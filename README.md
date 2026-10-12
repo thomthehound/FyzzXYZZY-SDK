@@ -13,10 +13,9 @@ Godot 4.7 is the first target consumer and acceptance harness, **not a core
 dependency**. The SDK is intended to support Linux, Windows, native C++
 applications and other host engines.
 
-The current M0 development branch provides a **provisional** CPU-backed world
-facade and headless smoke test using pinned PhysX 5.11 source. It has **not yet
-been verified on both platforms** or integrated into Godot. Do not mistake this
-bootstrap for a released engine.
+The M0 branch provides a CPU-backed world facade and headless smoke test
+using pinned PhysX 5.11 source. Linux and Windows builds are covered by
+GitHub Actions. Godot integration is the next consumer milestone.
 
 - [Development roadmap](docs/ROADMAP.md)
 - [M0 build and testing](docs/BUILDING.md)
