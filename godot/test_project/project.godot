@@ -1,0 +1,12 @@
+; SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+; SPDX-License-Identifier: Apache-2.0
+
+config_version=5
+
+[application]
+config/name="FizzX Godot M0 Acceptance"
+run/main_scene="res://main.tscn"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

@@ -1,0 +1,6 @@
+; SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+; SPDX-License-Identifier: Apache-2.0
+
+[gd_scene format=3]
+
+[node name="FizzXAcceptance" type="Node3D"]
