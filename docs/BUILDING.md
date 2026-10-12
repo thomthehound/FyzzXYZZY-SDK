@@ -115,15 +115,22 @@ The adapter exposes box creation, simulation stepping, position and velocity.
 This is the initial SDK-consumer test, not the complete Godot PhysicsServer3D
 backend.
 
-## Godot editor import coverage
+## Godot 4.7.2 editor import
 
-The headless CPU and Godot runtime tests pass on Linux and Windows. The Linux
-editor-import crash occurs only when the GDExtension is present.
+For a fresh sample-project cache, bootstrap headless editor import in recovery
+mode, followed by the regular editor-import pass:
 
-The non-blocking editor test compares five fresh projects: empty control,
-sample without extension, empty godot-cpp extension, simple RefCounted
-extension, and full FizzX extension. Results are recorded as
-`EDITOR_IMPORT_RESULT scenario=... exit=...`. A GDB backtrace is captured
-on failure of the full extension.
+```sh
+godot --headless --recovery-mode --editor --import --path godot/test_project
+godot --headless --editor --import --path godot/test_project
+```
 
-The separate headless runtime acceptance test remains mandatory.
+This sequence addresses a Godot 4.7.2 first-run headless-editor shutdown defect
+when the project discovers a GDExtension registering a native class. See
+[godotengine/godot#123511](https://github.com/godotengine/godot/issues/123511).
+The issue was closed without a demonstrated engine fix. Recovery mode prepares
+the extension registry for the subsequent normal editor import.
+
+CI validates this sequence on Linux and Windows, and then runs the FizzX
+simulation in the prepared project. The separate runtime acceptance test remains
+required.

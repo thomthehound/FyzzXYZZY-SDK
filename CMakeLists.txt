@@ -93,19 +93,6 @@ if(FIZZX_BUILD_GODOT)
   target_link_libraries(fizzx_godot PRIVATE FizzX::Core godot::cpp)
   set_target_properties(fizzx_godot PROPERTIES PREFIX "" OUTPUT_NAME "fizzx_godot")
 
-  # Native editor-import probes are built only for the integration test.
-  if(BUILD_TESTING)
-    foreach(probe_variant empty class)
-      add_library(fizzx_godot_probe_${probe_variant} SHARED
-        godot/tests/editor_probe.cpp)
-      target_compile_features(fizzx_godot_probe_${probe_variant} PRIVATE cxx_std_17)
-      target_link_libraries(fizzx_godot_probe_${probe_variant} PRIVATE godot::cpp)
-      set_target_properties(fizzx_godot_probe_${probe_variant} PROPERTIES
-        PREFIX "" OUTPUT_NAME "fizzx_godot_probe_${probe_variant}")
-    endforeach()
-    target_compile_definitions(fizzx_godot_probe_class PRIVATE FIZZX_PROBE_REGISTER_CLASS)
-  endif()
-
   # The sample descriptor references the same basename on Linux and Windows.
   set(FIZZX_GODOT_SAMPLE_BIN "${CMAKE_CURRENT_SOURCE_DIR}/godot/test_project/bin")
   add_custom_command(TARGET fizzx_godot POST_BUILD

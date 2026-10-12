@@ -19,7 +19,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON
       - name: Build
-        run: cmake --build build --target fizzx_headless_smoke fizzx_godot fizzx_godot_probe_empty fizzx_godot_probe_class --parallel 4
+        run: cmake --build build --target fizzx_headless_smoke fizzx_godot --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -60,57 +60,26 @@ jobs:
           fi
           grep -Fq "FizzX Godot M0 acceptance PASS" "${RUNNER_TEMP}/fizzx-godot.log"
 
-      - name: Linux editor import diagnostic
-        if: success()
-        continue-on-error: true
+      - name: Godot 4.7.2 editor import acceptance
         shell: bash
         run: |
           engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
-          control="${RUNNER_TEMP}/editor-control"
-          without_extension="${RUNNER_TEMP}/editor-no-extension"
-          empty_probe="${RUNNER_TEMP}/editor-empty-probe"
-          class_probe="${RUNNER_TEMP}/editor-class-probe"
-          full="${RUNNER_TEMP}/editor-full"
+          project="${RUNNER_TEMP}/fizzx-editor-acceptance"
+          cp -a godot/test_project "$project"
+          rm -rf "$project/.godot"
 
-          mkdir -p "$control"
-          printf 'config_version=5\n\n[application]\nconfig/name="Editor Control"\n\n[rendering]\nrenderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"\n' > "$control/project.godot"
-          for project in "$without_extension" "$empty_probe" "$class_probe" "$full"; do
-            cp -a godot/test_project "$project"
-            rm -rf "$project/.godot"
-          done
-          rm -f "$without_extension/addons/fizzx/fizzx.gdextension"
-          cp build/fizzx_godot_probe_empty.so "$empty_probe/bin/fizzx_godot.so"
-          cp build/fizzx_godot_probe_class.so "$class_probe/bin/fizzx_godot.so"
+          # Populate the extension registry before the first normal headless
+          # editor session; Godot 4.7.2 needs this for registered native classes.
+          timeout 45s "$engine" --headless --recovery-mode --editor --import --path "$project"
+          test -s "$project/.godot/extension_list.cfg"
 
-          set +e
-          for scenario in control without_extension empty_probe class_probe full; do
-            case "$scenario" in
-              control) project="$control" ;;
-              without_extension) project="$without_extension" ;;
-              empty_probe) project="$empty_probe" ;;
-              class_probe) project="$class_probe" ;;
-              full) project="$full" ;;
-            esac
-            timeout 45s "$engine" --headless --editor --import --path "$project" > "${RUNNER_TEMP}/editor-${scenario}.log" 2>&1
-            status=$?
-            echo "EDITOR_IMPORT_RESULT scenario=$scenario exit=$status"
-            cat "${RUNNER_TEMP}/editor-${scenario}.log"
-            if [ "$scenario" = full ]; then full_status=$status; fi
-          done
-          set -e
+          # Verify the ordinary editor import works on the prepared project.
+          timeout 45s "$engine" --headless --editor --import --path "$project"
 
-          if [ "$full_status" -ne 0 ]; then
-            if ! command -v gdb >/dev/null 2>&1; then
-              sudo apt-get update -qq && sudo apt-get install -y -qq gdb || true
-            fi
-            if command -v gdb >/dev/null 2>&1; then
-              rm -rf "$full/.godot"
-              timeout 75s gdb --batch -return-child-result \
-                -ex "set pagination off" -ex run -ex "thread apply all bt 18" --args \
-                "$engine" --headless --editor --import --path "$full" || true
-            fi
-          fi
-          test "$full_status" -eq 0
+          # Verify runtime class registration after both editor passes.
+          timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
+            2>&1 | tee "${RUNNER_TEMP}/fizzx-editor-runtime.log"
+          grep -Fq "FizzX Godot M0 acceptance PASS" "${RUNNER_TEMP}/fizzx-editor-runtime.log"
   windows:
     runs-on: windows-2022
     timeout-minutes: 35
@@ -137,4 +106,28 @@ jobs:
           if ($status -ne 0) { exit $status }
           if (-not ($godotOutput -match 'FizzX Godot M0 acceptance PASS')) {
             throw "Godot acceptance completion marker missing"
+          }
+      - name: Godot 4.7.2 editor import acceptance
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
+          $project = Join-Path $env:RUNNER_TEMP 'fizzx-editor-acceptance'
+          Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
+          $cache = Join-Path $project '.godot'
+          if (Test-Path $cache) { Remove-Item -Path $cache -Force -Recurse }
+
+          & $exe --headless --recovery-mode --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registry = Join-Path $cache 'extension_list.cfg'
+          if (-not (Test-Path $registry)) { throw "Godot extension registry not generated" }
+
+          & $exe --headless --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $output = & $exe --headless --path $project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($output -match 'FizzX Godot M0 acceptance PASS')) {
+            throw "Godot editor acceptance runtime marker missing"
           }
