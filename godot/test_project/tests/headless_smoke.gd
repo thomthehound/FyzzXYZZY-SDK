@@ -4,8 +4,18 @@
 extends SceneTree
 
 func _initialize() -> void:
+    var extension_path := "res://addons/fizzx/fizzx.gdextension"
     if not ClassDB.class_exists("FizzXGodotWorld"):
-        printerr("FizzXGodotWorld is not registered")
+        var load_status: int = GDExtensionManager.load_extension(extension_path)
+        if load_status != GDExtensionManager.LOAD_STATUS_OK and (
+            load_status != GDExtensionManager.LOAD_STATUS_ALREADY_LOADED
+        ):
+            printerr("FizzX GDExtension load failed: status=", load_status)
+            quit(1)
+            return
+
+    if not ClassDB.class_exists("FizzXGodotWorld"):
+        printerr("FizzXGodotWorld was not registered after loading the GDExtension")
         quit(1)
         return
 

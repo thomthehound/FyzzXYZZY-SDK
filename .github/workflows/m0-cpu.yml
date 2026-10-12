@@ -33,7 +33,7 @@ jobs:
           # Exercise the runtime GDExtension contract directly. Editor import is
           # an independent integration test and must not gate the headless SDK test.
           set +e
-          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd
+          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd 2>&1 | tee "${RUNNER_TEMP}/fizzx-godot.log"
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -43,6 +43,7 @@ jobs:
             fi
             exit "$status"
           fi
+          grep -Fq "FizzX Godot M0 acceptance PASS" "${RUNNER_TEMP}/fizzx-godot.log"
 
   windows:
     runs-on: windows-2022
@@ -62,8 +63,12 @@ jobs:
           $bin = Join-Path $env:RUNNER_TEMP 'godot-bin'
           Invoke-WebRequest -Uri 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $bin
-          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64.exe'
-          & $exe --headless --editor --import --path godot/test_project
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd
-          exit $LASTEXITCODE
+          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64_console.exe'
+          if (-not (Test-Path $exe)) { throw "Godot console executable not found: $exe" }
+          $godotOutput = & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $godotOutput | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($godotOutput -match 'FizzX Godot M0 acceptance PASS')) {
+            throw "Godot acceptance completion marker missing"
+          }

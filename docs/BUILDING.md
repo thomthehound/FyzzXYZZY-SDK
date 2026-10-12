@@ -50,8 +50,8 @@ The test creates a floor and dynamic box, advances 180 fixed 60 Hz steps, and ch
 that the box falls, contacts the floor and settles.
 
 The Linux and Windows CI jobs build and execute this test. The Godot adapter
-consumes the same FizzX core. The Linux Godot acceptance job runs the
-headless script directly; editor import is tracked separately.
+consumes the same FizzX core. Both Godot acceptance jobs execute the headless
+runtime script directly and require a successful completion marker.
 
 ## Headers
 
@@ -71,13 +71,15 @@ godot-cpp 10.0.0 is compiled against the Godot 4.7 API. The resulting
 library is copied to `godot/test_project/bin`, and the extension descriptor
 is `godot/test_project/addons/fizzx/fizzx.gdextension`.
 
-After installing Godot 4.7.2, initialize the sample project and execute the
-headless acceptance scene (use the appropriate executable path):
+After installing Godot 4.7.2, execute the headless acceptance test:
 
 ```sh
-godot --headless --editor --import --path godot/test_project
 godot --headless --path godot/test_project --script res://tests/headless_smoke.gd
 ```
+
+The test loads `res://addons/fizzx/fizzx.gdextension` explicitly when the
+Godot extension registry has not yet been generated. On Windows, use the
+console executable for command-line testing and process exit status.
 
 The Godot acceptance test constructs the same type of FizzX-managed rigid
 scene as the standalone test, advances 180 physics steps, and checks the
