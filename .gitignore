@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 *.swp
 .DS_Store
+
+# Godot sample cache and native output
+/godot/test_project/.godot/
+/godot/test_project/bin/

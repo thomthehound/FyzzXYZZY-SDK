@@ -15,7 +15,7 @@ applications and other host engines.
 
 The M0 branch provides a CPU-backed world facade and headless smoke test
 using pinned PhysX 5.11 source. Linux and Windows builds are covered by
-GitHub Actions. Godot integration is the next consumer milestone.
+GitHub Actions. An optional Godot 4.7 GDExtension consumer exercises the same core in a headless Godot project.
 
 - [Development roadmap](docs/ROADMAP.md)
 - [M0 build and testing](docs/BUILDING.md)

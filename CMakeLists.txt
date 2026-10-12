@@ -66,3 +66,33 @@ if(BUILD_TESTING)
   target_link_libraries(fizzx_headless_smoke PRIVATE FizzX::Core)
   add_test(NAME fizzx_headless_smoke COMMAND fizzx_headless_smoke)
 endif()
+
+# Godot is a first SDK consumer, never a dependency of FizzX::Core.
+option(FIZZX_BUILD_GODOT "Build the optional Godot 4.7 GDExtension consumer" OFF)
+if(FIZZX_BUILD_GODOT)
+  set(GODOTCPP_API_VERSION "4.7" CACHE STRING "Target Godot extension API version" FORCE)
+  FetchContent_Declare(fizzx_godot_cpp
+    GIT_REPOSITORY https://github.com/godotengine/godot-cpp.git
+    GIT_TAG 507ed9d840c01a3c5b2a39af8bb4000bfac30bf5
+    GIT_SHALLOW FALSE
+  )
+  FetchContent_MakeAvailable(fizzx_godot_cpp)
+
+  add_library(fizzx_godot SHARED
+    godot/src/fizzx_godot_world.cpp
+    godot/src/register_types.cpp
+  )
+  target_compile_features(fizzx_godot PRIVATE cxx_std_17)
+  target_link_libraries(fizzx_godot PRIVATE FizzX::Core godot::cpp)
+  set_target_properties(fizzx_godot PROPERTIES PREFIX "" OUTPUT_NAME "fizzx_godot")
+
+  # The sample descriptor references the same basename on Linux and Windows.
+  set(FIZZX_GODOT_SAMPLE_BIN "${CMAKE_CURRENT_SOURCE_DIR}/godot/test_project/bin")
+  add_custom_command(TARGET fizzx_godot POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${FIZZX_GODOT_SAMPLE_BIN}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "$<TARGET_FILE:fizzx_godot>"
+      "${FIZZX_GODOT_SAMPLE_BIN}/$<TARGET_FILE_NAME:fizzx_godot>"
+    VERBATIM
+  )
+endif()

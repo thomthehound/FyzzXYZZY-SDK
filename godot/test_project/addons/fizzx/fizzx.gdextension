@@ -1,0 +1,13 @@
+; SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+; SPDX-License-Identifier: Apache-2.0
+
+[configuration]
+
+entry_symbol = "fizzx_godot_library_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+[libraries]
+
+linux.x86_64 = "res://bin/fizzx_godot.so"
+windows.x86_64 = "res://bin/fizzx_godot.dll"

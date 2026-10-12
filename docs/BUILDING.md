@@ -58,3 +58,29 @@ New FizzX-authored C++ and CMake files use:
 `SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound` and
 `SPDX-License-Identifier: Apache-2.0`.
 Upstream and third-party files retain their original license and provenance.
+
+## Optional Godot 4.7.2 native consumer
+
+The `FizzX::Core` library remains independently buildable. To compile the
+GDExtension and copy it into the sample project, add
+`-DFIZZX_BUILD_GODOT=ON` to the usual CMake configuration, then build the
+`fizzx_godot` target.
+
+godot-cpp 10.0.0 is compiled against the Godot 4.7 API. The resulting
+library is copied to `godot/test_project/bin`, and the extension descriptor
+is `godot/test_project/addons/fizzx/fizzx.gdextension`.
+
+After installing Godot 4.7.2, initialize the sample project and execute the
+headless acceptance scene (use the appropriate executable path):
+
+```sh
+godot --headless --editor --import --path godot/test_project
+godot --headless --path godot/test_project --script res://tests/headless_smoke.gd
+```
+
+The Godot acceptance test constructs the same type of FizzX-managed rigid
+scene as the standalone test, advances 180 physics steps, and checks the
+contact/settling outcome. Godot does not perform its physics computation.
+The adapter exposes box creation, simulation stepping, position and velocity.
+This is the initial SDK-consumer test, not the complete Godot PhysicsServer3D
+backend.
