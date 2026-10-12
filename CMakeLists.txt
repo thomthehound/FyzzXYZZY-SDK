@@ -71,6 +71,30 @@ if(BUILD_TESTING)
   add_test(NAME fizzx_headless_smoke COMMAND fizzx_headless_smoke)
 endif()
 
+# Native compute resources and operations do not depend on Godot or PhysX.
+option(FIZZX_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
+if(FIZZX_BUILD_VULKAN)
+  find_package(Vulkan REQUIRED)
+  add_library(fizzx_compute STATIC src/compute_vulkan.cpp)
+  add_library(FizzX::Compute ALIAS fizzx_compute)
+  target_compile_features(fizzx_compute PUBLIC cxx_std_17)
+  target_include_directories(fizzx_compute PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(fizzx_compute PRIVATE Vulkan::Vulkan)
+  set_target_properties(fizzx_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  if(MSVC)
+    target_compile_options(fizzx_compute PRIVATE /W4)
+  else()
+    target_compile_options(fizzx_compute PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  if(BUILD_TESTING)
+    add_executable(fizzx_vulkan_memory_smoke tests/vulkan_memory_smoke.cpp)
+    target_link_libraries(fizzx_vulkan_memory_smoke PRIVATE FizzX::Compute)
+    add_test(NAME fizzx_vulkan_memory_smoke COMMAND fizzx_vulkan_memory_smoke)
+  endif()
+endif()
+
 # Godot is a first SDK consumer, never a dependency of FizzX::Core.
 option(FIZZX_BUILD_GODOT "Build the optional Godot 4.7 GDExtension consumer" OFF)
 if(FIZZX_BUILD_GODOT)

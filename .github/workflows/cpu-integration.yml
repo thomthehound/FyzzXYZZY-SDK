@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 # SPDX-License-Identifier: Apache-2.0
 
-name: M0 CPU and Godot acceptance
+name: CPU SDK and Godot Integration
 
-# Validate bootstrap changes on the M0 branch; allow manual reruns later.
 on:
   push:
     branches:
-      - feature/m0-headless-bootstrap
+      - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -16,10 +18,12 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Install Vulkan development packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON -DFIZZX_BUILD_VULKAN=ON
       - name: Build
-        run: cmake --build build --target fizzx_headless_smoke fizzx_godot --parallel 4
+        run: cmake --build build --target fizzx_headless_smoke fizzx_godot fizzx_vulkan_memory_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -58,7 +62,7 @@ jobs:
             fi
             exit "$status"
           fi
-          grep -Fq "FizzX Godot M0 acceptance PASS" "${RUNNER_TEMP}/fizzx-godot.log"
+          grep -Fq "FizzX Godot acceptance PASS" "${RUNNER_TEMP}/fizzx-godot.log"
 
       - name: Godot 4.7.2 editor import acceptance
         shell: bash
@@ -79,7 +83,7 @@ jobs:
           # Verify runtime class registration after both editor passes.
           timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
             2>&1 | tee "${RUNNER_TEMP}/fizzx-editor-runtime.log"
-          grep -Fq "FizzX Godot M0 acceptance PASS" "${RUNNER_TEMP}/fizzx-editor-runtime.log"
+          grep -Fq "FizzX Godot acceptance PASS" "${RUNNER_TEMP}/fizzx-editor-runtime.log"
   windows:
     runs-on: windows-2022
     timeout-minutes: 35
@@ -104,7 +108,7 @@ jobs:
           $status = $LASTEXITCODE
           $godotOutput | ForEach-Object { Write-Output $_ }
           if ($status -ne 0) { exit $status }
-          if (-not ($godotOutput -match 'FizzX Godot M0 acceptance PASS')) {
+          if (-not ($godotOutput -match 'FizzX Godot acceptance PASS')) {
             throw "Godot acceptance completion marker missing"
           }
       - name: Godot 4.7.2 editor import acceptance
@@ -128,6 +132,6 @@ jobs:
           $status = $LASTEXITCODE
           $output | ForEach-Object { Write-Output $_ }
           if ($status -ne 0) { exit $status }
-          if (-not ($output -match 'FizzX Godot M0 acceptance PASS')) {
+          if (-not ($output -match 'FizzX Godot acceptance PASS')) {
             throw "Godot editor acceptance runtime marker missing"
           }

@@ -43,7 +43,7 @@ func _initialize() -> void:
 
     var final_position: Vector3 = physics_world.get_body_position(box_id)
     var final_velocity: Vector3 = physics_world.get_body_velocity(box_id)
-    print("FizzX Godot M0: initial_y=", initial_y,
+    print("FizzX Godot: initial_y=", initial_y,
         " final_y=", final_position.y, " vy=", final_velocity.y)
 
     if not is_finite(final_position.y) or (
@@ -55,5 +55,5 @@ func _initialize() -> void:
         quit(1)
         return
 
-    print("FizzX Godot M0 acceptance PASS")
+    print("FizzX Godot acceptance PASS")
     quit(0)

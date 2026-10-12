@@ -1,7 +1,7 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# M0 headless build (provisional)
+# CPU SDK build and test
 
 M0 deliberately uses **upstream PhysX CPU** as its physics implementation, through the
 Godot-independent `FizzX::Core` C++ target. CUDA is disabled. The shader translation and
