@@ -34,6 +34,8 @@ jobs:
           test -f FizzX-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FizzX-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
+          cmake --build offline-build --target fizzx_headless_smoke --parallel 4
+          ctest --test-dir offline-build --output-on-failure
 
       - name: Godot 4.7.2 headless acceptance
         shell: bash
@@ -65,30 +67,42 @@ jobs:
         run: |
           engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
           control="${RUNNER_TEMP}/fizzx-editor-control"
+          no_extension="${RUNNER_TEMP}/fizzx-editor-no-extension"
           sample="${RUNNER_TEMP}/fizzx-editor-sample"
           mkdir -p "$control"
-          printf 'config_version=5\n\n[application]\nconfig/name="Godot Import Control"\n' > "$control/project.godot"
+          printf 'config_version=5\n\n[application]\nconfig/name="Godot Import Control"\n\n[rendering]\nrenderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"\n' > "$control/project.godot"
           cp -a godot/test_project "$sample"
-          rm -rf "$sample/.godot"
+          cp -a "$sample" "$no_extension"
+          rm -rf "$sample/.godot" "$no_extension/.godot"
+          rm -f "$no_extension/addons/fizzx/fizzx.gdextension"
 
           set +e
           timeout 45s "$engine" --headless --editor --import --path "$control" > "${RUNNER_TEMP}/godot-editor-control.log" 2>&1
           control_status=$?
+          timeout 45s "$engine" --headless --editor --import --path "$no_extension" > "${RUNNER_TEMP}/godot-editor-no-extension.log" 2>&1
+          no_extension_status=$?
           timeout 45s "$engine" --headless --editor --import --path "$sample" > "${RUNNER_TEMP}/godot-editor-sample.log" 2>&1
           sample_status=$?
           set -e
-          echo "Godot editor control exit: $control_status"
+          echo "Editor control exit: $control_status"
           cat "${RUNNER_TEMP}/godot-editor-control.log"
-          echo "FizzX editor sample exit: $sample_status"
+          echo "Editor without extension exit: $no_extension_status"
+          cat "${RUNNER_TEMP}/godot-editor-no-extension.log"
+          echo "Editor with FizzX extension exit: $sample_status"
           cat "${RUNNER_TEMP}/godot-editor-sample.log"
 
-          if [ "$sample_status" -ne 0 ] && command -v gdb >/dev/null 2>&1; then
-            rm -rf "$sample/.godot"
-            timeout 75s gdb --batch -return-child-result -ex "set pagination off" -ex run -ex "bt 24" --args \
-              "$engine" --headless --editor --import --path "$sample" || true
+          if [ "$sample_status" -ne 0 ]; then
+            if ! command -v gdb >/dev/null 2>&1; then
+              sudo apt-get update -qq && sudo apt-get install -y -qq gdb || true
+            fi
+            if command -v gdb >/dev/null 2>&1; then
+              rm -rf "$sample/.godot"
+              timeout 75s gdb --batch -return-child-result \
+                -ex "set pagination off" -ex run -ex "thread apply all bt 18" --args \
+                "$engine" --headless --editor --import --path "$sample" || true
+            fi
           fi
-          test "$control_status" -eq 0 && test "$sample_status" -eq 0
-
+          test "$control_status" -eq 0 && test "$no_extension_status" -eq 0 && test "$sample_status" -eq 0
   windows:
     runs-on: windows-2022
     timeout-minutes: 35
