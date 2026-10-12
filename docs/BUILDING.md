@@ -117,11 +117,13 @@ backend.
 
 ## Godot editor import coverage
 
-Linux editor import exited with SIGABRT (134) while the headless FizzX
-runtime passed. The CI diagnostic compares an empty project, the sample
-without its GDExtension descriptor, and the full sample using the same
-renderer. If the full sample fails, GDB captures a crash backtrace.
+The headless CPU and Godot runtime tests pass on Linux and Windows. The Linux
+editor-import crash occurs only when the GDExtension is present.
 
-Editor-import testing is a separate, non-blocking integration check until
-the underlying defect is resolved. The headless FizzX runtime test remains
-mandatory.
+The non-blocking editor test compares five fresh projects: empty control,
+sample without extension, empty godot-cpp extension, simple RefCounted
+extension, and full FizzX extension. Results are recorded as
+`EDITOR_IMPORT_RESULT scenario=... exit=...`. A GDB backtrace is captured
+on failure of the full extension.
+
+The separate headless runtime acceptance test remains mandatory.
