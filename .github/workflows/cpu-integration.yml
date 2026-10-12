@@ -19,11 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Vulkan development packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers glslang-tools
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON -DFIZZX_BUILD_VULKAN=ON
       - name: Build
-        run: cmake --build build --target fizzx_headless_smoke fizzx_godot fizzx_vulkan_memory_smoke --parallel 4
+        run: cmake --build build --target fizzx_headless_smoke fizzx_godot fizzx_vulkan_memory_smoke fizzx_vulkan_dispatch_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution

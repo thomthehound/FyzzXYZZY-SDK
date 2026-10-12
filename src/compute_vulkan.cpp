@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstring>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -121,6 +122,13 @@ struct Context::Impl {
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize bytes = 0;
     };
+    struct Pipeline {
+        VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        std::uint32_t binding_count = 0;
+        std::uint32_t push_bytes = 0;
+    };
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -129,7 +137,10 @@ struct Context::Impl {
     VkCommandPool command_pool = VK_NULL_HANDLE;
     DeviceInfo info;
     std::unordered_map<BufferId, Buffer> buffers;
+    std::unordered_map<PipelineId, Pipeline> pipelines;
     BufferId next_buffer = 1;
+    PipelineId next_pipeline = 1;
+    VkPhysicalDeviceLimits limits{};
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
         if (backend != Backend::Vulkan) {
@@ -144,6 +155,9 @@ struct Context::Impl {
             const auto& selected = candidates[ordinal];
             physical = selected.physical;
             info = selected.info;
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(physical, &properties);
+            limits = properties.limits;
 
             float priority = 1.0f;
             VkDeviceQueueCreateInfo queue_info{};
@@ -174,6 +188,10 @@ struct Context::Impl {
     void cleanup() noexcept {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
+            for (auto& item : pipelines) {
+                destroy_pipeline_handles(item.second);
+            }
+            pipelines.clear();
             for (auto& item : buffers) {
                 vkDestroyBuffer(device, item.second.buffer, nullptr);
                 vkFreeMemory(device, item.second.memory, nullptr);
@@ -193,6 +211,21 @@ struct Context::Impl {
     }
 
     ~Impl() { cleanup(); }
+
+    void destroy_pipeline_handles(Pipeline& pipeline) noexcept {
+        if (pipeline.pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, pipeline.pipeline, nullptr);
+            pipeline.pipeline = VK_NULL_HANDLE;
+        }
+        if (pipeline.layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, pipeline.layout, nullptr);
+            pipeline.layout = VK_NULL_HANDLE;
+        }
+        if (pipeline.descriptors != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, pipeline.descriptors, nullptr);
+            pipeline.descriptors = VK_NULL_HANDLE;
+        }
+    }
 
     Buffer& get(BufferId id) {
         auto it = buffers.find(id);
@@ -303,6 +336,245 @@ struct Context::Impl {
         vkUnmapMemory(device, buffer.memory);
     }
 
+
+    const Pipeline& get_pipeline(PipelineId id) const {
+        const auto it = pipelines.find(id);
+        if (it == pipelines.end()) {
+            throw std::out_of_range("Unknown compute pipeline ID");
+        }
+        return it->second;
+    }
+
+    PipelineId create_pipeline(const ComputePipelineDesc& desc) {
+        if (desc.shader.format != ShaderFormat::Spirv) {
+            throw std::invalid_argument("Vulkan compute pipelines require SPIR-V");
+        }
+        if (desc.shader.bytes.size() < 20 ||
+            (desc.shader.bytes.size() % sizeof(std::uint32_t)) != 0) {
+            throw std::invalid_argument("Invalid SPIR-V bytecode size");
+        }
+        std::vector<std::uint32_t> words(desc.shader.bytes.size() / 4);
+        std::memcpy(words.data(), desc.shader.bytes.data(), desc.shader.bytes.size());
+        if (words[0] != 0x07230203u) {
+            throw std::invalid_argument("Invalid SPIR-V magic");
+        }
+        if (desc.shader.entry_point.empty() ||
+            desc.shader.entry_point.find('\0') != std::string::npos) {
+            throw std::invalid_argument("Invalid compute shader entry point");
+        }
+        if (desc.storage_buffer_binding_count > limits.maxPerStageDescriptorStorageBuffers ||
+            desc.storage_buffer_binding_count > limits.maxDescriptorSetStorageBuffers) {
+            throw std::out_of_range("Storage-buffer binding count exceeds device limits");
+        }
+        if ((desc.push_constant_bytes % 4u) != 0 ||
+            desc.push_constant_bytes > limits.maxPushConstantsSize) {
+            throw std::out_of_range("Push constant size exceeds device limits or alignment");
+        }
+        if (next_pipeline == std::numeric_limits<PipelineId>::max()) {
+            throw std::overflow_error("Compute pipeline ID range exhausted");
+        }
+
+        Pipeline item;
+        VkShaderModule shader = VK_NULL_HANDLE;
+        try {
+            VkShaderModuleCreateInfo shader_create{};
+            shader_create.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            shader_create.codeSize = desc.shader.bytes.size();
+            shader_create.pCode = words.data();
+            require(vkCreateShaderModule(device, &shader_create, nullptr, &shader),
+                    "vkCreateShaderModule");
+
+            std::vector<VkDescriptorSetLayoutBinding> slots(
+                desc.storage_buffer_binding_count);
+            for (std::uint32_t i = 0; i < slots.size(); ++i) {
+                slots[i].binding = i;
+                slots[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                slots[i].descriptorCount = 1;
+                slots[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+            VkDescriptorSetLayoutCreateInfo descriptor_create{};
+            descriptor_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            descriptor_create.bindingCount = static_cast<std::uint32_t>(slots.size());
+            descriptor_create.pBindings = slots.data();
+            require(vkCreateDescriptorSetLayout(device, &descriptor_create, nullptr,
+                                                &item.descriptors),
+                    "vkCreateDescriptorSetLayout");
+
+            VkPushConstantRange push_range{};
+            push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            push_range.offset = 0;
+            push_range.size = desc.push_constant_bytes;
+
+            VkPipelineLayoutCreateInfo layout_create{};
+            layout_create.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            layout_create.setLayoutCount = 1;
+            layout_create.pSetLayouts = &item.descriptors;
+            layout_create.pushConstantRangeCount = desc.push_constant_bytes ? 1u : 0u;
+            layout_create.pPushConstantRanges = desc.push_constant_bytes ? &push_range : nullptr;
+            require(vkCreatePipelineLayout(device, &layout_create, nullptr, &item.layout),
+                    "vkCreatePipelineLayout");
+
+            VkPipelineShaderStageCreateInfo stage{};
+            stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            stage.module = shader;
+            stage.pName = desc.shader.entry_point.c_str();
+
+            VkComputePipelineCreateInfo create{};
+            create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            create.stage = stage;
+            create.layout = item.layout;
+            require(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create, nullptr,
+                                             &item.pipeline),
+                    "vkCreateComputePipelines");
+            item.binding_count = desc.storage_buffer_binding_count;
+            item.push_bytes = desc.push_constant_bytes;
+            const PipelineId id = next_pipeline;
+            pipelines.emplace(id, item);
+            ++next_pipeline;
+            vkDestroyShaderModule(device, shader, nullptr);
+            return id;
+        } catch (...) {
+            if (shader != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(device, shader, nullptr);
+            }
+            destroy_pipeline_handles(item);
+            throw;
+        }
+    }
+
+    void destroy_pipeline(PipelineId id) {
+        auto it = pipelines.find(id);
+        if (it == pipelines.end()) {
+            throw std::out_of_range("Unknown compute pipeline ID");
+        }
+        destroy_pipeline_handles(it->second);
+        pipelines.erase(it);
+    }
+
+    void dispatch(PipelineId id, DispatchSize groups,
+                  const std::vector<BufferBinding>& bindings,
+                  const void* push_constants, std::size_t push_bytes) {
+        const Pipeline& pipeline = get_pipeline(id);
+        const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
+        for (std::uint32_t i = 0; i < 3; ++i) {
+            if (counts[i] == 0 || counts[i] > info.max_workgroup_count[i]) {
+                throw std::out_of_range("Compute workgroup count exceeds device limits");
+            }
+        }
+        if (bindings.size() != pipeline.binding_count) {
+            throw std::invalid_argument("Incorrect number of compute buffer bindings");
+        }
+        if (push_bytes != pipeline.push_bytes || (push_bytes && !push_constants)) {
+            throw std::invalid_argument("Push constants do not match pipeline layout");
+        }
+
+        std::vector<VkDescriptorBufferInfo> descriptors(pipeline.binding_count);
+        std::vector<bool> assigned(pipeline.binding_count, false);
+        for (const auto& binding : bindings) {
+            if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
+                throw std::invalid_argument("Invalid or duplicate compute binding slot");
+            }
+            const Buffer& buffer = get(binding.buffer);
+            validate_range(buffer.bytes, binding.offset, binding.bytes);
+            if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
+                throw std::invalid_argument("Invalid compute descriptor range");
+            }
+            if (binding.offset % limits.minStorageBufferOffsetAlignment != 0) {
+                throw std::invalid_argument("Compute descriptor offset is misaligned");
+            }
+            assigned[binding.slot] = true;
+            descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
+        }
+
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        try {
+            VkDescriptorPoolSize pool_size{};
+            pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            pool_size.descriptorCount = std::max(1u, pipeline.binding_count);
+            VkDescriptorPoolCreateInfo pool_create{};
+            pool_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+            pool_create.maxSets = 1;
+            pool_create.poolSizeCount = 1;
+            pool_create.pPoolSizes = &pool_size;
+            require(vkCreateDescriptorPool(device, &pool_create, nullptr, &pool),
+                    "vkCreateDescriptorPool");
+
+            VkDescriptorSetAllocateInfo set_allocate{};
+            set_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            set_allocate.descriptorPool = pool;
+            set_allocate.descriptorSetCount = 1;
+            set_allocate.pSetLayouts = &pipeline.descriptors;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            require(vkAllocateDescriptorSets(device, &set_allocate, &set),
+                    "vkAllocateDescriptorSets");
+
+            std::vector<VkWriteDescriptorSet> writes(pipeline.binding_count);
+            for (std::uint32_t i = 0; i < writes.size(); ++i) {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = set;
+                writes[i].dstBinding = i;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[i].descriptorCount = 1;
+                writes[i].pBufferInfo = &descriptors[i];
+            }
+            if (!writes.empty()) {
+                vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
+                                       writes.data(), 0, nullptr);
+            }
+
+            VkCommandBufferAllocateInfo allocate{};
+            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocate.commandPool = command_pool;
+            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocate.commandBufferCount = 1;
+            require(vkAllocateCommandBuffers(device, &allocate, &commands),
+                    "vkAllocateCommandBuffers");
+
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
+            vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.layout, 0, 1, &set, 0, nullptr);
+            if (push_bytes) {
+                vkCmdPushConstants(commands, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                   0, static_cast<std::uint32_t>(push_bytes), push_constants);
+            }
+            vkCmdDispatch(commands, groups.x, groups.y, groups.z);
+
+            VkMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier,
+                                 0, nullptr, 0, nullptr);
+            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
+
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &commands;
+            require(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
+            require(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+        } catch (...) {
+            // A failed queue wait may signal device loss; the context is not
+            // recoverable, so callers must discard it after the exception.
+            if (commands != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(device, command_pool, 1, &commands);
+            }
+            if (pool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device, pool, nullptr);
+            }
+            throw;
+        }
+        vkFreeCommandBuffers(device, command_pool, 1, &commands);
+        vkDestroyDescriptorPool(device, pool, nullptr);
+    }
+
     void copy(BufferId source_id, std::size_t source_offset,
               BufferId destination_id, std::size_t destination_offset,
               std::size_t bytes) {
@@ -382,6 +654,18 @@ void Context::copy_buffer(BufferId source, std::size_t source_offset,
                           BufferId destination, std::size_t destination_offset,
                           std::size_t bytes) {
     impl_->copy(source, source_offset, destination, destination_offset, bytes);
+}
+
+PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& description) {
+    return impl_->create_pipeline(description);
+}
+
+void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(id); }
+
+void Context::dispatch(PipelineId pipeline, DispatchSize groups,
+                       const std::vector<BufferBinding>& buffers,
+                       const void* push_constants, std::size_t push_constant_bytes) {
+    impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
 }
 
 } // namespace fizzx::compute

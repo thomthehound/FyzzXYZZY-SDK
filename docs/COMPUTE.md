@@ -9,13 +9,13 @@ Vulkan types do not appear in `include/fizzx/compute.h`.
 
 ## Build
 
-Requires CMake, a C++17 compiler, Vulkan headers and loader, and a Vulkan
-driver with a compute-capable queue.
+Requires CMake, a C++17 compiler, Vulkan headers and loader, glslangValidator
+(for compiling the test shader), and a Vulkan compute-capable driver.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_VULKAN=ON
-cmake --build build --target fizzx_vulkan_memory_smoke
-ctest --test-dir build -R fizzx_vulkan_memory_smoke --output-on-failure
+cmake --build build --target fizzx_vulkan_memory_smoke fizzx_vulkan_dispatch_smoke
+ctest --test-dir build -R fizzx_vulkan_ --output-on-failure
 ```
 
 Vulkan is opt-in; CPU-only builds require no Vulkan SDK. Linux CI validates
@@ -29,8 +29,14 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Allocate and destroy host-visible coherent storage buffers.
 - Upload/download byte ranges with bounds checks.
 - Submit buffer-copy commands and synchronize their completion.
+- Create SPIR-V compute pipelines with storage-buffer bindings and push constants.
+- Dispatch 1D/2D/3D workgroups with validated device limits and descriptor ranges.
+- Synchronize shader writes for subsequent host reads.
 
 The current context is synchronous and not thread-safe. Buffer-copy offsets
-and sizes must be 4-byte aligned. Device-local memory, staging, descriptor
-bindings, compute pipelines, shader dispatch, barriers, fences, and graphics
-interop are not implemented yet. No GPU physics computation is claimed.
+and sizes must be 4-byte aligned; descriptor offsets must satisfy the device's
+storage-buffer alignment limits. Pipeline inputs supply compiled shader binaries
+and explicit binding layouts. Device-local memory, staging, asynchronous
+submission, fences, shader reflection, and graphics interop are not implemented.
+The kernel acceptance test verifies actual GPU-dispatched integer arithmetic
+without claiming a physics simulation.
