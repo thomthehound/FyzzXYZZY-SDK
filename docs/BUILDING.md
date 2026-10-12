@@ -14,9 +14,8 @@ portable GPU runtimes are separate milestones.
 - CMake will obtain that checkout over Git if `FIZZX_PHYSX_SOURCE_DIR` is unset.
 - For offline or editable builds, point `FIZZX_PHYSX_SOURCE_DIR` at the **repository
   root** of a local PhysX checkout (the folder containing `physx/CMakeLists.txt`).
-- Importing needed PhysX source into FizzX, with its attribution and licenses, remains
-  an explicit M0 packaging task. Do not represent this bootstrap dependency as a
-  completed standalone source distribution.
+- Importing needed PhysX source into FizzX, with its attribution and licenses, is
+  part of M0 packaging.
 
 ## Linux: Ninja
 
@@ -48,12 +47,10 @@ For a local checkout, append
 ## Expected M0 smoke result
 
 The test creates a floor and dynamic box, advances 180 fixed 60 Hz steps, and checks
-that the box falls, contacts the floor and settles. It uses **actual PhysX rigid bodies**;
-there is no Godot physics dependency or fabricated output.
+that the box falls, contacts the floor and settles.
 
-This first branch is a source bootstrap. Linux and Windows **must be built and tested**
-before it can be treated as a verified M0 baseline. The Godot adapter will consume the
-same FizzX core, but is not yet present in this branch.
+The Linux and Windows CI jobs build and execute this test. The Godot adapter
+will consume the same FizzX core.
 
 ## Headers
 
