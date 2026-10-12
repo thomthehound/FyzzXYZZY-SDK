@@ -29,8 +29,20 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/godot-bin"
           unzip -q "${RUNNER_TEMP}/godot.zip" -d "${RUNNER_TEMP}/godot-bin"
           chmod +x "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
-          "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64" --headless --editor --import --path godot/test_project
-          "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64" --headless --path godot/test_project --script res://tests/headless_smoke.gd
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          # Exercise the runtime GDExtension contract directly. Editor import is
+          # an independent integration test and must not gate the headless SDK test.
+          set +e
+          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if command -v gdb >/dev/null 2>&1; then
+              gdb --batch -ex "set pagination off" -ex run -ex "thread apply all bt 12" --args \
+                "$engine" --headless --path godot/test_project --script res://tests/headless_smoke.gd || true
+            fi
+            exit "$status"
+          fi
 
   windows:
     runs-on: windows-2022

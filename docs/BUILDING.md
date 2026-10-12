@@ -50,7 +50,8 @@ The test creates a floor and dynamic box, advances 180 fixed 60 Hz steps, and ch
 that the box falls, contacts the floor and settles.
 
 The Linux and Windows CI jobs build and execute this test. The Godot adapter
-will consume the same FizzX core.
+consumes the same FizzX core. The Linux Godot acceptance job runs the
+headless script directly; editor import is tracked separately.
 
 ## Headers
 
@@ -84,3 +85,10 @@ contact/settling outcome. Godot does not perform its physics computation.
 The adapter exposes box creation, simulation stepping, position and velocity.
 This is the initial SDK-consumer test, not the complete Godot PhysicsServer3D
 backend.
+
+## Godot editor import coverage
+
+The Linux editor-import run exited with SIGABRT (134) after project initialization
+on the first integration build. This remains an open editor-integration defect.
+The cross-platform M0 acceptance gate tests the runtime extension directly.
+Linux job diagnostics include a stack trace on a runtime crash when GDB is available.

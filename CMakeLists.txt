@@ -71,10 +71,9 @@ endif()
 option(FIZZX_BUILD_GODOT "Build the optional Godot 4.7 GDExtension consumer" OFF)
 if(FIZZX_BUILD_GODOT)
   set(GODOTCPP_API_VERSION "4.7" CACHE STRING "Target Godot extension API version" FORCE)
-  # Keep the first consumer's binding surface small; extend the profile as
-  # additional Godot types become part of the adapter.
-  set(GODOTCPP_BUILD_PROFILE "${CMAKE_CURRENT_SOURCE_DIR}/godot/build_profile.json"
-    CACHE FILEPATH "FizzX Godot adapter binding profile" FORCE)
+  # Use godot-cpp's complete supported API bindings until an upstream-compatible
+  # trimmed profile can cover its internal runtime dependencies.
+  set(GODOTCPP_BUILD_PROFILE "" CACHE FILEPATH "Godot binding profile" FORCE)
   FetchContent_Declare(fizzx_godot_cpp
     GIT_REPOSITORY https://github.com/godotengine/godot-cpp.git
     GIT_TAG 507ed9d840c01a3c5b2a39af8bb4000bfac30bf5
