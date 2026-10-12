@@ -14,8 +14,9 @@ portable GPU runtimes are separate milestones.
 - CMake will obtain that checkout over Git if `FIZZX_PHYSX_SOURCE_DIR` is unset.
 - For offline or editable builds, point `FIZZX_PHYSX_SOURCE_DIR` at the **repository
   root** of a local PhysX checkout (the folder containing `physx/CMakeLists.txt`).
-- Importing needed PhysX source into FizzX, with its attribution and licenses, is
-  part of M0 packaging.
+- The `fizzx_source_bundle` target produces an offline-configurable CPU source
+  archive containing the PhysX SDK tree and both upstream license documents.
+- Repository-level source vendoring remains a separate M0 integration task.
 
 ## Linux: Ninja
 
@@ -43,6 +44,32 @@ ctest --test-dir build --output-on-failure
 
 For a local checkout, append
 `-DFIZZX_PHYSX_SOURCE_DIR="C:/path/to/PhysX"` to configuration.
+
+## Source distribution
+
+Build the offline CPU source archive after CMake configuration:
+
+```sh
+cmake --build build --target fizzx_source_bundle
+```
+
+The resulting `build/fizzx-sdk-m0-source.tar.gz` contains the FizzX SDK
+and `vendor/PhysX/physx`. It also preserves the upstream repository-level
+BSD 3-Clause `vendor/PhysX/LICENSE.md` and PhysX SDK Apache-2.0
+`vendor/PhysX/physx/LICENSE.md`.
+
+Extract the archive and configure the CPU library without network access:
+
+```sh
+cmake -E tar xzf build/fizzx-sdk-m0-source.tar.gz
+cmake -S FizzX-SDK -B FizzX-SDK/build -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+cmake --build FizzX-SDK/build --target fizzx_headless_smoke
+ctest --test-dir FizzX-SDK/build --output-on-failure
+```
+
+The bundled PhysX source takes precedence over Git fetching unless
+`FIZZX_PHYSX_SOURCE_DIR` is specified. Optional Godot builds require
+godot-cpp separately and are not offline-complete in this archive.
 
 ## Expected M0 smoke result
 
@@ -90,7 +117,8 @@ backend.
 
 ## Godot editor import coverage
 
-The Linux editor-import run exited with SIGABRT (134) after project initialization
-on the first integration build. This remains an open editor-integration defect.
-The cross-platform M0 acceptance gate tests the runtime extension directly.
-Linux job diagnostics include a stack trace on a runtime crash when GDB is available.
+Linux editor-import initialization exited with SIGABRT (134) on the first
+integration build. CI compares an empty control project with the FizzX sample,
+captures both import logs, and collects a stack trace when GDB is available.
+This diagnostic step does not replace or weaken the cross-platform runtime
+acceptance gate. Editor import remains a separate integration acceptance item.

@@ -18,6 +18,10 @@ set(NV_USE_STATIC_WINCRT OFF CACHE BOOL "Use the DLL MSVC CRT for downstream con
 
 # Point this at the root of a local PhysX checkout to iterate without fetching.
 set(FIZZX_PHYSX_SOURCE_DIR "" CACHE PATH "Root of local PhysX 5.11 source checkout (contains physx/CMakeLists.txt)")
+if(NOT FIZZX_PHYSX_SOURCE_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/PhysX/physx/CMakeLists.txt")
+  set(FIZZX_PHYSX_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/PhysX"
+    CACHE PATH "Root of local PhysX 5.11 source checkout" FORCE)
+endif()
 if(FIZZX_PHYSX_SOURCE_DIR)
   if(NOT EXISTS "${FIZZX_PHYSX_SOURCE_DIR}/physx/CMakeLists.txt")
     message(FATAL_ERROR "FIZZX_PHYSX_SOURCE_DIR must point at a checkout root containing physx/CMakeLists.txt")
@@ -99,3 +103,15 @@ if(FIZZX_BUILD_GODOT)
     VERBATIM
   )
 endif()
+
+# Produce a complete, offline-configurable CPU SDK source distribution.
+# PhysX source is included in the archive; optional godot-cpp bindings are not.
+add_custom_target(fizzx_source_bundle
+  COMMAND "${CMAKE_COMMAND}"
+    "-DFIZZX_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DFIZZX_PHYSX_ROOT=${fizzx_physx_SOURCE_DIR}"
+    "-DFIZZX_BUNDLE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/fizzx-sdk-m0-source.tar.gz"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package-source.cmake"
+  BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/fizzx-sdk-m0-source.tar.gz"
+  VERBATIM
+)
