@@ -39,6 +39,13 @@ if(NOT TARGET physx_lib)
   message(FATAL_ERROR "Expected PhysX 5.11 CMake interface target 'physx_lib'")
 endif()
 
+# PhysX static consumers must not import symbols from PhysX DLLs on Windows.
+# The upstream static build defines this internally but does not export it
+# through the physx_lib interface target.
+if(PX_GENERATE_STATIC_LIBRARIES)
+  target_compile_definitions(physx_lib INTERFACE PX_PHYSX_STATIC_LIB)
+endif()
+
 add_library(fizzx_core STATIC src/world.cpp)
 add_library(FizzX::Core ALIAS fizzx_core)
 target_compile_features(fizzx_core PUBLIC cxx_std_17)
