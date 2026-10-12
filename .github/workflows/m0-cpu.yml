@@ -3,8 +3,11 @@
 
 name: M0 CPU smoke
 
-# Manual until the CPU baseline is validated; avoids repeated large PhysX builds.
+# Validate bootstrap changes on the M0 branch; allow manual reruns later.
 on:
+  push:
+    branches:
+      - feature/m0-headless-bootstrap
   workflow_dispatch:
 
 jobs:
