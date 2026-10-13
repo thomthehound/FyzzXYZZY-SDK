@@ -83,6 +83,19 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+  # Translated PhysX GPU stages. These operations preserve upstream data
+  # contracts; the PhysX scene integration is introduced incrementally.
+  add_library(fyzzxyzzy_physx_gpu_stages STATIC
+    src/physx_gpu/aabb_encoding.cpp
+  )
+  target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
+  target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC FyzzXYZZY::Compute)
+  set_target_properties(fyzzxyzzy_physx_gpu_stages
+    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
   # These independent physics demonstrations are not translations of PhysX
   # GPU algorithms or orchestration. Do not link them into the SDK by default.
   option(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES
@@ -127,6 +140,30 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_dispatch_shader)
     add_test(NAME fyzzxyzzy_vulkan_dispatch_smoke
       COMMAND fyzzxyzzy_vulkan_dispatch_smoke "${FYZZXYZZY_AFFINE_SHADER}")
+
+    # PhysX broadphase.cu::translateAABBsLaunch, with its original encoding
+    # and host dispatch contract. This is a ported stage, not a new solver.
+    set(FYZZXYZZY_PHYSX_AABB_SHADER
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.comp.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
+        -o "${FYZZXYZZY_PHYSX_AABB_SHADER}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.comp"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.comp"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_physx_aabb_shader DEPENDS "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+    add_executable(fyzzxyzzy_physx_aabb_encoding tests/physx_gpu_aabb_encoding.cpp)
+    target_include_directories(fyzzxyzzy_physx_aabb_encoding PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_aabb_encoding
+      PRIVATE fyzzxyzzy_physx_gpu_stages)
+    add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
+    add_test(NAME fyzzxyzzy_physx_aabb_encoding
+      COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
       set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
