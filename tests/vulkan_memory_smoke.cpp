@@ -103,6 +103,34 @@ int main() {
         if (!checked_alignment) {
             throw std::runtime_error("Misaligned device-local upload was accepted");
         }
+        // Chain device-local and host-visible copies without a queue-idle wait
+        // between commands. The second fence must cover both copies.
+        const SubmissionId first = context.submit_copy_buffer(
+            local_src, 0, local_dst, 0, sizeof(source));
+        const SubmissionId second = context.submit_copy_buffer(
+            local_dst, 0, dst, 0, sizeof(source));
+        context.wait_submission(second);
+        if (!context.submission_complete(first)) {
+            throw std::runtime_error("Earlier Vulkan submission did not finish");
+        }
+        context.wait_submission(first);
+        context.download(dst, 0, result.data(), sizeof(result));
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            const auto expected = i >= 4 && i < 7 ? patch_values[i - 4] : source[i];
+            if (result[i] != expected) {
+                throw std::runtime_error("Chained asynchronous copies produced wrong data");
+            }
+        }
+        bool rejected_submission = false;
+        try {
+            context.wait_submission(first);
+        } catch (const std::out_of_range&) {
+            rejected_submission = true;
+        }
+        if (!rejected_submission) {
+            throw std::runtime_error("Consumed submission ID remained valid");
+        }
+        context.wait_all();
         context.destroy_buffer(local_dst);
         context.destroy_buffer(local_src);
         context.destroy_buffer(dst);

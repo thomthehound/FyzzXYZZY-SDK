@@ -130,6 +130,11 @@ struct Context::Impl {
         std::uint32_t binding_count = 0;
         std::uint32_t push_bytes = 0;
     };
+    struct Submission {
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+    };
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -139,8 +144,10 @@ struct Context::Impl {
     DeviceInfo info;
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
+    std::unordered_map<SubmissionId, Submission> submissions;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
+    SubmissionId next_submission = 1;
     VkPhysicalDeviceLimits limits{};
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
@@ -189,6 +196,10 @@ struct Context::Impl {
     void cleanup() noexcept {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
+            for (const auto& item : submissions) {
+                release_submission(item.second);
+            }
+            submissions.clear();
             for (auto& item : pipelines) {
                 destroy_pipeline_handles(item.second);
             }
@@ -212,6 +223,77 @@ struct Context::Impl {
     }
 
     ~Impl() { cleanup(); }
+
+    void release_submission(const Submission& submission) noexcept {
+        if (submission.fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device, submission.fence, nullptr);
+        }
+        if (submission.commands != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device, command_pool, 1, &submission.commands);
+        }
+        if (submission.descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
+        }
+    }
+
+    SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
+        if (next_submission == std::numeric_limits<SubmissionId>::max()) {
+            throw std::overflow_error("Compute submission ID range exhausted");
+        }
+        VkFenceCreateInfo fence_create{};
+        fence_create.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence = VK_NULL_HANDLE;
+        require(vkCreateFence(device, &fence_create, nullptr, &fence), "vkCreateFence");
+        const SubmissionId id = next_submission;
+        try {
+            submissions.emplace(id, Submission{commands, descriptor_pool, fence});
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &commands;
+            const VkResult status = vkQueueSubmit(queue, 1, &submit, fence);
+            if (status != VK_SUCCESS) {
+                submissions.erase(id);
+                require(status, "vkQueueSubmit");
+            }
+        } catch (...) {
+            vkDestroyFence(device, fence, nullptr);
+            throw;
+        }
+        ++next_submission;
+        return id;
+    }
+
+    bool submission_complete(SubmissionId id) const {
+        const auto it = submissions.find(id);
+        if (it == submissions.end()) {
+            throw std::out_of_range("Unknown compute submission ID");
+        }
+        const VkResult status = vkGetFenceStatus(device, it->second.fence);
+        if (status == VK_NOT_READY) {
+            return false;
+        }
+        require(status, "vkGetFenceStatus");
+        return true;
+    }
+
+    void wait_submission(SubmissionId id) {
+        auto it = submissions.find(id);
+        if (it == submissions.end()) {
+            throw std::out_of_range("Unknown compute submission ID");
+        }
+        const VkFence fence = it->second.fence;
+        require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
+                "vkWaitForFences");
+        release_submission(it->second);
+        submissions.erase(it);
+    }
+
+    void wait_all() {
+        while (!submissions.empty()) {
+            wait_submission(submissions.begin()->first);
+        }
+    }
 
     void destroy_pipeline_handles(Pipeline& pipeline) noexcept {
         if (pipeline.pipeline != VK_NULL_HANDLE) {
@@ -335,6 +417,7 @@ struct Context::Impl {
     }
 
     void destroy_buffer(BufferId id) {
+        wait_all();
         const auto it = buffers.find(id);
         if (it == buffers.end()) {
             throw std::out_of_range("Unknown compute buffer ID");
@@ -358,9 +441,9 @@ struct Context::Impl {
         vkUnmapMemory(device, buffer.memory);
     }
 
-    void submit_copy(const Buffer& source, std::size_t source_offset,
+    SubmissionId submit_copy(const Buffer& source, std::size_t source_offset,
                      const Buffer& destination, std::size_t destination_offset,
-                     std::size_t bytes) const {
+                     std::size_t bytes) {
         if (source_offset % 4 != 0 || destination_offset % 4 != 0 || bytes % 4 != 0) {
             throw std::invalid_argument("Vulkan buffer copies require 4-byte alignment");
         }
@@ -406,21 +489,16 @@ struct Context::Impl {
                                  1, &after, 0, nullptr, 0, nullptr);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
 
-            VkSubmitInfo submit{};
-            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &commands;
-            require(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
-            require(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+            return enqueue(commands, VK_NULL_HANDLE);
         } catch (...) {
             vkFreeCommandBuffers(device, command_pool, 1, &commands);
             throw;
         }
-        vkFreeCommandBuffers(device, command_pool, 1, &commands);
     }
 
     void transfer(BufferId id, std::size_t offset, void* data,
-                  std::size_t bytes, bool upload) const {
+                  std::size_t bytes, bool upload) {
+        wait_all();
         const Buffer& buffer = get(id);
         validate_range(buffer.bytes, offset, bytes);
         if (bytes == 0) {
@@ -441,9 +519,9 @@ struct Context::Impl {
         try {
             if (upload) {
                 map_transfer(staging, 0, data, bytes, true);
-                submit_copy(staging, 0, buffer, offset, bytes);
+                wait_submission(submit_copy(staging, 0, buffer, offset, bytes));
             } else {
-                submit_copy(buffer, offset, staging, 0, bytes);
+                wait_submission(submit_copy(buffer, offset, staging, 0, bytes));
                 map_transfer(staging, 0, data, bytes, false);
             }
         } catch (...) {
@@ -560,6 +638,7 @@ struct Context::Impl {
     }
 
     void destroy_pipeline(PipelineId id) {
+        wait_all();
         auto it = pipelines.find(id);
         if (it == pipelines.end()) {
             throw std::out_of_range("Unknown compute pipeline ID");
@@ -568,7 +647,7 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    void dispatch(PipelineId id, DispatchSize groups,
+    SubmissionId dispatch(PipelineId id, DispatchSize groups,
                   const std::vector<BufferBinding>& bindings,
                   const void* push_constants, std::size_t push_bytes) {
         const Pipeline& pipeline = get_pipeline(id);
@@ -652,6 +731,14 @@ struct Context::Impl {
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
+            // Order prior GPU writes before reading or updating shader buffers.
+            VkMemoryBarrier before{};
+            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            before.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 1, &before, 0, nullptr, 0, nullptr);
             vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
             vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     pipeline.layout, 0, 1, &set, 0, nullptr);
@@ -664,21 +751,19 @@ struct Context::Impl {
             VkMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
+                                    VK_ACCESS_TRANSFER_READ_BIT |
+                                    VK_ACCESS_SHADER_READ_BIT |
+                                    VK_ACCESS_SHADER_WRITE_BIT;
             vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier,
-                                 0, nullptr, 0, nullptr);
+                                 VK_PIPELINE_STAGE_HOST_BIT |
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 1, &barrier, 0, nullptr, 0, nullptr);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
 
-            VkSubmitInfo submit{};
-            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &commands;
-            require(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
-            require(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+            return enqueue(commands, pool);
         } catch (...) {
-            // A failed queue wait may signal device loss; the context is not
-            // recoverable, so callers must discard it after the exception.
             if (commands != VK_NULL_HANDLE) {
                 vkFreeCommandBuffers(device, command_pool, 1, &commands);
             }
@@ -687,24 +772,25 @@ struct Context::Impl {
             }
             throw;
         }
-        vkFreeCommandBuffers(device, command_pool, 1, &commands);
-        vkDestroyDescriptorPool(device, pool, nullptr);
     }
 
-    void copy(BufferId source_id, std::size_t source_offset,
-              BufferId destination_id, std::size_t destination_offset,
-              std::size_t bytes) {
+    SubmissionId copy(BufferId source_id, std::size_t source_offset,
+                      BufferId destination_id, std::size_t destination_offset,
+                      std::size_t bytes, bool allow_empty = false) {
         const Buffer& source = get(source_id);
         const Buffer& destination = get(destination_id);
         validate_range(source.bytes, source_offset, bytes);
         validate_range(destination.bytes, destination_offset, bytes);
         if (bytes == 0) {
-            return;
+            if (allow_empty) {
+                return 0;
+            }
+            throw std::invalid_argument("Asynchronous compute copy cannot be empty");
         }
         if (source_id == destination_id) {
             throw std::invalid_argument("In-place GPU buffer copies are not supported yet");
         }
-        submit_copy(source, source_offset, destination, destination_offset, bytes);
+        return submit_copy(source, source_offset, destination, destination_offset, bytes);
     }
 };
 
@@ -734,7 +820,17 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
 void Context::copy_buffer(BufferId source, std::size_t source_offset,
                           BufferId destination, std::size_t destination_offset,
                           std::size_t bytes) {
-    impl_->copy(source, source_offset, destination, destination_offset, bytes);
+    const SubmissionId id = impl_->copy(source, source_offset,
+                                        destination, destination_offset, bytes, true);
+    if (id != 0) {
+        impl_->wait_submission(id);
+    }
+}
+
+SubmissionId Context::submit_copy_buffer(BufferId source, std::size_t source_offset,
+                                         BufferId destination, std::size_t destination_offset,
+                                         std::size_t bytes) {
+    return impl_->copy(source, source_offset, destination, destination_offset, bytes);
 }
 
 PipelineId Context::create_compute_pipeline(const ComputePipelineDesc& description) {
@@ -746,7 +842,22 @@ void Context::destroy_compute_pipeline(PipelineId id) { impl_->destroy_pipeline(
 void Context::dispatch(PipelineId pipeline, DispatchSize groups,
                        const std::vector<BufferBinding>& buffers,
                        const void* push_constants, std::size_t push_constant_bytes) {
-    impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
+    impl_->wait_submission(
+        impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes));
 }
+
+SubmissionId Context::submit_dispatch(PipelineId pipeline, DispatchSize groups,
+                                      const std::vector<BufferBinding>& buffers,
+                                      const void* push_constants, std::size_t push_constant_bytes) {
+    return impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
+}
+
+bool Context::submission_complete(SubmissionId id) const {
+    return impl_->submission_complete(id);
+}
+
+void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
+
+void Context::wait_all() { impl_->wait_all(); }
 
 } // namespace fyzz::compute
