@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "fyzzxyzzy/compute.h"
+#include "fyzzxyzzy/floor_contact.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,25 +13,13 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
-struct alignas(16) BodyVector {
-    float x;
-    float y;
-    float z;
-    float w;
-};
-
-struct StepParameters {
-    std::uint32_t count;
-    float dt;
-    float floor_y;
-    float gravity_y;
-    float tangent_retention;
-    float resting_speed;
-};
+using BodyVector = fyzz::compute::FloorBodyVector;
+using StepParameters = fyzz::compute::FloorStepParameters;
 
 static_assert(sizeof(BodyVector) == 16, "GPU state must match std430 vec4");
 static_assert(alignof(BodyVector) == 16, "GPU state must have vec4 alignment");
@@ -145,17 +133,9 @@ int main(int argc, char** argv) {
         context.upload(gpu_position, 0, position.data(), position.size() * sizeof(BodyVector));
         context.upload(gpu_velocity, 0, velocity.data(), velocity.size() * sizeof(BodyVector));
 
-        ComputePipelineDesc pipeline_desc;
-        pipeline_desc.shader.bytes = read_shader(argv[1]);
-        pipeline_desc.storage_buffer_binding_count = 2;
-        pipeline_desc.push_constant_bytes = sizeof(StepParameters);
-        const PipelineId pipeline = context.create_compute_pipeline(pipeline_desc);
-        std::vector<std::uint8_t> constants(sizeof(parameters));
-        std::memcpy(constants.data(), &parameters, constants.size());
-        const std::vector<BufferBinding> bindings{
-            {0, gpu_position, 0, position.size() * sizeof(BodyVector)},
-            {1, gpu_velocity, 0, velocity.size() * sizeof(BodyVector)}
-        };
+        ShaderBinary shader;
+        shader.bytes = read_shader(argv[1]);
+        FloorContactKernel physics(context, std::move(shader));
 
         float maximum_error = 0.0f;
         std::uint32_t contacts = 0;
@@ -163,9 +143,7 @@ int main(int argc, char** argv) {
             std::vector<BatchCommand> batch;
             batch.reserve(kBatchLength);
             for (std::uint32_t step = 0; step < kBatchLength; ++step) {
-                batch.emplace_back(DispatchCommand{
-                    pipeline, {(kCount + 63u) / 64u, 1u, 1u}, bindings, constants
-                });
+                physics.append_step(batch, gpu_position, gpu_velocity, parameters);
                 cpu_step(position, velocity, parameters, contacts);
             }
             const SubmissionId submitted = context.submit_batch(batch);
@@ -191,11 +169,52 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Reference state contract was not preserved");
         }
 
-        context.destroy_compute_pipeline(pipeline);
+        // Invalid parameters must be rejected without changing the batch.
+        std::vector<BatchCommand> rejected_batch;
+        auto invalid = parameters;
+        invalid.dt = 0.0f;
+        bool rejected = false;
+        try {
+            physics.append_step(rejected_batch, gpu_position, gpu_velocity, invalid);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        if (!rejected || !rejected_batch.empty()) {
+            throw std::runtime_error("Invalid physics step modified a command batch");
+        }
+        rejected = false;
+        try {
+            physics.append_step(rejected_batch, gpu_position, gpu_position, parameters);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        if (!rejected || !rejected_batch.empty()) {
+            throw std::runtime_error("Aliased physics state buffers were accepted");
+        }
+
+        // Exercise both public one-step entry points in addition to batching.
+        cpu_step(position, velocity, parameters, contacts);
+        const SubmissionId additional = physics.submit_step(
+            gpu_position, gpu_velocity, parameters);
+        context.wait_submission(additional);
+        cpu_step(position, velocity, parameters, contacts);
+        physics.step(gpu_position, gpu_velocity, parameters);
+        std::vector<BodyVector> final_position(kCount);
+        std::vector<BodyVector> final_velocity(kCount);
+        context.download(gpu_position, 0, final_position.data(),
+                         final_position.size() * sizeof(BodyVector));
+        context.download(gpu_velocity, 0, final_velocity.data(),
+                         final_velocity.size() * sizeof(BodyVector));
+        compare(final_position, position, parameters, kFrames + 2,
+                "position", maximum_error);
+        compare(final_velocity, velocity, parameters, kFrames + 2,
+                "velocity", maximum_error);
+
+        // The kernel owns its pipeline; buffers remain owned by the caller.
         context.destroy_buffer(gpu_velocity);
         context.destroy_buffer(gpu_position);
         std::cout << "Vulkan floor-contact physics acceptance PASS; "
-                  << kCount << " bodies, " << kFrames << " steps, "
+                  << kCount << " bodies, " << kFrames + 2 << " steps, "
                   << contacts << " CPU reference contacts, "
                   << "max error " << maximum_error << '\n';
         return 0;

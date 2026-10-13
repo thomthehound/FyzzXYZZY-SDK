@@ -47,12 +47,29 @@ two GPU-resident arrays of `vec4`: position xyz plus half-height, and velocity
 xyz plus restitution. It processes independent axis-aligned bodies with one
 shared floor; it does not handle body-body contacts, rotation, or constraints.
 
+The `fyzz::compute::FloorContactKernel` API in
+`include/fyzzxyzzy/floor_contact.h` wraps this shader as an SDK operation.
+It accepts a caller-provided compiled `ShaderBinary`, creates the pipeline,
+and exposes `append_step`, `submit_step`, and `step`. The public
+`FloorBodyVector` and `FloorStepParameters` types define its binary data
+contract. The caller owns both state buffers and the `Context`, which must
+outlive the kernel. `append_step` participates in the existing ordered batch
+API; it does not own a parallel scene.
+
+For example, compile `src/kernels/rigid_floor.comp` to SPIR-V with
+`glslangValidator -V -S comp`, load the bytes into `ShaderBinary`, then
+construct `FloorContactKernel(context, std::move(shader))`. Each body uses
+two `FloorBodyVector` entries: center + half-height, and velocity +
+restitution. Both arrays must have at least `count` entries. The kernel
+checks step parameters; the context checks buffer bounds at submission.
+This is a compute building block rather than an automatic physics-backend
+selection or renderer integration.
+
 The `fyzzxyzzy_vulkan_floor_physics` acceptance test runs 513 bodies for
-160 steps in eight-step Vulkan dispatch batches, checks floor penetration,
-and compares positions and velocities to a matching CPU reference after every
-batch. The physics kernel is not wired into the public `fyzz::World` yet;
-the test validates GPU arithmetic, memory layout, barriers, and iterative
-state updates without creating a competing SDK simulation world.
+160 batched steps, plus two single-step API paths. It checks floor penetration
+and compares state against a CPU reference after each batch. The public
+`fyzz::World` continues to use PhysX CPU simulation; no separate scene owner
+or automatic CPU/GPU state mirroring is introduced.
 
 The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
 own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
