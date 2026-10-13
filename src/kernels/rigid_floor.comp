@@ -1,0 +1,53 @@
+#version 450
+
+// Independent axis-aligned bodies against a shared static floor.
+// positions: xyz = center, w = half height.
+// velocities: xyz = linear velocity, w = normal restitution.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Positions {
+    vec4 values[];
+} positions;
+
+layout(set = 0, binding = 1, std430) buffer Velocities {
+    vec4 values[];
+} velocities;
+
+layout(push_constant) uniform StepParameters {
+    uint count;
+    float dt;
+    float floor_y;
+    float gravity_y;
+    float tangent_retention;
+    float resting_speed;
+} parameters;
+
+void main() {
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= parameters.count) {
+        return;
+    }
+
+    vec4 position = positions.values[index];
+    vec4 velocity = velocities.values[index];
+
+    velocity.y += parameters.gravity_y * parameters.dt;
+    position.xyz += velocity.xyz * parameters.dt;
+
+    const float floor_contact_y = parameters.floor_y + position.w;
+    if (position.y < floor_contact_y) {
+        position.y = floor_contact_y;
+        if (velocity.y < 0.0) {
+            const float impact_speed = -velocity.y;
+            const float restitution = clamp(velocity.w, 0.0, 1.0);
+            velocity.y = impact_speed <= parameters.resting_speed
+                ? 0.0
+                : impact_speed * restitution;
+            velocity.x *= parameters.tangent_retention;
+            velocity.z *= parameters.tangent_retention;
+        }
+    }
+
+    positions.values[index] = position;
+    velocities.values[index] = velocity;
+}
