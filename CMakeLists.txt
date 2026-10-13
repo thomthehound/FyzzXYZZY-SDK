@@ -141,18 +141,21 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_vulkan_dispatch_smoke
       COMMAND fyzzxyzzy_vulkan_dispatch_smoke "${FYZZXYZZY_AFFINE_SHADER}")
 
-    # PhysX broadphase.cu::translateAABBsLaunch, with its original encoding
-    # and host dispatch contract. This is a ported stage, not a new solver.
+    # PhysX broadphase.cu::translateAABBsLaunch, compiled from shared HLSL
+    # to both Vulkan SPIR-V and (in Windows CI) D3D12 DXIL. The original
+    # PhysX buffer layout and dispatch contract are unchanged.
+    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_PHYSX_AABB_SHADER
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.comp.spv")
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
     add_custom_command(
       OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
       COMMAND "${CMAKE_COMMAND}" -E make_directory
         "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
-        -o "${FYZZXYZZY_PHYSX_AABB_SHADER}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.comp"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.comp"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+        -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_PHYSX_AABB_SHADER}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
       VERBATIM
     )
     add_custom_target(fyzzxyzzy_physx_aabb_shader DEPENDS "${FYZZXYZZY_PHYSX_AABB_SHADER}")
