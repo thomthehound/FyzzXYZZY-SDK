@@ -35,6 +35,10 @@ using BufferId = std::uint64_t;
 // Resource identifiers are owned by a Context and are never interchangeable.
 using PipelineId = std::uint64_t;
 
+// Zero is never a valid submission. A completed submission remains queryable
+// until wait_submission() releases its tracking resources.
+using SubmissionId = std::uint64_t;
+
 enum class ShaderFormat { Spirv, Dxil };
 
 struct ShaderBinary {
@@ -92,12 +96,27 @@ public:
                      BufferId destination, std::size_t destination_offset,
                      std::size_t bytes);
 
+    // Record and submit work without blocking the calling thread.
+    // Work is ordered on this Context's single Vulkan compute queue.
+    SubmissionId submit_copy_buffer(BufferId source, std::size_t source_offset,
+                                    BufferId destination, std::size_t destination_offset,
+                                    std::size_t bytes);
+
     PipelineId create_compute_pipeline(const ComputePipelineDesc& description);
     void destroy_compute_pipeline(PipelineId id);
     void dispatch(PipelineId pipeline, DispatchSize groups,
                   const std::vector<BufferBinding>& buffers,
                   const void* push_constants = nullptr,
                   std::size_t push_constant_bytes = 0);
+
+    SubmissionId submit_dispatch(PipelineId pipeline, DispatchSize groups,
+                                 const std::vector<BufferBinding>& buffers,
+                                 const void* push_constants = nullptr,
+                                 std::size_t push_constant_bytes = 0);
+
+    bool submission_complete(SubmissionId id) const;
+    void wait_submission(SubmissionId id);
+    void wait_all();
 
 private:
     struct Impl;

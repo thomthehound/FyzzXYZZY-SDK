@@ -33,14 +33,22 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Create SPIR-V compute pipelines with storage-buffer bindings and push constants.
 - Dispatch 1D/2D/3D workgroups with validated device limits and descriptor ranges.
 - Synchronize shader writes for subsequent host reads.
+- Submit compute dispatches and buffer copies with per-submission fences,
+  query completion, and wait on an individual submission or all submissions.
 
-The current context is synchronous and not thread-safe. Buffer copies and
-device-local upload/download ranges require 4-byte-aligned offsets and sizes;
-host-visible memory transfers permit arbitrary byte ranges. Descriptor offsets
-must satisfy the device's storage-buffer alignment limits. Pipeline inputs
-supply compiled shader binaries and explicit binding layouts. Device-local
-allocations prefer non-mappable memory where available; staged transfers work
-on devices with unified memory as well. Asynchronous submission, persistent
-staging allocation, fences, shader reflection, and graphics interop are not
-implemented. The kernel test dispatches real compute work using device-local
-buffers but does not simulate physics.
+The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
+own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
+submission ID without waiting. Operations execute on the same compute queue,
+in submission order. `submission_complete` checks a submitted fence;
+`wait_submission` waits and releases its command resources, invalidating the
+ID. Buffer and pipeline destruction, and host transfers, wait for outstanding
+work to avoid premature resource reuse.
+
+Buffer copies and device-local upload/download ranges require 4-byte-aligned
+offsets and sizes; host-visible memory transfers permit arbitrary byte ranges.
+Descriptor offsets must satisfy storage-buffer alignment limits. Device-local
+allocations prefer non-mappable memory where available, with staged transfers
+on both discrete and unified-memory devices. Each dispatch still creates its
+own descriptor pool, and staged transfers still allocate temporary buffers.
+Shader reflection and graphics interop are not implemented. The compute
+tests execute GPU integer arithmetic, not a physics simulation.

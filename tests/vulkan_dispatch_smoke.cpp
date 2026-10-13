@@ -111,6 +111,31 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Mismatched push constant size was accepted");
         }
 
+        // A compute dispatch and its dependent transfer are both enqueued
+        // before waiting. The shader writes must be visible to the copy.
+        const BufferId mirror = context.create_buffer(
+            sizeof(output), MemoryPlacement::DeviceLocal);
+        parameters.multiplier = 7;
+        parameters.addend = 19;
+        const SubmissionId dispatched = context.submit_dispatch(
+            pipeline, {(size + 63u) / 64u, 1, 1},
+            bindings, &parameters, sizeof(parameters));
+        const SubmissionId copied = context.submit_copy_buffer(
+            dst, 0, mirror, 0, sizeof(output));
+        context.wait_submission(copied);
+        if (!context.submission_complete(dispatched)) {
+            throw std::runtime_error("Dependent compute submission remains incomplete");
+        }
+        context.wait_submission(dispatched);
+        context.download(mirror, 0, output.data(), sizeof(output));
+        for (std::uint32_t i = 0; i < array_size; ++i) {
+            const std::uint32_t expected =
+                i < size ? input[i] * parameters.multiplier + parameters.addend : sentinel;
+            if (output[i] != expected) {
+                throw std::runtime_error("Dependent asynchronous dispatch/copy result incorrect");
+            }
+        }
+        context.destroy_buffer(mirror);
         context.destroy_compute_pipeline(pipeline);
         context.destroy_buffer(dst);
         context.destroy_buffer(src);
