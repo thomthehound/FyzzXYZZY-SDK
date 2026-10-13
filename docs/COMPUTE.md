@@ -38,6 +38,22 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Submit ordered batches of copies and dispatches in one command buffer,
   descriptor pool, and completion fence, avoiding per-operation queue submissions.
 
+## Physics compute acceptance
+
+`src/kernels/rigid_floor.comp` is an initial bounded GPU physics workload:
+fixed-step semi-implicit linear integration under gravity, per-body static-floor
+contact projection, normal restitution, and tangential impact damping. It uses
+two GPU-resident arrays of `vec4`: position xyz plus half-height, and velocity
+xyz plus restitution. It processes independent axis-aligned bodies with one
+shared floor; it does not handle body-body contacts, rotation, or constraints.
+
+The `fyzzxyzzy_vulkan_floor_physics` acceptance test runs 513 bodies for
+160 steps in eight-step Vulkan dispatch batches, checks floor penetration,
+and compares positions and velocities to a matching CPU reference after every
+batch. The physics kernel is not wired into the public `fyzz::World` yet;
+the test validates GPU arithmetic, memory layout, barriers, and iterative
+state updates without creating a competing SDK simulation world.
+
 The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
 own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
 submission ID without waiting. Operations execute on the same compute queue,

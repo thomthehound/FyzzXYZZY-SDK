@@ -110,6 +110,24 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_dispatch_shader)
     add_test(NAME fyzzxyzzy_vulkan_dispatch_smoke
       COMMAND fyzzxyzzy_vulkan_dispatch_smoke "${FYZZXYZZY_AFFINE_SHADER}")
+
+    set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_FLOOR_SHADER}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
+        -o "${FYZZXYZZY_FLOOR_SHADER}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_floor_shader DEPENDS "${FYZZXYZZY_FLOOR_SHADER}")
+    add_executable(fyzzxyzzy_vulkan_floor_physics tests/vulkan_floor_physics.cpp)
+    target_link_libraries(fyzzxyzzy_vulkan_floor_physics PRIVATE FyzzXYZZY::Compute)
+    add_dependencies(fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_floor_shader)
+    add_test(NAME fyzzxyzzy_vulkan_floor_physics
+      COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
   endif()
 endif()
 
