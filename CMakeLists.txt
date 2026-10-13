@@ -74,7 +74,10 @@ endif()
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 if(FYZZXYZZY_BUILD_VULKAN)
   find_package(Vulkan REQUIRED)
-  add_library(fyzzxyzzy_compute STATIC src/compute_vulkan.cpp)
+  add_library(fyzzxyzzy_compute STATIC
+    src/compute_vulkan.cpp
+    src/floor_contact.cpp
+  )
   add_library(FyzzXYZZY::Compute ALIAS fyzzxyzzy_compute)
   target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_compute PUBLIC
