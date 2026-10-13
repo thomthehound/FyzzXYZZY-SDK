@@ -136,8 +136,10 @@ The first executable translation is maintained under `src/physx_gpu/`:
   It preserves the per-component float-bit ordering, inflated bounds, per-axis
   shifts, min-even/max-odd encoding and shared-environment sentinel behavior.
 - Host dispatch: `AabbEncodingStage::append` in
-  `src/physx_gpu/aabb_encoding.cpp`. A 256-thread workgroup encodes
-  32 boxes (eight logical threads per box), matching upstream launch geometry.
+  `src/physx_gpu/aabb_encoding.cpp`. A 128-thread workgroup encodes
+  16 boxes (eight logical threads per box). Upstream launches 256 threads;
+  the reduced physical workgroup size is required for Vulkan core portability
+  and preserves the original per-box lane mapping and encoding semantics.
   The stage appends work to the caller's command batch and never owns a
   scene or overrides collision behavior.
 - Test: `fyzzxyzzy_physx_aabb_encoding` compares the encoded integer output
