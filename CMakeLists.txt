@@ -85,6 +85,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
   )
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+  # A separate integration target keeps standalone compute independent of
+  # PhysX while allowing World to own an optional GPU simulation backend.
+  add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
+  add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
+  target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_17)
+  target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(fyzzxyzzy_vulkan_world PUBLIC
+    FyzzXYZZY::Core FyzzXYZZY::Compute
+  )
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute PRIVATE /W4)
   else()
@@ -131,6 +143,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_floor_shader)
     add_test(NAME fyzzxyzzy_vulkan_floor_physics
       COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
+
+    add_executable(fyzzxyzzy_vulkan_world_smoke tests/vulkan_world_smoke.cpp)
+    target_link_libraries(fyzzxyzzy_vulkan_world_smoke PRIVATE FyzzXYZZY::VulkanWorld)
+    add_dependencies(fyzzxyzzy_vulkan_world_smoke fyzzxyzzy_floor_shader)
+    add_test(NAME fyzzxyzzy_vulkan_world_smoke
+      COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
   endif()
 endif()
 

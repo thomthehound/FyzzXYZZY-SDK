@@ -67,9 +67,52 @@ selection or renderer integration.
 
 The `fyzzxyzzy_vulkan_floor_physics` acceptance test runs 513 bodies for
 160 batched steps, plus two single-step API paths. It checks floor penetration
-and compares state against a CPU reference after each batch. The public
-`fyzz::World` continues to use PhysX CPU simulation; no separate scene owner
-or automatic CPU/GPU state mirroring is introduced.
+and compares state against a CPU reference after each batch.
+
+## Opt-in Vulkan World backend
+
+`fyzz::World` owns one `WorldBackend`. Its default backend remains the
+existing PhysX CPU implementation. The separate `FyzzXYZZY::VulkanWorld`
+target supplies `fyzz::compute::create_floor_world(shader)`, which constructs
+a `World` whose authoritative body state lives in Vulkan device-local buffers.
+
+The Vulkan implementation is **explicitly limited** to one infinite horizontal
+floor and independent axis-aligned dynamic boxes. It simulates gravity, linear
+integration, restitution, and floor contact. It rejects static boxes, additional floors, and stepping dynamic bodies
+before adding a floor. Because this kernel cannot resolve body-to-body
+contacts, it also rejects new boxes whose horizontal (X/Z) footprints
+overlap those of existing dynamic boxes, even if initially at different
+heights. With no horizontal velocity or acceleration in this implementation,
+accepted footprints remain disjoint. It **does not** implement box-to-box
+collision, rotation, joints, or the rest of PhysX scene features. Use the
+default CPU backend for those capabilities. GPU and CPU results are compared
+for plausible behavior, not numerical equivalence.
+
+`World::add_static_floor(height)` creates an infinite floor on the CPU backend
+and selects the floor plane on the Vulkan backend. Body IDs belong to the
+chosen World, and `body_state` reads GPU state when using Vulkan. New bodies
+may be added after stepping; device-local buffers grow through GPU copies
+rather than reconstructing previous positions on the CPU. Per-body readback
+and synchronous stepping are functional but not optimized.
+
+The factory accepts a caller-supplied `ShaderBinary` compiled from
+`src/kernels/rigid_floor.comp`. For example:
+
+```cpp
+fyzz::compute::ShaderBinary shader; // Fill shader.bytes with compiled SPIR-V
+fyzz::World world = fyzz::compute::create_floor_world(std::move(shader));
+world.add_static_floor(0.0f);
+const auto body = world.add_dynamic_box({0.25f, 0.25f, 0.25f},
+                                        {0.0f, 2.0f, 0.0f}, 1.0f);
+world.step(1.0f / 120.0f);
+auto state = world.body_state(body);
+```
+
+`fyzzxyzzy_vulkan_world_smoke` tests this World integration against basic
+CPU PhysX behavior, unsupported-operation rejection, stable floor contact,
+body identity, and buffer growth after stepping. The optional Godot consumer
+still constructs the default CPU backend; selecting the Vulkan backend in
+Godot is a separate integration task.
 
 The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
 own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
@@ -93,5 +136,4 @@ Descriptor offsets must satisfy storage-buffer alignment limits. Device-local
 allocations prefer non-mappable memory where available, with staged transfers
 on both discrete and unified-memory devices. Each dispatch still creates its
 own descriptor pool, and staged transfers still allocate temporary buffers.
-Shader reflection and graphics interop are not implemented. The compute
-tests execute GPU integer arithmetic, not a physics simulation.
+Shader reflection and graphics interop are not implemented. The compute tests cover both arithmetic and the restricted GPU physics workload.
