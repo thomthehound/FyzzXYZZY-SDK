@@ -19,7 +19,9 @@ An optional Godot 4.7 GDExtension consumer exercises the same core.
 
 The optional standalone Vulkan compute backend supports device and buffer
 management, transfers, SPIR-V dispatch, ordered batches and submission
-synchronization. Its independent floor/contact demonstration is opt-in only
+synchronization. The first PhysX GPU stage being translated is broadphase
+AABB encoding; scene integration and collision-pair processing remain pending.
+Its independent floor/contact demonstration is opt-in only
 (`FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`) and does not constitute a
 PhysX GPU port. Production GPU physics requires porting PhysX's original
 algorithms, GPU contexts, scene orchestration and dataflow.
