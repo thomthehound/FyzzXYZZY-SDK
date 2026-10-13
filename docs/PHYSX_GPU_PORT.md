@@ -180,6 +180,50 @@ in the existing CPU build would not enable this Vulkan stage. The next
 integration work must adapt that factory/controller boundary and its resource
 lifetime, without introducing a separate simulation loop.
 
+## Vulkan and D3D12: concurrent portability gates
+
+**Both backends implement the same PhysX GPU source-derived operation and
+scene orchestration.** Vulkan is the first executable runtime, not a source
+of truth for the simulation architecture. D3D12 implementation begins with the
+first translated GPU stage, rather than waiting for the broadphase/solver port
+to finish.
+
+For AABB encoding, `src/physx_gpu/kernels/physx_translate_aabbs.hlsl` supplies
+a DXIL-target source translation compiled in Windows CI using Windows SDK DXC.
+This is currently a **compile-only D3D12 proof**. The Vulkan stage uses a
+GLSL implementation; both follow the same PhysX kernel, and they must be
+consolidated into a single HLSL/Slang-compatible source once SPIR-V compilation
+and runtime behavior from that source are validated. Do not multiply per-API
+physics algorithms by adding further independent shader translations.
+
+The portable execution contract needs to specify:
+
+| Responsibility | Vulkan | D3D12 | Shared invariant |
+| --- | --- | --- | --- |
+| Compiled code | SPIR-V | DXIL | One source-derived algorithm, same parameter/data layout |
+| Storage resources | Descriptor sets and storage buffers | SRV/UAV descriptors and heaps | Logical read/write bindings and range/lifetime |
+| Small dispatch parameters | Push constants | Root constants/CBV | One declared value schema; backend-specific lowering |
+| Dispatch and workgroup | `vkCmdDispatch`, SPIR-V local size | `Dispatch`, HLSL `numthreads` | Logical item indexing, supported group size, bounds checks |
+| Intra-GPU dependencies | Compute barriers, queue synchronization | UAV/resource barriers, fences | Explicit producer/consumer and read/write hazards |
+| CPU/GPU handoffs | Vulkan submissions/fences | D3D12 queues/fences | PhysX scene task completion and publication ordering |
+| Allocation/state | Vulkan buffer/heap/device addressing | D3D12 resources/heaps and addressing | PhysX buffers, aliasing and ownership survive each backend |
+
+D3D12 UAV accesses between dependent dispatches require explicit barriers;
+submitting the commands consecutively does not necessarily establish the
+correct ordering. A portable batch cannot rely on Vulkan implementation
+details for this or expose Vulkan descriptor-set semantics as the GPU scene
+interface.
+
+The next cross-backend acceptance gates are:
+
+1. Build this AABB kernel from one source to **both SPIR-V and DXIL**,
+   preserving a verified binary parameter/binding contract.
+2. Run the same input/reference test on Vulkan and a native D3D12 compute
+   backend, including producer/consumer dispatch barriers and result download.
+3. Expand the real PhysX broadphase stages with the same dual-backend source,
+   memory and task dependencies. Do not treat D3D12 as a final translation
+   after all Vulkan kernels and orchestration have already been designed.
+
 ## Implementation sequence and acceptance gates
 
 1. **Integrate at the PhysX scene boundary.** Identify the narrowest replacement
