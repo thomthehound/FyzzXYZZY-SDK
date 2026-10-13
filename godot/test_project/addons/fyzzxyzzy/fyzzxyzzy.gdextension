@@ -3,11 +3,11 @@
 
 [configuration]
 
-entry_symbol = "fizzx_godot_library_init"
+entry_symbol = "fyzzxyzzy_godot_library_init"
 compatibility_minimum = "4.7"
 reloadable = false
 
 [libraries]
 
-linux.x86_64 = "res://bin/fizzx_godot.so"
-windows.x86_64 = "res://bin/fizzx_godot.dll"
+linux.x86_64 = "res://bin/fyzzxyzzy_godot.so"
+windows.x86_64 = "res://bin/fyzzxyzzy_godot.dll"

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "fizzx/world.h"
+#include "fyzzxyzzy/world.h"
 
 #include <PxPhysicsAPI.h>
 
@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace fizzx {
+namespace fy_ {
 namespace {
 
 physx::PxVec3 to_physx(Vec3 value) {
@@ -155,7 +155,7 @@ void World::step(float seconds) {
 
 BodyState World::body_state(BodyId id) const {
     if (id >= impl_->actors.size()) {
-        throw std::out_of_range("Unknown FizzX body ID");
+        throw std::out_of_range("Unknown FyzzXYZZY body ID");
     }
     const auto* actor = impl_->actors[id];
     const physx::PxVec3 position = actor->getGlobalPose().p;
@@ -164,4 +164,4 @@ BodyState World::body_state(BodyId id) const {
             dynamic ? from_physx(dynamic->getLinearVelocity()) : Vec3{0.0f, 0.0f, 0.0f}};
 }
 
-} // namespace fizzx
+} // namespace fy_
