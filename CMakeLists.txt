@@ -141,11 +141,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_vulkan_dispatch_smoke
       COMMAND fyzzxyzzy_vulkan_dispatch_smoke "${FYZZXYZZY_AFFINE_SHADER}")
 
-    # PhysX broadphase.cu::translateAABBsLaunch, compiled from shared HLSL
-    # to both Vulkan SPIR-V and (in Windows CI) D3D12 DXIL. The original
-    # PhysX buffer layout and dispatch contract are unchanged.
-    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
-    set(FYZZXYZZY_PHYSX_AABB_SHADER
+    # Only this source-derived PhysX acceptance test requires DXC. Normal
+    # Vulkan compute/memory/dispatch tests remain usable without it.
+    option(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST
+      "Enable PhysX GPU AABB HLSL/SPIR-V acceptance test (requires DXC)" OFF)
+    if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST)
+      # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
+      # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
+      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      set(FYZZXYZZY_PHYSX_AABB_SHADER
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
     add_custom_command(
       OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
@@ -167,6 +171,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
     add_test(NAME fyzzxyzzy_physx_aabb_encoding
       COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+    endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
       set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
