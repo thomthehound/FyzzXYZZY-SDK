@@ -17,13 +17,17 @@ The CPU SDK provides a world facade and headless smoke test using pinned
 PhysX 5.11 source. Linux and Windows builds are covered by GitHub Actions.
 An optional Godot 4.7 GDExtension consumer exercises the same core.
 
-The optional standalone Vulkan compute backend currently supports device
-enumeration, storage buffer allocation, host transfers, and GPU-side
-buffer copies. Shader execution and GPU physics remain future work.
+The optional standalone Vulkan compute backend supports device and buffer
+management, transfers, SPIR-V dispatch, ordered batches and submission
+synchronization. Its independent floor/contact demonstration is opt-in only
+(`FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`) and does not constitute a
+PhysX GPU port. Production GPU physics requires porting PhysX's original
+algorithms, GPU contexts, scene orchestration and dataflow.
 
 - [Development roadmap](docs/ROADMAP.md)
 - [CPU SDK build and testing](docs/BUILDING.md)
 - [Portable compute backend](docs/COMPUTE.md)
+- [PhysX GPU port architecture and traceability](docs/PHYSX_GPU_PORT.md)
 - [Apache 2.0 license](LICENSE.md)
 
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
