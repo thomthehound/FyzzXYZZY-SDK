@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace fizzx {
+namespace fy_ {
 
 struct Vec3 {
     float x;
@@ -43,4 +43,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace fizzx
+} // namespace fy_

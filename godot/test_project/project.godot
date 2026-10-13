@@ -4,7 +4,7 @@
 config_version=5
 
 [application]
-config/name="FizzX Godot M0 Acceptance"
+config/name="FyzzXYZZY Godot Acceptance"
 run/main_scene="res://main.tscn"
 
 [rendering]

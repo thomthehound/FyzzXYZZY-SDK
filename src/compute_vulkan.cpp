@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "fizzx/compute.h"
+#include "fyzzxyzzy/compute.h"
 
 #include <vulkan/vulkan.h>
 
@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace fizzx::compute {
+namespace fy_::compute {
 namespace {
 
 void require(VkResult result, const char* operation) {
@@ -27,7 +27,7 @@ void require(VkResult result, const char* operation) {
 VkInstance create_instance() {
     VkApplicationInfo application{};
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    application.pApplicationName = "FizzX";
+    application.pApplicationName = "FyzzXYZZY";
     application.apiVersion = VK_API_VERSION_1_0;
 
     VkInstanceCreateInfo create{};
@@ -668,4 +668,4 @@ void Context::dispatch(PipelineId pipeline, DispatchSize groups,
     impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
 }
 
-} // namespace fizzx::compute
+} // namespace fy_::compute

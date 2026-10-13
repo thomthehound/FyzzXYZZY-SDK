@@ -3,9 +3,9 @@
 
 # Portable compute backend
 
-The native Vulkan backend is a standalone C++ library (`FizzX::Compute`)
+The native Vulkan backend is a standalone C++ library (`FyzzXYZZY::Compute`)
 without Godot or PhysX dependencies. Public resources use opaque identifiers;
-Vulkan types do not appear in `include/fizzx/compute.h`.
+Vulkan types do not appear in `include/fyzzxyzzy/compute.h`.
 
 ## Build
 
@@ -13,9 +13,9 @@ Requires CMake, a C++17 compiler, Vulkan headers and loader, glslangValidator
 (for compiling the test shader), and a Vulkan compute-capable driver.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_VULKAN=ON
-cmake --build build --target fizzx_vulkan_memory_smoke fizzx_vulkan_dispatch_smoke
-ctest --test-dir build -R fizzx_vulkan_ --output-on-failure
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON
+cmake --build build --target fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke
+ctest --test-dir build -R fyzzxyzzy_vulkan_ --output-on-failure
 ```
 
 Vulkan is opt-in; CPU-only builds require no Vulkan SDK. Linux CI validates

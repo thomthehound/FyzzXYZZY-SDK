@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "fizzx/compute.h"
+#include "fyzzxyzzy/compute.h"
 
 #include <array>
 #include <cstdint>
@@ -11,7 +11,7 @@
 
 int main() {
     try {
-        using namespace fizzx::compute;
+        using namespace fy_::compute;
         const auto devices = enumerate_devices(Backend::Vulkan);
         if (devices.empty()) {
             throw std::runtime_error("No Vulkan device exposing a compute queue");

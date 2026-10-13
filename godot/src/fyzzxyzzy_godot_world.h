@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "fizzx/world.h"
+#include "fyzzxyzzy/world.h"
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/vector3.hpp>
@@ -11,19 +11,19 @@
 #include <cstdint>
 #include <memory>
 
-namespace fizzx::godot_adapter {
+namespace fy_::godot_adapter {
 
-class FizzXGodotWorld : public godot::RefCounted {
-    GDCLASS(FizzXGodotWorld, godot::RefCounted)
+class FyzzXYZZYGodotWorld : public godot::RefCounted {
+    GDCLASS(FyzzXYZZYGodotWorld, godot::RefCounted)
 
-    std::unique_ptr<fizzx::World> world_;
+    std::unique_ptr<fy_::World> world_;
 
 protected:
     static void _bind_methods();
 
 public:
-    FizzXGodotWorld();
-    ~FizzXGodotWorld() override = default;
+    FyzzXYZZYGodotWorld();
+    ~FyzzXYZZYGodotWorld() override = default;
 
     int64_t add_static_box(godot::Vector3 half_extents, godot::Vector3 position);
     int64_t add_dynamic_box(godot::Vector3 half_extents, godot::Vector3 position, float density);
@@ -32,4 +32,4 @@ public:
     godot::Vector3 get_body_velocity(int64_t id) const;
 };
 
-} // namespace fizzx::godot_adapter
+} // namespace fy_::godot_adapter

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 # SPDX-License-Identifier: Apache-2.0
 
-name: CPU SDK and Godot Integration
+name: FyzzXYZZY SDK CI
 
 on:
   push:
@@ -21,24 +21,24 @@ jobs:
       - name: Install Vulkan development packages
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers glslang-tools
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON -DFIZZX_BUILD_VULKAN=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON
       - name: Build
-        run: cmake --build build --target fizzx_headless_smoke fizzx_godot fizzx_vulkan_memory_smoke fizzx_vulkan_dispatch_smoke --parallel 4
+        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
         shell: bash
         run: |
-          cmake --build build --target fizzx_source_bundle
-          mkdir -p "${RUNNER_TEMP}/fizzx-source-check"
-          cd "${RUNNER_TEMP}/fizzx-source-check"
-          cmake -E tar xzf "${GITHUB_WORKSPACE}/build/fizzx-sdk-m0-source.tar.gz"
-          test -f FizzX-SDK/vendor/PhysX/LICENSE.md
-          test -f FizzX-SDK/vendor/PhysX/physx/LICENSE.md
-          test -f FizzX-SDK/vendor/PhysX/physx/CMakeLists.txt
-          cmake -S FizzX-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          cmake --build build --target fyzzxyzzy_source_bundle
+          mkdir -p "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cd "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cmake -E tar xzf "${GITHUB_WORKSPACE}/build/fyzzxyzzy-source.tar.gz"
+          test -f FyzzXYZZY-SDK/vendor/PhysX/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
+          cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fizzx_headless_smoke --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_headless_smoke --parallel 4
           ctest --test-dir offline-build --output-on-failure
 
       - name: Godot 4.7.2 headless acceptance
@@ -52,7 +52,7 @@ jobs:
           # Exercise the runtime GDExtension contract directly. Editor import is
           # an independent integration test and must not gate the headless SDK test.
           set +e
-          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd 2>&1 | tee "${RUNNER_TEMP}/fizzx-godot.log"
+          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd 2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -62,13 +62,13 @@ jobs:
             fi
             exit "$status"
           fi
-          grep -Fq "FizzX Godot acceptance PASS" "${RUNNER_TEMP}/fizzx-godot.log"
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
 
       - name: Godot 4.7.2 editor import acceptance
         shell: bash
         run: |
           engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
-          project="${RUNNER_TEMP}/fizzx-editor-acceptance"
+          project="${RUNNER_TEMP}/fyzzxyzzy-editor-acceptance"
           cp -a godot/test_project "$project"
           rm -rf "$project/.godot"
 
@@ -82,17 +82,17 @@ jobs:
 
           # Verify runtime class registration after both editor passes.
           timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
-            2>&1 | tee "${RUNNER_TEMP}/fizzx-editor-runtime.log"
-          grep -Fq "FizzX Godot acceptance PASS" "${RUNNER_TEMP}/fizzx-editor-runtime.log"
+            2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
   windows:
     runs-on: windows-2022
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DFIZZX_BUILD_GODOT=ON
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON
       - name: Build
-        run: cmake --build build --config release --target fizzx_headless_smoke fizzx_godot --parallel 4
+        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
       - name: Godot 4.7.2 headless acceptance
@@ -108,14 +108,14 @@ jobs:
           $status = $LASTEXITCODE
           $godotOutput | ForEach-Object { Write-Output $_ }
           if ($status -ne 0) { exit $status }
-          if (-not ($godotOutput -match 'FizzX Godot acceptance PASS')) {
+          if (-not ($godotOutput -match 'FyzzXYZZY Godot acceptance PASS')) {
             throw "Godot acceptance completion marker missing"
           }
       - name: Godot 4.7.2 editor import acceptance
         shell: pwsh
         run: |
           $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
-          $project = Join-Path $env:RUNNER_TEMP 'fizzx-editor-acceptance'
+          $project = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-editor-acceptance'
           Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
           $cache = Join-Path $project '.godot'
           if (Test-Path $cache) { Remove-Item -Path $cache -Force -Recurse }
@@ -132,6 +132,6 @@ jobs:
           $status = $LASTEXITCODE
           $output | ForEach-Object { Write-Output $_ }
           if ($status -ne 0) { exit $status }
-          if (-not ($output -match 'FizzX Godot acceptance PASS')) {
+          if (-not ($output -match 'FyzzXYZZY Godot acceptance PASS')) {
             throw "Godot editor acceptance runtime marker missing"
           }

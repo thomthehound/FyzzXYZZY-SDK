@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace fizzx::compute {
+namespace fy_::compute {
 
 // Backend-independent host API. No Vulkan resources escape through this header.
 enum class Backend { Vulkan };
@@ -100,4 +100,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace fizzx::compute
+} // namespace fy_::compute

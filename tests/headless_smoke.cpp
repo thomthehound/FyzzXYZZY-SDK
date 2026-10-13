@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#include "fizzx/world.h"
+#include "fyzzxyzzy/world.h"
 
 #include <cmath>
 #include <exception>
@@ -9,9 +9,9 @@
 
 int main() {
     try {
-        fizzx::World world;
+        fy_::World world;
         world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
-        const fizzx::BodyId box = world.add_dynamic_box(
+        const fy_::BodyId box = world.add_dynamic_box(
             {0.25f, 0.25f, 0.25f}, {0.0f, 2.0f, 0.0f}, 1.0f);
         const float initial_y = world.body_state(box).position.y;
 
@@ -20,8 +20,8 @@ int main() {
             world.step(dt);
         }
 
-        const fizzx::BodyState state = world.body_state(box);
-        std::cout << "FizzX headless CPU: initial_y=" << initial_y
+        const fy_::BodyState state = world.body_state(box);
+        std::cout << "FyzzXYZZY headless CPU: initial_y=" << initial_y
                   << " final_y=" << state.position.y
                   << " vy=" << state.velocity.y << '\n';
 
@@ -35,7 +35,7 @@ int main() {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "FizzX headless smoke failed: " << error.what() << '\n';
+        std::cerr << "FyzzXYZZY headless smoke failed: " << error.what() << '\n';
         return 2;
     }
 }
