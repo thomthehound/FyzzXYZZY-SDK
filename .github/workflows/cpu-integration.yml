@@ -23,7 +23,7 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Build
-        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -93,6 +93,21 @@ jobs:
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON
       - name: Build
         run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
+      - name: Compile PhysX GPU AABB stage for D3D12 (DXIL)
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $candidates = @(Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
+              Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+              Sort-Object FullName -Descending)
+          if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
+          $dxc = $candidates[0].FullName
+          $dxil = Join-Path $env:RUNNER_TEMP 'physx_translate_aabbs.dxil'
+          & $dxc -T cs_6_0 -E main -Fo $dxil src/physx_gpu/kernels/physx_translate_aabbs.hlsl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $dxil)) { throw 'PhysX AABB DXIL not generated' }
+          if ((Get-Item $dxil).Length -eq 0) { throw 'PhysX AABB DXIL is empty' }
+          Write-Output 'PhysX AABB D3D12 shader compilation PASS'
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
       - name: Godot 4.7.2 headless acceptance

@@ -10,6 +10,7 @@ FyzzXYZZY is an **independent, PhysX-derived, general-purpose physics SDK** with
 - Prefer working upstream PhysX algorithms, data, API concepts, and tests where they remain sound. Replace CUDA-dependent contracts or other architecture when they obstruct portability.
 - CPU operation is a supported path, not a CUDA fallback masquerading as vendor neutrality.
 - Vulkan is the first non-CUDA GPU runtime; Direct3D 12 is the second. AMD is the first validation target, but portability includes Intel and NVIDIA hardware.
+- Compile PhysX-derived GPU stages for both SPIR-V and DXIL from the beginning; establish a single shared shader source and data contract before expanding the kernel inventory. D3D12 *runtime* integration follows the first Vulkan slice, rather than waiting for all PhysX GPU physics features.
 - HLSL + DXC is the low-risk default **candidate**, not a permanent decision. Compare Slang on the same real GPU workloads before choosing.
 - Public SDK APIs must not expose Godot types, CUDA types, Vulkan/D3D12 resource objects, or shader compiler details.
 - Functional simulation and observed plausibility matter more than bit-for-bit correspondence with CUDA. Test stability, conservation behavior where appropriate, collisions, contacts, and performance independently.

@@ -53,6 +53,30 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Submit ordered batches of copies and dispatches in one command buffer,
   descriptor pool, and completion fence, avoiding per-operation queue submissions.
 
+## PhysX-derived GPU stages
+
+The `fyzzxyzzy_physx_gpu_stages` target contains the first translated PhysX
+broadphase operation, `AabbEncodingStage`. Its SPIR-V shader implements
+upstream `translateAABBsLaunch` from `gpubroadphase/src/CUDA/broadphase.cu`
+and its host wrapper retains the original six-coordinate bounds representation,
+per-box contact distance, optional environment IDs and per-axis bit settings.
+It operates only on buffers owned by its caller and does not implement or select
+a simulation world. The `fyzzxyzzy_physx_aabb_encoding` test verifies encoded
+bounds against the upstream algorithm for a range of configurations.
+
+The same upstream AABB operation is also written in HLSL at
+`src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. Windows CI compiles it to
+DXIL with the Windows SDK DXC compiler. That is a shader compilation check,
+**not** native D3D12 execution or physics conformance. Converging the Vulkan
+and D3D shader implementations onto one validated HLSL/Slang source is
+required before porting a larger collection of PhysX kernels.
+
+This stage is not integrated into the PhysX `Sc::Scene` pipeline yet. A
+complete portable broadphase must also port PhysX's host orchestration,
+incremental SAP, pairs, aggregation, resource ownership and task dependencies
+before claiming executable GPU broadphase support. See
+[GPU port architecture](PHYSX_GPU_PORT.md).
+
 ## Experimental physics compute acceptance
 
 `src/kernels/rigid_floor.comp` is an original, bounded GPU physics experiment (not a translated PhysX kernel):
