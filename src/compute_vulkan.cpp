@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace fy_::compute {
+namespace fyzz::compute {
 namespace {
 
 void require(VkResult result, const char* operation) {
@@ -749,4 +749,4 @@ void Context::dispatch(PipelineId pipeline, DispatchSize groups,
     impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
 }
 
-} // namespace fy_::compute
+} // namespace fyzz::compute

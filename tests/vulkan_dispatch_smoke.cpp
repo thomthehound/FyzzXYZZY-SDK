@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
         if (argc != 2) {
             throw std::invalid_argument("Expected the compiled shader file path");
         }
-        using namespace fy_::compute;
+        using namespace fyzz::compute;
         constexpr std::uint32_t size = 259;
         constexpr std::uint32_t array_size = 320;
         constexpr std::uint32_t sentinel = 0xFEEDACEDu;

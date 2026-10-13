@@ -9,9 +9,9 @@
 
 int main() {
     try {
-        fy_::World world;
+        fyzz::World world;
         world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
-        const fy_::BodyId box = world.add_dynamic_box(
+        const fyzz::BodyId box = world.add_dynamic_box(
             {0.25f, 0.25f, 0.25f}, {0.0f, 2.0f, 0.0f}, 1.0f);
         const float initial_y = world.body_state(box).position.y;
 
@@ -20,7 +20,7 @@ int main() {
             world.step(dt);
         }
 
-        const fy_::BodyState state = world.body_state(box);
+        const fyzz::BodyState state = world.body_state(box);
         std::cout << "FyzzXYZZY headless CPU: initial_y=" << initial_y
                   << " final_y=" << state.position.y
                   << " vy=" << state.velocity.y << '\n';

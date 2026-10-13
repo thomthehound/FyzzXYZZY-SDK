@@ -11,7 +11,7 @@
 
 int main() {
     try {
-        using namespace fy_::compute;
+        using namespace fyzz::compute;
         const auto devices = enumerate_devices(Backend::Vulkan);
         if (devices.empty()) {
             throw std::runtime_error("No Vulkan device exposing a compute queue");

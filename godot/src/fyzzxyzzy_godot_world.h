@@ -11,12 +11,12 @@
 #include <cstdint>
 #include <memory>
 
-namespace fy_::godot_adapter {
+namespace fyzz::godot_adapter {
 
 class FyzzXYZZYGodotWorld : public godot::RefCounted {
     GDCLASS(FyzzXYZZYGodotWorld, godot::RefCounted)
 
-    std::unique_ptr<fy_::World> world_;
+    std::unique_ptr<fyzz::World> world_;
 
 protected:
     static void _bind_methods();
@@ -32,4 +32,4 @@ public:
     godot::Vector3 get_body_velocity(int64_t id) const;
 };
 
-} // namespace fy_::godot_adapter
+} // namespace fyzz::godot_adapter

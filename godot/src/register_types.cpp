@@ -10,7 +10,7 @@ using namespace godot;
 
 static void initialize_fyzzxyzzy(ModuleInitializationLevel level) {
     if (level == MODULE_INITIALIZATION_LEVEL_SCENE) {
-        ClassDB::register_class<fy_::godot_adapter::FyzzXYZZYGodotWorld>();
+        ClassDB::register_class<fyzz::godot_adapter::FyzzXYZZYGodotWorld>();
     }
 }
 

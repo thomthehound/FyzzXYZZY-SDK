@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace fy_ {
+namespace fyzz {
 namespace {
 
 physx::PxVec3 to_physx(Vec3 value) {
@@ -164,4 +164,4 @@ BodyState World::body_state(BodyId id) const {
             dynamic ? from_physx(dynamic->getLinearVelocity()) : Vec3{0.0f, 0.0f, 0.0f}};
 }
 
-} // namespace fy_
+} // namespace fyzz

@@ -29,4 +29,4 @@ buffer copies. Shader execution and GPU physics remain future work.
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
 code retains its original license and attribution.
 
-The C++ API uses the `fy_` namespace; the public headers are under `fyzzxyzzy/`.
+The C++ API uses the `fyzz` namespace; the public headers are under `fyzzxyzzy/`.
