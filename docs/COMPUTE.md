@@ -35,6 +35,8 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Synchronize shader writes for subsequent host reads.
 - Submit compute dispatches and buffer copies with per-submission fences,
   query completion, and wait on an individual submission or all submissions.
+- Submit ordered batches of copies and dispatches in one command buffer,
+  descriptor pool, and completion fence, avoiding per-operation queue submissions.
 
 The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
 own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
@@ -43,6 +45,14 @@ in submission order. `submission_complete` checks a submitted fence;
 `wait_submission` waits and releases its command resources, invalidating the
 ID. Buffer and pipeline destruction, and host transfers, wait for outstanding
 work to avoid premature resource reuse.
+
+`submit_batch` accepts an ordered vector of `CopyCommand` and
+`DispatchCommand` operations. Dispatch commands own their push-constant bytes
+and buffer bindings; the batch validates every operation before submission.
+The returned submission ID covers the entire sequence. `execute_batch`
+performs the same operation and waits for completion. A batch cannot be empty
+or contain a zero-length or in-place copy. Multiple dispatches share one
+descriptor pool (with separate descriptor sets); copy-only batches use none.
 
 Buffer copies and device-local upload/download ranges require 4-byte-aligned
 offsets and sizes; host-visible memory transfers permit arbitrary byte ranges.

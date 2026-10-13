@@ -135,6 +135,70 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Dependent asynchronous dispatch/copy result incorrect");
             }
         }
+        // A three-command batch has two dependent dispatches and a copy.
+        // It must execute in order under a single completion fence.
+        Parameters first_pass{size, 2, 11};
+        Parameters second_pass{size, 5, 2};
+        auto push_bytes = [](const Parameters& value) {
+            std::vector<std::uint8_t> bytes(sizeof(value));
+            std::memcpy(bytes.data(), &value, sizeof(value));
+            return bytes;
+        };
+        const DispatchSize groups{(size + 63u) / 64u, 1, 1};
+        const std::vector<BatchCommand> batch = {
+            DispatchCommand{pipeline, groups, bindings, push_bytes(first_pass)},
+            CopyCommand{dst, 0, mirror, 0, sizeof(output)},
+            DispatchCommand{pipeline, groups,
+                            {{0, mirror, 0, sizeof(output)}, {1, dst, 0, sizeof(output)}},
+                            push_bytes(second_pass)}
+        };
+        const SubmissionId batch_id = context.submit_batch(batch);
+        context.wait_submission(batch_id);
+        context.download(dst, 0, output.data(), sizeof(output));
+        for (std::uint32_t i = 0; i < array_size; ++i) {
+            const std::uint32_t expected = i < size
+                ? (input[i] * first_pass.multiplier + first_pass.addend) *
+                       second_pass.multiplier + second_pass.addend
+                : sentinel;
+            if (output[i] != expected) {
+                throw std::runtime_error("Ordered Vulkan compute batch result incorrect");
+            }
+        }
+
+        bool rejected_batch = false;
+        try {
+            context.submit_batch({});
+        } catch (const std::invalid_argument&) {
+            rejected_batch = true;
+        }
+        if (!rejected_batch) {
+            throw std::runtime_error("Empty Vulkan compute batch was accepted");
+        }
+
+        // All input validation must precede submission. No earlier operation
+        // may execute if a later command has an invalid buffer range.
+        rejected_batch = false;
+        try {
+            context.submit_batch({
+                CopyCommand{src, 0, dst, 0, sizeof(input)},
+                CopyCommand{src, 0, dst, 0, sizeof(input) + 4}
+            });
+        } catch (const std::out_of_range&) {
+            rejected_batch = true;
+        }
+        if (!rejected_batch) {
+            throw std::runtime_error("Invalid second batch command was accepted");
+        }
+        context.download(dst, 0, output.data(), sizeof(output));
+        for (std::uint32_t i = 0; i < array_size; ++i) {
+            const std::uint32_t expected = i < size
+                ? (input[i] * first_pass.multiplier + first_pass.addend) *
+                       second_pass.multiplier + second_pass.addend
+                : sentinel;
+            if (output[i] != expected) {
+                throw std::runtime_error("Rejected batch unexpectedly changed GPU data");
+            }
+        }
         context.destroy_buffer(mirror);
         context.destroy_compute_pipeline(pipeline);
         context.destroy_buffer(dst);
