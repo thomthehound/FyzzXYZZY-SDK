@@ -78,6 +78,20 @@ int main(int argc, char** argv) {
                 {half_height, half_height, half_height}, position, 1.0f));
         }
 
+        // Vertically separated bodies with overlapping X/Z footprints
+        // could eventually collide. Reject them instead of silently ignoring
+        // an unsupported body-to-body contact.
+        rejected = false;
+        try {
+            gpu.add_dynamic_box({half_height, half_height, half_height},
+                                {0.0f, 12.0f, 0.0f}, 1.0f);
+        } catch (const std::logic_error&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            throw std::runtime_error("Unsupported GPU body-to-body contact was accepted");
+        }
+
         const float initial = gpu.body_state(gpu_ids[0]).position.y;
         for (int frame = 0; frame < 180; ++frame) {
             gpu.step(dt);

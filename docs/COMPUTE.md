@@ -78,11 +78,15 @@ a `World` whose authoritative body state lives in Vulkan device-local buffers.
 
 The Vulkan implementation is **explicitly limited** to one infinite horizontal
 floor and independent axis-aligned dynamic boxes. It simulates gravity, linear
-integration, restitution, and floor contact. It rejects static boxes, additional
-floors, and stepping dynamic bodies before adding a floor; it **does not**
-implement box-to-box collision, rotation, joints, or the rest of PhysX scene
-features. Use the default CPU backend for those capabilities. GPU and CPU
-results are compared for plausible behavior, not numerical equivalence.
+integration, restitution, and floor contact. It rejects static boxes, additional floors, and stepping dynamic bodies
+before adding a floor. Because this kernel cannot resolve body-to-body
+contacts, it also rejects new boxes whose horizontal (X/Z) footprints
+overlap those of existing dynamic boxes, even if initially at different
+heights. With no horizontal velocity or acceleration in this implementation,
+accepted footprints remain disjoint. It **does not** implement box-to-box
+collision, rotation, joints, or the rest of PhysX scene features. Use the
+default CPU backend for those capabilities. GPU and CPU results are compared
+for plausible behavior, not numerical equivalence.
 
 `World::add_static_floor(height)` creates an infinite floor on the CPU backend
 and selects the floor plane on the Vulkan backend. Body IDs belong to the

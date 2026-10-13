@@ -4,6 +4,7 @@
 #include "fyzzxyzzy/floor_world.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -20,6 +21,8 @@ struct BodyEntry {
     bool is_floor = false;
     std::size_t dynamic_index = 0;
     float floor_height = 0.0f;
+    Vec3 center{};
+    Vec3 half_extents{};
 };
 
 class FloorGpuWorld final : public WorldBackend {
@@ -54,6 +57,20 @@ public:
 
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) override {
         (void)density; // Gravity is mass-independent for this limited workload.
+        // Horizontal velocities start at zero and this kernel applies no X/Z
+        // acceleration. Disjoint horizontal footprints therefore remain
+        // disjoint. Reject any configuration that could require body-body
+        // contact, which this backend cannot resolve.
+        for (const BodyEntry& existing : bodies_) {
+            if (!existing.is_floor &&
+                std::abs(existing.center.x - position.x) <
+                    existing.half_extents.x + half_extents.x &&
+                std::abs(existing.center.z - position.z) <
+                    existing.half_extents.z + half_extents.z) {
+                throw std::logic_error(
+                    "Vulkan floor backend does not support potential body-to-body contact");
+            }
+        }
         const BodyId id = next_id();
         const std::size_t slot = dynamic_count_;
         reserve_dynamic(slot + 1);
@@ -62,7 +79,7 @@ public:
         const std::size_t byte_offset = slot * sizeof(FloorBodyVector);
         context_.upload(positions_, byte_offset, &p, sizeof(p));
         context_.upload(velocities_, byte_offset, &v, sizeof(v));
-        bodies_.push_back(BodyEntry{false, slot, 0.0f});
+        bodies_.push_back(BodyEntry{false, slot, 0.0f, position, half_extents});
         ++dynamic_count_;
         return id;
     }
