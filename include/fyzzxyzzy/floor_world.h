@@ -8,11 +8,13 @@
 
 namespace fyzz::compute {
 
-// Creates a World whose only simulation backend is Vulkan floor contact.
-// Supported: one horizontal infinite floor, axis-aligned dynamic boxes,
-// gravity and floor response. Unsupported: static box geometry, body-to-body
-// collisions, rotations, joints and other PhysX scene features.
-// Requires SPIR-V compiled from src/kernels/rigid_floor.comp.
-World create_floor_world(ShaderBinary shader, std::uint32_t device_ordinal = 0);
+// Constructs one authoritative Vulkan World using both integration/floor and
+// vertical body-contact kernels. Both ShaderBinary objects must contain
+// SPIR-V for the corresponding SDK shader sources. This experimental
+// backend supports an infinite horizontal floor and nonrotating boxes with
+// vertical-only motion and AABB contact; not general 3D rigid-body physics.
+World create_floor_world(ShaderBinary floor_shader,
+                         ShaderBinary vertical_contact_shader,
+                         std::uint32_t device_ordinal = 0);
 
 } // namespace fyzz::compute

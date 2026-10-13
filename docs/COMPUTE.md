@@ -71,48 +71,64 @@ and compares state against a CPU reference after each batch.
 
 ## Opt-in Vulkan World backend
 
-`fyzz::World` owns one `WorldBackend`. Its default backend remains the
-existing PhysX CPU implementation. The separate `FyzzXYZZY::VulkanWorld`
-target supplies `fyzz::compute::create_floor_world(shader)`, which constructs
-a `World` whose authoritative body state lives in Vulkan device-local buffers.
+`fyzz::World` owns one `WorldBackend`. PhysX remains the default CPU
+implementation. The optional `FyzzXYZZY::VulkanWorld` target supplies
+`fyzz::compute::create_floor_world(floor_shader, contact_shader)`, producing
+one `World` whose authoritative simulation state remains on the GPU.
 
-The Vulkan implementation is **explicitly limited** to one infinite horizontal
-floor and independent axis-aligned dynamic boxes. It simulates gravity, linear
-integration, restitution, and floor contact. It rejects static boxes, additional floors, and stepping dynamic bodies
-before adding a floor. Because this kernel cannot resolve body-to-body
-contacts, it also rejects new boxes whose horizontal (X/Z) footprints
-overlap those of existing dynamic boxes, even if initially at different
-heights. With no horizontal velocity or acceleration in this implementation,
-accepted footprints remain disjoint. It **does not** implement box-to-box
-collision, rotation, joints, or the rest of PhysX scene features. Use the
-default CPU backend for those capabilities. GPU and CPU results are compared
-for plausible behavior, not numerical equivalence.
+The experimental backend supports one infinite horizontal floor and
+axis-aligned, **nonrotating** dynamic boxes. Gravity, linear integration,
+floor collision, and vertical box-to-box contact correction/impulses execute
+on Vulkan. Horizontal position and velocity are unchanged by the solver;
+a collision with a side face is **not** resolved in 3D. Static boxes,
+additional floors, rotation, joints, arbitrary collider shapes, and continuous
+collision detection remain unsupported. Those features require the normal
+PhysX backend until more complete GPU functionality is implemented.
 
-`World::add_static_floor(height)` creates an infinite floor on the CPU backend
-and selects the floor plane on the Vulkan backend. Body IDs belong to the
-chosen World, and `body_state` reads GPU state when using Vulkan. New bodies
-may be added after stepping; device-local buffers grow through GPU copies
-rather than reconstructing previous positions on the CPU. Per-body readback
-and synchronous stepping are functional but not optimized.
+For the restricted vertical-contact model, the CPU builds disjoint islands
+from overlapping X/Z box footprints when bodies are added. The island indices
+and ranges are uploaded to GPU buffers. Each island is assigned to one
+invocation of `src/kernels/vertical_contacts.comp`, which resolves vertical
+position and velocity impulses for that island in eight iterations. This
+avoids GPU data races between bodies sharing a contact island, including
+stacked bodies. All collision **response** runs on the GPU. The first pass
+uses the existing floor-integration kernel, and the contact pass follows
+in the same ordered Vulkan command batch. The implementation is intentionally
+a correctness-oriented vertical slice: CPU island construction is O(N²),
+per-island GPU pair processing is O(M²) per iteration, and there is no
+broadphase acceleration or spatially general contact handling yet.
 
-The factory accepts a caller-supplied `ShaderBinary` compiled from
-`src/kernels/rigid_floor.comp`. For example:
+`World::add_static_floor(height)` creates an infinite floor on either backend.
+Body IDs are owned by their selected World. The Vulkan implementation holds
+body positions, velocities, inverse masses and contact-island tables in
+device-local memory. The mass estimate uses box volume times density; stable
+settling is checked across bodies with different masses. Adding bodies after
+simulation rebuilds island membership and grows buffers through device-local
+copies without reconstructing previous positions on the CPU.
+
+Applications must supply compiled shader binaries for
+`src/kernels/rigid_floor.comp` and `src/kernels/vertical_contacts.comp`:
 
 ```cpp
-fyzz::compute::ShaderBinary shader; // Fill shader.bytes with compiled SPIR-V
-fyzz::World world = fyzz::compute::create_floor_world(std::move(shader));
+fyzz::compute::ShaderBinary floor_shader;    // Compiled SPIR-V bytes
+fyzz::compute::ShaderBinary contact_shader;  // Compiled SPIR-V bytes
+fyzz::World world = fyzz::compute::create_floor_world(
+    std::move(floor_shader), std::move(contact_shader));
 world.add_static_floor(0.0f);
-const auto body = world.add_dynamic_box({0.25f, 0.25f, 0.25f},
-                                        {0.0f, 2.0f, 0.0f}, 1.0f);
+auto lower = world.add_dynamic_box({0.25f, 0.25f, 0.25f},
+                                   {0.0f, 1.0f, 0.0f}, 1.0f);
+auto upper = world.add_dynamic_box({0.25f, 0.25f, 0.25f},
+                                   {0.0f, 2.0f, 0.0f}, 2.0f);
 world.step(1.0f / 120.0f);
-auto state = world.body_state(body);
+auto state = world.body_state(upper);
 ```
 
-`fyzzxyzzy_vulkan_world_smoke` tests this World integration against basic
-CPU PhysX behavior, unsupported-operation rejection, stable floor contact,
-body identity, and buffer growth after stepping. The optional Godot consumer
-still constructs the default CPU backend; selecting the Vulkan backend in
-Godot is a separate integration task.
+`fyzzxyzzy_vulkan_world_smoke` compares the GPU world to basic PhysX
+behavior, checks multi-body settling and separation, body identity, contact
+island rebuilding, and state preservation during buffer growth. It is a
+functional acceptance test, not a performance claim. Per-body readback and
+synchronous stepping remain expensive. The Godot adapter continues to use
+the default CPU backend; explicit GPU selection through Godot is future work.
 
 The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
 own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed

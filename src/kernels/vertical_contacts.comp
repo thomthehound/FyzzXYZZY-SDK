@@ -1,0 +1,100 @@
+#version 450
+
+// One invocation owns one disjoint horizontal contact island.
+// Within an island, vertical position/impulse corrections are sequential.
+// CPU-generated island membership is conservative and fixed between additions.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Positions { vec4 values[]; } positions;
+layout(set = 0, binding = 1, std430) buffer Velocities { vec4 values[]; } velocities;
+layout(set = 0, binding = 2, std430) readonly buffer Properties {
+    vec4 values[]; // half_width_x, half_width_z, inverse_mass, unused
+} properties;
+layout(set = 0, binding = 3, std430) readonly buffer Members { uint values[]; } members;
+layout(set = 0, binding = 4, std430) readonly buffer Islands { uvec2 values[]; } islands;
+
+layout(push_constant) uniform Parameters {
+    uint island_count;
+    float floor_y;
+    float restitution;
+    float resting_speed;
+    uint iterations;
+} parameters;
+
+bool overlap_xz(uint a, uint b) {
+    vec4 pa = positions.values[a];
+    vec4 pb = positions.values[b];
+    vec4 aa = properties.values[a];
+    vec4 ab = properties.values[b];
+    return abs(pa.x - pb.x) < aa.x + ab.x &&
+           abs(pa.z - pb.z) < aa.y + ab.y;
+}
+
+void constrain_floor(uint index) {
+    vec4 p = positions.values[index];
+    vec4 v = velocities.values[index];
+    float minimum_y = parameters.floor_y + p.w;
+    if (p.y < minimum_y) {
+        p.y = minimum_y;
+        if (v.y < 0.0) {
+            v.y = 0.0;
+        }
+    }
+    positions.values[index] = p;
+    velocities.values[index] = v;
+}
+
+void main() {
+    const uint island = gl_GlobalInvocationID.x;
+    if (island >= parameters.island_count) return;
+
+    const uvec2 range = islands.values[island];
+    for (uint iteration = 0u; iteration < parameters.iterations; ++iteration) {
+        for (uint i = 0u; i < range.y; ++i) {
+            constrain_floor(members.values[range.x + i]);
+        }
+        for (uint i = 0u; i < range.y; ++i) {
+            const uint ai = members.values[range.x + i];
+            for (uint j = i + 1u; j < range.y; ++j) {
+                const uint bi = members.values[range.x + j];
+                if (!overlap_xz(ai, bi)) continue;
+
+                vec4 pa = positions.values[ai];
+                vec4 pb = positions.values[bi];
+                vec4 va = velocities.values[ai];
+                vec4 vb = velocities.values[bi];
+                float gap = abs(pa.y - pb.y);
+                float required_gap = pa.w + pb.w;
+                if (gap >= required_gap) continue;
+
+                float inverse_a = properties.values[ai].z;
+                float inverse_b = properties.values[bi].z;
+                float total = inverse_a + inverse_b;
+                if (total <= 0.0) continue;
+
+                float direction = pa.y > pb.y ? 1.0 : -1.0;
+                // A stable tie-break avoids zero correction on coincident centers.
+                if (pa.y == pb.y) direction = ai < bi ? -1.0 : 1.0;
+                float penetration = required_gap - gap;
+                pa.y += direction * penetration * inverse_a / total;
+                pb.y -= direction * penetration * inverse_b / total;
+
+                float relative_speed = direction * (va.y - vb.y);
+                if (relative_speed < 0.0) {
+                    float bounce = (-relative_speed > parameters.resting_speed)
+                        ? parameters.restitution : 0.0;
+                    float impulse = -(1.0 + bounce) * relative_speed / total;
+                    va.y += direction * impulse * inverse_a;
+                    vb.y -= direction * impulse * inverse_b;
+                }
+                positions.values[ai] = pa;
+                positions.values[bi] = pb;
+                velocities.values[ai] = va;
+                velocities.values[bi] = vb;
+            }
+        }
+        for (uint i = 0u; i < range.y; ++i) {
+            constrain_floor(members.values[range.x + i]);
+        }
+    }
+}

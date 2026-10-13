@@ -144,11 +144,26 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_vulkan_floor_physics
       COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
 
+    set(FYZZXYZZY_CONTACT_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/vertical_contacts.comp.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_CONTACT_SHADER}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
+        -o "${FYZZXYZZY_CONTACT_SHADER}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vertical_contacts.comp"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/vertical_contacts.comp"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_contact_shader DEPENDS "${FYZZXYZZY_CONTACT_SHADER}")
+
     add_executable(fyzzxyzzy_vulkan_world_smoke tests/vulkan_world_smoke.cpp)
     target_link_libraries(fyzzxyzzy_vulkan_world_smoke PRIVATE FyzzXYZZY::VulkanWorld)
-    add_dependencies(fyzzxyzzy_vulkan_world_smoke fyzzxyzzy_floor_shader)
+    add_dependencies(fyzzxyzzy_vulkan_world_smoke
+      fyzzxyzzy_floor_shader fyzzxyzzy_contact_shader)
     add_test(NAME fyzzxyzzy_vulkan_world_smoke
-      COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
+      COMMAND fyzzxyzzy_vulkan_world_smoke
+        "${FYZZXYZZY_FLOOR_SHADER}" "${FYZZXYZZY_CONTACT_SHADER}")
   endif()
 endif()
 
