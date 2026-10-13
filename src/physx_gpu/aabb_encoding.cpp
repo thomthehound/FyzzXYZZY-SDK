@@ -14,7 +14,8 @@
 namespace fyzz::physx_gpu {
 namespace {
 
-constexpr std::uint32_t kAabbsPerWorkgroup = 32; // PhysX: 256 threads / 8 components.
+constexpr std::uint32_t kThreadsPerWorkgroup = 128; // Vulkan core minimum.
+constexpr std::uint32_t kAabbsPerWorkgroup = kThreadsPerWorkgroup / 8; // PhysX 8 lanes/AABB.
 constexpr std::size_t kCoordinateCount = 6;
 
 struct alignas(4) ShaderParameters {
@@ -51,6 +52,11 @@ AabbEncodingStage::AabbEncodingStage(compute::Context& context,
     description.shader = std::move(shader);
     description.storage_buffer_binding_count = 4;
     description.push_constant_bytes = sizeof(ShaderParameters);
+    const auto& device = context_.device_info();
+    if (device.max_workgroup_invocations < kThreadsPerWorkgroup ||
+        device.max_workgroup_size[0] < kThreadsPerWorkgroup) {
+        throw std::runtime_error("PhysX AABB encoding requires a 128-thread workgroup");
+    }
     pipeline_ = context_.create_compute_pipeline(description);
 }
 
