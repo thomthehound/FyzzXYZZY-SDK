@@ -108,10 +108,9 @@ if(FIZZX_BUILD_VULKAN)
     add_custom_target(fizzx_dispatch_shader DEPENDS "${FIZZX_AFFINE_SHADER}")
     add_executable(fizzx_vulkan_dispatch_smoke tests/vulkan_dispatch_smoke.cpp)
     target_link_libraries(fizzx_vulkan_dispatch_smoke PRIVATE FizzX::Compute)
-    target_compile_definitions(fizzx_vulkan_dispatch_smoke PRIVATE
-      FIZZX_AFFINE_SHADER_PATH="\"${FIZZX_AFFINE_SHADER}\"")
     add_dependencies(fizzx_vulkan_dispatch_smoke fizzx_dispatch_shader)
-    add_test(NAME fizzx_vulkan_dispatch_smoke COMMAND fizzx_vulkan_dispatch_smoke)
+    add_test(NAME fizzx_vulkan_dispatch_smoke
+      COMMAND fizzx_vulkan_dispatch_smoke "${FIZZX_AFFINE_SHADER}")
   endif()
 endif()
 

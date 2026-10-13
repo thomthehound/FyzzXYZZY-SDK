@@ -13,10 +13,6 @@
 #include <stdexcept>
 #include <vector>
 
-#ifndef FIZZX_AFFINE_SHADER_PATH
-#error FIZZX_AFFINE_SHADER_PATH is required
-#endif
-
 namespace {
 
 struct Parameters {
@@ -25,8 +21,8 @@ struct Parameters {
     std::uint32_t addend;
 };
 
-std::vector<std::uint8_t> read_shader() {
-    std::ifstream stream(FIZZX_AFFINE_SHADER_PATH, std::ios::binary);
+std::vector<std::uint8_t> read_shader(const char* path) {
+    std::ifstream stream(path, std::ios::binary);
     if (!stream) {
         throw std::runtime_error("Compiled compute shader was not found");
     }
@@ -37,8 +33,11 @@ std::vector<std::uint8_t> read_shader() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc != 2) {
+            throw std::invalid_argument("Expected the compiled shader file path");
+        }
         using namespace fizzx::compute;
         constexpr std::uint32_t size = 259;
         constexpr std::uint32_t array_size = 320;
@@ -58,7 +57,7 @@ int main() {
 
         ComputePipelineDesc description;
         description.shader.format = ShaderFormat::Spirv;
-        description.shader.bytes = read_shader();
+        description.shader.bytes = read_shader(argv[1]);
         description.shader.entry_point = "main";
         description.storage_buffer_binding_count = 2;
         description.push_constant_bytes = sizeof(Parameters);
