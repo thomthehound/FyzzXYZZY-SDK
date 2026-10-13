@@ -170,6 +170,11 @@ int main(int argc, char** argv) {
     try {
         if (argc != 2) throw std::invalid_argument("Expected compiled SPIR-V shader path");
         Context context(Backend::Vulkan);
+        const auto& info = context.device_info();
+        if (info.max_workgroup_invocations < 128 ||
+            info.max_workgroup_size[0] < 128) {
+            throw std::runtime_error("Vulkan device below core compute group-size limits");
+        }
         ShaderBinary shader;
         shader.format = ShaderFormat::Spirv;
         shader.bytes = read_shader(argv[1]);
