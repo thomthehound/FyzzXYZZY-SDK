@@ -23,6 +23,11 @@ FyzzXYZZY is an **independent, PhysX-derived, general-purpose physics SDK** with
 - Keep reference/prototype tools separable from distributed runtime dependencies.
 - Organize public headers, runtime backends, kernels, tests, samples, and consumers as separate targets; their final directory names can be settled in M0.
 
+PhysX's GPU host-side scene/task pipeline is part of the port, alongside CUDA
+kernels. Every portable physics component must have an upstream source mapping
+for algorithms, data representation, dispatch dependencies, synchronization,
+and scene result publication. See [GPU port audit](PHYSX_GPU_PORT.md).
+
 ## Proposed layers
 
 ```text
@@ -64,12 +69,12 @@ GPU/renderer sharing is an optional *later* optimization with explicit lifetime/
 **Gate:** the same FyzzXYZZY workload runs on AMD Vulkan *outside Godot* and via Godot's FyzzXYZZY adapter, with checked output and no CUDA installation or NVIDIA driver dependency. Record and resolve the HLSL-vs-Slang decision.
 
 ### M2 — First complete GPU physics pathway
-- Port a small coherent sequence, not a disconnected collection of compiled kernels: e.g. bounds update → broadphase candidates → contact handling for limited primitives → integration/constraint response.
+- Port an identifiable **PhysX-derived** coherent pathway through the existing PhysX scene, GPU context, task orchestration and data contracts: e.g. a selected bounds/broadphase stage through its original launch and result-processing path. Do not substitute an unrelated world or simplified contact solver.
 - Reuse or translate scan, sort, compaction and dispatch utilities as required by the pathway; leave nonessential kernel families unported.
 - Support a fixed-step interactive test scene with rigid bodies and visibly correct collision/response.
 - Document GPU/CPU state transfer semantics; measure synchronization and readback overhead.
 
-**Gate:** nontrivial, interactive *GPU-computed* rigid-body behavior on AMD Vulkan through FyzzXYZZY in both consumers; collisions are not secretly computed by Godot/Jolt.
+**Gate:** a demonstrably PhysX-derived GPU pathway integrated with PhysX scene orchestration, with traced source, verified stage ordering and contact/constraint behavior as applicable. A separate Vulkan physics prototype is not sufficient.
 
 ### M3 — First reciprocal deformable/rigid pathway
 - Add enough existing PhysX particle/PBD/FEM/contact functionality to support an interacting deformable body or garment against FyzzXYZZY rigid bodies.
