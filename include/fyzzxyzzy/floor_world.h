@@ -8,6 +8,7 @@
 
 namespace fyzz::compute {
 
+// Experimental, non-PhysX GPU physics prototype (explicit build opt-in).
 // Creates a World whose only simulation backend is Vulkan floor contact.
 // Supported: one horizontal infinite floor, axis-aligned dynamic boxes,
 // gravity and floor response. Unsupported: static box geometry, body-to-body
