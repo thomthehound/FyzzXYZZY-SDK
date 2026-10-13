@@ -149,10 +149,10 @@ The first executable translation is maintained under `src/physx_gpu/`:
   configuration rejection. The Vulkan test is required in Linux CI.
 
 **Current limit:** this stage is not yet called by a PhysX scene. It does not
-produce collision pairs or provide GPU broadphase on its own. The GLSL Vulkan
-source is now compiled from HLSL through DXC; native D3D12
-execution and scene integration remain to be established. The data and algorithm contract belongs
-to PhysX rather than a new physics subsystem.
+produce collision pairs or provide GPU broadphase on its own. The Vulkan
+pipeline now uses the DXC-compiled HLSL source; native D3D12 execution
+and PhysX scene integration remain to be established. The data and algorithm
+contract belongs to PhysX rather than a new physics subsystem.
 
 ### Broadphase host orchestration required to integrate it
 
@@ -191,10 +191,11 @@ to finish.
 
 For AABB encoding, `src/physx_gpu/kernels/physx_translate_aabbs.hlsl` supplies
 a DXIL-target source translation compiled in Windows CI using Windows SDK DXC.
-This is currently a **compile-only D3D12 proof**. The Vulkan stage now compiles the same HLSL source to SPIR-V
-using DXC in Linux CI, where the existing GPU-reference test verifies runtime
-behavior. Only descriptor and parameter bindings are backend-conditional. Do not multiply per-API
-physics algorithms by adding further independent shader translations.
+This is currently a **compile-only D3D12 proof**. The Vulkan stage compiles
+the same HLSL source to SPIR-V using DXC in Linux CI, where the existing
+GPU-reference test exercises runtime behavior. Only descriptor and parameter
+bindings are backend-conditional. Do not multiply per-API physics algorithms
+by adding further independent shader translations.
 
 The portable execution contract needs to specify:
 
