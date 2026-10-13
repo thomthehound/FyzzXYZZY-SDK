@@ -7,6 +7,11 @@ The native Vulkan backend is a standalone C++ library (`FyzzXYZZY::Compute`)
 without Godot or PhysX dependencies. Public resources use opaque identifiers;
 Vulkan types do not appear in `include/fyzzxyzzy/compute.h`.
 
+The production compute target contains device and execution infrastructure,
+not a GPU physics solver. The standalone floor physics kernel and `VulkanWorld`
+are independent experimental demonstrations, not ports of PhysX GPU algorithms
+or scene orchestration. They are excluded from ordinary Vulkan builds.
+
 ## Build
 
 Requires CMake, a C++17 compiler, Vulkan headers and loader, glslangValidator
@@ -16,6 +21,16 @@ Requires CMake, a C++17 compiler, Vulkan headers and loader, glslangValidator
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON
 cmake --build build --target fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke
 ctest --test-dir build -R fyzzxyzzy_vulkan_ --output-on-failure
+```
+
+To build and test the isolated floor and world prototypes, configure separately
+with `-DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`. These prototypes are not
+part of the production PhysX GPU implementation.
+
+```sh
+cmake -S . -B build-prototypes -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+cmake --build build-prototypes --target fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke
+ctest --test-dir build-prototypes -R 'fyzzxyzzy_vulkan_(floor_physics|world_smoke)' --output-on-failure
 ```
 
 Vulkan is opt-in; CPU-only builds require no Vulkan SDK. Linux CI validates
@@ -38,9 +53,9 @@ correctness but does not establish AMD GPU compatibility or performance.
 - Submit ordered batches of copies and dispatches in one command buffer,
   descriptor pool, and completion fence, avoiding per-operation queue submissions.
 
-## Physics compute acceptance
+## Experimental physics compute acceptance
 
-`src/kernels/rigid_floor.comp` is an initial bounded GPU physics workload:
+`src/kernels/rigid_floor.comp` is an original, bounded GPU physics experiment (not a translated PhysX kernel):
 fixed-step semi-implicit linear integration under gravity, per-body static-floor
 contact projection, normal restitution, and tangential impact damping. It uses
 two GPU-resident arrays of `vec4`: position xyz plus half-height, and velocity
@@ -69,11 +84,11 @@ The `fyzzxyzzy_vulkan_floor_physics` acceptance test runs 513 bodies for
 160 batched steps, plus two single-step API paths. It checks floor penetration
 and compares state against a CPU reference after each batch.
 
-## Opt-in Vulkan World backend
+## Experimental Vulkan World backend
 
 `fyzz::World` owns one `WorldBackend`. Its default backend remains the
-existing PhysX CPU implementation. The separate `FyzzXYZZY::VulkanWorld`
-target supplies `fyzz::compute::create_floor_world(shader)`, which constructs
+existing PhysX CPU implementation. With `FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`, the separate
+`FyzzXYZZY::VulkanWorld` target supplies `fyzz::compute::create_floor_world(shader)`, which constructs
 a `World` whose authoritative body state lives in Vulkan device-local buffers.
 
 The Vulkan implementation is **explicitly limited** to one infinite horizontal

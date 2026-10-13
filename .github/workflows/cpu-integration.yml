@@ -21,7 +21,7 @@ jobs:
       - name: Install Vulkan development packages
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers glslang-tools
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Build
         run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test

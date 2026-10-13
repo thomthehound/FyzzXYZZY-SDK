@@ -74,10 +74,7 @@ endif()
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 if(FYZZXYZZY_BUILD_VULKAN)
   find_package(Vulkan REQUIRED)
-  add_library(fyzzxyzzy_compute STATIC
-    src/compute_vulkan.cpp
-    src/floor_contact.cpp
-  )
+  add_library(fyzzxyzzy_compute STATIC src/compute_vulkan.cpp)
   add_library(FyzzXYZZY::Compute ALIAS fyzzxyzzy_compute)
   target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_compute PUBLIC
@@ -86,17 +83,22 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-  # A separate integration target keeps standalone compute independent of
-  # PhysX while allowing World to own an optional GPU simulation backend.
-  add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
-  add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
-  target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_17)
-  target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-  target_link_libraries(fyzzxyzzy_vulkan_world PUBLIC
-    FyzzXYZZY::Core FyzzXYZZY::Compute
-  )
+  # These independent physics demonstrations are not translations of PhysX
+  # GPU algorithms or orchestration. Do not link them into the SDK by default.
+  option(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES
+    "Build non-PhysX experimental Vulkan physics demonstrations" OFF)
+  if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
+    target_sources(fyzzxyzzy_compute PRIVATE src/floor_contact.cpp)
+    add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
+    add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
+    target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_17)
+    target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_link_libraries(fyzzxyzzy_vulkan_world PUBLIC
+      FyzzXYZZY::Core FyzzXYZZY::Compute
+    )
+  endif()
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute PRIVATE /W4)
   else()
@@ -126,29 +128,31 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_vulkan_dispatch_smoke
       COMMAND fyzzxyzzy_vulkan_dispatch_smoke "${FYZZXYZZY_AFFINE_SHADER}")
 
-    set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_FLOOR_SHADER}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
-        -o "${FYZZXYZZY_FLOOR_SHADER}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
-      VERBATIM
-    )
-    add_custom_target(fyzzxyzzy_floor_shader DEPENDS "${FYZZXYZZY_FLOOR_SHADER}")
-    add_executable(fyzzxyzzy_vulkan_floor_physics tests/vulkan_floor_physics.cpp)
-    target_link_libraries(fyzzxyzzy_vulkan_floor_physics PRIVATE FyzzXYZZY::Compute)
-    add_dependencies(fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_floor_shader)
-    add_test(NAME fyzzxyzzy_vulkan_floor_physics
-      COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
-
-    add_executable(fyzzxyzzy_vulkan_world_smoke tests/vulkan_world_smoke.cpp)
-    target_link_libraries(fyzzxyzzy_vulkan_world_smoke PRIVATE FyzzXYZZY::VulkanWorld)
-    add_dependencies(fyzzxyzzy_vulkan_world_smoke fyzzxyzzy_floor_shader)
-    add_test(NAME fyzzxyzzy_vulkan_world_smoke
-      COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
+    if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
+      set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_FLOOR_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_GLSLANG_VALIDATOR}" -V -S comp
+          -o "${FYZZXYZZY_FLOOR_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/rigid_floor.comp"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_floor_shader DEPENDS "${FYZZXYZZY_FLOOR_SHADER}")
+      add_executable(fyzzxyzzy_vulkan_floor_physics tests/vulkan_floor_physics.cpp)
+      target_link_libraries(fyzzxyzzy_vulkan_floor_physics PRIVATE FyzzXYZZY::Compute)
+      add_dependencies(fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_floor_shader)
+      add_test(NAME fyzzxyzzy_vulkan_floor_physics
+        COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
+  
+      add_executable(fyzzxyzzy_vulkan_world_smoke tests/vulkan_world_smoke.cpp)
+      target_link_libraries(fyzzxyzzy_vulkan_world_smoke PRIVATE FyzzXYZZY::VulkanWorld)
+      add_dependencies(fyzzxyzzy_vulkan_world_smoke fyzzxyzzy_floor_shader)
+      add_test(NAME fyzzxyzzy_vulkan_world_smoke
+        COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
+    endif()
   endif()
 endif()
 
