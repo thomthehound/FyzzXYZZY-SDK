@@ -121,6 +121,63 @@ The current Vulkan compute `Context` and batch API do not yet expose a
 PhysX-compatible task/synchronization contract. Do not attach a new physics
 algorithm directly to the public `WorldBackend` as a substitute.
 
+## First translated PhysX GPU stage: broadphase bounds encoding
+
+The first executable translation is maintained under `src/physx_gpu/`:
+
+- Source kernel: `physx/source/gpubroadphase/src/CUDA/broadphase.cu`,
+  `translateAABBsLaunch` and `encodeFloat`.
+- Upstream host caller: `physx/source/gpubroadphase/src/PxgCudaBroadPhaseSap.cpp`,
+  `translateAABBsKernel`, invoked by `PxgCudaBroadPhaseSap::update`.
+- Upstream binary layouts: `PxBounds3` (six contiguous 32-bit floats),
+  `PxgIntegerAABB::mMinMax[6]` (six contiguous 32-bit unsigned integers),
+  and per-box `PxReal` contact distances / optional `PxU32` environment IDs.
+- Translated kernel: `src/physx_gpu/kernels/physx_translate_aabbs.comp`.
+  It preserves the per-component float-bit ordering, inflated bounds, per-axis
+  shifts, min-even/max-odd encoding and shared-environment sentinel behavior.
+- Host dispatch: `AabbEncodingStage::append` in
+  `src/physx_gpu/aabb_encoding.cpp`. A 256-thread workgroup encodes
+  32 boxes (eight logical threads per box), matching upstream launch geometry.
+  The stage appends work to the caller's command batch and never owns a
+  scene or overrides collision behavior.
+- Test: `fyzzxyzzy_physx_aabb_encoding` compares the encoded integer output
+  with an upstream-formula CPU reference for default and custom axis shifts,
+  environment IDs, absent environment arrays, capacity boundaries, and invalid
+  configuration rejection. The Vulkan test is required in Linux CI.
+
+**Current limit:** this stage is not yet called by a PhysX scene. It does not
+produce collision pairs or provide GPU broadphase on its own. The GLSL Vulkan
+source is a first translated implementation; shared HLSL/Slang and D3D12
+execution remain to be established. The data and algorithm contract belongs
+to PhysX rather than a new physics subsystem.
+
+### Broadphase host orchestration required to integrate it
+
+The pinned `PxgCudaBroadPhaseSap.cpp` provides a specific call sequence:
+
+1. `preBroadPhase` stages changed floating-point bounds, per-object contact
+   distances, filter groups and optional environment IDs.
+2. `update` calls `gpuDMAUp` to update GPU buffers and descriptors, tracks
+   created/removed/updated handles and sleeping/forced-update state, then
+   dispatches `translateAABBsKernel`.
+3. It marks removed/updated pairs, maintains incremental SAP projections,
+   executes sorts, histogram/scans and comparison passes, and generates found
+   pairs. Operations depend on previous-frame state and cannot all be
+   indiscriminately recomputed without changing behavior.
+4. `runCopyResultsKernel` and `fetchBroadPhaseResults` publish the found/lost
+   pair data for scene narrowphase and update double-buffered projections,
+   handles and histograms.
+5. `PxgAABBManager` owns additional GPU aggregate and dirty-bounds handling
+   and its coordination with the broadphase; its origin and synchronization
+   dependencies must be preserved.
+
+PhysX's GPU broadphase does **not** require GPU dynamics, but the current
+factory and `Sc::Scene` initialization still require the CUDA context manager
+and GPU-specific memory allocators. Simply setting `PxBroadPhaseType::eGPU`
+in the existing CPU build would not enable this Vulkan stage. The next
+integration work must adapt that factory/controller boundary and its resource
+lifetime, without introducing a separate simulation loop.
+
 ## Implementation sequence and acceptance gates
 
 1. **Integrate at the PhysX scene boundary.** Identify the narrowest replacement
