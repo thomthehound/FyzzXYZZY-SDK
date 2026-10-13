@@ -14,6 +14,9 @@ namespace fy_::compute {
 // Backend-independent host API. No Vulkan resources escape through this header.
 enum class Backend { Vulkan };
 
+// HostVisible supports direct mapping; DeviceLocal uses staging for host transfers.
+enum class MemoryPlacement { HostVisible, DeviceLocal };
+
 struct DeviceInfo {
     std::uint32_t ordinal = 0;
     std::string name;
@@ -75,9 +78,10 @@ public:
 
     const DeviceInfo& device_info() const;
 
-    // Initial host-coherent storage allocation; subsequent versions will
-    // add explicit device-local and shared-memory placement.
-    BufferId create_buffer(std::size_t bytes);
+    // DeviceLocal buffers use GPU-preferred memory with internal staging.
+    // HostVisible remains the default for existing callers.
+    BufferId create_buffer(std::size_t bytes,
+                           MemoryPlacement placement = MemoryPlacement::HostVisible);
     void destroy_buffer(BufferId id);
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes);
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;

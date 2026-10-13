@@ -50,8 +50,8 @@ int main(int argc, char** argv) {
         }
 
         Context context(Backend::Vulkan, 0);
-        const BufferId src = context.create_buffer(sizeof(input));
-        const BufferId dst = context.create_buffer(sizeof(output));
+        const BufferId src = context.create_buffer(sizeof(input), MemoryPlacement::DeviceLocal);
+        const BufferId dst = context.create_buffer(sizeof(output), MemoryPlacement::DeviceLocal);
         context.upload(src, 0, input.data(), sizeof(input));
         context.upload(dst, 0, output.data(), sizeof(output));
 

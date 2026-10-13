@@ -26,17 +26,21 @@ correctness but does not establish AMD GPU compatibility or performance.
 
 - Enumerate compute-capable devices and their relevant resource/dispatch limits.
 - Select a device and create a compute queue and command pool.
-- Allocate and destroy host-visible coherent storage buffers.
-- Upload/download byte ranges with bounds checks.
+- Allocate host-visible coherent or device-local storage buffers.
+- Upload and download host-visible buffers directly; stage device-local transfers
+  through temporary host-visible buffers, with bounds and alignment validation.
 - Submit buffer-copy commands and synchronize their completion.
 - Create SPIR-V compute pipelines with storage-buffer bindings and push constants.
 - Dispatch 1D/2D/3D workgroups with validated device limits and descriptor ranges.
 - Synchronize shader writes for subsequent host reads.
 
-The current context is synchronous and not thread-safe. Buffer-copy offsets
-and sizes must be 4-byte aligned; descriptor offsets must satisfy the device's
-storage-buffer alignment limits. Pipeline inputs supply compiled shader binaries
-and explicit binding layouts. Device-local memory, staging, asynchronous
-submission, fences, shader reflection, and graphics interop are not implemented.
-The kernel acceptance test verifies actual GPU-dispatched integer arithmetic
-without claiming a physics simulation.
+The current context is synchronous and not thread-safe. Buffer copies and
+device-local upload/download ranges require 4-byte-aligned offsets and sizes;
+host-visible memory transfers permit arbitrary byte ranges. Descriptor offsets
+must satisfy the device's storage-buffer alignment limits. Pipeline inputs
+supply compiled shader binaries and explicit binding layouts. Device-local
+allocations prefer non-mappable memory where available; staged transfers work
+on devices with unified memory as well. Asynchronous submission, persistent
+staging allocation, fences, shader reflection, and graphics interop are not
+implemented. The kernel test dispatches real compute work using device-local
+buffers but does not simulate physics.
