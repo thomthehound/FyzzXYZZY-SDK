@@ -6,6 +6,8 @@
 #include <PxPhysicsAPI.h>
 
 #include <cmath>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -36,31 +38,69 @@ void validate_position(Vec3 position) {
     }
 }
 
-} // namespace
+// PhysX Foundation and Physics are process-level services, not individual
+// World resources. Hold them as long as any CPU World needs them.
+std::mutex& runtime_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
 
-struct PhysXCpuWorld final : WorldBackend {
+struct PhysXRuntime {
     physx::PxDefaultAllocator allocator;
     physx::PxDefaultErrorCallback errors;
     physx::PxFoundation* foundation = nullptr;
     physx::PxPhysics* physics = nullptr;
+
+    PhysXRuntime() {
+        foundation = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
+        if (!foundation) {
+            throw std::runtime_error("Failed to create PhysX foundation");
+        }
+        try {
+            physics = PxCreatePhysics(PX_PHYSICS_VERSION, *foundation,
+                                     physx::PxTolerancesScale(), false, nullptr);
+            if (!physics) {
+                throw std::runtime_error("Failed to create PhysX physics");
+            }
+        } catch (...) {
+            foundation->release();
+            foundation = nullptr;
+            throw;
+        }
+    }
+
+    ~PhysXRuntime() {
+        // Prevent another CPU world from recreating PhysX while its previous
+        // singleton is in the middle of releasing.
+        std::lock_guard<std::mutex> guard(runtime_mutex());
+        if (physics) physics->release();
+        if (foundation) foundation->release();
+    }
+};
+
+std::shared_ptr<PhysXRuntime> acquire_runtime() {
+    static std::weak_ptr<PhysXRuntime> cached;
+    std::lock_guard<std::mutex> guard(runtime_mutex());
+    if (auto existing = cached.lock()) {
+        return existing;
+    }
+    auto created = std::make_shared<PhysXRuntime>();
+    cached = created;
+    return created;
+}
+
+} // namespace
+
+struct PhysXCpuWorld final : WorldBackend {
+    std::shared_ptr<PhysXRuntime> runtime;
     physx::PxDefaultCpuDispatcher* dispatcher = nullptr;
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
 
     void initialize() {
-        foundation = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
-        if (!foundation) {
-            throw std::runtime_error("Failed to create PhysX foundation");
-        }
-
-        physics = PxCreatePhysics(PX_PHYSICS_VERSION, *foundation,
-                                 physx::PxTolerancesScale(), false, nullptr);
-        if (!physics) {
-            throw std::runtime_error("Failed to create PhysX physics");
-        }
-
-        physx::PxSceneDesc descriptor(physics->getTolerancesScale());
+        runtime = acquire_runtime();
+        physx::PxSceneDesc descriptor(runtime->physics->getTolerancesScale());
         descriptor.gravity = physx::PxVec3(0.0f, -9.81f, 0.0f);
         dispatcher = physx::PxDefaultCpuDispatcherCreate(2);
         if (!dispatcher) {
@@ -68,55 +108,61 @@ struct PhysXCpuWorld final : WorldBackend {
         }
         descriptor.cpuDispatcher = dispatcher;
         descriptor.filterShader = physx::PxDefaultSimulationFilterShader;
-        scene = physics->createScene(descriptor);
+        scene = runtime->physics->createScene(descriptor);
         if (!scene) {
             throw std::runtime_error("Failed to create PhysX scene");
         }
 
-        material = physics->createMaterial(0.5f, 0.5f, 0.2f);
+        material = runtime->physics->createMaterial(0.5f, 0.5f, 0.2f);
         if (!material) {
             throw std::runtime_error("Failed to create PhysX material");
         }
     }
 
-    ~PhysXCpuWorld() override {
-        for (physx::PxRigidActor* actor : actors) {
-            actor->release();
-        }
+    void cleanup() noexcept {
+        for (physx::PxRigidActor* actor : actors) actor->release();
+        actors.clear();
         if (material) {
             material->release();
+            material = nullptr;
         }
         if (scene) {
             scene->release();
+            scene = nullptr;
         }
         if (dispatcher) {
             dispatcher->release();
+            dispatcher = nullptr;
         }
-        if (physics) {
-            physics->release();
-        }
-        if (foundation) {
-            foundation->release();
+        // The runtime shared_ptr releases after per-world resources are gone.
+    }
+
+    ~PhysXCpuWorld() override { cleanup(); }
+
+    PhysXCpuWorld() {
+        try {
+            initialize();
+        } catch (...) {
+            cleanup();
+            throw;
         }
     }
 
-    PhysXCpuWorld() { initialize(); }
-
     BodyId add_static_box(Vec3 half_extents, Vec3 position) override {
         return add(physx::PxCreateStatic(
-            *physics, physx::PxTransform(to_physx(position)),
+            *runtime->physics, physx::PxTransform(to_physx(position)),
             physx::PxBoxGeometry(to_physx(half_extents)), *material));
     }
 
     BodyId add_static_floor(float height) override {
         // Plane equation y - height = 0, facing +Y.
         return add(physx::PxCreatePlane(
-            *physics, physx::PxPlane(0.0f, 1.0f, 0.0f, -height), *material));
+            *runtime->physics, physx::PxPlane(0.0f, 1.0f, 0.0f, -height), *material));
     }
 
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) override {
         return add(physx::PxCreateDynamic(
-            *physics, physx::PxTransform(to_physx(position)),
+            *runtime->physics, physx::PxTransform(to_physx(position)),
             physx::PxBoxGeometry(to_physx(half_extents)), *material, density));
     }
 
