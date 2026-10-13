@@ -8,9 +8,10 @@
 
 // Translation of PhysX translateAABBsLaunch from
 // physx/source/gpubroadphase/src/CUDA/broadphase.cu.
-// PhysX uses 256 threads per block, eight threads per AABB and six active
-// components. Preserve its bit encoding and optional environment-ID mapping.
-layout(local_size_x = 256) in;
+// PhysX uses eight logical threads per AABB, of which six write results.
+// Use 128 threads per workgroup: the Vulkan core minimum. This changes only
+// launch granularity, not PhysX's component mapping or numeric encoding.
+layout(local_size_x = 128) in;
 
 layout(std430, set = 0, binding = 0) readonly buffer FloatBounds {
     float values[];
