@@ -21,11 +21,22 @@ struct BodyState {
     Vec3 velocity;
 };
 
-// Minimal M0 host-facing facade. The API is provisional until the engine
-// ownership, scene, and resource contracts have been exercised by consumers.
+// SDK simulation backend. Each World owns exactly one implementation.
+// Additional backends must reject unsupported scene operations explicitly.
+class WorldBackend {
+public:
+    virtual ~WorldBackend() = default;
+    virtual BodyId add_static_box(Vec3 half_extents, Vec3 position) = 0;
+    virtual BodyId add_static_floor(float height) = 0;
+    virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
+    virtual void step(float seconds) = 0;
+    virtual BodyState body_state(BodyId id) const = 0;
+};
+
 class World final {
 public:
     World();
+    explicit World(std::unique_ptr<WorldBackend> backend);
     ~World();
 
     World(const World&) = delete;
@@ -34,13 +45,13 @@ public:
     World& operator=(World&&) noexcept;
 
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
+    BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
 
 private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::unique_ptr<WorldBackend> impl_;
 };
 
 } // namespace fyzz

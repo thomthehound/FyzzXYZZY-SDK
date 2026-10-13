@@ -6,6 +6,8 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 
 int main() {
     try {
@@ -32,6 +34,29 @@ int main() {
             !std::isfinite(state.velocity.y) || std::abs(state.velocity.y) > 1.0f) {
             std::cerr << "Rigid-body fall/contact smoke test failed\n";
             return 1;
+        }
+        // The provider-neutral floor API must also work with the default
+        // PhysX backend, independently of the optional Vulkan target.
+        fyzz::World floor_world;
+        floor_world.add_static_floor(0.0f);
+        const auto plane_box = floor_world.add_dynamic_box(
+            {0.25f, 0.25f, 0.25f}, {0.0f, 1.5f, 0.0f}, 1.0f);
+        for (int frame = 0; frame < 240; ++frame) {
+            floor_world.step(1.0f / 120.0f);
+        }
+        const auto plane_state = floor_world.body_state(plane_box);
+        if (!std::isfinite(plane_state.position.y) ||
+            std::abs(plane_state.position.y - 0.25f) > 0.08f) {
+            throw std::runtime_error("CPU infinite-floor contact failed");
+        }
+        bool rejected_null = false;
+        try {
+            fyzz::World invalid(std::unique_ptr<fyzz::WorldBackend>{});
+        } catch (const std::invalid_argument&) {
+            rejected_null = true;
+        }
+        if (!rejected_null) {
+            throw std::runtime_error("Null World backend was accepted");
         }
         return 0;
     } catch (const std::exception& error) {

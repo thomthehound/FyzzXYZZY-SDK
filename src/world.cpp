@@ -38,7 +38,7 @@ void validate_position(Vec3 position) {
 
 } // namespace
 
-struct World::Impl {
+struct PhysXCpuWorld final : WorldBackend {
     physx::PxDefaultAllocator allocator;
     physx::PxDefaultErrorCallback errors;
     physx::PxFoundation* foundation = nullptr;
@@ -79,7 +79,7 @@ struct World::Impl {
         }
     }
 
-    ~Impl() {
+    ~PhysXCpuWorld() override {
         for (physx::PxRigidActor* actor : actors) {
             actor->release();
         }
@@ -100,6 +100,45 @@ struct World::Impl {
         }
     }
 
+    PhysXCpuWorld() { initialize(); }
+
+    BodyId add_static_box(Vec3 half_extents, Vec3 position) override {
+        return add(physx::PxCreateStatic(
+            *physics, physx::PxTransform(to_physx(position)),
+            physx::PxBoxGeometry(to_physx(half_extents)), *material));
+    }
+
+    BodyId add_static_floor(float height) override {
+        // Plane equation y - height = 0, facing +Y.
+        return add(physx::PxCreatePlane(
+            *physics, physx::PxPlane(0.0f, 1.0f, 0.0f, -height), *material));
+    }
+
+    BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) override {
+        return add(physx::PxCreateDynamic(
+            *physics, physx::PxTransform(to_physx(position)),
+            physx::PxBoxGeometry(to_physx(half_extents)), *material, density));
+    }
+
+    void step(float seconds) override {
+        scene->simulate(seconds);
+        if (!scene->fetchResults(true)) {
+            throw std::runtime_error("PhysX simulation failed");
+        }
+    }
+
+    BodyState body_state(BodyId id) const override {
+        if (id >= actors.size()) {
+            throw std::out_of_range("Unknown FyzzXYZZY body ID");
+        }
+        const auto* actor = actors[id];
+        const physx::PxVec3 position = actor->getGlobalPose().p;
+        const auto* dynamic = actor->is<physx::PxRigidDynamic>();
+        return {from_physx(position),
+                dynamic ? from_physx(dynamic->getLinearVelocity())
+                        : Vec3{0.0f, 0.0f, 0.0f}};
+    }
+
     BodyId add(physx::PxRigidActor* actor) {
         if (!actor) {
             throw std::runtime_error("PhysX failed to create a rigid actor");
@@ -116,8 +155,12 @@ struct World::Impl {
     }
 };
 
-World::World() : impl_(std::make_unique<Impl>()) {
-    impl_->initialize();
+World::World() : World(std::make_unique<PhysXCpuWorld>()) {}
+
+World::World(std::unique_ptr<WorldBackend> backend) : impl_(std::move(backend)) {
+    if (!impl_) {
+        throw std::invalid_argument("World requires a simulation backend");
+    }
 }
 
 World::~World() = default;
@@ -127,9 +170,14 @@ World& World::operator=(World&&) noexcept = default;
 BodyId World::add_static_box(Vec3 half_extents, Vec3 position) {
     validate_half_extents(half_extents);
     validate_position(position);
-    return impl_->add(physx::PxCreateStatic(
-        *impl_->physics, physx::PxTransform(to_physx(position)),
-        physx::PxBoxGeometry(to_physx(half_extents)), *impl_->material));
+    return impl_->add_static_box(half_extents, position);
+}
+
+BodyId World::add_static_floor(float height) {
+    if (!std::isfinite(height)) {
+        throw std::invalid_argument("Floor height must be finite");
+    }
+    return impl_->add_static_floor(height);
 }
 
 BodyId World::add_dynamic_box(Vec3 half_extents, Vec3 position, float density) {
@@ -138,30 +186,18 @@ BodyId World::add_dynamic_box(Vec3 half_extents, Vec3 position, float density) {
     if (!std::isfinite(density) || density <= 0.0f) {
         throw std::invalid_argument("Density must be finite and positive");
     }
-    return impl_->add(physx::PxCreateDynamic(
-        *impl_->physics, physx::PxTransform(to_physx(position)),
-        physx::PxBoxGeometry(to_physx(half_extents)), *impl_->material, density));
+    return impl_->add_dynamic_box(half_extents, position, density);
 }
 
 void World::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f) {
         throw std::invalid_argument("Simulation step must be finite and positive");
     }
-    impl_->scene->simulate(seconds);
-    if (!impl_->scene->fetchResults(true)) {
-        throw std::runtime_error("PhysX simulation failed");
-    }
+    impl_->step(seconds);
 }
 
 BodyState World::body_state(BodyId id) const {
-    if (id >= impl_->actors.size()) {
-        throw std::out_of_range("Unknown FyzzXYZZY body ID");
-    }
-    const auto* actor = impl_->actors[id];
-    const physx::PxVec3 position = actor->getGlobalPose().p;
-    const auto* dynamic = actor->is<physx::PxRigidDynamic>();
-    return {from_physx(position),
-            dynamic ? from_physx(dynamic->getLinearVelocity()) : Vec3{0.0f, 0.0f, 0.0f}};
+    return impl_->body_state(id);
 }
 
 } // namespace fyzz
