@@ -20,6 +20,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Vulkan development packages
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers glslang-tools
+      - name: Install DXC for shared PhysX HLSL to SPIR-V
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
+            -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/dxc"
+          tar -xzf "${RUNNER_TEMP}/linux-dxc.tar.gz" -C "${RUNNER_TEMP}/dxc"
+          test -x "${RUNNER_TEMP}/dxc/bin/dxc"
+          echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Build
