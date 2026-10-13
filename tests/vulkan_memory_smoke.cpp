@@ -131,6 +131,19 @@ int main() {
             throw std::runtime_error("Consumed submission ID remained valid");
         }
         context.wait_all();
+
+        // A copy-only batch creates no descriptor pool.
+        context.execute_batch({
+            CopyCommand{local_src, 0, local_dst, 0, sizeof(source)},
+            CopyCommand{local_dst, 0, dst, 0, sizeof(source)}
+        });
+        context.download(dst, 0, result.data(), sizeof(result));
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            const auto expected = i >= 4 && i < 7 ? patch_values[i - 4] : source[i];
+            if (result[i] != expected) {
+                throw std::runtime_error("Copy-only batch result incorrect");
+            }
+        }
         context.destroy_buffer(local_dst);
         context.destroy_buffer(local_src);
         context.destroy_buffer(dst);

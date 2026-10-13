@@ -647,9 +647,10 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    SubmissionId dispatch(PipelineId id, DispatchSize groups,
-                  const std::vector<BufferBinding>& bindings,
-                  const void* push_constants, std::size_t push_bytes) {
+    std::vector<VkDescriptorBufferInfo> validate_dispatch(
+            PipelineId id, DispatchSize groups,
+            const std::vector<BufferBinding>& bindings,
+            const void* push_constants, std::size_t push_bytes) const {
         const Pipeline& pipeline = get_pipeline(id);
         const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
         for (std::uint32_t i = 0; i < 3; ++i) {
@@ -681,6 +682,15 @@ struct Context::Impl {
             assigned[binding.slot] = true;
             descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
         }
+        return descriptors;
+    }
+
+    SubmissionId dispatch(PipelineId id, DispatchSize groups,
+                  const std::vector<BufferBinding>& bindings,
+                  const void* push_constants, std::size_t push_bytes) {
+        const Pipeline& pipeline = get_pipeline(id);
+        std::vector<VkDescriptorBufferInfo> descriptors =
+            validate_dispatch(id, groups, bindings, push_constants, push_bytes);
 
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -762,6 +772,159 @@ struct Context::Impl {
                                  1, &barrier, 0, nullptr, 0, nullptr);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
 
+            return enqueue(commands, pool);
+        } catch (...) {
+            if (commands != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(device, command_pool, 1, &commands);
+            }
+            if (pool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(device, pool, nullptr);
+            }
+            throw;
+        }
+    }
+
+    SubmissionId submit_batch(const std::vector<BatchCommand>& operations) {
+        if (operations.empty()) {
+            throw std::invalid_argument("Compute batch must contain an operation");
+        }
+
+        // Validate the complete batch before recording any GPU commands.
+        // This prevents a malformed later operation from partially executing.
+        std::uint64_t dispatch_count = 0;
+        std::uint64_t descriptor_count = 0;
+        for (const BatchCommand& operation : operations) {
+            if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
+                const Buffer& source = get(copy->source);
+                const Buffer& destination = get(copy->destination);
+                validate_range(source.bytes, copy->source_offset, copy->bytes);
+                validate_range(destination.bytes, copy->destination_offset, copy->bytes);
+                if (copy->bytes == 0 || copy->source == copy->destination ||
+                    (copy->source_offset % 4) != 0 ||
+                    (copy->destination_offset % 4) != 0 ||
+                    (copy->bytes % 4) != 0) {
+                    throw std::invalid_argument("Invalid compute batch buffer copy");
+                }
+            } else {
+                const auto& dispatch = std::get<DispatchCommand>(operation);
+                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
+                validate_dispatch(dispatch.pipeline, dispatch.groups,
+                                  dispatch.buffers, dispatch.push_constants.data(),
+                                  dispatch.push_constants.size());
+                ++dispatch_count;
+                descriptor_count += pipeline.binding_count;
+            }
+        }
+        if (dispatch_count > std::numeric_limits<std::uint32_t>::max() ||
+            descriptor_count > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::out_of_range("Compute batch descriptor capacity exceeded");
+        }
+
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        try {
+            if (dispatch_count != 0) {
+                VkDescriptorPoolSize pool_size{};
+                pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                pool_size.descriptorCount = static_cast<std::uint32_t>(
+                    std::max<std::uint64_t>(1, descriptor_count));
+                VkDescriptorPoolCreateInfo create{};
+                create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                create.maxSets = static_cast<std::uint32_t>(dispatch_count);
+                create.poolSizeCount = 1;
+                create.pPoolSizes = &pool_size;
+                require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
+                        "vkCreateDescriptorPool");
+            }
+
+            VkCommandBufferAllocateInfo allocate{};
+            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocate.commandPool = command_pool;
+            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocate.commandBufferCount = 1;
+            require(vkAllocateCommandBuffers(device, &allocate, &commands),
+                    "vkAllocateCommandBuffers");
+
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
+
+            for (const BatchCommand& operation : operations) {
+                // Make previous transfer and shader writes visible to the
+                // next operation even when both share a command buffer.
+                VkMemoryBarrier before{};
+                before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+                before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
+                                       VK_ACCESS_TRANSFER_WRITE_BIT |
+                                       VK_ACCESS_SHADER_READ_BIT |
+                                       VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                     1, &before, 0, nullptr, 0, nullptr);
+
+                if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
+                    VkBufferCopy region{};
+                    region.srcOffset = copy->source_offset;
+                    region.dstOffset = copy->destination_offset;
+                    region.size = copy->bytes;
+                    vkCmdCopyBuffer(commands, get(copy->source).buffer,
+                                    get(copy->destination).buffer, 1, &region);
+                    continue;
+                }
+
+                const auto& dispatch = std::get<DispatchCommand>(operation);
+                const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
+                auto descriptors = validate_dispatch(
+                    dispatch.pipeline, dispatch.groups, dispatch.buffers,
+                    dispatch.push_constants.data(), dispatch.push_constants.size());
+
+                VkDescriptorSetAllocateInfo descriptor_allocate{};
+                descriptor_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                descriptor_allocate.descriptorPool = pool;
+                descriptor_allocate.descriptorSetCount = 1;
+                descriptor_allocate.pSetLayouts = &pipeline.descriptors;
+                VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+                require(vkAllocateDescriptorSets(device, &descriptor_allocate,
+                                                 &descriptor_set), "vkAllocateDescriptorSets");
+
+                std::vector<VkWriteDescriptorSet> writes(descriptors.size());
+                for (std::uint32_t slot = 0; slot < writes.size(); ++slot) {
+                    writes[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[slot].dstSet = descriptor_set;
+                    writes[slot].dstBinding = slot;
+                    writes[slot].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    writes[slot].descriptorCount = 1;
+                    writes[slot].pBufferInfo = &descriptors[slot];
+                }
+                if (!writes.empty()) {
+                    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
+                                           writes.data(), 0, nullptr);
+                }
+
+                vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+                vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                        pipeline.layout, 0, 1, &descriptor_set, 0, nullptr);
+                if (!dispatch.push_constants.empty()) {
+                    vkCmdPushConstants(commands, pipeline.layout,
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                       static_cast<std::uint32_t>(dispatch.push_constants.size()),
+                                       dispatch.push_constants.data());
+                }
+                vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
+                              dispatch.groups.z);
+            }
+
+            VkMemoryBarrier to_host{};
+            to_host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            to_host.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
+                                 0, nullptr, 0, nullptr);
+            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
             return enqueue(commands, pool);
         } catch (...) {
             if (commands != VK_NULL_HANDLE) {
@@ -857,6 +1020,14 @@ bool Context::submission_complete(SubmissionId id) const {
 }
 
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
+
+SubmissionId Context::submit_batch(const std::vector<BatchCommand>& commands) {
+    return impl_->submit_batch(commands);
+}
+
+void Context::execute_batch(const std::vector<BatchCommand>& commands) {
+    impl_->wait_submission(impl_->submit_batch(commands));
+}
 
 void Context::wait_all() { impl_->wait_all(); }
 

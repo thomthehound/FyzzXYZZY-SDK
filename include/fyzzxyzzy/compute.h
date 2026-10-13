@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace fyzz::compute {
 
@@ -68,6 +69,25 @@ struct DispatchSize {
     std::uint32_t z = 1;
 };
 
+// Commands retain their input data until submit_batch returns; the Vulkan
+// implementation records all operations in one ordered command buffer.
+struct CopyCommand {
+    BufferId source = 0;
+    std::size_t source_offset = 0;
+    BufferId destination = 0;
+    std::size_t destination_offset = 0;
+    std::size_t bytes = 0;
+};
+
+struct DispatchCommand {
+    PipelineId pipeline = 0;
+    DispatchSize groups;
+    std::vector<BufferBinding> buffers;
+    std::vector<std::uint8_t> push_constants;
+};
+
+using BatchCommand = std::variant<CopyCommand, DispatchCommand>;
+
 std::vector<DeviceInfo> enumerate_devices(Backend backend);
 
 class Context final {
@@ -113,6 +133,11 @@ public:
                                  const std::vector<BufferBinding>& buffers,
                                  const void* push_constants = nullptr,
                                  std::size_t push_constant_bytes = 0);
+
+    // Submit multiple operations in order using a single command buffer and
+    // fence. Empty batches and invalid commands are rejected.
+    SubmissionId submit_batch(const std::vector<BatchCommand>& commands);
+    void execute_batch(const std::vector<BatchCommand>& commands);
 
     bool submission_complete(SubmissionId id) const;
     void wait_submission(SubmissionId id);
