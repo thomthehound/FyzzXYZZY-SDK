@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace fy_::compute {
+namespace fyzz::compute {
 namespace {
 
 void require(VkResult result, const char* operation) {
@@ -121,6 +121,7 @@ struct Context::Impl {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize bytes = 0;
+        MemoryPlacement placement = MemoryPlacement::HostVisible;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -243,14 +244,18 @@ struct Context::Impl {
         return it->second;
     }
 
-    BufferId create_buffer(std::size_t bytes) {
-        if (bytes == 0 || bytes > info.max_storage_buffer_range) {
-            throw std::invalid_argument("Compute buffer size is zero or exceeds device limits");
+    void release_buffer(const Buffer& resource) const noexcept {
+        if (resource.buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, resource.buffer, nullptr);
         }
-        if (next_buffer == std::numeric_limits<BufferId>::max()) {
-            throw std::overflow_error("Compute buffer ID range exhausted");
+        if (resource.memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, resource.memory, nullptr);
         }
-        Buffer buffer;
+    }
+
+    Buffer make_buffer(std::size_t bytes, MemoryPlacement placement) const {
+        Buffer resource;
+        resource.placement = placement;
         try {
             VkBufferCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -259,45 +264,72 @@ struct Context::Impl {
                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                            VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            require(vkCreateBuffer(device, &create, nullptr, &buffer.buffer), "vkCreateBuffer");
+            require(vkCreateBuffer(device, &create, nullptr, &resource.buffer),
+                    "vkCreateBuffer");
 
             VkMemoryRequirements requirements{};
-            vkGetBufferMemoryRequirements(device, buffer.buffer, &requirements);
-            VkPhysicalDeviceMemoryProperties memory_properties{};
-            vkGetPhysicalDeviceMemoryProperties(physical, &memory_properties);
-            std::uint32_t type_index = memory_properties.memoryTypeCount;
-            for (std::uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
-                constexpr VkMemoryPropertyFlags needed =
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-                if ((requirements.memoryTypeBits & (1u << i)) != 0 &&
-                    (memory_properties.memoryTypes[i].propertyFlags & needed) == needed) {
+            vkGetBufferMemoryRequirements(device, resource.buffer, &requirements);
+            VkPhysicalDeviceMemoryProperties properties{};
+            vkGetPhysicalDeviceMemoryProperties(physical, &properties);
+            const VkMemoryPropertyFlags required = placement == MemoryPlacement::HostVisible
+                ? (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+            std::uint32_t type_index = properties.memoryTypeCount;
+            // Prefer non-mappable device-local memory when available.
+            for (std::uint32_t pass = 0; pass < 2; ++pass) {
+                for (std::uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+                    const VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+                    if ((requirements.memoryTypeBits & (1u << i)) == 0 ||
+                        (flags & required) != required) {
+                        continue;
+                    }
+                    if (placement == MemoryPlacement::DeviceLocal && pass == 0 &&
+                        (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                        continue;
+                    }
                     type_index = i;
                     break;
                 }
+                if (type_index != properties.memoryTypeCount) {
+                    break;
+                }
             }
-            if (type_index == memory_properties.memoryTypeCount) {
-                throw std::runtime_error("No host-visible coherent Vulkan memory type");
+            if (type_index == properties.memoryTypeCount) {
+                throw std::runtime_error("No compatible Vulkan memory type for buffer placement");
             }
 
             VkMemoryAllocateInfo allocation{};
             allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             allocation.allocationSize = requirements.size;
             allocation.memoryTypeIndex = type_index;
-            require(vkAllocateMemory(device, &allocation, nullptr, &buffer.memory),
+            require(vkAllocateMemory(device, &allocation, nullptr, &resource.memory),
                     "vkAllocateMemory");
-            require(vkBindBufferMemory(device, buffer.buffer, buffer.memory, 0),
+            require(vkBindBufferMemory(device, resource.buffer, resource.memory, 0),
                     "vkBindBufferMemory");
-            buffer.bytes = bytes;
-            const BufferId id = next_buffer++;
+            resource.bytes = bytes;
+            return resource;
+        } catch (...) {
+            release_buffer(resource);
+            throw;
+        }
+    }
+
+    BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
+        if (bytes == 0 || bytes > info.max_storage_buffer_range) {
+            throw std::invalid_argument("Compute buffer size is zero or exceeds device limits");
+        }
+        if (next_buffer == std::numeric_limits<BufferId>::max()) {
+            throw std::overflow_error("Compute buffer ID range exhausted");
+        }
+        const Buffer buffer = make_buffer(bytes, placement);
+        try {
+            const BufferId id = next_buffer;
             buffers.emplace(id, buffer);
+            ++next_buffer;
             return id;
         } catch (...) {
-            if (buffer.buffer != VK_NULL_HANDLE) {
-                vkDestroyBuffer(device, buffer.buffer, nullptr);
-            }
-            if (buffer.memory != VK_NULL_HANDLE) {
-                vkFreeMemory(device, buffer.memory, nullptr);
-            }
+            release_buffer(buffer);
             throw;
         }
     }
@@ -307,9 +339,84 @@ struct Context::Impl {
         if (it == buffers.end()) {
             throw std::out_of_range("Unknown compute buffer ID");
         }
-        vkDestroyBuffer(device, it->second.buffer, nullptr);
-        vkFreeMemory(device, it->second.memory, nullptr);
+        release_buffer(it->second);
         buffers.erase(it);
+    }
+
+    void map_transfer(const Buffer& buffer, std::size_t offset,
+                      void* data, std::size_t bytes, bool upload) const {
+        void* mapped = nullptr;
+        // Map from offset zero to avoid minMemoryMapAlignment restrictions.
+        require(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &mapped),
+                "vkMapMemory");
+        unsigned char* location = static_cast<unsigned char*>(mapped) + offset;
+        if (upload) {
+            std::memcpy(location, data, bytes);
+        } else {
+            std::memcpy(data, location, bytes);
+        }
+        vkUnmapMemory(device, buffer.memory);
+    }
+
+    void submit_copy(const Buffer& source, std::size_t source_offset,
+                     const Buffer& destination, std::size_t destination_offset,
+                     std::size_t bytes) const {
+        if (source_offset % 4 != 0 || destination_offset % 4 != 0 || bytes % 4 != 0) {
+            throw std::invalid_argument("Vulkan buffer copies require 4-byte alignment");
+        }
+        VkCommandBufferAllocateInfo allocation{};
+        allocation.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocation.commandPool = command_pool;
+        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocation.commandBufferCount = 1;
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        require(vkAllocateCommandBuffers(device, &allocation, &commands),
+                "vkAllocateCommandBuffers");
+        try {
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
+
+            // Make prior shader/transfer writes visible to the transfer read.
+            VkMemoryBarrier before{};
+            before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                 1, &before, 0, nullptr, 0, nullptr);
+
+            VkBufferCopy region{};
+            region.srcOffset = source_offset;
+            region.dstOffset = destination_offset;
+            region.size = bytes;
+            vkCmdCopyBuffer(commands, source.buffer, destination.buffer, 1, &region);
+
+            // The destination may next be accessed by the host or a shader.
+            VkMemoryBarrier after{};
+            after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            after.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            after.dstAccessMask = VK_ACCESS_HOST_READ_BIT |
+                                  VK_ACCESS_SHADER_READ_BIT |
+                                  VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_HOST_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 1, &after, 0, nullptr, 0, nullptr);
+            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
+
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &commands;
+            require(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
+            require(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+        } catch (...) {
+            vkFreeCommandBuffers(device, command_pool, 1, &commands);
+            throw;
+        }
+        vkFreeCommandBuffers(device, command_pool, 1, &commands);
     }
 
     void transfer(BufferId id, std::size_t offset, void* data,
@@ -319,23 +426,32 @@ struct Context::Impl {
         if (bytes == 0) {
             return;
         }
-        if (!data) {
+        if (data == nullptr) {
             throw std::invalid_argument("Null compute transfer data");
         }
-        // Mapping begins at zero to satisfy minMemoryMapAlignment even for
-        // arbitrary byte offsets in the public transfer API.
-        void* mapped = nullptr;
-        require(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &mapped),
-                "vkMapMemory");
-        auto* bytes_base = static_cast<unsigned char*>(mapped) + offset;
-        if (upload) {
-            std::memcpy(bytes_base, data, bytes);
-        } else {
-            std::memcpy(data, bytes_base, bytes);
+        if (buffer.placement == MemoryPlacement::HostVisible) {
+            map_transfer(buffer, offset, data, bytes, upload);
+            return;
         }
-        vkUnmapMemory(device, buffer.memory);
+        // Staging uses Vulkan's four-byte buffer-copy alignment.
+        if (offset % 4 != 0 || bytes % 4 != 0) {
+            throw std::invalid_argument("Device-local transfers require 4-byte alignment");
+        }
+        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
+        try {
+            if (upload) {
+                map_transfer(staging, 0, data, bytes, true);
+                submit_copy(staging, 0, buffer, offset, bytes);
+            } else {
+                submit_copy(buffer, offset, staging, 0, bytes);
+                map_transfer(staging, 0, data, bytes, false);
+            }
+        } catch (...) {
+            release_buffer(staging);
+            throw;
+        }
+        release_buffer(staging);
     }
-
 
     const Pipeline& get_pipeline(PipelineId id) const {
         const auto it = pipelines.find(id);
@@ -588,42 +704,7 @@ struct Context::Impl {
         if (source_id == destination_id) {
             throw std::invalid_argument("In-place GPU buffer copies are not supported yet");
         }
-        if ((source_offset % 4) != 0 || (destination_offset % 4) != 0 ||
-            (bytes % 4) != 0) {
-            throw std::invalid_argument("Vulkan buffer-copy offsets and sizes must be 4-byte aligned");
-        }
-        VkCommandBufferAllocateInfo allocation{};
-        allocation.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocation.commandPool = command_pool;
-        allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-
-        VkCommandBuffer commands = VK_NULL_HANDLE;
-        require(vkAllocateCommandBuffers(device, &allocation, &commands),
-                "vkAllocateCommandBuffers");
-        try {
-            VkCommandBufferBeginInfo begin{};
-            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
-            VkBufferCopy region{};
-            region.srcOffset = source_offset;
-            region.dstOffset = destination_offset;
-            region.size = bytes;
-            vkCmdCopyBuffer(commands, source.buffer, destination.buffer, 1, &region);
-            require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-
-            VkSubmitInfo submit{};
-            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &commands;
-            require(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
-            require(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
-        } catch (...) {
-            vkFreeCommandBuffers(device, command_pool, 1, &commands);
-            throw;
-        }
-        vkFreeCommandBuffers(device, command_pool, 1, &commands);
+        submit_copy(source, source_offset, destination, destination_offset, bytes);
     }
 };
 
@@ -636,8 +717,8 @@ Context& Context::operator=(Context&&) noexcept = default;
 
 const DeviceInfo& Context::device_info() const { return impl_->info; }
 
-BufferId Context::create_buffer(std::size_t bytes) {
-    return impl_->create_buffer(bytes);
+BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
+    return impl_->create_buffer(bytes, placement);
 }
 
 void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
@@ -668,4 +749,4 @@ void Context::dispatch(PipelineId pipeline, DispatchSize groups,
     impl_->dispatch(pipeline, groups, buffers, push_constants, push_constant_bytes);
 }
 
-} // namespace fy_::compute
+} // namespace fyzz::compute

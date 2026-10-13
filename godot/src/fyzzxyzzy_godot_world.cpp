@@ -10,22 +10,22 @@
 #include <limits>
 #include <stdexcept>
 
-namespace fy_::godot_adapter {
+namespace fyzz::godot_adapter {
 namespace {
 
-fy_::Vec3 to_fyzzxyzzy(godot::Vector3 value) {
+fyzz::Vec3 to_fyzzxyzzy(godot::Vector3 value) {
     return {value.x, value.y, value.z};
 }
 
-godot::Vector3 to_godot(fy_::Vec3 value) {
+godot::Vector3 to_godot(fyzz::Vec3 value) {
     return godot::Vector3(value.x, value.y, value.z);
 }
 
-fy_::BodyId checked_body_id(int64_t id) {
-    if (id < 0 || id > static_cast<int64_t>(std::numeric_limits<fy_::BodyId>::max())) {
+fyzz::BodyId checked_body_id(int64_t id) {
+    if (id < 0 || id > static_cast<int64_t>(std::numeric_limits<fyzz::BodyId>::max())) {
         throw std::out_of_range("Invalid FyzzXYZZY body ID");
     }
-    return static_cast<fy_::BodyId>(id);
+    return static_cast<fyzz::BodyId>(id);
 }
 
 void report_failure(const std::exception& error) {
@@ -34,7 +34,7 @@ void report_failure(const std::exception& error) {
 
 } // namespace
 
-FyzzXYZZYGodotWorld::FyzzXYZZYGodotWorld() : world_(std::make_unique<fy_::World>()) {}
+FyzzXYZZYGodotWorld::FyzzXYZZYGodotWorld() : world_(std::make_unique<fyzz::World>()) {}
 
 void FyzzXYZZYGodotWorld::_bind_methods() {
     godot::ClassDB::bind_method(
@@ -103,4 +103,4 @@ godot::Vector3 FyzzXYZZYGodotWorld::get_body_velocity(int64_t id) const {
     }
 }
 
-} // namespace fy_::godot_adapter
+} // namespace fyzz::godot_adapter

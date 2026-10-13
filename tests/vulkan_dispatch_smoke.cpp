@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
         if (argc != 2) {
             throw std::invalid_argument("Expected the compiled shader file path");
         }
-        using namespace fy_::compute;
+        using namespace fyzz::compute;
         constexpr std::uint32_t size = 259;
         constexpr std::uint32_t array_size = 320;
         constexpr std::uint32_t sentinel = 0xFEEDACEDu;
@@ -50,8 +50,8 @@ int main(int argc, char** argv) {
         }
 
         Context context(Backend::Vulkan, 0);
-        const BufferId src = context.create_buffer(sizeof(input));
-        const BufferId dst = context.create_buffer(sizeof(output));
+        const BufferId src = context.create_buffer(sizeof(input), MemoryPlacement::DeviceLocal);
+        const BufferId dst = context.create_buffer(sizeof(output), MemoryPlacement::DeviceLocal);
         context.upload(src, 0, input.data(), sizeof(input));
         context.upload(dst, 0, output.data(), sizeof(output));
 
