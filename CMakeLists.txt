@@ -150,27 +150,27 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
       find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
       set(FYZZXYZZY_PHYSX_AABB_SHADER
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_PHYSX_AABB_SHADER}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM
-    )
-    add_custom_target(fyzzxyzzy_physx_aabb_shader DEPENDS "${FYZZXYZZY_PHYSX_AABB_SHADER}")
-    add_executable(fyzzxyzzy_physx_aabb_encoding tests/physx_gpu_aabb_encoding.cpp)
-    target_include_directories(fyzzxyzzy_physx_aabb_encoding PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(fyzzxyzzy_physx_aabb_encoding
-      PRIVATE fyzzxyzzy_physx_gpu_stages)
-    add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
-    add_test(NAME fyzzxyzzy_physx_aabb_encoding
-      COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_AABB_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_aabb_shader DEPENDS "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+      add_executable(fyzzxyzzy_physx_aabb_encoding tests/physx_gpu_aabb_encoding.cpp)
+      target_include_directories(fyzzxyzzy_physx_aabb_encoding PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_aabb_encoding
+        PRIVATE fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
+      add_test(NAME fyzzxyzzy_physx_aabb_encoding
+        COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
