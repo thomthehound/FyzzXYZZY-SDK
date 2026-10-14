@@ -3,7 +3,8 @@
 
 # PhysX GPU port: execution architecture and traceability
 
-See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md).
+See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md)
+and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 
 Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
