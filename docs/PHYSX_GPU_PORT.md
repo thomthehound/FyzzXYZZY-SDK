@@ -325,6 +325,45 @@ WOR path sorts projections and handles directly. Their allocation,
 initialization, buffer swaps, and follow-on SAP histogram/region
 dependencies remain owned by PhysX.
 
+### Source-derived SAP endpoint index reconstruction
+
+The original `PxgCudaBroadPhaseSap::update` calls
+`initializeSapBoxKernel(mNumOfBoxes, false)` after any created/removed
+projection sort and before the region histogram and new-pair detection.
+The kernel is `broadphase.cu::initializeSapBox1DLaunch`
+(`BP_INITIALIZE_SAPBOX`), with host geometry
+`ceil(numHandles * 2 / 256)` blocks of **256 threads**.
+A separate call with `isNew=true` selects the
+`boxNewSapBox1D[axis]` outputs; the normal update writes
+`boxSapBox1D[axis]`.
+
+For each sorted endpoint on each of three axes, the kernel decodes
+`getHandle(tagged) = tagged >> 3`, uses the low bit to choose the
+minimum or maximum index in `PxgSapBox1D::mMinMax[2]`, and writes its
+scalar position in the newly sorted endpoint array. Both the new-handle
+flag and the deleted-handle flag are preserved in the sorted handle,
+but do not affect this index reconstruction. Only
+`numHandles * 2` live endpoint entries are processed; odd-count
+radix padding is not interpreted as a physical handle.
+
+`SapBoxIndicesArenaStage` lowers the original sorted-handle and two
+alternative output pointers per axis into arena offsets, retaining the
+original output-buffer selection and dispatch geometry. No substitute
+spatial partition, pairing rule, or handle indexing is introduced.
+
+The cross-backend integration oracle executes a source-ordered creation
+path in a **single ordered GPU batch**:
+`markCreatedPairsLaunch` → eight pairs of radix count/scatter dispatches
+→ `initializeSapBox1DLaunch`.
+It verifies exact sorted projections and tagged handles against stable
+CPU radix ordering; tests both SAP output-buffer modes; confirms old
+bounds are marked empty; and checks zero work, padded projection pairs,
+noncontiguous handle IDs, repeated endpoint keys, and dispatches across
+the 256-thread SAP box boundary. This is a deliberately scoped
+**created-handles-only** path. Incremental updates, removals, WR rank
+initialization, histogram/region processing, and scene tasks remain
+additional pieces of the original PhysX host execution pipeline.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
