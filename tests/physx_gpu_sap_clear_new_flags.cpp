@@ -329,6 +329,54 @@ void run_case(Context& context, CreatedPairsArenaStage& created,
     context.destroy_buffer(gpu);
 }
 
+// Exercise the source grid-stride loop at i = 8192 without paying for an
+// unrelated 16k-key radix sort. All inputs are genuine source SAP positions.
+void run_grid_stride_case(Context& context, SapClearNewFlagsArenaStage& clear) {
+    constexpr std::uint32_t kCreated = 8193u;
+    auto p = pack(kCreated);
+    std::vector<std::uint32_t> expected = p.arena;
+    for (std::uint32_t i = 0u; i < kCreated; ++i) {
+        const auto handle = p.handles[i];
+        for (std::uint32_t axis = 0u; axis < 3u; ++axis) {
+            const auto startIndex = 2u * i;
+            const auto endIndex = startIndex + 1u;
+            const auto sapStart = p.current_sap_offsets[axis] + handle * 8u;
+            const auto sapEnd = sapStart + 4u;
+            const auto taggedStart = p.handle_offsets[axis][0] + startIndex * 4u;
+            const auto taggedEnd = p.handle_offsets[axis][0] + endIndex * 4u;
+            p.at(sapStart) = startIndex;
+            p.at(sapEnd) = endIndex;
+            p.at(taggedStart) = (handle << 3u) | 3u;
+            p.at(taggedEnd) = (handle << 3u) | 2u;
+            expected[sapStart / 4u] = startIndex;
+            expected[sapEnd / 4u] = endIndex;
+            expected[taggedStart / 4u] = (handle << 3u) | 1u;
+            expected[taggedEnd / 4u] = handle << 3u;
+        }
+    }
+    const auto bytes = static_cast<std::uint32_t>(p.arena.size() * 4u);
+    const auto gpu = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const auto mirror = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    context.upload(gpu, 0, p.arena.data(), bytes);
+    std::vector<BatchCommand> ops;
+    clear.append(ops, gpu, bytes, p.clear_desc_offset, kCreated);
+    if (ops.size() != 1u)
+        throw std::runtime_error("PhysX BP_CLEAR_NEWFLAG grid-stride launch missing");
+    ops.emplace_back(CopyCommand{gpu, 0, mirror, 0, bytes});
+    context.wait_submission(context.submit_batch(ops));
+    std::vector<std::uint32_t> actual(p.arena.size());
+    context.download(mirror, 0, actual.data(), bytes);
+    if (actual != expected) {
+        const auto mismatch = std::mismatch(actual.begin(), actual.end(),
+                                            expected.begin());
+        throw std::runtime_error(
+            "PhysX BP_CLEAR_NEWFLAG grid-stride mismatch at word " +
+            std::to_string(std::distance(actual.begin(), mismatch.first)));
+    }
+    context.destroy_buffer(mirror);
+    context.destroy_buffer(gpu);
+}
+
 void negative_cases(SapBoxIndicesArenaStage& sap,
                     SapClearNewFlagsArenaStage& clear) {
     std::vector<BatchCommand> ops;
@@ -391,6 +439,7 @@ int main(int argc, char** argv) {
         run_case(context, created, count, scatter, sap, clear, 5u);
         run_case(context, created, count, scatter, sap, clear, 129u);
         run_case(context, created, count, scatter, sap, clear, 257u);
+        run_grid_stride_case(context, clear);
         std::cout << "PhysX created-handle → radix → SAP → clear-new state oracle PASS\n";
         return 0;
     } catch (const std::exception& e) {
