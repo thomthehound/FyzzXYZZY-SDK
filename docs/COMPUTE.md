@@ -123,8 +123,14 @@ destination retain caller order, and a subsequent GPU dispatch or copy on
 the Context queue can consume these results without a CPU wait.
 
 Vulkan records these as one `submit_batch` of `CopyCommand` operations
-and uses existing access/hazard bookkeeping. The temporary HostVisible
-GPU buffer is retired against the final submission fence. D3D12 records
+and uses existing access/hazard bookkeeping. Its internal staging buffer
+has transfer-source usage only and is **not** subject to Vulkan's
+`maxStorageBufferRange` shader-descriptor limit: the aggregate snapshot
+may be larger than each individual public storage buffer, subject to
+available device memory and Vulkan's buffer-allocation rules. Public
+storage buffers remain range-limited and transfer-only staging cannot
+be bound as shader storage. The temporary HostVisible GPU buffer is retired
+against the final submission fence. D3D12 records
 `CopyBufferRegion` operations against a single upload heap and attaches
 that heap directly to the submission's lifetime, releasing it on GPU
 completion. Each destination transitions into COPY_DEST once and returns
