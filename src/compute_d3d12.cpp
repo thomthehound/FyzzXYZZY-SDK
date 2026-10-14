@@ -532,9 +532,9 @@ struct Context::Impl {
 
         // Track states for the entire batch instead of returning each buffer
         // to COMMON after every operation. Keep real RAW/WAW ordering: a
-        // transition orders different uses, a UAV barrier orders consecutive
-        // UAV writes, and consecutive COPY_DEST writes need an explicit
-        // transition dependency. End at COMMON for the next submission.
+        // transition orders different uses and a UAV barrier orders
+        // consecutive dependent UAV writes. Legacy copy operations have
+        // implicit ordering. End at COMMON for the next submission.
         struct Access {
             D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
             bool pending_write = false;
@@ -554,14 +554,11 @@ struct Context::Impl {
                     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
                     barrier.UAV.pResource = resource;
                     submission.commands->ResourceBarrier(1, &barrier);
-                } else if (target == D3D12_RESOURCE_STATE_COPY_DEST) {
-                    // COPY_DEST -> COPY_DEST alone isn't a transition. The
-                    // intervening COMMON dependency orders repeated writes.
-                    transition(submission.commands.Get(), resource,
-                               D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-                    transition(submission.commands.Get(), resource,
-                               D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
                 }
+                // Legacy D3D12 CopyBufferRegion commands are synchronous
+                // with an implicit copy/resolve flush. Successive COPY_DEST
+                // writes therefore need no fabricated COMMON round-trip
+                // (DirectX Enhanced Barriers specification, legacy section).
                 access.pending_write = false;
             }
         };
