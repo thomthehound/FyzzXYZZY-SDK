@@ -255,6 +255,41 @@ exercise the second grid-stride iteration. **It does not yet execute
 the adjacent source radix sort or join a PhysX scene.** The original
 host update's conditional task sequencing remains authoritative.
 
+### Source-derived SAP radix multi-block counting
+
+The pinned `PxgCudaBroadPhaseSap::sortProjectionAndHandlesWORKernel`
+sorts `(previousNumOfBoxes + createdHandles) * 2` scalar endpoints,
+rounded up to a multiple of four, using `runRadixSort`.
+`runRadixSort` submits eight 4-bit passes (bits 0, 4, ..., 28),
+each with an `RS_MULTIBLOCK_COUNT` producer followed by an
+`RS_CALCULATERANKS_MULTIBLOCK_COUNT` rank/scatter consumer.
+There are three axes and two ping-pong descriptor records per axis.
+The source-defined geometry for each dispatch is **32 × 3 blocks
+with 1024 threads per block**.
+
+The counting producer corresponds to
+`gpucommon/src/CUDA/radixSortImpl.cu::radixSortMultiBlockLaunchWithCount`
+and `RadixSort.cuh::radixSortSingleBlock`. It assigns consecutive
+`uint4` input groups to each of 32 blocks, counts 16 radix buckets,
+and emits `radixBlockCounts[radix * 32 + block]`, per axis.
+Partial `uint4` tails are sanitized with `0xffffffff` keys.
+The portable HLSL count implementation preserves these partitions,
+four-key groups, and interleaved output layout using workgroup-shared
+atomic counts rather than CUDA warp-specific packed 16-bit scans.
+This is a counting-stage implementation, not an independent sorting
+algorithm. The rank/scatter consumer and full multi-pass sort
+remain to be ported.
+
+`RadixCountArenaDesc` lowers only the counting producer's two
+device pointers (input keys and block counts) per axis to byte offsets.
+Persistent projection, handle/rank, temporary, and ping-pong storage
+remain the responsibility of the original broadphase owner.
+The cross-backend full-arena oracle checks zero work, partial
+`uint4` padding, equal keys, all-one sentinels, all three axes,
+highest and intermediate radix digits, multi-block partitioning,
+and preservation of unrelated words. This does not yet integrate
+sorting into `PxgCudaBroadPhaseSap::update` or `Sc::Scene`.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
