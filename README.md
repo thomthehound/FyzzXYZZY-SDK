@@ -32,6 +32,7 @@ algorithms, GPU contexts, scene orchestration and dataflow.
 - [PhysX GPU port architecture and traceability](docs/PHYSX_GPU_PORT.md)
 - [Source-grounded GPU port implementation program](docs/GPU_PORT_PROGRAM.md)
 - [Source-grounded GPU broadphase trace](docs/GPU_BROADPHASE_TRACE.md)
+- [GPU memory addressing and performance experiment RFC](docs/GPU_MEMORY_ADDRESSING_RFC.md)
 - [Apache 2.0 license](LICENSE.md)
 
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party

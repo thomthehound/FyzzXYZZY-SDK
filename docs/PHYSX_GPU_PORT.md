@@ -153,8 +153,9 @@ The first executable translation is maintained under `src/physx_gpu/`:
 
 **Current limit:** this stage is not yet called by a PhysX scene. It does not
 produce collision pairs or provide GPU broadphase on its own. The Vulkan
-pipeline now uses the DXC-compiled HLSL source; native D3D12 execution
-and PhysX scene integration remain to be established. The data and algorithm
+pipeline uses DXC-compiled HLSL, and native D3D12 WARP execution is now
+verified for this bounded AABB stage. Hardware D3D12 profiling, a general
+multi-backend GPU executor, and PhysX scene integration remain outstanding. The data and algorithm
 contract belongs to PhysX rather than a new physics subsystem.
 
 ### Broadphase host orchestration required to integrate it
@@ -193,12 +194,17 @@ first translated GPU stage, rather than waiting for the broadphase/solver port
 to finish.
 
 For AABB encoding, `src/physx_gpu/kernels/physx_translate_aabbs.hlsl` supplies
-a DXIL-target source translation compiled in Windows CI using Windows SDK DXC.
-This is currently a **compile-only D3D12 proof**. The Vulkan stage compiles
-the same HLSL source to SPIR-V using DXC in Linux CI, where the existing
-GPU-reference test exercises runtime behavior. Only descriptor and parameter
-bindings are backend-conditional. Do not multiply per-API physics algorithms
+one translation compiled by DXC to Vulkan SPIR-V and D3D12 DXIL. Linux CI
+executes the upstream-derived encoding reference on Vulkan; Windows CI
+executes it on **native D3D12 WARP** and additionally checks
+dispatch/copy/dispatch ordering. This is native D3D12 *software-adapter*
+execution, **not** demonstrated AMD hardware performance or integrated
+PhysX GPU broadphase. Only descriptor and parameter bindings are
+backend-conditional. Do not multiply per-API physics algorithms
 by adding further independent shader translations.
+
+GPU device-pointer conversion remains a separate, unsolved requirement;
+see [memory/addressing experiments](GPU_MEMORY_ADDRESSING_RFC.md).
 
 The portable execution contract needs to specify:
 
