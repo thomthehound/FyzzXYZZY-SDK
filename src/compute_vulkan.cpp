@@ -726,6 +726,11 @@ struct Context::Impl {
             if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
                 throw std::invalid_argument("Invalid or duplicate compute binding slot");
             }
+            if (binding.access != BufferAccess::Unspecified &&
+                binding.access != BufferAccess::Read &&
+                binding.access != BufferAccess::Write &&
+                binding.access != BufferAccess::ReadWrite)
+                throw std::invalid_argument("Invalid compute buffer access intent");
             const Buffer& buffer = get(binding.buffer);
             validate_range(buffer.bytes, binding.offset, binding.bytes);
             if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
@@ -1021,19 +1026,29 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                // Storage descriptors in this initial API have no per-slot
-                // read-only declaration. Treat them as read/write until
-                // source-derived access intent is represented explicitly.
+                // Access intent comes from the PhysX launch contract, not
+                // an assumption that each storage buffer is writable. The
+                // conservative Unspecified default remains read/write.
+                // Multiple slots aliasing one allocation are merged before
+                // the dependency graph is updated, regardless of view ranges.
                 std::vector<std::pair<BufferId, Access>> shader_uses;
                 shader_uses.reserve(dispatch.buffers.size());
                 for (const auto& binding : dispatch.buffers) {
-                    const auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
+                    const bool reads = binding.access != BufferAccess::Write;
+                    const bool writes = binding.access != BufferAccess::Read;
+                    const VkAccessFlags mask =
+                        (reads ? VK_ACCESS_SHADER_READ_BIT : 0u) |
+                        (writes ? VK_ACCESS_SHADER_WRITE_BIT : 0u);
+                    auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
                         [&](const auto& entry) { return entry.first == binding.buffer; });
-                    if (found == shader_uses.end())
+                    if (found == shader_uses.end()) {
                         shader_uses.push_back({
                             binding.buffer,
-                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, true}});
+                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mask, writes}});
+                    } else {
+                        found->second.mask |= mask;
+                        found->second.writes |= writes;
+                    }
                 }
                 before_operation(shader_uses);
                 auto descriptors = validate_dispatch(
