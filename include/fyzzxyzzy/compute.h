@@ -128,6 +128,15 @@ public:
     void retire_buffer(BufferId id);
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes);
+
+    // Copies source bytes to Context-owned staging before returning, then
+    // queues transfer to the device without waiting. Caller can immediately
+    // reuse/free data; staging is retained until its submission completes.
+    // The returned submission token participates in ordinary wait/retire.
+    // Initial implementation requires nonempty, 4-byte-aligned transfers.
+    SubmissionId submit_upload_buffer(BufferId destination, std::size_t offset,
+                                      const void* data, std::size_t bytes);
+
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
 
     // Submits a GPU transfer and completes it before returning.

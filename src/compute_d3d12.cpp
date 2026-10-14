@@ -384,6 +384,40 @@ struct Context::Impl {
         wait_submission(enqueue(std::move(cmd))); // staging remains alive to completion
     }
 
+    SubmissionId submit_upload(BufferId id, std::size_t offset,
+                               const void* data, std::size_t bytes) {
+        Buffer& destination = get_buffer(id);
+        validate_range(destination.bytes, offset, bytes);
+        if (!bytes || !data || (offset % 4) || (bytes % 4))
+            throw std::invalid_argument("Async D3D12 upload requires nonempty aligned data");
+        // The staging allocation must be owned before submitting the queue
+        // work; reserve its retirement entry before enqueue can succeed.
+        retired_buffers.reserve(retired_buffers.size() + 1);
+        auto staging = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_UPLOAD,
+                                         D3D12_RESOURCE_FLAG_NONE,
+                                         D3D12_RESOURCE_STATE_GENERIC_READ);
+        void* mapped = nullptr;
+        const D3D12_RANGE read{0, 0};
+        check(staging->Map(0, &read, &mapped), "Map async upload");
+        std::memcpy(mapped, data, bytes);
+        const D3D12_RANGE written{0, bytes};
+        staging->Unmap(0, &written);
+
+        Submission cmd = new_commands();
+        transition(cmd.commands.Get(), destination.resource.Get(),
+                   D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmd.commands->CopyBufferRegion(destination.resource.Get(), offset,
+                                       staging.Get(), 0, bytes);
+        transition(cmd.commands.Get(), destination.resource.Get(),
+                   D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        const SubmissionId submission = enqueue(std::move(cmd));
+        const auto fence_value = submissions.at(submission).fence_value;
+        // No allocation after enqueue; ComPtr move retains upload heap
+        // until wait_submission or a later completed queue-fence releases it.
+        retired_buffers.push_back({fence_value, {std::move(staging), bytes}});
+        return submission;
+    }
+
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
         Buffer& buffer = get_buffer(id);
         validate_range(buffer.bytes, offset, bytes);
@@ -745,6 +779,11 @@ void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
 void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->upload(id, offset, data, bytes);
+}
+
+SubmissionId Context::submit_upload_buffer(BufferId id, std::size_t offset,
+                                           const void* data, std::size_t bytes) {
+    return impl_->submit_upload(id, offset, data, bytes);
 }
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
     impl_->download(id, offset, data, bytes);

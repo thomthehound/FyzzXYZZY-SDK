@@ -270,6 +270,76 @@ void run_deferred_retirement(Context& context) {
     context.destroy_buffer(first);
 }
 
+// Queue two source snapshots without waiting; the host immediately mutates
+// the original byte array. GPU copies must retain their own staging storage
+// until the final dependent submission completes.
+void run_async_staging(Context& context) {
+    constexpr std::size_t words = 73;
+    constexpr std::size_t bytes = words * sizeof(std::uint32_t);
+    std::array<std::uint32_t, words> host{};
+    std::array<std::uint32_t, words> expected_a{}, expected_b{};
+    for (std::size_t i = 0; i < words; ++i) {
+        expected_a[i] = 0xabc10000u + static_cast<std::uint32_t>(i);
+        expected_b[i] = 0xdef20000u + static_cast<std::uint32_t>(i * 3);
+    }
+    const BufferId destination_a = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId destination_b = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId snapshot = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+
+    host = expected_a;
+    const auto first = context.submit_upload_buffer(destination_a, 0, host.data(), bytes);
+    host = expected_b;
+    const auto second = context.submit_upload_buffer(destination_b, 0, host.data(), bytes);
+    host.fill(0xcdcdcdcd);
+    // PhysX-style handoff: dependent GPU work is submitted immediately,
+    // while the old destination is retired before its copy can be waited.
+    const auto third = context.submit_copy_buffer(destination_b, 0, snapshot, 0, bytes);
+    context.retire_buffer(destination_b);
+
+    bool rejected = false;
+    try {
+        context.submit_upload_buffer(destination_b, 0, host.data(), bytes);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Async upload accepted retired destination");
+
+    // Ensure staging still belongs to the Context even though the caller
+    // may have changed/reused its source bytes in the meantime.
+    context.wait_submission(third);
+    if (!context.submission_complete(first) || !context.submission_complete(second))
+        throw std::runtime_error("Earlier queued uploads did not complete");
+    context.wait_submission(first);
+    context.wait_submission(second);
+    std::array<std::uint32_t, words> observed{};
+    context.download(destination_a, 0, observed.data(), bytes);
+    if (observed != expected_a)
+        throw std::runtime_error("Async GPU upload did not snapshot first source");
+    context.download(snapshot, 0, observed.data(), bytes);
+    if (observed != expected_b)
+        throw std::runtime_error("Async GPU upload or dependent copy corrupted second source");
+
+    rejected = false;
+    try {
+        context.submit_upload_buffer(destination_a, 0, host.data(), 0);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Empty async upload was accepted");
+    rejected = false;
+    try {
+        context.submit_upload_buffer(destination_a, 0, host.data(), bytes - 1);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Misaligned async upload was accepted");
+    context.destroy_buffer(snapshot);
+    context.destroy_buffer(destination_a);
+}
+
 void reject_invalid(AabbEncodingStage& stage) {
     std::vector<BatchCommand> commands;
     commands.emplace_back(CopyCommand{1, 0, 2, 0, 16});
@@ -325,6 +395,7 @@ int main(int argc, char** argv) {
         run_case(context, stage, {37, 6, 2, 4, 2, 1, 0}, false);
         run_ordered_batch(context, stage);
         run_deferred_retirement(context);
+        run_async_staging(context);
         std::cout << "PhysX GPU broadphase AABB encoding PASS\n";
         return 0;
     } catch (const std::exception& e) {
