@@ -168,15 +168,23 @@ void reject_invalid(AabbEncodingStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2) throw std::invalid_argument("Expected compiled SPIR-V shader path");
+        if (argc != 2) throw std::invalid_argument("Expected compiled PhysX AABB shader path");
+#if defined(FYZZXYZZY_TEST_D3D12)
+        Context context(Backend::D3D12);
+#else
         Context context(Backend::Vulkan);
+#endif
         const auto& info = context.device_info();
         if (info.max_workgroup_invocations < 128 ||
             info.max_workgroup_size[0] < 128) {
-            throw std::runtime_error("Vulkan device below core compute group-size limits");
+            throw std::runtime_error("Compute device below core group-size limits");
         }
         ShaderBinary shader;
+#if defined(FYZZXYZZY_TEST_D3D12)
+        shader.format = ShaderFormat::Dxil;
+#else
         shader.format = ShaderFormat::Spirv;
+#endif
         shader.bytes = read_shader(argv[1]);
         AabbEncodingStage stage(context, std::move(shader));
         reject_invalid(stage);
