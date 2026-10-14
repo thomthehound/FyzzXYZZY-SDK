@@ -215,16 +215,63 @@ void run_case(Context& context, SapRankedSortArenaStage& wr,
 void negative_cases(Context& context, SapRankedSortArenaStage& wr,
                     RadixCountArenaStage& count_stage,
                     RadixScatterArenaStage& scatter) {
-    std::vector<BatchCommand> ops;
-    const std::uint32_t offsets[2]{0u, 128u};
+    // A caller may already have recorded work before constructing the
+    // source-ordered WR chain. Rejection must preserve the entire prefix.
+    auto prefix = [] {
+        std::vector<BatchCommand> ops;
+        ops.emplace_back(CopyCommand{1u, 0u, 2u, 0u, 4u});
+        return ops;
+    };
+    auto check_prefix = [](const std::vector<BatchCommand>& ops) {
+        if (ops.size() != 1u || !std::holds_alternative<CopyCommand>(ops[0]))
+            throw std::runtime_error("Rejected PhysX WR sort leaked partial GPU commands");
+        const auto& copy = std::get<CopyCommand>(ops[0]);
+        if (copy.source != 1u || copy.destination != 2u ||
+            copy.source_offset != 0u || copy.destination_offset != 0u ||
+            copy.bytes != 4u)
+            throw std::runtime_error("Rejected PhysX WR sort modified prior batch work");
+    };
+    const std::uint32_t valid[2]{0u, 128u};
     for (const auto bad : {1u, 128u, 256u}) {
+        auto ops = prefix();
         bool rejected = false;
         try {
             wr.append_source_sequence(ops, count_stage, scatter, 1u, 160u,
-                                      bad, offsets, offsets, 1u);
+                                      bad, valid, valid, 1u);
         } catch (const std::invalid_argument&) { rejected = true; }
-        if (!rejected || !ops.empty())
-            throw std::runtime_error("Invalid PhysX WR sort descriptor accepted");
+        if (!rejected)
+            throw std::runtime_error("Invalid PhysX WR top-level descriptor accepted");
+        check_prefix(ops);
+    }
+    // Every parity and both delegated stages must be transactional, even
+    // when the error occurs after several valid source-order dispatches.
+    for (std::uint32_t parity = 0u; parity < 2u; ++parity) {
+        for (std::uint32_t kind = 0u; kind < 2u; ++kind) {
+            for (const auto bad : {1u, 480u}) {
+                std::uint32_t count_offsets[2]{0u, 128u};
+                std::uint32_t scatter_offsets[2]{0u, 128u};
+                if (kind == 0u) count_offsets[parity] = bad;
+                else scatter_offsets[parity] = bad;
+                auto ops = prefix();
+                bool rejected = false;
+                try {
+                    wr.append_source_sequence(ops, count_stage, scatter,
+                                              1u, 512u, 0u,
+                                              count_offsets, scatter_offsets, 3u);
+                } catch (const std::invalid_argument&) { rejected = true; }
+                if (!rejected)
+                    throw std::runtime_error("Invalid PhysX WR radix descriptor accepted");
+                check_prefix(ops);
+            }
+        }
+    }
+    // The source's no-previous-boxes gate must not enqueue anything.
+    {
+        auto ops = prefix();
+        const std::uint32_t invalid[2]{1u, 480u};
+        wr.append_source_sequence(ops, count_stage, scatter, 1u, 512u,
+                                  0u, invalid, invalid, 0u);
+        check_prefix(ops);
     }
     (void)context;
 }
