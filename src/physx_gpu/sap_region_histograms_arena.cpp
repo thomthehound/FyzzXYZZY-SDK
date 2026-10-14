@@ -68,7 +68,9 @@ void SapRegionHistogramsArenaStage::append(
         descriptor_offset > arena_bytes ||
         sizeof(SapRegionHistogramsArenaDesc) > arena_bytes - descriptor_offset ||
         boxes == 0u || created_handles > boxes ||
-        boxes > std::numeric_limits<std::uint32_t>::max() / 2u)
+        // Upstream CUDA rounds 2*boxes up with +255 before /256.
+        // Reject a count that would overflow that 32-bit addition.
+        boxes > (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u)
         throw std::invalid_argument("Invalid PhysX region histogram dimensions");
 
     const Parameters params{descriptor_offset, boxes, arena_bytes, {}};
