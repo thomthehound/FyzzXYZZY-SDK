@@ -31,7 +31,8 @@ struct Parameters {
 ConstantBuffer<Parameters> params : register(b0, space0);
 #endif
 
-[numthreads(128, 1, 1)]
+// Pinned PxgBPKernelBlockDim::BP_UPDATE_DELETEDPAIRS = 256.
+[numthreads(256, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
     // Descriptor field byte offsets correspond to MarkRemovedPairsArenaDesc.
     uint base = params.descriptor_offset;
