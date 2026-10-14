@@ -128,6 +128,22 @@ void exercise(Backend backend) {
         throw std::runtime_error("Malformed PhysX publication released a task");
     PairTask valid_lost("lost", events);
     gate.fetch_and_release([] {}, [] {}, invalid_found, valid_lost);
+
+    // A failed setContinuation on the second task might have already
+    // incremented references on the first. Neither task may be released,
+    // and rearming/reinstalling a continuation must be rejected.
+    BroadPhaseCompletionGate terminal(context);
+    terminal.arm(0);
+    PairTask terminal_found("found", events), terminal_lost("lost", events);
+    require_throws([&] {
+        terminal.fetch_and_release([] {},
+            [&] { throw std::runtime_error("Second task continuation unavailable"); },
+            terminal_found, terminal_lost);
+    }, "Continuation failure was swallowed");
+    if (terminal_found.releases() || terminal_lost.releases())
+        throw std::runtime_error("Tasks released after failed PhysX continuation setup");
+    require_throws([&] { terminal.arm(0); },
+                   "Partially installed PhysX continuations were retried");
     context.destroy_buffer(buffer);
 }
 
