@@ -92,6 +92,25 @@ The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Do not infer performance gains from software
 Vulkan or WARP CI.
 
+### Nonblocking upload staging
+
+`Context::submit_upload_buffer(id, offset, data, bytes)` accepts nonempty
+4-byte-aligned input, **copies the source bytes before returning**, and
+enqueues a GPU transfer without waiting for completion. The returned
+`SubmissionId` is handled by `submission_complete`, `wait_submission`
+and `wait_all` just like a device-to-device copy. Both backends retain
+the host-visible upload allocation until the relevant ordered-queue
+submission completes, including when callers wait on a later submission
+first. A caller may immediately modify, free or reuse its original
+CPU buffer without changing the submitted data.
+
+This is the first **ownership-correct** asynchronous upload path, not
+yet a high-throughput staging ring: uploads currently allocate one host
+staging resource per call, so next steps include batching and pooling
+source transfers, preserving source-specific dirty/unchanged behavior.
+The existing synchronous `upload` remains available, as do synchronous
+downloads. No hardware throughput claim is implied by CI.
+
 ### Deferred GPU buffer retirement
 
 `Context::retire_buffer(id)` immediately invalidates the buffer handle
