@@ -349,8 +349,10 @@ struct Context::Impl {
         if (desc.shader.format != ShaderFormat::Dxil || desc.shader.bytes.empty())
             throw std::invalid_argument("Native D3D12 requires compiled DXIL");
         if (desc.shader.entry_point != "main" ||
-            desc.storage_buffer_binding_count != 4 || desc.push_constant_bytes != 32)
-            throw std::invalid_argument("D3D12 bring-up supports PhysX AABB 3 SRV + 1 UAV / 8 root constants only");
+            (desc.storage_buffer_binding_count != 1 &&
+             desc.storage_buffer_binding_count != 4) || desc.push_constant_bytes != 32)
+            throw std::invalid_argument("D3D12 supports single-UAV arena or 3 SRV + 1 UAV PhysX stages with eight root constants");
+        const bool arena = desc.storage_buffer_binding_count == 1;
 
         D3D12_DESCRIPTOR_RANGE ranges[2]{};
         ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -366,7 +368,7 @@ struct Context::Impl {
         D3D12_ROOT_PARAMETER roots[3]{};
         roots[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         roots[0].DescriptorTable.NumDescriptorRanges = 1;
-        roots[0].DescriptorTable.pDescriptorRanges = &ranges[0];
+        roots[0].DescriptorTable.pDescriptorRanges = arena ? &ranges[1] : &ranges[0];
         roots[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         roots[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         roots[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -377,8 +379,11 @@ struct Context::Impl {
         roots[2].Constants.RegisterSpace = 0;
         roots[2].Constants.Num32BitValues = 8;
         roots[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        // Arena: UAV table at root 0, 8x32-bit constants at root 1.
+        // AABB: SRV table 0, UAV table 1, constants at root 2.
+        if (arena) roots[1] = roots[2];
         D3D12_ROOT_SIGNATURE_DESC sig{};
-        sig.NumParameters = 3;
+        sig.NumParameters = arena ? 2 : 3;
         sig.pParameters = roots;
         sig.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
         ComPtr<ID3DBlob> blob;
@@ -399,7 +404,7 @@ struct Context::Impl {
         check(device->CreateComputePipelineState(&pso,
                                                  IID_PPV_ARGS(&pipeline.state)),
               "CreateComputePipelineState");
-        pipeline.bindings = 4;
+        pipeline.bindings = desc.storage_buffer_binding_count;
         pipeline.parameters = 32;
         const PipelineId id = next_pipeline++;
         pipelines.emplace(id, std::move(pipeline));
@@ -430,15 +435,16 @@ struct Context::Impl {
             const auto& buf = get_buffer(binding.buffer);
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }
-        if (cmd.buffers[3].buffer == cmd.buffers[0].buffer ||
-            cmd.buffers[3].buffer == cmd.buffers[1].buffer ||
-            cmd.buffers[3].buffer == cmd.buffers[2].buffer)
+        if (pipe.bindings == 4 &&
+            (cmd.buffers[3].buffer == cmd.buffers[0].buffer ||
+             cmd.buffers[3].buffer == cmd.buffers[1].buffer ||
+             cmd.buffers[3].buffer == cmd.buffers[2].buffer))
             throw std::invalid_argument("D3D12 AABB shader cannot alias its SRVs and UAV");
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
-        std::size_t dispatch_count = 0;
+        std::size_t descriptor_count = 0;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
@@ -451,18 +457,18 @@ struct Context::Impl {
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
             } else {
                 validate_dispatch(std::get<DispatchCommand>(op));
-                ++dispatch_count;
+                descriptor_count += get_pipeline(std::get<DispatchCommand>(op).pipeline).bindings;
             }
         }
-        if (dispatch_count > std::numeric_limits<UINT>::max() / 4)
+        if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
         Submission submission = new_commands();
         UINT increment = device->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        if (dispatch_count) {
+        if (descriptor_count) {
             D3D12_DESCRIPTOR_HEAP_DESC heap{};
             heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            heap.NumDescriptors = static_cast<UINT>(dispatch_count * 4);
+            heap.NumDescriptors = static_cast<UINT>(descriptor_count);
             heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             check(device->CreateDescriptorHeap(&heap,
                                                IID_PPV_ARGS(&submission.heap)),
@@ -494,7 +500,7 @@ struct Context::Impl {
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 if (!transitioned.insert(binding.buffer).second) continue;
-                auto desired = slot == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                auto desired = (pipeline.bindings == 1 || slot == 3) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                          : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 transition(submission.commands.Get(), get_buffer(binding.buffer).resource.Get(),
                            D3D12_RESOURCE_STATE_COMMON, desired);
@@ -502,19 +508,26 @@ struct Context::Impl {
 
             const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
             const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
-            for (UINT slot = 0; slot < 4; ++slot) {
+            for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 auto& buffer = get_buffer(binding.buffer);
                 D3D12_CPU_DESCRIPTOR_HANDLE cpu{
                     cpu_start.ptr + (descriptor_index + slot) * increment
                 };
-                if (slot == 3) {
+                if (pipeline.bindings == 1 || slot == 3) {
                     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    view.Format = DXGI_FORMAT_UNKNOWN;
+                    // RWByteAddressBuffer requires a RAW/typeless UAV. The
+                    // original AABB RWStructuredBuffer<uint> uses a structured
+                    // UAV instead. WARP may tolerate the wrong view type, but
+                    // real D3D12 hardware need not.
+                    const bool raw_arena = pipeline.bindings == 1;
+                    view.Format = raw_arena ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                     view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
                     view.Buffer.FirstElement = binding.offset / 4;
                     view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = 4;
+                    view.Buffer.StructureByteStride = raw_arena ? 0 : 4;
+                    view.Buffer.Flags = raw_arena ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                                   D3D12_BUFFER_UAV_FLAG_NONE;
                     device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
                 } else {
                     D3D12_SHADER_RESOURCE_VIEW_DESC view{};
@@ -532,26 +545,28 @@ struct Context::Impl {
             submission.commands->SetComputeRootDescriptorTable(0, {
                 gpu_start.ptr + descriptor_index * increment
             });
-            submission.commands->SetComputeRootDescriptorTable(1, {
-                gpu_start.ptr + (descriptor_index + 3) * increment
-            });
-            submission.commands->SetComputeRoot32BitConstants(2, 8,
-                                                              cmd.push_constants.data(), 0);
+            if (pipeline.bindings == 4) {
+                submission.commands->SetComputeRootDescriptorTable(1, {
+                    gpu_start.ptr + (descriptor_index + 3) * increment
+                });
+            }
+            submission.commands->SetComputeRoot32BitConstants(
+                pipeline.bindings == 1 ? 1 : 2, 8, cmd.push_constants.data(), 0);
             submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
             D3D12_RESOURCE_BARRIER uav{};
             uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            uav.UAV.pResource = get_buffer(cmd.buffers[3].buffer).resource.Get();
+            uav.UAV.pResource = get_buffer(cmd.buffers[pipeline.bindings - 1].buffer).resource.Get();
             submission.commands->ResourceBarrier(1, &uav);
             transitioned.clear();
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 auto id = cmd.buffers[slot].buffer;
                 if (!transitioned.insert(id).second) continue;
                 transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                           slot == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                           (pipeline.bindings == 1 || slot == 3) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                      : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                            D3D12_RESOURCE_STATE_COMMON);
             }
-            descriptor_index += 4;
+            descriptor_index += pipeline.bindings;
         }
         return enqueue(std::move(submission));
     }
