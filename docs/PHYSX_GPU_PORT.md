@@ -290,6 +290,41 @@ highest and intermediate radix digits, multi-block partitioning,
 and preservation of unrelated words. This does not yet integrate
 sorting into `PxgCudaBroadPhaseSap::update` or `Sc::Scene`.
 
+### Source-derived SAP radix rank/scatter
+
+The next original dispatch in each `PxgCudaBroadPhaseSap::runRadixSort`
+4-bit pass is `RS_CALCULATERANKS_MULTIBLOCK_COUNT`, implemented by
+`gpucommon/src/CUDA/radixSortImpl.cu::radixSortMultiCalculateRanksLaunchWithCount`
+and `RadixSort.cuh::radixSortCalculateRanks`. It consumes
+`radixBlockCounts[digit * 32 + block]` from the preceding count
+dispatch and stably permutes each key together with its input rank/payload
+to the per-axis output buffers. The source runs each dispatch at
+**32 × 3 blocks of 1024 threads**.
+
+`RadixScatterArenaStage` lowers the five source pointers per axis
+(input/output keys and ranks plus radix histogram) into arena offsets,
+without changing data ownership. The common HLSL implementation
+retains the source's consecutive `uint4` block partitioning,
+partial-tail sentinels, per-digit block prefix, stable intra-block rank,
+per-iteration carry, and independent axes. It replaces warp-specific
+CUDA ballot/shuffle/packed scans with deterministic workgroup-local
+parallel prefix sums, so subgroup width is not fixed to 32.
+
+The acceptance fixture executes the original **count → scatter**
+dependency on both backends, with Vulkan/D3D12 producer-consumer
+barriers from the compute batch. It also executes eight consecutive
+4-bit passes with alternating key/rank buffers and checks stable sort
+against source-derived CPU behavior, including duplicate projections,
+handle/payload correspondence, partial `uint4` tails, crossing block
+boundaries, multiple iterations per block, and untouched arena ranges.
+
+This establishes an executable source-derived radix sort path but
+**does not yet insert the radix chain into the original SAP host update**.
+The upstream WR path also initializes ranks and remaps handles; the
+WOR path sorts projections and handles directly. Their allocation,
+initialization, buffer swaps, and follow-on SAP histogram/region
+dependencies remain owned by PhysX.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
