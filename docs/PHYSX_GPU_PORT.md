@@ -631,6 +631,61 @@ tag clear's own inputs, but must be restored in the complete
 host orchestration. This is a frame-state maintenance stage,
 not yet a multi-frame PhysX scene acceptance test.
 
+### Source report copy and overflow-flag publication
+
+In the original `PxgCudaBroadPhaseSap::update`, report
+accumulation and copy follow the created-handle flag clearing:
+`runCopyResultsKernel` launches
+`BP_ACCUMULATE_REPORT_STAGE_1`,
+`BP_ACCUMULATE_REPORT_STAGE_2`, then
+`BP_COPY_REPORTS`. The final copy kernel is
+`gpubroadphase/src/CUDA/broadphase.cu::copyReports`,
+at a fixed **64 × 256** launch, including empty frames.
+
+The preceding accumulation pair separates the mixed found/lost
+reports into **actor** and **aggregate** streams. This distinction
+is essential: `copyReports` publishes only the *actor* streams,
+because aggregate pairs have their own processing path.
+The device-shared `sharedFoundPairIndex`/
+`sharedLostPairIndex` counters record raw pair counts, potentially
+exceeding the physical `max_found_lost_pairs` report capacity.
+`sharedFoundAggPairIndex`/`sharedLostAggPairIndex` count the
+aggregate pairs actually retained within that capacity.
+Accordingly, the source computes
+`actorCount = min(rawCount, capacity) - aggregateCount` per
+found/lost stream. It copies exactly `2 * actorCount` unsigned
+32-bit words from `foundActorPairReport` or
+`lostActorPairReport` to the mapped output buffers, with a
+grid-stride loop of 16384 threads. It writes a single shared
+overflow flag if either raw count exceeds capacity.
+
+`BroadphaseCopyReportsArenaStage` preserves the source launch,
+pointer relationships, both raw counts, both retained aggregate
+counts, the shared overflow semantic and exact wordwise actor-pair
+copy. Original CUDA mapped host pointers are represented as
+**caller-owned publication staging offsets**. This is an explicit
+resource-address lowering, **not** an assertion that device writes
+have already become visible to the PhysX caller.
+Portable GPU completion, device-to-host transfer, pair resizing,
+`fetchBroadPhaseResults` frame swap and original
+`PxgAABBManager` task continuations remain at the original
+host publication boundary.
+
+The test seeds stage-two actor/aggregate inputs with canonical
+PhysX pair words and checks the complete arena against an
+independent CPU word-copy oracle. Cases cover 0 and 1 pair,
+differing found/lost counts, aggregate subtraction, overflow
+from either or both counters, zero-capacity outputs, canary
+preservation and 16,385 actor pairs (crossing the kernel's
+grid-stride boundary). Both Vulkan SPIR-V and D3D12 DXIL/WARP
+run the same fixture.
+
+**Dependency limitation:** the standalone fixture does **not**
+pretend that source `BP_ACCUMULATE_REPORT_STAGE_1` and
+`BP_ACCUMULATE_REPORT_STAGE_2` have been executed. They are
+the next required GPU data producers; this bounded port tests
+their consumer before composing the three-stage host sequence.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
