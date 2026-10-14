@@ -31,13 +31,15 @@ public:
     // or removes a PhysX task reference.
     bool gpu_complete() const;
 
-    // Preserve PhysX order: wait for GPU -> fetch results and resize found/
-    // lost arrays -> decrement each existing PxBaseTask exactly once.
+    // Preserve PhysX order: wait for GPU -> fetch/resize results ->
+    // install original pair-task continuations -> release each task exactly once.
     // If GPU waiting or publication throws, NO task references are released.
     // After a successful GPU wait the publication step may be retried (e.g.,
     // after the original PhysX abort path has established empty results).
-    // Caller must arrange correct task continuations before invoking.
+    // install_continuations must implement the original PxgAABBManager
+    // continuation setup and is called AFTER fetch/resize (not beforehand).
     void fetch_and_release(const std::function<void()>& fetch_and_resize,
+                           const std::function<void()>& install_continuations,
                            physx::PxBaseTask& found,
                            physx::PxBaseTask& lost);
 
