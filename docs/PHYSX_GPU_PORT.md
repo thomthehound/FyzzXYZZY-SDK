@@ -3,6 +3,8 @@
 
 # PhysX GPU port: execution architecture and traceability
 
+See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md).
+
 Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX revision pinned in the root `CMakeLists.txt`.
