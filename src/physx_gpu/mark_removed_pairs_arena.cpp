@@ -13,7 +13,9 @@
 
 namespace fyzz::physx_gpu {
 namespace {
-constexpr std::uint32_t kWorkgroup = 128;
+// Pinned PhysX PxgBPKernelGridDim/BP_UPDATE_DELETEDPAIRS is 32x256.
+constexpr std::uint32_t kWorkgroup = 256;
+constexpr std::uint32_t kGrid = 32;
 struct Parameters {
     std::uint32_t descriptor_offset;
     std::uint32_t thread_stride;
@@ -28,8 +30,9 @@ MarkRemovedPairsArenaStage::MarkRemovedPairsArenaStage(compute::Context& ctx,
     : context_(ctx) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kWorkgroup ||
-        device.max_workgroup_size[0] < kWorkgroup)
-        throw std::runtime_error("PhysX removed-pair arena kernel requires 128 threads");
+        device.max_workgroup_size[0] < kWorkgroup ||
+        device.max_workgroup_count[0] < kGrid)
+        throw std::runtime_error("PhysX SAP removal requires original 32x256 launch capability");
 
     compute::ComputePipelineDesc desc;
     desc.shader = std::move(shader);
@@ -52,15 +55,12 @@ void MarkRemovedPairsArenaStage::append(std::vector<compute::BatchCommand>& comm
         descriptor_offset > arena_bytes ||
         sizeof(MarkRemovedPairsArenaDesc) > arena_bytes - descriptor_offset)
         throw std::invalid_argument("Invalid PhysX broadphase arena descriptor range");
-    const auto& info = context_.device_info();
-    const std::uint32_t groups = std::min(
-        (static_cast<std::uint64_t>(count) + kWorkgroup - 1) / kWorkgroup,
-        static_cast<std::uint64_t>(info.max_workgroup_count[0]));
-    if (!groups) throw std::out_of_range("Compute dispatch group limit is zero");
-    const Parameters params{descriptor_offset, groups * kWorkgroup, arena_bytes, {}};
+    // Original markRemovedPairsLaunch uses the same fixed grid/block as
+    // markRemovedPairsProjectionsLaunch. Grid-stride loop handles any count.
+    const Parameters params{descriptor_offset, kGrid * kWorkgroup, arena_bytes, {}};
     compute::DispatchCommand dispatch;
     dispatch.pipeline = pipeline_;
-    dispatch.groups = {groups, 1, 1};
+    dispatch.groups = {kGrid, 1, 1};
     dispatch.buffers = {{0, arena, 0, arena_bytes, compute::BufferAccess::ReadWrite}};
     dispatch.push_constants.resize(sizeof(params));
     std::memcpy(dispatch.push_constants.data(), &params, sizeof(params));
