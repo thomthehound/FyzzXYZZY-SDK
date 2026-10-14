@@ -227,18 +227,26 @@ cold startup and warmed steady state; steady-state must distinguish
 no-change frames from creation/removal storms. Use repeats, median, p95
 and variance. No absolute performance claims until real measurements exist.
 
-**Test matrix:** Vulkan on AMD hardware, D3D12 on AMD hardware, Linux
-software Vulkan for correctness and Windows WARP for correctness only.
-Use the same shader work and representative scene-state datasets.
-WARP throughput is **not** evidence of hardware efficiency.
-Capability checks (BDA, SM6.6, descriptor indexing, memory limits) must
-be recorded per device, not assumed from operating system.
+**Test cadence:** Linux Vulkan software execution and Windows
+D3D12 WARP are the routine correctness/ABI smoke platforms.
+Measurements on native AMD Vulkan and D3D12 are **deferred** until coherent
+PhysX GPU broadphase is operating through the real scene interface; revisit
+again when narrowphase/rigid solver form a useful integrated workload.
+No contributor is expected to run every incremental commit on personal
+hardware. WARP/software Vulkan throughput is **not** evidence of hardware
+efficiency. The benchmark harness may exist earlier, but numbers from it
+do not gate continued source-faithful porting. Capability checks (BDA,
+SM6.6, descriptor indexing, memory limits) must be recorded when an
+actual device is exercised, not assumed from its operating system.
 
 ### 5.4 Acceptance criteria (conditional, not invented targets)
 
-A candidate advances only when it satisfies **all** semantic and lifetime
-tests on Vulkan and D3D12, and measurements show it is acceptable on
-target hardware. Compare against the following *relative* baselines:
+A candidate may be used **provisionally for source-derived kernel
+porting** after passing relevant semantic, layout, lifetime and software
+execution tests on Vulkan and D3D12. Physical representation and hot-path
+specialization remain explicitly changeable in pre-alpha. A permanent
+performance preference requires integrated native-hardware data at the
+later checkpoints. Compare then against these *relative* baselines:
 
 - CPU/GPU reference algorithm correctness (non-negotiable).
 - Directly bound resource with no pointer decode (shader lower bound).
@@ -348,21 +356,38 @@ Upstream background:
 
 ## 8. Immediate work order
 
-1. Fix pre-existing stale "D3D12 compile-only" docs following PR #15.
-2. Build measurement infrastructure: GPU timestamps, CPU counters, reused
-   command/staging allocations, device capability report; preserve current
-   conformance tests.
-3. Implement two real-source-derived accessor kernels and representative
-   `PxgBroadPhaseDesc`/radix descriptor host packing (both APIs).
-4. Run A/B/C (and native Vulkan BDA) comparisons on the same fixtures.
-5. Decide physical addressing only after correct runtime results and
-   actual AMD measurements. Record measured trade-offs in this RFC.
-6. Refactor the executors behind a single runtime-selectable `Context`
-   without introducing an unrelated PhysX scene scheduler.
-7. Integrate a slice of source-authentic broadphase host orchestration;
-   immediately test lifetime, swap and task-continuation paths.
+1. **Already underway:** cross-backend AABB and source-derived removed-pair
+   conformance, native GPU batch timestamps, completed command/descriptors
+   reuse and dependency-aware batch dispatch. Continue correcting real
+   review findings; avoid reopening completed proofs merely to tune them.
+2. **Before more complex PhysX kernels:** extend command descriptors with
+   source-derived read/write access and alias semantics; add asynchronous,
+   pooled host↔GPU transfers and lifetime fencing; make the PhysX task
+   completion bridge concrete. Keep a conservative fallback where
+   assumptions have not yet been verified.
+3. **Carry a reversible memory lowering:** arena-relative offsets and
+   structured views are a useful baseline for the initial broadphase
+   families. Record current single-arena limits. Do not declare this the
+   universal device-pointer ABI or prevent future Vulkan BDA and D3D12
+   descriptor-indexed variants.
+4. **Port coherent shader families:** previous/new projection handle
+   bookkeeping, real radix sort/rank, endpoint/region histogram and
+   pair/aggregate output, with source-host orchestration and persistent
+   state through frames. Run exactly the same fixtures on SPIR-V and DXIL.
+5. **At the integrated broadphase checkpoint:** on native AMD, compare
+   address lowering and batched dispatch costs using full scene activity,
+   including queue/host overhead and result publication. Revisit storage
+   layout, subgroup specialization, and allocation pools from real traces.
+6. **Advance to narrowphase and rigid solver** once the source-faithful
+   scene boundary is operating; repeat serious performance profiling when
+   those subsystems share realistic contact/island workloads.
 
-**Non-goals for this RFC:** selecting a winner from intuition, replacing
-the PhysX heap policy with a general-purpose game-engine allocator,
-duplicating the solver, making WARP performance predictions, or claiming
-a complete portable GPU broadphase.
+See the [port program](GPU_PORT_PROGRAM.md#43-platform-acceptance-and-hardware-test-cadence)
+for the hardware cadence. This RFC contains candidate representations,
+not a mandate to finish a matrix of AMD benchmarks before continuing
+shader translation.
+
+**Non-goals:** selecting a permanent pointer model from intuition,
+replacing the PhysX heap policy with a speculative game-engine allocator,
+duplicating the solver or scene scheduler, making WARP performance
+predictions, or claiming complete GPU broadphase before scene integration.
