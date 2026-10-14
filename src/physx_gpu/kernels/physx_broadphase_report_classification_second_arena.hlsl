@@ -71,10 +71,12 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         uint2 pair = uint2(0u, 0u);
         if (index < safeCount) {
             pair = arena.Load2(pairs + index * 8u);
-            const bool singleA = hasVolumes == 0u ||
-                                  arena.Load(volumeTags + pair.x * 4u) == 0xffffffffu;
-            const bool singleB = hasVolumes == 0u ||
-                                  arena.Load(volumeTags + pair.y * 4u) == 0xffffffffu;
+            bool singleA = true;
+            bool singleB = true;
+            if (hasVolumes != 0u) {
+                singleA = arena.Load(volumeTags + pair.x * 4u) == 0xffffffffu;
+                singleB = arena.Load(volumeTags + pair.y * 4u) == 0xffffffffu;
+            }
             eligible = (!(singleA && singleB)) == aggregate;
         }
         scanA[thread.x] = eligible ? 1u : 0u;
