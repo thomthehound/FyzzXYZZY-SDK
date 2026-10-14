@@ -43,6 +43,13 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint outputRanks = arena.Load(desc + 12u);
     const uint radixCounts = arena.Load(desc + 16u);
 
+    // Every workgroup owns the same consecutive uint4 range as the
+    // source kernel. Skip groups with no work before any group barriers.
+    const uint numVectors = (params.num_keys + 3u) / 4u;
+    const uint requiredBlocks = (numVectors + 1023u) / 1024u;
+    const uint iterationsPerBlock = (requiredBlocks + 31u) / 32u;
+    if (iterationsPerBlock * block * 1024u >= numVectors) return;
+
     // The original rank kernel derives these starting offsets by scanning
     // the producer's 16 x 32 per-block counts, then carries bin counts
     // forward between local iterations of the same block.
@@ -57,10 +64,6 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         carriedCount[thread.x] = 0u;
     }
     GroupMemoryBarrierWithGroupSync();
-
-    const uint numVectors = (params.num_keys + 3u) / 4u;
-    const uint requiredBlocks = (numVectors + 1023u) / 1024u;
-    const uint iterationsPerBlock = (requiredBlocks + 31u) / 32u;
 
     for (uint iteration = 0u; iteration < iterationsPerBlock; ++iteration) {
         const uint vectorIndex =
