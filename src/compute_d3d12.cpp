@@ -513,9 +513,14 @@ struct Context::Impl {
             if (available < descriptor_count) {
                 // Geometric capacity growth avoids reallocation when scene
                 // work fluctuates around the previous dispatch count.
-                const std::size_t desired = std::min<std::size_t>(
-                    std::numeric_limits<UINT>::max(),
-                    std::max(descriptor_count, static_cast<std::size_t>(available) * 2));
+                // 1,000,000 descriptors are guaranteed for all resource
+                // binding tiers. Tier 3 may accept more, but must not fail
+                // due solely to an overambitious geometric growth request.
+                // Above that threshold, request only the actual batch size.
+                constexpr std::size_t kGuaranteedHeapSize = 1000000;
+                const std::size_t growth = std::min<std::size_t>(
+                    kGuaranteedHeapSize, static_cast<std::size_t>(available) * 2);
+                const std::size_t desired = std::max(descriptor_count, growth);
                 D3D12_DESCRIPTOR_HEAP_DESC heap{};
                 heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
                 heap.NumDescriptors = static_cast<UINT>(desired);
