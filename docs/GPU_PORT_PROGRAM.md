@@ -4,7 +4,8 @@
 # PhysX-to-portable-GPU engineering program
 
 Status: planning and source audit, October 2026. This is the program-level
-companion to [the execution trace](PHYSX_GPU_PORT.md), not a declaration of
+companion to [the execution trace](PHYSX_GPU_PORT.md) and
+[the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
 completed PhysX GPU functionality. Audit baseline: the PhysX revision pinned
 by the SDK root CMake file, `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`
 in `thomthehound/PhysX`. Re-evaluate this document whenever the pin moves.
