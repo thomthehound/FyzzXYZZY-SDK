@@ -11,6 +11,8 @@ BroadPhaseCompletionGate::BroadPhaseCompletionGate(compute::Context& context) no
     : context_(context) {}
 
 void BroadPhaseCompletionGate::arm(compute::SubmissionId submission) {
+    if (continuation_setup_failed_)
+        throw std::logic_error("Broadphase continuation setup failed; scene must abort");
     if (armed_)
         throw std::logic_error("Broadphase completion already armed");
     submission_ = submission;
@@ -47,11 +49,16 @@ void BroadPhaseCompletionGate::fetch_and_release(
     fetch_and_resize();
     // Exactly the original PxgAABBManager::postBroadPhase order: set both
     // found/lost continuations *after* result retrieval and pair resizing.
+    // Should installation fail after touching one task, retry would violate
+    // PhysX's single-installation reference contract. Poison the frame/scene
+    // until the caller takes its original abort/teardown path.
+    armed_ = false;
+    continuation_setup_failed_ = true;
     install_continuations();
 
-    // Mark consumed BEFORE calls into PhysX task dispatch. They may execute
-    // continuations or even destroy this gate's owning scene immediately.
-    armed_ = false;
+    // Mark the gate consumed BEFORE calls into PhysX task dispatch. They
+    // can execute the owner's continuation immediately.
+    continuation_setup_failed_ = false;
     found.removeReference();
     lost.removeReference();
 }
