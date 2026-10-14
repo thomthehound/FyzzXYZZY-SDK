@@ -124,6 +124,9 @@ struct Context::Impl {
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize bytes = 0;
         MemoryPlacement placement = MemoryPlacement::HostVisible;
+        // Transfer-only staging may exceed maxStorageBufferRange, which
+        // constrains a bound shader descriptor, not a transfer source.
+        bool storage_eligible = true;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -416,16 +419,20 @@ struct Context::Impl {
         }
     }
 
-    Buffer make_buffer(std::size_t bytes, MemoryPlacement placement) const {
+    Buffer make_buffer(std::size_t bytes, MemoryPlacement placement,
+                       bool storage_eligible = true) const {
         Buffer resource;
         resource.placement = placement;
+        resource.storage_eligible = storage_eligible;
         try {
             VkBufferCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             create.size = static_cast<VkDeviceSize>(bytes);
-            create.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                           VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            create.usage = storage_eligible
+                ? (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+                : VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             require(vkCreateBuffer(device, &create, nullptr, &resource.buffer),
                     "vkCreateBuffer");
@@ -478,14 +485,20 @@ struct Context::Impl {
         }
     }
 
-    BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
-        if (bytes == 0 || bytes > info.max_storage_buffer_range) {
+    BufferId create_buffer(std::size_t bytes, MemoryPlacement placement,
+                           bool storage_eligible = true) {
+        if (!bytes || (storage_eligible && bytes > info.max_storage_buffer_range)) {
             throw std::invalid_argument("Compute buffer size is zero or exceeds device limits");
         }
+        // maxStorageBufferRange applies only to descriptors. Internal
+        // transfer-only buffers are instead bounded by physical VkBuffer/
+        // allocation support (vkCreateBuffer/vkAllocateMemory failures).
+        if (static_cast<std::uint64_t>(bytes) != static_cast<VkDeviceSize>(bytes))
+            throw std::out_of_range("Vulkan transfer byte count exceeds VkDeviceSize");
         if (next_buffer == std::numeric_limits<BufferId>::max()) {
             throw std::overflow_error("Compute buffer ID range exhausted");
         }
-        const Buffer buffer = make_buffer(bytes, placement);
+        const Buffer buffer = make_buffer(bytes, placement, storage_eligible);
         try {
             const BufferId id = next_buffer;
             buffers.emplace(id, buffer);
@@ -615,7 +628,10 @@ struct Context::Impl {
         // ownership transfer. In the single-queue model, the last submitted
         // fence captures the lifetime of this entire upload batch.
         retired_buffers.reserve(retired_buffers.size() + 1);
-        const BufferId staging_id = create_buffer(total, MemoryPlacement::HostVisible);
+        // The packed staging buffer is never bound to a shader. It is legal
+        // for its aggregate size to exceed maxStorageBufferRange even when
+        // every public destination remains within that descriptor limit.
+        const BufferId staging_id = create_buffer(total, MemoryPlacement::HostVisible, false);
         bool submitted = false;
         try {
             const Buffer& staging = get(staging_id);
@@ -861,6 +877,8 @@ struct Context::Impl {
                 binding.access != BufferAccess::ReadWrite)
                 throw std::invalid_argument("Invalid compute buffer access intent");
             const Buffer& buffer = get(binding.buffer);
+            if (!buffer.storage_eligible)
+                throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");
             validate_range(buffer.bytes, binding.offset, binding.bytes);
             if (binding.bytes == 0 || binding.bytes > limits.maxStorageBufferRange) {
                 throw std::invalid_argument("Invalid compute descriptor range");
