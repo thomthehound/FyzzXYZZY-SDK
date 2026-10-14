@@ -66,7 +66,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         const uint field = aggregate
             ? (stream == 0u ? 32u : 40u)
             : (stream == 0u ? 36u : 44u);
-        const uint out = arena.Load(desc + field);
-        arena.Store(out + group.x * 4u, partial[0]);
+        const uint blockOutput = arena.Load(desc + field);
+        arena.Store(blockOutput + group.x * 4u, partial[0]);
     }
 }
