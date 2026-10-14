@@ -364,6 +364,52 @@ the 256-thread SAP box boundary. This is a deliberately scoped
 initialization, histogram/region processing, and scene tasks remain
 additional pieces of the original PhysX host execution pipeline.
 
+### Existing-handle WR radix sort and handle remapping
+
+The original host's `PxgCudaBroadPhaseSap::update` performs
+`sortProjectionAndHandlesWRKernel(previousNumOfBoxes)` **before**
+`markCreatedPairsKernel` or the later WOR sort. Unlike WOR, this
+earlier path must preserve the previous-frame endpoint identity while
+new bounds change projection order.
+
+The WR host wrapper executes, in order:
+
+1. `BP_INITIALIZE_RANKS` → `broadphase.cu::initializeRadixRanks`
+   (64 groups × 256 threads with grid-stride iterations).
+   It fills `boxProjectionRanks[axis]` with original endpoint positions,
+   including padded `uint4` lanes.
+2. `runRadixSort`: eight four-bit count/rank-scatter dispatch pairs,
+   using the WR `PxgRadixSortDesc` that carries **ranks**, not tagged
+   handles, as its payloads.
+3. `BP_UDPATE_HANDLES` → `broadphase.cu::updateHandles`
+   (64 groups × 256 threads with grid-stride iterations).
+   This gathers `boxHandles[0][axis][i] =
+   boxHandles[1][axis][boxProjectionRanks[axis][i]]` for the *live*
+   previous-frame projections only.
+
+The original `updateRadixSortDesc` and `updateDescriptor` confirm that
+`boxHandles[1]` is the previous-frame handle source and is **not**
+`mTempBoxPtHandlesBuf`, the radix ping-pong scratch buffer. The
+rank map must survive the radix permutation and remains available
+to downstream incremental SAP comparisons.
+
+`SapRankedSortArenaStage::append_source_sequence` reproduces that
+18-dispatch host schedule with the existing common radix count/scatter
+stages and two dedicated HLSL translations for rank initialization
+and handle remapping. Descriptor offsets lower the original three
+per-axis pointer relationships without changing ownership or
+introducing substitute handle identities. The zero-handle gate,
+projection padding, three independent axes, and source dispatch
+dimensions are preserved.
+
+The cross-backend GPU oracle verifies the complete WR dispatch
+sequence against a stable key/index reference, including equal keys,
+nonmonotonic tagged handles, preserved previous-frame handle buffers,
+padded endpoints excluded from handle remapping, and both odd/even
+previous-frame box counts. The test supplies an already-existing
+previous-frame state; it does not claim that all scene update paths or
+the incremental SAP pair-generation kernels have been ported.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
