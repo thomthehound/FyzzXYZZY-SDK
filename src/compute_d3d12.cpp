@@ -13,6 +13,7 @@
 #endif
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <d3d12.h>
 #include <d3dcompiler.h>
@@ -63,8 +64,12 @@ std::vector<Candidate> discover_adapters() {
     ComPtr<IDXGIFactory4> factory;
     check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
 
-    const char* force_warp = std::getenv("FYZZXYZZY_D3D12_FORCE_WARP");
+    char* force_warp = nullptr;
+    std::size_t env_bytes = 0;
+    check(_dupenv_s(&force_warp, &env_bytes, "FYZZXYZZY_D3D12_FORCE_WARP") == 0
+              ? S_OK : E_FAIL, "_dupenv_s");
     const bool warp_only = force_warp && std::string(force_warp) == "1";
+    std::free(force_warp);
     std::vector<Candidate> candidates;
     auto add = [&](ComPtr<IDXGIAdapter1> adapter) {
         if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
