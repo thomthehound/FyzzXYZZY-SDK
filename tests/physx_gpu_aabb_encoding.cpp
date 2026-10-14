@@ -249,7 +249,8 @@ void run_deferred_retirement(Context& context) {
     // A fresh buffer should be legal before either submission completes,
     // without reusing the backing resource still needed by the GPU.
     const BufferId replacement = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
-    context.upload(replacement, 0, source_values.data(), bytes);
+    // Avoid a synchronous upload here: that would implicitly drain both
+    // earlier copies and mask premature release by the retirement path.
     context.wait_submission(later);
     if (!context.submission_complete(earlier))
         throw std::runtime_error("Same-queue earlier copy did not complete");
