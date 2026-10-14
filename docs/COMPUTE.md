@@ -66,6 +66,31 @@ correctness but does not establish AMD GPU compatibility or performance.
   query completion, and wait on an individual submission or all submissions.
 - Submit ordered batches of copies and dispatches in one command buffer,
   descriptor pool, and completion fence, avoiding per-operation queue submissions.
+- Track source-declared per-buffer read/write intent for more precise Vulkan
+  batch dependencies, while retaining conservative behavior for callers that
+  have not yet been annotated.
+
+### Explicit access intent
+
+`BufferBinding::access` optionally declares `Read`, `Write`, or
+`ReadWrite` for the **actual shader operation**, not the resource type.
+The default `Unspecified` means conservatively read/write, preserving
+existing API callers. The source-derived AABB stage marks its three input
+bindings read-only and encoded output write-only; the incremental SAP
+single-arena stage declares read/write. Vulkan merges all bindings for
+the same allocation before placing barriers, so overlapping read/write
+aliases are treated as writes. For now the dependency granularity is the
+**whole resource**, not the declared byte subranges.
+
+The current D3D12 proof retains its **fixed** SRV/UAV pipeline layouts,
+not a general descriptor allocator. It checks that a bound SRV is not
+incorrectly declared writable; access declarations do not change the
+DXIL resource type or make arbitrary shaders writable. Eventually shader
+reflection or source-derived manifests should cross-check intent so
+incorrect declarations cannot silently remove necessary barriers.
+The PhysX task graph, cross-submission dependencies, and actual lifetime
+rules remain authoritative. Do not infer performance gains from software
+Vulkan or WARP CI.
 
 ## PhysX-derived GPU stages
 
