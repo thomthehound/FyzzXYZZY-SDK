@@ -46,10 +46,12 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         if (index < safeCount) {
             const uint a = arena.Load(pairs + index * 8u);
             const uint b = arena.Load(pairs + index * 8u + 4u);
-            const bool singleA = hasVolumes == 0u ||
-                                  arena.Load(volumeTags + a * 4u) == 0xffffffffu;
-            const bool singleB = hasVolumes == 0u ||
-                                  arena.Load(volumeTags + b * 4u) == 0xffffffffu;
+            bool singleA = true;
+            bool singleB = true;
+            if (hasVolumes != 0u) {
+                singleA = arena.Load(volumeTags + a * 4u) == 0xffffffffu;
+                singleB = arena.Load(volumeTags + b * 4u) == 0xffffffffu;
+            }
             if ((!(singleA && singleB)) == aggregate) ++localCount;
         }
     }
