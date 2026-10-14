@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -175,6 +176,17 @@ void run_case(Context& ctx, MarkRemovedPairsArenaStage& stage,
         commands.emplace_back(CopyCommand{arena, 0, snapshot, 0, bytes});
     }
     ctx.wait_submission(ctx.submit_batch(commands));
+
+    // Exercise the opt-in timestamp path during ordinary CI, too. This
+    // repeats an idempotent PhysX deletion against the same arena and never
+    // changes the expected result. Devices with no timestamp capability
+    // return nullopt and keep functional conformance meaningful.
+    if (capacity == 513 && removed) {
+        std::vector<BatchCommand> profiled{commands.front()};
+        const auto elapsed = ctx.profile_batch_gpu_nanoseconds(profiled);
+        if (elapsed && (!std::isfinite(*elapsed) || *elapsed < 0.0))
+            throw std::runtime_error("Invalid GPU timestamp duration");
+    }
 
     std::vector<std::uint32_t> observed(packed.arena.size(), 0);
     ctx.download(snapshot, 0, observed.data(), bytes);
