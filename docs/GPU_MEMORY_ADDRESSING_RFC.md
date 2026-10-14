@@ -271,7 +271,78 @@ economic constraints. Document precisely which path loses and why.
 9. Reserve support for direct GPU API and renderer interop as distinct
    future requirements: do not promise zero-copy with every engine/device.
 
-## 7. Immediate work order
+## 7. Future NPU / MLIR-AIE compatibility: a useful design constraint
+
+**Longer-term option, not a current delivery commitment:** execute selected
+source-derived PhysX work units on an AMD Ryzen AI NPU, with MLIR-AIE/IRON
+as a possible compiler and runtime path. This is **not** a proposal to
+recompile arbitrary Vulkan SPIR-V/D3D12 DXIL or pointer-heavy HLSL
+automatically onto the NPU, nor to replace PhysX's scene scheduler.
+
+Unlike a GPU, the AIE array is built around local scratchpads, stream/DMA
+routing, placement, and producer/consumer dataflow. IRON exposes Workers,
+ObjectFifos, DMA and runtime sequences; on npu2 a compute tile has around
+64 KiB of local data memory shared by stack, statics, and FIFO buffers.
+A globally dereferenceable GPU virtual pointer is not a portable NPU
+programming primitive.
+
+**Constrain the logical interface, not the fastest physical lowering:**
+
+- Describe each work unit's data as typed views: allocation identity,
+  byte offset/size, shape/stride, access mode, lifetime, producer,
+  consumer and required precision. Buffer generations and publication
+  events remain part of the scene-to-device execution dependency graph.
+- Permit GPU-specialized realizations: a known-arena hot path can use
+  32-bit offsets; Vulkan may use buffer device addresses; D3D12 may
+  use bound SRV/UAV views. An NPU lowering can instead pack/stream a
+  *bounded tile* from the same semantic view. Do **not** force a costly
+  "universal NPU pointer" into every GPU solver loop.
+- Avoid dependence on globally visible mutable pointer graphs *within*
+  a work unit when source semantics allow input staging, resolved views
+  and local scratchpad access. Preserve true cross-work-unit aliases and
+  ordering; do not indiscriminately copy mutable state.
+- Expose coarse-enough work-unit boundaries to amortize NPU command
+  configuration, transfers, repacking and synchronization. Prefer
+  persistent NPU-side input/state and pipelining when the original
+  PhysX dependencies permit it. A per-contact CPU→NPU→CPU round trip
+  is unlikely to be worthwhile.
+- Candidate NPU work belongs to **measured cohesive computational
+  islands** (batched constraint/contact transforms, reductions, certain
+  articulated-body substeps), not automatically to irregular global
+  broadphase sorting or every solver synchronization point. Partition
+  using observed source access patterns, not "NPU supports BF16".
+
+**Arithmetic policy:** BF16 has much less significand precision than FP32,
+though it retains a similarly wide exponent range. It must **not** be
+applied indiscriminately to integer handles, float-bit AABB encoding,
+sorting/order keys, exact masks, or collision/topology predicates.
+For eligible math, test BF16 inputs with suitable wider accumulation
+and/or refinement, retaining FP32 or integer representation for sensitive
+state. The required output standard is stable, useful PhysX simulation,
+not identical FP32 intermediate bits. Error amplification across iterative
+contacts, small separation distances, stacks and long horizons is a
+performance/quality experiment, not an assumption.
+
+**Hardware matters:** AIE2, AIE2P and newer variants differ in BF16
+multiply/accumulate and block-float capabilities. In particular,
+efficient BFP16 versus native BF16 paths are not interchangeable across
+generations. Feature-test the target and measure the emitted code;
+do not assume the label "Ryzen AI NPU" implies native peak BF16.
+
+**Selection gate for a future NPU slice:** compare total
+frame-critical-path time, including packaging/layout conversion,
+GPU/NPU/host transfers, NPU compute, synchronization and PhysX result
+publication. Include concurrent GPU render/physics traffic and limited
+local-memory tiling. An NPU implementation belongs in the product only
+when it wins on a realistic workload at acceptable physical behavior.
+
+Upstream background:
+[IRON programming model](https://xilinx.github.io/mlir-aie/1.4.4/programming_guide/section-1/),
+[core memory](https://xilinx.github.io/mlir-aie/1.4.4/programming_guide/core_data_memory/),
+[ObjectFIFO lowering](https://xilinx.github.io/mlir-aie/1.4.4/ObjectFifoLowering/),
+[AIE capability differences](https://github.com/Xilinx/mlir-aie/discussions/3390).
+
+## 8. Immediate work order
 
 1. Fix pre-existing stale "D3D12 compile-only" docs following PR #15.
 2. Build measurement infrastructure: GPU timestamps, CPU counters, reused
