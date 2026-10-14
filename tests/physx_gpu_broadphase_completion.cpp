@@ -47,7 +47,7 @@ void require_throws(F&& fn, const char* what) {
 }
 
 void check_event_order(const std::vector<std::string>& events) {
-    if (events != std::vector<std::string>{"publish", "found", "lost"})
+    if (events != std::vector<std::string>{"publish", "continuations", "found", "lost"})
         throw std::runtime_error("PhysX pair tasks ran before result publication or out of order");
 }
 
@@ -77,11 +77,11 @@ void exercise(Backend backend) {
         if (observed != input)
             throw std::runtime_error("PhysX broadphase result visibility failed");
         events.emplace_back("publish");
-    }, found, lost);
+    }, [&] { events.emplace_back("continuations"); }, found, lost);
     check_event_order(events);
     if (gate.armed() || found.releases() != 1 || lost.releases() != 1)
         throw std::runtime_error("PhysX broadphase publication was not one-shot");
-    require_throws([&] { gate.fetch_and_release([] {}, found, lost); },
+    require_throws([&] { gate.fetch_and_release([] {}, [] {}, found, lost); },
                    "Duplicate pair-task release was permitted");
 
     // Publication failure after GPU completion must not release tasks.
@@ -91,12 +91,16 @@ void exercise(Backend backend) {
     PairTask fail_found("found", events), fail_lost("lost", events);
     require_throws([&] {
         gate.fetch_and_release([&] { throw std::runtime_error("Invalid result count"); },
+                               [&] { events.emplace_back("continuations"); },
                                fail_found, fail_lost);
     }, "Publication failure was swallowed");
     if (!gate.armed() || fail_found.releases() || fail_lost.releases() ||
         !gate.gpu_complete())
         throw std::runtime_error("Tasks released against failed PhysX publication");
+    if (!events.empty())
+        throw std::runtime_error("PhysX continuation installed before result validation");
     gate.fetch_and_release([&] { events.emplace_back("publish"); },
+                           [&] { events.emplace_back("continuations"); },
                            fail_found, fail_lost);
     check_event_order(events);
 
@@ -106,6 +110,7 @@ void exercise(Backend backend) {
     gate.arm(0);
     PairTask empty_found("found", events), empty_lost("lost", events);
     gate.fetch_and_release([&] { events.emplace_back("publish"); },
+                           [&] { events.emplace_back("continuations"); },
                            empty_found, empty_lost);
     check_event_order(events);
 
@@ -114,15 +119,15 @@ void exercise(Backend backend) {
     gate.arm(0);
     PairTask invalid_found("found", events);
     require_throws([&] {
-        gate.fetch_and_release({}, invalid_found, invalid_found);
+        gate.fetch_and_release({}, {}, invalid_found, invalid_found);
     }, "Null callback and alias task were accepted");
     require_throws([&] {
-        gate.fetch_and_release([] {}, invalid_found, invalid_found);
+        gate.fetch_and_release([] {}, [] {}, invalid_found, invalid_found);
     }, "Aliased PhysX pair tasks were accepted");
     if (invalid_found.releases())
         throw std::runtime_error("Malformed PhysX publication released a task");
     PairTask valid_lost("lost", events);
-    gate.fetch_and_release([] {}, invalid_found, valid_lost);
+    gate.fetch_and_release([] {}, [] {}, invalid_found, valid_lost);
     context.destroy_buffer(buffer);
 }
 
