@@ -516,11 +516,18 @@ struct Context::Impl {
                 };
                 if (pipeline.bindings == 1 || slot == 3) {
                     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    view.Format = DXGI_FORMAT_UNKNOWN;
+                    // RWByteAddressBuffer requires a RAW/typeless UAV. The
+                    // original AABB RWStructuredBuffer<uint> uses a structured
+                    // UAV instead. WARP may tolerate the wrong view type, but
+                    // real D3D12 hardware need not.
+                    const bool raw_arena = pipeline.bindings == 1;
+                    view.Format = raw_arena ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                     view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
                     view.Buffer.FirstElement = binding.offset / 4;
                     view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = 4;
+                    view.Buffer.StructureByteStride = raw_arena ? 0 : 4;
+                    view.Buffer.Flags = raw_arena ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                                   D3D12_BUFFER_UAV_FLAG_NONE;
                     device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
                 } else {
                     D3D12_SHADER_RESOURCE_VIEW_DESC view{};
