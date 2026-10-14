@@ -69,10 +69,16 @@ timestamp unavailability returns `std::nullopt`, **never CPU time
 mislabeled as GPU time**.
 
 The GPU duration includes all **in-batch copies and synchronization
-barriers**, not isolated kernel execution. Vulkan's prototype still creates
-command buffers and descriptor pools per batch. On D3D12, completed
-command allocators/lists and descriptor heaps are now recycled (bounded cache
-of eight), and resources remain in their required states *within* a batch.
+barriers**, not isolated kernel execution. Vulkan now recycles a bounded
+pool of completed batch command buffers and descriptor pools **after fence
+completion** and emits explicit buffer dependencies for conflicting accesses,
+rather than a global write barrier before every batch operation. It still
+emits a conservative inter-submission barrier and a final host-visibility
+barrier because source-level read/write intent and persistent
+cross-submission scheduling are not yet fully expressed in the compute API.
+On D3D12, completed command allocators/lists and descriptor heaps are
+also recycled (bounded cache of eight), and resources remain in their
+required states *within* a batch.
 Repeated UAV writes still receive UAV barriers; transitions between UAV,
 SRV and copy states still establish the required dependencies. Every used
 resource transitions to COMMON at the end of the batch, since state is not

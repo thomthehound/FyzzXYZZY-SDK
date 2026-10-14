@@ -5,6 +5,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
+
 #include <cstring>
 #include <algorithm>
 #include <limits>
@@ -135,7 +137,17 @@ struct Context::Impl {
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
+        bool cacheable_batch = false;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
     };
+    struct CachedBatch {
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
+    };
+    static constexpr std::size_t kMaxCachedBatches = 8;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -146,6 +158,10 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
+    // A fixed-capacity, non-allocating cache. Retirement happens after GPU
+    // completion and must never fail from host allocation pressure.
+    std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
+    std::size_t cached_batch_count = 0;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -190,7 +206,8 @@ struct Context::Impl {
 
             VkCommandPoolCreateInfo pool{};
             pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-            pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                         VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
             pool.queueFamilyIndex = selected.queue_family;
             require(vkCreateCommandPool(device, &pool, nullptr, &command_pool),
                     "vkCreateCommandPool");
@@ -207,6 +224,14 @@ struct Context::Impl {
                 release_submission(item.second);
             }
             submissions.clear();
+            for (std::size_t i = 0; i < cached_batch_count; ++i) {
+                const auto& cache = cached_batches[i];
+                if (cache.descriptor_pool != VK_NULL_HANDLE)
+                    vkDestroyDescriptorPool(device, cache.descriptor_pool, nullptr);
+                if (cache.commands != VK_NULL_HANDLE)
+                    vkFreeCommandBuffers(device, command_pool, 1, &cache.commands);
+            }
+            cached_batch_count = 0;
             for (auto& item : pipelines) {
                 destroy_pipeline_handles(item.second);
             }
@@ -243,6 +268,27 @@ struct Context::Impl {
         if (submission.descriptor_pool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
         }
+    }
+
+    void retire_submission(const Submission& submission) noexcept {
+        // No host allocation, and Vulkan destroy/free APIs return void.
+        // This cannot leave a live submission retaining destroyed handles
+        // because retirement itself can no longer throw.
+        if (submission.timestamps != VK_NULL_HANDLE)
+            vkDestroyQueryPool(device, submission.timestamps, nullptr);
+        if (submission.fence != VK_NULL_HANDLE)
+            vkDestroyFence(device, submission.fence, nullptr);
+        if (!submission.cacheable_batch ||
+            cached_batch_count >= kMaxCachedBatches) {
+            if (submission.commands != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device, command_pool, 1, &submission.commands);
+            if (submission.descriptor_pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
+            return;
+        }
+        cached_batches[cached_batch_count++] = {
+            submission.commands, submission.descriptor_pool,
+            submission.descriptor_capacity, submission.set_capacity};
     }
 
     SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
@@ -294,7 +340,7 @@ struct Context::Impl {
         const VkFence fence = it->second.fence;
         require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
                 "vkWaitForFences");
-        release_submission(it->second);
+        retire_submission(it->second);
         submissions.erase(it);
     }
 
@@ -833,28 +879,53 @@ struct Context::Impl {
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
         try {
-            if (dispatch_count != 0) {
-                VkDescriptorPoolSize pool_size{};
-                pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                pool_size.descriptorCount = static_cast<std::uint32_t>(
-                    std::max<std::uint64_t>(1, descriptor_count));
-                VkDescriptorPoolCreateInfo create{};
-                create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                create.maxSets = static_cast<std::uint32_t>(dispatch_count);
-                create.poolSizeCount = 1;
-                create.pPoolSizes = &pool_size;
-                require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
-                        "vkCreateDescriptorPool");
+            if (cached_batch_count != 0) {
+                CachedBatch cached = cached_batches[--cached_batch_count];
+                cached_batches[cached_batch_count] = {};
+                pool = cached.descriptor_pool;
+                commands = cached.commands;
+                descriptor_capacity = cached.descriptor_capacity;
+                set_capacity = cached.set_capacity;
             }
-
-            VkCommandBufferAllocateInfo allocate{};
-            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocate.commandPool = command_pool;
-            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocate.commandBufferCount = 1;
-            require(vkAllocateCommandBuffers(device, &allocate, &commands),
-                    "vkAllocateCommandBuffers");
+            if (dispatch_count != 0) {
+                if (pool == VK_NULL_HANDLE ||
+                    descriptor_capacity < descriptor_count ||
+                    set_capacity < dispatch_count) {
+                    if (pool != VK_NULL_HANDLE)
+                        vkDestroyDescriptorPool(device, pool, nullptr);
+                    pool = VK_NULL_HANDLE;
+                    VkDescriptorPoolSize pool_size{};
+                    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    pool_size.descriptorCount = static_cast<std::uint32_t>(
+                        std::max<std::uint64_t>(1, descriptor_count));
+                    VkDescriptorPoolCreateInfo create{};
+                    create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    create.maxSets = static_cast<std::uint32_t>(dispatch_count);
+                    create.poolSizeCount = 1;
+                    create.pPoolSizes = &pool_size;
+                    require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
+                            "vkCreateDescriptorPool");
+                    descriptor_capacity = pool_size.descriptorCount;
+                    set_capacity = create.maxSets;
+                } else {
+                    require(vkResetDescriptorPool(device, pool, 0),
+                            "vkResetDescriptorPool");
+                }
+            }
+            if (commands != VK_NULL_HANDLE) {
+                require(vkResetCommandBuffer(commands, 0), "vkResetCommandBuffer");
+            } else {
+                VkCommandBufferAllocateInfo allocate{};
+                allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                allocate.commandPool = command_pool;
+                allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                allocate.commandBufferCount = 1;
+                require(vkAllocateCommandBuffers(device, &allocate, &commands),
+                        "vkAllocateCommandBuffers");
+            }
 
             VkCommandBufferBeginInfo begin{};
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -871,22 +942,74 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
-            for (const BatchCommand& operation : operations) {
-                // Make previous transfer and shader writes visible to the
-                // next operation even when both share a command buffer.
-                VkMemoryBarrier before{};
-                before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-                before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
-                                       VK_ACCESS_TRANSFER_WRITE_BIT |
-                                       VK_ACCESS_SHADER_READ_BIT |
-                                       VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                     VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                     1, &before, 0, nullptr, 0, nullptr);
+            // A single inter-submission dependency preserves the original
+            // queue contract. Vulkan queue ordering alone does not publish
+            // shader writes as memory dependencies between submissions.
+            VkMemoryBarrier from_previous{};
+            from_previous.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            from_previous.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            from_previous.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
+                                          VK_ACCESS_TRANSFER_WRITE_BIT |
+                                          VK_ACCESS_SHADER_READ_BIT |
+                                          VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 1, &from_previous, 0, nullptr, 0, nullptr);
 
+            struct Access {
+                VkPipelineStageFlags stage = 0;
+                VkAccessFlags mask = 0;
+                bool writes = false;
+            };
+            std::unordered_map<BufferId, Access> last_access;
+            last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
+                std::vector<VkBufferMemoryBarrier> barriers;
+                VkPipelineStageFlags sources = 0;
+                VkPipelineStageFlags targets = 0;
+                for (const auto& use : uses) {
+                    const auto prev = last_access.find(use.first);
+                    if (prev == last_access.end()) continue;
+                    if (!prev->second.writes && !use.second.writes) continue;
+                    VkBufferMemoryBarrier barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    barrier.srcAccessMask = prev->second.mask;
+                    barrier.dstAccessMask = use.second.mask;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.buffer = get(use.first).buffer;
+                    barrier.offset = 0;
+                    barrier.size = VK_WHOLE_SIZE;
+                    barriers.push_back(barrier);
+                    sources |= prev->second.stage;
+                    targets |= use.second.stage;
+                }
+                if (!barriers.empty()) {
+                    vkCmdPipelineBarrier(commands, sources, targets, 0,
+                                         0, nullptr,
+                                         static_cast<std::uint32_t>(barriers.size()),
+                                         barriers.data(), 0, nullptr);
+                }
+                for (const auto& use : uses) {
+                    auto& current = last_access[use.first];
+                    if (!current.stage || current.writes || use.second.writes) {
+                        current = use.second;
+                    } else {
+                        // Read after read is unordered: retain both source
+                        // stages in case a later operation writes the buffer.
+                        current.stage |= use.second.stage;
+                        current.mask |= use.second.mask;
+                    }
+                }
+            };
+
+            for (const BatchCommand& operation : operations) {
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
+                    before_operation({
+                        {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
+                        {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                    });
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
                     region.dstOffset = copy->destination_offset;
@@ -898,6 +1021,21 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
+                // Storage descriptors in this initial API have no per-slot
+                // read-only declaration. Treat them as read/write until
+                // source-derived access intent is represented explicitly.
+                std::vector<std::pair<BufferId, Access>> shader_uses;
+                shader_uses.reserve(dispatch.buffers.size());
+                for (const auto& binding : dispatch.buffers) {
+                    const auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
+                        [&](const auto& entry) { return entry.first == binding.buffer; });
+                    if (found == shader_uses.end())
+                        shader_uses.push_back({
+                            binding.buffer,
+                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, true}});
+                }
+                before_operation(shader_uses);
                 auto descriptors = validate_dispatch(
                     dispatch.pipeline, dispatch.groups, dispatch.buffers,
                     dispatch.push_constants.data(), dispatch.push_constants.size());
@@ -949,7 +1087,11 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
             const SubmissionId id = enqueue(commands, pool);
-            submissions.at(id).timestamps = timestamps;
+            auto& submitted = submissions.at(id);
+            submitted.timestamps = timestamps;
+            submitted.cacheable_batch = true;
+            submitted.descriptor_capacity = descriptor_capacity;
+            submitted.set_capacity = set_capacity;
             return id;
         } catch (...) {
             if (timestamps != VK_NULL_HANDLE)
@@ -979,14 +1121,14 @@ struct Context::Impl {
             device, it->second.timestamps, 0, 2, sizeof(ticks),
             ticks, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
         if (result != VK_SUCCESS) {
-            release_submission(it->second);
+            retire_submission(it->second);
             submissions.erase(it);
             require(result, "vkGetQueryPoolResults");
         }
         const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
                           ((std::uint64_t{1} << timestamp_valid_bits) - 1);
         const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
-        release_submission(it->second);
+        retire_submission(it->second);
         submissions.erase(it);
         return static_cast<double>(delta) * limits.timestampPeriod;
     }
