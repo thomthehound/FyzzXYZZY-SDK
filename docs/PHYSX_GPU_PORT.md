@@ -221,6 +221,40 @@ kernels consecutively. Full execution ordering is governed by the
 upstream `update` method and awaits translation of those stages.
 The new test is not yet an integrated GPU broadphase or scene simulation.
 
+### Source-derived created-handle SAP insertion
+
+The pinned `PxgCudaBroadPhaseSap::update` calls
+`markCreatedPairsKernel` when created or removed handles are present,
+but **the kernel's own host wrapper only dispatches when
+`mUpdateData_CreatedHandleSize != 0`**. The CUDA operation is
+`broadphase.cu::markCreatedPairsLaunch` (`BP_UPDATE_CREATEDPAIRS`),
+launched at its source-defined fixed **32 × 256** geometry.
+
+The kernel retains **previous-frame capacity as the insertion base**:
+`numPreviousHandles` + the created-handle list index. It writes one
+`uint2` (start/end) per axis into the current `boxProjections[axis]`
+and `boxHandles[0][axis]` buffers, using the new integer AABB's min/max
+coordinates and new-handle tags. It sets the corresponding
+`oldIntegerBounds[handle]` empty. When the total count of
+previous and newly created handles is odd, it writes one
+`0xffffffff` projection pair and one `0x3fffffff` handle pair
+for each axis. That is the **padded pair for the next radix-sort pass**,
+not a new collidable object.
+
+`CreatedPairsArenaDesc` extends the already established 80-byte
+source-logical SAP descriptor prefix with the created count, previous
+count, created-array offset and new-integer-AABB offset, for a 112-byte
+descriptor. HLSL retains the original writes and grid-stride dispatch
+loop, while lowering CUDA pointers to arena byte offsets. Vulkan SPIR-V
+and D3D12 DXIL use the same source file.
+
+The cross-backend test checks all six new bounds and old-empty markers,
+tagged current-frame handles, preservation of unrelated prior entries,
+odd/even padding, no-created fast path, and 8193 created handles to
+exercise the second grid-stride iteration. **It does not yet execute
+the adjacent source radix sort or join a PhysX scene.** The original
+host update's conditional task sequencing remains authoritative.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
