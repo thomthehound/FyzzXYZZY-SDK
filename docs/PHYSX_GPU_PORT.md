@@ -481,7 +481,9 @@ and the **current and previous** per-axis start/end endpoint histograms.
 For each endpoint, comparison direction is
 `current_index <= original_rank`. Downward movement uses the previous
 histogram and upward movement uses the current one. Start endpoints
-count crossing starts; end endpoints count crossing ends. Deleted
+count crossed **end** endpoints; end endpoints count crossed
+**start** endpoints. This deliberately selects the opposite
+endpoint type, as in the upstream `sStartEndAccum[isStartHandle]` table. Deleted
 endpoints contribute no comparisons. The exact candidate count is
 a difference of exclusive histogram entries over the original
 index-to-rank interval, with the previous-frame range clamped to the
