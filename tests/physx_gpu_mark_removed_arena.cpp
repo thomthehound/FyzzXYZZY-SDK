@@ -229,13 +229,13 @@ void bench(Context& ctx, MarkRemovedPairsArenaStage& descriptor_stage,
             const auto& ops = variant ? resolved : indirect;
             const auto begin = std::chrono::steady_clock::now();
             const auto gpu = ctx.profile_batch_gpu_nanoseconds(ops);
-            const auto end = std::chrono::steady_clock::now();
             if (!gpu) {
                 // Profiling unavailable on this device: still execute work,
                 // but do NOT claim the host-only number is a GPU measurement.
                 missing_gpu_timestamps = true;
                 ctx.execute_batch(ops);
             }
+            const auto end = std::chrono::steady_clock::now();
             if (sample >= 0) {
                 if (gpu) gpu_ns[variant].push_back(*gpu);
                 host_us[variant].push_back(
@@ -260,7 +260,7 @@ void bench(Context& ctx, MarkRemovedPairsArenaStage& descriptor_stage,
     }
     if (missing_gpu_timestamps)
         std::cout << "GPU timestamp queries unavailable; NO GPU performance comparison.\n";
-    else
+    else if (median(gpu_ns[0]) > 0)
         std::cout << "GPU timing ratio (resolved / descriptor) = "
                   << median(gpu_ns[1]) / median(gpu_ns[0])
                   << "; lower is better. NOT a direct-bind/segmented/BDA comparison.\n";
