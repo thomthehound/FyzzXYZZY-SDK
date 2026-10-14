@@ -103,11 +103,11 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
             const uint begin = down ? index : prevIndex + 1u;
             const uint local = workId - arena.Load(prefix + index * 4u);
             const uint histogram = load_axis(group.y,
-                down ? (startHandle ? 20u : 24u)
-                     : (startHandle ? 12u : 16u));
+                down ? (startHandle ? 24u : 20u)
+                     : (startHandle ? 16u : 12u));
             const uint ordered = load_axis(group.y,
-                down ? (startHandle ? 36u : 40u)
-                     : (startHandle ? 28u : 32u));
+                down ? (startHandle ? 40u : 36u)
+                     : (startHandle ? 32u : 28u));
             const uint partnerIndex = arena.Load(histogram + begin * 4u) + local;
             other = arena.Load(ordered + partnerIndex * 4u);
             const bool willFind = (!startHandle) != down;
