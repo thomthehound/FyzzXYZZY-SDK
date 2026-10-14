@@ -30,6 +30,12 @@ struct DeviceInfo {
     std::uint32_t max_workgroup_invocations = 0;
     std::uint32_t max_workgroup_count[3] = {};
     std::uint32_t max_workgroup_size[3] = {};
+    // Native subgroup/wave integer scan capability (compute stage).
+    // Vulkan queries VK_SUBGROUP_FEATURE_ARITHMETIC_BIT; D3D12 queries
+    // WaveOps and shader model via CheckFeatureSupport. Not a vendor ID.
+    bool supports_wave_arithmetic = false;
+    std::uint32_t subgroup_size = 0;
+    std::uint32_t shader_model = 0; // D3D_SHADER_MODEL enum value, 0 on Vulkan.
 };
 
 // The opaque identifier belongs to one Context. Zero is never a valid buffer.
