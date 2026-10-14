@@ -186,6 +186,9 @@ struct Context::Impl {
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
+    // Context is not thread-safe; one persistent completion event can serve
+    // every serial fence wait without creating Win32 objects per submission.
+    HANDLE completion_event = nullptr;
     DeviceInfo info;
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
@@ -212,12 +215,16 @@ struct Context::Impl {
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
+        completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!completion_event)
+            throw std::runtime_error("CreateEvent failed for D3D12 fence");
     }
 
     ~Impl() {
         if (queue && fence) {
             try { wait_all(); } catch (...) {}
         }
+        if (completion_event) CloseHandle(completion_event);
     }
 
     Buffer& get_buffer(BufferId id) {
@@ -273,15 +280,9 @@ struct Context::Impl {
 
     void wait_value(std::uint64_t value) {
         if (fence->GetCompletedValue() >= value) return;
-        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!event) throw std::runtime_error("CreateEvent failed for D3D12 fence");
-        HRESULT status = fence->SetEventOnCompletion(value, event);
-        if (FAILED(status)) {
-            CloseHandle(event);
-            check(status, "SetEventOnCompletion");
-        }
-        DWORD result = WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
+        check(fence->SetEventOnCompletion(value, completion_event),
+              "SetEventOnCompletion");
+        DWORD result = WaitForSingleObject(completion_event, INFINITE);
         if (result != WAIT_OBJECT_0)
             throw std::runtime_error("D3D12 fence wait failed");
     }
@@ -493,12 +494,14 @@ struct Context::Impl {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
             desc.Count = 2;
-            check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
-                  "CreateQueryHeap(timestamp)");
-            submission.query_readback = allocate_resource(
-                device.Get(), 2 * sizeof(std::uint64_t),
-                D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST);
+            if (!submission.query_heap)
+                check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
+                      "CreateQueryHeap(timestamp)");
+            if (!submission.query_readback)
+                submission.query_readback = allocate_resource(
+                    device.Get(), 2 * sizeof(std::uint64_t),
+                    D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 0);
         }
@@ -517,9 +520,11 @@ struct Context::Impl {
                 heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
                 heap.NumDescriptors = static_cast<UINT>(desired);
                 heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                ComPtr<ID3D12DescriptorHeap> replacement;
                 check(device->CreateDescriptorHeap(&heap,
-                                                   IID_PPV_ARGS(&submission.heap)),
+                                                   IID_PPV_ARGS(&replacement)),
                       "CreateDescriptorHeap");
+                submission.heap = std::move(replacement);
             }
             ID3D12DescriptorHeap* heaps[] = {submission.heap.Get()};
             submission.commands->SetDescriptorHeaps(1, heaps);
