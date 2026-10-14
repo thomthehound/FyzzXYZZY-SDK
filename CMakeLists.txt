@@ -708,17 +708,30 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_REGION_region_second_SHADER}")
 
       # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
-      foreach(_active_pass IN ITEMS writeout compute output)
+      foreach(_active_pass IN ITEMS writeout compute_wave compute_portable output)
+        if(_active_pass STREQUAL "compute_wave")
+          set(_active_source compute)
+          set(_active_flag 1)
+          set(_active_profile cs_6_6)
+        elseif(_active_pass STREQUAL "compute_portable")
+          set(_active_source compute)
+          set(_active_flag 0)
+          set(_active_profile cs_6_0)
+        else()
+          set(_active_source ${_active_pass})
+          set(_active_flag 0)
+          set(_active_profile cs_6_0)
+        endif()
         set(FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.spv")
         add_custom_command(
           OUTPUT "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
           COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
           COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main
+            -T ${_active_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag}
             -Fo "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
           VERBATIM
         )
         add_custom_target(fyzzxyzzy_physx_sap_active_${_active_pass}_shader
@@ -732,12 +745,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_gpu_stages)
       add_dependencies(fyzzxyzzy_physx_sap_active_region_lists
         fyzzxyzzy_physx_sap_active_writeout_shader
-        fyzzxyzzy_physx_sap_active_compute_shader
+        fyzzxyzzy_physx_sap_active_compute_wave_shader
+        fyzzxyzzy_physx_sap_active_compute_portable_shader
         fyzzxyzzy_physx_sap_active_output_shader)
       add_test(NAME fyzzxyzzy_physx_sap_active_region_lists
         COMMAND fyzzxyzzy_physx_sap_active_region_lists
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_writeout_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_wave_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_portable_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_output_SHADER}")
     endif()
 
@@ -1375,16 +1390,29 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_SAP_REGION_region_second_DXIL}")
 
     # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
-    foreach(_active_pass IN ITEMS writeout compute output)
+    foreach(_active_pass IN ITEMS writeout compute_wave compute_portable output)
+        if(_active_pass STREQUAL "compute_wave")
+          set(_active_source compute)
+          set(_active_flag 1)
+          set(_active_profile cs_6_6)
+        elseif(_active_pass STREQUAL "compute_portable")
+          set(_active_source compute)
+          set(_active_flag 0)
+          set(_active_profile cs_6_0)
+        else()
+          set(_active_source ${_active_pass})
+          set(_active_flag 0)
+          set(_active_profile cs_6_0)
+        endif()
       set(FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.dxil")
       add_custom_command(
         OUTPUT "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        COMMAND "${FYZZXYZZY_DXC}" -T ${_active_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag}
           -Fo "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
         VERBATIM
       )
       add_custom_target(fyzzxyzzy_d3d12_sap_active_${_active_pass}_shader
@@ -1400,12 +1428,14 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_sap_active_region_lists_d3d12
       fyzzxyzzy_d3d12_sap_active_writeout_shader
-      fyzzxyzzy_d3d12_sap_active_compute_shader
+      fyzzxyzzy_d3d12_sap_active_compute_wave_shader
+        fyzzxyzzy_d3d12_sap_active_compute_portable_shader
       fyzzxyzzy_d3d12_sap_active_output_shader)
     add_test(NAME fyzzxyzzy_physx_sap_active_region_lists_d3d12
       COMMAND fyzzxyzzy_physx_sap_active_region_lists_d3d12
         "${FYZZXYZZY_D3D12_SAP_ACTIVE_writeout_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_wave_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_portable_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_ACTIVE_output_DXIL}")
   endif()
 endif()
