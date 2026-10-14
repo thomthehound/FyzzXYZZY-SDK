@@ -596,6 +596,64 @@ struct Context::Impl {
         }
     }
 
+    SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
+        if (uploads.empty())
+            throw std::invalid_argument("Async Vulkan upload batch cannot be empty");
+        std::size_t total = 0;
+        // Validate every caller-owned source and GPU destination BEFORE
+        // recording GPU work or invalidating any public resource handle.
+        for (const auto& upload : uploads) {
+            const Buffer& destination = get(upload.destination);
+            validate_range(destination.bytes, upload.destination_offset, upload.bytes);
+            if (!upload.data || !upload.bytes ||
+                (upload.destination_offset % 4) || (upload.bytes % 4) ||
+                upload.bytes > std::numeric_limits<std::size_t>::max() - total)
+                throw std::invalid_argument("Invalid Vulkan upload span or staging capacity");
+            total += upload.bytes;
+        }
+        // Prevent post-submit allocation failure during deferred staging
+        // ownership transfer. In the single-queue model, the last submitted
+        // fence captures the lifetime of this entire upload batch.
+        retired_buffers.reserve(retired_buffers.size() + 1);
+        const BufferId staging_id = create_buffer(total, MemoryPlacement::HostVisible);
+        bool submitted = false;
+        try {
+            const Buffer& staging = get(staging_id);
+            void* mapped = nullptr;
+            require(vkMapMemory(device, staging.memory, 0, VK_WHOLE_SIZE, 0, &mapped),
+                    "vkMapMemory batched upload");
+            std::size_t position = 0;
+            for (const auto& upload : uploads) {
+                std::memcpy(static_cast<unsigned char*>(mapped) + position,
+                            upload.data, upload.bytes);
+                position += upload.bytes;
+            }
+            vkUnmapMemory(device, staging.memory);
+
+            std::vector<BatchCommand> copies;
+            copies.reserve(uploads.size());
+            position = 0;
+            for (const auto& upload : uploads) {
+                copies.emplace_back(CopyCommand{
+                    staging_id, position, upload.destination,
+                    upload.destination_offset, upload.bytes});
+                position += upload.bytes;
+            }
+            const SubmissionId id = submit_batch(copies);
+            submitted = true;
+            // Guaranteed room in retired_buffers. Retires only the public
+            // staging ID, not the memory still referenced by the GPU.
+            retire_buffer(staging_id);
+            return id;
+        } catch (...) {
+            // If a GPU command was actually enqueued, the staging handle
+            // remains live until its fence; never release backing memory.
+            if (!submitted)
+                destroy_buffer(staging_id);
+            throw;
+        }
+    }
+
     SubmissionId submit_upload(BufferId destination_id, std::size_t offset,
                                const void* data, std::size_t bytes) {
         // Snapshot into coherent pinned/mappable memory before submitting;
@@ -1264,6 +1322,10 @@ void Context::upload(BufferId id, std::size_t offset, const void* data, std::siz
 SubmissionId Context::submit_upload_buffer(BufferId id, std::size_t offset,
                                            const void* data, std::size_t bytes) {
     return impl_->submit_upload(id, offset, data, bytes);
+}
+
+SubmissionId Context::submit_upload_batch(const std::vector<UploadSpan>& uploads) {
+    return impl_->submit_uploads(uploads);
 }
 
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
