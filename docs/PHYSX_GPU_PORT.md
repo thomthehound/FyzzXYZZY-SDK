@@ -402,6 +402,12 @@ introducing substitute handle identities. The zero-handle gate,
 projection padding, three independent axes, and source dispatch
 dimensions are preserved.
 
+The composed host append is transactional: it stages the complete
+18-dispatch sequence and publishes it to the caller's command batch
+only after all delegated radix descriptors validate successfully.
+Malformed descriptors on either radix parity leave existing commands
+unchanged, rather than exposing partially scheduled PhysX state.
+
 The cross-backend GPU oracle verifies the complete WR dispatch
 sequence against a stable key/index reference, including equal keys,
 nonmonotonic tagged handles, preserved previous-frame handle buffers,
