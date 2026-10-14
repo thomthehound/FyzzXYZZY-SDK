@@ -211,8 +211,10 @@ and only then invokes `removeReference` on the two original
 no-GPU-update path, prevents double release, and leaves both tasks blocked
 if the GPU wait or the result-publication operation fails; a publication
 failure can be retried after the owning PhysX code establishes its abort/
-empty-result policy. A completion readiness query **never** publishes or
-releases tasks.
+empty-result policy. A **continuation-installation** failure is terminal,
+since retrying could install extra task references; the scene's original
+abort/teardown path must handle it. A completion readiness query **never**
+publishes or releases tasks.
 
 The bridge is **tested in isolation with real PhysX task interfaces and
 Vulkan/D3D12 submissions**, but is **not yet wired into
