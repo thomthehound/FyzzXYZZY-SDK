@@ -7,6 +7,7 @@
 #include "physx_gpu/mark_removed_pairs_arena.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -132,9 +133,25 @@ void reference_mark_removed(PackedCase& data) {
     }
 }
 
+// Dispatch-root comparison keeps the identical packed descriptor and GPU
+// arithmetic, replacing only five per-dispatch pointer loads with offsets
+// already known to the host. Three previous-frame handle offsets still
+// come from the GPU descriptor. This is NOT a direct-buffer baseline.
+void apply_resolved_subset(DispatchCommand& dispatch,
+                           const MarkRemovedPairsArenaDesc& desc) {
+    const std::array<std::uint32_t, 5> offsets{{
+        desc.removed_handles_offset, desc.old_integer_bounds_offset,
+        desc.sap_box_offsets[0], desc.sap_box_offsets[1], desc.sap_box_offsets[2]
+    }};
+    if (dispatch.push_constants.size() != 32)
+        throw std::runtime_error("Unexpected PhysX arena root parameter size");
+    std::memcpy(dispatch.push_constants.data() + 3 * sizeof(std::uint32_t),
+                offsets.data(), sizeof(offsets));
+}
+
 void run_case(Context& ctx, MarkRemovedPairsArenaStage& stage,
               std::uint32_t capacity, std::uint32_t removed,
-              std::uint32_t descriptor_offset) {
+              std::uint32_t descriptor_offset, bool resolved = false) {
     PackedCase packed = pack(capacity, removed, descriptor_offset);
     PackedCase expected = packed;
     reference_mark_removed(expected);
@@ -151,6 +168,8 @@ void run_case(Context& ctx, MarkRemovedPairsArenaStage& stage,
     } else {
         if (commands.size() != 1 || !std::holds_alternative<DispatchCommand>(commands[0]))
             throw std::runtime_error("PhysX arena stage did not append its GPU dispatch");
+        if (resolved)
+            apply_resolved_subset(std::get<DispatchCommand>(commands[0]), packed.desc);
         // Copy the GPU-written entire arena in the same submission; checks
         // dispatch -> transfer ordering on both APIs, including UAV barriers.
         commands.emplace_back(CopyCommand{arena, 0, snapshot, 0, bytes});
@@ -169,30 +188,90 @@ void run_case(Context& ctx, MarkRemovedPairsArenaStage& stage,
     ctx.destroy_buffer(arena);
 }
 
-void bench(Context& ctx, MarkRemovedPairsArenaStage& stage) {
+double median(std::vector<double> values) {
+    if (values.empty()) throw std::invalid_argument("No measurements");
+    std::sort(values.begin(), values.end());
+    const auto middle = values.size() / 2;
+    return values.size() % 2 ? values[middle] :
+           (values[middle - 1] + values[middle]) * 0.5;
+}
+
+void bench(Context& ctx, MarkRemovedPairsArenaStage& descriptor_stage,
+           MarkRemovedPairsArenaStage& resolved_stage) {
+    constexpr int iterations = 128;
+    constexpr int warmups = 2;
+    constexpr int repeats = 7;
     const auto packed = pack(8193, 2048, 256);
     const auto bytes = static_cast<std::uint32_t>(packed.arena.size() * 4);
     const auto arena = ctx.create_buffer(bytes, MemoryPlacement::DeviceLocal);
     ctx.upload(arena, 0, packed.arena.data(), bytes);
-    std::vector<BatchCommand> commands;
-    for (int i = 0; i < 256; ++i)
-        stage.append(commands, arena, bytes, packed.descriptor_offset,
-                     packed.desc.num_removed_handles);
-    const auto start = std::chrono::steady_clock::now();
-    ctx.wait_submission(ctx.submit_batch(commands));
-    const auto end = std::chrono::steady_clock::now();
-    const double us = std::chrono::duration<double, std::micro>(end - start).count();
-    std::cout << "Arena removed-pair 256 stages, end-to-end submit+wait (NOT GPU timestamps): "
-              << us << " us; " << us / 256 << " us/stage, device "
-              << ctx.device_info().name << '\n';
+
+    auto commands_for = [&](MarkRemovedPairsArenaStage& stage, bool resolved) {
+        std::vector<BatchCommand> ops;
+        ops.reserve(iterations);
+        for (int i = 0; i < iterations; ++i) {
+            stage.append(ops, arena, bytes, packed.descriptor_offset,
+                         packed.desc.num_removed_handles);
+            if (resolved)
+                apply_resolved_subset(std::get<DispatchCommand>(ops.back()), packed.desc);
+        }
+        return ops;
+    };
+    const auto indirect = commands_for(descriptor_stage, false);
+    const auto resolved = commands_for(resolved_stage, true);
+    std::array<std::vector<double>, 2> gpu_ns, host_us;
+    bool missing_gpu_timestamps = false;
+
+    // Alternate order to mitigate clock, cache, and thermal drift.
+    for (int sample = -warmups; sample < repeats; ++sample) {
+        for (int offset = 0; offset < 2; ++offset) {
+            const int variant = (sample + offset + warmups) % 2;
+            const auto& ops = variant ? resolved : indirect;
+            const auto begin = std::chrono::steady_clock::now();
+            const auto gpu = ctx.profile_batch_gpu_nanoseconds(ops);
+            const auto end = std::chrono::steady_clock::now();
+            if (!gpu) {
+                // Profiling unavailable on this device: still execute work,
+                // but do NOT claim the host-only number is a GPU measurement.
+                missing_gpu_timestamps = true;
+                ctx.execute_batch(ops);
+            }
+            if (sample >= 0) {
+                if (gpu) gpu_ns[variant].push_back(*gpu);
+                host_us[variant].push_back(
+                    std::chrono::duration<double, std::micro>(end - begin).count());
+            }
+        }
+    }
+    std::cout << "Device: " << ctx.device_info().name
+              << "; " << iterations << " PhysX SAP removal dispatches/batch, "
+              << repeats << " paired samples after " << warmups
+              << " warmups; same input arena and physics writes.\n";
+    for (int variant = 0; variant < 2; ++variant) {
+        std::cout << (variant ? "5 host-resolved offsets" : "GPU descriptor offsets")
+                  << ": host submit+wait median " << median(host_us[variant])
+                  << " us/batch";
+        if (!gpu_ns[variant].empty())
+            std::cout << "; GPU command-batch median "
+                      << median(gpu_ns[variant]) / 1000.0 << " us/batch"
+                      << " (" << median(gpu_ns[variant]) / iterations
+                      << " ns/dispatch, including in-batch barriers)";
+        std::cout << '\n';
+    }
+    if (missing_gpu_timestamps)
+        std::cout << "GPU timestamp queries unavailable; NO GPU performance comparison.\n";
+    else
+        std::cout << "GPU timing ratio (resolved / descriptor) = "
+                  << median(gpu_ns[1]) / median(gpu_ns[0])
+                  << "; lower is better. NOT a direct-bind/segmented/BDA comparison.\n";
     ctx.destroy_buffer(arena);
 }
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc < 2 || argc > 3)
-            throw std::invalid_argument("Expected shader path [--benchmark]");
+        if (argc < 3 || argc > 4)
+            throw std::invalid_argument("Expected descriptor and resolved shader paths [--benchmark]");
         Context ctx(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -208,15 +287,28 @@ int main(int argc, char** argv) {
 #endif
         shader.bytes = shader_bytes(argv[1]);
         MarkRemovedPairsArenaStage stage(ctx, std::move(shader));
+        ShaderBinary resolved_shader;
+#if defined(FYZZXYZZY_TEST_D3D12)
+        resolved_shader.format = ShaderFormat::Dxil;
+#else
+        resolved_shader.format = ShaderFormat::Spirv;
+#endif
+        resolved_shader.bytes = shader_bytes(argv[2]);
+        MarkRemovedPairsArenaStage resolved_stage(ctx, std::move(resolved_shader));
         run_case(ctx, stage, 1, 1, 0);
         run_case(ctx, stage, 17, 0, 128);
         run_case(ctx, stage, 17, 5, 128);
         run_case(ctx, stage, 513, 73, 256);
         run_case(ctx, stage, 4097, 513, 128);
-        if (argc == 3) {
-            if (std::string(argv[2]) != "--benchmark")
+        run_case(ctx, resolved_stage, 1, 1, 0, true);
+        run_case(ctx, resolved_stage, 17, 0, 128, true);
+        run_case(ctx, resolved_stage, 17, 5, 128, true);
+        run_case(ctx, resolved_stage, 513, 73, 256, true);
+        run_case(ctx, resolved_stage, 4097, 513, 128, true);
+        if (argc == 4) {
+            if (std::string(argv[3]) != "--benchmark")
                 throw std::invalid_argument("Unexpected arena test option");
-            bench(ctx, stage);
+            bench(ctx, stage, resolved_stage);
         }
         std::cout << "PhysX incremental SAP removed-pair arena PASS\n";
         return 0;
