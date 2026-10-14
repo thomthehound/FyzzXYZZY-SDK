@@ -23,6 +23,20 @@ cmake --build build --target fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_disp
 ctest --test-dir build -R fyzzxyzzy_vulkan_ --output-on-failure
 ```
 
+The ordinary Vulkan smoke targets do **not** require DXC. PhysX-derived AABB
+conformance testing additionally requires DXC with SPIR-V support. It is
+deliberately opt-in so unrelated compute configurations remain usable:
+
+```sh
+cmake -S . -B build-physx-aabb -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON
+cmake --build build-physx-aabb --target fyzzxyzzy_physx_aabb_encoding
+ctest --test-dir build-physx-aabb -R fyzzxyzzy_physx_aabb_encoding --output-on-failure
+```
+
+The specific PhysX test option requires DXC at configuration time. Linux CI
+enables the option explicitly, while ordinary Vulkan tests keep only their
+original glslangValidator dependency.
+
 To build and test the isolated floor and world prototypes, configure separately
 with `-DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`. These prototypes are not
 part of the production PhysX GPU implementation.
@@ -64,12 +78,14 @@ It operates only on buffers owned by its caller and does not implement or select
 a simulation world. The `fyzzxyzzy_physx_aabb_encoding` test verifies encoded
 bounds against the upstream algorithm for a range of configurations.
 
-The same upstream AABB operation is also written in HLSL at
-`src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. Windows CI compiles it to
-DXIL with the Windows SDK DXC compiler. That is a shader compilation check,
-**not** native D3D12 execution or physics conformance. Converging the Vulkan
-and D3D shader implementations onto one validated HLSL/Slang source is
-required before porting a larger collection of PhysX kernels.
+The source-derived AABB translation now has **one HLSL implementation**
+at `src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. DXC compiles it to
+SPIR-V on Linux and DXIL on Windows. Linux CI runs the Vulkan AABB numerical
+conformance test, while Windows CI currently checks DXIL compilation only;
+this does **not** establish native D3D12 execution or physics conformance.
+The `__spirv__` branch changes only descriptor bindings and the 32-byte
+parameter block (Vulkan push constants versus D3D12 constant buffer).
+See [GPU port architecture](PHYSX_GPU_PORT.md).
 
 This stage is not integrated into the PhysX `Sc::Scene` pipeline yet. A
 complete portable broadphase must also port PhysX's host orchestration,

@@ -4,19 +4,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-// HLSL implementation of PhysX broadphase.cu::translateAABBsLaunch.
-// This is the D3D12/DXIL compilation proof for the same PhysX GPU stage
-// currently exercised through Vulkan GLSL. The PhysX algorithm and data
-// layout are unchanged. Once Vulkan HLSL->SPIR-V is validated, converge
-// on this shared source rather than maintain two shader implementations.
+// Shared HLSL translation of PhysX broadphase.cu::translateAABBsLaunch.
+// Compiled by DXC to Vulkan SPIR-V and D3D12 DXIL from this one algorithm.
+// The conditional annotations lower only resource bindings and dispatch
+// parameters into the different API interfaces; they do not change physics.
 //
-// Logical slots 0..3 are the four buffers also exposed by the Vulkan stage.
-// D3D12 register spaces are distinct for SRV and UAV resources; the future
-// execution backend maps these logical slots through shader reflection.
+// PhysX logical storage-buffer slots are 0..3. D3D12 uses distinct SRV and
+// UAV register classes, while Vulkan uses one descriptor set of storage
+// buffers. PhysX data layout remains six float/uint coordinates per box.
 
+#ifdef __spirv__
+[[vk::binding(0, 0)]]
+#endif
 StructuredBuffer<float> input_bounds : register(t0, space0);
+#ifdef __spirv__
+[[vk::binding(1, 0)]]
+#endif
 StructuredBuffer<float> contact_distances : register(t1, space0);
+#ifdef __spirv__
+[[vk::binding(2, 0)]]
+#endif
 StructuredBuffer<uint> environment_ids : register(t2, space0);
+#ifdef __spirv__
+[[vk::binding(3, 0)]]
+#endif
 RWStructuredBuffer<uint> output_bounds : register(u0, space0);
 
 struct Parameters {
@@ -29,7 +40,14 @@ struct Parameters {
     uint env_bits_z;
     uint env_enabled;
 };
+#ifdef __spirv__
+// PhysX stage::append() supplies 32 bytes of Vulkan push constants.
+[[vk::push_constant]] Parameters parameters;
+#else
+// The D3D12 lowering will supply the same 32-byte payload as root constants
+// or a CBV. No separate D3D12 simulation parameters are introduced.
 ConstantBuffer<Parameters> parameters : register(b0, space0);
+#endif
 
 [numthreads(128, 1, 1)]
 void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
