@@ -53,6 +53,10 @@ struct Packed {
     std::uint32_t& at(std::uint32_t byte_offset, std::uint32_t index = 0u) {
         return arena[byte_offset / 4u + index];
     }
+    const std::uint32_t& at(std::uint32_t byte_offset,
+                            std::uint32_t index = 0u) const {
+        return arena[byte_offset / 4u + index];
+    }
 };
 
 Packed pack(std::uint32_t previous, std::uint32_t created,
