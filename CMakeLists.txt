@@ -94,6 +94,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/radix_scatter_arena.cpp
     src/physx_gpu/sap_box_indices_arena.cpp
     src/physx_gpu/sap_ranked_sort_arena.cpp
+    src/physx_gpu/sap_endpoint_histogram_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -422,6 +423,38 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_initialize_ranks_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_update_handles_SHADER}")
+
+      # Original BP_COMPUTE_ENDPT_HISTOGRAM / BP_OUTPUT_ENDPT_HISTOGRAM.
+      foreach(_hist_pass IN ITEMS first second)
+        set(FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_0 -E main
+            -Fo "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_physx_sap_endpoint_${_hist_pass}_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}")
+      endforeach()
+      add_executable(fyzzxyzzy_physx_sap_endpoint_histogram
+        tests/physx_gpu_sap_endpoint_histogram.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_endpoint_histogram PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_endpoint_histogram PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_endpoint_histogram
+        fyzzxyzzy_physx_sap_endpoint_first_shader
+        fyzzxyzzy_physx_sap_endpoint_second_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_endpoint_histogram
+        COMMAND fyzzxyzzy_physx_sap_endpoint_histogram
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -482,6 +515,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/radix_scatter_arena.cpp
     src/physx_gpu/sap_box_indices_arena.cpp
     src/physx_gpu/sap_ranked_sort_arena.cpp
+    src/physx_gpu/sap_endpoint_histogram_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -764,6 +798,39 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_initialize_ranks_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_update_handles_DXIL}")
+
+    # Original BP_COMPUTE_ENDPT_HISTOGRAM / BP_OUTPUT_ENDPT_HISTOGRAM.
+    foreach(_hist_pass IN ITEMS first second)
+      set(FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_d3d12_sap_endpoint_${_hist_pass}_shader
+        DEPENDS "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}")
+    endforeach()
+    add_executable(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
+      tests/physx_gpu_sap_endpoint_histogram.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
+      fyzzxyzzy_d3d12_sap_endpoint_first_shader
+      fyzzxyzzy_d3d12_sap_endpoint_second_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
+      COMMAND fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}")
   endif()
 endif()
 
