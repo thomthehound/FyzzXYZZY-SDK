@@ -179,6 +179,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.spv")
       add_custom_command(
         OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
         COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
           -T cs_6_0 -E main
           -Fo "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
@@ -295,6 +297,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.dxil")
     add_custom_command(
       OUTPUT "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
       COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
         -Fo "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
