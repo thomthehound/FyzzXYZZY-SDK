@@ -10,6 +10,7 @@
 #include "physx_gpu/radix_scatter_arena.h"
 
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -90,18 +91,26 @@ void SapRankedSortArenaStage::append_source_sequence(
         padded > std::numeric_limits<std::uint32_t>::max())
         throw std::invalid_argument("Invalid PhysX WR ranked-sort dimensions");
 
-    append_dispatch(commands, initialize_pipeline_, arena, arena_bytes,
+    // Build the full source-ordered sequence transactionally: a rejected
+    // radix descriptor must not leave initialization or partial sort work
+    // in a caller-owned batch.
+    std::vector<compute::BatchCommand> staged;
+    staged.reserve(18);
+    append_dispatch(staged, initialize_pipeline_, arena, arena_bytes,
                     descriptor_offset, previous_num_boxes);
     for (std::uint32_t pass = 0; pass < 8u; ++pass) {
         const auto parity = pass & 1u;
-        count_stage.append(commands, arena, arena_bytes,
+        count_stage.append(staged, arena, arena_bytes,
                            count_descriptor_offsets[parity],
                            static_cast<std::uint32_t>(padded), pass * 4u);
-        scatter_stage.append(commands, arena, arena_bytes,
+        scatter_stage.append(staged, arena, arena_bytes,
                              scatter_descriptor_offsets[parity],
                              static_cast<std::uint32_t>(padded), pass * 4u);
     }
-    append_dispatch(commands, update_pipeline_, arena, arena_bytes,
+    append_dispatch(staged, update_pipeline_, arena, arena_bytes,
                     descriptor_offset, previous_num_boxes);
+    commands.reserve(commands.size() + staged.size());
+    commands.insert(commands.end(), std::make_move_iterator(staged.begin()),
+                    std::make_move_iterator(staged.end()));
 }
 } // namespace fyzz::physx_gpu
