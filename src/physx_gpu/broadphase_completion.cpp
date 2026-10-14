@@ -25,12 +25,13 @@ bool BroadPhaseCompletionGate::gpu_complete() const {
 
 void BroadPhaseCompletionGate::fetch_and_release(
     const std::function<void()>& fetch_and_resize,
+    const std::function<void()>& install_continuations,
     physx::PxBaseTask& found,
     physx::PxBaseTask& lost) {
     if (!armed_)
         throw std::logic_error("Broadphase completion not armed");
-    if (!fetch_and_resize)
-        throw std::invalid_argument("Broadphase requires a result-publication operation");
+    if (!fetch_and_resize || !install_continuations)
+        throw std::invalid_argument("Broadphase requires publication and continuation operations");
     if (&found == &lost)
         throw std::invalid_argument("Broadphase pair tasks must be distinct");
 
@@ -44,6 +45,9 @@ void BroadPhaseCompletionGate::fetch_and_release(
     // Keep armed_ true until publication succeeds. A failure must not
     // release the found/lost tasks against unpublished or stale pair data.
     fetch_and_resize();
+    // Exactly the original PxgAABBManager::postBroadPhase order: set both
+    // found/lost continuations *after* result retrieval and pair resizing.
+    install_continuations();
 
     // Mark consumed BEFORE calls into PhysX task dispatch. They may execute
     // continuations or even destroy this gate's owning scene immediately.
