@@ -686,6 +686,64 @@ pretend that source `BP_ACCUMULATE_REPORT_STAGE_1` and
 the next required GPU data producers; this bounded port tests
 their consumer before composing the three-stage host sequence.
 
+### Source actor/aggregate report partition and compaction
+
+`PxgCudaBroadPhaseSap::runCopyResultsKernel` schedules three
+original GPU kernels: `BP_ACCUMULATE_REPORT_STAGE_1`,
+`BP_ACCUMULATE_REPORT_STAGE_2`, then `BP_COPY_REPORTS`.
+The first two are `accumulateReportsStage_1` and
+`accumulateReportsStage_2` in
+`gpubroadphase/src/CUDA/broadphase.cu`, each with
+**32 blocks × 4 stream classes × 256 threads**.
+The four original Y classes, in order, are aggregate-found,
+actor-found, aggregate-lost, and actor-lost. Their X blocks own
+contiguous portions of the incoming raw report arrays, with
+the original multi-iteration partitioning when the report
+count exceeds 8192.
+
+A report is an actor–actor report only when **both** volume
+entries are single actors. The source test is
+`Bp::VolumeData::isSingleActor()`, equivalent to
+`mAggregate == PX_INVALID_U32` in
+`physx/source/lowlevelaabb/include/BpVolumeData.h`.
+Aggregated actors and aggregate volumes are both nonsingle.
+When `aabbMngr_volumeData` is null, the original code
+treats **all** reports as actor reports. The portable
+descriptor uses a caller-owned array of exactly those
+`mAggregate` field values, not a custom actor/aggregate
+membership interpretation or a copied pointer-rich
+`Bp::VolumeData` layout.
+
+Stage one records 32 block totals per report class, limited
+to `min(sharedPairIndex, max_found_lost_pairs)` retained
+input records, while preserving the upstream partition based
+on the full count. Stage two computes exclusive block
+prefixes, classifies records within each block, and writes
+stable compacted found/lost actor and aggregate report
+buffers. Actor output capacity is the raw report capacity;
+aggregate output uses the independent
+`max_found_lost_agg_pairs` capacity. The found/lost
+aggregate counters reflect **all retained aggregate records**,
+even if the smaller aggregate-output allocation clips writes.
+The existing `BP_COPY_REPORTS` stage then copies actor
+reports to publication staging and sets overflow from the
+original raw counters. Original scene publication, CPU
+task continuations and buffer swaps are not part of this
+standalone source kernel fixture.
+
+The shared HLSL uses 256-thread workgroup reductions and
+scans independent of AMD/NVIDIA native wave size. It retains
+source X/Y work partitioning and output ordering, and executes
+the **three original report kernels consecutively** in one
+Vulkan or D3D12 batch. The CPU oracle independently partitions
+original found/lost reports and compares all four compacted
+outputs, all 128 block histograms, both aggregate counts,
+actor publication maps, clipped canaries, and overflow flags.
+Cases include zero, single, mixed actor/aggregate and
+null-`VolumeData` workloads; differing input/output caps;
+raw-count overflows and 8193/16385 pair boundary tests.
+The test does not claim a full live-scene broadphase.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:

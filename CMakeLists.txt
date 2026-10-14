@@ -99,6 +99,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
+    src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -595,6 +596,40 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_physx_bp_copy_reports
         COMMAND fyzzxyzzy_physx_bp_copy_reports
           "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
+
+      # Pinned PhysX accumulateReportsStage_1 / _2: 32 x 4 x 256 each.
+      foreach(_report_pass IN ITEMS first second)
+        set(FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_arena.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_0 -E main
+            -Fo "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_physx_bp_report_class_${_report_pass}_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}")
+      endforeach()
+      add_executable(fyzzxyzzy_physx_bp_report_classification
+        tests/physx_gpu_broadphase_report_classification.cpp)
+      target_include_directories(fyzzxyzzy_physx_bp_report_classification PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_bp_report_classification PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_bp_report_classification
+        fyzzxyzzy_physx_bp_report_class_first_shader
+        fyzzxyzzy_physx_bp_report_class_second_shader
+        fyzzxyzzy_physx_bp_copy_reports_shader)
+      add_test(NAME fyzzxyzzy_physx_bp_report_classification
+        COMMAND fyzzxyzzy_physx_bp_report_classification
+          "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -660,6 +695,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
+    src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1114,6 +1150,41 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_bp_copy_reports_shader)
     add_test(NAME fyzzxyzzy_physx_bp_copy_reports_d3d12
       COMMAND fyzzxyzzy_physx_bp_copy_reports_d3d12
+        "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
+
+    # Pinned PhysX accumulateReportsStage_1 / _2: 32 x 4 x 256 each.
+    foreach(_report_pass IN ITEMS first second)
+      set(FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_arena.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_d3d12_bp_report_class_${_report_pass}_shader
+        DEPENDS "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}")
+    endforeach()
+    add_executable(fyzzxyzzy_physx_bp_report_classification_d3d12
+      tests/physx_gpu_broadphase_report_classification.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_bp_report_classification_d3d12
+      fyzzxyzzy_d3d12_bp_report_class_first_shader
+      fyzzxyzzy_d3d12_bp_report_class_second_shader
+      fyzzxyzzy_d3d12_bp_copy_reports_shader)
+    add_test(NAME fyzzxyzzy_physx_bp_report_classification_d3d12
+      COMMAND fyzzxyzzy_physx_bp_report_classification_d3d12
+        "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_first_DXIL}"
+        "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_second_DXIL}"
         "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
   endif()
 endif()
