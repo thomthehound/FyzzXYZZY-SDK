@@ -5,6 +5,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
+
 #include <cstring>
 #include <algorithm>
 #include <limits>
@@ -156,7 +158,10 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
-    std::vector<CachedBatch> cached_batches;
+    // A fixed-capacity, non-allocating cache. Retirement happens after GPU
+    // completion and must never fail from host allocation pressure.
+    std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
+    std::size_t cached_batch_count = 0;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -219,13 +224,14 @@ struct Context::Impl {
                 release_submission(item.second);
             }
             submissions.clear();
-            for (const auto& cache : cached_batches) {
+            for (std::size_t i = 0; i < cached_batch_count; ++i) {
+                const auto& cache = cached_batches[i];
                 if (cache.descriptor_pool != VK_NULL_HANDLE)
                     vkDestroyDescriptorPool(device, cache.descriptor_pool, nullptr);
                 if (cache.commands != VK_NULL_HANDLE)
                     vkFreeCommandBuffers(device, command_pool, 1, &cache.commands);
             }
-            cached_batches.clear();
+            cached_batch_count = 0;
             for (auto& item : pipelines) {
                 destroy_pipeline_handles(item.second);
             }
@@ -264,21 +270,25 @@ struct Context::Impl {
         }
     }
 
-    void retire_submission(const Submission& submission) {
+    void retire_submission(const Submission& submission) noexcept {
+        // No host allocation, and Vulkan destroy/free APIs return void.
+        // This cannot leave a live submission retaining destroyed handles
+        // because retirement itself can no longer throw.
         if (submission.timestamps != VK_NULL_HANDLE)
             vkDestroyQueryPool(device, submission.timestamps, nullptr);
         if (submission.fence != VK_NULL_HANDLE)
             vkDestroyFence(device, submission.fence, nullptr);
         if (!submission.cacheable_batch ||
-            cached_batches.size() >= kMaxCachedBatches) {
+            cached_batch_count >= kMaxCachedBatches) {
             if (submission.commands != VK_NULL_HANDLE)
                 vkFreeCommandBuffers(device, command_pool, 1, &submission.commands);
             if (submission.descriptor_pool != VK_NULL_HANDLE)
                 vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
             return;
         }
-        cached_batches.push_back({submission.commands, submission.descriptor_pool,
-                                  submission.descriptor_capacity, submission.set_capacity});
+        cached_batches[cached_batch_count++] = {
+            submission.commands, submission.descriptor_pool,
+            submission.descriptor_capacity, submission.set_capacity};
     }
 
     SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
@@ -872,9 +882,9 @@ struct Context::Impl {
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
         try {
-            if (!cached_batches.empty()) {
-                CachedBatch cached = cached_batches.back();
-                cached_batches.pop_back();
+            if (cached_batch_count != 0) {
+                CachedBatch cached = cached_batches[--cached_batch_count];
+                cached_batches[cached_batch_count] = {};
                 pool = cached.descriptor_pool;
                 commands = cached.commands;
                 descriptor_capacity = cached.descriptor_capacity;
