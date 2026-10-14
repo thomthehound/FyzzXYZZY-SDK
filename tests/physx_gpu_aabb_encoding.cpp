@@ -209,6 +209,67 @@ void run_ordered_batch(Context& context, AabbEncodingStage& stage) {
     context.destroy_buffer(box);
 }
 
+// PhysX buffer-grow behavior: the old allocation remains valid to GPU work
+// already submitted, but its public handle is invalid immediately. Waiting
+// on a later submission also completes prior work on the ordered queue.
+void run_deferred_retirement(Context& context) {
+    std::array<std::uint32_t, 73> source_values{};
+    for (std::size_t i = 0; i < source_values.size(); ++i)
+        source_values[i] = 0x193f0000u + static_cast<std::uint32_t>(i * 17);
+    constexpr std::size_t bytes = sizeof(source_values);
+
+    const BufferId source = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId first = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId second = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    context.upload(source, 0, source_values.data(), bytes);
+
+    const auto earlier = context.submit_copy_buffer(source, 0, first, 0, bytes);
+    const auto later = context.submit_copy_buffer(source, 0, second, 0, bytes);
+    context.retire_buffer(source);
+
+    // Immediate public-handle invalidation is essential: later dispatches
+    // must not access an allocation already scheduled for deferred release.
+    bool rejected = false;
+    try {
+        context.submit_copy_buffer(source, 0, second, 0, bytes);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Retired GPU buffer ID remained usable");
+    rejected = false;
+    try {
+        context.retire_buffer(source);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("GPU buffer accepted duplicate retirement");
+
+    // A fresh buffer should be legal before either submission completes,
+    // without reusing the backing resource still needed by the GPU.
+    const BufferId replacement = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    // Avoid a synchronous upload here: that would implicitly drain both
+    // earlier copies and mask premature release by the retirement path.
+    context.wait_submission(later);
+    if (!context.submission_complete(earlier))
+        throw std::runtime_error("Same-queue earlier copy did not complete");
+    context.wait_submission(earlier);
+
+    std::array<std::uint32_t, 73> observed{};
+    context.download(first, 0, observed.data(), bytes);
+    if (observed != source_values)
+        throw std::runtime_error("Deferred GPU source retirement corrupted earlier copy");
+    context.download(second, 0, observed.data(), bytes);
+    if (observed != source_values)
+        throw std::runtime_error("Deferred GPU source retirement corrupted later copy");
+
+    // No pending submissions: retirement should release immediately.
+    context.retire_buffer(replacement);
+    context.destroy_buffer(second);
+    context.destroy_buffer(first);
+}
+
 void reject_invalid(AabbEncodingStage& stage) {
     std::vector<BatchCommand> commands;
     commands.emplace_back(CopyCommand{1, 0, 2, 0, 16});
@@ -263,6 +324,7 @@ int main(int argc, char** argv) {
         run_case(context, stage, {47, 6, 2, 4, 2, 1, 0}, true);
         run_case(context, stage, {37, 6, 2, 4, 2, 1, 0}, false);
         run_ordered_batch(context, stage);
+        run_deferred_retirement(context);
         std::cout << "PhysX GPU broadphase AABB encoding PASS\n";
         return 0;
     } catch (const std::exception& e) {

@@ -193,6 +193,11 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
+    struct RetiredBuffer {
+        std::uint64_t release_after_fence = 0;
+        Buffer buffer;
+    };
+    std::vector<RetiredBuffer> retired_buffers;
     // Completed command allocator/list and descriptor heap reuse. Never
     // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
     std::vector<Submission> recycled;
@@ -287,20 +292,35 @@ struct Context::Impl {
             throw std::runtime_error("D3D12 fence wait failed");
     }
 
+    void release_retired_through(std::uint64_t completed_fence) noexcept {
+        auto it = retired_buffers.begin();
+        while (it != retired_buffers.end()) {
+            if (it->release_after_fence <= completed_fence) {
+                it = retired_buffers.erase(it); // ComPtr releases GPU allocation
+            } else {
+                ++it;
+            }
+        }
+    }
+
     void wait_submission(SubmissionId id) {
         auto it = submissions.find(id);
         if (it == submissions.end()) throw std::invalid_argument("Unknown D3D12 submission");
-        wait_value(it->second.fence_value);
+        const auto completed = it->second.fence_value;
+        wait_value(completed);
         recycle_completed(std::move(it->second));
         submissions.erase(it);
+        release_retired_through(completed);
     }
 
     void wait_all() {
         if (submissions.empty()) return;
-        wait_value(next_fence - 1);
+        const auto completed = next_fence - 1;
+        wait_value(completed);
         for (auto& entry : submissions)
             recycle_completed(std::move(entry.second));
         submissions.clear();
+        release_retired_through(completed);
     }
 
     BufferId create_buffer(std::size_t bytes, MemoryPlacement /*placement*/) {
@@ -317,8 +337,26 @@ struct Context::Impl {
 
     void destroy_buffer(BufferId id) {
         get_buffer(id);
-        wait_all(); // resources cannot die while a GPU command refers to them
+        wait_all(); // original blocking API remains unchanged
         buffers.erase(id);
+    }
+
+    void retire_buffer(BufferId id) {
+        auto it = buffers.find(id);
+        if (it == buffers.end())
+            throw std::invalid_argument("Unknown D3D12 buffer");
+        if (!submissions.empty()) {
+            std::uint64_t last_fence = 0;
+            for (const auto& pending : submissions)
+                last_fence = std::max(last_fence, pending.second.fence_value);
+            // Copy the owning ComPtr into the retirement record *before*
+            // erasing the ID. On host allocation failure the original ID
+            // still owns the live resource.
+            retired_buffers.push_back({last_fence, it->second});
+        }
+        // The handle becomes unusable immediately. Its backing resource
+        // lives in retired_buffers until the last dependent queue fence.
+        buffers.erase(it);
     }
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
@@ -683,8 +721,10 @@ struct Context::Impl {
         std::memcpy(ticks, mapped, sizeof(ticks));
         const D3D12_RANGE written{0, 0};
         it->second.query_readback->Unmap(0, &written);
+        const auto completed = it->second.fence_value;
         recycle_completed(std::move(it->second));
         submissions.erase(it);
+        release_retired_through(completed);
         if (ticks[1] < ticks[0])
             throw std::runtime_error("D3D12 GPU timestamp counter regressed");
         return static_cast<double>(ticks[1] - ticks[0]) *
@@ -702,6 +742,7 @@ BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
     return impl_->create_buffer(bytes, placement);
 }
 void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
+void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->upload(id, offset, data, bytes);
 }

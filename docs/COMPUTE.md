@@ -92,6 +92,30 @@ The PhysX task graph, cross-submission dependencies, and actual lifetime
 rules remain authoritative. Do not infer performance gains from software
 Vulkan or WARP CI.
 
+### Deferred GPU buffer retirement
+
+`Context::retire_buffer(id)` immediately invalidates the buffer handle
+but **does not block** waiting for GPU execution. The Context owns the old
+allocation until the last outstanding submission on its ordered queue
+completes. On Vulkan this is attached to the last pending submission ID;
+on D3D12 it is attached to the last pending queue-fence value. Completion
+of a later submission on the same queue makes preceding operations safe
+to release even if their completion tokens have not been explicitly
+waited in ID order. Waiting and profiling a submission both trigger
+eligible retirement; Context destruction drains and releases remaining
+allocations.
+
+The pre-existing `destroy_buffer` retains its synchronous semantics.
+`retire_buffer` does not yet implement GPU-side arena suballocation,
+asynchronous host-to-device staging reuse, buffer growth, or result
+publication into the PhysX scene. It supplies **one necessary lifetime
+primitive** for faithful porting of PhysX's
+`PxgCudaBuffer::allocateCopyOldDataAsync`, preserving the old allocation
+until an in-flight GPU copy finishes. Ordinary device-to-device copies
+are already nonblocking when submitted through `submit_copy_buffer`.
+The backend's single-queue behavior is currently a conservative
+execution boundary, not a replacement for the upstream PhysX task graph.
+
 ## PhysX-derived GPU stages
 
 The `fyzzxyzzy_physx_gpu_stages` target contains the first translated PhysX

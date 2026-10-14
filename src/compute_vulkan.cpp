@@ -158,6 +158,11 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
+    struct RetiredBuffer {
+        SubmissionId release_after;
+        Buffer buffer;
+    };
+    std::vector<RetiredBuffer> retired_buffers;
     // A fixed-capacity, non-allocating cache. Retirement happens after GPU
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
@@ -224,6 +229,11 @@ struct Context::Impl {
                 release_submission(item.second);
             }
             submissions.clear();
+            // vkDeviceWaitIdle above guarantees the last submission has
+            // completed; no retired GPU allocation may survive device teardown.
+            for (const auto& retired : retired_buffers)
+                release_buffer(retired.buffer);
+            retired_buffers.clear();
             for (std::size_t i = 0; i < cached_batch_count; ++i) {
                 const auto& cache = cached_batches[i];
                 if (cache.descriptor_pool != VK_NULL_HANDLE)
@@ -319,6 +329,21 @@ struct Context::Impl {
         return id;
     }
 
+    void release_retired_through(SubmissionId completed_id) noexcept {
+        // The Context uses one ordered Vulkan queue. Completion of N
+        // therefore makes every submission <= N safe to release, even if a
+        // caller waits on N before earlier submission IDs.
+        auto it = retired_buffers.begin();
+        while (it != retired_buffers.end()) {
+            if (it->release_after <= completed_id) {
+                release_buffer(it->buffer);
+                it = retired_buffers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     bool submission_complete(SubmissionId id) const {
         const auto it = submissions.find(id);
         if (it == submissions.end()) {
@@ -342,6 +367,7 @@ struct Context::Impl {
                 "vkWaitForFences");
         retire_submission(it->second);
         submissions.erase(it);
+        release_retired_through(id);
     }
 
     void wait_all() {
@@ -478,6 +504,25 @@ struct Context::Impl {
             throw std::out_of_range("Unknown compute buffer ID");
         }
         release_buffer(it->second);
+        buffers.erase(it);
+    }
+
+    void retire_buffer(BufferId id) {
+        const auto it = buffers.find(id);
+        if (it == buffers.end())
+            throw std::out_of_range("Unknown compute buffer ID");
+        if (submissions.empty()) {
+            // No tracked in-flight work. Any earlier submitted work was
+            // already waited on the ordered queue.
+            release_buffer(it->second);
+        } else {
+            SubmissionId last = 0;
+            for (const auto& pending : submissions)
+                last = std::max(last, pending.first);
+            // Queue-retirement record must be secured *before* invalidating
+            // the public BufferId, preserving ownership on allocation failure.
+            retired_buffers.push_back({last, it->second});
+        }
         buffers.erase(it);
     }
 
@@ -1138,6 +1183,7 @@ struct Context::Impl {
         if (result != VK_SUCCESS) {
             retire_submission(it->second);
             submissions.erase(it);
+            release_retired_through(id);
             require(result, "vkGetQueryPoolResults");
         }
         const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
@@ -1145,6 +1191,7 @@ struct Context::Impl {
         const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
         retire_submission(it->second);
         submissions.erase(it);
+        release_retired_through(id);
         return static_cast<double>(delta) * limits.timestampPeriod;
     }
 
@@ -1182,6 +1229,7 @@ BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
 }
 
 void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
+void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->transfer(id, offset, const_cast<void*>(data), bytes, true);
