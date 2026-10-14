@@ -92,6 +92,26 @@ std::vector<Candidate> discover_adapters() {
         info.max_workgroup_size[0] = 1024;
         info.max_workgroup_size[1] = 1024;
         info.max_workgroup_size[2] = 64;
+        // Query the real adapter: a DXIL shader compiling under DXC
+        // says nothing about WaveOps support on the selected device.
+        ComPtr<ID3D12Device> probe;
+        check(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+                                IID_PPV_ARGS(&probe)), "D3D12 feature probe");
+        D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts{};
+        const bool waveOps =
+            SUCCEEDED(probe->CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS1, &opts, sizeof(opts))) &&
+            opts.WaveOps;
+        D3D12_FEATURE_DATA_SHADER_MODEL shaderModel{};
+        shaderModel.HighestShaderModel = D3D_SHADER_MODEL_6_6;
+        if (FAILED(probe->CheckFeatureSupport(
+                D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel))))
+            shaderModel.HighestShaderModel = D3D_SHADER_MODEL_5_1;
+        info.shader_model = static_cast<std::uint32_t>(
+            shaderModel.HighestShaderModel);
+        info.supports_wave_arithmetic =
+            waveOps && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+        info.subgroup_size = waveOps ? opts.WaveLaneCountMin : 0u;
         candidates.push_back({std::move(adapter), std::move(info)});
     };
 
