@@ -93,6 +93,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/radix_count_arena.cpp
     src/physx_gpu/radix_scatter_arena.cpp
     src/physx_gpu/sap_box_indices_arena.cpp
+    src/physx_gpu/sap_ranked_sort_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -385,6 +386,42 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}")
+
+      # PhysX WR: initializeRadixRanks → eight radix passes → updateHandles.
+      foreach(_sap_kernel IN ITEMS initialize_ranks update_handles)
+        set(FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_${_sap_kernel}_arena.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_0 -E main
+            -Fo "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_physx_sap_${_sap_kernel}_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}")
+      endforeach()
+      add_executable(fyzzxyzzy_physx_sap_ranked_sort
+        tests/physx_gpu_sap_ranked_sort.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_ranked_sort PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_ranked_sort PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_ranked_sort
+        fyzzxyzzy_physx_radix_count_shader
+        fyzzxyzzy_physx_radix_scatter_shader
+        fyzzxyzzy_physx_sap_initialize_ranks_shader
+        fyzzxyzzy_physx_sap_update_handles_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_ranked_sort
+        COMMAND fyzzxyzzy_physx_sap_ranked_sort
+          "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
+          "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_initialize_ranks_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_update_handles_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -444,6 +481,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/radix_count_arena.cpp
     src/physx_gpu/radix_scatter_arena.cpp
     src/physx_gpu/sap_box_indices_arena.cpp
+    src/physx_gpu/sap_ranked_sort_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -689,6 +727,43 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}")
+
+    # PhysX WR: initializeRadixRanks → eight radix passes → updateHandles.
+    foreach(_sap_kernel IN ITEMS initialize_ranks update_handles)
+      set(FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_${_sap_kernel}_arena.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_d3d12_sap_${_sap_kernel}_shader
+        DEPENDS "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}")
+    endforeach()
+    add_executable(fyzzxyzzy_physx_sap_ranked_sort_d3d12
+      tests/physx_gpu_sap_ranked_sort.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_ranked_sort_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_ranked_sort_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_ranked_sort_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_ranked_sort_d3d12
+      fyzzxyzzy_d3d12_radix_count_shader
+      fyzzxyzzy_d3d12_radix_scatter_shader
+      fyzzxyzzy_d3d12_sap_initialize_ranks_shader
+      fyzzxyzzy_d3d12_sap_update_handles_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_ranked_sort_d3d12
+      COMMAND fyzzxyzzy_physx_sap_ranked_sort_d3d12
+        "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
+        "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_initialize_ranks_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_update_handles_DXIL}")
   endif()
 endif()
 
