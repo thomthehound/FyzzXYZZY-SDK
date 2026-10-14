@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -134,9 +135,10 @@ int main() {
 #else
         exercise(Backend::Vulkan);
 #endif
+        std::cout << "PhysX broadphase completion gate PASS\n";
         return 0;
     } catch (const std::exception& e) {
-        (void)e;
+        std::cerr << "PhysX broadphase completion gate FAILED: " << e.what() << '\n';
         return 1;
     }
 }
