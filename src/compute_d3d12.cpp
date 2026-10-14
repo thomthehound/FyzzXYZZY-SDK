@@ -110,7 +110,9 @@ std::vector<Candidate> discover_adapters() {
         info.shader_model = static_cast<std::uint32_t>(
             shaderModel.HighestShaderModel);
         info.supports_wave_arithmetic =
-            waveOps && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+            // The fast DXIL binary is compiled for cs_6_6, so SM6.0
+            // WaveOps alone are insufficient to select this pipeline.
+            waveOps && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
         info.subgroup_size = waveOps ? opts.WaveLaneCountMin : 0u;
         candidates.push_back({std::move(adapter), std::move(info)});
     };
