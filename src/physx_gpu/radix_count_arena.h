@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "compute/compute.h"
+#include "fyzzxyzzy/compute.h"
 
 #include <cstddef>
 #include <cstdint>
