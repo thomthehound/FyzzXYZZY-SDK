@@ -128,6 +128,8 @@ An opaque Vulkan buffer ID is **not** interchangeable with a `CUdeviceptr`
 embedded in a kernel descriptor. A naive struct memcpy, pointer cast,
 or shader register remapping will not preserve the ABI.
 
+See [GPU memory/addressing RFC and benchmark contract](GPU_MEMORY_ADDRESSING_RFC.md).
+
 **Addressing decision gate:** evaluate, on real PhysX descriptor graphs,
 (a) explicit descriptor/offset indirection, (b) a GPU address scheme on Vulkan
 where supported, and (c) D3D12 shader-model-compatible descriptor indexing.
