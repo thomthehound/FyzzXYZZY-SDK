@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/broadphase_completion.h"
+#include "physx_gpu/sap_host_frame_roles.h"
 
 #include <array>
 #include <cstdint>
@@ -14,6 +15,9 @@ namespace {
 
 using namespace fyzz::compute;
 using fyzz::physx_gpu::BroadPhaseCompletionGate;
+using fyzz::physx_gpu::SapFrameBufferRoles;
+using fyzz::physx_gpu::SapUpdateInputs;
+using fyzz::physx_gpu::decide_sap_update;
 
 struct PairTask final : physx::PxBaseTask {
     explicit PairTask(const char* label, std::vector<std::string>& events)
@@ -147,14 +151,183 @@ void exercise(Backend backend) {
     context.destroy_buffer(buffer);
 }
 
+
+void verify_source_update_gates() {
+    // Actual PxgCudaBroadPhaseSap constructor sets mForceUpdate=true.
+    // The first idle update therefore runs once to complete a valid
+    // old/new-bound swap; the following idle call returns early.
+    bool force = true;
+    auto idle = decide_sap_update(SapUpdateInputs{12u, 0u, 0u, false, false, force});
+    if (!idle.dispatch_update || !idle.forced_idle_update ||
+        idle.force_update_next || idle.current_boxes != 12u ||
+        idle.perform_incremental_sap || idle.repair_removed_projections ||
+        idle.sort_created_removed_projections || idle.clear_created_handle_flags)
+        throw std::runtime_error("PhysX first idle forced-update gate changed");
+    force = idle.force_update_next;
+    idle = decide_sap_update(SapUpdateInputs{12u, 0u, 0u, false, false, force});
+    if (idle.dispatch_update || idle.force_update_next || idle.forced_idle_update)
+        throw std::runtime_error("PhysX repeated idle call should skip GPU work");
+
+    // Changed GPU state runs the incremental SAP comparison, whether or
+    // not the host bounds are reported as changed.
+    const auto gpuChanged =
+        decide_sap_update(SapUpdateInputs{12u, 0u, 0u, false, true, false});
+    if (!gpuChanged.dispatch_update || !gpuChanged.perform_incremental_sap ||
+        !gpuChanged.force_update_next || gpuChanged.forced_idle_update)
+        throw std::runtime_error("PhysX gpuStateChanged decision changed");
+    const auto afterGpu =
+        decide_sap_update(SapUpdateInputs{12u, 0u, 0u, false, false,
+                                          gpuChanged.force_update_next});
+    if (!afterGpu.dispatch_update || !afterGpu.forced_idle_update ||
+        afterGpu.force_update_next)
+        throw std::runtime_error("PhysX one forced frame after activity missing");
+
+    // Removed handles repair the old positions. Created *or* removed
+    // handles cause a full WOR sort; only created handles need new-flag
+    // clearing. Preserve the original previous-box count for rank setup.
+    const auto removeAndCreate =
+        decide_sap_update(SapUpdateInputs{12u, 5u, 3u, false, false, false});
+    if (!removeAndCreate.dispatch_update || removeAndCreate.previous_boxes != 12u ||
+        removeAndCreate.current_boxes != 14u ||
+        !removeAndCreate.repair_removed_projections ||
+        !removeAndCreate.sort_created_removed_projections ||
+        !removeAndCreate.clear_created_handle_flags ||
+        removeAndCreate.perform_incremental_sap)
+        throw std::runtime_error("PhysX created/removed host branches changed");
+    const auto removeOnly =
+        decide_sap_update(SapUpdateInputs{12u, 0u, 3u, false, false, false});
+    if (!removeOnly.repair_removed_projections ||
+        !removeOnly.sort_created_removed_projections ||
+        removeOnly.clear_created_handle_flags ||
+        removeOnly.current_boxes != 9u)
+        throw std::runtime_error("PhysX removed-only branch changed");
+    const auto cpuChange =
+        decide_sap_update(SapUpdateInputs{12u, 0u, 0u, true, false, false});
+    if (!cpuChange.dispatch_update || cpuChange.perform_incremental_sap ||
+        !cpuChange.force_update_next)
+        throw std::runtime_error("PhysX stateChanged branch changed");
+
+    require_throws([] {
+        decide_sap_update(SapUpdateInputs{1u, 0u, 2u, true, false, false});
+    }, "PhysX removed more SAP boxes than available");
+    require_throws([] {
+        decide_sap_update(SapUpdateInputs{0xffffffffu, 1u, 0u, true, false, false});
+    }, "PhysX overflowing box population accepted");
+}
+
+void verify_source_frame_swaps(Context& context) {
+    using Member = SapFrameBufferRoles::History SapFrameBufferRoles::*;
+    // Exactly the seven original PxgCudaBuffer histories, each with
+    // current [0..2] and previous [3..5] slots. A swap changes
+    // allocation identities, never any allocation's contents.
+    const std::array<Member, 7> families = {{
+        &SapFrameBufferRoles::box_handles,
+        &SapFrameBufferRoles::block_end_histograms,
+        &SapFrameBufferRoles::end_histograms,
+        &SapFrameBufferRoles::ordered_end_handles,
+        &SapFrameBufferRoles::block_start_histograms,
+        &SapFrameBufferRoles::start_histograms,
+        &SapFrameBufferRoles::ordered_start_handles
+    }};
+
+    SapFrameBufferRoles roles;
+    for (std::uint64_t f = 0u; f < families.size(); ++f)
+        for (std::uint64_t i = 0u; i < 6u; ++i)
+            (roles.*families[f])[i] = 1000u + 16u * f + i;
+    roles.old_integer_bounds = 4001u;
+    roles.new_integer_bounds = 4002u;
+    const auto initial = roles;
+    const auto check = [&](bool historiesSwapped, bool boundsSwapped) {
+        for (const auto member : families)
+            for (std::uint32_t i = 0u; i < 6u; ++i) {
+                const auto source = historiesSwapped ?
+                    (i < 3u ? i + 3u : i - 3u) : i;
+                if ((roles.*member)[i] != (initial.*member)[source])
+                    throw std::runtime_error("PhysX SAP six-buffer history identity mismatch");
+            }
+        const auto expectedOld = boundsSwapped ?
+            initial.new_integer_bounds : initial.old_integer_bounds;
+        const auto expectedNew = boundsSwapped ?
+            initial.old_integer_bounds : initial.new_integer_bounds;
+        if (roles.old_integer_bounds != expectedOld ||
+            roles.new_integer_bounds != expectedNew)
+            throw std::runtime_error("PhysX integer bounds and history swap were conflated");
+    };
+
+    // update() swaps the integer AABBs *before* the report kernel trio.
+    roles.swap_bounds_after_generate_new_pairs();
+    check(false, true);
+
+    // Fetch can only rotate histories after its GPU result transfer;
+    // the existing completion gate releases original PhysX pair tasks
+    // strictly after that callback. This exercise uses a real GPU upload.
+    std::array<std::uint32_t, 17u> payload{};
+    for (std::uint32_t i = 0; i < payload.size(); ++i)
+        payload[i] = 0xbeef0000u + i;
+    const auto buffer =
+        context.create_buffer(sizeof(payload), MemoryPlacement::DeviceLocal);
+    BroadPhaseCompletionGate gate(context);
+    gate.arm(context.submit_upload_buffer(
+        buffer, 0u, payload.data(), sizeof(payload)));
+    std::vector<std::string> events;
+    PairTask found("found", events), lost("lost", events);
+    check(false, true);
+    gate.fetch_and_release([&] {
+        std::array<std::uint32_t, 17u> actual{};
+        context.download(buffer, 0u, actual.data(), sizeof(actual));
+        if (actual != payload)
+            throw std::runtime_error("SAP swap occurred before GPU fetch");
+        events.emplace_back("fetch");
+        roles.swap_histories_after_fetch();
+        events.emplace_back("swap");
+    }, [&] { events.emplace_back("continuations"); }, found, lost);
+    if (events != std::vector<std::string>{
+            "fetch", "swap", "continuations", "found", "lost"})
+        throw std::runtime_error("Source SAP fetch, swap and task order changed");
+    check(true, true);
+
+    // An empty/early-return update still enters the original
+    // fetchBroadPhaseResults path and swaps all seven histories,
+    // without an integer-bound swap or a new GPU submission.
+    gate.arm(0u);
+    events.clear();
+    PairTask quietFound("found", events), quietLost("lost", events);
+    require_throws([&] {
+        gate.fetch_and_release([&] {
+            events.emplace_back("fetch-failed");
+            throw std::runtime_error("GPU report transfer error");
+        }, [&] { events.emplace_back("continuations"); },
+        quietFound, quietLost);
+    }, "Failed PhysX fetch unexpectedly succeeded");
+    check(true, true);
+    if (!gate.armed() || quietFound.releases() || quietLost.releases())
+        throw std::runtime_error("Failed fetch published partial SAP frame");
+    events.clear();
+    gate.fetch_and_release([&] {
+        events.emplace_back("fetch");
+        roles.swap_histories_after_fetch();
+        events.emplace_back("swap");
+    }, [&] { events.emplace_back("continuations"); },
+    quietFound, quietLost);
+    if (events != std::vector<std::string>{
+            "fetch", "swap", "continuations", "found", "lost"})
+        throw std::runtime_error("Quiet-frame history swap must precede task release");
+    check(false, true);
+    context.destroy_buffer(buffer);
+}
+
 } // namespace
 
 int main() {
     try {
 #if defined(FYZZXYZZY_TEST_D3D12)
         exercise(Backend::D3D12);
+        verify_source_update_gates();
+        { Context context(Backend::D3D12); verify_source_frame_swaps(context); }
 #else
         exercise(Backend::Vulkan);
+        verify_source_update_gates();
+        { Context context(Backend::Vulkan); verify_source_frame_swaps(context); }
 #endif
         std::cout << "PhysX broadphase completion gate PASS\n";
         return 0;

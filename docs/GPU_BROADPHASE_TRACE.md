@@ -65,6 +65,77 @@ mandatory source-translation dependency; replacing it with a proven
 semantically equivalent sort requires documenting tie-order, key/handle
 relationship, stability and incremental rank effects.
 
+## 2a. Portable host frame roles and original update gates
+
+Implementation: `src/physx_gpu/sap_host_frame_roles.{h,cpp}`,
+tested through the existing `BroadPhaseCompletionGate` GPU fixture.
+This is an adapter for the **original PhysX caller**, not a second
+simulation loop or autonomous batch scheduler.
+
+The original `PxgCudaBroadPhaseSap::update` calls `gpuDMAUp`
+**before** determining whether to return early. For a quiet frame
+(no created or removed handles, `stateChanged=false` and
+`gpuStateChanged=false`), it dispatches once if `mForceUpdate`
+is true, then sets `mForceUpdate=false`. The next quiet frame
+returns early, leaving the flag false. Any active frame resets
+`mForceUpdate=true` so the next idle frame performs one
+additional bounds update. The constructor initializes the flag
+to true. Source guards are distinct:
+
+- `gpuStateChanged` gates the incremental SAP pair-production
+  kernel; the base WR sort and incremental endpoint histograms
+  are still part of an otherwise-dispatched update.
+- Removed handles gate `initializeSapBoxKernel(previousBoxes)`
+  plus removed-projection maintenance.
+- Created **or** removed handles trigger created-projection
+  maintenance, WOR sorting and full endpoint histograms.
+- Created handles alone gate `clearNewFlagKernel`; a complete
+  update otherwise continues through region/new-pair generation.
+- `mNumOfBoxes` changes during `gpuDMAUp`; early return does
+  not mean this host preamble was skipped.
+
+`decide_sap_update` returns a pure, source-named decision record.
+It rejects invalid box-population arithmetic rather than inheriting
+unsigned wraparound. It does **not** perform `gpuDMAUp`, enqueue
+kernels, manage original `PxgAABBManager` task references or
+change the existing `ScPipeline` continuations.
+
+The pinned `update` swaps **old/new integer-bound buffer
+identities** after `generateNewPairsKernel`, before
+`clearNewFlagKernel` and report accumulation. The separate
+`fetchBroadPhaseResults` operation first calls
+`gpuDMABack` (including signal/wait and result-size handling),
+then swaps exactly **seven** double-buffered resource families
+at `axis` ↔ `axis+3`: endpoint handles, block-end
+histograms, end histograms, ordered end handles, block-start
+histograms, start histograms, and ordered start handles.
+Projections, ranks, integer bounds and SAP indices are **not**
+included in that fetch-time seven-family swap.
+
+`SapFrameBufferRoles` swaps `compute::BufferId` allocation
+identities rather than copying GPU contents; the original
+context and PhysX broadphase remain owners. It exposes separate
+`swap_bounds_after_generate_new_pairs` and
+`swap_histories_after_fetch` operations, with explicit
+source-order preconditions. The existing completion gate is
+still the operation that waits, fetches CPU-visible reports,
+installs the original found/lost task continuations and
+releases them once. Resource rotation belongs inside its
+*successful* fetch callback, after data becomes visible.
+A failed fetch does not rotate, and can retry without stranding
+PhysX references.
+
+The new native test checks active/idle/forced update decisions,
+every conditional branch, both invalid count transitions, all
+42 per-axis history resource identities, independent integer
+bounds flipping, completion and failure ordering using a real
+Vulkan/D3D12 submission, and an early-return/no-new-GPU-work
+fetch. The test does **not** claim the PhysX scene has begun
+using this adapter; that still requires integrating
+`PxgCudaBroadPhaseSap` into the original factory/task graph,
+including resizing, descriptor repacking and asynchronous
+CUDA-to-backend transfer adaptation.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.

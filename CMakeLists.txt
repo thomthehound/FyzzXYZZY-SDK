@@ -100,6 +100,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
+    src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -696,6 +697,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
+    src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
