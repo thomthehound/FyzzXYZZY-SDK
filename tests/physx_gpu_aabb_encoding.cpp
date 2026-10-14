@@ -6,6 +6,7 @@
 
 #include "physx_gpu/aabb_encoding.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -340,6 +341,106 @@ void run_async_staging(Context& context) {
     context.destroy_buffer(destination_a);
 }
 
+// Source-derived HtoD sequencing contract used by the PhysX broadphase:
+// multiple changed arrays and descriptor subranges share one queue submission.
+// Cross-backend tests verify caller snapshot, same-destination ordered overlap,
+// two destinations, dependent GPU copy, and retirement before completion.
+void run_batched_uploads(Context& context) {
+    constexpr std::size_t count = 73;
+    constexpr std::size_t bytes = count * sizeof(std::uint32_t);
+    constexpr std::size_t patch_start = 11;
+    constexpr std::size_t patch_count = 13;
+
+    std::array<std::uint32_t, count> first{}, second{}, expected{};
+    std::array<std::uint32_t, patch_count> patch{};
+    for (std::size_t i = 0; i < count; ++i) {
+        first[i] = 0x12340000u + static_cast<std::uint32_t>(i * 7);
+        second[i] = 0x56780000u + static_cast<std::uint32_t>(i * 19);
+    }
+    for (std::size_t i = 0; i < patch_count; ++i)
+        patch[i] = 0x87650000u + static_cast<std::uint32_t>(i * 23);
+    expected = first;
+    std::copy(patch.begin(), patch.end(), expected.begin() + patch_start);
+
+    const BufferId a = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId b = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const BufferId mirror = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const std::vector<UploadSpan> spans{
+        {a, 0, first.data(), bytes},
+        {b, 0, second.data(), bytes},
+        {a, patch_start * sizeof(std::uint32_t), patch.data(), sizeof(patch)}
+    };
+    const auto uploaded = context.submit_upload_batch(spans);
+    first.fill(0xcdcdcdcd);
+    second.fill(0xcdcdcdcd);
+    patch.fill(0xcdcdcdcd);
+    // Consume one of the buffers in the next queued operation before
+    // waiting for any of the staged uploads.
+    const auto copied = context.submit_copy_buffer(b, 0, mirror, 0, bytes);
+    context.retire_buffer(b);
+
+    bool rejected = false;
+    try {
+        context.submit_upload_batch({{a, 0, first.data(), bytes},
+                                     {b, 0, second.data(), bytes}});
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("Batched upload accepted a retired destination");
+
+    context.wait_submission(copied);
+    if (!context.submission_complete(uploaded))
+        throw std::runtime_error("Ordered upload batch did not finish before GPU copy");
+    context.wait_submission(uploaded);
+
+    std::array<std::uint32_t, count> actual{};
+    context.download(a, 0, actual.data(), bytes);
+    if (actual != expected)
+        throw std::runtime_error("Overlapping ordered batched uploads diverged");
+    context.download(mirror, 0, actual.data(), bytes);
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint32_t correct = 0x56780000u + static_cast<std::uint32_t>(i * 19);
+        if (actual[i] != correct)
+            throw std::runtime_error("Dependent GPU copy lost batched HtoD input");
+    }
+    // Incorrect batches are rejected before recording any GPU commands.
+    for (const auto& invalid : std::vector<std::vector<UploadSpan>>{
+            {},
+            {{a, 0, nullptr, bytes}},
+            {{a, 0, actual.data(), 0}},
+            {{a, 0, actual.data(), bytes - 1}},
+            {{a, 1, actual.data(), bytes - 4}},
+            {{a, 0, actual.data(), bytes},
+             {a, bytes - 4, actual.data(), 8}}
+        }) {
+        rejected = false;
+        try {
+            context.submit_upload_batch(invalid);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        if (!rejected)
+            throw std::runtime_error("Invalid batched HtoD request was accepted");
+    }
+
+    // Reuse the completed command/descriptor infrastructure with another
+    // independent batch and verify it does not inherit stale staging bytes.
+    std::array<std::uint32_t, count> repeat{};
+    for (std::size_t i = 0; i < count; ++i)
+        repeat[i] = 0xa5a50000u + static_cast<std::uint32_t>(i);
+    auto next = context.submit_upload_batch({{a, 0, repeat.data(), bytes}});
+    repeat.fill(0);
+    context.wait_submission(next);
+    context.download(a, 0, actual.data(), bytes);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (actual[i] != 0xa5a50000u + i)
+            throw std::runtime_error("Reused upload batch retained stale data");
+    }
+    context.destroy_buffer(mirror);
+    context.destroy_buffer(a);
+}
+
 void reject_invalid(AabbEncodingStage& stage) {
     std::vector<BatchCommand> commands;
     commands.emplace_back(CopyCommand{1, 0, 2, 0, 16});
@@ -396,6 +497,7 @@ int main(int argc, char** argv) {
         run_ordered_batch(context, stage);
         run_deferred_retirement(context);
         run_async_staging(context);
+        run_batched_uploads(context);
         std::cout << "PhysX GPU broadphase AABB encoding PASS\n";
         return 0;
     } catch (const std::exception& e) {

@@ -82,6 +82,16 @@ struct DispatchSize {
 
 // Commands own their parameter bytes through submission. Both implementations
 // record ordered copies/dispatches with explicit GPU resource dependencies.
+// A source-backed host-to-device transfer. Source memory is read and copied
+// into Context-owned staging before submit_upload_batch returns; it may be
+// immediately modified or freed. Multiple spans execute in given order.
+struct UploadSpan {
+    BufferId destination = 0;
+    std::size_t destination_offset = 0;
+    const void* data = nullptr;
+    std::size_t bytes = 0;
+};
+
 struct CopyCommand {
     BufferId source = 0;
     std::size_t source_offset = 0;
@@ -136,6 +146,12 @@ public:
     // Initial implementation requires nonempty, 4-byte-aligned transfers.
     SubmissionId submit_upload_buffer(BufferId destination, std::size_t offset,
                                       const void* data, std::size_t bytes);
+
+    // Pack several copies into one Context-owned staging allocation and
+    // submit them as one ordered GPU batch (one completion token). Entries
+    // must be nonempty and 4-byte aligned; all sources are snapshotted.
+    // Staging and its command resources survive until the token completes.
+    SubmissionId submit_upload_batch(const std::vector<UploadSpan>& uploads);
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
 

@@ -180,6 +180,9 @@ struct Context::Impl {
         ComPtr<ID3D12DescriptorHeap> heap;
         ComPtr<ID3D12QueryHeap> query_heap;
         ComPtr<ID3D12Resource> query_readback;
+        // One-off HtoD batch staging belongs to the submission itself.
+        // It is dropped on fence completion, not retained in command cache.
+        ComPtr<ID3D12Resource> owned_upload;
         std::uint64_t fence_value = 0;
     };
 
@@ -265,6 +268,7 @@ struct Context::Impl {
     }
 
     void recycle_completed(Submission&& submission) {
+        submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
@@ -416,6 +420,63 @@ struct Context::Impl {
         // until wait_submission or a later completed queue-fence releases it.
         retired_buffers.push_back({fence_value, {std::move(staging), bytes}});
         return submission;
+    }
+
+    SubmissionId submit_uploads(const std::vector<UploadSpan>& uploads) {
+        if (uploads.empty())
+            throw std::invalid_argument("Async D3D12 upload batch cannot be empty");
+        std::size_t total = 0;
+        std::unordered_set<BufferId> destinations;
+        destinations.reserve(uploads.size());
+        for (const auto& upload : uploads) {
+            const auto& target = get_buffer(upload.destination);
+            validate_range(target.bytes, upload.destination_offset, upload.bytes);
+            if (!upload.data || !upload.bytes ||
+                (upload.destination_offset % 4) || (upload.bytes % 4) ||
+                upload.bytes > std::numeric_limits<std::size_t>::max() - total)
+                throw std::invalid_argument("Invalid D3D12 upload span or staging capacity");
+            total += upload.bytes;
+            destinations.insert(upload.destination);
+        }
+
+        auto staging = allocate_resource(device.Get(), total, D3D12_HEAP_TYPE_UPLOAD,
+                                         D3D12_RESOURCE_FLAG_NONE,
+                                         D3D12_RESOURCE_STATE_GENERIC_READ);
+        void* mapped = nullptr;
+        const D3D12_RANGE read{0, 0};
+        check(staging->Map(0, &read, &mapped), "Map batched upload");
+        std::size_t position = 0;
+        for (const auto& upload : uploads) {
+            std::memcpy(static_cast<unsigned char*>(mapped) + position,
+                        upload.data, upload.bytes);
+            position += upload.bytes;
+        }
+        const D3D12_RANGE written{0, total};
+        staging->Unmap(0, &written);
+
+        Submission submission = new_commands();
+        // A target enters COPY_DEST once for the whole batch; repeated
+        // CopyBufferRegion writes are ordered under the legacy D3D12
+        // copy contract. Restore COMMON once at the end.
+        for (const auto id : destinations) {
+            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
+                       D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+        position = 0;
+        for (const auto& upload : uploads) {
+            submission.commands->CopyBufferRegion(
+                get_buffer(upload.destination).resource.Get(),
+                upload.destination_offset, staging.Get(), position, upload.bytes);
+            position += upload.bytes;
+        }
+        for (const auto id : destinations) {
+            transition(submission.commands.Get(), get_buffer(id).resource.Get(),
+                       D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        }
+        // Ownership is attached BEFORE queue submission. A later allocation
+        // failure cannot free the memory while the GPU still reads it.
+        submission.owned_upload = std::move(staging);
+        return enqueue(std::move(submission));
     }
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
@@ -784,6 +845,10 @@ void Context::upload(BufferId id, std::size_t offset, const void* data, std::siz
 SubmissionId Context::submit_upload_buffer(BufferId id, std::size_t offset,
                                            const void* data, std::size_t bytes) {
     return impl_->submit_upload(id, offset, data, bytes);
+}
+
+SubmissionId Context::submit_upload_batch(const std::vector<UploadSpan>& uploads) {
+    return impl_->submit_uploads(uploads);
 }
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
     impl_->download(id, offset, data, bytes);
