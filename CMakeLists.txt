@@ -87,6 +87,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   # contracts; the PhysX scene integration is introduced incrementally.
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
     src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/mark_removed_pairs_arena.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
@@ -171,6 +172,33 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
       add_test(NAME fyzzxyzzy_physx_aabb_encoding
         COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+
+      # Source-derived PxgBroadPhaseDesc subset and markRemovedPairsLaunch:
+      # a single GPU arena, no per-pointer descriptors, exact SAP state oracle.
+      set(FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_removed_arena_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}")
+      add_executable(fyzzxyzzy_physx_mark_removed_arena
+        tests/physx_gpu_mark_removed_arena.cpp)
+      target_include_directories(fyzzxyzzy_physx_mark_removed_arena PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_mark_removed_arena PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_mark_removed_arena
+        fyzzxyzzy_physx_removed_arena_shader)
+      add_test(NAME fyzzxyzzy_physx_mark_removed_arena
+        COMMAND fyzzxyzzy_physx_mark_removed_arena
+          "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -223,7 +251,8 @@ if(FYZZXYZZY_BUILD_D3D12)
   endif()
 
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
-    src/physx_gpu/aabb_encoding.cpp)
+    src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/mark_removed_pairs_arena.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -261,6 +290,32 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_aabb_encoding_d3d12
       COMMAND fyzzxyzzy_physx_aabb_encoding_d3d12
         "${FYZZXYZZY_D3D12_AABB_DXIL}")
+
+    set(FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_removed_arena_shader
+      DEPENDS "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}")
+    add_executable(fyzzxyzzy_physx_mark_removed_arena_d3d12
+      tests/physx_gpu_mark_removed_arena.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_mark_removed_arena_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_mark_removed_arena_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_mark_removed_arena_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_mark_removed_arena_d3d12
+      fyzzxyzzy_d3d12_removed_arena_shader)
+    add_test(NAME fyzzxyzzy_physx_mark_removed_arena_d3d12
+      COMMAND fyzzxyzzy_physx_mark_removed_arena_d3d12
+        "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}")
   endif()
 endif()
 
