@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/sap_region_producer_arena.h"
+#include "physx_gpu/sap_region_histograms_arena.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,6 +26,8 @@ namespace {
 using namespace fyzz::compute;
 using fyzz::physx_gpu::SapRegionProducerArenaDesc;
 using fyzz::physx_gpu::SapRegionProducerArenaStage;
+using fyzz::physx_gpu::SapRegionHistogramsArenaDesc;
+using fyzz::physx_gpu::SapRegionHistogramsArenaStage;
 
 constexpr std::uint32_t kCanary = 0xcdcdcdcd;
 
@@ -42,7 +46,9 @@ struct Endpoint {
 struct Packed {
     std::vector<std::uint32_t> memory;
     SapRegionProducerArenaDesc desc{};
+    SapRegionHistogramsArenaDesc hist{};
     std::uint32_t descriptor_offset = 0;
+    std::uint32_t histogram_descriptor_offset = 0;
 
     std::uint32_t reserve(std::uint32_t words) {
         while (memory.size() % 32u) memory.push_back(kCanary);
@@ -63,6 +69,7 @@ struct Packed {
 Packed build(std::uint32_t boxes, std::uint32_t created) {
     Packed p;
     p.descriptor_offset = p.reserve(sizeof(p.desc) / 4u);
+    p.histogram_descriptor_offset = p.reserve(sizeof(p.hist) / 4u);
     auto& d = p.desc;
     d.current_boxes = boxes;
     d.created_handles = created;
@@ -76,6 +83,13 @@ Packed build(std::uint32_t boxes, std::uint32_t created) {
     d.region_range_offset = p.reserve(d.box_capacity * 8u);
     d.start_region_accum_offset = p.reserve(d.endpoint_capacity);
     d.region_accum_offset = p.reserve(d.endpoint_capacity);
+    auto& scan = p.hist;
+    scan.start_region_accum_offset = d.start_region_accum_offset;
+    scan.region_accum_offset = d.region_accum_offset;
+    scan.block_start_region_accum_offset = p.reserve(32u);
+    scan.block_region_accum_offset = p.reserve(32u);
+    scan.start_region_total_offset = p.reserve(1u);
+    scan.region_total_offset = p.reserve(1u);
 
     for (std::uint32_t axis = 0u; axis < 3u; ++axis) {
         std::vector<Endpoint> endpoints;
@@ -109,6 +123,8 @@ Packed build(std::uint32_t boxes, std::uint32_t created) {
     }
     std::memcpy(p.memory.data() + p.descriptor_offset / 4u,
                 &p.desc, sizeof(p.desc));
+    std::memcpy(p.memory.data() + p.histogram_descriptor_offset / 4u,
+                &p.hist, sizeof(p.hist));
     return p;
 }
 
@@ -146,24 +162,64 @@ void reference(Packed& p) {
     }
 }
 
+
+void reference_histograms(Packed& p) {
+    if (!p.desc.created_handles) return;
+    const auto n = 2u * p.desc.current_boxes;
+    const auto perBlock = ((n + 255u) / 256u + 31u) / 32u * 256u;
+    const auto run = [&](std::uint32_t data, std::uint32_t blocks,
+                         std::uint32_t total) {
+        std::uint32_t accumulated = 0u;
+        for (std::uint32_t block = 0u; block < 32u; ++block) {
+            const auto before = accumulated;
+            const auto begin = block * perBlock;
+            const auto end = std::min(n, begin + perBlock);
+            for (std::uint32_t i = begin; i < end; ++i) {
+                const auto count = p.at(data, i);
+                p.at(data, i) = accumulated;
+                accumulated += count;
+            }
+            p.at(blocks, block) = accumulated - before;
+        }
+        p.at(total) = accumulated;
+    };
+    run(p.hist.start_region_accum_offset,
+        p.hist.block_start_region_accum_offset,
+        p.hist.start_region_total_offset);
+    run(p.hist.region_accum_offset,
+        p.hist.block_region_accum_offset,
+        p.hist.region_total_offset);
+}
 void run_case(Context& context, SapRegionProducerArenaStage& stage,
+              SapRegionHistogramsArenaStage* scans,
               std::uint32_t boxes, std::uint32_t created) {
     auto p = build(boxes, created);
     auto expected = p;
     reference(expected);
+    if (scans) reference_histograms(expected);
     const auto bytes = static_cast<std::uint32_t>(p.memory.size() * 4u);
     const auto gpu = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
     const auto mirror = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
     context.upload(gpu, 0u, p.memory.data(), bytes);
     std::vector<BatchCommand> ops;
     stage.append(ops, gpu, bytes, p.descriptor_offset, boxes, created);
-    if (ops.size() != (created ? 1u : 0u))
+    if (scans) scans->append(ops, gpu, bytes, p.histogram_descriptor_offset, boxes, created);
+    if (ops.size() != (created ? (scans ? 5u : 1u) : 0u))
         throw std::runtime_error("PhysX region host launch gate changed");
     if (created) {
         const auto& dispatch = std::get<DispatchCommand>(ops.front());
         if (dispatch.groups.x != 32u || dispatch.groups.y != 1u ||
             dispatch.groups.z != 1u)
             throw std::runtime_error("PhysX BP_CREATE_REGIONS geometry changed");
+    }
+    if (scans && created) {
+        for (std::size_t i = 1u; i < ops.size(); ++i) {
+            const auto& dispatch = std::get<DispatchCommand>(ops[i]);
+            if (dispatch.groups.x != 32u || dispatch.groups.y != 1u ||
+                dispatch.groups.z != 1u ||
+                dispatch.push_constants.size() != 32u)
+                throw std::runtime_error("PhysX region-prefix dispatch geometry changed");
+        }
     }
     ops.emplace_back(CopyCommand{gpu, 0u, mirror, 0u, bytes});
     context.wait_submission(context.submit_batch(ops));
@@ -182,7 +238,8 @@ void run_case(Context& context, SapRegionProducerArenaStage& stage,
     context.destroy_buffer(gpu);
 }
 
-void negative_cases(SapRegionProducerArenaStage& stage) {
+void negative_cases(SapRegionProducerArenaStage& stage,
+                    SapRegionHistogramsArenaStage* scans) {
     for (const auto invalid : {1u, 128u, 256u}) {
         std::vector<BatchCommand> commands;
         commands.emplace_back(CopyCommand{1u, 0u, 2u, 0u, 4u});
@@ -206,14 +263,34 @@ void negative_cases(SapRegionProducerArenaStage& stage) {
     stage.append(nothing, 0u, 0u, 3u, 0u, 0u);
     if (!nothing.empty())
         throw std::runtime_error("Unexpected no-created region dispatch");
+    if (scans) {
+        scans->append(nothing, 0u, 0u, 7u, 0u, 0u);
+        if (!nothing.empty())
+            throw std::runtime_error("Unexpected no-created region scan");
+        for (const auto invalid : {1u, 128u, 256u}) {
+            std::vector<BatchCommand> commands;
+            commands.emplace_back(CopyCommand{1u, 0u, 2u, 0u, 4u});
+            bool rejected = false;
+            try { scans->append(commands, 1u, 160u, invalid, 5u, 1u); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            if (!rejected || commands.size() != 1u)
+                throw std::runtime_error("Bad region scan changed caller batch");
+        }
+        std::vector<BatchCommand> ops;
+        bool rejected = false;
+        try { scans->append(ops, 1u, 160u, 0u, 0xffffffffu, 1u); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected || !ops.empty())
+            throw std::runtime_error("Region scan projection overflow accepted");
+    }
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2)
-            throw std::invalid_argument("Expected BP_CREATE_REGIONS shader path");
+        if (argc != 2 && argc != 6)
+            throw std::invalid_argument("Expected producer shader and optional four prefix shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -228,17 +305,31 @@ int main(int argc, char** argv) {
         shader.format = ShaderFormat::Spirv;
 #endif
         shader.bytes = load_shader(argv[1]);
+        const auto format = shader.format;
         SapRegionProducerArenaStage stage(context, std::move(shader));
-        negative_cases(stage);
-        run_case(context, stage, 0u, 0u);
-        run_case(context, stage, 5u, 0u);
-        run_case(context, stage, 1u, 1u);
-        run_case(context, stage, 5u, 1u);
-        run_case(context, stage, 17u, 3u);
-        run_case(context, stage, 129u, 7u);
-        run_case(context, stage, 257u, 257u);
-        run_case(context, stage, 4099u, 11u);
-        std::cout << "PhysX BP_CREATE_REGIONS native source oracle PASS\n";
+        std::unique_ptr<SapRegionHistogramsArenaStage> scans;
+        if (argc == 6) {
+            const auto from = [&](const char* path) {
+                ShaderBinary binary;
+                binary.format = format;
+                binary.bytes = load_shader(path);
+                return binary;
+            };
+            scans = std::make_unique<SapRegionHistogramsArenaStage>(
+                context, from(argv[2]), from(argv[3]),
+                from(argv[4]), from(argv[5]));
+        }
+        negative_cases(stage, scans.get());
+        run_case(context, stage, scans.get(), 0u, 0u);
+        run_case(context, stage, scans.get(), 5u, 0u);
+        run_case(context, stage, scans.get(), 1u, 1u);
+        run_case(context, stage, scans.get(), 5u, 1u);
+        run_case(context, stage, scans.get(), 17u, 3u);
+        run_case(context, stage, scans.get(), 129u, 7u);
+        run_case(context, stage, scans.get(), 257u, 257u);
+        run_case(context, stage, scans.get(), 4099u, 11u);
+        run_case(context, stage, scans.get(), 8201u, 19u);
+        std::cout << (scans ? "PhysX region producer + four region scans PASS\\n" : "PhysX region producer PASS\\n");
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "PhysX BP_CREATE_REGIONS FAILED: " << ex.what() << '\n';
