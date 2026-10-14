@@ -267,13 +267,23 @@ void negative_cases(SapRegionProducerArenaStage& stage,
         scans->append(nothing, 0u, 0u, 7u, 0u, 0u);
         if (!nothing.empty())
             throw std::runtime_error("Unexpected no-created region scan");
-        for (const auto invalid : {1u, 128u, 256u}) {
+        // The 32-byte descriptor at offset 128 fits exactly in a
+        // 160-byte arena; it must be accepted. Earlier testing wrongly
+        // treated this valid boundary as an invalid descriptor.
+        std::vector<BatchCommand> boundary;
+        boundary.emplace_back(CopyCommand{1u, 0u, 2u, 0u, 4u});
+        scans->append(boundary, 1u, 160u, 128u, 5u, 1u);
+        if (boundary.size() != 5u ||
+            !std::holds_alternative<CopyCommand>(boundary.front()))
+            throw std::runtime_error("Valid exact-fit region descriptor not accepted");
+        for (const auto invalid : {1u, 129u, 160u}) {
             std::vector<BatchCommand> commands;
             commands.emplace_back(CopyCommand{1u, 0u, 2u, 0u, 4u});
             bool rejected = false;
             try { scans->append(commands, 1u, 160u, invalid, 5u, 1u); }
             catch (const std::invalid_argument&) { rejected = true; }
-            if (!rejected || commands.size() != 1u)
+            if (!rejected || commands.size() != 1u ||
+                !std::holds_alternative<CopyCommand>(commands.front()))
                 throw std::runtime_error("Bad region scan changed caller batch");
         }
         std::vector<BatchCommand> ops;
