@@ -463,6 +463,64 @@ per block. The downstream incremental comparison-count kernels still
 need the original histogram and rank inputs connected in the proper
 host update order. This stage alone does not report found/lost pairs.
 
+### Incremental SAP comparison histogram and global work offsets
+
+`PxgCudaBroadPhaseSap::performIncrementalSapKernel` begins with
+`BP_COMPUTE_INCREMENTAL_CMP_COUNTS1` followed by
+`BP_COMPUTE_INCREMENTAL_CMP_COUNTS2`, before it dispatches
+`BP_INCREMENTAL_SAP`. Both counting kernels use the original
+**32 groups × 256 threads** launch, simultaneously processing all
+three projection axes in each workgroup. Their CUDA implementations
+are `computeIncrementalComparisonHistograms_Stage1` and
+`computeIncrementalComparisonHistograms_Stage2` in
+`gpubroadphase/src/CUDA/broadphase.cu`.
+
+The first stage consumes `numPreviousHandles * 2` sorted endpoints,
+their stable `boxProjectionRanks[axis]`, tagged `boxHandles[0][axis]`,
+and the **current and previous** per-axis start/end endpoint histograms.
+For each endpoint, comparison direction is
+`current_index <= original_rank`. Downward movement uses the previous
+histogram and upward movement uses the current one. Start endpoints
+count crossing starts; end endpoints count crossing ends. Deleted
+endpoints contribute no comparisons. The exact candidate count is
+a difference of exclusive histogram entries over the original
+index-to-rank interval, with the previous-frame range clamped to the
+last live projection. Each of the 32 source blocks writes its exclusive
+local comparison indices and a per-axis block total.
+
+The second stage scans the block totals, adds the exclusive
+cross-block prefix to each endpoint comparison index, and writes
+`totalIncrementalComparisons[axis]`, which the subsequent
+`performIncrementalSAP` kernel uses to distribute its comparison
+work. The original `incrementalComparisons` arrays remain owner-visible
+prefix maps; this port does **not** substitute a collision query or
+generate found/lost pair reports.
+
+`SapIncrementalComparisonsArenaStage` records both source dispatches
+transactionally, with per-axis arena descriptors corresponding to
+the original rank/handle and current/previous histogram pointers.
+The common HLSL uses workgroup prefix scans instead of fixed
+CUDA warp primitives, preserving the 32-block partition and
+across-block work offsets on both Vulkan and D3D12.
+
+The integration oracle executes
+**compute endpoint histogram → output endpoint histogram →
+comparison count stage 1 → comparison count stage 2** in one ordered
+GPU batch. It creates physically reordered prior/current sorted
+endpoint lists with stable position ranks, then compares every
+histogram entry, compacted handle, comparison prefix, block total,
+global count, and untouched arena word against an independent
+CPU reference. It covers empty and small workloads, deletions,
+all three axes, more than 256 projections, and multiple iterations
+within each source block. With no removals, the previous-frame
+histogram is seeded as persistent prior-frame state, as required by
+the original host dispatch.
+
+This is source-faithful comparison **work enumeration**, not the
+subsequent `BP_INCREMENTAL_SAP` comparison/overlap/report operation.
+The broader persistent scene task graph and result publication
+remain the province of the original PhysX host pipeline.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
