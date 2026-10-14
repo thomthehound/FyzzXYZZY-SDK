@@ -178,6 +178,8 @@ struct Context::Impl {
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commands;
         ComPtr<ID3D12DescriptorHeap> heap;
+        ComPtr<ID3D12QueryHeap> query_heap;
+        ComPtr<ID3D12Resource> query_readback;
         std::uint64_t fence_value = 0;
     };
 
@@ -442,7 +444,8 @@ struct Context::Impl {
             throw std::invalid_argument("D3D12 AABB shader cannot alias its SRVs and UAV");
     }
 
-    SubmissionId submit_batch(const std::vector<BatchCommand>& commands) {
+    SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
+                              bool profile = false) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
         for (const BatchCommand& op : commands) {
@@ -463,6 +466,19 @@ struct Context::Impl {
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
         Submission submission = new_commands();
+        if (profile) {
+            D3D12_QUERY_HEAP_DESC desc{};
+            desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            desc.Count = 2;
+            check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&submission.query_heap)),
+                  "CreateQueryHeap(timestamp)");
+            submission.query_readback = allocate_resource(
+                device.Get(), 2 * sizeof(std::uint64_t),
+                D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+            submission.commands->EndQuery(submission.query_heap.Get(),
+                                           D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        }
         UINT increment = device->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         if (descriptor_count) {
@@ -568,7 +584,37 @@ struct Context::Impl {
             }
             descriptor_index += pipeline.bindings;
         }
+        if (profile) {
+            submission.commands->EndQuery(submission.query_heap.Get(),
+                                           D3D12_QUERY_TYPE_TIMESTAMP, 1);
+            submission.commands->ResolveQueryData(
+                submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                0, 2, submission.query_readback.Get(), 0);
+        }
         return enqueue(std::move(submission));
+    }
+
+    std::optional<double> profile_batch_gpu_nanoseconds(
+        const std::vector<BatchCommand>& operations) {
+        std::uint64_t frequency = 0;
+        if (FAILED(queue->GetTimestampFrequency(&frequency)) || !frequency)
+            return std::nullopt;
+        const auto id = submit_batch(operations, true);
+        auto it = submissions.find(id);
+        wait_value(it->second.fence_value);
+        void* mapped = nullptr;
+        const D3D12_RANGE read{0, 2 * sizeof(std::uint64_t)};
+        check(it->second.query_readback->Map(0, &read, &mapped),
+              "Map timestamp readback");
+        std::uint64_t ticks[2]{};
+        std::memcpy(ticks, mapped, sizeof(ticks));
+        const D3D12_RANGE written{0, 0};
+        it->second.query_readback->Unmap(0, &written);
+        submissions.erase(it);
+        if (ticks[1] < ticks[0])
+            throw std::runtime_error("D3D12 GPU timestamp counter regressed");
+        return static_cast<double>(ticks[1] - ticks[0]) *
+               (1000000000.0 / static_cast<double>(frequency));
     }
 };
 
@@ -628,6 +674,11 @@ bool Context::submission_complete(SubmissionId id) const {
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
 SubmissionId Context::submit_batch(const std::vector<BatchCommand>& commands) {
     return impl_->submit_batch(commands);
+}
+
+std::optional<double> Context::profile_batch_gpu_nanoseconds(
+    const std::vector<BatchCommand>& commands) {
+    return impl_->profile_batch_gpu_nanoseconds(commands);
 }
 void Context::execute_batch(const std::vector<BatchCommand>& commands) {
     impl_->wait_submission(impl_->submit_batch(commands));

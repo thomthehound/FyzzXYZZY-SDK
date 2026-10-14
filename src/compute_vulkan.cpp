@@ -134,6 +134,7 @@ struct Context::Impl {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
+        VkQueryPool timestamps = VK_NULL_HANDLE;
     };
 
     VkInstance instance = VK_NULL_HANDLE;
@@ -149,6 +150,7 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     VkPhysicalDeviceLimits limits{};
+    std::uint32_t timestamp_valid_bits = 0;
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
         if (backend != Backend::Vulkan) {
@@ -166,6 +168,11 @@ struct Context::Impl {
             VkPhysicalDeviceProperties properties{};
             vkGetPhysicalDeviceProperties(physical, &properties);
             limits = properties.limits;
+            std::uint32_t family_count = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, nullptr);
+            std::vector<VkQueueFamilyProperties> families(family_count);
+            vkGetPhysicalDeviceQueueFamilyProperties(physical, &family_count, families.data());
+            timestamp_valid_bits = families.at(selected.queue_family).timestampValidBits;
 
             float priority = 1.0f;
             VkDeviceQueueCreateInfo queue_info{};
@@ -225,6 +232,8 @@ struct Context::Impl {
     ~Impl() { cleanup(); }
 
     void release_submission(const Submission& submission) noexcept {
+        if (submission.timestamps != VK_NULL_HANDLE)
+            vkDestroyQueryPool(device, submission.timestamps, nullptr);
         if (submission.fence != VK_NULL_HANDLE) {
             vkDestroyFence(device, submission.fence, nullptr);
         }
@@ -784,7 +793,8 @@ struct Context::Impl {
         }
     }
 
-    SubmissionId submit_batch(const std::vector<BatchCommand>& operations) {
+    SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
+                              bool profile = false) {
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
@@ -822,6 +832,7 @@ struct Context::Impl {
 
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
+        VkQueryPool timestamps = VK_NULL_HANDLE;
         try {
             if (dispatch_count != 0) {
                 VkDescriptorPoolSize pool_size{};
@@ -849,6 +860,16 @@ struct Context::Impl {
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             require(vkBeginCommandBuffer(commands, &begin), "vkBeginCommandBuffer");
+            if (profile) {
+                VkQueryPoolCreateInfo query{};
+                query.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+                query.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                query.queryCount = 2;
+                require(vkCreateQueryPool(device, &query, nullptr, &timestamps),
+                        "vkCreateQueryPool");
+                vkCmdResetQueryPool(commands, timestamps, 0, 2);
+                vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
+            }
 
             for (const BatchCommand& operation : operations) {
                 // Make previous transfer and shader writes visible to the
@@ -924,9 +945,15 @@ struct Context::Impl {
             vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
                                  0, nullptr, 0, nullptr);
+            if (timestamps != VK_NULL_HANDLE)
+                vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
-            return enqueue(commands, pool);
+            const SubmissionId id = enqueue(commands, pool);
+            submissions.at(id).timestamps = timestamps;
+            return id;
         } catch (...) {
+            if (timestamps != VK_NULL_HANDLE)
+                vkDestroyQueryPool(device, timestamps, nullptr);
             if (commands != VK_NULL_HANDLE) {
                 vkFreeCommandBuffers(device, command_pool, 1, &commands);
             }
@@ -935,6 +962,33 @@ struct Context::Impl {
             }
             throw;
         }
+    }
+
+
+    std::optional<double> profile_batch_gpu_nanoseconds(
+        const std::vector<BatchCommand>& operations) {
+        if (timestamp_valid_bits == 0 || limits.timestampPeriod <= 0.0f)
+            return std::nullopt;
+        const auto id = submit_batch(operations, true);
+        auto it = submissions.find(id);
+        const auto fence = it->second.fence;
+        require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
+                "vkWaitForFences timestamp batch");
+        std::uint64_t ticks[2]{};
+        const VkResult result = vkGetQueryPoolResults(
+            device, it->second.timestamps, 0, 2, sizeof(ticks),
+            ticks, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (result != VK_SUCCESS) {
+            release_submission(it->second);
+            submissions.erase(it);
+            require(result, "vkGetQueryPoolResults");
+        }
+        const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
+                          ((std::uint64_t{1} << timestamp_valid_bits) - 1);
+        const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
+        release_submission(it->second);
+        submissions.erase(it);
+        return static_cast<double>(delta) * limits.timestampPeriod;
     }
 
     SubmissionId copy(BufferId source_id, std::size_t source_offset,
@@ -1023,6 +1077,11 @@ void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
 
 SubmissionId Context::submit_batch(const std::vector<BatchCommand>& commands) {
     return impl_->submit_batch(commands);
+}
+
+std::optional<double> Context::profile_batch_gpu_nanoseconds(
+    const std::vector<BatchCommand>& commands) {
+    return impl_->profile_batch_gpu_nanoseconds(commands);
 }
 
 void Context::execute_batch(const std::vector<BatchCommand>& commands) {

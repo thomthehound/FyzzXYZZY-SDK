@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #include <variant>
@@ -140,6 +141,15 @@ public:
     // fence. Empty batches and invalid commands are rejected.
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands);
     void execute_batch(const std::vector<BatchCommand>& commands);
+
+    // Optional GPU timestamp span around a *single ordered batch*.
+    // Returns nanoseconds on the device timeline, excluding CPU submission
+    // and waiting. Includes in-batch copies and barriers, not isolated ALU
+    // time. std::nullopt means this queue cannot timestamp compute work.
+    // Blocks until the batch finishes; intended for profiling, not the
+    // PhysX simulation critical path.
+    std::optional<double> profile_batch_gpu_nanoseconds(
+        const std::vector<BatchCommand>& commands);
 
     bool submission_complete(SubmissionId id) const;
     void wait_submission(SubmissionId id);
