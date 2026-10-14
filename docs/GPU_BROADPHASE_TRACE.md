@@ -267,17 +267,44 @@ original new-projection tag. **PhysX initializes both
 dense histogram arrays to zero before `BP_CREATE_REGIONS`.**
 They are not created or cleared by the three kernels here.
 
-The middle kernel independently scans the start and active
-histograms for **each of 64 regions**, producing per-region
-exclusive prefixes. CUDA originally packs two 16-bit
-counters and scans them with warp operations; the portable
-HLSL uses separate 32-bit workgroup-wide scans with
-barriers, preserving observable prefixes without assuming
-wave32 and without allowing a 16-bit carry to bleed
-between fields. The third kernel traverses the same
-source work items and writes compact, X-ordered
-`orderedStartRegionHandles` and the newly-created subset
-`orderedActiveRegionHandles`.
+The middle kernel computes the **two exclusive region prefixes**
+from one packed 32-bit value per projection: `start<<16 | active`,
+as in the original CUDA code. Each 512-projection chunk contains at
+most 512 unit contributions to either field, so the packed addition
+cannot cross the 16-bit field boundary; across chunks the source
+maintains two independent wide carry accumulators. The first
+portable lowering unnecessarily used **two separate 512-wide
+Hillis–Steele shared-memory scans** (8 KiB scratch, repeated
+workgroup-wide synchronization). That was functionally sound but
+a performance regression risk introduced by this port, **not a
+requirement of the original PhysX algorithm**.
+
+PR #44 replaces it with a source-packed subgroup scan on devices
+reporting compute subgroup arithmetic: a single `WavePrefixSum`
+per packed value and `WaveActiveSum` per subgroup, a short
+subgroup-total scan, and three full-group barriers per 512-entry
+chunk. Wave leaders atomically acquire logical subgroup numbers
+**once per workgroup**, so mapping of physical wave lanes to
+`SV_GroupIndex` is never assumed. 32/64-lane implementations
+can both use the native fast path. The scan requires only
+2 KiB of shared wave-subtotal storage versus 8 KiB originally.
+A source-packed, **single** shared-memory scan (4 KiB) is retained
+strictly as the functional fallback where native subgroup
+arithmetic is unavailable. CUDA warp assumptions do not affect
+the output order. These are **analytical** operation/scratch
+comparisons; **hardware speedup is not yet measured**.
+
+The third kernel traverses the same original work items and
+writes compact, X-ordered `orderedStartRegionHandles` and
+the newly-created subset `orderedActiveRegionHandles`.
+The independent GPU oracle exercises both the native and fallback
+implementations on the same full-buffer fixtures, including
+multi-512-projection loops. Compiled target for the fast D3D12
+kernel is `cs_6_6`, consistent with the planned SM6.6 shipping
+minimum; Vulkan requires a separate queried subgroup-arithmetic
+capability, not an imagined SM6.6 Vulkan bit.
+**All further optimization departures must follow
+[GPU_PORT_PERFORMANCE.md](GPU_PORT_PERFORMANCE.md).**
 
 `SapActiveRegionListsArenaStage` retains the three exact
 launch shapes, the same create-only host gate, and the
