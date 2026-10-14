@@ -871,22 +871,74 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
             }
 
-            for (const BatchCommand& operation : operations) {
-                // Make previous transfer and shader writes visible to the
-                // next operation even when both share a command buffer.
-                VkMemoryBarrier before{};
-                before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-                before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-                before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
-                                       VK_ACCESS_TRANSFER_WRITE_BIT |
-                                       VK_ACCESS_SHADER_READ_BIT |
-                                       VK_ACCESS_SHADER_WRITE_BIT;
-                vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                     VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                                     1, &before, 0, nullptr, 0, nullptr);
+            // A single inter-submission dependency preserves the original
+            // queue contract. Vulkan queue ordering alone does not publish
+            // shader writes as memory dependencies between submissions.
+            VkMemoryBarrier from_previous{};
+            from_previous.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            from_previous.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            from_previous.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
+                                          VK_ACCESS_TRANSFER_WRITE_BIT |
+                                          VK_ACCESS_SHADER_READ_BIT |
+                                          VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 1, &from_previous, 0, nullptr, 0, nullptr);
 
+            struct Access {
+                VkPipelineStageFlags stage = 0;
+                VkAccessFlags mask = 0;
+                bool writes = false;
+            };
+            std::unordered_map<BufferId, Access> last_access;
+            last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
+                std::vector<VkBufferMemoryBarrier> barriers;
+                VkPipelineStageFlags sources = 0;
+                VkPipelineStageFlags targets = 0;
+                for (const auto& use : uses) {
+                    const auto prev = last_access.find(use.first);
+                    if (prev == last_access.end()) continue;
+                    if (!prev->second.writes && !use.second.writes) continue;
+                    VkBufferMemoryBarrier barrier{};
+                    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+                    barrier.srcAccessMask = prev->second.mask;
+                    barrier.dstAccessMask = use.second.mask;
+                    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.buffer = get(use.first).buffer;
+                    barrier.offset = 0;
+                    barrier.size = VK_WHOLE_SIZE;
+                    barriers.push_back(barrier);
+                    sources |= prev->second.stage;
+                    targets |= use.second.stage;
+                }
+                if (!barriers.empty()) {
+                    vkCmdPipelineBarrier(commands, sources, targets, 0,
+                                         0, nullptr,
+                                         static_cast<std::uint32_t>(barriers.size()),
+                                         barriers.data(), 0, nullptr);
+                }
+                for (const auto& use : uses) {
+                    auto& current = last_access[use.first];
+                    if (!current.stage || current.writes || use.second.writes) {
+                        current = use.second;
+                    } else {
+                        // Read after read is unordered: retain both source
+                        // stages in case a later operation writes the buffer.
+                        current.stage |= use.second.stage;
+                        current.mask |= use.second.mask;
+                    }
+                }
+            };
+
+            for (const BatchCommand& operation : operations) {
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
+                    before_operation({
+                        {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
+                        {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                    });
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
                     region.dstOffset = copy->destination_offset;
@@ -898,6 +950,21 @@ struct Context::Impl {
 
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
+                // Storage descriptors in this initial API have no per-slot
+                // read-only declaration. Treat them as read/write until
+                // source-derived access intent is represented explicitly.
+                std::vector<std::pair<BufferId, Access>> shader_uses;
+                shader_uses.reserve(dispatch.buffers.size());
+                for (const auto& binding : dispatch.buffers) {
+                    const auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
+                        [&](const auto& entry) { return entry.first == binding.buffer; });
+                    if (found == shader_uses.end())
+                        shader_uses.push_back({
+                            binding.buffer,
+                            {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, true}});
+                }
+                before_operation(shader_uses);
                 auto descriptors = validate_dispatch(
                     dispatch.pipeline, dispatch.groups, dispatch.buffers,
                     dispatch.push_constants.data(), dispatch.push_constants.size());
