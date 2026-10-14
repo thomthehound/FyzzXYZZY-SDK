@@ -303,9 +303,9 @@ void run_case(Context& context,SapEndpointHistogramArenaStage& hist,
         throw std::runtime_error("PhysX histogram/comparison/report host sequence changed");
     for(std::uint32_t i=0u;i<5u;++i){
         const auto& dispatch=std::get<DispatchCommand>(commands[i]);
+        const auto expectedY = (i < 2u || i == 4u) ? 3u : 1u;
         if(dispatch.groups.x!=(i==4u?256u:32u) ||
-           dispatch.groups.y==(i==0u||i==1u||i==4u?1u:3u) ||
-           dispatch.groups.z!=1u)
+           dispatch.groups.y!=expectedY || dispatch.groups.z!=1u)
             throw std::runtime_error("PhysX SAP native dispatch geometry changed");
     }
     commands.emplace_back(CopyCommand{gpu,0u,mirror,0u,bytes});
