@@ -204,8 +204,10 @@ The source-faithful first CPU/GPU boundary is a **blocking fetch on the
 actual PhysX post-broadphase path**, not a new GPU callback scheduler.
 `src/physx_gpu/broadphase_completion.{h,cpp}` now provides a minimal
 `BroadPhaseCompletionGate`: it associates one compute submission with
-one frame, waits before caller-provided fetch/resize, and only then invokes
-`removeReference` on the two original `PxBaseTask` objects. It covers the
+one frame, waits before caller-provided fetch/resize, installs the
+caller's original task continuations **after** successful publication,
+and only then invokes `removeReference` on the two original
+`PxBaseTask` objects. It covers the
 no-GPU-update path, prevents double release, and leaves both tasks blocked
 if the GPU wait or the result-publication operation fails; a publication
 failure can be retried after the owning PhysX code establishes its abort/
@@ -215,7 +217,7 @@ releases tasks.
 The bridge is **tested in isolation with real PhysX task interfaces and
 Vulkan/D3D12 submissions**, but is **not yet wired into
 `PxgAABBManager` or `Sc::Scene`**. The caller remains responsible for
-establishing original continuations, reading the descriptor/pair streams,
+providing the original continuation-setup operation, reading the descriptor/pair streams,
 checking overflow/abort flags, updating report storage, and swapping state.
 It does not make the existing SDK GPU-broadphase-capable or add a worker
 thread. Next integration attaches this boundary to actual PhysX broadphase
