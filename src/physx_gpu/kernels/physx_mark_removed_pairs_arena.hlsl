@@ -36,15 +36,29 @@ void main(uint3 tid : SV_DispatchThreadID) {
     // Descriptor field byte offsets correspond to MarkRemovedPairsArenaDesc.
     uint base = params.descriptor_offset;
     uint count = arena.Load(base + 0);
+    // Benchmark alternative: resolve five pointers once on the CPU, pack
+    // into the five otherwise-unused 32-bit dispatch constants. This is
+    // specifically a *partial* address-resolution comparison, not a
+    // different algorithm or a generalized direct-buffer implementation.
+#ifdef FYZZXYZZY_RESOLVED_SUBSET
+    uint removed_array = params.reserved0;
+    uint bounds_array = params.reserved1;
+#else
     uint removed_array = arena.Load(base + 4);
     uint bounds_array = arena.Load(base + 44);
+#endif
 
     for (uint i = tid.x; i < count; i += params.thread_stride) {
         uint handle = arena.Load(removed_array + i * 4);
 
         [unroll]
         for (uint axis = 0; axis < 3; ++axis) {
+#ifdef FYZZXYZZY_RESOLVED_SUBSET
+            uint sap_array = axis == 0 ? params.reserved2 :
+                             (axis == 1 ? params.reserved3 : params.reserved4);
+#else
             uint sap_array = arena.Load(base + 8 + axis * 4);
+#endif
             // Source: boxHandles[1][axis], the PREVIOUS frame.
             uint previous_handles = arena.Load(base + 20 + (3 + axis) * 4);
             uint box_base = sap_array + handle * 8;
