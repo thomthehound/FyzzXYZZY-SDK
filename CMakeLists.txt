@@ -103,6 +103,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/sap_region_histograms_arena.cpp
+    src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -705,6 +706,39 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_REGION_start_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_REGION_region_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_REGION_region_second_SHADER}")
+
+      # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
+      foreach(_active_pass IN ITEMS writeout compute output)
+        set(FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_0 -E main
+            -Fo "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_physx_sap_active_${_active_pass}_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}")
+      endforeach()
+      add_executable(fyzzxyzzy_physx_sap_active_region_lists
+        tests/physx_gpu_sap_active_region_lists.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_active_region_lists PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_active_region_lists PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_active_region_lists
+        fyzzxyzzy_physx_sap_active_writeout_shader
+        fyzzxyzzy_physx_sap_active_compute_shader
+        fyzzxyzzy_physx_sap_active_output_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_active_region_lists
+        COMMAND fyzzxyzzy_physx_sap_active_region_lists
+          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_writeout_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ACTIVE_output_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -774,6 +808,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/sap_region_histograms_arena.cpp
+    src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1338,6 +1373,40 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_SAP_REGION_start_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_REGION_region_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_REGION_region_second_DXIL}")
+
+    # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
+    foreach(_active_pass IN ITEMS writeout compute output)
+      set(FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_pass}_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_d3d12_sap_active_${_active_pass}_shader
+        DEPENDS "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}")
+    endforeach()
+    add_executable(fyzzxyzzy_physx_sap_active_region_lists_d3d12
+      tests/physx_gpu_sap_active_region_lists.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_active_region_lists_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_active_region_lists_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_active_region_lists_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_active_region_lists_d3d12
+      fyzzxyzzy_d3d12_sap_active_writeout_shader
+      fyzzxyzzy_d3d12_sap_active_compute_shader
+      fyzzxyzzy_d3d12_sap_active_output_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_active_region_lists_d3d12
+      COMMAND fyzzxyzzy_physx_sap_active_region_lists_d3d12
+        "${FYZZXYZZY_D3D12_SAP_ACTIVE_writeout_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ACTIVE_output_DXIL}")
   endif()
 endif()
 
