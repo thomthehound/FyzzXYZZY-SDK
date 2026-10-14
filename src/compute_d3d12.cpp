@@ -209,12 +209,12 @@ struct Context::Impl {
         }
     }
 
-    Buffer& get(BufferId id) {
+    Buffer& get_buffer(BufferId id) {
         auto it = buffers.find(id);
         if (it == buffers.end()) throw std::invalid_argument("Unknown D3D12 buffer");
         return it->second;
     }
-    Pipeline& get(PipelineId id) {
+    Pipeline& get_pipeline(PipelineId id) {
         auto it = pipelines.find(id);
         if (it == pipelines.end()) throw std::invalid_argument("Unknown D3D12 pipeline");
         return it->second;
@@ -285,13 +285,13 @@ struct Context::Impl {
     }
 
     void destroy_buffer(BufferId id) {
-        get(id);
+        get_buffer(id);
         wait_all(); // resources cannot die while a GPU command refers to them
         buffers.erase(id);
     }
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
-        Buffer& buffer = get(id);
+        Buffer& buffer = get_buffer(id);
         validate_range(buffer.bytes, offset, bytes);
         if (!bytes) return;
         if (!data || offset % 4 || bytes % 4)
@@ -316,7 +316,7 @@ struct Context::Impl {
     }
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) {
-        Buffer& buffer = get(id);
+        Buffer& buffer = get_buffer(id);
         validate_range(buffer.bytes, offset, bytes);
         if (!bytes) return;
         if (!data || offset % 4 || bytes % 4)
@@ -402,13 +402,13 @@ struct Context::Impl {
     }
 
     void destroy_pipeline(PipelineId id) {
-        get(id);
+        get_pipeline(id);
         wait_all();
         pipelines.erase(id);
     }
 
     void validate_dispatch(const DispatchCommand& cmd) {
-        const Pipeline& pipe = get(cmd.pipeline);
+        const Pipeline& pipe = get_pipeline(cmd.pipeline);
         if (!cmd.groups.x || !cmd.groups.y || !cmd.groups.z ||
             cmd.groups.x > info.max_workgroup_count[0] ||
             cmd.groups.y > info.max_workgroup_count[1] ||
@@ -422,7 +422,7 @@ struct Context::Impl {
                 binding.offset % 4 || binding.bytes % 4 ||
                 binding.bytes / 4 > std::numeric_limits<UINT>::max())
                 throw std::invalid_argument("Invalid D3D12 structured buffer view");
-            const auto& buf = get(binding.buffer);
+            const auto& buf = get_buffer(binding.buffer);
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }
         if (cmd.buffers[3].buffer == cmd.buffers[0].buffer ||
@@ -436,8 +436,8 @@ struct Context::Impl {
         std::size_t dispatch_count = 0;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                const auto& source = get(copy->source);
-                const auto& dest = get(copy->destination);
+                const auto& source = get_buffer(copy->source);
+                const auto& dest = get_buffer(copy->destination);
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(dest.bytes, copy->destination_offset, copy->bytes);
                 if (!copy->bytes || copy->source == copy->destination ||
@@ -468,8 +468,8 @@ struct Context::Impl {
         UINT descriptor_index = 0;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
-                auto& src = get(copy->source);
-                auto& dst = get(copy->destination);
+                auto& src = get_buffer(copy->source);
+                auto& dst = get_buffer(copy->destination);
                 transition(submission.commands.Get(), src.resource.Get(),
                            D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 transition(submission.commands.Get(), dst.resource.Get(),
@@ -484,14 +484,14 @@ struct Context::Impl {
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
-            Pipeline& pipeline = get(cmd.pipeline);
+            Pipeline& pipeline = get_pipeline(cmd.pipeline);
             std::unordered_set<BufferId> transitioned;
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 if (!transitioned.insert(binding.buffer).second) continue;
                 auto desired = slot == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                          : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                transition(submission.commands.Get(), get(binding.buffer).resource.Get(),
+                transition(submission.commands.Get(), get_buffer(binding.buffer).resource.Get(),
                            D3D12_RESOURCE_STATE_COMMON, desired);
             }
 
@@ -499,7 +499,7 @@ struct Context::Impl {
             const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
             for (UINT slot = 0; slot < 4; ++slot) {
                 const auto& binding = cmd.buffers[slot];
-                auto& buffer = get(binding.buffer);
+                auto& buffer = get_buffer(binding.buffer);
                 D3D12_CPU_DESCRIPTOR_HANDLE cpu{
                     cpu_start.ptr + (descriptor_index + slot) * increment
                 };
@@ -535,13 +535,13 @@ struct Context::Impl {
             submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
             D3D12_RESOURCE_BARRIER uav{};
             uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            uav.UAV.pResource = get(cmd.buffers[3].buffer).resource.Get();
+            uav.UAV.pResource = get_buffer(cmd.buffers[3].buffer).resource.Get();
             submission.commands->ResourceBarrier(1, &uav);
             transitioned.clear();
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 auto id = cmd.buffers[slot].buffer;
                 if (!transitioned.insert(id).second) continue;
-                transition(submission.commands.Get(), get(id).resource.Get(),
+                transition(submission.commands.Get(), get_buffer(id).resource.Get(),
                            slot == 3 ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                      : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                            D3D12_RESOURCE_STATE_COMMON);
