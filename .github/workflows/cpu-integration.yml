@@ -111,9 +111,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON
-      - name: Compile PhysX GPU AABB stage for D3D12 (DXIL)
+      - name: Find Windows SDK DXC
         shell: pwsh
         run: |
           $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
@@ -121,13 +119,19 @@ jobs:
               Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
               Sort-Object FullName -Descending)
           if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
-          $dxc = $candidates[0].FullName
-          $dxil = Join-Path $env:RUNNER_TEMP 'physx_translate_aabbs.dxil'
-          & $dxc -T cs_6_0 -E main -Fo $dxil src/physx_gpu/kernels/physx_translate_aabbs.hlsl
+          "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Execute native D3D12 PhysX AABB conformance (WARP)
+        shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: |
+          cmake --build build --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $dxil)) { throw 'PhysX AABB DXIL not generated' }
-          if ((Get-Item $dxil).Length -eq 0) { throw 'PhysX AABB DXIL is empty' }
-          Write-Output 'PhysX AABB D3D12 shader compilation PASS'
+          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_aabb_encoding_d3d12$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
       - name: Test

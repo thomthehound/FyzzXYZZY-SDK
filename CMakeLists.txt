@@ -201,6 +201,69 @@ if(FYZZXYZZY_BUILD_VULKAN)
   endif()
 endif()
 
+# Native D3D12 execution of PhysX's AABB stage, using the exact same
+# AabbEncodingStage host dispatch and reference fixtures as Vulkan.
+# The initial executor supports this kernel's 3 SRV + 1 UAV/8-constant ABI.
+# It remains a separate static target pending backend-neutral runtime dispatch.
+option(FYZZXYZZY_BUILD_D3D12 "Build the native Windows D3D12 compute backend" OFF)
+if(FYZZXYZZY_BUILD_D3D12)
+  if(NOT WIN32)
+    message(FATAL_ERROR "FYZZXYZZY_BUILD_D3D12 requires Windows")
+  endif()
+  add_library(fyzzxyzzy_compute_d3d12 STATIC src/compute_d3d12.cpp)
+  add_library(FyzzXYZZY::ComputeD3D12 ALIAS fyzzxyzzy_compute_d3d12)
+  target_compile_features(fyzzxyzzy_compute_d3d12 PUBLIC cxx_std_17)
+  target_include_directories(fyzzxyzzy_compute_d3d12 PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(fyzzxyzzy_compute_d3d12 PUBLIC d3d12 dxgi d3dcompiler)
+  set_target_properties(fyzzxyzzy_compute_d3d12 PROPERTIES
+    POSITION_INDEPENDENT_CODE ON)
+  if(MSVC)
+    target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
+  endif()
+
+  add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
+    src/physx_gpu/aabb_encoding.cpp)
+  target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
+  target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
+    FyzzXYZZY::ComputeD3D12)
+
+  option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
+    "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
+  if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
+    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    set(FYZZXYZZY_D3D12_AABB_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_AABB_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_AABB_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_aabb_shader
+      DEPENDS "${FYZZXYZZY_D3D12_AABB_DXIL}")
+    add_executable(fyzzxyzzy_physx_aabb_encoding_d3d12
+      tests/physx_gpu_aabb_encoding.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_aabb_encoding_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_aabb_encoding_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_aabb_encoding_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_aabb_encoding_d3d12
+      fyzzxyzzy_d3d12_aabb_shader)
+    add_test(NAME fyzzxyzzy_physx_aabb_encoding_d3d12
+      COMMAND fyzzxyzzy_physx_aabb_encoding_d3d12
+        "${FYZZXYZZY_D3D12_AABB_DXIL}")
+  endif()
+endif()
+
 # Godot is a first SDK consumer, never a dependency of FyzzXYZZY::Core.
 option(FYZZXYZZY_BUILD_GODOT "Build the optional Godot 4.7 GDExtension consumer" OFF)
 if(FYZZXYZZY_BUILD_GODOT)

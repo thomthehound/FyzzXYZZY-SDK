@@ -141,6 +141,59 @@ void run_case(Context& context, AabbEncodingStage& stage,
     context.destroy_buffer(gpu_bounds);
 }
 
+// Source-derived stage must participate in an ordered GPU batch, not
+// implicitly synchronize or maintain a hidden secondary simulation state.
+// Exercise shader write -> GPU copy -> shader write; both published results
+// must match the original PhysX float-bit encoding for their respective
+// environment-ID modes.
+void run_ordered_batch(Context& context, AabbEncodingStage& stage) {
+    const AabbEncodingParameters p{73, 4, 4, 4, 2, 3, 4};
+    std::vector<FloatBounds> bounds(p.count);
+    std::vector<float> distances(p.count);
+    std::vector<std::uint32_t> env_ids(p.count);
+    for (std::size_t i = 0; i < p.count; ++i) {
+        const float x = static_cast<float>(i) * 0.125f - 5.0f;
+        bounds[i] = {{x, -x, x * 0.5f, x + 1.0f, -x + 0.75f, x * 0.5f + 0.25f}};
+        distances[i] = static_cast<float>(i % 5) * 0.03125f;
+        env_ids[i] = i % 17 == 0 ? 0xffffffffu : static_cast<std::uint32_t>(i % 6);
+    }
+    const auto bound_bytes = bounds.size() * sizeof(FloatBounds);
+    const auto scalar_bytes = distances.size() * sizeof(float);
+    const BufferId box = context.create_buffer(bound_bytes, MemoryPlacement::DeviceLocal);
+    const BufferId distance = context.create_buffer(scalar_bytes, MemoryPlacement::DeviceLocal);
+    const BufferId env = context.create_buffer(scalar_bytes, MemoryPlacement::DeviceLocal);
+    const BufferId output = context.create_buffer(bound_bytes, MemoryPlacement::DeviceLocal);
+    const BufferId first_snapshot = context.create_buffer(bound_bytes, MemoryPlacement::DeviceLocal);
+    context.upload(box, 0, bounds.data(), bound_bytes);
+    context.upload(distance, 0, distances.data(), scalar_bytes);
+    context.upload(env, 0, env_ids.data(), scalar_bytes);
+
+    std::vector<BatchCommand> commands;
+    stage.append(commands, box, distance, 0, output, p);
+    commands.emplace_back(CopyCommand{output, 0, first_snapshot, 0, bound_bytes});
+    stage.append(commands, box, distance, env, output, p);
+    if (commands.size() != 3) throw std::runtime_error("PhysX batch did not record three operations");
+    context.wait_submission(context.submit_batch(commands));
+
+    std::vector<IntegerBounds> before(p.count), after(p.count);
+    context.download(first_snapshot, 0, before.data(), bound_bytes);
+    context.download(output, 0, after.data(), bound_bytes);
+    for (std::size_t i = 0; i < p.count; ++i) {
+        auto expected_first = upstream_reference(bounds[i], distances[i], env_ids[i], false, p);
+        auto expected_last = upstream_reference(bounds[i], distances[i], env_ids[i], true, p);
+        for (std::size_t axis = 0; axis < 6; ++axis) {
+            if (before[i].value[axis] != expected_first.value[axis] ||
+                after[i].value[axis] != expected_last.value[axis])
+                throw std::runtime_error("PhysX batch producer/copy/consumer order mismatch");
+        }
+    }
+    context.destroy_buffer(first_snapshot);
+    context.destroy_buffer(output);
+    context.destroy_buffer(env);
+    context.destroy_buffer(distance);
+    context.destroy_buffer(box);
+}
+
 void reject_invalid(AabbEncodingStage& stage) {
     std::vector<BatchCommand> commands;
     commands.emplace_back(CopyCommand{1, 0, 2, 0, 16});
@@ -168,15 +221,23 @@ void reject_invalid(AabbEncodingStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2) throw std::invalid_argument("Expected compiled SPIR-V shader path");
+        if (argc != 2) throw std::invalid_argument("Expected compiled PhysX AABB shader path");
+#if defined(FYZZXYZZY_TEST_D3D12)
+        Context context(Backend::D3D12);
+#else
         Context context(Backend::Vulkan);
+#endif
         const auto& info = context.device_info();
         if (info.max_workgroup_invocations < 128 ||
             info.max_workgroup_size[0] < 128) {
-            throw std::runtime_error("Vulkan device below core compute group-size limits");
+            throw std::runtime_error("Compute device below core group-size limits");
         }
         ShaderBinary shader;
+#if defined(FYZZXYZZY_TEST_D3D12)
+        shader.format = ShaderFormat::Dxil;
+#else
         shader.format = ShaderFormat::Spirv;
+#endif
         shader.bytes = read_shader(argv[1]);
         AabbEncodingStage stage(context, std::move(shader));
         reject_invalid(stage);
@@ -186,6 +247,7 @@ int main(int argc, char** argv) {
         run_case(context, stage, {513, 4, 4, 4, 2, 3, 4}, true);
         run_case(context, stage, {47, 6, 2, 4, 2, 1, 0}, true);
         run_case(context, stage, {37, 6, 2, 4, 2, 1, 0}, false);
+        run_ordered_batch(context, stage);
         std::cout << "PhysX GPU broadphase AABB encoding PASS\n";
         return 0;
     } catch (const std::exception& e) {

@@ -12,8 +12,9 @@
 
 namespace fyzz::compute {
 
-// Backend-independent host API. No Vulkan resources escape through this header.
-enum class Backend { Vulkan };
+// Backend-independent host API; the initial D3D12 backend is built as a
+// separate implementation of Context until shared runtime selection lands.
+enum class Backend { Vulkan, D3D12 };
 
 // HostVisible supports direct mapping; DeviceLocal uses staging for host transfers.
 enum class MemoryPlacement { HostVisible, DeviceLocal };
@@ -48,8 +49,9 @@ struct ShaderBinary {
     std::string entry_point = "main";
 };
 
-// Descriptor set 0 uses consecutive storage-buffer slots [0, count).
-// The pipeline binary must declare compatible storage-buffer bindings.
+// Logical buffer bindings use consecutive slots [0, count). Vulkan maps
+// them to storage descriptors. Initial D3D12 AABB support maps 0..2 to SRV
+// registers t0..t2 and slot 3 to UAV u0; parameters become root constants.
 struct ComputePipelineDesc {
     ShaderBinary shader;
     std::uint32_t storage_buffer_binding_count = 0;
@@ -69,8 +71,8 @@ struct DispatchSize {
     std::uint32_t z = 1;
 };
 
-// Commands retain their input data until submit_batch returns; the Vulkan
-// implementation records all operations in one ordered command buffer.
+// Commands own their parameter bytes through submission. Both implementations
+// record ordered copies/dispatches with explicit GPU resource dependencies.
 struct CopyCommand {
     BufferId source = 0;
     std::size_t source_offset = 0;
@@ -117,7 +119,7 @@ public:
                      std::size_t bytes);
 
     // Record and submit work without blocking the calling thread.
-    // Work is ordered on this Context's single Vulkan compute queue.
+    // Work is ordered on this Context's compute queue.
     SubmissionId submit_copy_buffer(BufferId source, std::size_t source_offset,
                                     BufferId destination, std::size_t destination_offset,
                                     std::size_t bytes);

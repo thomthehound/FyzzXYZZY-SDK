@@ -93,6 +93,37 @@ incremental SAP, pairs, aggregation, resource ownership and task dependencies
 before claiming executable GPU broadphase support. See
 [GPU port architecture](PHYSX_GPU_PORT.md).
 
+## Native D3D12 AABB bring-up (Windows)
+
+A Windows-only native D3D12 executor is available behind
+`FYZZXYZZY_BUILD_D3D12=ON`. It executes the **same**
+`physx_translate_aabbs.hlsl` DXIL shader, `AabbEncodingStage` host wrapper,
+and exact integer reference fixtures as the Vulkan/SPIR-V test. Configure
+with a Windows SDK DXC path (or place `dxc` on PATH):
+
+```powershell
+cmake -S . -B build-d3d12 -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=C:\path\to\dxc.exe"
+cmake --build build-d3d12 --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12
+$env:FYZZXYZZY_D3D12_FORCE_WARP = "1"
+ctest --test-dir build-d3d12 -C Release -R fyzzxyzzy_physx_aabb_encoding_d3d12 --output-on-failure
+```
+
+Windows CI runs the DXIL test on D3D12's software WARP adapter before the
+full Godot build. Remove the environment variable to prefer a hardware
+adapter; WARP remains a fallback. WARP conformance does **not** establish
+AMD device performance or hardware-specific wave behavior.
+
+**Current limits:** the D3D12 backend is initially a separate static
+implementation of `fyzz::compute::Context`, exposing 3 structured
+SRVs (t0..t2), one structured UAV (u0), and 8 root constants (b0)
+for this source-derived PhysX stage. It does not yet allow both backends
+to be linked into a single executable for runtime selection. Its
+`HostVisible` requests use device-local resources with staging rather
+than a directly mapped device buffer. This is an explicit bring-up
+limitation, not a general-purpose or scene-integrated D3D12 GPU backend.
+The next architecture step is a backend-neutral context implementation
+with interface-owned command, descriptor and task-completion semantics.
+
 ## Experimental physics compute acceptance
 
 `src/kernels/rigid_floor.comp` is an original, bounded GPU physics experiment (not a translated PhysX kernel):
