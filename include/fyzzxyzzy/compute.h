@@ -118,6 +118,15 @@ public:
     BufferId create_buffer(std::size_t bytes,
                            MemoryPlacement placement = MemoryPlacement::HostVisible);
     void destroy_buffer(BufferId id);
+
+    // Invalidates the handle immediately without waiting for the GPU.
+    // Its physical allocation remains alive until all GPU commands already
+    // submitted on this Context's ordered queue have completed. No future
+    // command may use id; this is a precursor to PhysX's deferred free on
+    // async grow/copy. Pending submissions must still be waited or retired
+    // through their normal API. The Context owns the retired allocation.
+    void retire_buffer(BufferId id);
+
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes);
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
 
