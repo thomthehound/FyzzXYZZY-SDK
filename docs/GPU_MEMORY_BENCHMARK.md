@@ -69,11 +69,24 @@ timestamp unavailability returns `std::nullopt`, **never CPU time
 mislabeled as GPU time**.
 
 The GPU duration includes all **in-batch copies and synchronization
-barriers**, not isolated kernel execution. These executors currently
-allocate/record command lists and descriptors per batch. The reported
-host submit+wait wall time includes those costs and OS scheduling;
-it is *not* a precise CPU-only encoding metric. There is no production
-overhead when unprofiled submissions use the normal path.
+barriers**, not isolated kernel execution. Vulkan's prototype still creates
+command buffers and descriptor pools per batch. On D3D12, completed
+command allocators/lists and descriptor heaps are now recycled (bounded cache
+of eight), and resources remain in their required states *within* a batch.
+Repeated UAV writes still receive UAV barriers; transitions between UAV,
+SRV and copy states still establish the required dependencies. Every used
+resource transitions to COMMON at the end of the batch, since state is not
+yet tracked across submissions. The D3D12 path can therefore amortize
+driver allocations, but does not yet represent the final PhysX host scheduler
+or queueing model.
+
+The reported host submit+wait wall time includes command recording, any
+driver allocations or reuse, device execution, OS scheduling and the wait;
+it is *not* a precise CPU-only encoding metric. GPU query timestamps exclude
+host work but still include the barriers and copies in the measured batch.
+Both measurements are required, and neither alone establishes application
+frame-time improvement. There is no timestamp-query overhead in ordinary
+unprofiled submissions.
 
 **Interpretation rules:** do not use WARP or llvmpipe/lavapipe relative
 speeds as evidence of AMD hardware throughput. Do not assume a 5-offset

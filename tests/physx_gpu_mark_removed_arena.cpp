@@ -200,6 +200,40 @@ void run_case(Context& ctx, MarkRemovedPairsArenaStage& stage,
     ctx.destroy_buffer(arena);
 }
 
+// Repeated coherent PhysX work, using the same state across submissions.
+// Dispatch -> GPU copy -> dispatch exercises UAV/COPY_SOURCE/COPY_DEST/UAV
+// hazards, and each completed submission makes its allocator reusable.
+// The second copy into the same target explicitly tests back-to-back
+// COPY_DEST writes without silently depending on a global state reset.
+void run_repeated_batch_lifetimes(Context& ctx, MarkRemovedPairsArenaStage& stage) {
+    const auto packed = pack(97, 17, 128);
+    auto expected = packed;
+    reference_mark_removed(expected);
+    const auto bytes = static_cast<std::uint32_t>(packed.arena.size() * 4);
+    const auto arena = ctx.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    const auto mirror = ctx.create_buffer(bytes, MemoryPlacement::DeviceLocal);
+    ctx.upload(arena, 0, packed.arena.data(), bytes);
+
+    std::vector<BatchCommand> operations;
+    stage.append(operations, arena, bytes, packed.descriptor_offset,
+                 packed.desc.num_removed_handles);
+    operations.emplace_back(CopyCommand{arena, 0, mirror, 0, bytes});
+    operations.emplace_back(CopyCommand{arena, 0, mirror, 0, bytes});
+    stage.append(operations, mirror, bytes, packed.descriptor_offset,
+                 packed.desc.num_removed_handles);
+
+    for (int iteration = 0; iteration < 12; ++iteration) {
+        ctx.wait_submission(ctx.submit_batch(operations));
+        std::vector<std::uint32_t> actual(packed.arena.size());
+        ctx.download(mirror, 0, actual.data(), bytes);
+        if (actual != expected.arena)
+            throw std::runtime_error("PhysX repeated batch memory/state hazard failed at iteration " +
+                                     std::to_string(iteration));
+    }
+    ctx.destroy_buffer(mirror);
+    ctx.destroy_buffer(arena);
+}
+
 double median(std::vector<double> values) {
     if (values.empty()) throw std::invalid_argument("No measurements");
     std::sort(values.begin(), values.end());
@@ -312,6 +346,7 @@ int main(int argc, char** argv) {
         run_case(ctx, stage, 17, 5, 128);
         run_case(ctx, stage, 513, 73, 256);
         run_case(ctx, stage, 4097, 513, 128);
+        run_repeated_batch_lifetimes(ctx, stage);
         run_case(ctx, resolved_stage, 1, 1, 0, true);
         run_case(ctx, resolved_stage, 17, 0, 128, true);
         run_case(ctx, resolved_stage, 17, 5, 128, true);
