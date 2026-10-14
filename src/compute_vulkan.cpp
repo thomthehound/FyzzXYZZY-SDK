@@ -31,7 +31,16 @@ VkInstance create_instance() {
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     application.pApplicationName = "FyzzXYZZY";
     // The SPIR-V wave path uses Vulkan 1.1 subgroup properties and SPIR-V 1.3.
-    application.apiVersion = VK_API_VERSION_1_1;
+    // The generic Vulkan compute API still works with Vulkan 1.0.
+    // Subgroup arithmetic is an OPTIONAL optimized shader path, not a
+    // reason to fail vkCreateInstance on a 1.0 loader.
+    std::uint32_t runtimeVersion = VK_API_VERSION_1_0;
+    auto getVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
+    if (getVersion)
+        require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
+    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_1
+        ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0;
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -80,16 +89,23 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.api_version = properties.apiVersion;
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
-            VkPhysicalDeviceSubgroupProperties subgroup{};
-            subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-            VkPhysicalDeviceProperties2 queried{};
-            queried.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            queried.pNext = &subgroup;
-            vkGetPhysicalDeviceProperties2(physical, &queried);
-            info.subgroup_size = subgroup.subgroupSize;
-            info.supports_wave_arithmetic =
-                (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-                (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+            // Vulkan 1.0 loader/device pairs have no core subgroup
+            // properties. Keep their old compute path and disable the
+            // native-wave optimization instead of rejecting the context.
+            auto getProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"));
+            if (getProperties2 && properties.apiVersion >= VK_API_VERSION_1_1) {
+                VkPhysicalDeviceSubgroupProperties subgroup{};
+                subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+                VkPhysicalDeviceProperties2 queried{};
+                queried.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+                queried.pNext = &subgroup;
+                getProperties2(physical, &queried);
+                info.subgroup_size = subgroup.subgroupSize;
+                info.supports_wave_arithmetic =
+                    (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+                    (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+            }
             for (std::size_t j = 0; j < 3; ++j) {
                 info.max_workgroup_count[j] = limits.maxComputeWorkGroupCount[j];
                 info.max_workgroup_size[j] = limits.maxComputeWorkGroupSize[j];
