@@ -39,17 +39,23 @@ static_assert(sizeof(SapActiveRegionListsArenaDesc) == 64,
 //   OUTPUT:   64 x 256
 // Original PhysX host initializes both dense histograms to zero before
 // BP_CREATE_REGIONS; this stage does not repeat those clears.
-// Portable scan keeps independent start/active counts instead of the
-// source's packed-16-bit warp arithmetic, preserving output ordering.
+// Uses the SOURCE's packed two-16-bit arithmetic. Wave/subgroup prefix
+// scan is the default whenever the device reports arithmetic support.
+// The fallback is also packed, for software CI and missing Vulkan features.
 class SapActiveRegionListsArenaStage final {
 public:
     SapActiveRegionListsArenaStage(compute::Context& context,
                                   compute::ShaderBinary writeout,
-                                  compute::ShaderBinary compute,
-                                  compute::ShaderBinary output);
+                                  compute::ShaderBinary compute_wave,
+                                  compute::ShaderBinary compute_portable,
+                                  compute::ShaderBinary output,
+                                  bool force_portable = false);
     ~SapActiveRegionListsArenaStage();
     SapActiveRegionListsArenaStage(const SapActiveRegionListsArenaStage&) = delete;
     SapActiveRegionListsArenaStage& operator=(const SapActiveRegionListsArenaStage&) = delete;
+
+    // Useful to check the fast path is actually exercised in native tests.
+    bool using_subgroup_scan() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -59,5 +65,6 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipelines_[3] = {};
+    bool using_wave_ = false;
 };
 } // namespace fyzz::physx_gpu
