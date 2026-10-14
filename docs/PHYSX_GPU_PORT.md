@@ -185,6 +185,46 @@ in the existing CPU build would not enable this Vulkan stage. The next
 integration work must adapt that factory/controller boundary and its resource
 lifetime, without introducing a separate simulation loop.
 
+### GPU completion and existing PhysX pair-task publication
+
+The pinned source makes the ordering precise:
+
+- `PxgCudaBroadPhaseSap::gpuDMABack` queues a descriptor readback,
+  launches `BP_SIGNAL_COMPLETE` against mapped host memory, flushes the
+  CUDA stream, and waits (briefly spins, then synchronizes if necessary).
+  Only after this boundary does it inspect report counts and overflow.
+- `PxgCudaBroadPhaseSap::fetchBroadPhaseResults` calls that fetch, then
+  swaps the persistent six-way projection/handle/histogram buffer sets.
+- `PxgAABBManager::postBroadPhase` calls `fetchBroadPhaseResults`,
+  resizes pair lists, and **then** sets each found/lost `PxLightCpuTask`
+  continuation and removes its initial task reference. The existing PhysX
+  task manager dispatches those tasks and releases their continuations.
+
+The source-faithful first CPU/GPU boundary is a **blocking fetch on the
+actual PhysX post-broadphase path**, not a new GPU callback scheduler.
+`src/physx_gpu/broadphase_completion.{h,cpp}` now provides a minimal
+`BroadPhaseCompletionGate`: it associates one compute submission with
+one frame, waits before caller-provided fetch/resize, installs the
+caller's original task continuations **after** successful publication,
+and only then invokes `removeReference` on the two original
+`PxBaseTask` objects. It covers the
+no-GPU-update path, prevents double release, and leaves both tasks blocked
+if the GPU wait or the result-publication operation fails; a publication
+failure can be retried after the owning PhysX code establishes its abort/
+empty-result policy. A **continuation-installation** failure is terminal,
+since retrying could install extra task references; the scene's original
+abort/teardown path must handle it. A completion readiness query **never**
+publishes or releases tasks.
+
+The bridge is **tested in isolation with real PhysX task interfaces and
+Vulkan/D3D12 submissions**, but is **not yet wired into
+`PxgAABBManager` or `Sc::Scene`**. The caller remains responsible for
+providing the original continuation-setup operation, reading the descriptor/pair streams,
+checking overflow/abort flags, updating report storage, and swapping state.
+It does not make the existing SDK GPU-broadphase-capable or add a worker
+thread. Next integration attaches this boundary to actual PhysX broadphase
+factory/scene objects as the relevant kernel family becomes runnable.
+
 ## Vulkan and D3D12: concurrent portability gates
 
 **Both backends implement the same PhysX GPU source-derived operation and

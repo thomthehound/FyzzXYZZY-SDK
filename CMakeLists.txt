@@ -88,12 +88,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
     src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
+    src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
-  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC FyzzXYZZY::Compute)
+  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC FyzzXYZZY::Compute physx_lib)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -172,6 +173,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
       add_test(NAME fyzzxyzzy_physx_aabb_encoding
         COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+
+      # PhysX PxgAABBManager::postBroadPhase result-publication boundary:
+      # GPU completion precedes found/lost-pair task reference release.
+      add_executable(fyzzxyzzy_physx_broadphase_completion
+        tests/physx_gpu_broadphase_completion.cpp)
+      target_include_directories(fyzzxyzzy_physx_broadphase_completion PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_broadphase_completion PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_test(NAME fyzzxyzzy_physx_broadphase_completion
+        COMMAND fyzzxyzzy_physx_broadphase_completion)
 
       # Source-derived PxgBroadPhaseDesc subset and markRemovedPairsLaunch:
       # a single GPU arena, no per-pointer descriptors, exact SAP state oracle.
@@ -273,12 +285,13 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
     src/physx_gpu/aabb_encoding.cpp
-    src/physx_gpu/mark_removed_pairs_arena.cpp)
+    src/physx_gpu/mark_removed_pairs_arena.cpp
+    src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
-    FyzzXYZZY::ComputeD3D12)
+    FyzzXYZZY::ComputeD3D12 physx_lib)
 
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
@@ -311,6 +324,17 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_aabb_encoding_d3d12
       COMMAND fyzzxyzzy_physx_aabb_encoding_d3d12
         "${FYZZXYZZY_D3D12_AABB_DXIL}")
+
+    add_executable(fyzzxyzzy_physx_broadphase_completion_d3d12
+      tests/physx_gpu_broadphase_completion.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_test(NAME fyzzxyzzy_physx_broadphase_completion_d3d12
+      COMMAND fyzzxyzzy_physx_broadphase_completion_d3d12)
 
     set(FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.dxil")

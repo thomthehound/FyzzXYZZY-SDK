@@ -42,8 +42,8 @@ jobs:
       - name: Validate shared PhysX HLSL to SPIR-V before full SDK build
         shell: bash
         run: |
-          cmake --build build --target fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_mark_removed_arena --parallel 4
-          ctest --test-dir build -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena)$' --output-on-failure
+          cmake --build build --target fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_mark_removed_arena fyzzxyzzy_physx_broadphase_completion --parallel 4
+          ctest --test-dir build -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena|broadphase_completion)$' --output-on-failure
       - name: Build
         run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test
@@ -128,9 +128,9 @@ jobs:
         env:
           FYZZXYZZY_D3D12_FORCE_WARP: '1'
         run: |
-          cmake --build build --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12 fyzzxyzzy_physx_mark_removed_arena_d3d12 --parallel 4
+          cmake --build build --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12 fyzzxyzzy_physx_mark_removed_arena_d3d12 fyzzxyzzy_physx_broadphase_completion_d3d12 --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena)_d3d12$' --output-on-failure
+          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena|broadphase_completion)_d3d12$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
