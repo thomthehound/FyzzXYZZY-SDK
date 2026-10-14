@@ -245,6 +245,71 @@ count / pair-write sequence. These remain explicit
 dependencies; this is not a fabricated replacement
 simulation pipeline.
 
+## 2d. Original start/active region worklists
+
+Following the four region prefix passes,
+`PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel`
+launches three CUDA kernels, gated on nonzero created handles:
+`BP_WRITEOUT_ACTIVE_HISTOGRAM` (**32×256**),
+`BP_COMPUTE_ACTIVE_HISTOGRAM` (**64×512**), then
+`BP_OUTPUT_ACTIVE_HISTOGRAM` (**64×256**). The source
+implements these in `broadphase.cu` as
+`writeOutStartAndActiveRegionHistogram`,
+`computeStartAndActiveRegionHistogram`, and
+`outputOrderedActiveRegionHistogram`.
+
+The first maps every work item in the previously scanned
+`startRegionAccum` to its X start projection and one YZ
+region. It marks the source-owned dense
+`startRegionsHistogram[region, xProjection]` and sets
+`activeRegionsHistogram` only for endpoints with the
+original new-projection tag. **PhysX initializes both
+dense histogram arrays to zero before `BP_CREATE_REGIONS`.**
+They are not created or cleared by the three kernels here.
+
+The middle kernel independently scans the start and active
+histograms for **each of 64 regions**, producing per-region
+exclusive prefixes. CUDA originally packs two 16-bit
+counters and scans them with warp operations; the portable
+HLSL uses separate 32-bit workgroup-wide scans with
+barriers, preserving observable prefixes without assuming
+wave32 and without allowing a 16-bit carry to bleed
+between fields. The third kernel traverses the same
+source work items and writes compact, X-ordered
+`orderedStartRegionHandles` and the newly-created subset
+`orderedActiveRegionHandles`.
+
+`SapActiveRegionListsArenaStage` retains the three exact
+launch shapes, the same create-only host gate, and the
+original resource relationships. Its common shader is
+compiled to Vulkan SPIR-V and D3D12 DXIL. The descriptor
+is a compact offset lowering of the original
+`PxgBroadPhaseDesc`, **not** an independent broadphase
+owner. It validates that the dense 64-region storage and
+rounded projection-count calculations fit its 32-bit
+addressing contract.
+
+Its native GPU test seeds source-compatible sorted X
+endpoints, `PxgSapBox1D` positions, 4×4×4 per-handle
+region ranges, and exclusive start-region work prefixes.
+An independent CPU oracle traverses logical X start
+objects, marks membership, linearly scans each region
+and emits ordered lists, without duplicating the GPU
+binary-search work mapping. Entire arenas including
+unwritten padding and source input are compared for
+empty, quiet, small, and multi-512-projection workloads.
+
+The first five producer/prefix kernels remain separately
+tested. This fixture does **not** yet submit all eight
+kernels in a live PhysX scene or perform the original
+overlap-check and new-pair work. Next are
+`BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS`,
+`BP_COMPUTE_OVERLAPCHECKS_HISTOGRAM`,
+`BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM`, and
+`BP_GENERATE_FOUNDPAIR_NEWBOUNDS`, with original
+host scheduling, ownership and result publication
+preserved.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.
