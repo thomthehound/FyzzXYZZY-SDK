@@ -161,6 +161,15 @@ lanes, divergence, barriers, atomics, reductions, shared memory, and
 inter-workgroup ordering. Never substitute an apparently analogous shuffle
 without proving the original active-lane contract.
 
+Relevant external feature mechanisms are
+[Vulkan subgroup-size control](https://docs.vulkan.org/guide/latest/subgroups.html)
+and [D3D12/HLSL Shader Model 6.6 WaveSize](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_WaveSize.html).
+Neither mechanism should be assumed available without querying device
+capabilities. SM 6.6 also offers
+[dynamic descriptor-heap indexing](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_DynamicResources.html),
+which is a *candidate* for descriptor indirection, not an automatic
+replacement for CUDA's arbitrary typed pointer graph.
+
 ### 1.5 Other PhysX GPU obligations remain visible
 
 - `gpunarrowphase/src/PxgNphaseImplementationContext.cpp` chooses a GPU
