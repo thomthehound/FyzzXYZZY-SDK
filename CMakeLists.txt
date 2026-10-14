@@ -101,6 +101,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
+    src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -631,6 +632,34 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_first_SHADER}"
           "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_second_SHADER}"
           "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
+
+      # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
+      set(FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_producer_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_sap_region_producer_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}")
+      add_executable(fyzzxyzzy_physx_sap_region_producer
+        tests/physx_gpu_sap_region_producer.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_region_producer PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_region_producer PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_region_producer
+        fyzzxyzzy_physx_sap_region_producer_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_region_producer
+        COMMAND fyzzxyzzy_physx_sap_region_producer
+          "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -698,6 +727,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
+    src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1188,6 +1218,35 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_first_DXIL}"
         "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_second_DXIL}"
         "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
+
+    # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
+    set(FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_producer_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_sap_region_producer_shader
+      DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}")
+    add_executable(fyzzxyzzy_physx_sap_region_producer_d3d12
+      tests/physx_gpu_sap_region_producer.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_region_producer_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_region_producer_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_region_producer_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_region_producer_d3d12
+      fyzzxyzzy_d3d12_sap_region_producer_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_region_producer_d3d12
+      COMMAND fyzzxyzzy_physx_sap_region_producer_d3d12
+        "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}")
   endif()
 endif()
 

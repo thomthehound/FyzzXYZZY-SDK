@@ -136,6 +136,66 @@ using this adapter; that still requires integrating
 including resizing, descriptor repacking and asynchronous
 CUDA-to-backend transfer adaptation.
 
+## 2b. Original 3D region producer after created-handle processing
+
+The pinned `PxgCudaBroadPhaseSap::computeRegionHistogramKernel`
+runs **only when at least one created handle exists**, after the final
+nonincremental endpoint histogram and SAP index initialization.
+It first clears the dense `activeRegionsHistogram` and
+`startRegionsHistogram` arrays and dispatches
+`BP_CREATE_REGIONS` followed by four dedicated prefix passes
+(start region stage 1/2 and total region stage 1/2).
+These two clearing operations are **not** a reset of
+`startRegionAccum` or `regionAccum`: those are sparse
+per-projection counts produced by `BP_CREATE_REGIONS`.
+
+The source `broadphase.cu::createRegionsKernel` launches
+**32 workgroups × 256 threads**, walking contiguous 256-endpoint
+partitions with
+`ceil(ceil(2*numBoxes/256)/32)` iterations per workgroup.
+It reads the *current* X-sorted `boxHandles[0][X]` and each
+axis's `boxSapBox1D[axis]` endpoint indices. Every start
+endpoint obtains its own start/end **all-endpoint histogram**
+counts in all three axes, then divides each count by
+`ceil(numBoxes/REGION_SIZE_PER_AXIS)` where
+`REGION_SIZE_PER_AXIS = 4`. This yields
+`PxgIntegerRegion::minRange/maxRange` (two `uint4`
+vectors per handle) in a 4×4×4 region grid.
+
+For a start endpoint the source writes
+`startRegionAccum[boxStartX]` as the number of YZ regions
+covered; it zeros `startRegionAccum[boxEndX]`.
+`regionAccum[xSortedIndex]` is the full XYZ region count
+for start endpoints, or zero for end endpoints. The original
+per-handle and per-endpoint storage addresses must be preserved
+for subsequent region scan and active/start worklist kernels.
+Tags are inspected using the upstream `isStartProjection` bit
+and handles decoded with `getHandle(tagged) = tagged >> 3`.
+
+`SapRegionProducerArenaStage` ports **only** this source
+producer as Vulkan/D3D12 shared HLSL with a caller-owned,
+byte-offset subset of `PxgBroadPhaseDesc`. It does not
+allocate persistent regions, publish pairs, or replace the
+host's created-handle gate, memory clears or later scans.
+
+The independent GPU oracle constructs three-axis sorted
+endpoints, original all-endpoint exclusive histograms, and
+per-handle SAP min/max positions, then iterates **objects**
+rather than sorted X endpoints to calculate expected region
+ranges and sparse counts. It compares the **entire arena**,
+including untouched tags, histograms, padding and unused
+regions, on both native APIs. Cases include zero-created
+and empty skipped updates, tied projection keys, asymmetric
+axis ordering, new-handle tags, and 4099 boxes which cross
+the first 8192-projection iteration boundary.
+
+**Next dependency:** `BP_COMPUTE_START_REGION_HISTOGRAM`,
+`BP_OUTPUT_START_REGION_HISTOGRAM`,
+`BP_COMPUTE_REGION_HISTOGRAM`, and
+`BP_OUTPUT_REGION_HISTOGRAM`, followed by the original
+active-region and overlap-check pair work. Do not fold these
+into a generic grid overlap engine.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.
