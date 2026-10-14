@@ -596,6 +596,32 @@ struct Context::Impl {
         }
     }
 
+    SubmissionId submit_upload(BufferId destination_id, std::size_t offset,
+                               const void* data, std::size_t bytes) {
+        // Snapshot into coherent pinned/mappable memory before submitting;
+        // the user's pointer is never retained beyond this call.
+        const Buffer& destination = get(destination_id);
+        validate_range(destination.bytes, offset, bytes);
+        if (!bytes || !data || (offset % 4) || (bytes % 4))
+            throw std::invalid_argument("Async Vulkan upload requires nonempty aligned data");
+        // Reserve the retirement slot BEFORE queue submission. Otherwise a
+        // bad_alloc while retaining staging after submit could free memory
+        // that a live GPU copy still references.
+        retired_buffers.reserve(retired_buffers.size() + 1);
+        const Buffer staging = make_buffer(bytes, MemoryPlacement::HostVisible);
+        try {
+            map_transfer(staging, 0, const_cast<void*>(data), bytes, true);
+            const SubmissionId id = submit_copy(staging, 0, destination, offset, bytes);
+            // Buffer is trivially copyable; reserved capacity prevents
+            // vector relocation/allocation after the GPU is submitted.
+            retired_buffers.push_back({id, staging});
+            return id;
+        } catch (...) {
+            release_buffer(staging);
+            throw;
+        }
+    }
+
     void transfer(BufferId id, std::size_t offset, void* data,
                   std::size_t bytes, bool upload) {
         wait_all();
@@ -1233,6 +1259,11 @@ void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->transfer(id, offset, const_cast<void*>(data), bytes, true);
+}
+
+SubmissionId Context::submit_upload_buffer(BufferId id, std::size_t offset,
+                                           const void* data, std::size_t bytes) {
+    return impl_->submit_upload(id, offset, data, bytes);
 }
 
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
