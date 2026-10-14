@@ -42,8 +42,320 @@ jobs:
       - name: Validate shared PhysX HLSL to SPIR-V before full SDK build
         shell: bash
         run: |
-          cmake --build build --target fyzzxyzzy_physx_aabb_encoding --parallel 4
-          ctest --test-dir build -R '^fyzzxyzzy_physx_aabb_encoding$' --output-on-failure
+          cmake --build build --target fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_mark_removed_arena --parallel 4
+          ctest --test-dir build -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena)
+      - name: Build
+        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Offline CPU source distribution
+        shell: bash
+        run: |
+          cmake --build build --target fyzzxyzzy_source_bundle
+          mkdir -p "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cd "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cmake -E tar xzf "${GITHUB_WORKSPACE}/build/fyzzxyzzy-source.tar.gz"
+          test -f FyzzXYZZY-SDK/vendor/PhysX/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
+          cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          grep -F "vendor/PhysX" offline-build/CMakeCache.txt
+          cmake --build offline-build --target fyzzxyzzy_headless_smoke --parallel 4
+          ctest --test-dir offline-build --output-on-failure
+
+      - name: Godot 4.7.2 headless acceptance
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip" -o "${RUNNER_TEMP}/godot.zip"
+          mkdir -p "${RUNNER_TEMP}/godot-bin"
+          unzip -q "${RUNNER_TEMP}/godot.zip" -d "${RUNNER_TEMP}/godot-bin"
+          chmod +x "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          # Exercise the runtime GDExtension contract directly. Editor import is
+          # an independent integration test and must not gate the headless SDK test.
+          set +e
+          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd 2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if command -v gdb >/dev/null 2>&1; then
+              gdb --batch -ex "set pagination off" -ex run -ex "thread apply all bt 12" --args \
+                "$engine" --headless --path godot/test_project --script res://tests/headless_smoke.gd || true
+            fi
+            exit "$status"
+          fi
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
+
+      - name: Godot 4.7.2 editor import acceptance
+        shell: bash
+        run: |
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          project="${RUNNER_TEMP}/fyzzxyzzy-editor-acceptance"
+          cp -a godot/test_project "$project"
+          rm -rf "$project/.godot"
+
+          # Populate the extension registry before the first normal headless
+          # editor session; Godot 4.7.2 needs this for registered native classes.
+          timeout 45s "$engine" --headless --recovery-mode --editor --import --path "$project"
+          test -s "$project/.godot/extension_list.cfg"
+
+          # Verify the ordinary editor import works on the prepared project.
+          timeout 45s "$engine" --headless --editor --import --path "$project"
+
+          # Verify runtime class registration after both editor passes.
+          timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
+            2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find Windows SDK DXC
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $candidates = @(Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
+              Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+              Sort-Object FullName -Descending)
+          if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
+          "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Execute native D3D12 PhysX AABB conformance (WARP)
+        shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: |
+          cmake --build build --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12 fyzzxyzzy_physx_mark_removed_arena_d3d12 --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena)_d3d12
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C release --output-on-failure
+      - name: Godot 4.7.2 headless acceptance
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'godot.zip'
+          $bin = Join-Path $env:RUNNER_TEMP 'godot-bin'
+          Invoke-WebRequest -Uri 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $bin
+          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64_console.exe'
+          if (-not (Test-Path $exe)) { throw "Godot console executable not found: $exe" }
+          $godotOutput = & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $godotOutput | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($godotOutput -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot acceptance completion marker missing"
+          }
+      - name: Godot 4.7.2 editor import acceptance
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
+          $project = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-editor-acceptance'
+          Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
+          $cache = Join-Path $project '.godot'
+          if (Test-Path $cache) { Remove-Item -Path $cache -Force -Recurse }
+
+          & $exe --headless --recovery-mode --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registry = Join-Path $cache 'extension_list.cfg'
+          if (-not (Test-Path $registry)) { throw "Godot extension registry not generated" }
+
+          & $exe --headless --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $output = & $exe --headless --path $project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($output -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot editor acceptance runtime marker missing"
+          }
+ --output-on-failure
+      - name: Build
+        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Offline CPU source distribution
+        shell: bash
+        run: |
+          cmake --build build --target fyzzxyzzy_source_bundle
+          mkdir -p "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cd "${RUNNER_TEMP}/fyzzxyzzy-source-check"
+          cmake -E tar xzf "${GITHUB_WORKSPACE}/build/fyzzxyzzy-source.tar.gz"
+          test -f FyzzXYZZY-SDK/vendor/PhysX/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/LICENSE.md
+          test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
+          cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          grep -F "vendor/PhysX" offline-build/CMakeCache.txt
+          cmake --build offline-build --target fyzzxyzzy_headless_smoke --parallel 4
+          ctest --test-dir offline-build --output-on-failure
+
+      - name: Godot 4.7.2 headless acceptance
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip" -o "${RUNNER_TEMP}/godot.zip"
+          mkdir -p "${RUNNER_TEMP}/godot-bin"
+          unzip -q "${RUNNER_TEMP}/godot.zip" -d "${RUNNER_TEMP}/godot-bin"
+          chmod +x "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          # Exercise the runtime GDExtension contract directly. Editor import is
+          # an independent integration test and must not gate the headless SDK test.
+          set +e
+          "$engine" --headless --verbose --path godot/test_project --script res://tests/headless_smoke.gd 2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if command -v gdb >/dev/null 2>&1; then
+              gdb --batch -ex "set pagination off" -ex run -ex "thread apply all bt 12" --args \
+                "$engine" --headless --path godot/test_project --script res://tests/headless_smoke.gd || true
+            fi
+            exit "$status"
+          fi
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
+
+      - name: Godot 4.7.2 editor import acceptance
+        shell: bash
+        run: |
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          project="${RUNNER_TEMP}/fyzzxyzzy-editor-acceptance"
+          cp -a godot/test_project "$project"
+          rm -rf "$project/.godot"
+
+          # Populate the extension registry before the first normal headless
+          # editor session; Godot 4.7.2 needs this for registered native classes.
+          timeout 45s "$engine" --headless --recovery-mode --editor --import --path "$project"
+          test -s "$project/.godot/extension_list.cfg"
+
+          # Verify the ordinary editor import works on the prepared project.
+          timeout 45s "$engine" --headless --editor --import --path "$project"
+
+          # Verify runtime class registration after both editor passes.
+          timeout 45s "$engine" --headless --path "$project" --script res://tests/headless_smoke.gd \
+            2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+          grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find Windows SDK DXC
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $candidates = @(Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
+              Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+              Sort-Object FullName -Descending)
+          if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
+          "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Execute native D3D12 PhysX AABB conformance (WARP)
+        shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: |
+          cmake --build build --config Release --target fyzzxyzzy_physx_aabb_encoding_d3d12 --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_aabb_encoding_d3d12$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C release --output-on-failure
+      - name: Godot 4.7.2 headless acceptance
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'godot.zip'
+          $bin = Join-Path $env:RUNNER_TEMP 'godot-bin'
+          Invoke-WebRequest -Uri 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $bin
+          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64_console.exe'
+          if (-not (Test-Path $exe)) { throw "Godot console executable not found: $exe" }
+          $godotOutput = & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $godotOutput | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($godotOutput -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot acceptance completion marker missing"
+          }
+      - name: Godot 4.7.2 editor import acceptance
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
+          $project = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-editor-acceptance'
+          Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
+          $cache = Join-Path $project '.godot'
+          if (Test-Path $cache) { Remove-Item -Path $cache -Force -Recurse }
+
+          & $exe --headless --recovery-mode --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registry = Join-Path $cache 'extension_list.cfg'
+          if (-not (Test-Path $registry)) { throw "Godot extension registry not generated" }
+
+          & $exe --headless --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $output = & $exe --headless --path $project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($output -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot editor acceptance runtime marker missing"
+          }
+ --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C release --output-on-failure
+      - name: Godot 4.7.2 headless acceptance
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'godot.zip'
+          $bin = Join-Path $env:RUNNER_TEMP 'godot-bin'
+          Invoke-WebRequest -Uri 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $bin
+          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64_console.exe'
+          if (-not (Test-Path $exe)) { throw "Godot console executable not found: $exe" }
+          $godotOutput = & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $godotOutput | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($godotOutput -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot acceptance completion marker missing"
+          }
+      - name: Godot 4.7.2 editor import acceptance
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
+          $project = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-editor-acceptance'
+          Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
+          $cache = Join-Path $project '.godot'
+          if (Test-Path $cache) { Remove-Item -Path $cache -Force -Recurse }
+
+          & $exe --headless --recovery-mode --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registry = Join-Path $cache 'extension_list.cfg'
+          if (-not (Test-Path $registry)) { throw "Godot extension registry not generated" }
+
+          & $exe --headless --editor --import --path $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $output = & $exe --headless --path $project --script res://tests/headless_smoke.gd 2>&1
+          $status = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($status -ne 0) { exit $status }
+          if (-not ($output -match 'FyzzXYZZY Godot acceptance PASS')) {
+            throw "Godot editor acceptance runtime marker missing"
+          }
+ --output-on-failure
       - name: Build
         run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test
