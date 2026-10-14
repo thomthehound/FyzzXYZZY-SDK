@@ -190,6 +190,10 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
+    // Completed command allocator/list and descriptor heap reuse. Never
+    // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
+    std::vector<Submission> recycled;
+    static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -228,6 +232,15 @@ struct Context::Impl {
     }
 
     Submission new_commands() {
+        if (!recycled.empty()) {
+            Submission submission = std::move(recycled.back());
+            recycled.pop_back();
+            check(submission.allocator->Reset(), "ResetCommandAllocator");
+            check(submission.commands->Reset(submission.allocator.Get(), nullptr),
+                  "ResetCommandList");
+            submission.fence_value = 0;
+            return submission;
+        }
         Submission submission;
         check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
                                              IID_PPV_ARGS(&submission.allocator)),
@@ -237,6 +250,13 @@ struct Context::Impl {
                                         IID_PPV_ARGS(&submission.commands)),
               "CreateCommandList");
         return submission;
+    }
+
+    void recycle_completed(Submission&& submission) {
+        // The caller must first wait for the submission fence. A cached heap
+        // keeps its descriptors only until the next recording overwrites them.
+        if (recycled.size() < kMaxRecycled)
+            recycled.push_back(std::move(submission));
     }
 
     SubmissionId enqueue(Submission&& submission) {
@@ -270,12 +290,15 @@ struct Context::Impl {
         auto it = submissions.find(id);
         if (it == submissions.end()) throw std::invalid_argument("Unknown D3D12 submission");
         wait_value(it->second.fence_value);
+        recycle_completed(std::move(it->second));
         submissions.erase(it);
     }
 
     void wait_all() {
         if (submissions.empty()) return;
         wait_value(next_fence - 1);
+        for (auto& entry : submissions)
+            recycle_completed(std::move(entry.second));
         submissions.clear();
     }
 
@@ -482,44 +505,82 @@ struct Context::Impl {
         UINT increment = device->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         if (descriptor_count) {
-            D3D12_DESCRIPTOR_HEAP_DESC heap{};
-            heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            heap.NumDescriptors = static_cast<UINT>(descriptor_count);
-            heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-            check(device->CreateDescriptorHeap(&heap,
-                                               IID_PPV_ARGS(&submission.heap)),
-                  "CreateDescriptorHeap");
+            const auto available = submission.heap
+                ? submission.heap->GetDesc().NumDescriptors : 0u;
+            if (available < descriptor_count) {
+                // Geometric capacity growth avoids reallocation when scene
+                // work fluctuates around the previous dispatch count.
+                const std::size_t desired = std::min<std::size_t>(
+                    std::numeric_limits<UINT>::max(),
+                    std::max(descriptor_count, static_cast<std::size_t>(available) * 2));
+                D3D12_DESCRIPTOR_HEAP_DESC heap{};
+                heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+                heap.NumDescriptors = static_cast<UINT>(desired);
+                heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+                check(device->CreateDescriptorHeap(&heap,
+                                                   IID_PPV_ARGS(&submission.heap)),
+                      "CreateDescriptorHeap");
+            }
             ID3D12DescriptorHeap* heaps[] = {submission.heap.Get()};
             submission.commands->SetDescriptorHeaps(1, heaps);
         }
+
+        // Track states for the entire batch instead of returning each buffer
+        // to COMMON after every operation. Keep real RAW/WAW ordering: a
+        // transition orders different uses, a UAV barrier orders consecutive
+        // UAV writes, and consecutive COPY_DEST writes need an explicit
+        // transition dependency. End at COMMON for the next submission.
+        struct Access {
+            D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+            bool pending_write = false;
+        };
+        std::unordered_map<BufferId, Access> resource_access;
+        resource_access.reserve(std::min<std::size_t>(commands.size() * 2, 512));
+        auto require_state = [&](BufferId id, D3D12_RESOURCE_STATES target) {
+            Access& access = resource_access[id];
+            auto* resource = get_buffer(id).resource.Get();
+            if (access.state != target) {
+                transition(submission.commands.Get(), resource, access.state, target);
+                access.state = target;
+                access.pending_write = false;
+            } else if (access.pending_write) {
+                if (target == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+                    D3D12_RESOURCE_BARRIER barrier{};
+                    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    barrier.UAV.pResource = resource;
+                    submission.commands->ResourceBarrier(1, &barrier);
+                } else if (target == D3D12_RESOURCE_STATE_COPY_DEST) {
+                    // COPY_DEST -> COPY_DEST alone isn't a transition. The
+                    // intervening COMMON dependency orders repeated writes.
+                    transition(submission.commands.Get(), resource,
+                               D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+                    transition(submission.commands.Get(), resource,
+                               D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+                }
+                access.pending_write = false;
+            }
+        };
         UINT descriptor_index = 0;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 auto& src = get_buffer(copy->source);
                 auto& dst = get_buffer(copy->destination);
-                transition(submission.commands.Get(), src.resource.Get(),
-                           D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                transition(submission.commands.Get(), dst.resource.Get(),
-                           D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+                require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
                 submission.commands->CopyBufferRegion(dst.resource.Get(), copy->destination_offset,
                                                        src.resource.Get(), copy->source_offset,
                                                        copy->bytes);
-                transition(submission.commands.Get(), src.resource.Get(),
-                           D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
-                transition(submission.commands.Get(), dst.resource.Get(),
-                           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+                resource_access[copy->destination].pending_write = true;
                 continue;
             }
             const auto& cmd = std::get<DispatchCommand>(op);
             Pipeline& pipeline = get_pipeline(cmd.pipeline);
-            std::unordered_set<BufferId> transitioned;
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto& binding = cmd.buffers[slot];
-                if (!transitioned.insert(binding.buffer).second) continue;
-                auto desired = (pipeline.bindings == 1 || slot == 3) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-                                         : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                transition(submission.commands.Get(), get_buffer(binding.buffer).resource.Get(),
-                           D3D12_RESOURCE_STATE_COMMON, desired);
+                const auto desired = (pipeline.bindings == 1 || slot == 3)
+                    ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                    : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                require_state(binding.buffer, desired);
             }
 
             const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
@@ -569,20 +630,12 @@ struct Context::Impl {
             submission.commands->SetComputeRoot32BitConstants(
                 pipeline.bindings == 1 ? 1 : 2, 8, cmd.push_constants.data(), 0);
             submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
-            D3D12_RESOURCE_BARRIER uav{};
-            uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            uav.UAV.pResource = get_buffer(cmd.buffers[pipeline.bindings - 1].buffer).resource.Get();
-            submission.commands->ResourceBarrier(1, &uav);
-            transitioned.clear();
-            for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
-                auto id = cmd.buffers[slot].buffer;
-                if (!transitioned.insert(id).second) continue;
-                transition(submission.commands.Get(), get_buffer(id).resource.Get(),
-                           (pipeline.bindings == 1 || slot == 3) ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-                                     : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                           D3D12_RESOURCE_STATE_COMMON);
-            }
+            resource_access[cmd.buffers[pipeline.bindings - 1].buffer].pending_write = true;
             descriptor_index += pipeline.bindings;
+        }
+        for (const auto& entry : resource_access) {
+            transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
+                       entry.second.state, D3D12_RESOURCE_STATE_COMMON);
         }
         if (profile) {
             submission.commands->EndQuery(submission.query_heap.Get(),
@@ -610,6 +663,7 @@ struct Context::Impl {
         std::memcpy(ticks, mapped, sizeof(ticks));
         const D3D12_RANGE written{0, 0};
         it->second.query_readback->Unmap(0, &written);
+        recycle_completed(std::move(it->second));
         submissions.erase(it);
         if (ticks[1] < ticks[0])
             throw std::runtime_error("D3D12 GPU timestamp counter regressed");
