@@ -81,8 +81,10 @@ bounds against the upstream algorithm for a range of configurations.
 The source-derived AABB translation now has **one HLSL implementation**
 at `src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. DXC compiles it to
 SPIR-V on Linux and DXIL on Windows. Linux CI runs the Vulkan AABB numerical
-conformance test, while Windows CI currently checks DXIL compilation only;
-this does **not** establish native D3D12 execution or physics conformance.
+conformance test, and Windows CI now executes the same reference fixtures on
+native D3D12 using WARP, including ordered dispatch/copy/dispatch behavior.
+This verifies a bounded D3D12 compute stage, **not** AMD hardware throughput,
+general-purpose pointer addressing, or PhysX scene integration.
 The `__spirv__` branch changes only descriptor bindings and the 32-byte
 parameter block (Vulkan push constants versus D3D12 constant buffer).
 See [GPU port architecture](PHYSX_GPU_PORT.md).
@@ -123,6 +125,8 @@ than a directly mapped device buffer. This is an explicit bring-up
 limitation, not a general-purpose or scene-integrated D3D12 GPU backend.
 The next architecture step is a backend-neutral context implementation
 with interface-owned command, descriptor and task-completion semantics.
+Memory/addressing candidates and real-hardware benchmark gates are documented
+in [GPU memory/addressing RFC](GPU_MEMORY_ADDRESSING_RFC.md).
 
 ## Experimental physics compute acceptance
 
