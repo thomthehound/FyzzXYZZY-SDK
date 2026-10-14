@@ -583,6 +583,54 @@ actor-vs-aggregate filtering, mapped publication, persistent
 bound swapping, created/removed paths, and full host scheduling
 remain separate architecture work.
 
+### Clearing newly-created SAP handle tags after pair generation
+
+In the original `PxgCudaBroadPhaseSap::update`, the source sequence
+finishes region pair generation, swaps the **old/new integer AABB
+buffers** for the next frame, then invokes `clearNewFlagKernel()`,
+followed by `runCopyResultsKernel`. The helper conditionally
+launches **`BP_CLEAR_NEWFLAG`** only when the created-handle list
+is nonempty. Its CUDA implementation is
+`gpubroadphase/src/CUDA/broadphase.cu::clearNewFlagLaunch`, with
+the original fixed launch of **32 blocks × 256 threads** and a
+grid-stride loop for larger created-handle populations.
+
+Each thread reads an original created object handle, looks up the
+*current* `boxSapBox1D[axis][handle].mMinMax[0..1]` positions
+for all three axes, and **rewrites** `boxHandles[0][axis]` at
+those exact positions with
+`createHandle(handle, true/false, false)`. This clears the
+`isNew` bit without relying on adjacent endpoints being stored
+together or rewriting pre-existing/deleted handles. The source
+does not touch its handle positions, projection keys, bounds,
+histograms, rank buffers, or previous-frame handles.
+
+`SapClearNewFlagsArenaStage` translates this launch into one
+common Vulkan SPIR-V / D3D12 DXIL shader operating through
+host-owned handle/SAP/list offsets, and preserves the
+zero-created no-dispatch gate. Its arena description is *not*
+a replacement PhysX scene or private SAP buffer owner.
+
+The cross-backend integration fixture first executes the
+already-ported creation → radix sort → SAP index operations
+and validates the **original new-bit tags**. After a GPU submission
+and a full-arena snapshot, a separate submission executes
+`BP_CLEAR_NEWFLAG`. An independent CPU expectation edits only
+the two tagged endpoints for each created object and checks
+every other arena word unchanged. An additional isolated
+**8193-created-handle** fixture verifies the original 8192-thread
+grid-stride wrap without re-running a large radix sort. Zero
+work, invalid descriptor ranges, padding and all three axes
+are also checked.
+
+**Source-order caveat:** the tests intentionally omit the
+upstream region pair generation, old/new AABB buffer swap,
+and report-copy stages between SAP initialization and
+`BP_CLEAR_NEWFLAG`. Those omitted stages do not change the
+tag clear's own inputs, but must be restored in the complete
+host orchestration. This is a frame-state maintenance stage,
+not yet a multi-frame PhysX scene acceptance test.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
