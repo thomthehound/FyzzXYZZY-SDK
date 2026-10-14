@@ -102,6 +102,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
+    src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -660,6 +661,50 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_physx_sap_region_producer
         COMMAND fyzzxyzzy_physx_sap_region_producer
           "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}")
+
+      # Four distinct PhysX region histogram kernels, in source order.
+      foreach(_region_kind IN ITEMS start region)
+        foreach(_region_pass IN ITEMS first second)
+          if(_region_kind STREQUAL "start")
+            set(_region_flag 1)
+          else()
+            set(_region_flag 0)
+          endif()
+          set(FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER
+            "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_${_region_pass}.spv")
+          add_custom_command(
+            OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+            COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+              -T cs_6_0 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
+              -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
+            VERBATIM
+          )
+          add_custom_target(fyzzxyzzy_physx_sap_region_${_region_kind}_${_region_pass}_shader
+            DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}")
+        endforeach()
+      endforeach()
+      add_executable(fyzzxyzzy_physx_sap_region_histograms
+        tests/physx_gpu_sap_region_producer.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_region_histograms PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_region_histograms PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_region_histograms
+        fyzzxyzzy_physx_sap_region_producer_shader
+        fyzzxyzzy_physx_sap_region_start_first_shader
+        fyzzxyzzy_physx_sap_region_start_second_shader
+        fyzzxyzzy_physx_sap_region_region_first_shader
+        fyzzxyzzy_physx_sap_region_region_second_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_region_histograms
+        COMMAND fyzzxyzzy_physx_sap_region_histograms
+          "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_start_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_start_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_region_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_region_second_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -728,6 +773,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/broadphase_report_classification_arena.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
+    src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1247,6 +1293,51 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_sap_region_producer_d3d12
       COMMAND fyzzxyzzy_physx_sap_region_producer_d3d12
         "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}")
+
+    # Four distinct PhysX region histogram kernels, in source order.
+    foreach(_region_kind IN ITEMS start region)
+      foreach(_region_pass IN ITEMS first second)
+        if(_region_kind STREQUAL "start")
+          set(_region_flag 1)
+        else()
+          set(_region_flag 0)
+        endif()
+        set(FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_${_region_pass}.dxil")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
+            -Fo "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_d3d12_sap_region_${_region_kind}_${_region_pass}_shader
+          DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}")
+      endforeach()
+    endforeach()
+    add_executable(fyzzxyzzy_physx_sap_region_histograms_d3d12
+      tests/physx_gpu_sap_region_producer.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_region_histograms_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_region_histograms_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_region_histograms_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_region_histograms_d3d12
+      fyzzxyzzy_d3d12_sap_region_producer_shader
+      fyzzxyzzy_d3d12_sap_region_start_first_shader
+      fyzzxyzzy_d3d12_sap_region_start_second_shader
+      fyzzxyzzy_d3d12_sap_region_region_first_shader
+      fyzzxyzzy_d3d12_sap_region_region_second_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_region_histograms_d3d12
+      COMMAND fyzzxyzzy_physx_sap_region_histograms_d3d12
+        "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_start_first_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_start_second_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_region_first_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_region_second_DXIL}")
   endif()
 endif()
 
