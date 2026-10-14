@@ -59,11 +59,19 @@ struct ComputePipelineDesc {
     std::uint32_t push_constant_bytes = 0;
 };
 
+// Source-derived *access intent*, not a request to change shader bindings.
+// Unspecified preserves legacy conservative read/write hazard tracking.
+// Accurate intent enables a backend to avoid ordering independent readers.
+// A lying Read declaration can create a GPU data race; eventually cross-check
+// these declarations against shader reflection/source manifests.
+enum class BufferAccess { Unspecified, Read, Write, ReadWrite };
+
 struct BufferBinding {
     std::uint32_t slot = 0;
     BufferId buffer = 0;
     std::size_t offset = 0;
     std::size_t bytes = 0;
+    BufferAccess access = BufferAccess::Unspecified;
 };
 
 struct DispatchSize {
