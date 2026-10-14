@@ -173,6 +173,21 @@ void run_ordered_batch(Context& context, AabbEncodingStage& stage) {
     commands.emplace_back(CopyCommand{output, 0, first_snapshot, 0, bound_bytes});
     stage.append(commands, box, distance, env, output, p);
     if (commands.size() != 3) throw std::runtime_error("PhysX batch did not record three operations");
+    // The native D3D12 bounded AABB pipeline uses t0..t2 SRVs.
+    // Explicitly claiming writes to those sources must be rejected before
+    // recording GPU work, rather than silently disregarding metadata.
+#if defined(FYZZXYZZY_TEST_D3D12)
+    auto invalid_access = std::get<DispatchCommand>(commands.front());
+    invalid_access.buffers[0].access = BufferAccess::Write;
+    bool rejected_access = false;
+    try {
+        context.submit_batch({invalid_access});
+    } catch (const std::invalid_argument&) {
+        rejected_access = true;
+    }
+    if (!rejected_access)
+        throw std::runtime_error("Writable PhysX AABB input SRV access was accepted");
+#endif
     context.wait_submission(context.submit_batch(commands));
 
     std::vector<IntegerBounds> before(p.count), after(p.count);

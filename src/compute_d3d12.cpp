@@ -458,6 +458,19 @@ struct Context::Impl {
                 binding.offset % 4 || binding.bytes % 4 ||
                 binding.bytes / 4 > std::numeric_limits<UINT>::max())
                 throw std::invalid_argument("Invalid D3D12 structured buffer view");
+            // The bounded AABB pipeline's t0..t2 slots are SRVs; only
+            // the final slot (or the single-arena path) is a UAV. Intent
+            // cannot make a DXIL SRV writable. Avoid accepting metadata
+            // that promises unsupported writes through an SRV.
+            const bool srv_slot = pipe.bindings == 4 && i < 3;
+            if (binding.access != BufferAccess::Unspecified &&
+                binding.access != BufferAccess::Read &&
+                binding.access != BufferAccess::Write &&
+                binding.access != BufferAccess::ReadWrite)
+                throw std::invalid_argument("Invalid D3D12 compute buffer access intent");
+            if (srv_slot && binding.access != BufferAccess::Unspecified &&
+                binding.access != BufferAccess::Read)
+                throw std::invalid_argument("D3D12 SRV cannot be declared writable");
             const auto& buf = get_buffer(binding.buffer);
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }

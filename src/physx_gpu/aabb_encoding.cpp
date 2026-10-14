@@ -96,13 +96,13 @@ void AabbEncodingStage::append(std::vector<compute::BatchCommand>& commands,
     command.pipeline = pipeline_;
     command.groups = {static_cast<std::uint32_t>(groups), 1, 1};
     command.buffers = {
-        {0, bounds, 0, static_cast<std::size_t>(array_bytes)},
-        {1, contact_distances, 0, static_cast<std::size_t>(single_bytes)},
+        {0, bounds, 0, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Read},
+        {1, contact_distances, 0, static_cast<std::size_t>(single_bytes), compute::BufferAccess::Read},
         // A dummy descriptor is used only when the optional PhysX env IDs
         // array is absent. The shader never reads it in that configuration.
         {2, environment_ids ? environment_ids : contact_distances, 0,
-         static_cast<std::size_t>(single_bytes)},
-        {3, encoded_bounds, 0, static_cast<std::size_t>(array_bytes)}
+         static_cast<std::size_t>(single_bytes), compute::BufferAccess::Read},
+        {3, encoded_bounds, 0, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Write}
     };
     command.push_constants.resize(sizeof(push));
     std::memcpy(command.push_constants.data(), &push, sizeof(push));

@@ -61,7 +61,7 @@ void MarkRemovedPairsArenaStage::append(std::vector<compute::BatchCommand>& comm
     compute::DispatchCommand dispatch;
     dispatch.pipeline = pipeline_;
     dispatch.groups = {groups, 1, 1};
-    dispatch.buffers = {{0, arena, 0, arena_bytes}};
+    dispatch.buffers = {{0, arena, 0, arena_bytes, compute::BufferAccess::ReadWrite}};
     dispatch.push_constants.resize(sizeof(params));
     std::memcpy(dispatch.push_constants.data(), &params, sizeof(params));
     commands.emplace_back(std::move(dispatch));
