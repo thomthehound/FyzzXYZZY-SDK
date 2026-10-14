@@ -24,8 +24,12 @@ static_assert(sizeof(Parameters) == 32, "PhysX active-region constants changed")
 
 SapActiveRegionListsArenaStage::SapActiveRegionListsArenaStage(
     compute::Context& context, compute::ShaderBinary writeout,
-    compute::ShaderBinary compute, compute::ShaderBinary output)
+    compute::ShaderBinary compute_wave,
+    compute::ShaderBinary compute_portable,
+    compute::ShaderBinary output, bool force_portable)
     : context_(context) {
+    using_wave_ = !force_portable &&
+                  context.device_info().supports_wave_arithmetic;
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < 512u ||
         device.max_workgroup_size[0] < 512u ||
@@ -36,7 +40,9 @@ SapActiveRegionListsArenaStage::SapActiveRegionListsArenaStage(
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
     compute::ShaderBinary shaders[] = {
-        std::move(writeout), std::move(compute), std::move(output)
+        std::move(writeout),
+        using_wave_ ? std::move(compute_wave) : std::move(compute_portable),
+        std::move(output)
     };
     try {
         for (std::uint32_t i = 0; i < 3u; ++i) {
