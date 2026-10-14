@@ -98,6 +98,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_incremental_comparisons_arena.cpp
     src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/sap_clear_new_flags_arena.cpp
+    src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -566,6 +567,34 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}")
+
+      # PhysX broadphase.cu::copyReports: 64 x 256 publication stage.
+      set(FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_copy_reports_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_bp_copy_reports_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
+      add_executable(fyzzxyzzy_physx_bp_copy_reports
+        tests/physx_gpu_broadphase_copy_reports.cpp)
+      target_include_directories(fyzzxyzzy_physx_bp_copy_reports PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_bp_copy_reports PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_bp_copy_reports
+        fyzzxyzzy_physx_bp_copy_reports_shader)
+      add_test(NAME fyzzxyzzy_physx_bp_copy_reports
+        COMMAND fyzzxyzzy_physx_bp_copy_reports
+          "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -630,6 +659,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_incremental_comparisons_arena.cpp
     src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/sap_clear_new_flags_arena.cpp
+    src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1056,6 +1086,35 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}")
+
+    # PhysX broadphase.cu::copyReports: 64 x 256 publication stage.
+    set(FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_copy_reports_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_bp_copy_reports_shader
+      DEPENDS "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
+    add_executable(fyzzxyzzy_physx_bp_copy_reports_d3d12
+      tests/physx_gpu_broadphase_copy_reports.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_bp_copy_reports_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_bp_copy_reports_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_bp_copy_reports_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_bp_copy_reports_d3d12
+      fyzzxyzzy_d3d12_bp_copy_reports_shader)
+    add_test(NAME fyzzxyzzy_physx_bp_copy_reports_d3d12
+      COMMAND fyzzxyzzy_physx_bp_copy_reports_d3d12
+        "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
   endif()
 endif()
 
