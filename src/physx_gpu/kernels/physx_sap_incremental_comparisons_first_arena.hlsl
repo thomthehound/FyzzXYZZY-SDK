@@ -55,8 +55,8 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
                 const bool startHandle = (tagged & 1u) != 0u;
                 const bool deleted = (tagged & 4u) != 0u;
                 const uint histOffset = axisDesc +
-                    (down ? (startHandle ? 16u : 20u)
-                          : (startHandle ? 8u : 12u));
+                    (down ? (startHandle ? 20u : 16u)
+                          : (startHandle ? 12u : 8u));
                 const uint histogram = arena.Load(histOffset);
                 const uint lo = down ? index : rank + 1u;
                 const uint hi = down ? min(rank, projections - 1u) : index;

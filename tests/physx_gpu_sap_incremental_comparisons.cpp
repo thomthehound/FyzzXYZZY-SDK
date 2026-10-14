@@ -195,10 +195,10 @@ void expected_comparisons(Packed& p) {
                 const bool down = i <= rank;
                 const bool startHandle = (tagged & 1u) != 0u;
                 const auto histogram =
-                    down ? (startHandle ? d.previous_start_histogram_offset :
-                                           d.previous_end_histogram_offset)
-                         : (startHandle ? d.current_start_histogram_offset :
-                                           d.current_end_histogram_offset);
+                    down ? (startHandle ? d.previous_end_histogram_offset :
+                                           d.previous_start_histogram_offset)
+                         : (startHandle ? d.current_end_histogram_offset :
+                                           d.current_start_histogram_offset);
                 const auto low = down ? i : rank + 1u;
                 const auto high = down ? std::min(rank, projections - 1u) : i;
                 p.at(d.comparison_histogram_offset, i) = global;

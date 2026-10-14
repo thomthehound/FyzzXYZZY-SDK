@@ -96,6 +96,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_ranked_sort_arena.cpp
     src/physx_gpu/sap_endpoint_histogram_arena.cpp
     src/physx_gpu/sap_incremental_comparisons_arena.cpp
+    src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -492,6 +493,42 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}")
+
+      # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
+      set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
+      add_executable(fyzzxyzzy_physx_sap_incremental_pairs
+        tests/physx_gpu_sap_incremental_pairs.cpp)
+      target_include_directories(fyzzxyzzy_physx_sap_incremental_pairs PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_sap_incremental_pairs PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_sap_incremental_pairs
+        fyzzxyzzy_physx_sap_endpoint_first_shader
+        fyzzxyzzy_physx_sap_endpoint_second_shader
+        fyzzxyzzy_physx_sap_comparisons_first_shader
+        fyzzxyzzy_physx_sap_comparisons_second_shader
+        fyzzxyzzy_physx_sap_incremental_pairs_shader)
+      add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs
+        COMMAND fyzzxyzzy_physx_sap_incremental_pairs
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_first_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -554,6 +591,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_ranked_sort_arena.cpp
     src/physx_gpu/sap_endpoint_histogram_arena.cpp
     src/physx_gpu/sap_incremental_comparisons_arena.cpp
+    src/physx_gpu/sap_incremental_pairs_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -906,6 +944,43 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}")
+
+    # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
+    set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_shader
+      DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
+    add_executable(fyzzxyzzy_physx_sap_incremental_pairs_d3d12
+      tests/physx_gpu_sap_incremental_pairs.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_incremental_pairs_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_sap_incremental_pairs_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_sap_incremental_pairs_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_sap_incremental_pairs_d3d12
+      fyzzxyzzy_d3d12_sap_endpoint_first_shader
+      fyzzxyzzy_d3d12_sap_endpoint_second_shader
+      fyzzxyzzy_d3d12_sap_comparisons_first_shader
+      fyzzxyzzy_d3d12_sap_comparisons_second_shader
+      fyzzxyzzy_d3d12_sap_incremental_pairs_shader)
+    add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs_d3d12
+      COMMAND fyzzxyzzy_physx_sap_incremental_pairs_d3d12
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_COMPARISONS_first_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
   endif()
 endif()
 

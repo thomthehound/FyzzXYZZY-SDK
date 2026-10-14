@@ -481,7 +481,9 @@ and the **current and previous** per-axis start/end endpoint histograms.
 For each endpoint, comparison direction is
 `current_index <= original_rank`. Downward movement uses the previous
 histogram and upward movement uses the current one. Start endpoints
-count crossing starts; end endpoints count crossing ends. Deleted
+count crossed **end** endpoints; end endpoints count crossed
+**start** endpoints. This deliberately selects the opposite
+endpoint type, as in the upstream `sStartEndAccum[isStartHandle]` table. Deleted
 endpoints contribute no comparisons. The exact candidate count is
 a difference of exclusive histogram entries over the original
 index-to-rank interval, with the previous-frame range clamped to the
@@ -520,6 +522,66 @@ This is source-faithful comparison **work enumeration**, not the
 subsequent `BP_INCREMENTAL_SAP` comparison/overlap/report operation.
 The broader persistent scene task graph and result publication
 remain the province of the original PhysX host pipeline.
+
+### Incremental SAP found/lost pair reports
+
+`PxgCudaBroadPhaseSap::performIncrementalSapKernel` submits
+`BP_COMPUTE_INCREMENTAL_CMP_COUNTS1`, then
+`BP_COMPUTE_INCREMENTAL_CMP_COUNTS2`, then `BP_INCREMENTAL_SAP`.
+The last dispatch runs **256 × 3 × 256 threads** (256 workgroups per
+projection axis, 256 threads per workgroup). The source kernel is
+`gpubroadphase/src/CUDA/broadphase.cu::performIncrementalSAP`.
+
+This kernel consumes the original source inputs:
+`totalIncrementalComparisons[axis]`, its inclusive-endpoint
+`incrementalComparisons[axis]` *exclusive prefix*,
+`boxProjectionRanks[axis]`, `boxHandles[0][axis]`, both
+generations of `startPtHistogram` and `endPtHistogram` and their
+ordered `startPointHandles`/`endPointHandles` arrays. Work IDs map
+back to their moving endpoint via the last prefix not exceeding
+the work ID. For down-sweeps the partner is selected from the
+previous-frame endpoint list; up-sweeps use the current list.
+
+The original `willFindPair = (!isStartHandle) ^ downPass` selects
+whether the **new** or **old** AABBs define the present overlap. A pair
+is reported only if it overlaps on all three axes in that selected
+state and was separated on the swept axis in the other state.
+`isSeparatedBeforeAxis` suppresses duplicate reports for axes
+later than the first separating axis. Groups must differ.
+When environment IDs are supplied, they must match or one must be
+`PX_INVALID_U32`; absent environment IDs are permitted exactly as
+in the `USE_ENV_IDS` source branch.
+
+`PxgBroadPhasePair` stores its two handle IDs in ascending order.
+Found and lost streams each atomically reserve separate slots in
+their shared counters. The counters retain the **complete count**
+even when `max_found_lost_pairs` clips the report writes.
+The original source does not guarantee deterministic ordering
+across workgroups; neither does the Vulkan/D3D12 translation.
+`SapIncrementalPairsArenaStage` keeps this contract, lowering the
+upstream pointer relationships to per-axis and global offsets
+within host-owned buffers and replacing CUDA warp scans with
+wave-width-independent workgroup scans and one pair of atomic
+group reservations per populated batch.
+
+The integrated GPU oracle executes the original two endpoint
+histogram passes, both incremental comparison-count passes,
+and the incremental SAP report pass in one ordered batch. It
+builds old/current sorted endpoints and stable old-position ranks
+from deterministic integer AABBs, seeds the previous-frame
+histogram as persistent state, and independently computes
+**actual 3D overlap changes** for all eligible pairs.
+It validates found/lost counters and pair multisets, group and
+environment filtering, canonical pair order, clipping behavior,
+all 32 local histogram blocks, comparison prefixes and totals,
+and untouched arena allocations. Atomic output order is normalized
+only in the test; the implementation makes no ordering promise.
+
+This is the source-defined incremental pair **producer**, not
+the completed PhysX scene task graph. Report accumulation,
+actor-vs-aggregate filtering, mapped publication, persistent
+bound swapping, created/removed paths, and full host scheduling
+remain separate architecture work.
 
 ### GPU completion and existing PhysX pair-task publication
 
