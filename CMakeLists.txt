@@ -188,6 +188,23 @@ if(FYZZXYZZY_BUILD_VULKAN)
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
         VERBATIM
       )
+      # Same source and dataflow: five offset fields are pre-resolved into
+      # dispatch constants instead of loaded from the GPU descriptor.
+      set(FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_resolved.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main -D FYZZXYZZY_RESOLVED_SUBSET=1
+          -Fo "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_removed_resolved_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}")
       add_custom_target(fyzzxyzzy_physx_removed_arena_shader
         DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}")
       add_executable(fyzzxyzzy_physx_mark_removed_arena
@@ -197,10 +214,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       target_link_libraries(fyzzxyzzy_physx_mark_removed_arena PRIVATE
         fyzzxyzzy_physx_gpu_stages)
       add_dependencies(fyzzxyzzy_physx_mark_removed_arena
-        fyzzxyzzy_physx_removed_arena_shader)
+        fyzzxyzzy_physx_removed_arena_shader
+        fyzzxyzzy_physx_removed_resolved_shader)
       add_test(NAME fyzzxyzzy_physx_mark_removed_arena
         COMMAND fyzzxyzzy_physx_mark_removed_arena
-          "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}")
+          "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
+          "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -305,6 +324,21 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
       VERBATIM
     )
+    set(FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_resolved.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -D FYZZXYZZY_RESOLVED_SUBSET=1
+        -Fo "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_removed_resolved_shader
+      DEPENDS "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}")
     add_custom_target(fyzzxyzzy_d3d12_removed_arena_shader
       DEPENDS "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}")
     add_executable(fyzzxyzzy_physx_mark_removed_arena_d3d12
@@ -316,10 +350,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_physx_mark_removed_arena_d3d12 PRIVATE
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_mark_removed_arena_d3d12
-      fyzzxyzzy_d3d12_removed_arena_shader)
+      fyzzxyzzy_d3d12_removed_arena_shader
+      fyzzxyzzy_d3d12_removed_resolved_shader)
     add_test(NAME fyzzxyzzy_physx_mark_removed_arena_d3d12
       COMMAND fyzzxyzzy_physx_mark_removed_arena_d3d12
-        "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}")
+        "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
+        "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}")
   endif()
 endif()
 
