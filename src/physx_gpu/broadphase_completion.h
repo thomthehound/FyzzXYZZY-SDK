@@ -34,8 +34,9 @@ public:
     // Preserve PhysX order: wait for GPU -> fetch/resize results ->
     // install original pair-task continuations -> release each task exactly once.
     // If GPU waiting or publication throws, NO task references are released.
-    // After a successful GPU wait the publication step may be retried (e.g.,
-    // after the original PhysX abort path has established empty results).
+    // After a successful GPU wait the *fetch/resize* step may be retried
+    // (e.g. after PhysX's abort path prepares empty results). A failure while
+    // installing continuations is terminal: replay could add references twice.
     // install_continuations must implement the original PxgAABBManager
     // continuation setup and is called AFTER fetch/resize (not beforehand).
     void fetch_and_release(const std::function<void()>& fetch_and_resize,
@@ -49,6 +50,9 @@ private:
     compute::Context& context_;
     compute::SubmissionId submission_ = 0;
     bool armed_ = false;
+    // A partially installed PhysX task continuation cannot safely be
+    // retried, because setContinuation increments task references.
+    bool continuation_setup_failed_ = false;
 };
 
 } // namespace fyzz::physx_gpu
