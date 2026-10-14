@@ -257,8 +257,8 @@ void negative_cases(SapActiveRegionListsArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 4)
-            throw std::invalid_argument("Expected three active-region shaders");
+        if (argc != 5)
+            throw std::invalid_argument("Expected writeout, wave, portable and output shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -278,17 +278,29 @@ int main(int argc, char** argv) {
             result.bytes = load_shader(file);
             return result;
         };
+        // Exercise the hardware-selected packed wave implementation
+        // and the compact packed fallback against the same GPU oracle.
         SapActiveRegionListsArenaStage stage(
-            context, shader(argv[1]), shader(argv[2]), shader(argv[3]));
+            context, shader(argv[1]), shader(argv[2]),
+            shader(argv[3]), shader(argv[4]));
+        SapActiveRegionListsArenaStage portable(
+            context, shader(argv[1]), shader(argv[2]),
+            shader(argv[3]), shader(argv[4]), true);
+        if (stage.using_subgroup_scan() != context.device_info().supports_wave_arithmetic ||
+            portable.using_subgroup_scan())
+            throw std::runtime_error("Active-region capability selection changed");
         negative_cases(stage);
-        run_case(context, stage, 0u, false);
-        run_case(context, stage, 5u, false);
-        run_case(context, stage, 1u, true);
-        run_case(context, stage, 5u, true);
-        run_case(context, stage, 129u, true);
-        run_case(context, stage, 257u, true);
-        run_case(context, stage, 1027u, true);
-        std::cout << "PhysX SAP three-stage active-region lists PASS\n";
+        negative_cases(portable);
+        for (auto* implementation : {&stage, &portable}) {
+            run_case(context, *implementation, 0u, false);
+            run_case(context, *implementation, 5u, false);
+            run_case(context, *implementation, 1u, true);
+            run_case(context, *implementation, 5u, true);
+            run_case(context, *implementation, 129u, true);
+            run_case(context, *implementation, 257u, true);
+            run_case(context, *implementation, 1027u, true);
+        }
+        std::cout << "PhysX SAP packed-wave and fallback source oracle PASS\\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "PhysX active-region stages FAILED: " << error.what() << '\n';
