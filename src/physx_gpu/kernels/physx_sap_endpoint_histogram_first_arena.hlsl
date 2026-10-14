@@ -94,6 +94,9 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
                 if (frame == 0u) arena.Store(totalEnds + index * 4u, counts.z);
             }
 
+            // All lanes must consume the previous carry before the
+            // leader advances it for the next source block iteration.
+            GroupMemoryBarrierWithGroupSync();
             if (thread.x == 0u) carry += scanA[255u];
             GroupMemoryBarrierWithGroupSync();
         }
