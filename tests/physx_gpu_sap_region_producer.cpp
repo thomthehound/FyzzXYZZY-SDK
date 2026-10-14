@@ -250,7 +250,21 @@ void negative_cases(SapRegionProducerArenaStage& stage,
             !std::holds_alternative<CopyCommand>(commands.front()))
             throw std::runtime_error("Invalid region descriptor changed caller work");
     }
-    for (const auto badBoxes : {0u, 0xffffffffu}) {
+    // CUDA uses (2*boxes + 255) before dividing by 256. Merely
+    // checking that 2*boxes fits misses an overflow in the rounding
+    // addition. Test the precise largest accepted count without
+    // allocating or dispatching a multi-gigabyte fixture.
+    constexpr auto kMaximumRoundedBoxes =
+        (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u;
+    std::vector<BatchCommand> exactProducer;
+    stage.append(exactProducer, 1u, 160u, 0u, kMaximumRoundedBoxes, 1u);
+    if (exactProducer.size() != 1u ||
+        !std::holds_alternative<DispatchCommand>(exactProducer.front()))
+        throw std::runtime_error("Valid region-producer rounding boundary rejected");
+    for (const auto badBoxes : {
+            0u, kMaximumRoundedBoxes + 1u,
+            std::numeric_limits<std::uint32_t>::max() / 2u,
+            std::numeric_limits<std::uint32_t>::max()}) {
         std::vector<BatchCommand> commands;
         bool rejected = false;
         try { stage.append(commands, 1u, 160u, 0u, badBoxes, 1u); }
@@ -286,12 +300,21 @@ void negative_cases(SapRegionProducerArenaStage& stage,
                 !std::holds_alternative<CopyCommand>(commands.front()))
                 throw std::runtime_error("Bad region scan changed caller batch");
         }
-        std::vector<BatchCommand> ops;
-        bool rejected = false;
-        try { scans->append(ops, 1u, 160u, 0u, 0xffffffffu, 1u); }
-        catch (const std::invalid_argument&) { rejected = true; }
-        if (!rejected || !ops.empty())
-            throw std::runtime_error("Region scan projection overflow accepted");
+        std::vector<BatchCommand> exact;
+        scans->append(exact, 1u, 160u, 128u, kMaximumRoundedBoxes, 1u);
+        if (exact.size() != 4u)
+            throw std::runtime_error("Valid region histogram rounding boundary rejected");
+        for (const auto overflowBoxes : {
+                kMaximumRoundedBoxes + 1u,
+                std::numeric_limits<std::uint32_t>::max() / 2u,
+                std::numeric_limits<std::uint32_t>::max()}) {
+            std::vector<BatchCommand> ops;
+            bool rejected = false;
+            try { scans->append(ops, 1u, 160u, 128u, overflowBoxes, 1u); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            if (!rejected || !ops.empty())
+                throw std::runtime_error("Region scan rounded projection overflow accepted");
+        }
     }
 }
 
