@@ -96,7 +96,7 @@ jobs:
             2>&1 | tee "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
           grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-editor-runtime.log"
   windows:
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
