@@ -307,23 +307,53 @@ implementation pass.
 - Compatibility: CPU backend remains available; tests run when CUDA is
   absent; Godot is an optional consumer and must not be the only harness.
 
-### 4.3 Platform acceptance
+### 4.3 Platform acceptance and hardware test cadence
 
-- Linux: build and run Vulkan on software ICD for API correctness, plus
-  native AMD hardware testing for actual subgroup/performance coverage.
-- Windows: `windows-latest` compiler/build baseline; native D3D12/WARP if
-  available, otherwise report **not exercised** rather than skipping into a
-  green "D3D12 runtime passed" claim. Native AMD D3D12 is necessary too.
-- Later: NVIDIA and Intel Vulkan/D3D12 where supported; 32/64-lane behavior,
-  required atomics, device limits and memory model.
-- CI should run cheap shader/compute tests **before** long PhysX/Godot builds,
-  while retaining full integration jobs. CMake and CTest must run locally
-  without GitHub Actions.
+**Routine development is CI-first, not user-hardware-first.** FyzzXYZZY
+does not require an AMD workstation run for every kernel, buffer, or
+dispatch change. Do not make real-hardware performance results a condition
+for continuing the shader port. We can establish source correspondence,
+portable execution and software correctness without that burden:
 
-A PR's test ledger records: original source path/function, corresponding
-portable implementation, explicit input/output and allocation owners, task
-predecessors/successors, validation fixture, tested backend/device,
-unsupported cases, and any deliberate deviation.
+- Linux CI: compile Vulkan SPIR-V, run reference fixtures with an available
+  Vulkan ICD, and retain SDK integration tests. Label software ICD results
+  as software **API/behavior** acceptance, not representative GPU speed.
+- Windows `windows-latest`: compile DXIL, run the same source-derived
+  reference fixtures on D3D12 WARP, and retain Windows integration. Label
+  WARP as **correctness/API** execution, not native GPU profiling.
+- Both: test descriptor layouts, dispatch shape, queue/barrier dependencies,
+  lifetime, error cleanup, state across submissions, and data publication.
+  Do not silently treat unexercised device features as passed.
+- CI should run focused compute tests before long PhysX/Godot builds;
+  documentation-only changes do not require full compilation. Keep
+  CMake/CTest invocable independently of GitHub Actions.
+- Later: expand cross-vendor 32/64-lane, atomic and device-limit coverage
+  with NVIDIA/Intel hardware when practical; do not block early porting.
+
+**Hardware checkpoints are coherent subsystem events, not PR events:**
+
+1. **First AMD profiling session:** GPU broadphase entered through an
+   actual PhysX scene with CPU dynamics, spanning multiple frames, persistent
+   SAP state, pair publication, realistic creation/removal traffic, and
+   representative batching. Exercise native AMD Vulkan and D3D12 where
+   practical. This is the first point when end-to-end timing can meaningfully
+   guide memory and dispatch choices.
+2. **Second major session:** native GPU narrowphase and a meaningful
+   rigid-body solver slice (contacts/joints, islands, state writeback and
+   original task completions) execute together. Profile frame latency,
+   CPU/GPU overlap, memory traffic, solver occupancy and adverse workloads.
+3. **Later:** expand device matrix, direct GPU API, scene mixing, renderer
+   interference, feature breadth, and production performance/reliability.
+
+These sessions inform **optimization**, not whether source-derived porting
+is allowed to continue. If CI cannot expose a particular hardware-only
+contract, record that limitation and design a targeted device test at the
+next checkpoint rather than fabricating evidence of coverage.
+
+A PR's lightweight test ledger records: original source function,
+corresponding portable implementation, input/output and allocation
+owners, predecessor/successor tasks, validation fixture, backend actually
+tested, unsupported cases and deliberate deviations.
 
 ## 5. Risks and decisions to resolve deliberately
 
@@ -360,9 +390,10 @@ actual source-derived prototypes, not preference.
    deferring D3D12.
 4. **Review for semantic divergence:** active masks, atomics, ordering,
    overflow/abort, persistent data, fallbacks and CPU task continuation.
-5. **Close evidence gaps:** CI, one real hardware test per supported API
-   whenever practical, and documented comparison to source. Carry known
-   unsupported conditions visibly.
+5. **Close evidence gaps:** use Linux Vulkan and Windows D3D12/WARP CI
+   routinely, compare against pinned PhysX source and CPU oracles, and
+   flag missing hardware coverage. Reserve AMD profiling for coherent scene
+   milestones described in §4.3; do not demand it per PR.
 6. **Update this program and [execution trace](PHYSX_GPU_PORT.md)** as each
    gate closes. Treat unresolved deviations as actionable engineering work,
    not "legacy" or "good enough because a test passed."
@@ -370,6 +401,58 @@ actual source-derived prototypes, not preference.
 This program is a **roadmap and audit**, not an instruction to build a
 new architecture on speculation. Source traces determine what the portability
 layer needs; working code and acceptance tests determine when a gate is done.
+
+### 6.1 What to tighten before scaling up shader translation
+
+The correct target is a **minimum viable faithful port substrate**, not a
+fully generalized compute framework completed before any more kernels.
+
+1. **Make memory access intent explicit.** Dispatch metadata should
+   distinguish read, write and read/write views (including offsets/lengths
+   and aliases). PhysX's launch-side descriptors and workgroup dependencies
+   provide this information; do not conservatively label every storage
+   binding read/write forever. Maintain a safe conservative fallback for
+   genuinely unknown access. Keep backend-specific lowering isolated from
+   source-derived kernel logic.
+2. **Handle completion and ownership without device-wide idle.** A
+   submission's command/descriptors/staging buffers and overwritten or
+   relocated PhysX arenas must survive until the actual completing fence/
+   timeline value. Asynchronous upload, copy, download and deferred free
+   need to correspond to PhysX's existing copy manager and stream/event
+   semantics. Implement a thin completion-to-PhysX-task continuation
+   bridge; do not invent a separate physics scheduler.
+3. **Compile kernels from one behavioral source.** Establish a repeatable
+   mapping from CUDA source function and host launch configuration to
+   common shader, parameter/descriptor layout, backend capability and
+   test fixture. Deal with warp/subgroup assumptions explicitly when they
+   first occur, not by guessing universal defaults.
+4. **Maintain bounded, honest compute backends.** Both APIs must execute
+   each accepted source-derived stage with equivalent state/pair semantics;
+   avoid building elaborate backend runtime selection, descriptor heaps,
+   multi-queue policy or address-encoding generalization without an
+   upstream task requiring it. The current single-queue executor can
+   serialize a coherent subgraph as a correctness baseline, provided its
+   edges and publication are retained and its serialization is marked.
+5. **Then port source-coherent kernel families.** Continue from AABB
+   encoding and removed-pair marking into created/updated/projection
+   bookkeeping and SAP initialization; bring in the actual PhysX radix
+   sort/rank/handle stages as a *shared dependency*; follow with endpoint/
+   region histograms, incremental pair generation and aggregate processing;
+   finally wire report retrieval and original AABB-manager/scene
+   continuations. Test successive *frames*, not only independent dispatches.
+   Order adjacent kernels by their **upstream launches and dependency
+   graph**, not by apparent shader complexity or novelty.
+6. **After integrated broadphase:** extend original CPU/GPU shape-pair
+   routing and narrowphase, then constraint preparation/partitioning,
+   PGS/TGS integration and state publication. Solver and articulation
+   data/warp requirements may justify alternate physical address lowering,
+   without changing the authoritative PhysX algorithms.
+
+**Defer until evidence exists:** speculative shader fusion, unconditional
+BDA/SM6.6 dependence, complete multi-queue scheduling, NPU tiling,
+universal descriptor graphs, hardware-specific subgroup specialization,
+and parameter micro-optimizations. Carry candidate designs in the RFC,
+but do not block shader-family translation waiting for an AMD benchmark.
 
 ## 7. Primary source index
 
