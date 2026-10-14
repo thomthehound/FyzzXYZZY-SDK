@@ -65,8 +65,8 @@ int main(int argc, char** argv) {
 
         Parameters parameters{size, 3, 7};
         const std::vector<BufferBinding> bindings = {
-            {1, dst, 0, sizeof(output)},
-            {0, src, 0, sizeof(input)}
+            {1, dst, 0, sizeof(output), BufferAccess::Write},
+            {0, src, 0, sizeof(input), BufferAccess::Read}
         };
         context.dispatch(pipeline, {(size + 63u) / 64u, 1, 1},
                          bindings, &parameters, sizeof(parameters));
@@ -100,6 +100,20 @@ int main(int argc, char** argv) {
         }
         if (!rejected) {
             throw std::runtime_error("Duplicate descriptor slot was accepted");
+        }
+        // Explicit intent metadata must be validated, not silently
+        // interpreted as writable for an invalid enum value.
+        rejected = false;
+        auto malformed_access = bindings;
+        malformed_access[0].access = static_cast<BufferAccess>(123);
+        try {
+            context.dispatch(pipeline, {1, 1, 1},
+                             malformed_access, &parameters, sizeof(parameters));
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        if (!rejected) {
+            throw std::runtime_error("Invalid access intent was accepted");
         }
         rejected = false;
         try {
@@ -149,7 +163,8 @@ int main(int argc, char** argv) {
             DispatchCommand{pipeline, groups, bindings, push_bytes(first_pass)},
             CopyCommand{dst, 0, mirror, 0, sizeof(output)},
             DispatchCommand{pipeline, groups,
-                            {{0, mirror, 0, sizeof(output)}, {1, dst, 0, sizeof(output)}},
+                            {{0, mirror, 0, sizeof(output), BufferAccess::Read},
+                             {1, dst, 0, sizeof(output), BufferAccess::Write}},
                             push_bytes(second_pass)}
         };
         const SubmissionId batch_id = context.submit_batch(batch);
@@ -216,8 +231,9 @@ int main(int argc, char** argv) {
         std::vector<BatchCommand> independent_batch = {
             DispatchCommand{pipeline, groups, bindings, push_bytes(first_pass)},
             DispatchCommand{pipeline, groups,
-                {{0, independent_input, 0, sizeof(input)},
-                 {1, independent_output, 0, sizeof(output)}}, push_bytes(alternate)},
+                {{0, independent_input, 0, sizeof(input), BufferAccess::Read},
+                 {1, independent_output, 0, sizeof(output), BufferAccess::Write}},
+                push_bytes(alternate)},
             CopyCommand{independent_output, 0, independent_copy, 0, sizeof(output)}
         };
         for (int iteration = 0; iteration < 12; ++iteration) {
