@@ -88,6 +88,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
     src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
+    src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -232,6 +233,36 @@ if(FYZZXYZZY_BUILD_VULKAN)
         COMMAND fyzzxyzzy_physx_mark_removed_arena
           "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
           "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}")
+
+      # markRemovedPairsProjectionsLaunch, after the incremental SAP pass.
+      set(FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_removed_projections_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_removed_projections_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}")
+      add_executable(fyzzxyzzy_physx_removed_projections
+        tests/physx_gpu_removed_projections.cpp)
+      target_include_directories(fyzzxyzzy_physx_removed_projections PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_physx_removed_projections PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_physx_removed_projections
+        fyzzxyzzy_physx_removed_arena_shader
+        fyzzxyzzy_physx_removed_projections_shader)
+      add_test(NAME fyzzxyzzy_physx_removed_projections
+        COMMAND fyzzxyzzy_physx_removed_projections
+          "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
+          "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}")
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -286,6 +317,7 @@ if(FYZZXYZZY_BUILD_D3D12)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
     src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
+    src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -380,6 +412,36 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND fyzzxyzzy_physx_mark_removed_arena_d3d12
         "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
         "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}")
+
+    set(FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_removed_projections_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_removed_projections_shader
+      DEPENDS "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}")
+    add_executable(fyzzxyzzy_physx_removed_projections_d3d12
+      tests/physx_gpu_removed_projections.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_removed_projections_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12)
+    target_include_directories(fyzzxyzzy_physx_removed_projections_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_removed_projections_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_removed_projections_d3d12
+      fyzzxyzzy_d3d12_removed_arena_shader
+      fyzzxyzzy_d3d12_removed_projections_shader)
+    add_test(NAME fyzzxyzzy_physx_removed_projections_d3d12
+      COMMAND fyzzxyzzy_physx_removed_projections_d3d12
+        "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
+        "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}")
   endif()
 endif()
 

@@ -185,6 +185,42 @@ in the existing CPU build would not enable this Vulkan stage. The next
 integration work must adapt that factory/controller boundary and its resource
 lifetime, without introducing a separate simulation loop.
 
+### Source-derived deleted-projection maintenance (next shader)
+
+The pinned source links two distinct removal operations in
+`PxgCudaBroadPhaseSap::update`:
+
+1. `markRemovedPairsKernel` invokes `BP_MARK_DELETEDPAIRS` to mark the
+   *previous-frame* SAP handles as deleted and empty old bounds.
+2. After the intervening sort, rank/handle update and incremental SAP
+   operations, `markRemovedPairsProjectionsKernel` invokes
+   `BP_UPDATE_DELETEDPAIRS`/`markRemovedPairsProjectionsLaunch`. It uses
+   the current `boxSapBox1D[axis]` index pair to set both
+   `boxProjections[axis]` endpoints to 0xffffffff and invalidates the
+   SAP min/max entries before the second sort shuffles removals away.
+
+Both pinned host launches use **32 blocks of 256 threads**, irrespective
+of removed count; the device loop strides by 8192. The first port had
+used a 128-thread dynamically sized grid. Its grid is now corrected,
+and the new projection stage matches the original 32x256 shape.
+
+The new `RemovedProjectionsArenaDesc` extends the existing 64-byte
+logical descriptor with **three projection offsets** at bytes 64..75;
+the source's other pointers and previous/current handle distinction
+retain their original meaning. The HLSL shader carries only the source
+algorithm, with an arena-offset lowering for its CUDA pointers.
+It shares the Vulkan SPIR-V / D3D12 DXIL path.
+
+A source-oracle test exercises the two removal kernels in one ordered
+GPU batch against a whole-arena CPU expected result, including
+previous-frame handle deletion, old AABB invalidation, projection
+invalidation and SAP index invalidation. This is a **focused dependency
+fixture**: it holds the omitted intervening PhysX sort/incremental-SAP
+state fixed, rather than claiming that the real host update calls these
+kernels consecutively. Full execution ordering is governed by the
+upstream `update` method and awaits translation of those stages.
+The new test is not yet an integrated GPU broadphase or scene simulation.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
