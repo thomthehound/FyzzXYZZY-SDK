@@ -249,8 +249,8 @@ void oracle_comparisons(Packed& p) {
                 const auto start=(p.at(d.sorted_handles_offset,i)&1u)!=0u;
                 const auto down=i<=rank;
                 const auto hist=down ?
-                    (start?d.previous_start_histogram_offset:d.previous_end_histogram_offset):
-                    (start?d.current_start_histogram_offset:d.current_end_histogram_offset);
+                    (start?d.previous_end_histogram_offset:d.previous_start_histogram_offset):
+                    (start?d.current_end_histogram_offset:d.current_start_histogram_offset);
                 const auto loIndex=down?i:rank+1u;
                 const auto hiIndex=down?std::min(rank,n-1u):i;
                 p.at(d.comparison_histogram_offset,i)=global;
