@@ -135,7 +135,17 @@ struct Context::Impl {
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
+        bool cacheable_batch = false;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
     };
+    struct CachedBatch {
+        VkCommandBuffer commands = VK_NULL_HANDLE;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
+    };
+    static constexpr std::size_t kMaxCachedBatches = 8;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -146,6 +156,7 @@ struct Context::Impl {
     std::unordered_map<BufferId, Buffer> buffers;
     std::unordered_map<PipelineId, Pipeline> pipelines;
     std::unordered_map<SubmissionId, Submission> submissions;
+    std::vector<CachedBatch> cached_batches;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -190,7 +201,8 @@ struct Context::Impl {
 
             VkCommandPoolCreateInfo pool{};
             pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-            pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            pool.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                         VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
             pool.queueFamilyIndex = selected.queue_family;
             require(vkCreateCommandPool(device, &pool, nullptr, &command_pool),
                     "vkCreateCommandPool");
@@ -207,6 +219,13 @@ struct Context::Impl {
                 release_submission(item.second);
             }
             submissions.clear();
+            for (const auto& cache : cached_batches) {
+                if (cache.descriptor_pool != VK_NULL_HANDLE)
+                    vkDestroyDescriptorPool(device, cache.descriptor_pool, nullptr);
+                if (cache.commands != VK_NULL_HANDLE)
+                    vkFreeCommandBuffers(device, command_pool, 1, &cache.commands);
+            }
+            cached_batches.clear();
             for (auto& item : pipelines) {
                 destroy_pipeline_handles(item.second);
             }
@@ -243,6 +262,23 @@ struct Context::Impl {
         if (submission.descriptor_pool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
         }
+    }
+
+    void retire_submission(const Submission& submission) {
+        if (submission.timestamps != VK_NULL_HANDLE)
+            vkDestroyQueryPool(device, submission.timestamps, nullptr);
+        if (submission.fence != VK_NULL_HANDLE)
+            vkDestroyFence(device, submission.fence, nullptr);
+        if (!submission.cacheable_batch ||
+            cached_batches.size() >= kMaxCachedBatches) {
+            if (submission.commands != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(device, command_pool, 1, &submission.commands);
+            if (submission.descriptor_pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(device, submission.descriptor_pool, nullptr);
+            return;
+        }
+        cached_batches.push_back({submission.commands, submission.descriptor_pool,
+                                  submission.descriptor_capacity, submission.set_capacity});
     }
 
     SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
@@ -294,7 +330,7 @@ struct Context::Impl {
         const VkFence fence = it->second.fence;
         require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
                 "vkWaitForFences");
-        release_submission(it->second);
+        retire_submission(it->second);
         submissions.erase(it);
     }
 
@@ -833,28 +869,53 @@ struct Context::Impl {
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
+        std::uint32_t descriptor_capacity = 0;
+        std::uint32_t set_capacity = 0;
         try {
-            if (dispatch_count != 0) {
-                VkDescriptorPoolSize pool_size{};
-                pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                pool_size.descriptorCount = static_cast<std::uint32_t>(
-                    std::max<std::uint64_t>(1, descriptor_count));
-                VkDescriptorPoolCreateInfo create{};
-                create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-                create.maxSets = static_cast<std::uint32_t>(dispatch_count);
-                create.poolSizeCount = 1;
-                create.pPoolSizes = &pool_size;
-                require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
-                        "vkCreateDescriptorPool");
+            if (!cached_batches.empty()) {
+                CachedBatch cached = cached_batches.back();
+                cached_batches.pop_back();
+                pool = cached.descriptor_pool;
+                commands = cached.commands;
+                descriptor_capacity = cached.descriptor_capacity;
+                set_capacity = cached.set_capacity;
             }
-
-            VkCommandBufferAllocateInfo allocate{};
-            allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            allocate.commandPool = command_pool;
-            allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            allocate.commandBufferCount = 1;
-            require(vkAllocateCommandBuffers(device, &allocate, &commands),
-                    "vkAllocateCommandBuffers");
+            if (dispatch_count != 0) {
+                if (pool == VK_NULL_HANDLE ||
+                    descriptor_capacity < descriptor_count ||
+                    set_capacity < dispatch_count) {
+                    if (pool != VK_NULL_HANDLE)
+                        vkDestroyDescriptorPool(device, pool, nullptr);
+                    pool = VK_NULL_HANDLE;
+                    VkDescriptorPoolSize pool_size{};
+                    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    pool_size.descriptorCount = static_cast<std::uint32_t>(
+                        std::max<std::uint64_t>(1, descriptor_count));
+                    VkDescriptorPoolCreateInfo create{};
+                    create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                    create.maxSets = static_cast<std::uint32_t>(dispatch_count);
+                    create.poolSizeCount = 1;
+                    create.pPoolSizes = &pool_size;
+                    require(vkCreateDescriptorPool(device, &create, nullptr, &pool),
+                            "vkCreateDescriptorPool");
+                    descriptor_capacity = pool_size.descriptorCount;
+                    set_capacity = create.maxSets;
+                } else {
+                    require(vkResetDescriptorPool(device, pool, 0),
+                            "vkResetDescriptorPool");
+                }
+            }
+            if (commands != VK_NULL_HANDLE) {
+                require(vkResetCommandBuffer(commands, 0), "vkResetCommandBuffer");
+            } else {
+                VkCommandBufferAllocateInfo allocate{};
+                allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                allocate.commandPool = command_pool;
+                allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                allocate.commandBufferCount = 1;
+                require(vkAllocateCommandBuffers(device, &allocate, &commands),
+                        "vkAllocateCommandBuffers");
+            }
 
             VkCommandBufferBeginInfo begin{};
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1016,7 +1077,11 @@ struct Context::Impl {
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
             const SubmissionId id = enqueue(commands, pool);
-            submissions.at(id).timestamps = timestamps;
+            auto& submitted = submissions.at(id);
+            submitted.timestamps = timestamps;
+            submitted.cacheable_batch = true;
+            submitted.descriptor_capacity = descriptor_capacity;
+            submitted.set_capacity = set_capacity;
             return id;
         } catch (...) {
             if (timestamps != VK_NULL_HANDLE)
@@ -1046,14 +1111,14 @@ struct Context::Impl {
             device, it->second.timestamps, 0, 2, sizeof(ticks),
             ticks, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
         if (result != VK_SUCCESS) {
-            release_submission(it->second);
+            retire_submission(it->second);
             submissions.erase(it);
             require(result, "vkGetQueryPoolResults");
         }
         const auto mask = timestamp_valid_bits == 64 ? ~std::uint64_t{0} :
                           ((std::uint64_t{1} << timestamp_valid_bits) - 1);
         const std::uint64_t delta = (ticks[1] - ticks[0]) & mask;
-        release_submission(it->second);
+        retire_submission(it->second);
         submissions.erase(it);
         return static_cast<double>(delta) * limits.timestampPeriod;
     }
