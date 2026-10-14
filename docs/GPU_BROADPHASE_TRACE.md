@@ -196,6 +196,55 @@ the first 8192-projection iteration boundary.
 active-region and overlap-check pair work. Do not fold these
 into a generic grid overlap engine.
 
+## 2c. Source start-region and total-region four-pass prefix sequence
+
+After `BP_CREATE_REGIONS`, the original
+`PxgCudaBroadPhaseSap::computeRegionHistogramKernel` launches
+**four separate kernels in this exact order**:
+`BP_COMPUTE_START_REGION_HISTOGRAM`,
+`BP_OUTPUT_START_REGION_HISTOGRAM`,
+`BP_COMPUTE_REGION_HISTOGRAM`, then
+`BP_OUTPUT_REGION_HISTOGRAM`.
+All four use the original **32 blocks × 256 threads** and are
+gated on a nonempty created-handle list. They consume the
+previously produced sparse per-projection
+`startRegionAccum` and `regionAccum` arrays, without
+re-running region generation.
+
+`broadphase.cu::computeHistogram` computes per-block
+**exclusive** prefix sums and exactly 32 block totals, with
+contiguous `ceil(ceil(2*numBoxes/256)/32)*256`-projection
+partitions. `outputHistogram` applies preceding block sums,
+writes one grand total to the source
+`startRegionAccumTotal` or `regionAccumTotal` descriptor
+field and leaves unrelated state untouched. The portable
+HLSL lowers CUDA warp and block scans to 256-thread
+workgroup scans and preserves the four dispatches rather
+than combining them into a new generic GPU pipeline.
+
+`SapRegionHistogramsArenaStage` owns the four shader
+pipeline handles but not their persistent data buffers.
+It appends four ordered commands transactionally to its
+caller's batch. CMake compiles the first and second scan
+sources separately for start-region and total-region views,
+using the same code on Vulkan SPIR-V and D3D12 DXIL.
+The full GPU fixture runs
+**BP_CREATE_REGIONS → all four region prefix stages**
+in one ordered batch. The independent CPU reference
+calculates each region count per object and then computes
+linear per-projection prefix sums, 32 block totals and
+both grand totals. It compares every arena word, including
+unused capacities and source inputs, on zero-work and
+1/5/17/129/257/4099/8201-box workloads.
+
+The next original stages are
+`BP_WRITEOUT_ACTIVE_HISTOGRAM`,
+`BP_COMPUTE_ACTIVE_HISTOGRAM`,
+`BP_OUTPUT_ACTIVE_HISTOGRAM`, and the original overlap
+count / pair-write sequence. These remain explicit
+dependencies; this is not a fabricated replacement
+simulation pipeline.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.
