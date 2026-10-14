@@ -30,6 +30,7 @@ algorithms, GPU contexts, scene orchestration and dataflow.
 - [CPU SDK build and testing](docs/BUILDING.md)
 - [Portable compute backend](docs/COMPUTE.md)
 - [PhysX GPU port architecture and traceability](docs/PHYSX_GPU_PORT.md)
+- [Source-grounded GPU port implementation program](docs/GPU_PORT_PROGRAM.md)
 - [Apache 2.0 license](LICENSE.md)
 
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
