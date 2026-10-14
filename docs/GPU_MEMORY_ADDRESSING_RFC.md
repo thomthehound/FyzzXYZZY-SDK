@@ -116,6 +116,10 @@ generation must not be mistaken for GPU lifetime safety: deferred reuse
 is governed by submitted work completion. Do not cache references across
 a physical move without explicit repack/versioning.
 
+The first [GPU timestamp and host-resolved-offset comparison harness](GPU_MEMORY_BENCHMARK.md)
+tests a deliberately narrow source-derived access-path hypothesis. It is
+not a selection among A/B/C/D or a native AMD performance result.
+
 ## 4. Two independent costs: addressing and memory management
 
 **Access-path cost** is paid by GPU threads:
