@@ -4,6 +4,7 @@
 
 #include "physx_gpu/radix_count_arena.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
