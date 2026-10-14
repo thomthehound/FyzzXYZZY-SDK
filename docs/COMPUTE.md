@@ -111,6 +111,35 @@ source transfers, preserving source-specific dirty/unchanged behavior.
 The existing synchronous `upload` remains available, as do synchronous
 downloads. No hardware throughput claim is implied by CI.
 
+### Ordered HtoD upload batches
+
+`Context::submit_upload_batch(vector<UploadSpan>)` accepts several
+nonempty 4-byte-aligned destination spans and CPU sources. It **snapshots
+all source bytes synchronously** into one Context-owned host-visible
+allocation, then records all GPU copies in **one ordered queue submission**
+with one completion token. The original CPU pointers may be modified or
+freed as soon as this method returns. Overlapping writes to the same
+destination retain caller order, and a subsequent GPU dispatch or copy on
+the Context queue can consume these results without a CPU wait.
+
+Vulkan records these as one `submit_batch` of `CopyCommand` operations
+and uses existing access/hazard bookkeeping. The temporary HostVisible
+GPU buffer is retired against the final submission fence. D3D12 records
+`CopyBufferRegion` operations against a single upload heap and attaches
+that heap directly to the submission's lifetime, releasing it on GPU
+completion. Each destination transitions into COPY_DEST once and returns
+to COMMON after the batch. Invalid destination IDs, null pointers,
+misalignment and out-of-bounds ranges are rejected before submission.
+
+**Current limitations:** This is a first *batching and ownership* path,
+not an implementation of the upstream `PxgCopyManager::dispatchCopy`
+GPU balanced-copy kernel, and not an allocation subpool or staging ring.
+Each batch still allocates one staging resource; completed D3D12/Vulkan
+command resources are independently reused. This is enough to preserve
+producer/consumer ordering when translating source-derived PhysX host
+launch groups. Submission-token to PhysX task-continuation publication
+remains the next integration step.
+
 ### Deferred GPU buffer retirement
 
 `Context::retire_buffer(id)` immediately invalidates the buffer handle
