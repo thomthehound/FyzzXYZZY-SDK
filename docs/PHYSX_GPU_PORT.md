@@ -416,6 +416,53 @@ previous-frame box counts. The test supplies an already-existing
 previous-frame state; it does not claim that all scene update paths or
 the incremental SAP pair-generation kernels have been ported.
 
+### Incremental and full-update endpoint histograms
+
+`PxgCudaBroadPhaseSap::calculateEndPtHistogramKernel(isIncremental)`
+schedules two original kernels in strict order:
+
+- `BP_COMPUTE_ENDPT_HISTOGRAM` / `computeEndPtsHistogram`
+- `BP_OUTPUT_ENDPT_HISTOGRAM` / `outputEndPtsHistogram`
+
+Both dispatch with a **32 × 3 grid of 256-thread workgroups**.
+The original CUDA helpers are `firstPassEndPtsHistogram` and
+`secondPassEndPtsHistogram` in `gpubroadphase/src/CUDA/broadphase.cu`.
+Each block owns a contiguous slice of the sorted endpoints, including
+the source's multi-iteration distribution when populations are large.
+
+The first pass computes local exclusive prefix histograms for start
+projections, end projections, and **all** end projections. The start/end
+histograms exclude deleted handles, but the all-end histogram counts
+deleted end projections too. Each block publishes its three totals.
+The second pass adds exclusive prefixes across the original 32 blocks
+and builds the ordered start/end handle lists without deleted entries.
+The tagged handle is decoded with PhysX's original `getHandle`
+(`tagged >> 3`). This is not a collision-pair generator.
+
+In incremental mode, PhysX scans only `numPreviousHandles` in the
+current sorted buffers; when any removals occurred, it additionally
+scans the previous `boxHandles[1]` buffers into a separate set of
+histograms and ordered handle lists. In non-incremental mode, it scans
+`numPreviousHandles + numCreatedHandles - numRemovedHandles` and
+does not touch the previous-frame results. Only the current view
+publishes the all-end histogram.
+
+`SapEndpointHistogramArenaStage` lowers the source pointers to
+arena offsets, records **both** kernel dispatches together, and uses
+the existing backend submission barriers to publish the first pass's
+block counts to the second pass. The shared HLSL scans use workgroup
+memory rather than relying on CUDA's 32-lane ballot and packed
+per-warp arithmetic. The original partitioning, output indices,
+buffer separation, and persistent-frame responsibilities remain.
+
+A dual-backend source-oracle fixture checks each per-projection
+exclusive count, the ordered handles, all 32 block totals, untouched
+arena regions, zero work, deleted and new flags, incremental/normal
+modes, previous-frame retention, and more than one source iteration
+per block. The downstream incremental comparison-count kernels still
+need the original histogram and rank inputs connected in the proper
+host update order. This stage alone does not report found/lost pairs.
+
 ### GPU completion and existing PhysX pair-task publication
 
 The pinned source makes the ordering precise:
