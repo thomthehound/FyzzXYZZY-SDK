@@ -39,6 +39,7 @@ static_assert(offsetof(MarkRemovedPairsArenaDesc, old_integer_bounds_offset) == 
 
 // Each dispatch has one RW arena descriptor, rather than one descriptor for
 // each source PhysX pointer. No allocation or world state is owned here.
+// Host launch shape matches the pinned PhysX BP_MARK_DELETEDPAIRS: 32x256.
 class MarkRemovedPairsArenaStage final {
 public:
     MarkRemovedPairsArenaStage(compute::Context& context, compute::ShaderBinary shader);
