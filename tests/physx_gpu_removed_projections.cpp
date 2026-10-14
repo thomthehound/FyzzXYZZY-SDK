@@ -16,6 +16,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -181,7 +182,7 @@ void run_case(Context& ctx, MarkRemovedPairsArenaStage& removed,
 
 void reject_invalid(RemovedProjectionsArenaStage& stage) {
     std::vector<BatchCommand> pending;
-    for (const std::uint32_t descriptor_offset : {1u, 16u, 128u}) {
+    for (const std::uint32_t descriptor_offset : {1u, 96u, 128u}) {
         bool rejected = false;
         try {
             stage.append(pending, 1, 160, descriptor_offset, 1);
