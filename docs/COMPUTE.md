@@ -23,174 +23,19 @@ cmake --build build --target fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_disp
 ctest --test-dir build -R fyzzxyzzy_vulkan_ --output-on-failure
 ```
 
-The general Vulkan smoke targets above do **not** require DXC. To build and
-run the PhysX-derived AABB encoding conformance test, install DXC with SPIR-V
-support (`dxc` on PATH), and enable its explicit test configuration:
+The ordinary Vulkan smoke targets do **not** require DXC. PhysX-derived AABB
+conformance testing additionally requires DXC with SPIR-V support. It is
+deliberately opt-in so unrelated compute configurations remain usable:
 
 ```sh
 cmake -S . -B build-physx-aabb -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON
 cmake --build build-physx-aabb --target fyzzxyzzy_physx_aabb_encoding
-ctest --test-dir build-physx-aabb -R '^fyzzxyzzy_physx_aabb_encoding and world prototypes, configure separately
-with `-DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`. These prototypes are not
-part of the production PhysX GPU implementation.
-
-```sh
-cmake -S . -B build-prototypes -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
-cmake --build build-prototypes --target fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke
-ctest --test-dir build-prototypes -R 'fyzzxyzzy_vulkan_(floor_physics|world_smoke)' --output-on-failure
+ctest --test-dir build-physx-aabb -R fyzzxyzzy_physx_aabb_encoding --output-on-failure
 ```
 
-Vulkan is opt-in; CPU-only builds require no Vulkan SDK. Linux CI validates
-the Vulkan implementation using a software Vulkan device. That verifies API
-correctness but does not establish AMD GPU compatibility or performance.
-
-## Implemented
-
-- Enumerate compute-capable devices and their relevant resource/dispatch limits.
-- Select a device and create a compute queue and command pool.
-- Allocate host-visible coherent or device-local storage buffers.
-- Upload and download host-visible buffers directly; stage device-local transfers
-  through temporary host-visible buffers, with bounds and alignment validation.
-- Submit buffer-copy commands and synchronize their completion.
-- Create SPIR-V compute pipelines with storage-buffer bindings and push constants.
-- Dispatch 1D/2D/3D workgroups with validated device limits and descriptor ranges.
-- Synchronize shader writes for subsequent host reads.
-- Submit compute dispatches and buffer copies with per-submission fences,
-  query completion, and wait on an individual submission or all submissions.
-- Submit ordered batches of copies and dispatches in one command buffer,
-  descriptor pool, and completion fence, avoiding per-operation queue submissions.
-
-## PhysX-derived GPU stages
-
-The `fyzzxyzzy_physx_gpu_stages` target contains the first translated PhysX
-broadphase operation, `AabbEncodingStage`. Its SPIR-V shader implements
-upstream `translateAABBsLaunch` from `gpubroadphase/src/CUDA/broadphase.cu`
-and its host wrapper retains the original six-coordinate bounds representation,
-per-box contact distance, optional environment IDs and per-axis bit settings.
-It operates only on buffers owned by its caller and does not implement or select
-a simulation world. The `fyzzxyzzy_physx_aabb_encoding` test verifies encoded
-bounds against the upstream algorithm for a range of configurations.
-
-The AABB translation has **one HLSL source** at
-`src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. Linux CI uses official
-DXC to compile it to Vulkan SPIR-V and runs the PhysX encoding conformance
-test against the result. Windows CI compiles this same file to DXIL with
-Windows SDK DXC; the Windows result is **compile-only**, not native D3D12
-execution or physics conformance. The `__spirv__` shader branch lowers only
-descriptor bindings and the 32-byte parameter block into Vulkan push
-constants; the PhysX encoding algorithm is shared.
-
-This stage is not integrated into the PhysX `Sc::Scene` pipeline yet. A
-complete portable broadphase must also port PhysX's host orchestration,
-incremental SAP, pairs, aggregation, resource ownership and task dependencies
-before claiming executable GPU broadphase support. See
-[GPU port architecture](PHYSX_GPU_PORT.md).
-
-## Experimental physics compute acceptance
-
-`src/kernels/rigid_floor.comp` is an original, bounded GPU physics experiment (not a translated PhysX kernel):
-fixed-step semi-implicit linear integration under gravity, per-body static-floor
-contact projection, normal restitution, and tangential impact damping. It uses
-two GPU-resident arrays of `vec4`: position xyz plus half-height, and velocity
-xyz plus restitution. It processes independent axis-aligned bodies with one
-shared floor; it does not handle body-body contacts, rotation, or constraints.
-
-The `fyzz::compute::FloorContactKernel` API in
-`include/fyzzxyzzy/floor_contact.h` wraps this shader as an SDK operation.
-It accepts a caller-provided compiled `ShaderBinary`, creates the pipeline,
-and exposes `append_step`, `submit_step`, and `step`. The public
-`FloorBodyVector` and `FloorStepParameters` types define its binary data
-contract. The caller owns both state buffers and the `Context`, which must
-outlive the kernel. `append_step` participates in the existing ordered batch
-API; it does not own a parallel scene.
-
-For example, compile `src/kernels/rigid_floor.comp` to SPIR-V with
-`glslangValidator -V -S comp`, load the bytes into `ShaderBinary`, then
-construct `FloorContactKernel(context, std::move(shader))`. Each body uses
-two `FloorBodyVector` entries: center + half-height, and velocity +
-restitution. Both arrays must have at least `count` entries. The kernel
-checks step parameters; the context checks buffer bounds at submission.
-This is a compute building block rather than an automatic physics-backend
-selection or renderer integration.
-
-The `fyzzxyzzy_vulkan_floor_physics` acceptance test runs 513 bodies for
-160 batched steps, plus two single-step API paths. It checks floor penetration
-and compares state against a CPU reference after each batch.
-
-## Experimental Vulkan World backend
-
-`fyzz::World` owns one `WorldBackend`. Its default backend remains the
-existing PhysX CPU implementation. With `FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`, the separate
-`FyzzXYZZY::VulkanWorld` target supplies `fyzz::compute::create_floor_world(shader)`, which constructs
-a `World` whose authoritative body state lives in Vulkan device-local buffers.
-
-The Vulkan implementation is **explicitly limited** to one infinite horizontal
-floor and independent axis-aligned dynamic boxes. It simulates gravity, linear
-integration, restitution, and floor contact. It rejects static boxes, additional floors, and stepping dynamic bodies
-before adding a floor. Because this kernel cannot resolve body-to-body
-contacts, it also rejects new boxes whose horizontal (X/Z) footprints
-overlap those of existing dynamic boxes, even if initially at different
-heights. With no horizontal velocity or acceleration in this implementation,
-accepted footprints remain disjoint. It **does not** implement box-to-box
-collision, rotation, joints, or the rest of PhysX scene features. Use the
-default CPU backend for those capabilities. GPU and CPU results are compared
-for plausible behavior, not numerical equivalence.
-
-`World::add_static_floor(height)` creates an infinite floor on the CPU backend
-and selects the floor plane on the Vulkan backend. Body IDs belong to the
-chosen World, and `body_state` reads GPU state when using Vulkan. New bodies
-may be added after stepping; device-local buffers grow through GPU copies
-rather than reconstructing previous positions on the CPU. Per-body readback
-and synchronous stepping are functional but not optimized.
-
-The factory accepts a caller-supplied `ShaderBinary` compiled from
-`src/kernels/rigid_floor.comp`. For example:
-
-```cpp
-fyzz::compute::ShaderBinary shader; // Fill shader.bytes with compiled SPIR-V
-fyzz::World world = fyzz::compute::create_floor_world(std::move(shader));
-world.add_static_floor(0.0f);
-const auto body = world.add_dynamic_box({0.25f, 0.25f, 0.25f},
-                                        {0.0f, 2.0f, 0.0f}, 1.0f);
-world.step(1.0f / 120.0f);
-auto state = world.body_state(body);
-```
-
-`fyzzxyzzy_vulkan_world_smoke` tests this World integration against basic
-CPU PhysX behavior, unsupported-operation rejection, stable floor contact,
-body identity, and buffer growth after stepping. The optional Godot consumer
-still constructs the default CPU backend; selecting the Vulkan backend in
-Godot is a separate integration task.
-
-The context is not thread-safe. `copy_buffer` and `dispatch` wait for their
-own submissions; `submit_copy_buffer` and `submit_dispatch` return a fence-backed
-submission ID without waiting. Operations execute on the same compute queue,
-in submission order. `submission_complete` checks a submitted fence;
-`wait_submission` waits and releases its command resources, invalidating the
-ID. Buffer and pipeline destruction, and host transfers, wait for outstanding
-work to avoid premature resource reuse.
-
-`submit_batch` accepts an ordered vector of `CopyCommand` and
-`DispatchCommand` operations. Dispatch commands own their push-constant bytes
-and buffer bindings; the batch validates every operation before submission.
-The returned submission ID covers the entire sequence. `execute_batch`
-performs the same operation and waits for completion. A batch cannot be empty
-or contain a zero-length or in-place copy. Multiple dispatches share one
-descriptor pool (with separate descriptor sets); copy-only batches use none.
-
-Buffer copies and device-local upload/download ranges require 4-byte-aligned
-offsets and sizes; host-visible memory transfers permit arbitrary byte ranges.
-Descriptor offsets must satisfy storage-buffer alignment limits. Device-local
-allocations prefer non-mappable memory where available, with staged transfers
-on both discrete and unified-memory devices. Each dispatch still creates its
-own descriptor pool, and staged transfers still allocate temporary buffers.
-Shader reflection and graphics interop are not implemented. The compute tests cover both arithmetic and the restricted GPU physics workload.
- --output-on-failure
-```
-
-The dedicated test fails configuration if DXC is missing. Linux CI enables
-this option explicitly. Normal Vulkan builds and unrelated compute tests
-never require DXC just because `BUILD_TESTING` is enabled.
+The specific PhysX test option requires DXC at configuration time. Linux CI
+enables the option explicitly, while ordinary Vulkan tests keep only their
+original glslangValidator dependency.
 
 To build and test the isolated floor and world prototypes, configure separately
 with `-DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`. These prototypes are not
@@ -233,14 +78,14 @@ It operates only on buffers owned by its caller and does not implement or select
 a simulation world. The `fyzzxyzzy_physx_aabb_encoding` test verifies encoded
 bounds against the upstream algorithm for a range of configurations.
 
-The AABB translation has **one HLSL source** at
-`src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. Linux CI uses official
-DXC to compile it to Vulkan SPIR-V and runs the PhysX encoding conformance
-test against the result. Windows CI compiles this same file to DXIL with
-Windows SDK DXC; the Windows result is **compile-only**, not native D3D12
-execution or physics conformance. The `__spirv__` shader branch lowers only
-descriptor bindings and the 32-byte parameter block into Vulkan push
-constants; the PhysX encoding algorithm is shared.
+The source-derived AABB translation now has **one HLSL implementation**
+at `src/physx_gpu/kernels/physx_translate_aabbs.hlsl`. DXC compiles it to
+SPIR-V on Linux and DXIL on Windows. Linux CI runs the Vulkan AABB numerical
+conformance test, while Windows CI currently checks DXIL compilation only;
+this does **not** establish native D3D12 execution or physics conformance.
+The `__spirv__` branch changes only descriptor bindings and the 32-byte
+parameter block (Vulkan push constants versus D3D12 constant buffer).
+See [GPU port architecture](PHYSX_GPU_PORT.md).
 
 This stage is not integrated into the PhysX `Sc::Scene` pipeline yet. A
 complete portable broadphase must also port PhysX's host orchestration,
