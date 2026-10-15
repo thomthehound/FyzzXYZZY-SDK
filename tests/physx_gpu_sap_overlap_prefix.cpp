@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
         );
         const auto& info = context.device_info();
         if (!info.supports_int64_wave || !info.supports_wave_arithmetic ||
-            info.subgroup_size < 32u || info.subgroup_size > 64u ||
+            info.subgroup_size < 4u || info.subgroup_size > 128u ||
             256u % info.subgroup_size != 0u) {
             std::cout << "SKIP: no enabled 64-bit subgroup arithmetic on this adapter\n";
             return 77;
