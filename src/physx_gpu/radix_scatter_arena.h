@@ -39,7 +39,7 @@ static_assert(offsetof(RadixScatterAxisDesc, radix_counts_offset) == 16,
 class RadixScatterArenaStage final {
 public:
     RadixScatterArenaStage(compute::Context& context, compute::ShaderBinary shader,
-                            compute::ShaderBinary wave_shader = {},
+                            compute::ShaderBinary wave_shader,
                             bool force_portable = false);
     ~RadixScatterArenaStage();
     RadixScatterArenaStage(const RadixScatterArenaStage&) = delete;
