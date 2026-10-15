@@ -72,7 +72,8 @@ private:
     static constexpr Address kAlignment = 256;
     Address next_address_ = 0x100000000ull; // all generated pointers >32-bit
     std::map<Address, Allocation> allocations_;
-    std::map<compute::BufferId, Address> by_buffer_;
+    std::map<compute::BufferId, Address> by_buffer_; // uniquely owned, retireable
+    std::map<compute::BufferId, std::size_t> slice_counts_; // non-owning references
 };
 
 } // namespace fyzz::physx_gpu
