@@ -135,6 +135,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_newbounds_pairs_native.cpp
     src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
+    src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -401,6 +402,35 @@ if(FYZZXYZZY_BUILD_VULKAN)
         COMMAND fyzzxyzzy_physx_source_d32_fill_native
           "${FYZZXYZZY_SOURCE_D32_FILL_SPV}")
       set_tests_properties(fyzzxyzzy_physx_source_d32_fill_native PROPERTIES
+        SKIP_RETURN_CODE 77)
+
+      # First three operations of source computeRegionHistogramKernel:
+      # two original D32 clears, then BP_CREATE_REGIONS over native source buffers.
+      set(FYZZXYZZY_SOURCE_REGION_CREATE_SPV
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_physx_source_region_create_spv
+        DEPENDS "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}")
+      add_executable(fyzzxyzzy_physx_source_region_create_native
+        tests/physx_gpu_source_region_create_native.cpp)
+      target_include_directories(fyzzxyzzy_physx_source_region_create_native PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+      target_link_libraries(fyzzxyzzy_physx_source_region_create_native PRIVATE
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+      add_dependencies(fyzzxyzzy_physx_source_region_create_native
+        fyzzxyzzy_physx_source_d32_fill_spv fyzzxyzzy_physx_source_region_create_spv)
+      add_test(NAME fyzzxyzzy_physx_source_region_create_native
+        COMMAND fyzzxyzzy_physx_source_region_create_native
+          "${FYZZXYZZY_SOURCE_D32_FILL_SPV}" "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}")
+      set_tests_properties(fyzzxyzzy_physx_source_region_create_native PROPERTIES
         SKIP_RETURN_CODE 77)
 
       # Original PxgBroadPhaseDesc fields and source CUDA virtual pointers,
@@ -1322,6 +1352,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_newbounds_pairs_native.cpp
     src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
+    src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -1550,6 +1581,36 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND fyzzxyzzy_physx_source_d32_fill_native_d3d12
         "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}")
     set_tests_properties(fyzzxyzzy_physx_source_d32_fill_native_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+    set(FYZZXYZZY_SOURCE_REGION_CREATE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_physx_source_region_create_dxil
+      DEPENDS "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}")
+    add_executable(fyzzxyzzy_physx_source_region_create_native_d3d12
+      tests/physx_gpu_source_region_create_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_region_create_native_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_region_create_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_region_create_native_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+    add_dependencies(fyzzxyzzy_physx_source_region_create_native_d3d12
+      fyzzxyzzy_physx_source_d32_fill_dxil fyzzxyzzy_physx_source_region_create_dxil)
+    add_test(NAME fyzzxyzzy_physx_source_region_create_native_d3d12
+      COMMAND fyzzxyzzy_physx_source_region_create_native_d3d12
+        "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}" "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}")
+    set_tests_properties(fyzzxyzzy_physx_source_region_create_native_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
