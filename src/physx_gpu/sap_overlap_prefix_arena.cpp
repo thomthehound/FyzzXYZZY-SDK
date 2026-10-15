@@ -54,7 +54,7 @@ void SapOverlapPrefixArenaStage::append(
     std::uint32_t arena_bytes, std::uint32_t descriptor_offset,
     std::uint32_t created_handles) const {
     if (!created_handles) return;
-    if (!arena || !arena_bytes || arena_bytes % 8u ||
+    if (!arena || !arena_bytes || arena_bytes % 4u ||
         descriptor_offset % alignof(SapOverlapPrefixArenaDesc) != 0u ||
         descriptor_offset > arena_bytes ||
         sizeof(SapOverlapPrefixArenaDesc) > arena_bytes - descriptor_offset)
