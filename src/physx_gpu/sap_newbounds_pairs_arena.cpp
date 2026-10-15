@@ -27,10 +27,10 @@ SapNewBoundsPairsArenaStage::SapNewBoundsPairsArenaStage(
         256u % device.subgroup_size != 0u ||
         device.max_workgroup_invocations < 256u ||
         device.max_workgroup_size[0] < 256u ||
-        device.max_workgroup_count[0] < 32u)
+        device.max_workgroup_count[0] < 64u)
         throw std::runtime_error(
             "PhysX new-bounds pairs require uint64 shaders, subgroup arithmetic "
-            "and original 32x256 grid");
+            "and original 64x256 grid");
     compute::ComputePipelineDesc desc;
     desc.shader = std::move(shader);
     desc.storage_buffer_binding_count = 1u;
@@ -53,7 +53,7 @@ void SapNewBoundsPairsArenaStage::append(
     const Parameters params{descriptor_offset, arena_bytes, {}};
     compute::DispatchCommand command;
     command.pipeline = pipeline_;
-    command.groups = {32u, 1u, 1u};
+    command.groups = {64u, 1u, 1u};
     command.buffers = {{0u, arena, 0u, arena_bytes,
                         compute::BufferAccess::ReadWrite}};
     command.push_constants.resize(sizeof(params));
