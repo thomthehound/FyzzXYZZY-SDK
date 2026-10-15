@@ -51,10 +51,15 @@ class BroadphaseReportClassificationArenaStage final {
 public:
     BroadphaseReportClassificationArenaStage(compute::Context& context,
                                               compute::ShaderBinary first_shader,
-                                              compute::ShaderBinary second_shader);
+                                              compute::ShaderBinary second_shader,
+                                              compute::ShaderBinary first_wave_shader,
+                                              compute::ShaderBinary second_wave_shader,
+                                              bool force_portable = false);
     ~BroadphaseReportClassificationArenaStage();
     BroadphaseReportClassificationArenaStage(const BroadphaseReportClassificationArenaStage&) = delete;
     BroadphaseReportClassificationArenaStage& operator=(const BroadphaseReportClassificationArenaStage&) = delete;
+
+    bool using_wave_reports() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -64,6 +69,7 @@ private:
     compute::Context& context_;
     compute::PipelineId first_ = 0;
     compute::PipelineId second_ = 0;
+    bool using_wave_ = false;
 };
 
 } // namespace fyzz::physx_gpu
