@@ -94,7 +94,8 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
         ptr=reinterpret_cast<T>(static_cast<std::uintptr_t>(address));
         return offset;
     };
-    const std::uint32_t n=c.boxes, p=2u*n;
+    // PhysX gpuDMAUp retains removed projections until the update finishes.
+    const std::uint32_t n=c.boxes, p=2u*(n+(c.enabled?1u:0u));
     const auto r0=0u, r1=c.shared?0u:1u, r2=c.shared?0u:2u,
                r3=c.shared?0u:3u;
     physx::PxgBroadPhaseDesc src{};
