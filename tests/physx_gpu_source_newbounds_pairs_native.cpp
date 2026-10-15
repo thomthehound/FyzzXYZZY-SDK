@@ -202,6 +202,21 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
               dispatch.buffers[11].buffer==roots[r2].id&&
               dispatch.buffers[15].buffer==roots[r0].id,
               "PhysX native pair lowering repacked independent heap roots");
+        // PhysX's scalar counters need not be 16-byte aligned in the
+        // original GPU descriptor. D3D12 RAW UAV descriptors DO need a
+        // 16-byte-aligned FirstElement, even for a four-byte field.
+        for (const auto& view : dispatch.buffers)
+            check(view.offset % 16u == 0u,
+                  "D3D12 RAW UAV view base is not 16-byte aligned");
+        std::uint32_t scalar_delta = 0u;
+        std::memcpy(&scalar_delta,
+                    dispatch.push_constants.data() + 15u * sizeof(std::uint32_t),
+                    sizeof(scalar_delta));
+        const auto actual_scalar = map.resolve(
+            descriptor + offsetof(physx::PxgBroadPhaseDesc, sharedFoundPairIndex),
+            sizeof(std::uint32_t));
+        check(dispatch.buffers[15].offset + scalar_delta == actual_scalar.offset,
+              "Shader-local scalar displacement did not preserve original PhysX pointer");
         const auto gpu=context.submit_batch(cmds);
         std::cerr << "  GPU dispatch submitted\n";
         context.wait_submission(gpu);
