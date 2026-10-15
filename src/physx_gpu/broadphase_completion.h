@@ -44,14 +44,24 @@ public:
                            physx::PxBaseTask& found,
                            physx::PxBaseTask& lost);
 
+    // PxgAABBManager::postBroadPhase(continuation == nullptr) directly calls
+    // each concrete Cm::Task::runInternal() after fetch/resize. These two
+    // callbacks must invoke those ORIGINAL tasks, not schedule replacements.
+    // No task reference is added or removed in this source branch.
+    // A failed inline task cannot safely be replayed, so the gate remains
+    // terminal until the owning scene performs its abort/teardown path.
+    void fetch_and_run_inline(const std::function<void()>& fetch_and_resize,
+                              const std::function<void()>& run_found_pair_task,
+                              const std::function<void()>& run_lost_pair_task);
+
     bool armed() const noexcept { return armed_; }
 
 private:
     compute::Context& context_;
     compute::SubmissionId submission_ = 0;
     bool armed_ = false;
-    // A partially installed PhysX task continuation cannot safely be
-    // retried, because setContinuation increments task references.
+    // Partial continuation installation or inline task execution cannot be
+    // replayed safely by a new GPU frame.
     bool continuation_setup_failed_ = false;
 };
 

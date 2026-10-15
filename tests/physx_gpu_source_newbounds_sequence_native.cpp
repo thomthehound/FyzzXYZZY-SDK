@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_newbounds_sequence_native.h"
+#include "physx_gpu/broadphase_completion.h"
 
 #include <array>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <iterator>
 #include <set>
+#include <string>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -217,16 +219,64 @@ void run(Context& ctx, const SourceNewBoundsSequenceNativeStage& stage,Case c) {
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
         uploads.push_back({root.buffer,0u,root.image.data(),kRootBytes});
-    const auto up=ctx.submit_upload_batch(uploads);
+    ctx.submit_upload_batch(uploads);
     const auto sub=ctx.submit_batch(operations);
-    ctx.wait_submission(sub);
-    ctx.wait_submission(up);
-    std::vector<std::uint32_t> actual(kRootBytes/4u);
-    for(std::uint32_t i=0u;i<roots.size();++i) {
-        ctx.download(roots[i].buffer,0u,actual.data(),kRootBytes);
-        check(actual==expected[i].image,
-              "Four-source-kernel result or untouched allocation canary mismatch");
+    BroadPhaseCompletionGate gate(ctx);
+    gate.arm(sub);
+    // The *same GPU submission* that carries the original four kernels
+    // is the completion dependency for PhysX's postBroadPhase publication.
+    // Nothing is downloaded before the fetch callback.
+    std::vector<std::string> events;
+    auto publish=[&] {
+        std::vector<std::uint32_t> actual(kRootBytes/4u);
+        for(std::uint32_t i=0u;i<roots.size();++i) {
+            ctx.download(roots[i].buffer,0u,actual.data(),kRootBytes);
+            check(actual==expected[i].image,
+                  "Four-source-kernel result or untouched allocation canary mismatch");
+        }
+        events.emplace_back("published");
+    };
+    if(c.shared) {
+        // Non-null continuation path: install the two original task
+        // continuations before releasing either source task reference.
+        struct PairTask final : physx::PxBaseTask {
+            PairTask(std::vector<std::string>& log,const char* name)
+                : events(log),label(name) {}
+            void run() override {}
+            const char* getName() const override { return label; }
+            void addReference() override { ++refs; }
+            void removeReference() override {
+                if(refs!=1)throw std::runtime_error("PhysX pair task released twice");
+                --refs;events.emplace_back(label);
+            }
+            std::int32_t getReference() const override { return refs; }
+            void release() override {}
+            std::vector<std::string>& events;
+            const char* label;
+            std::int32_t refs=1;
+        };
+        PairTask found(events,"found"),lost(events,"lost");
+        gate.fetch_and_release(publish,
+            [&]{events.emplace_back("continuations");},found,lost);
+        check(events==std::vector<std::string>{
+            "published","continuations","found","lost"},
+            "Original PhysX continuation tasks released before source GPU publication");
+    } else {
+        // Null continuation path: directly execute the two existing
+        // PxgAABBManager tasks *after* source-owned GPU result retrieval.
+        gate.fetch_and_run_inline(publish,
+            [&]{events.emplace_back("found");},
+            [&]{events.emplace_back("lost");});
+        check(events==std::vector<std::string>{"published","found","lost"},
+              "Original inline pair tasks ran before source GPU publication");
     }
+    check(!gate.armed(),"Broadphase source GPU frame published more than once");
+    // Source uploads and all four broadphase launches share one ordered
+    // native queue. Waiting on the later four-kernel submission, followed
+    // by the publishing readback, already makes the earlier upload visible.
+    // Vulkan download drains all tracked submissions, including the old
+    // upload token; D3D12 readback uses its own fence. Neither backend
+    // requires an additional wait for an already ordered producer.
     for(auto& root:roots)ctx.destroy_buffer(root.buffer);
 }
 } // namespace

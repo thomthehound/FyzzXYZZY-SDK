@@ -32,7 +32,10 @@ struct PairTask final : physx::PxBaseTask {
         --refs_;
         ++releases_;
         events_.emplace_back(label_);
+        if (throw_on_remove)
+            throw std::runtime_error("Original task release failed after state change");
     }
+    bool throw_on_remove = false;
     int32_t getReference() const override { return refs_; }
     void release() override {}
 
@@ -118,6 +121,64 @@ void exercise(Backend backend) {
                            empty_found, empty_lost);
     check_event_order(events);
 
+    // Original PxgAABBManager::postBroadPhase(nullptr) executes its two
+    // concrete Cm::Task::runInternal functions inline, after GPU results
+    // and resize. It must NOT remove their task references.
+    events.clear();
+    gate.arm(context.submit_upload_buffer(buffer, 0, input.data(), sizeof(input)));
+    PairTask inline_found("found", events), inline_lost("lost", events);
+    gate.fetch_and_run_inline([&] {
+        std::array<std::uint32_t, 73> observed{};
+        context.download(buffer, 0, observed.data(), sizeof(observed));
+        if (observed != input)
+            throw std::runtime_error("Original inline path ran before GPU completion");
+        events.emplace_back("publish");
+    }, [&] { events.emplace_back("found"); },
+       [&] { events.emplace_back("lost"); });
+    if (events != std::vector<std::string>{"publish", "found", "lost"} ||
+        gate.armed() || inline_found.releases() || inline_lost.releases())
+        throw std::runtime_error("PhysX null-continuation branch changed task semantics");
+    require_throws([&] {
+        gate.fetch_and_run_inline([] {}, [] {}, [] {});
+    }, "Inline source pair tasks ran twice");
+
+    // Publication failure is retryable before either inline task runs.
+    events.clear();
+    gate.arm(0);
+    require_throws([&] {
+        gate.fetch_and_run_inline([&] {
+            throw std::runtime_error("Original GPU pair resize failed");
+        }, [&] { events.emplace_back("found"); },
+           [&] { events.emplace_back("lost"); });
+    }, "Inline fetch failure was swallowed");
+    if (!gate.armed() || !events.empty())
+        throw std::runtime_error("Inline source tasks ran against failed publication");
+    gate.fetch_and_run_inline([&] { events.emplace_back("publish"); },
+                              [&] { events.emplace_back("found"); },
+                              [&] { events.emplace_back("lost"); });
+    if (events != std::vector<std::string>{"publish", "found", "lost"})
+        throw std::runtime_error("Inline retry did not preserve source publication order");
+
+    // If runInternal mutates scene state and throws, the second original
+    // task cannot safely be replayed in the same or a future frame.
+    BroadPhaseCompletionGate inline_terminal(context);
+    inline_terminal.arm(0);
+    events.clear();
+    require_throws([&] {
+        inline_terminal.fetch_and_run_inline(
+            [&] { events.emplace_back("publish"); },
+            [&] {
+                events.emplace_back("found");
+                throw std::runtime_error("Original found-pair callback aborted");
+            },
+            [&] { events.emplace_back("lost"); });
+    }, "Partial inline source task failure was swallowed");
+    if (events != std::vector<std::string>{"publish", "found"} ||
+        inline_terminal.armed())
+        throw std::runtime_error("Original inline tasks replayed after partial execution");
+    require_throws([&] { inline_terminal.arm(0); },
+                   "Partially run source task accepted another frame");
+
     // No callback, aliased task inputs or unarmed state may never silently
     // release a reference.
     gate.arm(0);
@@ -148,6 +209,31 @@ void exercise(Backend backend) {
         throw std::runtime_error("Tasks released after failed PhysX continuation setup");
     require_throws([&] { terminal.arm(0); },
                    "Partially installed PhysX continuations were retried");
+
+    // PhysX task release can enter a dispatcher immediately. If the
+    // first release fails after changing task state, neither replay nor
+    // rearming may be allowed: doing either can dispatch old work twice.
+    BroadPhaseCompletionGate released_partial(context);
+    released_partial.arm(0);
+    events.clear();
+    PairTask partial_found("found", events), partial_lost("lost", events);
+    partial_found.throw_on_remove = true;
+    require_throws([&] {
+        released_partial.fetch_and_release(
+            [&] { events.emplace_back("publish"); },
+            [&] { events.emplace_back("continuations"); },
+            partial_found, partial_lost);
+    }, "Partial source task release failure was swallowed");
+    if (events != std::vector<std::string>{
+            "publish", "continuations", "found"} ||
+        released_partial.armed() ||
+        partial_found.releases() != 1 || partial_lost.releases() != 0)
+        throw std::runtime_error("Partial PhysX continuation release replayed task work");
+    require_throws([&] { released_partial.arm(0); },
+                   "Broadphase accepted new frame after failed pair-task release");
+    require_throws([&] {
+        released_partial.fetch_and_release([] {}, [] {}, partial_found, partial_lost);
+    }, "Broadphase retried a partially released pair task");
     context.destroy_buffer(buffer);
 }
 

@@ -341,7 +341,7 @@ preserved.
 
 ## 2d. Created-handles new-bounds four-kernel handoff (integrated adapter)
 
-The source `PxgCudaBroadPhaseSap::generatePairsForNewBounds` calls the
+The source `PxgCudaBroadPhaseSap::generateNewPairsKernel` calls the
 following sequence, **only if `mUpdateData_CreatedHandleSize != 0`**:
 
 1. `BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS` (32 × 256)
@@ -411,6 +411,67 @@ replaced those CUDA dispatches in a live PhysX scene. That replacement
 requires the broader source-owned scene GPU orchestration and resource
 lifetime port described in sections 1–3, not an invented surrogate
 simulation pipeline.
+
+## 2e. Source-owned native kernel batch to actual PhysX postBroadPhase (PRs #64–#68)
+
+The arena fixture in section 2d remains a useful regression, but is **not**
+the source-resource integration path. The production-direction native stages
+read the original `PxgBroadPhaseDesc` and resolve its CUDA allocation pointers
+through `CudaDeviceAddressMap` without repacking source allocations:
+
+- `SourceOverlapWorkNativeStage`: 32 × 256, nine original source views.
+- `SourceOverlapPrefixNativeStage`: two 32 × 256 launches, four views,
+  consumes the GPU-written `regionAccumTotal` and writes the resident
+  `overlapChecksTotalRegion`.
+- `SourceNewBoundsPairsNativeStage`: 64 × 256, sixteen views and the original
+  GPU-resident 32-bit found-pair counter.
+- `SourceNewBoundsSequenceNativeStage`: appends exactly those four original
+  commands, with created-handle gating and atomic append validation; it has
+  no queue, device allocation, DMA or frame-task ownership.
+
+The common `source_native_view` preserves original interior CUDA addresses,
+including four-byte scalar fields, while setting 16-byte-aligned RAW view
+bases required by D3D12. Its regression ensures address preservation and
+rejects malformed D3D12 views before a GPU submission.
+
+In the source, **`PxgCudaBroadPhaseSap::update()`** runs `gpuDMAUp`,
+translated/removed/created SAP work, region histogram production, active and
+start-region lists, `generateNewPairsKernel()`, bound-buffer swapping,
+`clearNewFlagKernel()` and report accumulation/copy, all on `mStream`.
+The first-pass manager's `preBpUpdate_GPU()` previously queued bitmap,
+group, bounds and aggregate uploads on that *same* source stream. Translating
+only `generateNewPairsKernel()` into a standalone submit operation would
+lose those producer dependencies: it must be inserted into the native lowering
+of this **existing** host execution chain.
+
+The source publication path is:
+
+1. `PxgCudaBroadPhaseSap::gpuDMABack()` enqueues an asynchronous descriptor
+   copy, a mapped signal kernel, then flushes/waits on `mStream` at the fetch
+   boundary (with stream synchronization fallback); reads the resident counts;
+   clips found/lost pair-list sizes and handles abort/overflow.
+2. `PxgCudaBroadPhaseSap::fetchBroadPhaseResults()` performs that fetch then
+   swaps seven six-slot SAP histogram/projection-history buffer families.
+3. `PxgAABBManager::postBroadPhase()` calls `fetchBroadPhaseResults()` and
+   `resizeFoundAndLostPairs()`; **only then** it either sets found/lost task
+   continuations and releases both references, or—if `continuation == nullptr`—
+   calls the two concrete `Cm::Task::runInternal()` methods directly, without
+   changing their task reference counts.
+
+`BroadPhaseCompletionGate` represents the GPU wait → fetch/resize → task
+release ordering and now also the original null-continuation inline branch.
+The GPU integration fixture passes the *actual four-kernel submission token*
+to this gate, validates the complete GPU-resident data inside the publication
+callback and verifies the two task paths after publication. **These are
+source-contract tests, not proof of a live portable GPU PxScene.**
+
+**Next actual implementation boundary:** keep `PxgCudaBroadPhaseSap` and
+`PxgAABBManager` as host owners, translate their used `mStream` DMA,
+memset, kernel-launch, buffer-grow/swap, event/wait and abort semantics to the
+native compute backend; bind native kernels at their existing source launch
+sites, and keep the original `Sc::Scene` task continuations. Do not build
+a second scene loop or promise live GPU `PxScene` before the original full
+producer/report chain and multi-frame state have been validated.
 
 ## 3. Buffer, ownership, and publication worksheet
 
