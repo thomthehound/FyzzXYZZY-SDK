@@ -46,7 +46,7 @@ jobs:
           ctest --test-dir build -R '^fyzzxyzzy_physx_(aabb_encoding|mark_removed_arena|removed_projections|created_pairs|radix_count|radix_scatter|sap_box_indices|sap_ranked_sort|sap_endpoint_histogram|sap_incremental_comparisons|sap_incremental_pairs|sap_clear_new_flags|bp_copy_reports|bp_report_classification|sap_region_producer|sap_region_histograms|sap_active_region_lists|broadphase_completion)$' --output-on-failure
           ctest --test-dir build -R '^fyzzxyzzy_sap_(overlap_(work|prefix)|newbounds_(pairs|sequence))$' --output-on-failure
       - name: Build
-        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_portable_gpu_factory_admission fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -61,7 +61,7 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_headless_smoke --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_headless_smoke fyzzxyzzy_portable_gpu_factory_admission --parallel 4
           ctest --test-dir offline-build --output-on-failure
 
       - name: Godot 4.7.2 headless acceptance
@@ -136,7 +136,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
-        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_godot --parallel 4
+        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_portable_gpu_factory_admission fyzzxyzzy_godot --parallel 4
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
       - name: Godot 4.7.2 headless acceptance
