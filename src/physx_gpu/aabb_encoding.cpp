@@ -73,8 +73,9 @@ AlignedAabbViews lower_aabb_storage_views(
                                descriptor_alignment;
         if (remainder % 4u != 0u ||
             remainder / 4u > std::numeric_limits<std::uint32_t>::max() ||
+            remainder > max_descriptor_bytes ||
             static_cast<std::uint64_t>(view.bytes) >
-                max_descriptor_bytes - std::min(remainder, max_descriptor_bytes))
+                max_descriptor_bytes - remainder)
             throw std::out_of_range("PhysX AABB aligned storage view exceeds limits");
         const auto aligned = static_cast<std::size_t>(
             static_cast<std::uint64_t>(view.offset) - remainder);
