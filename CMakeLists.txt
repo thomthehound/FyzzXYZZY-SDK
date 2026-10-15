@@ -133,7 +133,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
-    src/physx_gpu/source_newbounds_descriptor.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -249,8 +248,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
       # Original PxgBroadPhaseDesc fields and source CUDA virtual pointers,
       # native persistent backing growth and descriptor-only re-materialization.
+      # Source pointer -> single-backing arena is a feasibility test,
+      # not the production solution for PhysX's multiple heap roots.
       add_executable(fyzzxyzzy_physx_source_descriptor
-        tests/physx_gpu_source_descriptor.cpp)
+        tests/physx_gpu_source_descriptor.cpp
+        src/physx_gpu/source_newbounds_descriptor.cpp)
       target_include_directories(fyzzxyzzy_physx_source_descriptor PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
@@ -1161,7 +1163,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
-    src/physx_gpu/source_newbounds_descriptor.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1232,7 +1233,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_AABB_DXIL}")
 
     add_executable(fyzzxyzzy_physx_source_descriptor_d3d12
-      tests/physx_gpu_source_descriptor.cpp)
+      tests/physx_gpu_source_descriptor.cpp
+      src/physx_gpu/source_newbounds_descriptor.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_descriptor_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_physx_source_descriptor_d3d12 PRIVATE
