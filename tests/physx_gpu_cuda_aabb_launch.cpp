@@ -109,8 +109,10 @@ void run(Context& ctx, AabbEncodingStage& shader) {
     std::uint64_t argOutput = op + output_offset;
     std::uint64_t argDistance = dp + dist_offset;
     std::uint64_t argEnv = ep + env_offset;
-    std::uint32_t shifts[3] = {4u, 4u, 4u};
-    std::uint32_t envbits[3] = {2u, 3u, 4u};
+    // The real PxGpuBroadPhaseDesc stores six PxU8 values. Place these
+    // in byte arrays so any accidental four-byte read can be detected.
+    std::uint8_t shifts[3] = {4u, 5u, 6u};
+    std::uint8_t envbits[3] = {2u, 3u, 4u};
     const std::array<const void*,11> args{{
         &argBounds,&argOutput,&argDistance,&argEnv,&n,
         &shifts[0],&shifts[1],&shifts[2],
