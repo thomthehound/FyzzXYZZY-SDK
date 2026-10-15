@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
@@ -27,7 +28,13 @@ inline compute::BufferBinding source_native_view(
         alignment % 4u)
         throw std::invalid_argument("Invalid PhysX native source view parameters");
     const auto physical = addresses.resolve(address, bytes);
-    const auto base = physical.offset - physical.offset % alignment;
+    // D3D12 RAW buffer UAVs require a 16-byte aligned FirstElement even
+    // when a device reports a weaker general storage-buffer alignment.
+    // The original CUDA pointer itself may be only 4-byte aligned (for
+    // example, a scalar in PxgBroadPhaseDesc). Expand the native view
+    // backwards and retain the exact pointer as a shader-local offset.
+    const auto view_alignment = std::lcm(alignment, std::size_t{16u});
+    const auto base = physical.offset - physical.offset % view_alignment;
     const auto delta = physical.offset - base;
     if (delta > std::numeric_limits<std::uint32_t>::max() ||
         bytes > std::numeric_limits<std::size_t>::max() - delta ||
