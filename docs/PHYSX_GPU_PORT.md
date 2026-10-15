@@ -9,7 +9,7 @@ and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 
 Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
-D3D12. Source reference: the PhysX revision pinned in the root `CMakeLists.txt`.
+D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
 ## Port boundary
 
@@ -27,7 +27,7 @@ architecture require an identified source counterpart and a technical rationale.
 
 ## Verified scene-to-GPU path
 
-These entry points and dependencies are present in the pinned PhysX source:
+These entry points and dependencies are present in the audited PhysX source:
 
 1. `physx/source/physx/src/NpScene.cpp`:
    `NpScene::simulate` enters `simulateOrCollide`; `executeScene` invokes
@@ -161,7 +161,7 @@ contract belongs to PhysX rather than a new physics subsystem.
 
 ### Broadphase host orchestration required to integrate it
 
-The pinned `PxgCudaBroadPhaseSap.cpp` provides a specific call sequence:
+The upstream `PxgCudaBroadPhaseSap.cpp` provides a specific call sequence:
 
 1. `preBroadPhase` stages changed floating-point bounds, per-object contact
    distances, filter groups and optional environment IDs.
@@ -188,7 +188,7 @@ lifetime, without introducing a separate simulation loop.
 
 ### Source-derived deleted-projection maintenance (next shader)
 
-The pinned source links two distinct removal operations in
+The upstream source links two distinct removal operations in
 `PxgCudaBroadPhaseSap::update`:
 
 1. `markRemovedPairsKernel` invokes `BP_MARK_DELETEDPAIRS` to mark the
@@ -200,7 +200,7 @@ The pinned source links two distinct removal operations in
    `boxProjections[axis]` endpoints to 0xffffffff and invalidates the
    SAP min/max entries before the second sort shuffles removals away.
 
-Both pinned host launches use **32 blocks of 256 threads**, irrespective
+Both original host launches use **32 blocks of 256 threads**, irrespective
 of removed count; the device loop strides by 8192. The first port had
 used a 128-thread dynamically sized grid. Its grid is now corrected,
 and the new projection stage matches the original 32x256 shape.
@@ -224,7 +224,7 @@ The new test is not yet an integrated GPU broadphase or scene simulation.
 
 ### Source-derived created-handle SAP insertion
 
-The pinned `PxgCudaBroadPhaseSap::update` calls
+The upstream `PxgCudaBroadPhaseSap::update` calls
 `markCreatedPairsKernel` when created or removed handles are present,
 but **the kernel's own host wrapper only dispatches when
 `mUpdateData_CreatedHandleSize != 0`**. The CUDA operation is
@@ -258,7 +258,7 @@ host update's conditional task sequencing remains authoritative.
 
 ### Source-derived SAP radix multi-block counting
 
-The pinned `PxgCudaBroadPhaseSap::sortProjectionAndHandlesWORKernel`
+The upstream `PxgCudaBroadPhaseSap::sortProjectionAndHandlesWORKernel`
 sorts `(previousNumOfBoxes + createdHandles) * 2` scalar endpoints,
 rounded up to a multiple of four, using `runRadixSort`.
 `runRadixSort` submits eight 4-bit passes (bits 0, 4, ..., 28),
@@ -747,7 +747,7 @@ The test does not claim a full live-scene broadphase.
 
 ### GPU completion and existing PhysX pair-task publication
 
-The pinned source makes the ordering precise:
+The upstream source makes the ordering precise:
 
 - `PxgCudaBroadPhaseSap::gpuDMABack` queues a descriptor readback,
   launches `BP_SIGNAL_COMPLETE` against mapped host memory, flushes the
