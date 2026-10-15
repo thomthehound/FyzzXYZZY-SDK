@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/sap_newbounds_sequence_arena.h"
+#include "physx_gpu/sap_host_frame_roles.h"
 
 #include <algorithm>
 #include <array>
@@ -252,8 +253,21 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
     const auto arena = context.create_buffer(size, MemoryPlacement::DeviceLocal);
     const auto mirror = context.create_buffer(size, MemoryPlacement::DeviceLocal);
     context.upload(arena, 0u, f.bytes.data(), size);
+    // Feed this source stage the box count and created-handle gate derived
+    // from the existing PxgCudaBroadPhaseSap::update host role, rather than
+    // inventing a second frame-counting scheme inside the sequence.
+    SapUpdateInputs frame{};
+    frame.previous_boxes = c.created ? 2u : 3u;
+    frame.created_handles = c.created ? 1u : 0u;
+    frame.force_update = true;
+    const auto decision = decide_sap_update(frame);
+    if (decision.current_boxes != 3u ||
+        !decision.dispatch_update ||
+        decision.sort_created_removed_projections != c.created)
+        throw std::runtime_error("PhysX source frame decision changed");
     std::vector<BatchCommand> commands;
-    stage.append(commands, arena, size, f.descriptors, 3u, c.created ? 1u : 0u);
+    stage.append(commands, arena, size, f.descriptors,
+                 decision.current_boxes, frame.created_handles);
     if (commands.size() != (c.created ? 4u : 0u))
         throw std::runtime_error("PhysX four-dispatch created-handle gate changed");
     if (c.created) {
