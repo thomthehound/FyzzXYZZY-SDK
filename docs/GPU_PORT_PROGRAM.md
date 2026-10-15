@@ -7,7 +7,7 @@ Status: planning and source audit, October 2026. This is the program-level
 companion to [the execution trace](PHYSX_GPU_PORT.md) and
 [the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
 completed PhysX GPU functionality. Audit baseline: the PhysX revision pinned
-by the SDK root CMake file, `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`
+by the SDK root CMake file, `fe2ab0a871350db0790c7a56f34d6193d575f241`
 in `thomthehound/PhysX`. Re-evaluate this document whenever the pin moves.
 Proposals below are explicitly distinguished from behavior observed upstream.
 
@@ -457,7 +457,7 @@ but do not block shader-family translation waiting for an AMD benchmark.
 ## 7. Primary source index
 
 Pinned upstream source in `thomthehound/PhysX`, revision
-`6dc53585d7db07346f53d0598a5fd3bfdce47d8d`:
+`fe2ab0a871350db0790c7a56f34d6193d575f241`:
 
 - `physx/source/physx/src/NpScene.cpp`
 - `physx/source/simulationcontroller/src/ScScene.cpp`
