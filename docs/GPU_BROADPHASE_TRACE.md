@@ -4,7 +4,7 @@
 # GPU broadphase source trace and migration ledger
 
 Scope: **actual PhysX 5.11 GPU broadphase and its scene contract**.
-Source revision: `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`.
+Source revision: `fe2ab0a871350db0790c7a56f34d6193d575f241`.
 This page is a focused implementation worksheet; it complements
 [the port program](GPU_PORT_PROGRAM.md) and
 [scene-wide execution trace](PHYSX_GPU_PORT.md).
