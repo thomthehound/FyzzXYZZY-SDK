@@ -5,7 +5,7 @@
 
 **Status:** evidence-gathering RFC; **NO representation decision has been made**.
 **Source baseline:** pinned PhysX fork revision
-`6dc53585d7db07346f53d0598a5fd3bfdce47d8d`.
+`fe2ab0a871350db0790c7a56f34d6193d575f241`.
 **Goal:** preserve PhysX GPU algorithm, allocation ownership, CPU/GPU task
 dependencies and semantic data layouts while making access fast on Vulkan
 and D3D12. Any backend-specific lowering must be demonstrated equivalent,
