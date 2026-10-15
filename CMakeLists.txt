@@ -106,6 +106,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
+    src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -968,6 +969,33 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_OVERLAP_PREFIX_second_SPV}")
       set_tests_properties(fyzzxyzzy_sap_overlap_prefix PROPERTIES
         SKIP_RETURN_CODE 77)
+      # PhysX BP_GENERATE_FOUNDPAIR_NEWBOUNDS, fixed 32x256 native-wave scan.
+      set(FYZZXYZZY_NEWBOUNDS_PAIRS_SPV
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.2
+          -T cs_6_6 -E main -Fo "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_newbounds_pairs_spv
+        DEPENDS "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}")
+      add_executable(fyzzxyzzy_sap_newbounds_pairs
+        tests/physx_gpu_sap_newbounds_pairs.cpp)
+      target_include_directories(fyzzxyzzy_sap_newbounds_pairs PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_sap_newbounds_pairs PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_sap_newbounds_pairs
+        fyzzxyzzy_newbounds_pairs_spv)
+      add_test(NAME fyzzxyzzy_sap_newbounds_pairs
+        COMMAND fyzzxyzzy_sap_newbounds_pairs
+          "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}")
+      set_tests_properties(fyzzxyzzy_sap_newbounds_pairs PROPERTIES
+        SKIP_RETURN_CODE 77)
+
 
     endif()
 
@@ -1041,6 +1069,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
+    src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1853,6 +1882,34 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OVERLAP_PREFIX_second_DXIL}")
     set_tests_properties(fyzzxyzzy_sap_overlap_prefix_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77)
+    set(FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_newbounds_pairs_dxil
+      DEPENDS "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}")
+    add_executable(fyzzxyzzy_sap_newbounds_pairs_d3d12
+      tests/physx_gpu_sap_newbounds_pairs.cpp)
+    target_compile_definitions(fyzzxyzzy_sap_newbounds_pairs_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_sap_newbounds_pairs_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_sap_newbounds_pairs_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_sap_newbounds_pairs_d3d12
+      fyzzxyzzy_newbounds_pairs_dxil)
+    add_test(NAME fyzzxyzzy_sap_newbounds_pairs_d3d12
+      COMMAND fyzzxyzzy_sap_newbounds_pairs_d3d12
+        "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}")
+    set_tests_properties(fyzzxyzzy_sap_newbounds_pairs_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77)
+
 
   endif()
 endif()
