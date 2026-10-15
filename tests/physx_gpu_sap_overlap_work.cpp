@@ -22,7 +22,7 @@ std::vector<std::uint8_t> load(const char* path) {
     std::vector<char> b{std::istreambuf_iterator<char>{f}, std::istreambuf_iterator<char>{}};
     return {b.begin(), b.end()};
 }
-void test(Context& context, SapOverlapWorkArenaStage& stage, bool created) {
+void test(Context& context, SapOverlapWorkArenaStage& stage, bool created, bool multi_x) {
     std::vector<std::uint32_t> input(1024u, kCanary);
     constexpr std::uint32_t sorted=64u, sap=96u, ranges=128u;
     constexpr std::uint32_t prefix=192u, total=224u, active=256u;
@@ -43,25 +43,38 @@ void test(Context& context, SapOverlapWorkArenaStage& stage, bool created) {
     set(sap,0u,0u); set(sap,1u,2u);
     set(sap,2u,1u); set(sap,3u,3u);
     for (std::uint32_t i=0;i<16u;++i) set(ranges,i,0u);
-    set(prefix,0u,0u); set(prefix,1u,1u);
-    set(prefix,2u,2u); set(prefix,3u,2u);
-    set(total,0u,2u);
+    set(prefix,0u,0u); set(prefix,1u,multi_x ? 2u : 1u);
+    set(prefix,2u,multi_x ? 3u : 2u); set(prefix,3u,multi_x ? 3u : 2u);
+    set(total,0u,multi_x ? 3u : 2u);
+    if (multi_x) {
+        // Handle 0 occupies X regions 0 and 1. Region 1 has a
+        // different histogram: reusing region 0 must fail this oracle.
+        set(ranges,4u,1u);
+        set(starts,4u+1u,0u);
+        set(starts,4u+2u,1u);
+    }
     for (std::uint32_t i=0;i<4u;++i) {
         set(starts,i,i<2u?i:2u);
         set(active,i,i<2u?i:2u);
     }
     auto expected=input;
     if (created) {
-        // Independently enumerate the two logical region work entries.
-        for (std::uint32_t box=0;box<2u;++box) {
+        // Independently enumerate each handle's X region. The middle
+        // entry in multi-X mode must use region 1 rather than region 0.
+        const std::uint32_t work_count=multi_x?3u:2u;
+        for (std::uint32_t work=0;work<work_count;++work) {
+            const std::uint32_t box=multi_x?(work==2u?1u:0u):work;
+            const std::uint32_t region=(multi_x && work==1u)?1u:0u;
             const std::uint32_t x=box;
             const std::uint32_t end=box==0u?2u:3u;
             const std::uint32_t hist=box==0u?starts:active;
-            const std::uint32_t n=input[hist/4u+end]-input[hist/4u+x+1u];
-            expected[counts/4u+box*2u]=n;
-            expected[counts/4u+box*2u+1u]=0u;
-            expected[regions/4u+box*2u]=box;
-            expected[regions/4u+box*2u+1u]=0u;
+            const std::uint32_t region_base=region*4u;
+            const std::uint32_t n=input[hist/4u+region_base+end]-
+                                  input[hist/4u+region_base+x+1u];
+            expected[counts/4u+work*2u]=n;
+            expected[counts/4u+work*2u+1u]=0u;
+            expected[regions/4u+work*2u]=box;
+            expected[regions/4u+work*2u+1u]=region_base;
         }
     }
     auto bytes=static_cast<std::uint32_t>(input.size()*4u);
@@ -119,7 +132,8 @@ int main(int argc,char** argv) {
 #endif
         shader.bytes=load(argv[1]);
         SapOverlapWorkArenaStage stage(context,std::move(shader));
-        invalid(stage); test(context,stage,false); test(context,stage,true);
+        invalid(stage); test(context,stage,false,false); test(context,stage,true,false);
+        test(context,stage,true,true);
         std::cout << "PhysX BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS PASS\n";
         return 0;
     } catch (const std::exception& e) {
