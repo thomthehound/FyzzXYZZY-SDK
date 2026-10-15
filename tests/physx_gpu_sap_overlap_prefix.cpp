@@ -125,6 +125,11 @@ void negative(SapOverlapPrefixArenaStage& stage) {
     std::vector<BatchCommand> commands;
     stage.append(commands, 0u, 0u, 17u, 0u);
     if (!commands.empty()) throw std::runtime_error("Unexpected empty dispatch");
+    // Exact-fit descriptor at the end of a valid arena is accepted.
+    std::vector<BatchCommand> exact;
+    stage.append(exact, 1u, 64u, 32u, 1u);
+    if (exact.size() != 2u)
+        throw std::runtime_error("Valid exact-fit overlap descriptor rejected");
     for (auto offset : {1u, 40u, 64u}) {
         bool rejected = false;
         try { stage.append(commands, 1u, 64u, offset, 1u); }
