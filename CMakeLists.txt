@@ -1005,6 +1005,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
+    src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
