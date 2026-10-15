@@ -21,6 +21,9 @@ struct SourceNewBoundsArenaLayout {
     CudaDeviceAddressMap::Address descriptor = 0; // original mBPDescBuf
     std::uint32_t current_boxes = 0;
     std::uint32_t box_capacity = 0;
+    // Original host uses (current boxes + removed handles)*2 when
+    // constructing sorted/histogram arrays; never infer from capacity.
+    std::uint32_t projection_slots = 0;
 };
 
 // Throws if any required source pointer refers to another backing resource,
