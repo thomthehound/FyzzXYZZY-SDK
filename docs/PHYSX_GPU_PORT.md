@@ -937,3 +937,43 @@ support the required shader features, the test **reports skipped**, not
 passed. Hardware speedup and actual 680M/Arc device admission remain
 unmeasured. `BP_GENERATE_FOUNDPAIR_NEWBOUNDS` and original live PhysX
 GPU broadphase orchestration still remain ahead.
+
+
+### Source new-bounds found-pair kernel (standalone acceptance stage)
+
+The original `PxgCudaBroadPhaseSap::generatePairsForNewBounds` issues four
+created-handles-gated commands in order: overlap-work producer,
+64-bit compute overlap histogram, 64-bit output overlap histogram,
+and `BP_GENERATE_FOUNDPAIR_NEWBOUNDS`. The new
+`SapNewBoundsPairsArenaStage` lowers this last CUDA
+`generateFoundPairsForNewBoundsRegion` command with the **original 64 groups
+× 256 threads** (unlike the preceding 32 × 256 overlap histogram passes).
+The total candidate domain and work-item index remain 64-bit, and each
+block owns ceil(total / 16384) successive 256-item segments. Work-item
+lookup uses the source's upper-bound-minus-one search of the producer's
+exclusive overlap prefixes, the source `PxgHandleRegion` mapping, current
+X SAP positions/new tags, the per-region active/start histograms and ordered
+partner lists. Duplicate prevention uses the maximum of both boxes' minimum
+region coordinates, not a geometrically different broadphase algorithm.
+
+Filtering preserves group exclusion, optional environment equality / invalid
+ID wildcard behavior, and six-coordinate integer AABB intersection. Each
+surviving pair enters a native 32-bit `WavePrefixSum` batch, a short
+cross-wave prefix, and the source's **single 32-bit global report-counter
+reservation per nonempty 256-item batch**. Pairs are written with ascending
+handle order, subject to `max_found_lost_pairs`; the shared counter is
+not clamped when output capacity is exceeded. No 64-bit global atomics or
+whole-workgroup Hillis–Steele scans. GPU/device capability admission occurs
+at stage construction; no device queries or frame-time shader selection.
+
+Acceptance includes independently enumerated CPU candidate pairs with
+source-style group/environment filters and integer bounds, new and old
+histogram selection, 64-region canonical duplicate suppression, report
+capacity clipping and persistent prior report counts, and a case spanning
+more than 16,384 pair candidates. Unrelated GPU arena memory is canary-
+checked; report order between blocks is intentionally unspecified. A
+software adapter without native shader int64 and subgroup arithmetic is
+explicitly reported as skipped, not verified. The stage intentionally does
+not claim real end-to-end PxgAABBManager integration or native GPU speed
+measurements; the owning PhysX host must chain the four original commands
+and publish their results through its existing task graph.
