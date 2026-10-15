@@ -9,43 +9,43 @@
 #ifdef __spirv__
 [[vk::binding(0, 0)]]
 #endif
-ByteAddressBuffer handlesX : register(t0,space0);
+RWByteAddressBuffer handlesX : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(1, 0)]]
 #endif
-ByteAddressBuffer sapX : register(t1,space0);
+RWByteAddressBuffer sapX : register(u1,space0);
 #ifdef __spirv__
 [[vk::binding(2, 0)]]
 #endif
-ByteAddressBuffer sapY : register(t2,space0);
+RWByteAddressBuffer sapY : register(u2,space0);
 #ifdef __spirv__
 [[vk::binding(3, 0)]]
 #endif
-ByteAddressBuffer sapZ : register(t3,space0);
+RWByteAddressBuffer sapZ : register(u3,space0);
 #ifdef __spirv__
 [[vk::binding(4, 0)]]
 #endif
-ByteAddressBuffer endsX : register(t4,space0);
+RWByteAddressBuffer endsX : register(u4,space0);
 #ifdef __spirv__
 [[vk::binding(5, 0)]]
 #endif
-ByteAddressBuffer endsY : register(t5,space0);
+RWByteAddressBuffer endsY : register(u5,space0);
 #ifdef __spirv__
 [[vk::binding(6, 0)]]
 #endif
-ByteAddressBuffer endsZ : register(t6,space0);
+RWByteAddressBuffer endsZ : register(u6,space0);
 #ifdef __spirv__
 [[vk::binding(7, 0)]]
 #endif
-RWByteAddressBuffer ranges : register(u0,space0);
+RWByteAddressBuffer ranges : register(u7,space0);
 #ifdef __spirv__
 [[vk::binding(8, 0)]]
 #endif
-RWByteAddressBuffer startAccum : register(u1,space0);
+RWByteAddressBuffer startAccum : register(u8,space0);
 #ifdef __spirv__
 [[vk::binding(9, 0)]]
 #endif
-RWByteAddressBuffer regionAccum : register(u2,space0);
+RWByteAddressBuffer regionAccum : register(u9,space0);
 
 struct Parameters {
     uint boxes;
