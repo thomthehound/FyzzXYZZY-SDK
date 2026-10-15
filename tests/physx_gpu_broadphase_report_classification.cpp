@@ -267,8 +267,8 @@ void negative_cases(BroadphaseReportClassificationArenaStage& classifier) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 4)
-            throw std::invalid_argument("Expected report classifier stages 1,2 and copy shaders");
+        if (argc != 6)
+            throw std::invalid_argument("Expected report stage1, stage2, copy, wave stage1, wave stage2");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -286,19 +286,36 @@ int main(int argc, char** argv) {
             out.bytes = load_shader(path);
             return out;
         };
-        BroadphaseReportClassificationArenaStage classify(context, shader(argv[1]), shader(argv[2]));
+        BroadphaseReportClassificationArenaStage classify(
+            context, shader(argv[1]), shader(argv[2]),
+            shader(argv[4]), shader(argv[5]));
+        BroadphaseReportClassificationArenaStage portable(
+            context, shader(argv[1]), shader(argv[2]),
+            shader(argv[4]), shader(argv[5]), true);
         BroadphaseCopyReportsArenaStage copy(context, shader(argv[3]));
-        negative_cases(classify);
-        run_case(context, classify, copy, 0u, 0u, 0u, 0u, false);
-        run_case(context, classify, copy, 0u, 0u, 8u, 2u, true);
-        run_case(context, classify, copy, 1u, 1u, 1u, 1u, false);
-        run_case(context, classify, copy, 12u, 8u, 12u, 2u, true);
-        run_case(context, classify, copy, 17u, 39u, 16u, 3u, true);
-        run_case(context, classify, copy, 21u, 12u, 0u, 0u, true);
-        run_case(context, classify, copy, 129u, 257u, 300u, 4u, true);
-        run_case(context, classify, copy, 8193u, 19u, 8193u, 100u, true);
-        run_case(context, classify, copy, 16385u, 1u, 16385u, 160u, false);
-        std::cout << "PhysX 3-stage report classification and publication PASS\n";
+        const auto& caps = context.device_info();
+        const bool capable = caps.supports_wave_arithmetic &&
+            caps.subgroup_size >= 4u && 256u % caps.subgroup_size == 0u;
+        if (classify.using_wave_reports() != capable ||
+            portable.using_wave_reports())
+            throw std::runtime_error("Report classification skipped native-wave capability selection");
+
+        // Compare entire original 2+1 kernel report stream against the
+        // independent CPU source oracle, including cross-block stable
+        // order, empty input, overflow, aggregate/actor split and tails.
+        for (auto* stage : {&classify, &portable}) {
+            negative_cases(*stage);
+            run_case(context, *stage, copy, 0u, 0u, 0u, 0u, false);
+            run_case(context, *stage, copy, 0u, 0u, 8u, 2u, true);
+            run_case(context, *stage, copy, 1u, 1u, 1u, 1u, false);
+            run_case(context, *stage, copy, 12u, 8u, 12u, 2u, true);
+            run_case(context, *stage, copy, 17u, 39u, 16u, 3u, true);
+            run_case(context, *stage, copy, 21u, 12u, 0u, 0u, true);
+            run_case(context, *stage, copy, 129u, 257u, 300u, 4u, true);
+            run_case(context, *stage, copy, 8193u, 19u, 8193u, 100u, true);
+            run_case(context, *stage, copy, 16385u, 1u, 16385u, 160u, false);
+        }
+        std::cout << "PhysX native-wave/fallback report classification + publication PASS\\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "PhysX report classification FAILED: " << ex.what() << '\n';

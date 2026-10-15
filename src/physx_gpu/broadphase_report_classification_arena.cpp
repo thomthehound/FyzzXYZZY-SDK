@@ -25,20 +25,28 @@ static_assert(sizeof(Parameters) == 32, "PhysX report classification root consta
 
 BroadphaseReportClassificationArenaStage::BroadphaseReportClassificationArenaStage(
     compute::Context& context, compute::ShaderBinary first_shader,
-    compute::ShaderBinary second_shader) : context_(context) {
+    compute::ShaderBinary second_shader,
+    compute::ShaderBinary first_wave_shader,
+    compute::ShaderBinary second_wave_shader,
+    bool force_portable) : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
         device.max_workgroup_size[0] < kThreads ||
         device.max_workgroup_count[0] < kGroups ||
         device.max_workgroup_count[1] < kStreams)
         throw std::runtime_error("PhysX report classification requires 32x4x256 grid");
+    using_wave_ = !force_portable && device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  256u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
-    desc.shader = std::move(first_shader);
+    desc.shader = using_wave_ ? std::move(first_wave_shader)
+                              : std::move(first_shader);
     first_ = context_.create_compute_pipeline(desc);
     try {
-        desc.shader = std::move(second_shader);
+        desc.shader = using_wave_ ? std::move(second_wave_shader)
+                                  : std::move(second_shader);
         second_ = context_.create_compute_pipeline(desc);
     } catch (...) {
         context_.destroy_compute_pipeline(first_);
