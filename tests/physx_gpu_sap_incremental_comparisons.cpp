@@ -279,6 +279,25 @@ void negative_cases(SapIncrementalComparisonsArenaStage& cmp) {
     catch (const std::invalid_argument&) { overflow = true; }
     if (!overflow || !commands.empty())
         throw std::runtime_error("Invalid PhysX incremental projection overflow accepted");
+
+    // CUDA and the portable shader both round 2*boxes using +255.
+    // Exercise the exact host-only boundary without allocating huge
+    // projection buffers. This protects both selected shader paths.
+    constexpr std::uint32_t maxRoundedBoxes =
+        (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u;
+    std::vector<BatchCommand> accepted;
+    cmp.append(accepted, 1u, 112u, 0u, maxRoundedBoxes);
+    if (accepted.size() != 2u)
+        throw std::runtime_error("Valid rounded comparison boundary rejected");
+    for (const auto boxes : {maxRoundedBoxes + 1u,
+                             std::numeric_limits<std::uint32_t>::max() / 2u}) {
+        std::vector<BatchCommand> rejectedBatch;
+        bool rejected = false;
+        try { cmp.append(rejectedBatch, 1u, 112u, 0u, boxes); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected || !rejectedBatch.empty())
+            throw std::runtime_error("Comparison projection rounding overflow accepted");
+    }
 }
 
 } // namespace
