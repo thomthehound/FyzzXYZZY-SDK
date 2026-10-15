@@ -43,10 +43,14 @@ class SapIncrementalComparisonsArenaStage final {
 public:
     SapIncrementalComparisonsArenaStage(compute::Context& context,
                                         compute::ShaderBinary stage1_shader,
-                                        compute::ShaderBinary stage2_shader);
+                                        compute::ShaderBinary stage2_shader,
+                                        compute::ShaderBinary stage1_wave_shader,
+                                        bool force_portable = false);
     ~SapIncrementalComparisonsArenaStage();
     SapIncrementalComparisonsArenaStage(const SapIncrementalComparisonsArenaStage&) = delete;
     SapIncrementalComparisonsArenaStage& operator=(const SapIncrementalComparisonsArenaStage&) = delete;
+
+    bool using_wave_scan() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -57,5 +61,6 @@ private:
     compute::Context& context_;
     compute::PipelineId stage1_ = 0;
     compute::PipelineId stage2_ = 0;
+    bool using_wave_ = false;
 };
 } // namespace fyzz::physx_gpu
