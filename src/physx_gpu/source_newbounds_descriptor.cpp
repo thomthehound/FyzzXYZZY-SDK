@@ -59,8 +59,12 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     if (!layout.backing || !layout.backing_bytes || !layout.current_boxes ||
         layout.box_capacity < layout.current_boxes ||
         layout.box_capacity < d.numPreviousHandles ||
-        layout.projection_slots < layout.current_boxes * 2ull ||
-        layout.projection_slots % 2u != 0u ||
+        std::uint64_t(d.numPreviousHandles) + d.numCreatedHandles <
+            d.numRemovedHandles ||
+        std::uint64_t(d.numPreviousHandles) + d.numCreatedHandles -
+            d.numRemovedHandles != layout.current_boxes ||
+        std::uint64_t(layout.current_boxes + std::uint64_t(d.numRemovedHandles))*2u !=
+            layout.projection_slots ||
         !layout.descriptor ||
         d.regionAccumTotal == 0u ||
         d.max_found_lost_pairs == 0u)
