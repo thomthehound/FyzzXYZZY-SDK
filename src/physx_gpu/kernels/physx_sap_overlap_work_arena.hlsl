@@ -58,7 +58,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
         const uint ordinal = work - arena.Load(prefix + x * 4u);
         const uint z = ordinal % nz + sz;
         const uint y = (ordinal / nz) % ny + sy;
-        const uint rx = arena.Load(range);
+        const uint rx = arena.Load(range) + ordinal / (ny * nz);
         const uint regionId = rx + y * 4u + z * 16u;
         const uint regionOffset = regionId * projections;
         const uint endX = arena.Load(positions + handle * 8u + 4u);
