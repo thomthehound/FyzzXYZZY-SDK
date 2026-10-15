@@ -186,6 +186,7 @@ struct Context::Impl {
         VkPipeline pipeline = VK_NULL_HANDLE;
         std::uint32_t binding_count = 0;
         std::uint32_t push_bytes = 0;
+        std::vector<StorageBufferViewKind> view_kinds;
     };
     struct Submission {
         VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -820,6 +821,20 @@ struct Context::Impl {
             desc.shader.entry_point.find('\0') != std::string::npos) {
             throw std::invalid_argument("Invalid compute shader entry point");
         }
+        if (!desc.storage_buffer_views.empty() &&
+            desc.storage_buffer_views.size() != desc.storage_buffer_binding_count)
+            throw std::invalid_argument("Vulkan storage view declaration count mismatch");
+        for (const auto kind : desc.storage_buffer_views) {
+            switch (kind) {
+                case StorageBufferViewKind::RawRead:
+                case StorageBufferViewKind::RawReadWrite:
+                case StorageBufferViewKind::Structured32Read:
+                case StorageBufferViewKind::Structured32ReadWrite:
+                    break;
+                default:
+                    throw std::invalid_argument("Unknown Vulkan storage buffer view kind");
+            }
+        }
         if (desc.storage_buffer_binding_count > limits.maxPerStageDescriptorStorageBuffers ||
             desc.storage_buffer_binding_count > limits.maxDescriptorSetStorageBuffers) {
             throw std::out_of_range("Storage-buffer binding count exceeds device limits");
@@ -887,6 +902,7 @@ struct Context::Impl {
                     "vkCreateComputePipelines");
             item.binding_count = desc.storage_buffer_binding_count;
             item.push_bytes = desc.push_constant_bytes;
+            item.view_kinds = desc.storage_buffer_views;
             const PipelineId id = next_pipeline;
             pipelines.emplace(id, item);
             ++next_pipeline;
@@ -940,6 +956,14 @@ struct Context::Impl {
                 binding.access != BufferAccess::Write &&
                 binding.access != BufferAccess::ReadWrite)
                 throw std::invalid_argument("Invalid compute buffer access intent");
+            if (!pipeline.view_kinds.empty()) {
+                const auto kind = pipeline.view_kinds[binding.slot];
+                const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                       kind == StorageBufferViewKind::Structured32Read;
+                if (read_only && binding.access != BufferAccess::Unspecified &&
+                    binding.access != BufferAccess::Read)
+                    throw std::invalid_argument("Read-only Vulkan view declared writable");
+            }
             const Buffer& buffer = get(binding.buffer);
             if (!buffer.storage_eligible)
                 throw std::invalid_argument("Transfer-only Vulkan staging cannot bind as shader storage");

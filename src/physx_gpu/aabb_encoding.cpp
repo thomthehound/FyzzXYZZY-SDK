@@ -103,6 +103,12 @@ AabbEncodingStage::AabbEncodingStage(compute::Context& context,
     compute::ComputePipelineDesc description;
     description.shader = std::move(shader);
     description.storage_buffer_binding_count = 4;
+    description.storage_buffer_views = {
+        compute::StorageBufferViewKind::Structured32Read,
+        compute::StorageBufferViewKind::Structured32Read,
+        compute::StorageBufferViewKind::Structured32Read,
+        compute::StorageBufferViewKind::Structured32ReadWrite
+    };
     description.push_constant_bytes = sizeof(ShaderParameters);
     const auto& device = context_.device_info();
     descriptor_alignment_ = device.storage_buffer_offset_alignment;

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-// Native D3D12 bring-up of the same Context contract used by the PhysX AABB
-// stage on Vulkan. This backend currently supports 3 structured SRVs + 1
-// structured UAV and eight 32-bit root constants; it is deliberately not yet
-// a general lowering of PhysX's CUDA pointer-rich GPU descriptors.
+// D3D12 implementation of the common native compute contract.
+// Pipeline-declared storage view types determine SRV/UAV registers and RAW
+// versus structured descriptors. The PhysX host selects resources at launch
+// setup; this layer never interprets CUDA virtual addresses.
 
 #include "fyzzxyzzy/compute.h"
 
@@ -200,6 +200,10 @@ struct Context::Impl {
         ComPtr<ID3D12PipelineState> state;
         std::uint32_t bindings = 0;
         std::uint32_t parameters = 0;
+        std::uint32_t srv_count = 0;
+        std::uint32_t uav_count = 0;
+        std::vector<StorageBufferViewKind> view_kinds;
+        std::vector<std::uint32_t> descriptor_slots;
     };
     struct Submission {
         ComPtr<ID3D12CommandAllocator> allocator;
@@ -535,41 +539,89 @@ struct Context::Impl {
         if (desc.shader.format != ShaderFormat::Dxil || desc.shader.bytes.empty())
             throw std::invalid_argument("Native D3D12 requires compiled DXIL");
         if (desc.shader.entry_point != "main" ||
-            (desc.storage_buffer_binding_count != 1 &&
-             desc.storage_buffer_binding_count != 4) || desc.push_constant_bytes != 32)
-            throw std::invalid_argument("D3D12 supports single-UAV arena or 3 SRV + 1 UAV PhysX stages with eight root constants");
-        const bool arena = desc.storage_buffer_binding_count == 1;
+            !desc.storage_buffer_binding_count || desc.push_constant_bytes != 32u)
+            throw std::invalid_argument("Invalid D3D12 compute pipeline declaration");
+
+        std::vector<StorageBufferViewKind> kinds = desc.storage_buffer_views;
+        if (kinds.empty()) {
+            // Existing stage ABIs during migration to explicit declarations.
+            if (desc.storage_buffer_binding_count == 1u)
+                kinds = {StorageBufferViewKind::RawReadWrite};
+            else if (desc.storage_buffer_binding_count == 4u)
+                kinds = {StorageBufferViewKind::Structured32Read,
+                         StorageBufferViewKind::Structured32Read,
+                         StorageBufferViewKind::Structured32Read,
+                         StorageBufferViewKind::Structured32ReadWrite};
+            else
+                throw std::invalid_argument(
+                    "D3D12 multi-resource pipeline requires explicit storage views");
+        }
+        if (kinds.size() != desc.storage_buffer_binding_count)
+            throw std::invalid_argument("D3D12 storage view declaration count mismatch");
+
+        Pipeline pipeline;
+        pipeline.view_kinds = kinds;
+        pipeline.bindings = desc.storage_buffer_binding_count;
+        pipeline.parameters = desc.push_constant_bytes;
+        pipeline.descriptor_slots.resize(kinds.size());
+        for (const auto kind : kinds) {
+            switch (kind) {
+                case StorageBufferViewKind::RawRead:
+                case StorageBufferViewKind::Structured32Read:
+                    ++pipeline.srv_count;
+                    break;
+                case StorageBufferViewKind::RawReadWrite:
+                case StorageBufferViewKind::Structured32ReadWrite:
+                    ++pipeline.uav_count;
+                    break;
+                default:
+                    throw std::invalid_argument("Unknown D3D12 storage buffer view kind");
+            }
+        }
+
+        std::uint32_t read_index = 0u, write_index = 0u;
+        for (std::size_t slot = 0; slot < kinds.size(); ++slot) {
+            const bool read_only = kinds[slot] == StorageBufferViewKind::RawRead ||
+                                   kinds[slot] == StorageBufferViewKind::Structured32Read;
+            pipeline.descriptor_slots[slot] = read_only
+                ? read_index++ : pipeline.srv_count + write_index++;
+        }
 
         D3D12_DESCRIPTOR_RANGE ranges[2]{};
-        ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        ranges[0].NumDescriptors = 3;
-        ranges[0].BaseShaderRegister = 0;
-        ranges[0].RegisterSpace = 0;
-        ranges[0].OffsetInDescriptorsFromTableStart = 0;
-        ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        ranges[1].NumDescriptors = 1;
-        ranges[1].BaseShaderRegister = 0;
-        ranges[1].RegisterSpace = 0;
-        ranges[1].OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER roots[3]{};
-        roots[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        roots[0].DescriptorTable.NumDescriptorRanges = 1;
-        roots[0].DescriptorTable.pDescriptorRanges = arena ? &ranges[1] : &ranges[0];
-        roots[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        roots[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        roots[1].DescriptorTable.NumDescriptorRanges = 1;
-        roots[1].DescriptorTable.pDescriptorRanges = &ranges[1];
-        roots[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        roots[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        roots[2].Constants.ShaderRegister = 0;
-        roots[2].Constants.RegisterSpace = 0;
-        roots[2].Constants.Num32BitValues = 8;
-        roots[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        // Arena: UAV table at root 0, 8x32-bit constants at root 1.
-        // AABB: SRV table 0, UAV table 1, constants at root 2.
-        if (arena) roots[1] = roots[2];
+        UINT root_count = 0u;
+        if (pipeline.srv_count) {
+            ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+            ranges[0].NumDescriptors = pipeline.srv_count;
+            ranges[0].BaseShaderRegister = 0;
+            ranges[0].RegisterSpace = 0;
+            ranges[0].OffsetInDescriptorsFromTableStart = 0;
+            roots[root_count].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            roots[root_count].DescriptorTable.NumDescriptorRanges = 1;
+            roots[root_count].DescriptorTable.pDescriptorRanges = &ranges[0];
+            roots[root_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            ++root_count;
+        }
+        if (pipeline.uav_count) {
+            ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+            ranges[1].NumDescriptors = pipeline.uav_count;
+            ranges[1].BaseShaderRegister = 0;
+            ranges[1].RegisterSpace = 0;
+            ranges[1].OffsetInDescriptorsFromTableStart = 0;
+            roots[root_count].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            roots[root_count].DescriptorTable.NumDescriptorRanges = 1;
+            roots[root_count].DescriptorTable.pDescriptorRanges = &ranges[1];
+            roots[root_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            ++root_count;
+        }
+        roots[root_count].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        roots[root_count].Constants.ShaderRegister = 0;
+        roots[root_count].Constants.RegisterSpace = 0;
+        roots[root_count].Constants.Num32BitValues = 8;
+        roots[root_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        ++root_count;
         D3D12_ROOT_SIGNATURE_DESC sig{};
-        sig.NumParameters = arena ? 2 : 3;
+        sig.NumParameters = root_count;
         sig.pParameters = roots;
         sig.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
         ComPtr<ID3DBlob> blob;
@@ -581,7 +633,6 @@ struct Context::Impl {
                                      std::string(static_cast<const char*>(errors->GetBufferPointer()),
                                                  errors->GetBufferSize()));
         check(result, "D3D12SerializeRootSignature");
-        Pipeline pipeline;
         check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
                                           IID_PPV_ARGS(&pipeline.signature)), "CreateRootSignature");
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
@@ -590,8 +641,6 @@ struct Context::Impl {
         check(device->CreateComputePipelineState(&pso,
                                                  IID_PPV_ARGS(&pipeline.state)),
               "CreateComputePipelineState");
-        pipeline.bindings = desc.storage_buffer_binding_count;
-        pipeline.parameters = 32;
         const PipelineId id = next_pipeline++;
         pipelines.emplace(id, std::move(pipeline));
         return id;
@@ -618,11 +667,9 @@ struct Context::Impl {
                 binding.offset % 4 || binding.bytes % 4 ||
                 binding.bytes / 4 > std::numeric_limits<UINT>::max())
                 throw std::invalid_argument("Invalid D3D12 structured buffer view");
-            // The bounded AABB pipeline's t0..t2 slots are SRVs; only
-            // the final slot (or the single-arena path) is a UAV. Intent
-            // cannot make a DXIL SRV writable. Avoid accepting metadata
-            // that promises unsupported writes through an SRV.
-            const bool srv_slot = pipe.bindings == 4 && i < 3;
+            const auto kind = pipe.view_kinds[i];
+            const bool srv_slot = kind == StorageBufferViewKind::RawRead ||
+                                  kind == StorageBufferViewKind::Structured32Read;
             if (binding.access != BufferAccess::Unspecified &&
                 binding.access != BufferAccess::Read &&
                 binding.access != BufferAccess::Write &&
@@ -634,11 +681,23 @@ struct Context::Impl {
             const auto& buf = get_buffer(binding.buffer);
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }
-        if (pipe.bindings == 4 &&
-            (cmd.buffers[3].buffer == cmd.buffers[0].buffer ||
-             cmd.buffers[3].buffer == cmd.buffers[1].buffer ||
-             cmd.buffers[3].buffer == cmd.buffers[2].buffer))
-            throw std::invalid_argument("D3D12 AABB shader cannot alias its SRVs and UAV");
+        // The entire D3D12 buffer is one stateful subresource. A dispatch
+        // cannot simultaneously bind it as an SRV and UAV, even when the
+        // views name disjoint byte ranges. Several UAV views may alias.
+        for (std::size_t a = 0; a < cmd.buffers.size(); ++a) {
+            const auto a_kind = pipe.view_kinds[a];
+            const bool a_read = a_kind == StorageBufferViewKind::RawRead ||
+                                a_kind == StorageBufferViewKind::Structured32Read;
+            for (std::size_t b = a + 1u; b < cmd.buffers.size(); ++b) {
+                const auto b_kind = pipe.view_kinds[b];
+                const bool b_read = b_kind == StorageBufferViewKind::RawRead ||
+                                    b_kind == StorageBufferViewKind::Structured32Read;
+                if (a_read != b_read &&
+                    cmd.buffers[a].buffer == cmd.buffers[b].buffer)
+                    throw std::invalid_argument(
+                        "D3D12 cannot bind one resource as SRV and UAV simultaneously");
+            }
+        }
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
@@ -757,9 +816,12 @@ struct Context::Impl {
             Pipeline& pipeline = get_pipeline(cmd.pipeline);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto& binding = cmd.buffers[slot];
-                const auto desired = (pipeline.bindings == 1 || slot == 3)
-                    ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-                    : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                const auto kind = pipeline.view_kinds[slot];
+                const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                       kind == StorageBufferViewKind::Structured32Read;
+                const auto desired = read_only
+                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                    : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                 require_state(binding.buffer, desired);
             }
 
@@ -768,49 +830,61 @@ struct Context::Impl {
             for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 auto& buffer = get_buffer(binding.buffer);
+                const auto kind = pipeline.view_kinds[slot];
+                const bool read_only = kind == StorageBufferViewKind::RawRead ||
+                                       kind == StorageBufferViewKind::Structured32Read;
+                const bool raw = kind == StorageBufferViewKind::RawRead ||
+                                 kind == StorageBufferViewKind::RawReadWrite;
                 D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + (descriptor_index + slot) * increment
+                    cpu_start.ptr + (descriptor_index +
+                        pipeline.descriptor_slots[slot]) * increment
                 };
-                if (pipeline.bindings == 1 || slot == 3) {
+                if (!read_only) {
                     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
-                    // RWByteAddressBuffer requires a RAW/typeless UAV. The
-                    // original AABB RWStructuredBuffer<uint> uses a structured
-                    // UAV instead. WARP may tolerate the wrong view type, but
-                    // real D3D12 hardware need not.
-                    const bool raw_arena = pipeline.bindings == 1;
-                    view.Format = raw_arena ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
+                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                     view.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
                     view.Buffer.FirstElement = binding.offset / 4;
                     view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = raw_arena ? 0 : 4;
-                    view.Buffer.Flags = raw_arena ? D3D12_BUFFER_UAV_FLAG_RAW :
-                                                   D3D12_BUFFER_UAV_FLAG_NONE;
+                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                    view.Buffer.Flags = raw ? D3D12_BUFFER_UAV_FLAG_RAW :
+                                               D3D12_BUFFER_UAV_FLAG_NONE;
                     device->CreateUnorderedAccessView(buffer.resource.Get(), nullptr, &view, cpu);
                 } else {
                     D3D12_SHADER_RESOURCE_VIEW_DESC view{};
-                    view.Format = DXGI_FORMAT_UNKNOWN;
+                    view.Format = raw ? DXGI_FORMAT_R32_TYPELESS : DXGI_FORMAT_UNKNOWN;
                     view.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
                     view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                     view.Buffer.FirstElement = binding.offset / 4;
                     view.Buffer.NumElements = static_cast<UINT>(binding.bytes / 4);
-                    view.Buffer.StructureByteStride = 4;
+                    view.Buffer.StructureByteStride = raw ? 0u : 4u;
+                    view.Buffer.Flags = raw ? D3D12_BUFFER_SRV_FLAG_RAW :
+                                              D3D12_BUFFER_SRV_FLAG_NONE;
                     device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
                 }
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
-            submission.commands->SetComputeRootDescriptorTable(0, {
-                gpu_start.ptr + descriptor_index * increment
-            });
-            if (pipeline.bindings == 4) {
-                submission.commands->SetComputeRootDescriptorTable(1, {
-                    gpu_start.ptr + (descriptor_index + 3) * increment
+            UINT table_root = 0u;
+            if (pipeline.srv_count) {
+                submission.commands->SetComputeRootDescriptorTable(table_root++, {
+                    gpu_start.ptr + descriptor_index * increment
+                });
+            }
+            if (pipeline.uav_count) {
+                submission.commands->SetComputeRootDescriptorTable(table_root++, {
+                    gpu_start.ptr + (descriptor_index + pipeline.srv_count) * increment
                 });
             }
             submission.commands->SetComputeRoot32BitConstants(
-                pipeline.bindings == 1 ? 1 : 2, 8, cmd.push_constants.data(), 0);
+                table_root, 8, cmd.push_constants.data(), 0);
             submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
-            resource_access[cmd.buffers[pipeline.bindings - 1].buffer].pending_write = true;
+            for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
+                const auto kind = pipeline.view_kinds[slot];
+                const bool writable = kind == StorageBufferViewKind::RawReadWrite ||
+                                      kind == StorageBufferViewKind::Structured32ReadWrite;
+                if (writable && cmd.buffers[slot].access != BufferAccess::Read)
+                    resource_access[cmd.buffers[slot].buffer].pending_write = true;
+            }
             descriptor_index += pipeline.bindings;
         }
         for (const auto& entry : resource_access) {
