@@ -483,3 +483,43 @@ Pinned upstream source in `thomthehound/PhysX`, revision
 Upstream interpretation is authoritative for what **PhysX does**;
 this document's suggested architecture and gate ordering are decisions for
 FyzzXYZZY, not claims made by NVIDIA.
+
+
+## First source-level portable GPU scene factory increment (October 15, 2026)
+
+**Source PR:** [PhysX #1](https://github.com/thomthehound/PhysX/pull/1).
+The SDK's pinned PhysX checkout in this development branch includes a
+versioned, optional `PxPortableGpuBroadPhaseProviderV1` record and a
+per-`PxSceneDesc` selection pointer. `NpPhysics::createScene` runs its
+readiness callback once and **rejects** an unavailable portable GPU request;
+it does not silently run CPU broadphase. `ScScene` asks that provider to
+construct the original `Bp::BroadPhase` and `Bp::AABBManagerBase`
+objects at their native factory sites. It retains PhysX scene/task/fetch
+ownership and the CPU narrowphase/solver, and does not require an invented
+CUDA context manager. CPU and ordinary CUDA factory paths are preserved.
+
+**ABI boundary:** the provider selector and callback table have explicit
+version/size and C layout, allowing straightforward source-level use by
+other application authors. Its *object factory callbacks* currently pass
+opaque handles to PhysX-internal C++ objects. Those object implementations
+must be built with the **same PhysX revision**. This is **not** yet a
+cross-version binary plugin ABI, a CUDA drop-in implementation, or a
+complete portable-GPU engine. A true stable foreign-module ABI will require
+isolating the internal PhysX object contract behind a separately versioned
+adapter, not pretending opaque pointers eliminate the C++ coupling.
+
+**Verification gate:** a test against the real pinned `PxPhysics::createScene`
+verifies ABI validation, per-scene provider rejection *before* any factory
+callbacks, no CPU fallback after an explicit GPU request, and continued
+CPU `simulate/fetchResults` functionality. Both CI platforms and the
+offline source distribution build that test.
+
+**Next implementation target:** provide source-derived, GPU-backed
+`Bp::BroadPhase` and `Bp::AABBManagerBase` implementations at these
+factory sites, moving PhysX's persistent `PxgCudaBroadPhaseSap` and
+`PxgAABBManager` update/fetch operations, descriptor graph, buffer
+allocation/growth, and report publication to the existing Vulkan/D3D12
+compute contexts. No shadow scene scheduler; no CPU broadphase presented
+as GPU success. Once present, a live `PxPhysics::createScene` with
+`PxBroadPhaseType::eGPU` must run multi-frame created/updated/removed and
+idle overlap tests through the normal scene event pipeline.
