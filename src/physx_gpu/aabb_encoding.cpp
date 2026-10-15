@@ -58,9 +58,13 @@ AlignedAabbViews lower_aabb_storage_views(
     std::uint64_t max_descriptor_bytes) {
     // minStorageBufferOffsetAlignment is fixed by the selected device,
     // never queried here or when appending the source PhysX CUDA launch.
-    if (!descriptor_alignment || descriptor_alignment % 4u != 0u ||
+    if (!descriptor_alignment ||
+        (descriptor_alignment & (descriptor_alignment - 1u)) != 0u ||
         !max_descriptor_bytes)
         throw std::invalid_argument("Invalid native storage-buffer alignment");
+    // Vulkan permits smaller-than-word storage alignment; the AABB shader
+    // still operates on 32-bit float/uint elements.
+    if (descriptor_alignment < 4u) descriptor_alignment = 4u;
 
     AlignedAabbViews result{};
     for (std::size_t i = 0; i < requested.size(); ++i) {
