@@ -7,7 +7,7 @@ project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 include(CTest)
 include(FetchContent)
 
-# The CPU backend uses the pinned PhysX solver; the upstream CUDA build is disabled.
+# CPU PhysX-derived execution remains available; upstream CUDA is disabled.
 set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "Disable upstream CUDA" FORCE)
 set(PX_GENERATE_GPU_PROJECTS_ONLY OFF CACHE BOOL "" FORCE)
 set(PX_GENERATE_STATIC_LIBRARIES ON CACHE BOOL "Use static PhysX for the standalone SDK" FORCE)
@@ -29,10 +29,13 @@ if(FYZZXYZZY_PHYSX_SOURCE_DIR)
   set(FETCHCONTENT_SOURCE_DIR_FYZZXYZZY_PHYSX "${FYZZXYZZY_PHYSX_SOURCE_DIR}")
 endif()
 
-# Pinned PhysX source provenance and upstream notices remain intact.
+# Transitional source bootstrap only: follows the current PhysX
+# development branch when a local checkout is not supplied. The engine must
+# ultimately own its PhysX-derived implementation rather than impose an
+# external version-locked provider/factory dependency.
 FetchContent_Declare(fyzzxyzzy_physx
   GIT_REPOSITORY https://github.com/thomthehound/PhysX.git
-  GIT_TAG 6dc53585d7db07346f53d0598a5fd3bfdce47d8d
+  GIT_TAG main
   SOURCE_SUBDIR physx
   GIT_SHALLOW FALSE
 )
