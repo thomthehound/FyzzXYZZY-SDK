@@ -219,7 +219,7 @@ void run(Context& ctx, const SourceNewBoundsSequenceNativeStage& stage,Case c) {
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
         uploads.push_back({root.buffer,0u,root.image.data(),kRootBytes});
-    const auto up=ctx.submit_upload_batch(uploads);
+    ctx.submit_upload_batch(uploads);
     const auto sub=ctx.submit_batch(operations);
     BroadPhaseCompletionGate gate(ctx);
     gate.arm(sub);
@@ -271,7 +271,11 @@ void run(Context& ctx, const SourceNewBoundsSequenceNativeStage& stage,Case c) {
               "Original inline pair tasks ran before source GPU publication");
     }
     check(!gate.armed(),"Broadphase source GPU frame published more than once");
-    ctx.wait_submission(up);
+    // Source uploads and all four broadphase launches share one ordered
+    // native queue. Waiting on the later four-kernel submission, followed
+    // by the publishing readback, already makes the earlier upload visible.
+    // Context::download may retire that upload's tracking record, so a
+    // second wait on its consumed SubmissionId is invalid on both backends.
     for(auto& root:roots)ctx.destroy_buffer(root.buffer);
 }
 } // namespace
