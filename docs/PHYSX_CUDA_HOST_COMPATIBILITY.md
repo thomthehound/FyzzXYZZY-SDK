@@ -127,7 +127,22 @@ call site, NOT a generic CUDA driver implementation. Original
 `updateData_fpBounds`, `newIntegerBounds`,
 `updateData_contactDistances`, `updateData_envIDs`,
 `mUpdateData_BoxesCapacity`, XYZ projection shifts, and XYZ environment
-shift widths. The source kernel's 256-thread CUDA blocks process 32 boxes;
+shift widths. The six shift arguments are **PxU8**, not PxU32; the
+adapter reads each argument as exactly one byte and promotes it. The
+native shader packs the six byte shifts into two 32-bit constants,
+retaining its original eight-DWORD root/push constant footprint.
+
+The original CUDA interior pointers are lowered to device-aligned
+descriptor starts using the selected Vulkan `minStorageBufferOffsetAlignment`
+(or D3D12's native structured-buffer alignment). Four residual
+32-bit **element biases** are passed through those same eight constants.
+The shader applies each bias to its input, distance, environment and output
+array accesses. No compatibility buffer copies are inserted. The alignment
+is queried once at device admission, not per PhysX launch. Tests exercise
+four-byte interior CUDA offsets and separately force descriptor alignment
+of 256 and 1024 bytes independent of CI hardware.
+
+The source kernel's 256-thread CUDA blocks process 32 boxes;
 the translated shader's native 128-thread blocks process 16. The adapter
 verifies the original launch grid instead of falsely passing it through
 as the translated grid.
