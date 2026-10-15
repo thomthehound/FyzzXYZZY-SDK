@@ -3,9 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_region_create_native.h"
+#include "physx_gpu/source_region_histograms_native.h"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstring>
+#include <memory>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -53,12 +57,13 @@ struct Root {
 struct Endpoint {std::uint32_t key, handle, tag;};
 
 void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
+              const SourceRegionHistogramsNativeStage* scans,
               std::uint32_t boxes,std::uint32_t created,
               std::uint32_t removed=0u){
     check(created<=boxes,"Invalid source-created fixture population");
     CudaDeviceAddressMap map;
     std::vector<Root> roots;
-    roots.reserve(13u);
+    roots.reserve(15u);
     auto allocate=[&](std::uint32_t words)->std::size_t{
         const auto ordinal=static_cast<std::uint32_t>(roots.size());
         const std::uint32_t offset=260u+((ordinal%5u)*4u);
@@ -89,6 +94,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     const auto regions=allocate(slots);
     const auto active=allocate(cleared);
     const auto startHist=allocate(cleared);
+    const auto blockStarts=allocate(32u);
+    const auto blockRegions=allocate(32u);
+    const auto descriptor=allocate(
+        static_cast<std::uint32_t>(sizeof(physx::PxgBroadPhaseDesc)/4u));
+    static_assert(sizeof(physx::PxgBroadPhaseDesc)%4u==0u,
+                  "PhysX GPU source descriptor must be D32 aligned");
 
     auto set=[&](std::size_t root,std::uint32_t word,std::uint32_t val) {
         roots[root].input[roots[root].offset/4u+word]=val;
@@ -115,6 +126,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     desc.regionAccum=reinterpret_cast<decltype(desc.regionAccum)>(ptr(regions));
     desc.activeRegionsHistogram=reinterpret_cast<decltype(desc.activeRegionsHistogram)>(ptr(active));
     desc.startRegionsHistogram=reinterpret_cast<decltype(desc.startRegionsHistogram)>(ptr(startHist));
+    desc.blockStartRegionAccum=reinterpret_cast<decltype(desc.blockStartRegionAccum)>(ptr(blockStarts));
+    desc.blockRegionAccum=reinterpret_cast<decltype(desc.blockRegionAccum)>(ptr(blockRegions));
+    desc.startRegionAccumTotal=0xdeadbeefu;
+    desc.regionAccumTotal=0xdeadbeefu;
+    std::memcpy(roots[descriptor].input.data()+roots[descriptor].offset/4u,
+                &desc,sizeof(desc));
 
     for(std::uint32_t a=0u;a<3u;++a){
         std::vector<Endpoint> list;
@@ -168,6 +185,32 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
             setExpected(regions,endX,0u);
         }
     }
+    if(created && scans){
+        // Follow source createRegionsKernel with four source histogram passes.
+        // Independent CPU oracle over the first 2*live-box projections,
+        // preserving the temporary removed-projection tail.
+        const auto span=(((projections+255u)/256u+31u)/32u)*256u;
+        for(std::uint32_t kind=0u;kind<2u;++kind){
+            const auto data=kind==0u?starts:regions;
+            const auto blocks=kind==0u?blockStarts:blockRegions;
+            std::uint32_t running=0u;
+            for(std::uint32_t g=0u;g<32u;++g){
+                std::uint32_t subtotal=0u;
+                for(std::uint32_t i=g*span;
+                    i<std::min(projections,(g+1u)*span);++i){
+                    const auto v=roots[data].expected[roots[data].offset/4u+i];
+                    setExpected(data,i,running+subtotal);
+                    subtotal+=v;
+                }
+                setExpected(blocks,g,subtotal);
+                running+=subtotal;
+            }
+            const auto offset=kind==0u?
+                offsetof(physx::PxgBroadPhaseDesc,startRegionAccumTotal):
+                offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal);
+            setExpected(descriptor,static_cast<std::uint32_t>(offset/4u),running);
+        }
+    }
 
     const SourceRegionCreateNativeLayout layout{box_capacity,slots};
     std::vector<BatchCommand> operations;
@@ -200,6 +243,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         for(std::uint32_t i=7u;i<10u;++i)
             check(dispatch.buffers[i].access==BufferAccess::Write,
                   "Source create-regions output access changed");
+    }
+    if(scans){
+        scans->append(operations,desc,map,
+            {roots[descriptor].address,slots});
+        check(operations.size()==(created?7u:0u),
+              "Original PhysX seven region producer/histogram operations changed");
     }
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
