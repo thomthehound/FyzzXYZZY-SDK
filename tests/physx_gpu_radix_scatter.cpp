@@ -256,8 +256,8 @@ void negative_cases(RadixScatterArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 4)
-            throw std::invalid_argument("Expected radix count, portable and packed-wave shaders");
+        if (argc != 5)
+            throw std::invalid_argument("Expected count, scatter, wave count and wave scatter shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -267,18 +267,22 @@ int main(int argc, char** argv) {
         );
         ShaderBinary count_shader;
         ShaderBinary scatter_shader;
+        ShaderBinary wave_count_shader;
         ShaderBinary wave_shader;
 #if defined(FYZZXYZZY_TEST_D3D12)
         count_shader.format = scatter_shader.format =
-            wave_shader.format = ShaderFormat::Dxil;
+            wave_count_shader.format = wave_shader.format = ShaderFormat::Dxil;
 #else
         count_shader.format = scatter_shader.format =
-            wave_shader.format = ShaderFormat::Spirv;
+            wave_count_shader.format = wave_shader.format = ShaderFormat::Spirv;
 #endif
         count_shader.bytes = load_shader(argv[1]);
         scatter_shader.bytes = load_shader(argv[2]);
-        wave_shader.bytes = load_shader(argv[3]);
-        RadixCountArenaStage count_stage(context, std::move(count_shader));
+        wave_count_shader.bytes = load_shader(argv[3]);
+        wave_shader.bytes = load_shader(argv[4]);
+        RadixCountArenaStage count_stage(context, count_shader, wave_count_shader);
+        RadixCountArenaStage count_fallback(
+            context, std::move(count_shader), std::move(wave_count_shader), true);
         RadixScatterArenaStage scatter_stage(
             context, scatter_shader, wave_shader);
         RadixScatterArenaStage fallback(
@@ -287,25 +291,30 @@ int main(int argc, char** argv) {
         const bool capable = device.supports_wave_arithmetic &&
             device.subgroup_size >= 4u && 1024u % device.subgroup_size == 0u;
         if (scatter_stage.using_wave_scan() != capable ||
-            fallback.using_wave_scan())
+            count_stage.using_wave_count() != capable ||
+            fallback.using_wave_scan() ||
+            count_fallback.using_wave_count())
             throw std::runtime_error("Radix wave-shader capability selection changed");
         negative_cases(scatter_stage);
         negative_cases(fallback);
 
-        // Keep prior oracle workloads on both codepaths; the optimized
-        // route must also handle worst-case concentrated digit bins.
-        for (auto* implementation : {&scatter_stage, &fallback}) {
-            run_case(context, count_stage, *implementation, 0u, 0u);
-            run_case(context, count_stage, *implementation, 1u, 1u);
-            run_case(context, count_stage, *implementation, 5u, 8u);
-            run_case(context, count_stage, *implementation, 128u, 8u);
-            run_case(context, count_stage, *implementation, 4099u, 8u);
-            run_case(context, count_stage, *implementation, 8193u, 8u);
-            run_case(context, count_stage, *implementation, 131075u, 1u);
-            run_case(context, count_stage, *implementation, 4099u, 8u, true);
-            run_case(context, count_stage, *implementation, 8193u, 1u, true);
+        // Cross-check two complete execution strategies, both with the
+        // original two-dispatch count→scatter dependencies and payload
+        // stability. The independent CPU reference is unchanged.
+        for (const auto path : {0u, 1u}) {
+            auto& counters = path ? count_fallback : count_stage;
+            auto& scatter = path ? fallback : scatter_stage;
+            run_case(context, counters, scatter, 0u, 0u);
+            run_case(context, counters, scatter, 1u, 1u);
+            run_case(context, counters, scatter, 5u, 8u);
+            run_case(context, counters, scatter, 128u, 8u);
+            run_case(context, counters, scatter, 4099u, 8u);
+            run_case(context, counters, scatter, 8193u, 8u);
+            run_case(context, counters, scatter, 131075u, 1u);
+            run_case(context, counters, scatter, 4099u, 8u, true);
+            run_case(context, counters, scatter, 8193u, 1u, true);
         }
-        std::cout << "PhysX packed-wave and fallback radix source oracle PASS\n";
+        std::cout << "PhysX packed wave radix count/scatter and fallback source oracle PASS\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "PhysX radix scatter GPU oracle FAILED: " << e.what() << '\n';
