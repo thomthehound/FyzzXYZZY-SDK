@@ -27,6 +27,10 @@ struct DeviceInfo {
     std::uint32_t device_id = 0;
     std::uint32_t api_version = 0;
     std::uint64_t max_storage_buffer_range = 0;
+    // Device-creation-time descriptor binding alignment. Vulkan obtains its
+    // physical-device limit; D3D12 structured 32-bit buffer views use 4.
+    // Used to lower CUDA-style interior pointers without staging copies.
+    std::uint64_t storage_buffer_offset_alignment = 4;
     std::uint32_t max_workgroup_invocations = 0;
     std::uint32_t max_workgroup_count[3] = {};
     std::uint32_t max_workgroup_size[3] = {};
