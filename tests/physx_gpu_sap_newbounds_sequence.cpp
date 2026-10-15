@@ -174,7 +174,7 @@ Fixture prepare(const Case& c) {
         f.put(ranges + handle * 32u + 4u, 0u);
         f.put(ranges + handle * 32u + 8u, 0u);
         f.put(ranges + handle * 32u + 16u,
-              c.two_regions && (handle == 0u || handle == 2u) ? 1u : 0u);
+              c.two_regions ? 1u : 0u);
         f.put(ranges + handle * 32u + 20u, 0u);
         f.put(ranges + handle * 32u + 24u, 0u);
 
@@ -198,20 +198,25 @@ Fixture prepare(const Case& c) {
     for (std::uint32_t x = 0u; x < kProjections; ++x)
         f.put(region_prefix + x * 4u, x == 0u ? 0u : n);
 
-    // Region-local histogram values selected by the owner's new tag.
-    // startHistogram[ownerStart+1]=0, histogram[ownerEnd]=2.
-    // Ordered partner handles occupy entries 0 and 1 in each region.
+    // Valid source-style region memberships:
+    // - one-region case: both partners occur in region 0;
+    // - two-region case: partner 1 spans both regions, partner 2
+    //   belongs only to region 1. This produces raw counts [1,2].
+    //   The canonical-region rule emits (0,1) in region 0 and
+    //   (0,2) in region 1, rejecting the repeated (0,1).
     const auto selected_hist = c.new_projection ? start_hist : active_hist;
     const auto selected_order = c.new_projection ? start_order : active_order;
     for (std::uint32_t region = 0u; region < (c.two_regions ? 2u : 1u); ++region) {
         const auto start = selected_hist + region * kProjections * 4u;
+        const auto both = !c.two_regions || region == 1u;
         for (std::uint32_t x = 0u; x < kProjections; ++x) {
-            const std::uint32_t count = x < 2u ? 0u : (x == 2u ? 1u : 2u);
+            const std::uint32_t count =
+                x < 2u ? 0u : (x == 2u ? 1u : (both ? 2u : 1u));
             f.put(start + x * 4u, count);
         }
         const auto ordered = selected_order + region * kProjections * 4u;
         f.put(ordered, 1u);
-        f.put(ordered + 4u, 2u);
+        if (both) f.put(ordered + 4u, 2u);
     }
     return f;
 }
@@ -233,17 +238,20 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
     auto expected = f;
     const auto valid = reference_pairs(c);
     if (c.created) {
-        // Independent source-sequence CPU oracle: each owner X region sees
-        // two start points; prefixes are exclusive and globally 64-bit.
+        // Independently enumerate per-region candidate membership,
+        // then form the true uint64 exclusive overlap offsets. Unlike the
+        // shader, the oracle does not binary-search region/work prefixes.
+        std::uint64_t comparisonTotal = 0u;
         for (std::uint32_t i = 0; i < f.work_items; ++i) {
-            expected.put64(f.overlap_counts + i * 8u, i * 2u);
+            expected.put64(f.overlap_counts + i * 8u, comparisonTotal);
             expected.put(f.handle_regions + i * 8u, 0u);
             expected.put(f.handle_regions + i * 8u + 4u, i * kProjections);
+            comparisonTotal += c.two_regions && i == 0u ? 1u : 2u;
         }
         for (std::uint32_t block = 0; block < 32u; ++block)
             expected.put64(f.block_totals + block * 8u,
-                           block == 0u ? f.work_items * 2u : 0u);
-        expected.put64(f.overlap_total, f.work_items * 2u);
+                           block == 0u ? comparisonTotal : 0u);
+        expected.put64(f.overlap_total, comparisonTotal);
         expected.put(f.found_count, c.initial_report_count +
                                     static_cast<std::uint32_t>(valid.size()));
     }
