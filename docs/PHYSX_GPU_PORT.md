@@ -888,5 +888,52 @@ dispatch geometry, descriptor rejection and an independent two-handle
 count/reference comparison including multi-X-region enumeration with
 region-distinct histogram values, preserving untouched buffer canaries. This is
 a bounded producer test, not the complete overlap-prefix/found-pair pipeline.
-The follow-on 64-bit prefix and pair writer must be integrated into the
+The 64-bit prefix kernels are now implemented as a separate ordered stage;
+this producer remains independently testable. The pair writer and integrated
+producer/prefix sequence must still be wired into the
 source-ordered host sequence before claiming full new-bounds pair generation.
+
+
+### Native 64-bit overlap-comparison prefix
+
+The source sequence after `BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS`
+consists of `broadphase.cu::computeOverlapChecksForRegionsHistogram`
+(`BP_COMPUTE_OVERLAPCHECKS_HISTOGRAM`) and
+`outputOverlapChecksForRegionHistogram`
+(`BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM`). Both retain **32 × 256** work
+geometry, source-ordered dispatch, contiguous 256-element iterations per
+block, and the created-handles host gate. The producer's GPU-computed
+`regionAccumTotal` drives the count without a CPU readback.
+
+`SapOverlapPrefixArenaStage` takes only caller-owned GPU byte offsets for
+the 64-bit per-item overlap counts, 32 64-bit block totals, 64-bit grand
+total and 32-bit work-count field. The first shader computes native
+`WavePrefixSum(uint64_t)` and `WaveActiveSum(uint64_t)` per physical wave,
+followed by a short wave-total prefix and a 64-bit per-block running carry.
+The second shader scans exactly 32 block totals using the participating
+native waves and adds each preceding-block sum. The implementation uses
+three group barriers per 256-item first-pass iteration, requires no
+64-bit global atomics, and does **not** lower the original warp scan to
+a 256-thread shared Hillis–Steele ladder. Wave-to-logical work assignment
+uses the same once-per-group wave reservation already used by other SAP
+native-wave shaders, not an assumption that SV_GroupIndex maps onto
+hardware lanes.
+
+The context queries and enables Vulkan `shaderInt64` and (on Vulkan 1.2+)
+`shaderSubgroupExtendedTypes` when supported. D3D12 uses its existing
+`D3D12_FEATURE_D3D12_OPTIONS1` query (`Int64ShaderOps` and `WaveOps`).
+The source stage requires these capabilities **when creating the pipelines**;
+no capability queries or shader selection occur during dispatch. The
+compute context itself stays usable for existing non-64-bit operations on
+unsupported devices; there is intentionally no slow 64-bit overlap-scan
+variant masquerading as production support. This is an early per-stage
+admission contract, not yet a full GPU scene/device shipping gate (#47).
+
+GPU acceptance exercises source 32-block geometry, quiet frames,
+1/31/32/256/257/8192/8193/16385-item boundaries, wide synthetic inputs
+crossing 32-bit carries, all 32 block counts, 64-bit total, full arena
+canaries and invalid host arguments. When the software adapter does not
+support the required shader features, the test **reports skipped**, not
+passed. Hardware speedup and actual 680M/Arc device admission remain
+unmeasured. `BP_GENERATE_FOUNDPAIR_NEWBOUNDS` and original live PhysX
+GPU broadphase orchestration still remain ahead.
