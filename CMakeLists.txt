@@ -610,7 +610,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       )
       add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
-      # Native packed found/lost wave scan, original 256x3x256 dispatch.
+            # Native packed found/lost wave scan, original 256x3x256 dispatch.
       set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.spv")
       add_custom_command(
         OUTPUT "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}"
@@ -735,6 +735,23 @@ if(FYZZXYZZY_BUILD_VULKAN)
         add_custom_target(fyzzxyzzy_physx_bp_report_class_${_report_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}")
       endforeach()
+      # Native wave reductions and stable compaction for the original
+      # 32 x 4 x 256 report-classification dispatches.
+      foreach(_report_pass IN ITEMS first second)
+        set(FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_wave.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_6 -E main
+            -Fo "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
+          VERBATIM)
+        add_custom_target(fyzzxyzzy_physx_bp_report_class_${_report_pass}_wave_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}")
+      endforeach()
       add_executable(fyzzxyzzy_physx_bp_report_classification
         tests/physx_gpu_broadphase_report_classification.cpp)
       target_include_directories(fyzzxyzzy_physx_bp_report_classification PRIVATE
@@ -744,12 +761,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_physx_bp_report_classification
         fyzzxyzzy_physx_bp_report_class_first_shader
         fyzzxyzzy_physx_bp_report_class_second_shader
+        fyzzxyzzy_physx_bp_report_class_first_wave_shader
+        fyzzxyzzy_physx_bp_report_class_second_wave_shader
         fyzzxyzzy_physx_bp_copy_reports_shader)
       add_test(NAME fyzzxyzzy_physx_bp_report_classification
         COMMAND fyzzxyzzy_physx_bp_report_classification
           "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_first_SHADER}"
           "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_second_SHADER}"
-          "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
+          "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}"
+          "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_first_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_second_WAVE_SHADER}")
 
       # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
       set(FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER
@@ -1419,7 +1440,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     )
     add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
-    # Native packed found/lost wave scan, original 256x3x256 dispatch.
+        # Native packed found/lost wave scan, original 256x3x256 dispatch.
     set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.dxil")
     add_custom_command(
       OUTPUT "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}"
@@ -1547,6 +1568,21 @@ if(FYZZXYZZY_BUILD_D3D12)
       add_custom_target(fyzzxyzzy_d3d12_bp_report_class_${_report_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}")
     endforeach()
+    # Same wave implementation as DXIL, selected only on SM6.6 WaveOps.
+    foreach(_report_pass IN ITEMS first second)
+      set(FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_wave.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+          -Fo "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_d3d12_bp_report_class_${_report_pass}_wave_shader
+        DEPENDS "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}")
+    endforeach()
     add_executable(fyzzxyzzy_physx_bp_report_classification_d3d12
       tests/physx_gpu_broadphase_report_classification.cpp)
     target_compile_definitions(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
@@ -1558,12 +1594,16 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_dependencies(fyzzxyzzy_physx_bp_report_classification_d3d12
       fyzzxyzzy_d3d12_bp_report_class_first_shader
       fyzzxyzzy_d3d12_bp_report_class_second_shader
+      fyzzxyzzy_d3d12_bp_report_class_first_wave_shader
+      fyzzxyzzy_d3d12_bp_report_class_second_wave_shader
       fyzzxyzzy_d3d12_bp_copy_reports_shader)
     add_test(NAME fyzzxyzzy_physx_bp_report_classification_d3d12
       COMMAND fyzzxyzzy_physx_bp_report_classification_d3d12
         "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_first_DXIL}"
         "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_second_DXIL}"
-        "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
+        "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}"
+        "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_first_WAVE_DXIL}"
+        "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_second_WAVE_DXIL}")
 
     # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
     set(FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL
