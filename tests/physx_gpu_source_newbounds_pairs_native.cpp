@@ -88,6 +88,7 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
     std::array<Root,4> roots;
     for (auto& r : roots)
         r.id=context.create_buffer(kRootSize,MemoryPlacement::DeviceLocal);
+    std::cerr << "  buffers allocated\n";
     auto allocate=[&](std::uint32_t root,std::uint32_t bytes) {
         const auto offset=roots[root].reserve(bytes);
         return std::pair<CudaDeviceAddressMap::Address,std::uint32_t>{
@@ -164,6 +165,7 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
         if(c.env&&h%5u==0u)continue;
         expectedPairs.emplace(0u,h);
     }
+    std::cerr << "  host source prepared\n";
     SourceNewBoundsPairsNativeLayout layout{
         descriptor,n,n,p,64u*n,64u*n};
     std::vector<BatchCommand> cmds;
@@ -179,12 +181,15 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
                "Missing PhysX found report source allocation accepted");
     }
     check(cmds.empty(),"Source pair rejection appended half a command");
+    std::cerr << "  source validation checked\n";
 
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
         uploads.push_back({root.id,0u,root.image.data(),kRootSize});
     const auto upload=context.submit_upload_batch(uploads);
+    std::cerr << "  upload submitted\n";
     stage.append(cmds,src,map,layout);
+    std::cerr << "  dispatch appended\n";
     check(cmds.size()==(c.enabled?1u:0u),"Original PhysX created-pair gate changed");
     if(c.enabled) {
         const auto& dispatch=std::get<DispatchCommand>(cmds.front());
@@ -198,16 +203,21 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
               dispatch.buffers[15].buffer==roots[r0].id,
               "PhysX native pair lowering repacked independent heap roots");
         const auto gpu=context.submit_batch(cmds);
+        std::cerr << "  GPU dispatch submitted\n";
         context.wait_submission(gpu);
+        std::cerr << "  GPU completion acknowledged\n";
     }
     context.wait_submission(upload);
+    std::cerr << "  upload completion acknowledged\n";
 
     std::vector<std::uint32_t> actual(kRootSize/4u);
     for(std::uint32_t root=1u;root<4u;++root) {
+        std::cerr << "  checking root " << root << '\n';
         context.download(roots[root].id,0u,actual.data(),kRootSize);
         check(actual==roots[root].image,
               "Original PhysX native pair read-only root or canaries changed");
     }
+    std::cerr << "  checking report root\n";
     context.download(roots[0].id,0u,actual.data(),kRootSize);
     auto original=roots[0].image;
     const auto expectedCount=c.prior+static_cast<std::uint32_t>(expectedPairs.size());
