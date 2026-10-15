@@ -387,8 +387,13 @@ exercise new/non-new projection histograms, multi-region canonical
 duplicate suppression, group filtering, separated bounds,
 environment IDs and wildcard IDs, pre-existing pair count, capacity
 clipping, created-handle gating, zero region work, invalid descriptor
-rollback and untouched arena canaries. The GPU test checks true
-end-to-end **kernel-chain** behavior, not just isolated shader oracles.
+rollback and untouched arena canaries. The existing
+`BroadPhaseCompletionGate` waits on the batch at the original fetch
+boundary; the CPU oracle checks all GPU results inside its publication
+callback **before** found/lost-pair task references are released. The
+no-created case exercises the zero-submission publication path. The GPU
+test therefore checks both **kernel-chain dataflow and source publication
+ordering**, not just isolated shader oracles.
 
 **Remaining integration boundary:** the live `PxgCudaBroadPhaseSap`
 implementation still owns its CUDA allocations, update/fetch task
