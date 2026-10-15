@@ -217,6 +217,15 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
             sizeof(std::uint32_t));
         check(dispatch.buffers[15].offset + scalar_delta == actual_scalar.offset,
               "Shader-local scalar displacement did not preserve original PhysX pointer");
+#if defined(FYZZXYZZY_TEST_D3D12)
+        // The D3D12 debug layer would remove the device for this malformed
+        // RAW UAV view. The compute API must reject it before submission.
+        auto malformed = dispatch;
+        malformed.buffers[15].offset += 4u;
+        malformed.buffers[15].bytes -= 4u;
+        reject([&]{ context.submit_batch({malformed}); },
+               "D3D12 accepted a misaligned RAW UAV descriptor");
+#endif
         const auto gpu=context.submit_batch(cmds);
         std::cerr << "  GPU dispatch submitted\n";
         context.wait_submission(gpu);
