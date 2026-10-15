@@ -299,8 +299,12 @@ never cause that fallback selection by itself.
   **logical report range** once at kernel entry; its prefix
   rank and previous-iteration carry are added to the source
   32-block exclusive base. This preserves **stable** order
-  for all four streams. Aggregate totals are still published
-  exactly once by the source-designated workgroups.
+  for all four streams. The original 32 report block totals are
+  loaded in parallel by logical GPU lanes and prefixed with native
+  wave arithmetic rather than 32 serialized device loads from the
+  workgroup leader; a short cross-wave carry preserves the source
+  block base. Aggregate totals are still published exactly once by
+  the source-designated workgroups.
 - **Kept unchanged:** the 32×4×256 stage1/stage2 launches,
   single caller-owned arena, source pair buffers and volume
   membership semantics, original found/lost/actor/aggregate
