@@ -22,17 +22,17 @@ SapOverlapPrefixArenaStage::SapOverlapPrefixArenaStage(
     compute::Context& context, compute::ShaderBinary compute_wave,
     compute::ShaderBinary output_wave) : context_(context) {
     const auto& device = context_.device_info();
-    // The source uses a 32-entry block-total scan. Require a physical
-    // wave of at least 32 lanes so it remains ONE native wave.
+    // Require native subgroup arithmetic, but never assume CUDA warp32.
+    // Physical waves of 4..128 lanes are handled by the scan hierarchy.
     if (!device.supports_int64_wave || !device.supports_wave_arithmetic ||
-        device.subgroup_size < 32u || device.subgroup_size > 64u ||
+        device.subgroup_size < 4u || device.subgroup_size > 128u ||
         256u % device.subgroup_size != 0u ||
         device.max_workgroup_invocations < 256u ||
         device.max_workgroup_size[0] < 256u ||
         device.max_workgroup_count[0] < 32u)
         throw std::runtime_error(
             "PhysX overlap prefix requires 64-bit subgroup arithmetic "
-            "with 32/64-lane compute waves and 32x256 dispatch support");
+            "with subgroup waves dividing 256 and 32x256 dispatch support");
     compute::ComputePipelineDesc desc;
     desc.storage_buffer_binding_count = 1u;
     desc.push_constant_bytes = sizeof(Parameters);
