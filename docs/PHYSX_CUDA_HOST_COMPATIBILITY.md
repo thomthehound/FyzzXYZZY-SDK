@@ -180,8 +180,43 @@ unchanged memory/canaries, retained removed-projection capacity and
 both separate and shared GPU heap-root backing. This is a contiguous
 seven-operation segment of the original source host path, not a
 standalone rewritten scene scheduler. The subsequent active-region
-histogram steps and the complete live `PxScene` task graph remain
-unintegrated.
+histogram steps are addressed by the source-native stage below;
+the complete live `PxScene` task graph remains unintegrated.
+
+## Source-native active-region histograms and ordered handle lists
+
+The original `PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel()`
+is distinct from the preceding region-table clearing routine. It
+enqueues exactly three more kernels on `mStream`, gated by the same
+nonzero created-handle count: `BP_WRITEOUT_ACTIVE_HISTOGRAM` (32×256),
+`BP_COMPUTE_ACTIVE_HISTOGRAM` (64×512), and
+`BP_OUTPUT_ACTIVE_HISTOGRAM` (64×256).
+
+`SourceActiveRegionListsNativeStage` binds the source descriptor's
+**original** sorted X handles, X SAP positions, region ranges, start-region
+prefix, active and start histograms, and ordered-output buffers. The first
+and third kernels read `startRegionAccumTotal` from the **GPU-resident**
+`PxgBroadPhaseDesc` written by the preceding region-prefix stage,
+rather than an out-of-date CPU shadow. No synthetic descriptor,
+per-buffer repacking, extra stream, or host readback is introduced.
+
+The 64×512 scan reuses the established packed-16+16 active/start prefix
+algorithm; native wave arithmetic is preferred when supported, while
+the portable shared-memory variant remains available. Both variants
+preserve source 64-region strides and exact original kernel geometry.
+Each native pass binds only the source allocations it uses, with
+alias-safe RAW UAV views for D3D12 buddy-heap slices.
+
+A source-native conformance extension replays the original allocation
+fixture used for the packed-arena implementation as **separate CUDA
+virtual address slices of the same physical GPU root**, with the scalar
+count deliberately different between the host shadow and the uploaded
+GPU descriptor. It compares all region lists, histograms and canaries
+against the independent logical-handle CPU oracle. The retained
+removed-projection case and a completely live `PxScene` remain future
+integration boundaries; the current tests demonstrate correctness of
+the original source operation independently, not complete scene
+execution.
 
 ### Still required before source-compatible GPU execution
 
