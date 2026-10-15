@@ -24,11 +24,11 @@ std::uint32_t native_offset(
     CudaDeviceAddressMap::Address address,
     const CudaDeviceAddressMap& addresses,
     const SourceNewBoundsArenaLayout& layout,
-    std::uint32_t bytes) {
+    std::uint32_t bytes, std::size_t alignment = 4u) {
     if (!address || !bytes)
         throw std::invalid_argument("Missing required PhysX GPU descriptor pointer");
     const auto found = addresses.resolve(address, bytes);
-    if (found.buffer != layout.backing || found.offset % 4u ||
+    if (found.buffer != layout.backing || found.offset % alignment ||
         found.offset > layout.backing_bytes ||
         bytes > layout.backing_bytes - found.offset ||
         found.offset > std::numeric_limits<std::uint32_t>::max())
@@ -38,15 +38,17 @@ std::uint32_t native_offset(
 template <typename T>
 std::uint32_t native_pointer(
     const T* ptr, const CudaDeviceAddressMap& addresses,
-    const SourceNewBoundsArenaLayout& layout, std::uint32_t bytes) {
+    const SourceNewBoundsArenaLayout& layout, std::uint32_t bytes,
+    std::size_t alignment = 4u) {
     return native_offset(static_cast<CudaDeviceAddressMap::Address>(
-        reinterpret_cast<std::uintptr_t>(ptr)), addresses, layout, bytes);
+        reinterpret_cast<std::uintptr_t>(ptr)), addresses, layout, bytes, alignment);
 }
 std::uint32_t inline_scalar(
     const SourceNewBoundsArenaLayout& layout,
     std::uint32_t descriptor_offset, std::size_t member, std::size_t bytes) {
     const auto offset = std::uint64_t(descriptor_offset) + member;
-    if (offset > std::numeric_limits<std::uint32_t>::max() ||
+    if (offset % bytes != 0u ||
+        offset > std::numeric_limits<std::uint32_t>::max() ||
         offset > layout.backing_bytes || bytes > layout.backing_bytes - offset)
         throw std::out_of_range("Source broadphase descriptor scalar outside GPU arena");
     return static_cast<std::uint32_t>(offset);
@@ -74,7 +76,8 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     // Source mBPDescBuf remains resident in this same native backing. Its
     // scalar counters are actual GPU memory locations, not invented copies.
     const auto descriptor = native_offset(
-        layout.descriptor, addresses, layout, sizeof(physx::PxgBroadPhaseDesc));
+        layout.descriptor, addresses, layout, sizeof(physx::PxgBroadPhaseDesc),
+        alignof(physx::PxgBroadPhaseDesc));
     const auto projection_count = layout.projection_slots;
     const auto histogram_bytes = checked_bytes(projection_count, 64u * 4u);
     const auto handles_bytes = checked_bytes(projection_count, 4u);
@@ -97,7 +100,8 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     pair.sorted_x_handles_offset = native_pointer(d.boxHandles[0][0], addresses, layout, handles_bytes);
     pair.x_sap_positions_offset = native_pointer(d.boxSapBox1D[0], addresses, layout, sap_bytes);
     pair.region_ranges_offset = native_pointer(d.regionRange, addresses, layout, range_bytes);
-    pair.overlap_prefix_offset = native_pointer(d.overlapChecksRegion, addresses, layout, overlap_bytes);
+    pair.overlap_prefix_offset = native_pointer(d.overlapChecksRegion, addresses, layout,
+                                                overlap_bytes, alignof(physx::regionOverlapType));
     pair.region_work_total_offset = inline_scalar(layout, descriptor,
         offsetof(physx::PxgBroadPhaseDesc, regionAccumTotal), sizeof(d.regionAccumTotal));
     pair.overlap_total_offset = inline_scalar(layout, descriptor,
@@ -117,7 +121,8 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     pair.has_environment_ids = d.updateData_envIDs ? 1u : 0u;
 
     const auto region_prefix = native_pointer(d.regionAccum, addresses, layout, region_prefix_bytes);
-    const auto block = native_pointer(d.blockOverlapChecksRegion, addresses, layout, block_bytes);
+    const auto block = native_pointer(d.blockOverlapChecksRegion, addresses, layout,
+                                      block_bytes, alignof(physx::regionOverlapType));
     return make_sap_newbounds_sequence_descriptors(pair, region_prefix, block);
 }
 } // namespace fyzz::physx_gpu
