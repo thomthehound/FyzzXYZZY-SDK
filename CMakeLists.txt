@@ -350,6 +350,24 @@ if(FYZZXYZZY_BUILD_VULKAN)
       )
       add_custom_target(fyzzxyzzy_physx_radix_scatter_shader
         DEPENDS "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}")
+
+      # SM6.6 / Vulkan compute-subgroup fast path: 8 packed 2-digit scans
+      # instead of 16 separate 1024-thread Hillis-Steele scans.
+      set(FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_wave_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_6 -E main
+          -Fo "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_radix_scatter_wave_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_radix_scatter
         tests/physx_gpu_radix_scatter.cpp)
       target_include_directories(fyzzxyzzy_physx_radix_scatter PRIVATE
@@ -357,11 +375,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       target_link_libraries(fyzzxyzzy_physx_radix_scatter PRIVATE
         fyzzxyzzy_physx_gpu_stages)
       add_dependencies(fyzzxyzzy_physx_radix_scatter
-        fyzzxyzzy_physx_radix_count_shader fyzzxyzzy_physx_radix_scatter_shader)
+        fyzzxyzzy_physx_radix_count_shader fyzzxyzzy_physx_radix_scatter_shader
+        fyzzxyzzy_physx_radix_scatter_wave_shader)
       add_test(NAME fyzzxyzzy_physx_radix_scatter
         COMMAND fyzzxyzzy_physx_radix_scatter
           "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
-          "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}")
+          "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
+          "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}")
 
       # broadphase.cu::initializeSapBox1DLaunch (ceil(2 * handles / 256)).
       set(FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER
@@ -1020,6 +1040,21 @@ if(FYZZXYZZY_BUILD_D3D12)
     )
     add_custom_target(fyzzxyzzy_d3d12_radix_scatter_shader
       DEPENDS "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}")
+
+    set(FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_wave_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_radix_scatter_wave_shader
+      DEPENDS "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_radix_scatter_d3d12
       tests/physx_gpu_radix_scatter.cpp)
     target_compile_definitions(fyzzxyzzy_physx_radix_scatter_d3d12 PRIVATE
@@ -1029,11 +1064,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_physx_radix_scatter_d3d12 PRIVATE
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_radix_scatter_d3d12
-      fyzzxyzzy_d3d12_radix_count_shader fyzzxyzzy_d3d12_radix_scatter_shader)
+      fyzzxyzzy_d3d12_radix_count_shader fyzzxyzzy_d3d12_radix_scatter_shader
+      fyzzxyzzy_d3d12_radix_scatter_wave_shader)
     add_test(NAME fyzzxyzzy_physx_radix_scatter_d3d12
       COMMAND fyzzxyzzy_physx_radix_scatter_d3d12
         "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
-        "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}")
+        "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}")
 
     # broadphase.cu::initializeSapBox1DLaunch (ceil(2 * handles / 256)).
     set(FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL
