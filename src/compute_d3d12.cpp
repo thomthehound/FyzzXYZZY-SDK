@@ -731,6 +731,14 @@ struct Context::Impl {
                 binding.bytes / 4 > std::numeric_limits<UINT>::max())
                 throw std::invalid_argument("Invalid D3D12 structured buffer view");
             const auto kind = pipe.view_kinds[i];
+            // D3D12 requires RAW buffer UAV/SRV FirstElement to start
+            // on a 16-byte boundary. Reject an invalid descriptor before
+            // the debug layer removes the device on command execution.
+            if ((kind == StorageBufferViewKind::RawRead ||
+                 kind == StorageBufferViewKind::RawReadWrite) &&
+                binding.offset % 16u != 0u)
+                throw std::invalid_argument(
+                    "D3D12 RAW buffer view base must be 16-byte aligned");
             const bool srv_slot = kind == StorageBufferViewKind::RawRead ||
                                   kind == StorageBufferViewKind::Structured32Read;
             if (binding.access != BufferAccess::Unspecified &&
