@@ -427,7 +427,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_created_pairs_shader
         fyzzxyzzy_physx_radix_count_shader
         fyzzxyzzy_physx_radix_scatter_shader
-        fyzzxyzzy_physx_sap_box_indices_shader        fyzzxyzzy_physx_radix_count_wave_shader
+        fyzzxyzzy_physx_sap_box_indices_shader
+        fyzzxyzzy_physx_radix_count_wave_shader
         fyzzxyzzy_physx_radix_scatter_wave_shader
 )
       add_test(NAME fyzzxyzzy_physx_sap_box_indices
@@ -435,7 +436,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"
+          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
 )
 
@@ -467,7 +469,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_radix_count_shader
         fyzzxyzzy_physx_radix_scatter_shader
         fyzzxyzzy_physx_sap_initialize_ranks_shader
-        fyzzxyzzy_physx_sap_update_handles_shader        fyzzxyzzy_physx_radix_count_wave_shader
+        fyzzxyzzy_physx_sap_update_handles_shader
+        fyzzxyzzy_physx_radix_count_wave_shader
         fyzzxyzzy_physx_radix_scatter_wave_shader
 )
       add_test(NAME fyzzxyzzy_physx_sap_ranked_sort
@@ -475,7 +478,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_initialize_ranks_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_update_handles_SHADER}"          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_update_handles_SHADER}"
+          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
 )
 
@@ -610,7 +614,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_radix_count_shader
         fyzzxyzzy_physx_radix_scatter_shader
         fyzzxyzzy_physx_sap_box_indices_shader
-        fyzzxyzzy_physx_sap_clear_new_flags_shader        fyzzxyzzy_physx_radix_count_wave_shader
+        fyzzxyzzy_physx_sap_clear_new_flags_shader
+        fyzzxyzzy_physx_radix_count_wave_shader
         fyzzxyzzy_physx_radix_scatter_wave_shader
 )
       add_test(NAME fyzzxyzzy_physx_sap_clear_new_flags
@@ -619,7 +624,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}"          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}"
+          "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
           "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
 )
 
@@ -1146,7 +1152,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_created_pairs_shader
       fyzzxyzzy_d3d12_radix_count_shader
       fyzzxyzzy_d3d12_radix_scatter_shader
-      fyzzxyzzy_d3d12_sap_box_indices_shader      fyzzxyzzy_d3d12_radix_count_wave_shader
+      fyzzxyzzy_d3d12_sap_box_indices_shader
+        fyzzxyzzy_d3d12_radix_count_wave_shader
       fyzzxyzzy_d3d12_radix_scatter_wave_shader
 )
     add_test(NAME fyzzxyzzy_physx_sap_box_indices_d3d12
@@ -1154,7 +1161,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"        "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"
+          "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
 )
 
@@ -1187,7 +1195,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_radix_count_shader
       fyzzxyzzy_d3d12_radix_scatter_shader
       fyzzxyzzy_d3d12_sap_initialize_ranks_shader
-      fyzzxyzzy_d3d12_sap_update_handles_shader      fyzzxyzzy_d3d12_radix_count_wave_shader
+      fyzzxyzzy_d3d12_sap_update_handles_shader
+        fyzzxyzzy_d3d12_radix_count_wave_shader
       fyzzxyzzy_d3d12_radix_scatter_wave_shader
 )
     add_test(NAME fyzzxyzzy_physx_sap_ranked_sort_d3d12
@@ -1195,7 +1204,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_initialize_ranks_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_update_handles_DXIL}"        "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_update_handles_DXIL}"
+          "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
 )
 
@@ -1334,7 +1344,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_radix_count_shader
       fyzzxyzzy_d3d12_radix_scatter_shader
       fyzzxyzzy_d3d12_sap_box_indices_shader
-      fyzzxyzzy_d3d12_sap_clear_new_flags_shader      fyzzxyzzy_d3d12_radix_count_wave_shader
+      fyzzxyzzy_d3d12_sap_clear_new_flags_shader
+        fyzzxyzzy_d3d12_radix_count_wave_shader
       fyzzxyzzy_d3d12_radix_scatter_wave_shader
 )
     add_test(NAME fyzzxyzzy_physx_sap_clear_new_flags_d3d12
@@ -1343,7 +1354,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}"        "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}"
+          "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
         "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
 )
 
