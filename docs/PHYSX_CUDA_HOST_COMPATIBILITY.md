@@ -115,3 +115,46 @@ The earlier provider-injection experiment was **closed unmerged**:
 [PhysX #1](https://github.com/thomthehound/PhysX/pull/1) and
 [FyzzXYZZY-SDK #58](https://github.com/thomthehound/FyzzXYZZY-SDK/pull/58).
 It does not define our production API or ABI.
+
+
+## First original CUDA kernel launch lowering: BP_TRANSLATE_AABBS
+
+`src/physx_gpu/cuda_aabb_launch_lowering.{h,cpp}` is an **internal**
+lowering of the actual `PxgCudaBroadPhaseSap::translateAABBsKernel`
+call site, NOT a generic CUDA driver implementation. Original
+`PxgKernelIds::BP_TRANSLATE_AABBS` takes exactly eleven
+`PX_CUDA_KERNEL_PARAM2` value pointers, in this order:
+`updateData_fpBounds`, `newIntegerBounds`,
+`updateData_contactDistances`, `updateData_envIDs`,
+`mUpdateData_BoxesCapacity`, XYZ projection shifts, and XYZ environment
+shift widths. The source kernel's 256-thread CUDA blocks process 32 boxes;
+the translated shader's native 128-thread blocks process 16. The adapter
+verifies the original launch grid instead of falsely passing it through
+as the translated grid.
+
+The adapter reads only those original arguments and resolves the four
+CUDA-style 64-bit pointer values with the existing private
+`CudaDeviceAddressMap`; it binds the resulting **interior buffer views**
+(with native offsets and Read/Write access) directly to our existing
+`AabbEncodingStage` pipeline. No per-launch intermediate buffer copy,
+CPU readback, pipeline recreation, per-frame device-feature probe or
+new physics algorithm. In particular, the previously zero-offset-only
+AABB stage now exposes a shared buffer-view lowering internally, so native
+callers and CUDA-derived callers use the **same** shader and parameter ABI.
+
+Vulkan and D3D12 tests pass the original eleven address-of-argument
+pointers and source kernel ID, use nonzero interior offsets in four
+independent allocations, check incorrect kernel identity/grid/block/arg
+count rejection, execute an environment-enabled launch, copy a snapshot,
+execute an environment-disabled launch, and validate both translated GPU
+results and complete untouched view canaries. The two kernels and GPU copy
+share one original-order submission, without a CPU wait between them.
+
+**Remaining limits:** the adapter currently knows only this one PhysX
+kernel, and it does not load arbitrary CUDA binaries or dereference
+pointer-bearing `PxgBroadPhaseDesc` inside a GPU shader. The next
+host task is to bring the actual descriptor upload fields and original
+kernel ID/name lookups through the same source-backed lowering approach.
+After that, prove the original scene stream/event and AABB manager
+publication chain. This experiment does not yet establish that an
+unmodified `PxScene` runs GPU broadphase.
