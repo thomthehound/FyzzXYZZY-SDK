@@ -51,9 +51,12 @@ public:
     SapNewBoundsPairsArenaStage(const SapNewBoundsPairsArenaStage&) = delete;
     SapNewBoundsPairsArenaStage& operator=(const SapNewBoundsPairsArenaStage&) = delete;
 
+    // Current box count is a per-frame PhysX value. Do not infer it
+    // from a GPU descriptor that may outlive a resize of the box set.
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
                 std::uint32_t descriptor_offset,
+                std::uint32_t current_boxes,
                 std::uint32_t created_handles) const;
 private:
     compute::Context& context_;
