@@ -1769,6 +1769,23 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_wave_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_ACTIVE_compute_portable_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_ACTIVE_output_DXIL}")
+
+    set(FYZZXYZZY_SAP_OVERLAP_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SAP_OVERLAP_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SAP_OVERLAP_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_d3d12_sap_overlap_shader DEPENDS "${FYZZXYZZY_SAP_OVERLAP_DXIL}")
+    add_executable(fyzzxyzzy_sap_overlap_work_d3d12 tests/physx_gpu_sap_overlap_work.cpp)
+    target_compile_definitions(fyzzxyzzy_sap_overlap_work_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_sap_overlap_work_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_sap_overlap_work_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_sap_overlap_work_d3d12 fyzzxyzzy_d3d12_sap_overlap_shader)
+    add_test(NAME fyzzxyzzy_sap_overlap_work_d3d12
+      COMMAND fyzzxyzzy_sap_overlap_work_d3d12 "${FYZZXYZZY_SAP_OVERLAP_DXIL}")
   endif()
 endif()
 
