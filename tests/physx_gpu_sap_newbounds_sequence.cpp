@@ -64,6 +64,7 @@ struct Case {
     bool created = true;
     bool empty_work = false;
     bool two_regions = false;
+    bool stale_pair_population = false; // Simulate layout-stable box count change.
     bool new_projection = true;
     bool group_exclusion = false;
     bool aabb_separation = false;
@@ -156,7 +157,7 @@ Fixture prepare(const Case& c) {
     p.found_reports_offset = f.reports;
     p.found_counter_offset = f.found_count;
     p.max_found_lost_pairs = c.report_capacity;
-    p.current_boxes = 3u;
+    p.current_boxes = c.stale_pair_population ? 2u : 3u;
     p.box_capacity = 3u;
     p.has_environment_ids = c.environment ? 1u : 0u;
 
@@ -350,6 +351,14 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
             std::memcpy(&suppliedOffset, d.push_constants.data(), 4u);
             if (suppliedOffset != offsets[i])
                 throw std::runtime_error("PhysX sequence descriptor order changed");
+            if (i == 3u) {
+                std::uint32_t frameCount = 0u;
+                std::memcpy(&frameCount, d.push_constants.data() + 8u,
+                            sizeof(frameCount));
+                if (frameCount != decision.current_boxes)
+                    throw std::runtime_error(
+                        "Final pair shader did not receive current frame population");
+            }
         }
     }
     // The four dispatches and the dependent readback run as one GPU batch.
@@ -475,6 +484,17 @@ int main(int argc, char** argv) {
             c.wildcard_environment = true;
             check(context, sequence, c);
         }
+        // Codex P1 regression: a persistently allocated GPU descriptor
+        // still advertises two boxes after this frame grows to three.
+        // Region 1 has base offset 6, not 4: using stale population
+        // silently suppresses (0,2) via the canonical-region filter.
+        Case stale;
+        stale.two_regions = true;
+        stale.stale_pair_population = true;
+        check(context, sequence, stale);
+        stale.new_projection = false;
+        check(context, sequence, stale);
+
         Case c;
         c.two_regions = true;
         c.initial_report_count = 1u;
