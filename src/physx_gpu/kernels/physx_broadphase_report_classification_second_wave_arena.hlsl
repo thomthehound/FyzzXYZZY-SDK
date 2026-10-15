@@ -33,6 +33,7 @@ groupshared uint waveBases[64];
 groupshared uint blockBase;
 groupshared uint carry;
 groupshared uint iterationCarry;
+groupshared uint localBlockPrefix;
 
 [numthreads(256, 1, 1)]
 void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
@@ -54,22 +55,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint hasVolumes = arena.Load(desc + 64u);
     const uint volumeTags = arena.Load(desc + 48u);
 
-    if (thread.x == 0u) {
-        uint exclusive = 0u, all = 0u;
-        [unroll]
-        for (uint block = 0u; block < 32u; ++block) {
-            const uint value = arena.Load(blocks + block * 4u);
-            if (block < group.x) exclusive += value;
-            all += value;
-        }
-        blockBase = exclusive;
-        carry = 0u;
-        nextWave = 0u;
-        if (aggregate && group.x == 0u) {
-            const uint aggregateTotals = arena.Load(desc + 4u);
-            arena.Store(aggregateTotals + stream * 4u, all);
-        }
-    }
+    if (thread.x == 0u) nextWave = 0u;
     GroupMemoryBarrierWithGroupSync();
 
     const uint laneCount = WaveGetLaneCount();
@@ -78,6 +64,38 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     uint waveId = 0u;
     if (WaveIsFirstLane()) InterlockedAdd(nextWave, 1u, waveId);
     waveId = WaveReadLaneFirst(waveId);
+    const uint logicalThread = waveId * laneCount + laneIndex;
+
+    // Original CUDA prefixes the 32 block totals with one warp scan.
+    // Do not serialize 32 device loads through one leader (as the old
+    // port did). Coalesced logical lanes load all 32 source block totals;
+    // a native wave prefix and a tiny cross-wave carry reconstruct the
+    // original exclusive block base for this workgroup.
+    const uint blockValue = logicalThread < 32u
+        ? arena.Load(blocks + logicalThread * 4u) : 0u;
+    const uint blockPrefix = WavePrefixSum(blockValue);
+    const uint blockWaveTotal = WaveActiveSum(blockValue);
+    if (WaveIsFirstLane()) waveTotals[waveId] = blockWaveTotal;
+    if (logicalThread == group.x) localBlockPrefix = blockPrefix;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (thread.x == 0u) {
+        uint all = 0u;
+        uint earlier = 0u;
+        const uint selectedWave = group.x / laneCount;
+        for (uint w = 0u; w < waveCount; ++w) {
+            const uint count = waveTotals[w];
+            if (w < selectedWave) earlier += count;
+            all += count;
+        }
+        blockBase = earlier + localBlockPrefix;
+        carry = 0u;
+        if (aggregate && group.x == 0u) {
+            const uint aggregateTotals = arena.Load(desc + 4u);
+            arena.Store(aggregateTotals + stream * 4u, all);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
 
     const uint blocksRequired = (raw + 255u) / 256u;
     const uint iterations = (blocksRequired + 31u) / 32u;
