@@ -4,8 +4,7 @@
 # GPU memory/addressing: decision RFC and benchmark contract
 
 **Status:** evidence-gathering RFC; **NO representation decision has been made**.
-**Source baseline:** pinned PhysX fork revision
-`6dc53585d7db07346f53d0598a5fd3bfdce47d8d`.
+**Source reference:** upstream PhysX CUDA host/device addressing; no fixed source revision is a consumer requirement.
 **Goal:** preserve PhysX GPU algorithm, allocation ownership, CPU/GPU task
 dependencies and semantic data layouts while making access fast on Vulkan
 and D3D12. Any backend-specific lowering must be demonstrated equivalent,

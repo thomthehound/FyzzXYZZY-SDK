@@ -13,8 +13,8 @@ Godot 4.7 is the first target consumer and acceptance harness, **not a core
 dependency**. The SDK is intended to support Linux, Windows, native C++
 applications and other host engines.
 
-The CPU SDK provides a world facade and headless smoke test using pinned
-PhysX 5.11 source. Linux and Windows builds are covered by GitHub Actions.
+The CPU SDK provides a world facade and headless smoke test using PhysX-derived
+solver source. Linux and Windows builds are covered by GitHub Actions.
 An optional Godot 4.7 GDExtension consumer exercises the same core.
 
 The optional standalone Vulkan compute backend supports device and buffer
@@ -34,6 +34,7 @@ algorithms, GPU contexts, scene orchestration and dataflow.
 - [Portable compute backend](docs/COMPUTE.md)
 - [PhysX GPU port architecture and traceability](docs/PHYSX_GPU_PORT.md)
 - [Source-grounded GPU port implementation program](docs/GPU_PORT_PROGRAM.md)
+- [PhysX CUDA-host compatibility feasibility and source integration](docs/PHYSX_CUDA_HOST_COMPATIBILITY.md)
 - [Source-grounded GPU broadphase trace](docs/GPU_BROADPHASE_TRACE.md)
 - [GPU memory addressing and performance experiment RFC](docs/GPU_MEMORY_ADDRESSING_RFC.md)
 - [**GPU performance policy and shipping tiers (SM6.6, Vulkan 1.4, optional WMMA/SM6.8)**](docs/GPU_PORT_PERFORMANCE.md)

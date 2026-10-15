@@ -9,9 +9,14 @@ portable GPU runtimes are separate milestones.
 
 ## Source layout and provenance
 
-- `thomthehound/PhysX` at commit `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`
-  is the **pinned source dependency**.
-- CMake will obtain that checkout over Git if `FYZZXYZZY_PHYSX_SOURCE_DIR` is unset.
+- During the transition to an in-tree PhysX-derived engine, CMake uses
+  `thomthehound/PhysX` **main** as a source bootstrap only; no PhysX
+  revision is pinned to the product.
+- CMake fetches the current development branch when
+  `FYZZXYZZY_PHYSX_SOURCE_DIR` is unset. For offline or reproducible
+  development, supply a local checkout and manage its contents yourself.
+  Upstream revision tracking belongs to individual test reports, not to a
+  required public provider ABI.
 - For offline or editable builds, point `FYZZXYZZY_PHYSX_SOURCE_DIR` at the **repository
   root** of a local PhysX checkout (the folder containing `physx/CMakeLists.txt`).
 - The `fyzzxyzzy_source_bundle` target produces an offline-configurable CPU source
@@ -24,7 +29,7 @@ Prerequisites: CMake 3.21+, Ninja, supported C++ compiler, and Git (only if fetc
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --target fyzzxyzzy_headless_smoke
+cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir build --output-on-failure
 ```
 
@@ -38,7 +43,7 @@ fetching source). Invoke from a Developer PowerShell environment where `cl` is a
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --target fyzzxyzzy_headless_smoke
+cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir build --output-on-failure
 ```
 
@@ -63,7 +68,7 @@ Extract the archive and configure the CPU library without network access:
 ```sh
 cmake -E tar xzf build/fyzzxyzzy-source.tar.gz
 cmake -S FyzzXYZZY-SDK -B FyzzXYZZY-SDK/build -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-cmake --build FyzzXYZZY-SDK/build --target fyzzxyzzy_headless_smoke
+cmake --build FyzzXYZZY-SDK/build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir FyzzXYZZY-SDK/build --output-on-failure
 ```
 
@@ -75,6 +80,13 @@ godot-cpp separately and are not offline-complete in this archive.
 
 The test creates a floor and dynamic box, advances 180 fixed 60 Hz steps, and checks
 that the box falls, contacts the floor and settles.
+
+The CPU test suite also checks the internal 64-bit CUDA-style host
+device-address registry, including >4 GiB virtual offsets, allocation bounds,
+and stale pointer rejection (without allocating GPU memory). Both executables
+are explicitly built in the commands above, including offline builds.
+When Vulkan or D3D12 is enabled, the additional CUDA-host transfer tests
+exercise actual GPU memory copies and deferred resource retirement.
 
 The Linux and Windows CI jobs build and execute this test. The Godot adapter
 consumes the same FyzzXYZZY core. Both Godot acceptance jobs execute the headless

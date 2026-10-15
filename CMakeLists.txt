@@ -7,7 +7,7 @@ project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 include(CTest)
 include(FetchContent)
 
-# The CPU backend uses the pinned PhysX solver; the upstream CUDA build is disabled.
+# CPU PhysX-derived execution remains available; upstream CUDA is disabled.
 set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "Disable upstream CUDA" FORCE)
 set(PX_GENERATE_GPU_PROJECTS_ONLY OFF CACHE BOOL "" FORCE)
 set(PX_GENERATE_STATIC_LIBRARIES ON CACHE BOOL "Use static PhysX for the standalone SDK" FORCE)
@@ -29,10 +29,13 @@ if(FYZZXYZZY_PHYSX_SOURCE_DIR)
   set(FETCHCONTENT_SOURCE_DIR_FYZZXYZZY_PHYSX "${FYZZXYZZY_PHYSX_SOURCE_DIR}")
 endif()
 
-# Pinned PhysX source provenance and upstream notices remain intact.
+# Transitional source bootstrap only: follows the current PhysX
+# development branch when a local checkout is not supplied. The engine must
+# ultimately own its PhysX-derived implementation rather than impose an
+# external version-locked provider/factory dependency.
 FetchContent_Declare(fyzzxyzzy_physx
   GIT_REPOSITORY https://github.com/thomthehound/PhysX.git
-  GIT_TAG 6dc53585d7db07346f53d0598a5fd3bfdce47d8d
+  GIT_TAG main
   SOURCE_SUBDIR physx
   GIT_SHALLOW FALSE
 )
@@ -68,6 +71,27 @@ if(BUILD_TESTING)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
+endif()
+
+# Internal translation of PhysX's CUdeviceptr-style host addresses into
+# native backend buffers. This is not a public CUDA ABI or a replacement
+# host scheduler, and is testable without a GPU or CUDA SDK.
+add_library(fyzzxyzzy_physx_cuda_host_address STATIC
+  src/physx_gpu/cuda_device_address_map.cpp)
+target_compile_features(fyzzxyzzy_physx_cuda_host_address PUBLIC cxx_std_17)
+target_include_directories(fyzzxyzzy_physx_cuda_host_address PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_physx_cuda_address_test
+    tests/physx_gpu_cuda_device_address_map.cpp)
+  target_include_directories(fyzzxyzzy_physx_cuda_address_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_physx_cuda_address_test PRIVATE
+    fyzzxyzzy_physx_cuda_host_address)
+  add_test(NAME fyzzxyzzy_physx_cuda_address_test
+    COMMAND fyzzxyzzy_physx_cuda_address_test)
 endif()
 
 # Native compute resources and operations do not depend on Godot or PhysX.
@@ -143,6 +167,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_executable(fyzzxyzzy_vulkan_memory_smoke tests/vulkan_memory_smoke.cpp)
     target_link_libraries(fyzzxyzzy_vulkan_memory_smoke PRIVATE FyzzXYZZY::Compute)
     add_test(NAME fyzzxyzzy_vulkan_memory_smoke COMMAND fyzzxyzzy_vulkan_memory_smoke)
+    # Exercise CUdeviceptr+offset host lowering against a real Vulkan
+    # device-local upload/copy and submission-safe buffer retirement.
+    add_executable(fyzzxyzzy_physx_cuda_host_transfer
+      tests/physx_gpu_cuda_host_transfer.cpp)
+    target_include_directories(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
+    add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
+      COMMAND fyzzxyzzy_physx_cuda_host_transfer)
+
 
     find_program(FYZZXYZZY_GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
     set(FYZZXYZZY_AFFINE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/affine.comp.spv")
@@ -1100,6 +1136,20 @@ if(FYZZXYZZY_BUILD_D3D12)
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib)
 
+
+  if(BUILD_TESTING)
+    add_executable(fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      tests/physx_gpu_cuda_host_transfer.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
+    add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
+  endif()
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
   if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
