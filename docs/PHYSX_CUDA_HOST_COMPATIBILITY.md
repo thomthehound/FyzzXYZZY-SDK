@@ -70,6 +70,33 @@ DMA prerequisites for PhysX's original host operations, not proof that
 translated shaders can dereference CUDA pointers or that stream events
 are implemented.
 
+## Source-native D32 fills at PhysX's existing stream call sites
+
+`PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel()` performs two
+`mCudaContext->memsetD32Async` operations on `mStream` before starting the
+histogram launches, clearing `mActiveRegionTotalBuf` and
+`mStartRegionsTotalBuf` for the current `totalNbProjectionRegions`.
+This ordering is part of the real PhysX host work graph, not a request to
+reconstruct a separate CUDA runtime or introduce a CPU staging pass.
+
+`SourceFillD32NativeStage` lowers the source's exact `CUdeviceptr`, uint32
+fill pattern, and word count into a single GPU dispatch appended to the
+**caller-owned ordered command list**. It reuses `CudaDeviceAddressMap`
+and `source_native_view`; the original pointer can be interior to a
+source-owned heap root and only four-byte aligned. The physical RAW GPU
+view begins at the backend-compliant aligned base; the push constant
+retains the original scalar displacement. Zero-word calls append no
+command. The stage neither allocates a persistent fill resource, owns a
+stream, copies zeros from the host, submits, nor waits.
+
+Source fill and following histogram launches **must remain in the same
+source stream order**. The primitive on its own does not implement the
+complete `mStream` interface or claim portable `PxScene` support.
+The Vulkan and D3D12 tests validate ordered overlapping writes,
+per-allocation canaries, native alignment, and invalid CUDA pointers.
+This is the first device-side stream operation required at the original
+source call sites beyond compute dispatch and buffer copying.
+
 ### Still required before source-compatible GPU execution
 
 1. **Kernel/descriptor lowering.** PhysX `CUfunction` handles and its
