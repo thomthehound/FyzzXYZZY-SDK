@@ -360,6 +360,13 @@ some other reason. It stages all four commands before modifying the
 caller's vector, so a later descriptor validation error cannot leave a
 half-appended new-bounds sequence.
 
+The per-frame `current_boxes` is pushed directly into the found-pair
+kernel, matching the count used for overlap-work generation; a persistently
+allocated pair descriptor is **not** authoritative for that changing field.
+A regression holds the pair descriptor's old count at two boxes while the
+live frame has three, and checks canonical ownership of a valid pair in
+region 1. This prevents the stale-stride error reported in Codex's P1.
+
 The three older arena subsets represent the **same** original
 `PxgBroadPhaseDesc` fields. To avoid divergent ad hoc bindings,
 `make_sap_newbounds_sequence_descriptors` derives the producer and
