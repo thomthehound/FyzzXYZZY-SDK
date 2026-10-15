@@ -20,7 +20,9 @@ using namespace fyzz::compute;
 namespace {
 constexpr std::uint32_t kBoxCount = 3, kCapacity = 6;
 constexpr std::uint32_t kProjections = 8; // (3 current + 1 removed)*2
-constexpr std::uint32_t kRegionWork = 5;
+// Source gpuDMAUp allocates 64 * currentBoxes work-prefix entries,
+// independent of the GPU-produced regionAccumTotal for this frame.
+constexpr std::uint32_t kRegionWork = 64u * kBoxCount;
 constexpr std::uint32_t kPairs = 8;
 constexpr std::uint32_t kPhysicalBytes = 32768;
 constexpr std::uint32_t kArenaGrowthBytes = 65536;
