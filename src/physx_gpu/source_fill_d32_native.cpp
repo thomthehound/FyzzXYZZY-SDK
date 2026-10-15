@@ -76,14 +76,13 @@ void SourceFillD32NativeStage::append(
     const auto view_limit = std::min<std::uint64_t>(
         gpu.max_storage_buffer_range,
         static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) & ~3ull);
-    const auto view_alignment = std::lcm(alignment, std::size_t{16u});
     std::vector<compute::BatchCommand> pending;
     std::uint64_t consumed_words = 0u;
     while (consumed_words < words) {
         const auto cursor = device_address + consumed_words * 4u;
         const auto chunk_words = source_d32_fill_chunk_words(
             addresses, cursor, static_cast<std::uint32_t>(
-                words - consumed_words), view_alignment, view_limit);
+                words - consumed_words), alignment, view_limit);
         const auto desired_groups = (std::uint64_t(chunk_words - 1u) / 256u) + 1u;
         const auto groups = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(
