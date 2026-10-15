@@ -274,8 +274,9 @@ void run(Context& ctx, const SourceNewBoundsSequenceNativeStage& stage,Case c) {
     // Source uploads and all four broadphase launches share one ordered
     // native queue. Waiting on the later four-kernel submission, followed
     // by the publishing readback, already makes the earlier upload visible.
-    // Context::download may retire that upload's tracking record, so a
-    // second wait on its consumed SubmissionId is invalid on both backends.
+    // Vulkan download drains all tracked submissions, including the old
+    // upload token; D3D12 readback uses its own fence. Neither backend
+    // requires an additional wait for an already ordered producer.
     for(auto& root:roots)ctx.destroy_buffer(root.buffer);
 }
 } // namespace
