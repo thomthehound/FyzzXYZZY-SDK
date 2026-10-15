@@ -63,4 +63,33 @@ void BroadPhaseCompletionGate::fetch_and_release(
     lost.removeReference();
 }
 
+void BroadPhaseCompletionGate::fetch_and_run_inline(
+    const std::function<void()>& fetch_and_resize,
+    const std::function<void()>& run_found_pair_task,
+    const std::function<void()>& run_lost_pair_task) {
+    if (!armed_)
+        throw std::logic_error("Broadphase completion not armed");
+    if (!fetch_and_resize || !run_found_pair_task || !run_lost_pair_task)
+        throw std::invalid_argument("Broadphase inline publication requires both original pair tasks");
+
+    if (submission_ != 0) {
+        context_.wait_submission(submission_);
+        submission_ = 0;
+    }
+
+    // Source postBroadPhase() always retrieves data and resizes both
+    // lists before invoking tasks, including in the null-continuation case.
+    // A failed fetch is retryable before either task has executed.
+    fetch_and_resize();
+
+    // runInternal() can change scene state immediately. Consume the gate
+    // before entering either callback; do not permit replay if only the
+    // first original task has run when an exception occurs.
+    armed_ = false;
+    continuation_setup_failed_ = true;
+    run_found_pair_task();
+    run_lost_pair_task();
+    continuation_setup_failed_ = false;
+}
+
 } // namespace fyzz::physx_gpu
