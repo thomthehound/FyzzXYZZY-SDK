@@ -58,7 +58,7 @@ void SapNewBoundsSequenceArenaStage::append(
     prefix_.append(staged, arena, arena_bytes, offsets.prefix,
                    created_handles);
     pairs_.append(staged, arena, arena_bytes, offsets.pairs,
-                  created_handles);
+                  current_boxes, created_handles);
     if (staged.size() != 4u)
         throw std::logic_error("PhysX new-bounds sequence must issue four dispatches");
 
