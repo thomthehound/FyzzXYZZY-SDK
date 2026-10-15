@@ -34,7 +34,7 @@ before touching. Separate *upstream-native* costs from port costs.
 | `RadixSort.cuh::radixSortSingleBlock` → `physx_radix_count_arena.hlsl` | 4 shared `InterlockedAdd` calls per uint4 input, contending on just **16** workgroup bins; source accumulates register-local packed counts then warp-reduces | **P0 corrective PR #46:** register-packed two-bin counts with native `WaveActiveSum`, a bounded number of atomic group updates; validate collision-heavy digit distributions and register pressure |
 | `broadphase.cu::computeStartAndActiveRegionHistogram` → `physx_sap_active_region_compute_arena.hlsl` | Original packed warp scan was initially lowered to two separate 512-entry LDS scans (8 KiB and nine rounds each) | **Resolved functionally in PR #44**: original packed 32-bit arithmetic restored, wave fast path (2 KiB scratch, 3 barriers/chunk), portable packed fallback. Bench still missing |
 | `broadphase.cu::computeEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | 256-wide `uint3` Hillis–Steele scan, eight sync rounds in an inner block loop; source uses warp scans / per-warp totals | **P1:** introduce native wave scan + compact warp-total prefix while retaining exact triple histogram and multi-frame behavior |
-| `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | 256-wide two-bank shared prefix scan, eight rounds per iteration; source CUDA warp scan strategy | **P1:** native subgroup fast path; source partition, 32 block totals and four-dispatch scan order unchanged |
+| `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | Original port used 256-wide two-bank shared prefix, eight full-group rounds per iteration vs upstream per-warp scan and short warp-total prefix | **Corrective PR #48 under validation:** one `WavePrefixSum`/`WaveActiveSum` per lane, short wave-total prefix and **three barriers per 256-entry iteration**, 512 bytes shared scratch versus 2 KiB; preserve 32 block totals and original four dispatches; portable oracle remains |
 | `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Per-iteration three-axis `uint3` shared prefix, eight rounds; source CUDA warp primitives | **P1:** wave prefix plus 32-block totals, retain source comparison selection and rank pairing |
 | `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Two-output `uint2` shared prefix with eight rounds per batch; global report-count reservation still uses atomic increments | **P1:** wave-based packed/dual report scan, preserve original global reservations and report order; do not change candidate correctness rules |
 | `broadphase.cu::accumulateReportsStage_2` → `physx_broadphase_report_classification_second_arena.hlsl` | 256-thread shared scan and repeated per-block carry barriers | **P1:** examine wave prefix / report-label propagation, maintain original actor/aggregate found/lost classification |
@@ -95,3 +95,42 @@ before touching. Separate *upstream-native* costs from port costs.
 This audit is maintained alongside `GPU_PORT_PERFORMANCE.md`
 and must be updated with source-based evidence, correction PRs,
 newly discovered risks and eventually measured GPU timings.
+
+## PR #48: region-histogram source-performance restoration (unmeasured)
+
+- **Source:** `broadphase.cu::computeHistogram<WARP_PERBLOCK_SIZE>`
+  invoked separately for `BP_COMPUTE_START_REGION_HISTOGRAM` and
+  `BP_COMPUTE_REGION_HISTOGRAM`. Source uses a 32-lane warp exclusive
+  scan followed by a short warp-total prefix and a block carry.
+- **Rejected lowering:** two 256-word shared arrays for a full
+  Hillis–Steele prefix, eight synchronization rounds, roughly eleven
+  group barriers per iteration (including the group carry), 2 KiB
+  scratch. Source CUDA warp primitives do not require this.
+- **Corrective native fast path:** a wave-sized exclusive prefix plus
+  wave total per physical subgroup, a short prefix across those
+  totals, three workgroup barriers per iteration and two 64-word
+  scratch arrays (512 bytes). One workgroup-scope wave-ID allocation
+  per physical subgroup at kernel entry establishes deterministic
+  *logical* projection order independently of physical scheduling.
+  Cross-iteration carry remains 32-bit and source-derived.
+- **Unchanged:** 32×256 workgroups, 32 per-block totals, start/region
+  input arrays, four source-ordered compute/output dispatches,
+  created-handles gate, backend ownership and global offsets.
+- **Fallback:** original two-bank shared scan remains strictly for
+  development environments lacking native compute subgroup arithmetic.
+  Both variants run the same entire-arena CPU oracle after the source
+  `BP_CREATE_REGIONS` producer on both native backends. Device
+  selection must not silently bypass the wave shader.
+- **Alternative designs:** fixed warp32 shuffle (not portable);
+  one large full-group shared scan (rejected slow fallback);
+  subgroup-prefix followed by parallel prefix of subgroup totals
+  (additional barriers versus serial prefix of only 4–64 wave totals,
+  consider if measured leader bottleneck); decomposing original
+  blocks into more dispatches (breaks host/dispatch contract).
+- **Performance hypothesis:** reduced global workgroup synchronization
+  and LDS traffic, but possible serial leader bottleneck for devices
+  running many small subgroups. This is an analytical expectation;
+  **no measured speedup** yet. Later profile 680M/RX5000 and
+  representative NVIDIA hardware with clustered region counts.
+- **WMMA:** sparse scans/prefixes have no compelling dense matrix
+  structure; not applicable to this kernel.
