@@ -277,6 +277,10 @@ share a root as an engine invariant would be an architectural error.
    bytes. The overlap scratch allocations match the original source
    allocation policy of 64 entries per current box, rather than an
    arbitrary small fixture capacity.
+5. The source 64-bit overlap-prefix/scratch arrays and inline 64-bit
+   total are now checked against their **eight-byte ABI alignment**.
+   A 4-byte-shifted GPU allocation is explicitly rejected even though
+   ordinary 32-bit array accesses at that offset would be legal.
 
 **Unresolved correctness/engineering risks, NOT passed by PR #61:**
 
