@@ -33,9 +33,9 @@ before touching. Separate *upstream-native* costs from port costs.
 | `RadixSort.cuh::radixSortCalculateRanks` → `physx_radix_scatter_arena.hlsl` | **16 digit-by-digit 1024-thread shared scans**, each with ten group barriers, plus carries. Original uses packed counters and warp scans. **At least 160 full-group scan barriers** per radix iteration were introduced by us | **P0 corrective PR #46:** native SM6.6 packed two-digit `WavePrefixSum` lowering, eight pairs and native reductions, retaining all source stable rank/order semantics; preserve fallback; GPU validation and real timing outstanding |
 | `RadixSort.cuh::radixSortSingleBlock` → `physx_radix_count_arena.hlsl` | 4 shared `InterlockedAdd` calls per uint4 input, contending on just **16** workgroup bins; source accumulates register-local packed counts then warp-reduces | **P0 corrective PR #46:** register-packed two-bin counts with native `WaveActiveSum`, a bounded number of atomic group updates; validate collision-heavy digit distributions and register pressure |
 | `broadphase.cu::computeStartAndActiveRegionHistogram` → `physx_sap_active_region_compute_arena.hlsl` | Original packed warp scan was initially lowered to two separate 512-entry LDS scans (8 KiB and nine rounds each) | **Resolved functionally in PR #44**: original packed 32-bit arithmetic restored, wave fast path (2 KiB scratch, 3 barriers/chunk), portable packed fallback. Bench still missing |
-| `broadphase.cu::firstPassEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | Triple-`uint3` full-group shared Hillis–Steele prefix discarded the source's *already packed* three 10-bit counters and warp scan | **PR #49 under review:** restore exact CUDA 10+10+10-bit packing, one native wave scan, 3 barriers/256-entry chunk, source second pass unchanged, CPU oracle both variants/frames |
+| `broadphase.cu::firstPassEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | Triple-`uint3` full-group shared Hillis–Steele prefix discarded the source's *already packed* three 10-bit counters and warp scan | **Resolved functionally in PR #49:** restore exact CUDA 10+10+10-bit packing, one native wave scan, 3 barriers/256-entry chunk, source second pass unchanged, CPU oracle both variants/frames |
 | `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | Original port used 256-wide two-bank shared prefix, eight full-group rounds per iteration vs upstream per-warp scan and short warp-total prefix | **Corrective PR #48 under validation:** one `WavePrefixSum`/`WaveActiveSum` per lane, short wave-total prefix and **three barriers per 256-entry iteration**, 512 bytes shared scratch versus 2 KiB; preserve 32 block totals and original four dispatches; portable oracle remains |
-| `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Per-iteration three-axis `uint3` shared prefix, eight rounds; source CUDA warp primitives | **P1:** wave prefix plus 32-block totals, retain source comparison selection and rank pairing |
+| `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Three-axis `uint3` 256-entry shared prefix uses eight group-wide scan rounds, unlike CUDA's three warp scans and short warp-total prefix | **PR #50 in validation:** three independent native 32-bit wave prefixes, 3 workgroup barriers/chunk vs ~11, 1536 B scratch vs 6144 B, original stage2/host dispatch and source oracle retained |
 | `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Two-output `uint2` shared prefix with eight rounds per batch; global report-count reservation still uses atomic increments | **P1:** wave-based packed/dual report scan, preserve original global reservations and report order; do not change candidate correctness rules |
 | `broadphase.cu::accumulateReportsStage_2` → `physx_broadphase_report_classification_second_arena.hlsl` | 256-thread shared scan and repeated per-block carry barriers | **P1:** examine wave prefix / report-label propagation, maintain original actor/aggregate found/lost classification |
 | Other copied/report producers and simple PhysX kernels (AABB encoding, initialized rank/index lists, removed projections/pairs, clear new flag, update handles) | No obvious **high-order new workgroup-wide scan** in static inspection; typically direct per-entry loops and/or source-sized workgroups. This is **not** a measured performance endorsement | **P2:** collect timestamps and source diff as these become integration-relevant; no speculative redesign |
@@ -212,4 +212,58 @@ never cause that fallback selection by itself.
   both variants, 0–8201 previous boxes and extra mixed-created
   workloads. CI validates functional results; **no hardware latency
   claim** until RX5000/680M and comparable vendor benchmarks exist.
+
+## PR #50: native three-axis incremental comparison prefixes (unmeasured)
+
+- **Pinned source:** `broadphase.cu::computeIncrementalComparisonHistograms_Stage1`;
+  original CUDA runs **32 × 256** and performs *three separate*
+  32-bit `warpScanAdd` passes (X, Y and Z). It collects each
+  warp's subtotal, prefixes those eight warp subtotals and
+  accumulates independent 32-bit carries across per-block
+  iterations. Stage 2 adds the 32 block totals and publishes
+  three final comparison counts. All original rank/direction,
+  deleted-projection and source current/previous endpoint
+  selection semantics remain unchanged.
+- **Rejected port adaptation:** two arrays of 256 `uint3` values
+  (6144 B shared scan scratch) with eight workgroup-wide
+  Hillis–Steele scan rounds, roughly 11 full-group barriers
+  per iteration. This synchronization is an *introduced*
+  cost absent from CUDA's warp arithmetic.
+- **Corrective fast path:** three native `WavePrefixSum` and three
+  `WaveActiveSum` operations per projection, 64 `uint3`
+  wave totals plus 64 wave bases (1536 B shared), three full
+  workgroup barriers per 256-entry iteration. Each physical
+  wave claims a contiguous **logical** projection range once
+  before processing the group, avoiding ungrounded assumptions
+  about wave32 or group-index-to-lane mapping. A workgroup
+  leader prefixes the small number of wave totals, then
+  advances **three separate 32-bit carries**.
+- **Why no packing:** Unlike endpoint 0/1 values, a projection's
+  comparison count can be arbitrarily large within the source
+  numeric contract. Packing three values into narrow fields
+  would cause erroneous cross-field carries. Three native
+  wave arithmetic operations are faithful to the original
+  CUDA strategy; no WMMA acceleration is applicable.
+- **Preserved:** `BP_COMPUTE_INCREMENTAL_CMP_COUNTS1/COUNTS2`
+  source order, exact 32×256 geometry, original per-axis
+  arena offsets, full comparison prefix outputs, original
+  32-block totals, host ownership and no additional dispatch.
+  Existing endpoint-histogram and downstream incremental-pair
+  source-order fixtures now require the comparison wave
+  shader and assert actual capability-based selection.
+- **Validation:** independent CPU source comparator traverses
+  sorted/ranked previous and current endpoints, then checks
+  the full GPU arena including canaries, on both wave-selected
+  and forced portable paths; incremental-pair integration
+  also checks the wave-selected predecessor. Host validation
+  now rejects `2*boxes+255` overflow, matching the original
+  projection-rounding arithmetic.
+- **Alternatives:** fixed CUDA warp32 translation (not portable),
+  packing variable-width comparison counts (unsafe), a single
+  256-lane shared scan (reintroduces barriers), extra global
+  reduction dispatch (alters original host/dispatch graph).
+- **Performance:** barrier/LDS improvements are *analytic*,
+  not a measured latency win; many tiny waves could introduce
+  a serial leader prefix cost, so benchmark native wave32/64
+  devices when a meaningful GPU timeline is available.
 

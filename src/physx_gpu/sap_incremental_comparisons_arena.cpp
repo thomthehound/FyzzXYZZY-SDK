@@ -26,7 +26,8 @@ static_assert(sizeof(Parameters) == 32, "PhysX incremental comparison constants 
 
 SapIncrementalComparisonsArenaStage::SapIncrementalComparisonsArenaStage(
     compute::Context& context, compute::ShaderBinary stage1_shader,
-    compute::ShaderBinary stage2_shader)
+    compute::ShaderBinary stage2_shader,
+    compute::ShaderBinary stage1_wave_shader, bool force_portable)
     : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
@@ -34,10 +35,14 @@ SapIncrementalComparisonsArenaStage::SapIncrementalComparisonsArenaStage(
         device.max_workgroup_count[0] < kBlocks)
         throw std::runtime_error("PhysX incremental comparisons require 32x256 launch");
 
+    using_wave_ = !force_portable && device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  256u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
-    desc.shader = std::move(stage1_shader);
+    desc.shader = using_wave_ ? std::move(stage1_wave_shader)
+                              : std::move(stage1_shader);
     stage1_ = context_.create_compute_pipeline(desc);
     try {
         desc.shader = std::move(stage2_shader);
@@ -62,7 +67,10 @@ void SapIncrementalComparisonsArenaStage::append(
         descriptor_offset % alignof(SapIncrementalComparisonArenaDesc) ||
         descriptor_offset > arena_bytes ||
         sizeof(SapIncrementalComparisonArenaDesc) > arena_bytes - descriptor_offset ||
-        previous_num_boxes > std::numeric_limits<std::uint32_t>::max() / 2u)
+        // Both source and wave kernels round 2*boxes with +255 before /256.
+        // The projection count must leave room for that 32-bit addition.
+        previous_num_boxes >
+            (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u)
         throw std::invalid_argument("Invalid PhysX incremental comparison dimensions");
 
     const Parameters params{descriptor_offset, previous_num_boxes, arena_bytes, {}};

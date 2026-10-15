@@ -279,13 +279,32 @@ void negative_cases(SapIncrementalComparisonsArenaStage& cmp) {
     catch (const std::invalid_argument&) { overflow = true; }
     if (!overflow || !commands.empty())
         throw std::runtime_error("Invalid PhysX incremental projection overflow accepted");
+
+    // CUDA and the portable shader both round 2*boxes using +255.
+    // Exercise the exact host-only boundary without allocating huge
+    // projection buffers. This protects both selected shader paths.
+    constexpr std::uint32_t maxRoundedBoxes =
+        (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u;
+    std::vector<BatchCommand> accepted;
+    cmp.append(accepted, 1u, 112u, 0u, maxRoundedBoxes);
+    if (accepted.size() != 2u)
+        throw std::runtime_error("Valid rounded comparison boundary rejected");
+    for (const auto boxes : {maxRoundedBoxes + 1u,
+                             std::numeric_limits<std::uint32_t>::max() / 2u}) {
+        std::vector<BatchCommand> rejectedBatch;
+        bool rejected = false;
+        try { cmp.append(rejectedBatch, 1u, 112u, 0u, boxes); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        if (!rejected || !rejectedBatch.empty())
+            throw std::runtime_error("Comparison projection rounding overflow accepted");
+    }
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 6)
+        if (argc != 7)
             throw std::invalid_argument("Expected endpoint-first, endpoint-second, comparison-first, comparison-second shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -310,14 +329,20 @@ int main(int argc, char** argv) {
             caps.subgroup_size >= 4u && 256u % caps.subgroup_size == 0u;
         if (hist.using_packed_wave_scan() != waveCapable)
             throw std::runtime_error("Incremental SAP endpoint stage bypassed native packed wave path");
-        SapIncrementalComparisonsArenaStage cmp(context, shader(argv[3]), shader(argv[4]));
-        negative_cases(cmp);
-        run_case(context, hist, cmp, 0u, 0u);
-        run_case(context, hist, cmp, 1u, 0u);
-        run_case(context, hist, cmp, 5u, 1u);
-        run_case(context, hist, cmp, 129u, 7u);
-        run_case(context, hist, cmp, 257u, 0u);
-        run_case(context, hist, cmp, 4099u, 13u);
+        SapIncrementalComparisonsArenaStage cmp(context, shader(argv[3]), shader(argv[4]), shader(argv[6]));
+        SapIncrementalComparisonsArenaStage portable(context, shader(argv[3]), shader(argv[4]), shader(argv[6]), true);
+        if (cmp.using_wave_scan() != waveCapable || portable.using_wave_scan())
+            throw std::runtime_error("Incremental comparison stage selected incorrect wave variant");
+        for (auto* stage : {&cmp, &portable}) {
+            negative_cases(*stage);
+            run_case(context, hist, *stage, 0u, 0u);
+            run_case(context, hist, *stage, 1u, 0u);
+            run_case(context, hist, *stage, 5u, 1u);
+            run_case(context, hist, *stage, 129u, 7u);
+            run_case(context, hist, *stage, 257u, 0u);
+            run_case(context, hist, *stage, 4099u, 13u);
+            run_case(context, hist, *stage, 8201u, 37u);
+        }
         std::cout << "PhysX endpoint histograms → incremental comparison counts PASS\n";
         return 0;
     } catch (const std::exception& e) {
