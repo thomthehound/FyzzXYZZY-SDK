@@ -97,8 +97,23 @@ source stream order**. The primitive on its own does not implement the
 complete `mStream` interface or claim portable `PxScene` support.
 The Vulkan and D3D12 tests validate ordered overlapping writes,
 per-allocation canaries, native alignment, and invalid CUDA pointers.
+The tiny-view planning oracle additionally forces descriptor-window
+splitting without requiring multi-gigabyte CI allocations.
 This is the first device-side stream operation required at the original
 source call sites beyond compute dispatch and buffer copying.
+
+**Performance decision still open.** Vulkan provides native
+`vkCmdFillBuffer`, which supports four-byte-aligned source offsets and
+may be preferable to a compute dispatch. D3D12 has
+`ClearUnorderedAccessViewUint`, but it needs both CPU and GPU UAV
+descriptors, explicit UAV ordering around dispatches, and careful
+handling of four-byte interior offsets under the 16-byte RAW descriptor
+base constraint. The shared shader is a correct portable lowering,
+**not evidence that it beats either native fill path**. Before declaring
+the host primitive production-optimal, compare fill and following
+kernel performance using representative small and large PhysX
+histograms and consider backend-native lowering without duplicating
+the source host scheduler.
 
 ### Still required before source-compatible GPU execution
 
