@@ -173,3 +173,184 @@ kernel ID/name lookups through the same source-backed lowering approach.
 After that, prove the original scene stream/event and AABB manager
 publication chain. This experiment does not yet establish that an
 unmodified `PxScene` runs GPU broadphase.
+
+
+## Original PxgBroadPhaseDesc GPU allocation/descriptor handoff
+
+`source_newbounds_descriptor.{h,cpp}` now consumes the real
+`physx::PxgBroadPhaseDesc` type and resolves the new-bounds sequence's
+source-named pointer fields: original integer bounds, collision groups,
+optional environment IDs, X SAP handles/positions, per-box region extents,
+region histograms and ordered handles, uint64 overlap counts, per-work-item
+handle/region pairs, block scratch, region prefix and bounded pair report
+storage. Importantly, **`regionAccumTotal`**, **`overlapChecksTotalRegion`**
+and **`sharedFoundPairIndex`** are already scalars *inside the GPU
+descriptor*; the lowering points the translated shader at their exact
+`offsetof(PxgBroadPhaseDesc, ...)` byte positions, rather than inventing
+separate counter allocations. **The host copy of `regionAccumTotal` is not
+authoritative:** the GPU produces this count, and no CPU readback occurs
+during descriptor lowering. The host supplies the original allocation
+capacities of `overlapChecksRegion` and `overlapChecksHandleRegiones`
+instead, to validate their backing ranges. This preserves the GPU-owned
+runtime count and avoids a hidden synchronization point.
+
+This source descriptor is still uploaded by the original host when GPU
+buffer ownership or input state changes, **not reconstructed at every
+kernel dispatch**. The native pair/scan/work descriptors are small views
+of its source GPU allocations and share the same persistent backing.
+The original host's actual projection-slot count is supplied explicitly,
+including projection slots for removed handles; it must not be inferred
+from a stale box capacity.
+
+`CudaDeviceAddressMap` now allows **distinct logical CUDA allocations
+inside the same physical compute buffer**: `register_slice` creates a
+stable virtual CUDA pointer with its own bounds/liveness; `resolve`
+returns the backing offset; `relocate_slice` preserves the virtual
+pointer when source-ordered allocation growth copies data to new backing
+storage; and `unregister_slice` invalidates that logical allocation
+without claiming ownership of the shared native buffer. The original
+PhysX allocator/stream owner decides *when* to copy, retire, and reuse
+physical memory. These methods themselves neither launch kernels nor
+allocate or synchronize the GPU.
+
+The Vulkan/D3D12 `fyzzxyzzy_physx_source_descriptor` tests construct
+the actual source descriptor from separately bounded CUDA-virtual
+allocations sharing one device-local backing. They check **every mapped
+pointer and all three inline scalar aliases**, asynchronous source and
+translated descriptor uploads, a single ordered GPU copy of the arena
+on growth, an independently moved source-group allocation, descriptor
+re-materialization **at relocation**, and deferred retirement of the
+original backing without a CPU fence. They reject disjoint physical
+backing, missing/stale source allocations, impossible sizes and
+out-of-range inline fields, and check GPU-resident bytes after the
+copy/upload chain has completed. The CPU address-map test separately
+covers duplicate native backing with independently freed logical slices,
+64-bit interior pointers and stable virtual identity during relocation.
+
+**Performance contract:** This is a zero-per-kernel-copy *persistent
+shared-backing feasibility test*, compiled **only into the two conformance
+executables**, not into the shipping translated GPU stage libraries. Source-allocation growth can require source-
+ordered GPU copies, like PhysX's existing `allocateCopyOldDataAsync`,
+but there is no per-dispatch inter-allocation packing or host readback.
+It is not a claim that unrelated GPU buffers are magically contiguous:
+mappings backed by separate native buffers currently **fail explicitly**
+rather than silently copying them. Nor is it a production memory pool or
+a working GPU `PxScene` yet. The next engineering work is tying the
+**original PhysX heap allocation/growth/free decisions** to this backing
+and handling the capacity/fragmentation limits of an arena, or extending
+kernel binding for disjoint native resources where preferable. Existing
+arena shaders use 32-bit offsets and one storage-buffer descriptor, so
+this slice is bounded by native storage-buffer-range constraints; do not
+advertise unlimited device memory support. Real scene admission and
+multi-frame found/lost reporting remain the acceptance milestones.
+
+
+### Native GPU memory binding architecture review
+
+**Decision:** Do not treat the single native arena as the general PhysX
+allocator or the runtime broadphase integration interface. This is a
+test-only proof that source pointer fields and inline counters can be
+lowered *when* they share a native resource. That special case is useful,
+but PhysX's real `PxgHeapMemoryAllocator` has a buddy-style page/root
+allocator, deferred frees and exceptional allocations. A broadphase
+scene may legitimately allocate the source fields on **different GPU
+buffers**. Failing on those resources is truthful; requiring them to
+share a root as an engine invariant would be an architectural error.
+
+**Concrete correctness findings repaired:**
+
+1. Original `regionAccumTotal` is GPU-produced. Host-side descriptor
+   lowering now validates the allocator-provided capacities, never
+   reads back the GPU value. GPU kernels continue using the resident
+   `offsetof(PxgBroadPhaseDesc, regionAccumTotal)` location.
+2. A source frame's handle count is
+   `numPreviousHandles + numCreatedHandles - numRemovedHandles`,
+   while sorted/histogram projection storage includes temporarily
+   removed handles. Both relationships are checked.
+3. Dedicated `CudaDeviceAddressMap::register_allocation` ownership and
+   borrowed `register_slice` references can no longer coexist on
+   the same native buffer. Neither registration order nor relocation
+   can turn a live borrowed slice into a silently retired buffer.
+   Multiple non-owning slices of one backing remain supported.
+4. The native copy fixture now uses nonuniform source bytes, checks
+   exact relocated-copy contents and preserves all outside-descriptor
+   bytes. The overlap scratch allocations match the original source
+   allocation policy of 64 entries per current box, rather than an
+   arbitrary small fixture capacity.
+5. The source 64-bit overlap-prefix/scratch arrays and inline 64-bit
+   total are now checked against their **eight-byte ABI alignment**.
+   A 4-byte-shifted GPU allocation is explicitly rejected even though
+   ordinary 32-bit array accesses at that offset would be legal.
+
+**Unresolved correctness/engineering risks, NOT passed by PR #61:**
+
+- The conformance test submits original and lowered *descriptor bytes*
+  and ordered GPU copies, but does **not** run the four native shaders
+  against that source-derived memory. The earlier four-kernel test
+  exercises a different specially constructed arena. The next
+  integrated test must join the two, verify original GPU-produced
+  inline counters, found-pair reports, capacities and canaries, and
+  exercise created/removed/idle frame transitions.
+- The source heap's *actual* multi-root and exceptional allocation
+  behavior is not integrated. Production descriptor binding must be
+  able to represent a **table of independent native resource views**,
+  with a tested Vulkan/D3D12 lowering strategy, before claiming a
+  generally usable GPU broadphase. Shader descriptor indexing,
+  multi-view bindings, or other native GPU-address mechanisms are
+  options to evaluate; no per-launch heap packing or GPU readbacks.
+  A coalesced single-root specialization may remain an optimization,
+  not the required allocator policy.
+- There is no original PhysX `PxgCudaBroadPhaseSap` allocation
+  owner, event/stream translation, original task-graph dispatcher or
+  live `PxScene` wired to these views. A passed native memory test
+  does not establish those contracts.
+- The address map does not independently know the *physical* backing
+  buffer's byte size, concurrent submission lifetimes or the source
+  allocator's free-list reuse policy. It is a resolution table, not
+  the GPU heap allocator. The owning host must validate physical
+  extents and defer reuse until dependent submissions complete.
+- The source `PxgCudaBuffer` distinguishes the raw allocator-returned
+  `mPtr` from its 128-byte-aligned `getDevicePtr()` view. Its
+  `swapBuffer` and heap deallocation deliberately operate on **raw**
+  allocation pointers, not the aligned view. Our fixture's 256-aligned
+  slices make those two addresses coincide by construction and do NOT
+  exercise that distinction. The real allocator integration must
+  maintain raw ownership/free identities separately from shader-visible
+  aligned CUDA pointers, or demonstrate an allocator alignment guarantee
+  that genuinely makes the two equivalent.
+- A single arena uses 32-bit byte offsets and a whole-buffer storage
+  binding; those are real range/scale limits, not unlimited GPU memory.
+  Device capability and binding-range validation belongs at resource
+  setup, not per kernel. The true multi-root path must support large
+  scenes without copying an entire previous arena each growth cycle.
+- Our GPU compute `Context` currently has an ordered queue and
+  completion tokens, not all CUDA stream/event semantics. Cross-stream
+  copy, launch and report-publication dependencies require their own
+  original-source audit and integrated tests.
+
+**Implementation boundary:** the reusable logical-slice bookkeeping can stand as
+internal infrastructure once validated; the source arena converter remains
+**test-only**. Do not move it into the runtime by making a single-root backing
+an allocation requirement.
+
+The compute API already represents buffer identity, byte range and access intent
+through `compute::BufferBinding`. Its Vulkan implementation accepts multiple
+storage bindings up to device limits, whereas the current D3D12 implementation
+hard-codes either one arena UAV or three SRVs and one UAV. A production
+multi-resource path must first generalize and validate the D3D12 binding
+contract, while keeping equivalent explicit dependency tracking on both
+backends. This is a native compute runtime change, not a new public PhysX ABI.
+
+Per-field static resource views offer a simple correctness baseline. A compact
+root table can reduce per-kernel descriptor pressure if the required device
+features and measured performance justify it. Source kernel ID and its actual
+field-access manifest determine the resources bound for each dispatch; allocation
+location must not change the simulated algorithm. Source-visible 64-bit virtual
+pointers must never be truncated merely to fit a 32-bit arena offset.
+
+The first acceptance milestone is execution of the **existing four new-bounds
+kernels** against the source-derived `PxgBroadPhaseDesc` data, including
+independent physical resources and GPU-owned counters. Follow it with original
+stream/event, deferred-free and scene publication integration. The concrete
+work items and cross-backend acceptance criteria are tracked in
+[PhysX GPU host front-end: multi-resource execution](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/62).

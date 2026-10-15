@@ -140,7 +140,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
-  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC FyzzXYZZY::Compute physx_lib)
+  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
+    FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -263,6 +264,22 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch
         COMMAND fyzzxyzzy_physx_cuda_aabb_launch
           "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+
+      # Original PxgBroadPhaseDesc fields and source CUDA virtual pointers,
+      # native persistent backing growth and descriptor-only re-materialization.
+      # Source pointer -> single-backing arena is a feasibility test,
+      # not the production solution for PhysX's multiple heap roots.
+      add_executable(fyzzxyzzy_physx_source_descriptor
+        tests/physx_gpu_source_descriptor.cpp
+        src/physx_gpu/source_newbounds_descriptor.cpp)
+      target_include_directories(fyzzxyzzy_physx_source_descriptor PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+      target_link_libraries(fyzzxyzzy_physx_source_descriptor PRIVATE
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+      add_test(NAME fyzzxyzzy_physx_source_descriptor
+        COMMAND fyzzxyzzy_physx_source_descriptor)
+
 
 
       # PhysX PxgAABBManager::postBroadPhase result-publication boundary:
@@ -1172,7 +1189,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
-    FyzzXYZZY::ComputeD3D12 physx_lib)
+    FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address)
 
 
   if(BUILD_TESTING)
@@ -1256,6 +1273,20 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch_d3d12
       COMMAND fyzzxyzzy_physx_cuda_aabb_launch_d3d12
         "${FYZZXYZZY_D3D12_AABB_DXIL}")
+
+    add_executable(fyzzxyzzy_physx_source_descriptor_d3d12
+      tests/physx_gpu_source_descriptor.cpp
+      src/physx_gpu/source_newbounds_descriptor.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_descriptor_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_descriptor_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_descriptor_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+    add_test(NAME fyzzxyzzy_physx_source_descriptor_d3d12
+      COMMAND fyzzxyzzy_physx_source_descriptor_d3d12)
+
 
 
     add_executable(fyzzxyzzy_physx_broadphase_completion_d3d12
