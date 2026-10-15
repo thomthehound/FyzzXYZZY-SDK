@@ -885,7 +885,8 @@ dispatch.
 
 The native cross-backend fixture exercises created and quiet frames, source
 dispatch geometry, descriptor rejection and an independent two-handle
-count/reference comparison, preserving untouched buffer canaries. This is
+count/reference comparison including multi-X-region enumeration with
+region-distinct histogram values, preserving untouched buffer canaries. This is
 a bounded producer test, not the complete overlap-prefix/found-pair pipeline.
 The follow-on 64-bit prefix and pair writer must be integrated into the
 source-ordered host sequence before claiming full new-bounds pair generation.
