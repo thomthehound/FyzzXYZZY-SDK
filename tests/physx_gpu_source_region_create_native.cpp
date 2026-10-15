@@ -12,6 +12,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -99,10 +100,10 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     desc.numCreatedHandles=created;
     desc.numRemovedHandles=0u;
     const auto ptr=[&](std::size_t idx){return static_cast<std::uintptr_t>(roots[idx].address);};
-    desc.boxHandles[0][0]=reinterpret_cast<decltype(desc.boxHandles[0][0])>(ptr(handles));
+    desc.boxHandles[0][0]=reinterpret_cast<std::remove_reference_t<decltype(desc.boxHandles[0][0])>>(ptr(handles));
     for(std::uint32_t a=0;a<3u;++a){
-        desc.boxSapBox1D[a]=reinterpret_cast<decltype(desc.boxSapBox1D[a])>(ptr(sap[a]));
-        desc.totalEndPtHistogram[a]=reinterpret_cast<decltype(desc.totalEndPtHistogram[a])>(ptr(ends[a]));
+        desc.boxSapBox1D[a]=reinterpret_cast<std::remove_reference_t<decltype(desc.boxSapBox1D[a])>>(ptr(sap[a]));
+        desc.totalEndPtHistogram[a]=reinterpret_cast<std::remove_reference_t<decltype(desc.totalEndPtHistogram[a])>>(ptr(ends[a]));
     }
     desc.regionRange=reinterpret_cast<decltype(desc.regionRange)>(ptr(ranges));
     desc.startRegionAccum=reinterpret_cast<decltype(desc.startRegionAccum)>(ptr(starts));
@@ -243,10 +244,10 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         auto shared=desc;
         const auto ptr2=[&](std::size_t i){
             return static_cast<std::uintptr_t>(alias[i]);};
-        shared.boxHandles[0][0]=reinterpret_cast<decltype(shared.boxHandles[0][0])>(ptr2(handles));
+        shared.boxHandles[0][0]=reinterpret_cast<std::remove_reference_t<decltype(shared.boxHandles[0][0])>>(ptr2(handles));
         for(std::uint32_t a=0u;a<3u;++a){
-            shared.boxSapBox1D[a]=reinterpret_cast<decltype(shared.boxSapBox1D[a])>(ptr2(sap[a]));
-            shared.totalEndPtHistogram[a]=reinterpret_cast<decltype(shared.totalEndPtHistogram[a])>(ptr2(ends[a]));
+            shared.boxSapBox1D[a]=reinterpret_cast<std::remove_reference_t<decltype(shared.boxSapBox1D[a])>>(ptr2(sap[a]));
+            shared.totalEndPtHistogram[a]=reinterpret_cast<std::remove_reference_t<decltype(shared.totalEndPtHistogram[a])>>(ptr2(ends[a]));
         }
         shared.regionRange=reinterpret_cast<decltype(shared.regionRange)>(ptr2(ranges));
         shared.startRegionAccum=reinterpret_cast<decltype(shared.startRegionAccum)>(ptr2(starts));
