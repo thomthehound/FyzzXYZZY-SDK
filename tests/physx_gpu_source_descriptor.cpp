@@ -183,7 +183,11 @@ void verify_gpu(Context& ctx) {
     // The original native source descriptor still contains genuine 64-bit
     // CUDA-style virtual pointers. GPU scalar fields are inline at exactly
     // the original PxgBroadPhaseDesc offsets inside that same backing.
-    std::vector<std::uint8_t> image(kPhysicalBytes,0xa5u);
+    // Use distinct bytes across the original allocation. A uniform fill
+    // would not detect copying the wrong heap slice to a grown location.
+    std::vector<std::uint8_t> image(kPhysicalBytes);
+    for (std::size_t i=0;i<image.size();++i)
+        image[i]=static_cast<std::uint8_t>((i*37u+13u)%251u);
     ctx.upload(initial,0u,image.data(),image.size());
     const std::vector<UploadSpan> uploads{
         {initial,f.descriptor,&f.source,sizeof(f.source)},
@@ -248,8 +252,23 @@ void verify_gpu(Context& ctx) {
     read(f.prefixDescriptor,&moved.prefix,sizeof(moved.prefix));
     read(f.pairDescriptor,&moved.pairs,sizeof(moved.pairs));
     for(std::uint32_t i=0;i<kCapacity*4u;++i)
-        require(actual[newGroups+i]==0xa5u,
-                "GPU source data was lost during allocateCopyOldDataAsync-style relocation");
+        require(actual[newGroups+i]==image[oldGroups+i],
+                "GPU source data was lost or copied from the wrong source slice during growth");
+    // Unchanged original source ranges must survive the original-order
+    // whole-backing copy, except the native descriptor views re-uploaded
+    // at their own source allocation-change boundary.
+    for (std::uint32_t i=0;i<kPhysicalBytes;++i) {
+        const auto within = [&](std::uint32_t start, std::size_t bytes) {
+            return i>=start && i<start+bytes;
+        };
+        if (within(f.descriptor,sizeof(f.source)) ||
+            within(f.workDescriptor,sizeof(first.work)) ||
+            within(f.prefixDescriptor,sizeof(first.prefix)) ||
+            within(f.pairDescriptor,sizeof(first.pairs)))
+            continue;
+        require(actual[i]==image[i],
+                "Source heap backing changed outside the explicitly copied/uploaded regions");
+    }
 
     // Separate source buffers are not silently repacked each dispatch.
     const auto incompatible=ctx.create_buffer(4096u,MemoryPlacement::DeviceLocal);
