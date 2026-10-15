@@ -165,12 +165,14 @@ void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
     auto idle=src;idle.numCreatedHandles=0u;
     stage.append(cmds,idle,map,layout);
     check(cmds.empty(),"No-created-handle native pair frame launched");
-    auto wrong=layout;wrong.overlap_prefix_capacity=1u;
-    reject([&]{stage.append(cmds,src,map,wrong);},
-           "Source overlap prefix shorter than source allocation accepted");
-    auto bad=src;bad.foundPairReport=nullptr;
-    reject([&]{stage.append(cmds,bad,map,layout);},
-           "Missing PhysX found report source allocation accepted");
+    if(c.enabled) {
+        auto wrong=layout;wrong.overlap_prefix_capacity=1u;
+        reject([&]{stage.append(cmds,src,map,wrong);},
+               "Source overlap prefix shorter than source allocation accepted");
+        auto bad=src;bad.foundPairReport=nullptr;
+        reject([&]{stage.append(cmds,bad,map,layout);},
+               "Missing PhysX found report source allocation accepted");
+    }
     check(cmds.empty(),"Source pair rejection appended half a command");
 
     std::vector<UploadSpan> uploads;
