@@ -24,6 +24,11 @@ struct SourceNewBoundsArenaLayout {
     // Original host uses (current boxes + removed handles)*2 when
     // constructing sorted/histogram arrays; never infer from capacity.
     std::uint32_t projection_slots = 0;
+    // These are SOURCE ALLOCATION CAPACITIES, not d.regionAccumTotal.
+    // The latter is written by GPU kernels to the resident descriptor and
+    // must never be read back merely to rebuild its native binding views.
+    std::uint32_t overlap_prefix_capacity = 0; // uint64 elements
+    std::uint32_t handle_region_capacity = 0; // {handle, region} entries
 };
 
 // Throws if any required source pointer refers to another backing resource,
