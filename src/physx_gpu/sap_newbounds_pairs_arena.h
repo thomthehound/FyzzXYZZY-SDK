@@ -40,7 +40,7 @@ static_assert(sizeof(SapNewBoundsPairsArenaDesc) == 96,
 static_assert(offsetof(SapNewBoundsPairsArenaDesc, found_counter_offset) == 60,
               "PhysX found-pair counter offset changed");
 
-// Source BP_GENERATE_FOUNDPAIR_NEWBOUNDS: 32 workgroups x 256 threads,
+// Source BP_GENERATE_FOUNDPAIR_NEWBOUNDS: 64 workgroups x 256 threads,
 // gated on created handles. Must follow the three overlap work/prefix
 // kernels; this class does not replace their host ordering or buffers.
 class SapNewBoundsPairsArenaStage final {
