@@ -32,7 +32,7 @@ static_assert(sizeof(RadixCountArenaDesc) == 48, "Three-axis radix layout change
 class RadixCountArenaStage final {
 public:
     RadixCountArenaStage(compute::Context& context, compute::ShaderBinary shader,
-                         compute::ShaderBinary wave_shader = {},
+                         compute::ShaderBinary wave_shader,
                          bool force_portable = false);
     ~RadixCountArenaStage();
     RadixCountArenaStage(const RadixCountArenaStage&) = delete;
