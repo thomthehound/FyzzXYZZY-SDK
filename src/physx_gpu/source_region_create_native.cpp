@@ -35,17 +35,12 @@ SourceRegionCreateNativeStage::SourceRegionCreateNativeStage(
     pipeline.shader = std::move(shader);
     pipeline.storage_buffer_binding_count = 10u;
     pipeline.push_constant_bytes = 12u * sizeof(std::uint32_t);
-    pipeline.storage_buffer_views = {
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawRead,
-        compute::StorageBufferViewKind::RawReadWrite,
-        compute::StorageBufferViewKind::RawReadWrite,
-        compute::StorageBufferViewKind::RawReadWrite};
+    // Match the existing source-native PhysX kernels: CUDA heap slices
+    // can alias the SAME D3D12 resource. Mixing SRV and UAV states in one
+    // dispatch is not valid for those heap roots, so bind RAW UAVs for
+    // every slot while preserving actual read/write intent separately.
+    pipeline.storage_buffer_views.assign(10u,
+        compute::StorageBufferViewKind::RawReadWrite);
     pipeline_ = context_.create_compute_pipeline(pipeline);
 }
 
