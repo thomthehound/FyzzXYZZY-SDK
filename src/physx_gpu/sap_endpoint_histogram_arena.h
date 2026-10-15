@@ -50,10 +50,14 @@ class SapEndpointHistogramArenaStage final {
 public:
     SapEndpointHistogramArenaStage(compute::Context& context,
                                   compute::ShaderBinary first_pass_shader,
-                                  compute::ShaderBinary second_pass_shader);
+                                  compute::ShaderBinary second_pass_shader,
+                                  compute::ShaderBinary first_pass_wave_shader,
+                                  bool force_portable = false);
     ~SapEndpointHistogramArenaStage();
     SapEndpointHistogramArenaStage(const SapEndpointHistogramArenaStage&) = delete;
     SapEndpointHistogramArenaStage& operator=(const SapEndpointHistogramArenaStage&) = delete;
+
+    bool using_packed_wave_scan() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -65,5 +69,6 @@ private:
     compute::Context& context_;
     compute::PipelineId first_pipeline_ = 0;
     compute::PipelineId second_pipeline_ = 0;
+    bool using_wave_ = false;
 };
 } // namespace fyzz::physx_gpu
