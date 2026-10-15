@@ -285,7 +285,7 @@ void negative_cases(SapIncrementalComparisonsArenaStage& cmp) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 5)
+        if (argc != 6)
             throw std::invalid_argument("Expected endpoint-first, endpoint-second, comparison-first, comparison-second shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -304,7 +304,12 @@ int main(int argc, char** argv) {
             result.bytes = load_shader(path);
             return result;
         };
-        SapEndpointHistogramArenaStage hist(context, shader(argv[1]), shader(argv[2]));
+        SapEndpointHistogramArenaStage hist(context, shader(argv[1]), shader(argv[2]), shader(argv[5]));
+        const auto& caps = context.device_info();
+        const bool waveCapable = caps.supports_wave_arithmetic &&
+            caps.subgroup_size >= 4u && 256u % caps.subgroup_size == 0u;
+        if (hist.using_packed_wave_scan() != waveCapable)
+            throw std::runtime_error("Incremental SAP endpoint stage bypassed native packed wave path");
         SapIncrementalComparisonsArenaStage cmp(context, shader(argv[3]), shader(argv[4]));
         negative_cases(cmp);
         run_case(context, hist, cmp, 0u, 0u);

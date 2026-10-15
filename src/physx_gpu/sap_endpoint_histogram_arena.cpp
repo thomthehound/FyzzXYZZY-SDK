@@ -30,7 +30,9 @@ static_assert(sizeof(Parameters) == 32, "SAP endpoint root constants changed");
 
 SapEndpointHistogramArenaStage::SapEndpointHistogramArenaStage(
     compute::Context& context, compute::ShaderBinary first_pass_shader,
-    compute::ShaderBinary second_pass_shader)
+    compute::ShaderBinary second_pass_shader,
+    compute::ShaderBinary first_pass_wave_shader,
+    bool force_portable)
     : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
@@ -39,10 +41,17 @@ SapEndpointHistogramArenaStage::SapEndpointHistogramArenaStage(
         device.max_workgroup_count[1] < kAxes)
         throw std::runtime_error("PhysX endpoint histogram requires 32x3x256 dispatch");
 
+    // The source CUDA 10-bit packed prefix is selected with actual
+    // subgroup arithmetic on a capable adapter. Neither WMMA nor a
+    // specific vendor/wave32 implementation is required.
+    using_wave_ = !force_portable && device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  256u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
-    desc.shader = std::move(first_pass_shader);
+    desc.shader = using_wave_ ? std::move(first_pass_wave_shader)
+                              : std::move(first_pass_shader);
     first_pipeline_ = context_.create_compute_pipeline(desc);
     try {
         desc.shader = std::move(second_pass_shader);

@@ -501,6 +501,25 @@ if(FYZZXYZZY_BUILD_VULKAN)
         add_custom_target(fyzzxyzzy_physx_sap_endpoint_${_hist_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}")
       endforeach()
+
+      # Source's packed 10-bit triple-counter first pass, native SM6.6
+      # wave prefix; the original first-pass shader stays as the oracle
+      # fallback and the original second-pass output kernel is unchanged.
+      set(FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_wave.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_6 -E main
+          -Fo "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_physx_sap_endpoint_wave_shader
+        DEPENDS "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_endpoint_histogram
         tests/physx_gpu_sap_endpoint_histogram.cpp)
       target_include_directories(fyzzxyzzy_physx_sap_endpoint_histogram PRIVATE
@@ -509,11 +528,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_gpu_stages)
       add_dependencies(fyzzxyzzy_physx_sap_endpoint_histogram
         fyzzxyzzy_physx_sap_endpoint_first_shader
-        fyzzxyzzy_physx_sap_endpoint_second_shader)
+        fyzzxyzzy_physx_sap_endpoint_second_shader
+        fyzzxyzzy_physx_sap_endpoint_wave_shader)
       add_test(NAME fyzzxyzzy_physx_sap_endpoint_histogram
         COMMAND fyzzxyzzy_physx_sap_endpoint_histogram
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}")
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}")
 
       # PhysX BP_COMPUTE_INCREMENTAL_CMP_COUNTS1 / COUNTS2 (32x256).
       foreach(_comparison_pass IN ITEMS first second)
@@ -543,13 +564,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_sap_endpoint_first_shader
         fyzzxyzzy_physx_sap_endpoint_second_shader
         fyzzxyzzy_physx_sap_comparisons_first_shader
-        fyzzxyzzy_physx_sap_comparisons_second_shader)
+        fyzzxyzzy_physx_sap_comparisons_second_shader
+        fyzzxyzzy_physx_sap_endpoint_wave_shader)
       add_test(NAME fyzzxyzzy_physx_sap_incremental_comparisons
         COMMAND fyzzxyzzy_physx_sap_incremental_comparisons
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_first_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}")
+          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}")
 
       # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
       set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER
@@ -578,14 +601,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_sap_endpoint_second_shader
         fyzzxyzzy_physx_sap_comparisons_first_shader
         fyzzxyzzy_physx_sap_comparisons_second_shader
-        fyzzxyzzy_physx_sap_incremental_pairs_shader)
+        fyzzxyzzy_physx_sap_incremental_pairs_shader
+        fyzzxyzzy_physx_sap_endpoint_wave_shader)
       add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs
         COMMAND fyzzxyzzy_physx_sap_incremental_pairs
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
+          "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}")
 
       # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
       set(FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER
@@ -1253,6 +1278,22 @@ if(FYZZXYZZY_BUILD_D3D12)
       add_custom_target(fyzzxyzzy_d3d12_sap_endpoint_${_hist_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}")
     endforeach()
+
+    # Source packed 10-bit first-pass wave shader, SM6.6 native path.
+    set(FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_wave.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
+      VERBATIM
+    )
+    add_custom_target(fyzzxyzzy_d3d12_sap_endpoint_wave_shader
+      DEPENDS "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
       tests/physx_gpu_sap_endpoint_histogram.cpp)
     target_compile_definitions(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12 PRIVATE
@@ -1263,11 +1304,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
       fyzzxyzzy_d3d12_sap_endpoint_first_shader
-      fyzzxyzzy_d3d12_sap_endpoint_second_shader)
+      fyzzxyzzy_d3d12_sap_endpoint_second_shader
+      fyzzxyzzy_d3d12_sap_endpoint_wave_shader)
     add_test(NAME fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
       COMMAND fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}")
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}")
 
     # PhysX BP_COMPUTE_INCREMENTAL_CMP_COUNTS1 / COUNTS2 (32x256).
     foreach(_comparison_pass IN ITEMS first second)
@@ -1298,13 +1341,15 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_sap_endpoint_first_shader
       fyzzxyzzy_d3d12_sap_endpoint_second_shader
       fyzzxyzzy_d3d12_sap_comparisons_first_shader
-      fyzzxyzzy_d3d12_sap_comparisons_second_shader)
+      fyzzxyzzy_d3d12_sap_comparisons_second_shader
+        fyzzxyzzy_d3d12_sap_endpoint_wave_shader)
     add_test(NAME fyzzxyzzy_physx_sap_incremental_comparisons_d3d12
       COMMAND fyzzxyzzy_physx_sap_incremental_comparisons_d3d12
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_first_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}")
+        "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}"
+          "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}")
 
     # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
     set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL
@@ -1334,14 +1379,16 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_sap_endpoint_second_shader
       fyzzxyzzy_d3d12_sap_comparisons_first_shader
       fyzzxyzzy_d3d12_sap_comparisons_second_shader
-      fyzzxyzzy_d3d12_sap_incremental_pairs_shader)
+      fyzzxyzzy_d3d12_sap_incremental_pairs_shader
+        fyzzxyzzy_d3d12_sap_endpoint_wave_shader)
     add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs_d3d12
       COMMAND fyzzxyzzy_physx_sap_incremental_pairs_d3d12
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
+        "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
+          "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}")
 
     # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
     set(FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL

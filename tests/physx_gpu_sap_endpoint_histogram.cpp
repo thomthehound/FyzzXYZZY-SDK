@@ -237,8 +237,8 @@ void negative_cases(SapEndpointHistogramArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 3)
-            throw std::invalid_argument("Expected first and second PhysX histogram shaders");
+        if (argc != 4)
+            throw std::invalid_argument("Expected portable, output and packed-wave endpoint shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -256,18 +256,31 @@ int main(int argc, char** argv) {
             result.bytes = load_shader(path);
             return result;
         };
-        SapEndpointHistogramArenaStage stage(context, shader(argv[1]), shader(argv[2]));
-        negative_cases(stage);
-        run_case(context, stage, 0u, 0u, 0u, true);
-        run_case(context, stage, 1u, 0u, 0u, true);
-        run_case(context, stage, 5u, 0u, 1u, true);
-        run_case(context, stage, 129u, 0u, 12u, true);
-        run_case(context, stage, 257u, 0u, 7u, true);
-        run_case(context, stage, 4099u, 0u, 0u, true);
-        run_case(context, stage, 0u, 5u, 0u, false);
-        run_case(context, stage, 7u, 3u, 2u, false);
-        run_case(context, stage, 129u, 71u, 5u, false);
-        std::cout << "PhysX SAP two-pass endpoint histogram oracle PASS\n";
+        SapEndpointHistogramArenaStage stage(
+            context, shader(argv[1]), shader(argv[2]), shader(argv[3]));
+        SapEndpointHistogramArenaStage portable(
+            context, shader(argv[1]), shader(argv[2]), shader(argv[3]), true);
+        const auto& info = context.device_info();
+        const bool capable = info.supports_wave_arithmetic &&
+            info.subgroup_size >= 4u && 256u % info.subgroup_size == 0u;
+        if (stage.using_packed_wave_scan() != capable ||
+            portable.using_packed_wave_scan())
+            throw std::runtime_error("Endpoint histogram bypassed the native packed-wave shader");
+        for (auto* implementation : {&stage, &portable}) {
+            negative_cases(*implementation);
+            run_case(context, *implementation, 0u, 0u, 0u, true);
+            run_case(context, *implementation, 1u, 0u, 0u, true);
+            run_case(context, *implementation, 5u, 0u, 1u, true);
+            run_case(context, *implementation, 129u, 0u, 12u, true);
+            run_case(context, *implementation, 257u, 0u, 7u, true);
+            run_case(context, *implementation, 4099u, 0u, 0u, true);
+            run_case(context, *implementation, 8201u, 0u, 19u, true);
+            run_case(context, *implementation, 0u, 5u, 0u, false);
+            run_case(context, *implementation, 7u, 3u, 2u, false);
+            run_case(context, *implementation, 129u, 71u, 5u, false);
+            run_case(context, *implementation, 4099u, 307u, 35u, false);
+        }
+        std::cout << "PhysX SAP CUDA-packed wave and portable endpoint oracles PASS\\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "PhysX SAP endpoint histogram oracle FAILED: " << e.what() << '\n';
