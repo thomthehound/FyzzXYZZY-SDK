@@ -33,6 +33,23 @@ public:
     Address register_allocation(compute::BufferId buffer,
                                 std::size_t allocation_bytes);
 
+    // Original PxgCudaBuffer/heap allocation can be a *slice* of one
+    // persistent native storage resource. Slices receive distinct stable
+    // CUDA virtual addresses even if they share the same backing buffer.
+    // Their owner (not this address table) owns and retires that buffer.
+    Address register_slice(compute::BufferId buffer, std::size_t backing_offset,
+                           std::size_t allocation_bytes);
+
+    // A source-ordered GPU copy must already have been enqueued before a
+    // live slice moves to a grown arena. This changes future host lowering
+    // without invalidating prior submitted GPU commands or virtual pointers.
+    void relocate_slice(Address base, compute::BufferId buffer,
+                        std::size_t backing_offset);
+
+    // Logical free only: removes the address mapping immediately, but leaves
+    // physical retirement and safe reuse to the original host allocator.
+    Resolved unregister_slice(Address base);
+
     // A CUdeviceptr may be base+offset, including offsets > UINT32_MAX.
     // Rejects addresses outside a live allocation, crossing its end,
     // or a zero-length access. Does not query the device or synchronize.
@@ -49,11 +66,14 @@ private:
     struct Allocation {
         compute::BufferId buffer;
         std::size_t bytes;
+        std::size_t backing_offset = 0u;
+        bool owned = true; // dedicated allocation; slices never retire backing.
     };
     static constexpr Address kAlignment = 256;
     Address next_address_ = 0x100000000ull; // all generated pointers >32-bit
     std::map<Address, Allocation> allocations_;
-    std::map<compute::BufferId, Address> by_buffer_;
+    std::map<compute::BufferId, Address> by_buffer_; // uniquely owned, retireable
+    std::map<compute::BufferId, std::size_t> slice_counts_; // non-owning references
 };
 
 } // namespace fyzz::physx_gpu

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -88,6 +89,60 @@ int main() {
         demand(big.buffer == 404u && big.offset == (1ull << 32u) + 4095u,
                "Truncated 64-bit CUdeviceptr offset");
 
+        // Multiple independent PhysX CUDA heap allocations may share one
+        // physical Vulkan/D3D12 buffer. Their virtual addresses still need
+        // independent bounds, lifetime, and relocation semantics.
+        // A retireable owned buffer must never be borrowed by
+        // non-owning slices, in either registration order or after a move.
+        const auto owned = table.register_allocation(717u, 512u);
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(717u,0u,128u); },
+            "Owned GPU buffer simultaneously accepted borrowed CUDA slice");
+        const auto sliceA=table.register_slice(515u,256u,132u);
+        const auto sliceB=table.register_slice(515u,768u,260u);
+        rejected<std::invalid_argument>(
+            [&] { table.register_allocation(515u,8192u); },
+            "GPU buffer with live shared slices was registered as a retireable owner");
+        rejected<std::invalid_argument>(
+            [&] { table.relocate_slice(sliceB,717u,2048u); },
+            "Relocation into owned GPU buffer was allowed");
+        demand(table.resolve(sliceB,4u).buffer==515u,
+               "Rejected relocation changed live CUDA mapping");
+        demand(sliceB>sliceA &&
+               table.resolve(sliceA+128u,4u).offset==384u &&
+               table.resolve(sliceB+256u,4u).offset==1024u,
+               "Shared PhysX allocation slices mapped incorrectly");
+        rejected<std::out_of_range>(
+            [&] { table.resolve(sliceA+132u,1u); },
+            "PhysX logical allocation slice boundary ignored");
+        rejected<std::out_of_range>(
+            [&] { table.unregister_allocation(sliceA); },
+            "Shared arena slice incorrectly owns physical compute buffer");
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(515u,1u,128u); },
+            "Unaligned native PhysX GPU slice was accepted");
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(515u,
+                std::numeric_limits<std::size_t>::max()-32u,64u); },
+            "Overflowing native PhysX backing offset accepted");
+        table.relocate_slice(sliceA,616u,1024u);
+        demand(table.resolve(sliceA+128u,4u).buffer==616u &&
+               table.resolve(sliceA+128u,4u).offset==1152u,
+               "Relocation lost stable PhysX CUDA virtual pointer");
+        const auto releasedA=table.unregister_slice(sliceA);
+        demand(releasedA.buffer==616u && releasedA.offset==1024u &&
+               releasedA.remaining==132u,
+               "Logical PhysX arena free returned incorrect allocation");
+        rejected<std::out_of_range>(
+            [&] { table.resolve(sliceA,1u); },
+            "Freed PhysX source allocation remained mapped");
+        demand(table.unregister_slice(sliceB).buffer==515u,
+               "Independent source slice lost shared GPU backing");
+        const auto dedicated_after_release = table.register_allocation(515u,256u);
+        demand(table.unregister_allocation(dedicated_after_release)==515u,
+               "GPU resource remained spuriously borrowed after last slice freed");
+        demand(table.unregister_allocation(owned)==717u,
+               "Original dedicated GPU buffer owner was invalidated");
         demand(table.unregister_allocation(b) == 202u &&
                table.unregister_allocation(c) == 303u &&
                table.unregister_allocation(huge) == 404u &&
