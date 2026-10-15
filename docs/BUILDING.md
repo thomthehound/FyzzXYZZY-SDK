@@ -9,9 +9,14 @@ portable GPU runtimes are separate milestones.
 
 ## Source layout and provenance
 
-- `thomthehound/PhysX` at commit `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`
-  is the **pinned source dependency**.
-- CMake will obtain that checkout over Git if `FYZZXYZZY_PHYSX_SOURCE_DIR` is unset.
+- During the transition to an in-tree PhysX-derived engine, CMake uses
+  `thomthehound/PhysX` **main** as a source bootstrap only; no PhysX
+  revision is pinned to the product.
+- CMake fetches the current development branch when
+  `FYZZXYZZY_PHYSX_SOURCE_DIR` is unset. For offline or reproducible
+  development, supply a local checkout and manage its contents yourself.
+  Upstream revision tracking belongs to individual test reports, not to a
+  required public provider ABI.
 - For offline or editable builds, point `FYZZXYZZY_PHYSX_SOURCE_DIR` at the **repository
   root** of a local PhysX checkout (the folder containing `physx/CMakeLists.txt`).
 - The `fyzzxyzzy_source_bundle` target produces an offline-configurable CPU source
