@@ -33,7 +33,7 @@ before touching. Separate *upstream-native* costs from port costs.
 | `RadixSort.cuh::radixSortCalculateRanks` → `physx_radix_scatter_arena.hlsl` | **16 digit-by-digit 1024-thread shared scans**, each with ten group barriers, plus carries. Original uses packed counters and warp scans. **At least 160 full-group scan barriers** per radix iteration were introduced by us | **P0 corrective PR #46:** native SM6.6 packed two-digit `WavePrefixSum` lowering, eight pairs and native reductions, retaining all source stable rank/order semantics; preserve fallback; GPU validation and real timing outstanding |
 | `RadixSort.cuh::radixSortSingleBlock` → `physx_radix_count_arena.hlsl` | 4 shared `InterlockedAdd` calls per uint4 input, contending on just **16** workgroup bins; source accumulates register-local packed counts then warp-reduces | **P0 corrective PR #46:** register-packed two-bin counts with native `WaveActiveSum`, a bounded number of atomic group updates; validate collision-heavy digit distributions and register pressure |
 | `broadphase.cu::computeStartAndActiveRegionHistogram` → `physx_sap_active_region_compute_arena.hlsl` | Original packed warp scan was initially lowered to two separate 512-entry LDS scans (8 KiB and nine rounds each) | **Resolved functionally in PR #44**: original packed 32-bit arithmetic restored, wave fast path (2 KiB scratch, 3 barriers/chunk), portable packed fallback. Bench still missing |
-| `broadphase.cu::computeEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | 256-wide `uint3` Hillis–Steele scan, eight sync rounds in an inner block loop; source uses warp scans / per-warp totals | **P1:** introduce native wave scan + compact warp-total prefix while retaining exact triple histogram and multi-frame behavior |
+| `broadphase.cu::firstPassEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | Triple-`uint3` full-group shared Hillis–Steele prefix discarded the source's *already packed* three 10-bit counters and warp scan | **PR #49 under review:** restore exact CUDA 10+10+10-bit packing, one native wave scan, 3 barriers/256-entry chunk, source second pass unchanged, CPU oracle both variants/frames |
 | `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | Original port used 256-wide two-bank shared prefix, eight full-group rounds per iteration vs upstream per-warp scan and short warp-total prefix | **Corrective PR #48 under validation:** one `WavePrefixSum`/`WaveActiveSum` per lane, short wave-total prefix and **three barriers per 256-entry iteration**, 512 bytes shared scratch versus 2 KiB; preserve 32 block totals and original four dispatches; portable oracle remains |
 | `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Per-iteration three-axis `uint3` shared prefix, eight rounds; source CUDA warp primitives | **P1:** wave prefix plus 32-block totals, retain source comparison selection and rank pairing |
 | `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Two-output `uint2` shared prefix with eight rounds per batch; global report-count reservation still uses atomic increments | **P1:** wave-based packed/dual report scan, preserve original global reservations and report order; do not change candidate correctness rules |
@@ -168,3 +168,48 @@ never cause that fallback selection by itself.
   representative NVIDIA hardware with clustered region counts.
 - **WMMA:** sparse scans/prefixes have no compelling dense matrix
   structure; not applicable to this kernel.
+
+## PR #49: source CUDA triple-packed endpoint histograms (unmeasured)
+
+- **Reference:** `broadphase.cu::firstPassEndPtsHistogram` uses a
+  32×3 grid of 256 threads, scans the three contributions
+  (`start`, `undeleted end`, `all ends`) **as one packed 32-bit
+  integer** (`start<<20 | end<<10 | allEnd`). CUDA's comment
+  explicitly establishes ten bits per counter: each 256-projection
+  iteration produces at most 256, so none can overflow its field.
+  Warp `__ballot_sync`/`__popc` counts and a packed warp-total scan
+  determine prefixes, with three *independent 32-bit carried totals*
+  between iterations.
+- **Rejected port:** three-component `uint3` Hillis–Steele workgroup
+  scan over two 256-entry shared banks (6 KiB of uint3 scratch
+  ignoring padding), eight rounds of full-group barriers per iteration,
+  plus carry barriers. The increased synchronization was *our*
+  translation, not imposed by CUDA.
+- **Corrective native:** identical 10/10/10 bit packing, one
+  `WavePrefixSum` and `WaveActiveSum` per projection, two 64-word
+  shared arrays (**512 B**), three workgroup barriers per chunk.
+  Each hardware wave is given a contiguous logical input slice
+  once on entry; per-wave totals are prefixed in their logical order.
+  The group leader unpacks the total into three **32-bit**
+  carried counters, preserving cross-iteration semantics and preventing
+  halfword leakage. Works for physical wave32/wave64 without WMMA.
+- **Unchanged:** 32×3×256 original grid, both incremental/current and
+  removed/previous frame paths, same start/end/total-end dense arrays,
+  original block histogram positions, two compute/output passes,
+  original per-axis and per-frame inputs and outputs, host dispatch
+  and CPU-GPU ordering.
+- **Fallback and admission:** older portable shader remains a
+  functional oracle/soft GPU fallback, not an acceptable silent
+  production performance substitution. Actual wave feature checks
+  select the SM6.6/Vulkan subgroup-arithmetic path. WMMA is not used.
+- **Alternatives:** triple independent wave scans waste two wave
+  primitives relative to source packed arithmetic; an all-workgroup
+  scan adds needless barriers; fixed warp32 ballot would force vendor
+  assumptions; modern ranged wave-size declarations might reduce
+  specialization but aren't part of our SM6.6 floor.
+- **Evidence:** full-arena independent CPU reference (source sorted
+  handle + three-axis, all frames, removed/new flags) exercises
+  both variants, 0–8201 previous boxes and extra mixed-created
+  workloads. CI validates functional results; **no hardware latency
+  claim** until RX5000/680M and comparable vendor benchmarks exist.
+
