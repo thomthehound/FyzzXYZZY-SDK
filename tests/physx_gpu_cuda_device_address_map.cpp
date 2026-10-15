@@ -92,8 +92,22 @@ int main() {
         // Multiple independent PhysX CUDA heap allocations may share one
         // physical Vulkan/D3D12 buffer. Their virtual addresses still need
         // independent bounds, lifetime, and relocation semantics.
+        // Codex P2: a retireable owned buffer may NEVER be borrowed by
+        // non-owning slices, in either registration order or after a move.
+        const auto owned = table.register_allocation(717u, 512u);
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(717u,0u,128u); },
+            "Owned GPU buffer simultaneously accepted borrowed CUDA slice");
         const auto sliceA=table.register_slice(515u,256u,132u);
         const auto sliceB=table.register_slice(515u,768u,260u);
+        rejected<std::invalid_argument>(
+            [&] { table.register_allocation(515u,8192u); },
+            "GPU buffer with live shared slices was registered as a retireable owner");
+        rejected<std::invalid_argument>(
+            [&] { table.relocate_slice(sliceB,717u,2048u); },
+            "Relocation into owned GPU buffer was allowed");
+        demand(table.resolve(sliceB,4u).buffer==515u,
+               "Rejected relocation changed live CUDA mapping");
         demand(sliceB>sliceA &&
                table.resolve(sliceA+128u,4u).offset==384u &&
                table.resolve(sliceB+256u,4u).offset==1024u,
@@ -124,6 +138,11 @@ int main() {
             "Freed PhysX source allocation remained mapped");
         demand(table.unregister_slice(sliceB).buffer==515u,
                "Independent source slice lost shared GPU backing");
+        const auto dedicated_after_release = table.register_allocation(515u,256u);
+        demand(table.unregister_allocation(dedicated_after_release)==515u,
+               "GPU resource remained spuriously borrowed after last slice freed");
+        demand(table.unregister_allocation(owned)==717u,
+               "Original dedicated GPU buffer owner was invalidated");
         demand(table.unregister_allocation(b) == 202u &&
                table.unregister_allocation(c) == 303u &&
                table.unregister_allocation(huge) == 404u &&
