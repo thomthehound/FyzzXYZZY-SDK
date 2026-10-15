@@ -245,7 +245,7 @@ advertise unlimited device memory support. Real scene admission and
 multi-frame found/lost reporting remain the acceptance milestones.
 
 
-### Independent architecture/PR #61 critical review (no Codex required)
+### Native GPU memory binding architecture review
 
 **Decision:** Do not treat the single native arena as the general PhysX
 allocator or the runtime broadphase integration interface. This is a
@@ -328,11 +328,29 @@ share a root as an engine invariant would be an architectural error.
   copy, launch and report-publication dependencies require their own
   original-source audit and integrated tests.
 
-**Merge bar:** the reusable logical-slice bookkeeping can stand as
-internal infrastructure once CI passes; the source arena converter
-must remain **test-only**, and PR #61 must be described as a
-feasibility increment, not a production-ready allocator/host bridge.
-A later PR should prove multi-root resource binding and run source
-descriptor data through actual kernels before this bridge is admitted
-into the runtime path. Do not use another standalone kernel pass as
-a substitute for that integration proof.
+**Implementation boundary:** the reusable logical-slice bookkeeping can stand as
+internal infrastructure once validated; the source arena converter remains
+**test-only**. Do not move it into the runtime by making a single-root backing
+an allocation requirement.
+
+The compute API already represents buffer identity, byte range and access intent
+through `compute::BufferBinding`. Its Vulkan implementation accepts multiple
+storage bindings up to device limits, whereas the current D3D12 implementation
+hard-codes either one arena UAV or three SRVs and one UAV. A production
+multi-resource path must first generalize and validate the D3D12 binding
+contract, while keeping equivalent explicit dependency tracking on both
+backends. This is a native compute runtime change, not a new public PhysX ABI.
+
+Per-field static resource views offer a simple correctness baseline. A compact
+root table can reduce per-kernel descriptor pressure if the required device
+features and measured performance justify it. Source kernel ID and its actual
+field-access manifest determine the resources bound for each dispatch; allocation
+location must not change the simulated algorithm. Source-visible 64-bit virtual
+pointers must never be truncated merely to fit a 32-bit arena offset.
+
+The first acceptance milestone is execution of the **existing four new-bounds
+kernels** against the source-derived `PxgBroadPhaseDesc` data, including
+independent physical resources and GPU-owned counters. Follow it with original
+stream/event, deferred-free and scene publication integration. The concrete
+work items and cross-backend acceptance criteria are tracked in
+[PhysX GPU host front-end: multi-resource execution](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/62).
