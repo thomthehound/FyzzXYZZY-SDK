@@ -70,6 +70,51 @@ DMA prerequisites for PhysX's original host operations, not proof that
 translated shaders can dereference CUDA pointers or that stream events
 are implemented.
 
+## Source-native D32 fills at PhysX's existing stream call sites
+
+`PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel()` performs two
+`mCudaContext->memsetD32Async` operations on `mStream` before starting the
+histogram launches, clearing `mActiveRegionTotalBuf` and
+`mStartRegionsTotalBuf` for the current `totalNbProjectionRegions`.
+This ordering is part of the real PhysX host work graph, not a request to
+reconstruct a separate CUDA runtime or introduce a CPU staging pass.
+
+`SourceFillD32NativeStage` lowers the source's exact `CUdeviceptr`, uint32
+fill pattern, and word count into GPU dispatches appended to the
+**caller-owned ordered command list**. When a source allocation exceeds the
+backend's maximum storage-buffer view range, the stage splits the same
+allocation into directly bound views without allocating, copying, or inserting
+host waits; it validates all chunks before committing any commands. It reuses `CudaDeviceAddressMap`
+and `source_native_view`; the original pointer can be interior to a
+source-owned heap root and only four-byte aligned. The physical RAW GPU
+view begins at the backend-compliant aligned base; the push constant
+retains the original scalar displacement. Zero-word calls append no
+command. The stage neither allocates a persistent fill resource, owns a
+stream, copies zeros from the host, submits, nor waits.
+
+Source fill and following histogram launches **must remain in the same
+source stream order**. The primitive on its own does not implement the
+complete `mStream` interface or claim portable `PxScene` support.
+The Vulkan and D3D12 tests validate ordered overlapping writes,
+per-allocation canaries, native alignment, and invalid CUDA pointers.
+The tiny-view planning oracle additionally forces descriptor-window
+splitting without requiring multi-gigabyte CI allocations.
+This is the first device-side stream operation required at the original
+source call sites beyond compute dispatch and buffer copying.
+
+**Performance decision still open.** Vulkan provides native
+`vkCmdFillBuffer`, which supports four-byte-aligned source offsets and
+may be preferable to a compute dispatch. D3D12 has
+`ClearUnorderedAccessViewUint`, but it needs both CPU and GPU UAV
+descriptors, explicit UAV ordering around dispatches, and careful
+handling of four-byte interior offsets under the 16-byte RAW descriptor
+base constraint. The shared shader is a correct portable lowering,
+**not evidence that it beats either native fill path**. Before declaring
+the host primitive production-optimal, compare fill and following
+kernel performance using representative small and large PhysX
+histograms and consider backend-native lowering without duplicating
+the source host scheduler.
+
 ### Still required before source-compatible GPU execution
 
 1. **Kernel/descriptor lowering.** PhysX `CUfunction` handles and its
