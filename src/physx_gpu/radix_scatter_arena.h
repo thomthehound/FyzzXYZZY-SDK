@@ -38,10 +38,14 @@ static_assert(offsetof(RadixScatterAxisDesc, radix_counts_offset) == 16,
 // and owns submission barriers, source buffers, and later passes.
 class RadixScatterArenaStage final {
 public:
-    RadixScatterArenaStage(compute::Context& context, compute::ShaderBinary shader);
+    RadixScatterArenaStage(compute::Context& context, compute::ShaderBinary shader,
+                            compute::ShaderBinary wave_shader,
+                            bool force_portable = false);
     ~RadixScatterArenaStage();
     RadixScatterArenaStage(const RadixScatterArenaStage&) = delete;
     RadixScatterArenaStage& operator=(const RadixScatterArenaStage&) = delete;
+
+    bool using_wave_scan() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -51,6 +55,7 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipeline_ = 0;
+    bool using_wave_ = false;
 };
 
 } // namespace fyzz::physx_gpu

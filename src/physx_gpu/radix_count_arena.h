@@ -31,10 +31,14 @@ static_assert(sizeof(RadixCountArenaDesc) == 48, "Three-axis radix layout change
 
 class RadixCountArenaStage final {
 public:
-    RadixCountArenaStage(compute::Context& context, compute::ShaderBinary shader);
+    RadixCountArenaStage(compute::Context& context, compute::ShaderBinary shader,
+                         compute::ShaderBinary wave_shader,
+                         bool force_portable = false);
     ~RadixCountArenaStage();
     RadixCountArenaStage(const RadixCountArenaStage&) = delete;
     RadixCountArenaStage& operator=(const RadixCountArenaStage&) = delete;
+
+    bool using_wave_count() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -44,6 +48,7 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipeline_ = 0;
+    bool using_wave_ = false;
 };
 
 } // namespace fyzz::physx_gpu

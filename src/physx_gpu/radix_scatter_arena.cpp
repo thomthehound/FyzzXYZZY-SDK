@@ -25,7 +25,9 @@ static_assert(sizeof(Parameters) == 32, "PhysX radix-scatter root layout changed
 }
 
 RadixScatterArenaStage::RadixScatterArenaStage(compute::Context& context,
-                                               compute::ShaderBinary shader)
+                                               compute::ShaderBinary shader,
+                                               compute::ShaderBinary wave_shader,
+                                               bool force_portable)
     : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
@@ -33,8 +35,15 @@ RadixScatterArenaStage::RadixScatterArenaStage(compute::Context& context,
         device.max_workgroup_count[0] < kBlocks ||
         device.max_workgroup_count[1] < 3)
         throw std::runtime_error("PhysX radix-scatter requires source 32x3x1024 launch");
+    // Select by actual subgroup feature support and wave size, never
+    // vendor ID; only the native SM6.6/Vulkan subgroup implementation
+    // restores the original packed warp-first performance strategy.
+    using_wave_ = !force_portable && !wave_shader.bytes.empty() &&
+                  device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  1024u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
-    desc.shader = std::move(shader);
+    desc.shader = using_wave_ ? std::move(wave_shader) : std::move(shader);
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
     pipeline_ = context_.create_compute_pipeline(desc);

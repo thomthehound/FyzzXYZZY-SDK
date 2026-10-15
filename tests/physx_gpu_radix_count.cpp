@@ -159,7 +159,8 @@ void negative_cases(RadixCountArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2) throw std::invalid_argument("Expected compiled radix shader");
+        if (argc != 3)
+            throw std::invalid_argument("Expected portable and wave radix count shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -168,21 +169,33 @@ int main(int argc, char** argv) {
 #endif
         );
         ShaderBinary shader;
+        ShaderBinary wave;
 #if defined(FYZZXYZZY_TEST_D3D12)
-        shader.format = ShaderFormat::Dxil;
+        shader.format = wave.format = ShaderFormat::Dxil;
 #else
-        shader.format = ShaderFormat::Spirv;
+        shader.format = wave.format = ShaderFormat::Spirv;
 #endif
         shader.bytes = load_shader(argv[1]);
-        RadixCountArenaStage stage(context, std::move(shader));
-        negative_cases(stage);
-        run_case(context, stage, 0u, 0u, 0u);
-        run_case(context, stage, 4u, 0u, 128u);
-        run_case(context, stage, 5u, 4u, 128u);
-        run_case(context, stage, 4099u, 12u, 256u);
-        run_case(context, stage, 8193u, 28u, 128u);
-        run_case(context, stage, 131075u, 20u, 256u);
-        std::cout << "PhysX three-axis radix block count oracle PASS\n";
+        wave.bytes = load_shader(argv[2]);
+        RadixCountArenaStage stage(context, shader, wave);
+        RadixCountArenaStage fallback(
+            context, std::move(shader), std::move(wave), true);
+        const auto& device = context.device_info();
+        const bool supported = device.supports_wave_arithmetic &&
+            device.subgroup_size >= 4u && 1024u % device.subgroup_size == 0u;
+        if (stage.using_wave_count() != supported ||
+            fallback.using_wave_count())
+            throw std::runtime_error("Radix count wave selection changed");
+        for (auto* implementation : {&stage, &fallback}) {
+            negative_cases(*implementation);
+            run_case(context, *implementation, 0u, 0u, 0u);
+            run_case(context, *implementation, 4u, 0u, 128u);
+            run_case(context, *implementation, 5u, 4u, 128u);
+            run_case(context, *implementation, 4099u, 12u, 256u);
+            run_case(context, *implementation, 8193u, 28u, 128u);
+            run_case(context, *implementation, 131075u, 20u, 256u);
+        }
+        std::cout << "PhysX packed wave and fallback radix block count oracle PASS\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "PhysX radix-count GPU oracle FAILED: " << e.what() << '\n';

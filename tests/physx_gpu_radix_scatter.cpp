@@ -68,7 +68,7 @@ std::uint32_t key_for(std::uint32_t i, std::uint32_t axis) {
     return ((i / 3u) * 2654435761u) ^ (axis * 0x9e3779b9u);
 }
 
-Packed pack(std::uint32_t num_keys) {
+Packed pack(std::uint32_t num_keys, bool clustered = false) {
     Packed p;
     for (std::uint32_t parity = 0; parity < 2; ++parity) {
         p.count_descriptor_offsets[parity] =
@@ -85,7 +85,12 @@ Packed pack(std::uint32_t num_keys) {
         p.counts_offsets[axis] = p.reserve(16u * kBlocks);
 
         for (std::uint32_t i = 0; i < num_keys; ++i) {
-            const auto key = key_for(i, axis);
+            // Adversarial skew: almost all keys occupy just two bins
+            // across all eight radix passes; catches packed-field
+            // carry and massive single-bin contention regressions.
+            const auto key = clustered
+                ? ((i % 7u == 0u) ? 0xffffffffu : 0u)
+                : key_for(i, axis);
             const auto rank = 0xf0000000u + i * 3u + axis;
             p.original[axis].emplace_back(key, rank);
             p.arena[p.keys_offsets[axis][0] / 4u + i] = key;
@@ -180,8 +185,9 @@ void check_guarded(const Packed& p, const std::vector<std::uint32_t>& actual,
 
 void run_case(Context& context, RadixCountArenaStage& count_stage,
               RadixScatterArenaStage& scatter_stage,
-              std::uint32_t num_keys, std::uint32_t passes) {
-    auto p = pack(num_keys);
+              std::uint32_t num_keys, std::uint32_t passes,
+              bool clustered = false) {
+    auto p = pack(num_keys, clustered);
     const auto bytes = static_cast<std::uint32_t>(p.arena.size() * 4u);
     const auto arena = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
     const auto mirror = context.create_buffer(bytes, MemoryPlacement::DeviceLocal);
@@ -250,8 +256,8 @@ void negative_cases(RadixScatterArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 3)
-            throw std::invalid_argument("Expected radix count and scatter shaders");
+        if (argc != 5)
+            throw std::invalid_argument("Expected count, scatter, wave count and wave scatter shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -261,24 +267,54 @@ int main(int argc, char** argv) {
         );
         ShaderBinary count_shader;
         ShaderBinary scatter_shader;
+        ShaderBinary wave_count_shader;
+        ShaderBinary wave_shader;
 #if defined(FYZZXYZZY_TEST_D3D12)
-        count_shader.format = scatter_shader.format = ShaderFormat::Dxil;
+        count_shader.format = scatter_shader.format =
+            wave_count_shader.format = wave_shader.format = ShaderFormat::Dxil;
 #else
-        count_shader.format = scatter_shader.format = ShaderFormat::Spirv;
+        count_shader.format = scatter_shader.format =
+            wave_count_shader.format = wave_shader.format = ShaderFormat::Spirv;
 #endif
         count_shader.bytes = load_shader(argv[1]);
         scatter_shader.bytes = load_shader(argv[2]);
-        RadixCountArenaStage count_stage(context, std::move(count_shader));
-        RadixScatterArenaStage scatter_stage(context, std::move(scatter_shader));
+        wave_count_shader.bytes = load_shader(argv[3]);
+        wave_shader.bytes = load_shader(argv[4]);
+        RadixCountArenaStage count_stage(context, count_shader, wave_count_shader);
+        RadixCountArenaStage count_fallback(
+            context, std::move(count_shader), std::move(wave_count_shader), true);
+        RadixScatterArenaStage scatter_stage(
+            context, scatter_shader, wave_shader);
+        RadixScatterArenaStage fallback(
+            context, std::move(scatter_shader), std::move(wave_shader), true);
+        const auto& device = context.device_info();
+        const bool capable = device.supports_wave_arithmetic &&
+            device.subgroup_size >= 4u && 1024u % device.subgroup_size == 0u;
+        if (scatter_stage.using_wave_scan() != capable ||
+            count_stage.using_wave_count() != capable ||
+            fallback.using_wave_scan() ||
+            count_fallback.using_wave_count())
+            throw std::runtime_error("Radix wave-shader capability selection changed");
         negative_cases(scatter_stage);
-        run_case(context, count_stage, scatter_stage, 0u, 0u);
-        run_case(context, count_stage, scatter_stage, 1u, 1u);
-        run_case(context, count_stage, scatter_stage, 5u, 8u);
-        run_case(context, count_stage, scatter_stage, 128u, 8u);
-        run_case(context, count_stage, scatter_stage, 4099u, 8u);
-        run_case(context, count_stage, scatter_stage, 8193u, 8u);
-        run_case(context, count_stage, scatter_stage, 131075u, 1u);
-        std::cout << "PhysX three-axis radix count/scatter stable oracle PASS\n";
+        negative_cases(fallback);
+
+        // Cross-check two complete execution strategies, both with the
+        // original two-dispatch count→scatter dependencies and payload
+        // stability. The independent CPU reference is unchanged.
+        for (const auto path : {0u, 1u}) {
+            auto& counters = path ? count_fallback : count_stage;
+            auto& scatter = path ? fallback : scatter_stage;
+            run_case(context, counters, scatter, 0u, 0u);
+            run_case(context, counters, scatter, 1u, 1u);
+            run_case(context, counters, scatter, 5u, 8u);
+            run_case(context, counters, scatter, 128u, 8u);
+            run_case(context, counters, scatter, 4099u, 8u);
+            run_case(context, counters, scatter, 8193u, 8u);
+            run_case(context, counters, scatter, 131075u, 1u);
+            run_case(context, counters, scatter, 4099u, 8u, true);
+            run_case(context, counters, scatter, 8193u, 1u, true);
+        }
+        std::cout << "PhysX packed wave radix count/scatter and fallback source oracle PASS\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "PhysX radix scatter GPU oracle FAILED: " << e.what() << '\n';

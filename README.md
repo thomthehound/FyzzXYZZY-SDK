@@ -33,7 +33,8 @@ algorithms, GPU contexts, scene orchestration and dataflow.
 - [Source-grounded GPU port implementation program](docs/GPU_PORT_PROGRAM.md)
 - [Source-grounded GPU broadphase trace](docs/GPU_BROADPHASE_TRACE.md)
 - [GPU memory addressing and performance experiment RFC](docs/GPU_MEMORY_ADDRESSING_RFC.md)
-- [**Binding GPU performance-first policy, SM6.6 hardware target, WMMA opportunities and performance-risk register**](docs/GPU_PORT_PERFORMANCE.md)
+- [**GPU performance policy and shipping tiers (SM6.6, Vulkan 1.4, optional WMMA/SM6.8)**](docs/GPU_PORT_PERFORMANCE.md)
+- [Retroactive CUDA-to-HLSL performance audit and corrections](docs/GPU_PERFORMANCE_AUDIT.md)
 - [Apache 2.0 license](LICENSE.md)
 
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
