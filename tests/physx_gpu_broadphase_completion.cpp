@@ -32,7 +32,10 @@ struct PairTask final : physx::PxBaseTask {
         --refs_;
         ++releases_;
         events_.emplace_back(label_);
+        if (throw_on_remove)
+            throw std::runtime_error("Original task release failed after state change");
     }
+    bool throw_on_remove = false;
     int32_t getReference() const override { return refs_; }
     void release() override {}
 
@@ -206,6 +209,31 @@ void exercise(Backend backend) {
         throw std::runtime_error("Tasks released after failed PhysX continuation setup");
     require_throws([&] { terminal.arm(0); },
                    "Partially installed PhysX continuations were retried");
+
+    // PhysX task release can enter a dispatcher immediately. If the
+    // first release fails after changing task state, neither replay nor
+    // rearming may be allowed: doing either can dispatch old work twice.
+    BroadPhaseCompletionGate released_partial(context);
+    released_partial.arm(0);
+    events.clear();
+    PairTask partial_found("found", events), partial_lost("lost", events);
+    partial_found.throw_on_remove = true;
+    require_throws([&] {
+        released_partial.fetch_and_release(
+            [&] { events.emplace_back("publish"); },
+            [&] { events.emplace_back("continuations"); },
+            partial_found, partial_lost);
+    }, "Partial source task release failure was swallowed");
+    if (events != std::vector<std::string>{
+            "publish", "continuations", "found"} ||
+        released_partial.armed() ||
+        partial_found.releases() != 1 || partial_lost.releases() != 0)
+        throw std::runtime_error("Partial PhysX continuation release replayed task work");
+    require_throws([&] { released_partial.arm(0); },
+                   "Broadphase accepted new frame after failed pair-task release");
+    require_throws([&] {
+        released_partial.fetch_and_release([] {}, [] {}, partial_found, partial_lost);
+    }, "Broadphase retried a partially released pair task");
     context.destroy_buffer(buffer);
 }
 
