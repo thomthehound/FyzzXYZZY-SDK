@@ -133,6 +133,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
+    src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -351,6 +352,27 @@ if(FYZZXYZZY_BUILD_VULKAN)
         COMMAND fyzzxyzzy_physx_source_pairs_native
           "${FYZZXYZZY_SOURCE_PAIRS_SPV}")
       set_tests_properties(fyzzxyzzy_physx_source_pairs_native PROPERTIES SKIP_RETURN_CODE 77)
+
+      # PxgCudaBroadPhaseSap::generateNewPairsKernel - four ordered source
+      # dispatches, one GPU batch, no intermediate host data transfers.
+      add_executable(fyzzxyzzy_physx_source_sequence_native
+        tests/physx_gpu_source_newbounds_sequence_native.cpp)
+      target_include_directories(fyzzxyzzy_physx_source_sequence_native PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+      target_link_libraries(fyzzxyzzy_physx_source_sequence_native PRIVATE
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+      add_dependencies(fyzzxyzzy_physx_source_sequence_native
+        fyzzxyzzy_physx_source_overlap_native_spv
+        fyzzxyzzy_physx_source_scan_spv
+        fyzzxyzzy_physx_source_pairs_spv)
+      add_test(NAME fyzzxyzzy_physx_source_sequence_native
+        COMMAND fyzzxyzzy_physx_source_sequence_native
+          "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}"
+          ${FYZZXYZZY_SOURCE_SCAN_SPV_FILES}
+          "${FYZZXYZZY_SOURCE_PAIRS_SPV}")
+      set_tests_properties(fyzzxyzzy_physx_source_sequence_native PROPERTIES
+        SKIP_RETURN_CODE 77)
 
       # Original PxgBroadPhaseDesc fields and source CUDA virtual pointers,
       # native persistent backing growth and descriptor-only re-materialization.
@@ -1269,6 +1291,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
+    src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -1446,6 +1469,28 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND fyzzxyzzy_physx_source_pairs_native_d3d12
         "${FYZZXYZZY_SOURCE_PAIRS_DXIL}")
     set_tests_properties(fyzzxyzzy_physx_source_pairs_native_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+    add_executable(fyzzxyzzy_physx_source_sequence_native_d3d12
+      tests/physx_gpu_source_newbounds_sequence_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_sequence_native_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_sequence_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_sequence_native_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+    add_dependencies(fyzzxyzzy_physx_source_sequence_native_d3d12
+      fyzzxyzzy_physx_source_overlap_native_dxil
+      fyzzxyzzy_physx_source_scan_dxil
+      fyzzxyzzy_physx_source_pairs_dxil)
+    add_test(NAME fyzzxyzzy_physx_source_sequence_native_d3d12
+      COMMAND fyzzxyzzy_physx_source_sequence_native_d3d12
+        "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}"
+        ${FYZZXYZZY_SOURCE_SCAN_DXIL_FILES}
+        "${FYZZXYZZY_SOURCE_PAIRS_DXIL}")
+    set_tests_properties(fyzzxyzzy_physx_source_sequence_native_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
