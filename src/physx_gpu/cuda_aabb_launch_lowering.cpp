@@ -46,12 +46,12 @@ void CudaAabbLaunchLowering::append(
     const auto environment = read_arg<std::uint64_t>(args, 3u);
     const AabbEncodingParameters params{
         read_arg<std::uint32_t>(args, 4u),
-        read_arg<std::uint32_t>(args, 5u),
-        read_arg<std::uint32_t>(args, 6u),
-        read_arg<std::uint32_t>(args, 7u),
-        read_arg<std::uint32_t>(args, 8u),
-        read_arg<std::uint32_t>(args, 9u),
-        read_arg<std::uint32_t>(args, 10u)
+        read_arg<std::uint8_t>(args, 5u),
+        read_arg<std::uint8_t>(args, 6u),
+        read_arg<std::uint8_t>(args, 7u),
+        read_arg<std::uint8_t>(args, 8u),
+        read_arg<std::uint8_t>(args, 9u),
+        read_arg<std::uint8_t>(args, 10u)
     };
     if (!params.count)
         throw std::invalid_argument("Zero-sized PhysX AABB CUDA launch");
