@@ -240,10 +240,16 @@ int main(int argc,char** argv){
 #endif
         );
         const auto& info=context.device_info();
+        // Match SapNewBoundsPairsArenaStage's initialization-time
+        // requirements: this test must skip devices that cannot launch
+        // the source's fixed 64 x 256 grid, not report a GPU test failure.
         if(!info.supports_int64_shader||!info.supports_wave_arithmetic||
            info.subgroup_size<4u||info.subgroup_size>256u||
-           256u%info.subgroup_size!=0u) {
-            std::cout<<"SKIP: native uint64 shader or subgroup ops unavailable\n";
+           256u%info.subgroup_size!=0u||
+           info.max_workgroup_invocations<256u||
+           info.max_workgroup_size[0]<256u||
+           info.max_workgroup_count[0]<64u) {
+            std::cout<<"SKIP: native uint64/wave or 64x256 dispatch unavailable\n";
             return 77;
         }
         ShaderBinary binary;
