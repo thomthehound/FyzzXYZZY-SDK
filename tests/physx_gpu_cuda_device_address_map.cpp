@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -88,6 +89,41 @@ int main() {
         demand(big.buffer == 404u && big.offset == (1ull << 32u) + 4095u,
                "Truncated 64-bit CUdeviceptr offset");
 
+        // Multiple independent PhysX CUDA heap allocations may share one
+        // physical Vulkan/D3D12 buffer. Their virtual addresses still need
+        // independent bounds, lifetime, and relocation semantics.
+        const auto sliceA=table.register_slice(515u,256u,132u);
+        const auto sliceB=table.register_slice(515u,768u,260u);
+        demand(sliceB>sliceA &&
+               table.resolve(sliceA+128u,4u).offset==384u &&
+               table.resolve(sliceB+256u,4u).offset==1024u,
+               "Shared PhysX allocation slices mapped incorrectly");
+        rejected<std::out_of_range>(
+            [&] { table.resolve(sliceA+132u,1u); },
+            "PhysX logical allocation slice boundary ignored");
+        rejected<std::out_of_range>(
+            [&] { table.unregister_allocation(sliceA); },
+            "Shared arena slice incorrectly owns physical compute buffer");
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(515u,1u,128u); },
+            "Unaligned native PhysX GPU slice was accepted");
+        rejected<std::invalid_argument>(
+            [&] { table.register_slice(515u,
+                std::numeric_limits<std::size_t>::max()-32u,64u); },
+            "Overflowing native PhysX backing offset accepted");
+        table.relocate_slice(sliceA,616u,1024u);
+        demand(table.resolve(sliceA+128u,4u).buffer==616u &&
+               table.resolve(sliceA+128u,4u).offset==1152u,
+               "Relocation lost stable PhysX CUDA virtual pointer");
+        const auto releasedA=table.unregister_slice(sliceA);
+        demand(releasedA.buffer==616u && releasedA.offset==1024u &&
+               releasedA.remaining==132u,
+               "Logical PhysX arena free returned incorrect allocation");
+        rejected<std::out_of_range>(
+            [&] { table.resolve(sliceA,1u); },
+            "Freed PhysX source allocation remained mapped");
+        demand(table.unregister_slice(sliceB).buffer==515u,
+               "Independent source slice lost shared GPU backing");
         demand(table.unregister_allocation(b) == 202u &&
                table.unregister_allocation(c) == 303u &&
                table.unregister_allocation(huge) == 404u &&
