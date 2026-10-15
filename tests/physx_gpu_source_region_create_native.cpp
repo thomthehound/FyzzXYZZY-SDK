@@ -212,6 +212,63 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
                 " for "+std::to_string(boxes)+" boxes");
         }
     }
+    // The source buddy allocator can place all ten producer inputs/outputs
+    // and both clear targets inside ONE native GPU resource. D3D12 must
+    // bind reads as UAVs too: mixed SRV/UAV states on this heap root would
+    // be invalid even though the logical CUDA suballocations do not overlap.
+    if(created && boxes==5u){
+        CudaDeviceAddressMap sharedMap;
+        std::vector<std::uint32_t> initial(73u,kCanary), wanted(73u,kCanary);
+        std::vector<CudaDeviceAddressMap::Address> alias(roots.size());
+        std::vector<std::uint32_t> placement(roots.size());
+        for(std::size_t i=0;i<roots.size();++i){
+            const auto words=static_cast<std::uint32_t>(
+                roots[i].input.size()-roots[i].offset/4u-16u);
+            const auto position=static_cast<std::uint32_t>(initial.size()+5u+i%3u);
+            initial.resize(position+words+17u,kCanary);
+            wanted.resize(position+words+17u,kCanary);
+            placement[i]=position*4u;
+            const auto old=roots[i].offset/4u;
+            for(std::uint32_t k=0u;k<words;++k){
+                initial[position+k]=roots[i].input[old+k];
+                wanted[position+k]=roots[i].expected[old+k];
+            }
+        }
+        const auto backing=ctx.create_buffer(initial.size()*4u,MemoryPlacement::DeviceLocal);
+        for(std::size_t i=0;i<roots.size();++i) {
+            const auto words=static_cast<std::uint32_t>(
+                roots[i].input.size()-roots[i].offset/4u-16u);
+            alias[i]=sharedMap.register_slice(backing,placement[i],words*4u);
+        }
+        auto shared=desc;
+        const auto ptr2=[&](std::size_t i){
+            return static_cast<std::uintptr_t>(alias[i]);};
+        shared.boxHandles[0][0]=reinterpret_cast<decltype(shared.boxHandles[0][0])>(ptr2(handles));
+        for(std::uint32_t a=0u;a<3u;++a){
+            shared.boxSapBox1D[a]=reinterpret_cast<decltype(shared.boxSapBox1D[a])>(ptr2(sap[a]));
+            shared.totalEndPtHistogram[a]=reinterpret_cast<decltype(shared.totalEndPtHistogram[a])>(ptr2(ends[a]));
+        }
+        shared.regionRange=reinterpret_cast<decltype(shared.regionRange)>(ptr2(ranges));
+        shared.startRegionAccum=reinterpret_cast<decltype(shared.startRegionAccum)>(ptr2(starts));
+        shared.regionAccum=reinterpret_cast<decltype(shared.regionAccum)>(ptr2(regions));
+        shared.activeRegionsHistogram=reinterpret_cast<decltype(shared.activeRegionsHistogram)>(ptr2(active));
+        shared.startRegionsHistogram=reinterpret_cast<decltype(shared.startRegionsHistogram)>(ptr2(startHist));
+        std::vector<BatchCommand> aliasedCommands;
+        stage.append(aliasedCommands,shared,sharedMap,layout);
+        check(aliasedCommands.size()==3u,
+              "Source buddy-heap aliased region sequence lost dispatches");
+        const auto& producer=std::get<DispatchCommand>(aliasedCommands.back());
+        for(const auto& binding:producer.buffers)
+            check(binding.buffer==backing,
+                  "Source buddy-heap allocations silently used different roots");
+        ctx.submit_upload_buffer(backing,0u,initial.data(),initial.size()*4u);
+        ctx.wait_submission(ctx.submit_batch(aliasedCommands));
+        std::vector<std::uint32_t> observed(initial.size());
+        ctx.download(backing,0u,observed.data(),observed.size()*4u);
+        check(observed==wanted,
+              "Aliased PhysX source heap-root region contents or canaries changed");
+        ctx.destroy_buffer(backing);
+    }
     for(auto& root:roots)ctx.destroy_buffer(root.buffer);
 }
 } // namespace
