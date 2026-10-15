@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_fill_d32_native.h"
+#include "physx_gpu/source_native_view.h"
 
 #include <algorithm>
 #include <array>
@@ -56,6 +57,47 @@ void run(Context& ctx, SourceFillD32NativeStage& stage) {
     // nonetheless be 16-byte aligned on D3D12.
     const auto a=addresses.register_slice(buffers[0],260u,4096u);
     const auto b=addresses.register_slice(buffers[1],1036u,4096u);
+
+    // Force tiny RAW storage view limits to exercise the SAME window
+    // calculation used for real multi-gigabyte PhysX allocations. Check
+    // that each dispatch view maps to the exact original CUDA words,
+    // without skipped or repeated words as alignment residues change.
+    // This is CPU-only planning; GPU execution below remains unmodified.
+    {
+        constexpr std::uint32_t kFillWords = 300u;
+        std::uint32_t visited = 0u;
+        std::uint32_t window_count = 0u;
+        while (visited < kFillWords) {
+            const auto pointer = a + std::uint64_t(visited) * 4u;
+            const auto count = source_d32_fill_chunk_words(
+                addresses, pointer, kFillWords - visited, 256u, 256u);
+            if (window_count == 0u) check(count == 63u,
+                "Source D32 first chunk forgot the unaligned physical view base");
+            if (window_count == 1u) check(count == 64u,
+                "Source D32 subsequent chunk retained stale offset bias");
+            check(count > 0u && count <= kFillWords - visited,
+                  "Source D32 chunk planner failed to make bounded progress");
+            std::uint32_t bias = 0u;
+            const auto view = source_native_view(
+                addresses, pointer, source_allocation_bytes(count, 4u),
+                256u, 0u, BufferAccess::Write, bias, 256u);
+            const auto resolved = addresses.resolve(pointer, count * 4u);
+            check(view.buffer == buffers[0] &&
+                  view.offset + bias == resolved.offset &&
+                  view.offset % 256u == 0u && view.bytes <= 256u,
+                  "Source D32 chunk did not preserve original address/view extent");
+            visited += count;
+            ++window_count;
+        }
+        check(visited == kFillWords && window_count == 5u,
+              "Source D32 chunk boundaries did not cover requested allocation");
+        reject([&] {
+            source_d32_fill_chunk_words(addresses, a, 16u, 256u, 4u);
+        }, "Source D32 chunk planner accepted view too small for offset bias");
+        reject([&] {
+            source_d32_fill_chunk_words(addresses, a + 2u, 16u, 256u, 256u);
+        }, "Source D32 chunk planner accepted non-word-aligned virtual address");
+    }
 
     std::vector<BatchCommand> commands;
     stage.append(commands, addresses, 0u, 0x12345678u, 0u);
