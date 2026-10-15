@@ -5,6 +5,7 @@
 
 See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md)
 and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
+**All GPU work is also bound by the [GPU performance contract](GPU_PORT_PERFORMANCE.md)**, which requires explicit review of throughput costs and modern hardware primitives for every deviation from source PhysX.
 
 Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or

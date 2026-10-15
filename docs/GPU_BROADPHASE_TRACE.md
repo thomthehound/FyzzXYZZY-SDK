@@ -245,6 +245,98 @@ count / pair-write sequence. These remain explicit
 dependencies; this is not a fabricated replacement
 simulation pipeline.
 
+## 2d. Original start/active region worklists
+
+Following the four region prefix passes,
+`PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel`
+launches three CUDA kernels, gated on nonzero created handles:
+`BP_WRITEOUT_ACTIVE_HISTOGRAM` (**32×256**),
+`BP_COMPUTE_ACTIVE_HISTOGRAM` (**64×512**), then
+`BP_OUTPUT_ACTIVE_HISTOGRAM` (**64×256**). The source
+implements these in `broadphase.cu` as
+`writeOutStartAndActiveRegionHistogram`,
+`computeStartAndActiveRegionHistogram`, and
+`outputOrderedActiveRegionHistogram`.
+
+The first maps every work item in the previously scanned
+`startRegionAccum` to its X start projection and one YZ
+region. It marks the source-owned dense
+`startRegionsHistogram[region, xProjection]` and sets
+`activeRegionsHistogram` only for endpoints with the
+original new-projection tag. **PhysX initializes both
+dense histogram arrays to zero before `BP_CREATE_REGIONS`.**
+They are not created or cleared by the three kernels here.
+
+The middle kernel computes the **two exclusive region prefixes**
+from one packed 32-bit value per projection: `start<<16 | active`,
+as in the original CUDA code. Each 512-projection chunk contains at
+most 512 unit contributions to either field, so the packed addition
+cannot cross the 16-bit field boundary; across chunks the source
+maintains two independent wide carry accumulators. The first
+portable lowering unnecessarily used **two separate 512-wide
+Hillis–Steele shared-memory scans** (8 KiB scratch, repeated
+workgroup-wide synchronization). That was functionally sound but
+a performance regression risk introduced by this port, **not a
+requirement of the original PhysX algorithm**.
+
+PR #44 replaces it with a source-packed subgroup scan on devices
+reporting compute subgroup arithmetic: a single `WavePrefixSum`
+per packed value and `WaveActiveSum` per subgroup, a short
+subgroup-total scan, and three full-group barriers per 512-entry
+chunk. Wave leaders atomically acquire logical subgroup numbers
+**once per workgroup**, so mapping of physical wave lanes to
+`SV_GroupIndex` is never assumed. 32/64-lane implementations
+can both use the native fast path. The scan requires only
+2 KiB of shared wave-subtotal storage versus 8 KiB originally.
+A source-packed, **single** shared-memory scan (4 KiB) is retained
+strictly as the functional fallback where native subgroup
+arithmetic is unavailable. CUDA warp assumptions do not affect
+the output order. These are **analytical** operation/scratch
+comparisons; **hardware speedup is not yet measured**.
+
+The third kernel traverses the same original work items and
+writes compact, X-ordered `orderedStartRegionHandles` and
+the newly-created subset `orderedActiveRegionHandles`.
+The independent GPU oracle exercises both the native and fallback
+implementations on the same full-buffer fixtures, including
+multi-512-projection loops. Compiled target for the fast D3D12
+kernel is `cs_6_6`, consistent with the planned SM6.6 shipping
+minimum; Vulkan requires a separate queried subgroup-arithmetic
+capability, not an imagined SM6.6 Vulkan bit.
+**All further optimization departures must follow
+[GPU_PORT_PERFORMANCE.md](GPU_PORT_PERFORMANCE.md).**
+
+`SapActiveRegionListsArenaStage` retains the three exact
+launch shapes, the same create-only host gate, and the
+original resource relationships. Its common shader is
+compiled to Vulkan SPIR-V and D3D12 DXIL. The descriptor
+is a compact offset lowering of the original
+`PxgBroadPhaseDesc`, **not** an independent broadphase
+owner. It validates that the dense 64-region storage and
+rounded projection-count calculations fit its 32-bit
+addressing contract.
+
+Its native GPU test seeds source-compatible sorted X
+endpoints, `PxgSapBox1D` positions, 4×4×4 per-handle
+region ranges, and exclusive start-region work prefixes.
+An independent CPU oracle traverses logical X start
+objects, marks membership, linearly scans each region
+and emits ordered lists, without duplicating the GPU
+binary-search work mapping. Entire arenas including
+unwritten padding and source input are compared for
+empty, quiet, small, and multi-512-projection workloads.
+
+The first five producer/prefix kernels remain separately
+tested. This fixture does **not** yet submit all eight
+kernels in a live PhysX scene or perform the original
+overlap-check and new-pair work. Next are
+`BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS`,
+`BP_COMPUTE_OVERLAPCHECKS_HISTOGRAM`,
+`BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM`, and
+`BP_GENERATE_FOUNDPAIR_NEWBOUNDS`, with original
+host scheduling, ownership and result publication
+preserved.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.
