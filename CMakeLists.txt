@@ -1445,7 +1445,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_source_pairs_native_d3d12
       COMMAND fyzzxyzzy_physx_source_pairs_native_d3d12
         "${FYZZXYZZY_SOURCE_PAIRS_DXIL}")
-    set_tests_properties(fyzzxyzzy_physx_source_pairs_native_d3d12 PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(fyzzxyzzy_physx_source_pairs_native_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
     add_executable(fyzzxyzzy_physx_source_descriptor_d3d12
       tests/physx_gpu_source_descriptor.cpp
