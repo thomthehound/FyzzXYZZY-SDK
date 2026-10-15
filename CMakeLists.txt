@@ -73,6 +73,24 @@ if(BUILD_TESTING)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
 endif()
 
+# Internal translation of PhysX's CUdeviceptr-style host addresses into
+# native backend buffers. This is not a public CUDA ABI or a replacement
+# host scheduler, and is testable without a GPU or CUDA SDK.
+add_library(fyzzxyzzy_physx_cuda_host_address STATIC
+  src/physx_gpu/cuda_device_address_map.cpp)
+target_compile_features(fyzzxyzzy_physx_cuda_host_address PUBLIC cxx_std_17)
+target_include_directories(fyzzxyzzy_physx_cuda_host_address PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_physx_cuda_address_test
+    tests/physx_gpu_cuda_device_address_map.cpp)
+  target_link_libraries(fyzzxyzzy_physx_cuda_address_test PRIVATE
+    fyzzxyzzy_physx_cuda_host_address)
+  add_test(NAME fyzzxyzzy_physx_cuda_address_test
+    COMMAND fyzzxyzzy_physx_cuda_address_test)
+endif()
+
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 if(FYZZXYZZY_BUILD_VULKAN)
