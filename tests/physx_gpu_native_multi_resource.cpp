@@ -76,8 +76,6 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     context.upload(destination, 0u, output.data(), output.size() * 4u);
     context.upload(snapshot, 0u, mirror.data(), mirror.size() * 4u);
 
-    ComputePipelineDesc unused{};
-    (void)unused;
     DispatchCommand dispatch;
     dispatch.pipeline = pipeline;
     dispatch.groups = {1u, 1u, 1u};
