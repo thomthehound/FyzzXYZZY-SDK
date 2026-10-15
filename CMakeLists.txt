@@ -919,8 +919,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_wave_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_compute_portable_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_output_SHADER}")
-    endif()
-
 
       set(FYZZXYZZY_SAP_OVERLAP_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work.spv")
       add_custom_command(OUTPUT "${FYZZXYZZY_SAP_OVERLAP_SPV}"
@@ -937,6 +935,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_sap_overlap_work fyzzxyzzy_sap_overlap_shader)
       add_test(NAME fyzzxyzzy_sap_overlap_work
         COMMAND fyzzxyzzy_sap_overlap_work "${FYZZXYZZY_SAP_OVERLAP_SPV}")
+    endif()
+
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
       set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
       add_custom_command(
