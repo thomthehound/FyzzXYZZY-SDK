@@ -32,13 +32,13 @@ RWStructuredBuffer<uint> output_bounds : register(u0, space0);
 
 struct Parameters {
     uint count;
-    uint shift_x;
-    uint shift_y;
-    uint shift_z;
-    uint env_bits_x;
-    uint env_bits_y;
-    uint env_bits_z;
+    uint shifts_xyz;         // Original PxU8 X/Y/Z packed into 24 bits.
+    uint env_shifts_xyz;     // Original PxU8 environment X/Y/Z shifts.
     uint env_enabled;
+    uint input_bias;         // 32-bit elements after aligned native descriptor.
+    uint distance_bias;
+    uint environment_bias;
+    uint output_bias;
 };
 #ifdef __spirv__
 // PhysX stage::append() supplies 32 bytes of Vulkan push constants.
@@ -59,26 +59,24 @@ void main(uint3 dispatch_thread_id : SV_DispatchThreadID) {
 
     uint axis = component < 3 ? component : component - 3;
     uint source_index = box_index * 6 + component;
-    float value = input_bounds[source_index];
-    float distance = contact_distances[box_index];
+    float value = input_bounds[parameters.input_bias + source_index];
+    float distance = contact_distances[parameters.distance_bias + box_index];
     float projected = component < 3 ? value - distance : value + distance;
 
     uint bits = asuint(projected);
     uint encoded = (bits & 0x80000000u) != 0 ? ~bits : bits | 0x80000000u;
-    uint shift = axis == 0 ? parameters.shift_x :
-                 (axis == 1 ? parameters.shift_y : parameters.shift_z);
-    uint env_shift = axis == 0 ? parameters.env_bits_x :
-                     (axis == 1 ? parameters.env_bits_y : parameters.env_bits_z);
+    uint shift = (parameters.shifts_xyz >> (8u * axis)) & 0xffu;
+    uint env_shift = (parameters.env_shifts_xyz >> (8u * axis)) & 0xffu;
     uint mask = component >= 3 ? 1u : 0u;
     uint result = ((encoded >> shift) & ~1u) | mask;
 
     if (parameters.env_enabled != 0 && env_shift != 0) {
-        uint env_id = environment_ids[box_index];
+        uint env_id = environment_ids[parameters.environment_bias + box_index];
         if (env_id != 0xffffffffu)
             result |= env_id << (32u - env_shift);
         else
             result = mask != 0 ? 0xfe7fffffu : 0x01800000u;
     }
 
-    output_bounds[source_index] = result;
+    output_bounds[parameters.output_bias + source_index] = result;
 }
