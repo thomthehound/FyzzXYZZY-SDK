@@ -921,6 +921,22 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_ACTIVE_output_SHADER}")
     endif()
 
+
+      set(FYZZXYZZY_SAP_OVERLAP_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work.spv")
+      add_custom_command(OUTPUT "${FYZZXYZZY_SAP_OVERLAP_SPV}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+          -Fo "${FYZZXYZZY_SAP_OVERLAP_SPV}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_sap_overlap_shader DEPENDS "${FYZZXYZZY_SAP_OVERLAP_SPV}")
+      add_executable(fyzzxyzzy_sap_overlap_work tests/physx_gpu_sap_overlap_work.cpp)
+      target_include_directories(fyzzxyzzy_sap_overlap_work PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_sap_overlap_work PRIVATE fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_sap_overlap_work fyzzxyzzy_sap_overlap_shader)
+      add_test(NAME fyzzxyzzy_sap_overlap_work
+        COMMAND fyzzxyzzy_sap_overlap_work "${FYZZXYZZY_SAP_OVERLAP_SPV}")
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
       set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
       add_custom_command(
