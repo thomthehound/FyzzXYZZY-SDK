@@ -63,12 +63,27 @@ struct ShaderBinary {
     std::string entry_point = "main";
 };
 
-// Logical buffer bindings use consecutive slots [0, count). Vulkan maps
-// them to storage descriptors. Initial D3D12 AABB support maps 0..2 to SRV
-// registers t0..t2 and slot 3 to UAV u0; parameters become root constants.
+// The shader's declared view ABI is independent of whether several
+// bindings refer to allocations in the same native resource. Raw means
+// ByteAddressBuffer/RWByteAddressBuffer; Structured32 means 32-bit
+// structured elements. Read bindings use t-registers on D3D12, writable
+// bindings use u-registers. Indices within each register class are assigned
+// in declaration order; Vulkan uses ordinary storage-buffer bindings.
+enum class StorageBufferViewKind {
+    RawRead,
+    RawReadWrite,
+    Structured32Read,
+    Structured32ReadWrite
+};
+
+// Logical bindings use slots [0, count). Explicit storage views define
+// the shader ABI and native descriptor types without inferring it from the
+// number of buffers. Empty views retain the existing one-buffer arena and
+// four-buffer AABB layouts while their callers migrate.
 struct ComputePipelineDesc {
     ShaderBinary shader;
     std::uint32_t storage_buffer_binding_count = 0;
+    std::vector<StorageBufferViewKind> storage_buffer_views;
     std::uint32_t push_constant_bytes = 0;
 };
 
