@@ -105,8 +105,8 @@ Fixture prepare(const Case& c) {
     f.region_work_total = f.allocate(1u);
     auto active_hist = f.allocate(64u * kProjections);
     auto start_hist = f.allocate(64u * kProjections);
-    f.overlap_counts = f.allocate(2u * 2u); // two u64 values
-    f.handle_regions = f.allocate(2u * 2u);
+    f.overlap_counts = f.allocate(5u * 2u); // at most five 64-bit work entries
+    f.handle_regions = f.allocate(5u * 2u);
     f.block_totals = f.allocate(32u * 2u);
     f.overlap_total = f.allocate(2u);
     auto active_order = f.allocate(64u * kProjections);
@@ -156,7 +156,11 @@ Fixture prepare(const Case& c) {
         f.mapping.work.start_histograms_offset != f.mapping.pairs.start_histograms_offset)
         throw std::runtime_error("PhysX sequence descriptor aliases diverged");
 
-    const std::uint32_t n = c.empty_work ? 0u : (c.two_regions ? 2u : 1u);
+    // PhysX's upstream BP_CREATE_REGIONS counts every start endpoint:
+    // single region [owner, partner1, partner2] => three items;
+    // two-region case [owner x0,x1; partner1 x0,x1; partner2 x1]
+    // => five items. End projections have no region work.
+    const std::uint32_t n = c.empty_work ? 0u : (c.two_regions ? 5u : 3u);
     f.work_items = n;
     f.put(f.region_work_total, n);
     f.put(f.found_count, c.initial_report_count);
@@ -180,10 +184,19 @@ Fixture prepare(const Case& c) {
 
         const auto bound = bounds + handle * 24u;
         f.put(bound, handle); // min X
-        f.put(bound + 4u, handle == 2u && c.aabb_separation ? 20u : 0u);
+        // The owner overlaps both partners, but partners are separated
+        // from each other in Y. Moving partner 2 above the owner's
+        // maximum tests filtering without altering the work histogram.
+        const auto y0 = handle == 0u ? 0u :
+                        (handle == 1u ? 0u :
+                        (c.aabb_separation ? 120u : 20u));
+        const auto y1 = handle == 0u ? 100u :
+                        (handle == 1u ? 10u :
+                        (c.aabb_separation ? 130u : 30u));
+        f.put(bound + 4u, y0);
         f.put(bound + 8u, 0u);
         f.put(bound + 12u, 10u);
-        f.put(bound + 16u, handle == 2u && c.aabb_separation ? 30u : 10u);
+        f.put(bound + 16u, y1);
         f.put(bound + 20u, 10u);
 
         f.put(group_ids + handle * 4u,
@@ -193,30 +206,37 @@ Fixture prepare(const Case& c) {
                   (c.wildcard_environment ? 0xffffffffu : 8u) : 7u);
     }
 
-    // Source producer's regionAccum: the owner start has N possible
-    // X regions, every other projection has zero work items.
-    for (std::uint32_t x = 0u; x < kProjections; ++x)
-        f.put(region_prefix + x * 4u, x == 0u ? 0u : n);
+    // Upstream regionAccum is the exclusive scan of EVERY start's
+    // number of region cells. Retain zero contributions from X ends.
+    std::uint32_t regionWorkCursor = 0u;
+    for (std::uint32_t x = 0u; x < kProjections; ++x) {
+        f.put(region_prefix + x * 4u, regionWorkCursor);
+        if (!c.empty_work && x < 3u)
+            regionWorkCursor += c.two_regions && x < 2u ? 2u : 1u;
+    }
+    if (regionWorkCursor != n)
+        throw std::runtime_error("Region-work prefix input is inconsistent");
 
-    // Valid source-style region memberships:
-    // - one-region case: both partners occur in region 0;
-    // - two-region case: partner 1 spans both regions, partner 2
-    //   belongs only to region 1. This produces raw counts [1,2].
-    //   The canonical-region rule emits (0,1) in region 0 and
-    //   (0,2) in region 1, rejecting the repeated (0,1).
-    const auto selected_hist = c.new_projection ? start_hist : active_hist;
-    const auto selected_order = c.new_projection ? start_order : active_order;
+    // Region 0 contains starts 0 and 1; region 1 contains 0, 1, 2.
+    // For one-region work all three are members of region 0.
+    // Prefix histograms exclude the start at X=0 when sampling X=1.
+    // Both active/start views share a valid region membership in this
+    // fixture; the separate stage test checks differing selections.
     for (std::uint32_t region = 0u; region < (c.two_regions ? 2u : 1u); ++region) {
-        const auto start = selected_hist + region * kProjections * 4u;
-        const auto both = !c.two_regions || region == 1u;
-        for (std::uint32_t x = 0u; x < kProjections; ++x) {
-            const std::uint32_t count =
-                x < 2u ? 0u : (x == 2u ? 1u : (both ? 2u : 1u));
-            f.put(start + x * 4u, count);
+        const bool both = !c.two_regions || region == 1u;
+        for (auto histogram : {start_hist, active_hist}) {
+            const auto base = histogram + region * kProjections * 4u;
+            for (std::uint32_t x = 0u; x < kProjections; ++x) {
+                const auto count =
+                    x < 2u ? 0u : (x == 2u ? 1u : (both ? 2u : 1u));
+                f.put(base + x * 4u, count);
+            }
         }
-        const auto ordered = selected_order + region * kProjections * 4u;
-        f.put(ordered, 1u);
-        if (both) f.put(ordered + 4u, 2u);
+        for (auto ordering : {start_order, active_order}) {
+            const auto base = ordering + region * kProjections * 4u;
+            f.put(base, 1u);
+            if (both) f.put(base + 4u, 2u);
+        }
     }
     return f;
 }
@@ -238,16 +258,32 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
     auto expected = f;
     const auto valid = reference_pairs(c);
     if (c.created) {
-        // Independently enumerate per-region candidate membership,
-        // then form the true uint64 exclusive overlap offsets. Unlike the
-        // shader, the oracle does not binary-search region/work prefixes.
+        // Independently enumerate each valid start handle's region
+        // membership and its sorted *later* start handles. The original
+        // shader instead uses upper-bound prefix searches on GPU.
         std::uint64_t comparisonTotal = 0u;
-        for (std::uint32_t i = 0; i < f.work_items; ++i) {
-            expected.put64(f.overlap_counts + i * 8u, comparisonTotal);
-            expected.put(f.handle_regions + i * 8u, 0u);
-            expected.put(f.handle_regions + i * 8u + 4u, i * kProjections);
-            comparisonTotal += c.two_regions && i == 0u ? 1u : 2u;
+        std::uint32_t work = 0u;
+        for (std::uint32_t owner = 0u; owner < 3u; ++owner) {
+            const std::uint32_t firstRegion =
+                c.two_regions && owner == 2u ? 1u : 0u;
+            const std::uint32_t lastRegion =
+                c.two_regions && owner != 2u ? 1u : firstRegion;
+            for (std::uint32_t region = firstRegion;
+                 region <= lastRegion && work < f.work_items; ++region) {
+                expected.put64(f.overlap_counts + work * 8u, comparisonTotal);
+                expected.put(f.handle_regions + work * 8u, owner);
+                expected.put(f.handle_regions + work * 8u + 4u,
+                             region * kProjections);
+                for (std::uint32_t other = owner + 1u; other < 3u; ++other) {
+                    // Partner1 spans both regions; partner2 only region1.
+                    if (!c.two_regions || other == 1u || region == 1u)
+                        ++comparisonTotal;
+                }
+                ++work;
+            }
         }
+        if (work != f.work_items)
+            throw std::runtime_error("CPU region enumeration missing entries");
         for (std::uint32_t block = 0; block < 32u; ++block)
             expected.put64(f.block_totals + block * 8u,
                            block == 0u ? comparisonTotal : 0u);
