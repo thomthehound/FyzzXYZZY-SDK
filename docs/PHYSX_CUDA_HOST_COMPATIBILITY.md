@@ -187,7 +187,12 @@ storage. Importantly, **`regionAccumTotal`**, **`overlapChecksTotalRegion`**
 and **`sharedFoundPairIndex`** are already scalars *inside the GPU
 descriptor*; the lowering points the translated shader at their exact
 `offsetof(PxgBroadPhaseDesc, ...)` byte positions, rather than inventing
-separate counter allocations.
+separate counter allocations. **The host copy of `regionAccumTotal` is not
+authoritative:** the GPU produces this count, and no CPU readback occurs
+during descriptor lowering. The host supplies the original allocation
+capacities of `overlapChecksRegion` and `overlapChecksHandleRegiones`
+instead, to validate their backing ranges. This preserves the GPU-owned
+runtime count and avoids a hidden synchronization point.
 
 This source descriptor is still uploaded by the original host when GPU
 buffer ownership or input state changes, **not reconstructed at every
