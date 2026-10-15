@@ -4,7 +4,7 @@
 # GPU broadphase source trace and migration ledger
 
 Scope: **actual PhysX 5.11 GPU broadphase and its scene contract**.
-Source revision: `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`.
+Source family: PhysX GPU broadphase; no specific source revision is required by the SDK.
 This page is a focused implementation worksheet; it complements
 [the port program](GPU_PORT_PROGRAM.md) and
 [scene-wide execution trace](PHYSX_GPU_PORT.md).
@@ -100,7 +100,7 @@ unsigned wraparound. It does **not** perform `gpuDMAUp`, enqueue
 kernels, manage original `PxgAABBManager` task references or
 change the existing `ScPipeline` continuations.
 
-The pinned `update` swaps **old/new integer-bound buffer
+The upstream `update` swaps **old/new integer-bound buffer
 identities** after `generateNewPairsKernel`, before
 `clearNewFlagKernel` and report accumulation. The separate
 `fetchBroadPhaseResults` operation first calls
@@ -138,7 +138,7 @@ CUDA-to-backend transfer adaptation.
 
 ## 2b. Original 3D region producer after created-handle processing
 
-The pinned `PxgCudaBroadPhaseSap::computeRegionHistogramKernel`
+The upstream `PxgCudaBroadPhaseSap::computeRegionHistogramKernel`
 runs **only when at least one created handle exists**, after the final
 nonincremental endpoint histogram and SAP index initialization.
 It first clears the dense `activeRegionsHistogram` and
@@ -448,7 +448,7 @@ invariant rather than reproducing pointer arithmetic unnecessarily.
    three axes; stable/expected ranks and handle remapping on both APIs.
 4. **Pairs through frames:** a scene that introduces, updates, removes and
    sleeps objects; compare created/destroyed overlap **sets** and legal
-   report ordering against the pinned CUDA implementation (if available)
+   report ordering against the original CUDA implementation (if available)
    and CPU PhysX general behavior.
 5. **Aggregate regression:** empty aggregate excluded; aggregate membership
    changes, actor–aggregate and aggregate–aggregate pairs, duplicate handling.
