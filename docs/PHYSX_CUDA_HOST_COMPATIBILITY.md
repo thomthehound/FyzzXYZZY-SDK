@@ -143,9 +143,45 @@ region tables; it submits both clears and source region generation
 in one ordered native GPU batch, then checks every output against a
 separate per-box CPU oracle and untouched allocation canaries.
 No new host scheduler, scene task, or CPU synchronization point is
-introduced between those three source operations. The four following
-region histogram scans and the actual `PxScene` host integration
-remain work to do; passing this test is not a claim of a working scene.
+introduced between those three source operations. Passing this test
+is not a claim of a working GPU scene.
+
+## Original four region histogram scans over GPU-resident source allocations
+
+`SourceRegionHistogramsNativeStage` appends the four original PhysX
+region histogram launches in source order:
+`BP_COMPUTE_START_REGION_HISTOGRAM`,
+`BP_OUTPUT_START_REGION_HISTOGRAM`,
+`BP_COMPUTE_REGION_HISTOGRAM`, and
+`BP_OUTPUT_REGION_HISTOGRAM`. Each has the source's 32 × 256 workgroup
+geometry. The original GPU data and 32-element block histograms are
+borrowed from the source `PxgBroadPhaseDesc`, using the existing CUDA
+virtual address map and physical native binding views.
+
+The second pass writes the GPU totals **into the original resident
+`PxgBroadPhaseDesc::startRegionAccumTotal` and
+`PxgBroadPhaseDesc::regionAccumTotal` fields**, including exact
+structure member offsets and original descriptor address bias. It does
+not write an independent/surrogate descriptor or copy GPU histogram
+values to the CPU to reconstruct dispatch sizes.
+
+The portable scan uses the established two-bank workgroup prefix
+technique. When native wave arithmetic and a compatible subgroup
+width are available, the implementation selects the existing
+atomic-wave-ID hierarchical scan strategy. Both variants have
+conformance tests against independent serial CPU prefix and
+per-block subtotal oracles.
+
+Most importantly, the source region-creation conformance fixture now
+also appends these four stages after the two D32 fills and
+`BP_CREATE_REGIONS` **in one caller-owned GPU batch**. It checks output
+arrays, all 32 block totals, the two original descriptor scalar fields,
+unchanged memory/canaries, retained removed-projection capacity and
+both separate and shared GPU heap-root backing. This is a contiguous
+seven-operation segment of the original source host path, not a
+standalone rewritten scene scheduler. The subsequent active-region
+histogram steps and the complete live `PxScene` task graph remain
+unintegrated.
 
 ### Still required before source-compatible GPU execution
 
