@@ -31,6 +31,22 @@ struct AabbEncodingParameters {
     std::uint32_t env_bits_z = 0;
 };
 
+// Private device-descriptor lowering. A CUDA pointer can address a 4-byte
+// element inside an allocation even when Vulkan requires descriptor offsets
+// to be 256 bytes (or another device-reported alignment). Bind the aligned
+// containing range, then index by the residual ELEMENT offset in the shader.
+struct AlignedAabbViews {
+    std::array<compute::BufferBinding, 4> bindings{};
+    std::array<std::uint32_t, 4> element_bias{};
+};
+
+// Pure host computation; test with stricter alignments than the CI adapter.
+// The caller supplies exact (un-aligned) views and range requirements.
+AlignedAabbViews lower_aabb_storage_views(
+    const std::array<compute::BufferBinding, 4>& requested,
+    std::uint64_t descriptor_alignment,
+    std::uint64_t max_descriptor_bytes);
+
 class AabbEncodingStage final {
 public:
     AabbEncodingStage(compute::Context& context, compute::ShaderBinary shader);
@@ -59,6 +75,9 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipeline_ = 0;
+    std::uint64_t descriptor_alignment_ = 4u;
+    std::uint64_t max_descriptor_range_ = 0u;
+    std::uint32_t max_workgroup_x_ = 0u;
 };
 
 } // namespace fyzz::physx_gpu
