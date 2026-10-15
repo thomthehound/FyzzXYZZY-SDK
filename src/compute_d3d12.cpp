@@ -539,7 +539,8 @@ struct Context::Impl {
         if (desc.shader.format != ShaderFormat::Dxil || desc.shader.bytes.empty())
             throw std::invalid_argument("Native D3D12 requires compiled DXIL");
         if (desc.shader.entry_point != "main" ||
-            !desc.storage_buffer_binding_count || desc.push_constant_bytes != 32u)
+            !desc.storage_buffer_binding_count || !desc.push_constant_bytes ||
+            desc.push_constant_bytes % 4u || desc.push_constant_bytes / 4u > 62u)
             throw std::invalid_argument("Invalid D3D12 compute pipeline declaration");
 
         std::vector<StorageBufferViewKind> kinds = desc.storage_buffer_views;
@@ -617,7 +618,7 @@ struct Context::Impl {
         roots[root_count].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         roots[root_count].Constants.ShaderRegister = 0;
         roots[root_count].Constants.RegisterSpace = 0;
-        roots[root_count].Constants.Num32BitValues = 8;
+        roots[root_count].Constants.Num32BitValues = desc.push_constant_bytes / 4u;
         roots[root_count].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         ++root_count;
         D3D12_ROOT_SIGNATURE_DESC sig{};
@@ -876,7 +877,7 @@ struct Context::Impl {
                 });
             }
             submission.commands->SetComputeRoot32BitConstants(
-                table_root, 8, cmd.push_constants.data(), 0);
+                table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
             submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto kind = pipeline.view_kinds[slot];
