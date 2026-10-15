@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/sap_newbounds_sequence_arena.h"
 #include "physx_gpu/sap_host_frame_roles.h"
+#include "physx_gpu/broadphase_completion.h"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,24 @@ using namespace fyzz::physx_gpu;
 namespace {
 constexpr std::uint32_t kCanary = 0xcdcdcdcd;
 constexpr std::uint32_t kProjections = 6u; // Three current PhysX boxes.
+struct ReportTask final : physx::PxBaseTask {
+    ReportTask(std::vector<int>& events, int id)
+        : events_(events), id_(id) {}
+    void run() override {}
+    const char* getName() const override { return "integrated new-bounds pair task"; }
+    void addReference() override { ++references_; }
+    void removeReference() override {
+        if (references_ != 1) throw std::runtime_error("Found/lost task released twice");
+        --references_;
+        events_.push_back(id_);
+    }
+    int32_t getReference() const override { return references_; }
+    void release() override {}
+    std::vector<int>& events_;
+    int id_;
+    int references_ = 1;
+};
+
 
 std::vector<std::uint8_t> load(const char* path) {
     std::ifstream file(path, std::ios::binary);
@@ -333,15 +352,20 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
                 throw std::runtime_error("PhysX sequence descriptor order changed");
         }
     }
-    // One ordered GPU batch. No CPU intermediate downloads or invented
-    // per-stage synchronization; the backend tracks the common RW arena.
-    commands.emplace_back(CopyCommand{arena, 0u, mirror, 0u, size});
-    context.wait_submission(context.submit_batch(commands));
+    // The four dispatches and the dependent readback run as one GPU batch.
+    // The caller holds one completion token until PhysX's original fetch
+    // boundary. There are no intermediate CPU waits or readbacks.
+    if (c.created)
+        commands.emplace_back(CopyCommand{arena, 0u, mirror, 0u, size});
+    BroadPhaseCompletionGate completion(context);
+    completion.arm(c.created ? context.submit_batch(commands) : 0u);
     std::vector<std::uint32_t> actual(f.bytes.size());
-    context.download(mirror, 0u, actual.data(), size);
-    context.destroy_buffer(mirror);
-    context.destroy_buffer(arena);
+    std::vector<int> events;
+    ReportTask found(events, 2), lost(events, 3);
+    bool published = false;
 
+    completion.fetch_and_release([&] {
+        context.download(c.created ? mirror : arena, 0u, actual.data(), size);
     const std::uint32_t count = actual.at(f.found_count / 4u);
     if (count != expected.get(f.found_count))
         throw std::runtime_error(
@@ -375,6 +399,19 @@ void check(Context& context, const SapNewBoundsSequenceArenaStage& stage,
             "Integrated PhysX intermediate/canary mismatch at word " +
             std::to_string(std::distance(actual.begin(), mismatch.first)));
     }
+        published = true;
+        events.push_back(0); // validated/fetched PhysX reports
+    }, [&] {
+        if (!published)
+            throw std::runtime_error("PhysX continuations before pair publication");
+        events.push_back(1);
+    }, found, lost);
+    if (events != std::vector<int>{0, 1, 2, 3} ||
+        completion.armed() || found.getReference() != 0 ||
+        lost.getReference() != 0)
+        throw std::runtime_error("PhysX pair-task publication order changed");
+    context.destroy_buffer(mirror);
+    context.destroy_buffer(arena);
 }
 
 void test_invalid(const SapNewBoundsSequenceArenaStage& stage) {
