@@ -6,9 +6,9 @@
 Status: planning and source audit, October 2026. This is the program-level
 companion to [the execution trace](PHYSX_GPU_PORT.md) and
 [the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
-completed PhysX GPU functionality. Audit baseline: the PhysX revision pinned
-by the SDK root CMake file, `6dc53585d7db07346f53d0598a5fd3bfdce47d8d`
-in `thomthehound/PhysX`. Re-evaluate this document whenever the pin moves.
+completed PhysX GPU functionality. Source audit follows the PhysX family in `thomthehound/PhysX` and
+the SDK's own ported sources; no product build should require an exact
+external PhysX commit. Refresh this audit when upstream internals change.
 Proposals below are explicitly distinguished from behavior observed upstream.
 
 ## 0. Objective, scope, and truthfulness
@@ -141,7 +141,7 @@ demonstrate nested traversal, safe reallocations, aliasing, pointer lifetimes,
 
 ### 1.4 Warp and device execution semantics are a high-risk port
 
-Samples from the pinned CUDA source:
+Samples from the original CUDA source:
 
 - `gpubroadphase/src/CUDA/broadphase.cu`: ballot and barriers in sorting,
   incremental SAP, and region work.
@@ -183,7 +183,7 @@ replacement for CUDA's arbitrary typed pointer graph.
   synchronization required by constraints and solver.
 - `gpusimulationcontroller`: rigid body/shape state, DMA back, sleeping,
   joint manager and direct GPU API, plus particle, soft-body and FEM-cloth
-  paths. The pinned source contains all these modules; parity claims must
+  paths. The audited source contains all these modules; parity claims must
   identify which are supported, falling back, or still unavailable.
 - CPU-side CCD, triggers and callbacks still exist in GPU-enabled scenes.
   Their CPU execution is not a deficiency to "fix"; their ordering and
@@ -253,14 +253,14 @@ state machine or a backend-specific body ownership model.
 
 | Gate | Deliverable | Must be proven before proceeding |
 | --- | --- | --- |
-| G0 - baseline | Source/scene map; build modes; CPU test oracle; trace/profiling format | Exact pinned PhysX call/dependency map, CPU regression fixtures, reproducible builds |
+| G0 - baseline | Source/scene map; build modes; CPU test oracle; trace/profiling format | Source-grounded PhysX call/dependency map, CPU regression fixtures, reproducible builds |
 | G1 - two execution backends | Native Vulkan and D3D12 compute, same AABB shader and identical reference fixtures | SPIR-V and DXIL compilation, dispatch, copy, resource barriers, readback, fence and failure tests; native Windows D3D12 execution |
 | G2 - addressing and tasks | Portable device descriptor schema, allocation/lifetime policy and GPU completion bridge into PhysX continuations | Real pointer-rich descriptor traversal on both backends; task continuation exactly once; resize, alias, abort, sequencing cases |
 | G3 - coherent GPU broadphase | Source-derived SAP/sort/region/aggregate/pair pipeline entered from a real PhysX scene | Found/lost-pair parity, frame-to-frame state, forced update, aggregation, overflow, scene publication, CPU dynamics with GPU BP |
 | G4 - body/shape pipeline | Portable simulation-controller body/shape updates, contact stream ownership and GPU narrowphase foundation | Original GPU/CPU fallback matrix, contact/patch output, touch/CCD/trigger interaction and island input |
 | G5 - rigid solver | Source-derived PGS/TGS constraint preparation, partitioning, rigid solver and integration | Stable bodies, contacts, joints, restitution/friction, sleep/wake, callback/report semantics, multi-frame regression |
 | G6 - articulation | GPU articulation streams, data prep, solve/feedback consistent with PhysX | Chains/loops where supported; joints/tendons; edge cases and CPU fallbacks clearly classified |
-| G7 - GPU breadth | Deformable surface/volume, PBD particles and remaining pinned PhysX GPU services | Per-feature source trace, capacity constraints, mixed-feature interactions and coverage report |
+| G7 - GPU breadth | Deformable surface/volume, PBD particles and remaining PhysX GPU services | Per-feature source trace, capacity constraints, mixed-feature interactions and coverage report |
 | G8 - production | Direct GPU API policy, interop, tuning, hardware matrices, packaging and engine consumers | Honest public support matrix, profiling, robust recovery and repeatable release acceptance |
 
 **Implementation priority:** G0/G1/G2 *before* adding lots of CUDA kernels.
@@ -391,7 +391,7 @@ actual source-derived prototypes, not preference.
 4. **Review for semantic divergence:** active masks, atomics, ordering,
    overflow/abort, persistent data, fallbacks and CPU task continuation.
 5. **Close evidence gaps:** use Linux Vulkan and Windows D3D12/WARP CI
-   routinely, compare against pinned PhysX source and CPU oracles, and
+   routinely, compare against source PhysX behavior and CPU oracles, and
    flag missing hardware coverage. Reserve AMD profiling for coherent scene
    milestones described in §4.3; do not demand it per PR.
 6. **Update this program and [execution trace](PHYSX_GPU_PORT.md)** as each
@@ -456,8 +456,7 @@ but do not block shader-family translation waiting for an AMD benchmark.
 
 ## 7. Primary source index
 
-Pinned upstream source in `thomthehound/PhysX`, revision
-`6dc53585d7db07346f53d0598a5fd3bfdce47d8d`:
+Source reference paths in the PhysX family (not a dependency pin):
 
 - `physx/source/physx/src/NpScene.cpp`
 - `physx/source/simulationcontroller/src/ScScene.cpp`
