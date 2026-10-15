@@ -610,6 +610,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
       )
       add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
+      # Native packed found/lost wave scan, original 256x3x256 dispatch.
+      set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_6 -E main
+          -Fo "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_wave_shader DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_incremental_pairs
         tests/physx_gpu_sap_incremental_pairs.cpp)
       target_include_directories(fyzzxyzzy_physx_sap_incremental_pairs PRIVATE
@@ -623,7 +634,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_sap_comparisons_second_shader
         fyzzxyzzy_physx_sap_incremental_pairs_shader
         fyzzxyzzy_physx_sap_endpoint_wave_shader
-        fyzzxyzzy_physx_sap_comparisons_wave_shader)
+        fyzzxyzzy_physx_sap_comparisons_wave_shader
+        fyzzxyzzy_physx_sap_incremental_pairs_wave_shader)
       add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs
         COMMAND fyzzxyzzy_physx_sap_incremental_pairs
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_first_SHADER}"
@@ -632,7 +644,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}")
+          "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}")
 
       # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
       set(FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER
@@ -1406,6 +1419,17 @@ if(FYZZXYZZY_BUILD_D3D12)
     )
     add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
+    # Native packed found/lost wave scan, original 256x3x256 dispatch.
+    set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}"  -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_wave_shader DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_incremental_pairs_d3d12
       tests/physx_gpu_sap_incremental_pairs.cpp)
     target_compile_definitions(fyzzxyzzy_physx_sap_incremental_pairs_d3d12 PRIVATE
@@ -1421,7 +1445,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_sap_comparisons_second_shader
       fyzzxyzzy_d3d12_sap_incremental_pairs_shader
         fyzzxyzzy_d3d12_sap_endpoint_wave_shader
-        fyzzxyzzy_d3d12_sap_comparisons_wave_shader)
+        fyzzxyzzy_d3d12_sap_comparisons_wave_shader
+        fyzzxyzzy_d3d12_sap_incremental_pairs_wave_shader)
     add_test(NAME fyzzxyzzy_physx_sap_incremental_pairs_d3d12
       COMMAND fyzzxyzzy_physx_sap_incremental_pairs_d3d12
         "${FYZZXYZZY_D3D12_SAP_ENDPOINT_first_DXIL}"
@@ -1430,7 +1455,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_SAP_COMPARISONS_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
           "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}"
-          "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}")
+          "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}"
+          "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}")
 
     # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
     set(FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL
