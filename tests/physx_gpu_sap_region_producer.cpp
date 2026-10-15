@@ -322,8 +322,8 @@ void negative_cases(SapRegionProducerArenaStage& stage,
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2 && argc != 6)
-            throw std::invalid_argument("Expected producer shader and optional four prefix shaders");
+        if (argc != 2 && argc != 8)
+            throw std::invalid_argument("Expected producer and four prefix shaders plus two native-wave variants");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -341,28 +341,49 @@ int main(int argc, char** argv) {
         const auto format = shader.format;
         SapRegionProducerArenaStage stage(context, std::move(shader));
         std::unique_ptr<SapRegionHistogramsArenaStage> scans;
-        if (argc == 6) {
+        std::unique_ptr<SapRegionHistogramsArenaStage> portable;
+        if (argc == 8) {
             const auto from = [&](const char* path) {
                 ShaderBinary binary;
                 binary.format = format;
                 binary.bytes = load_shader(path);
                 return binary;
             };
-            scans = std::make_unique<SapRegionHistogramsArenaStage>(
-                context, from(argv[2]), from(argv[3]),
-                from(argv[4]), from(argv[5]));
+            const auto make = [&](bool force_portable) {
+                return std::make_unique<SapRegionHistogramsArenaStage>(
+                    context, from(argv[2]), from(argv[3]),
+                    from(argv[4]), from(argv[5]),
+                    from(argv[6]), from(argv[7]), force_portable);
+            };
+            scans = make(false);
+            portable = make(true);
+            const auto& info = context.device_info();
+            const bool capable = info.supports_wave_arithmetic &&
+                info.subgroup_size >= 4u &&
+                256u % info.subgroup_size == 0u;
+            if (scans->using_subgroup_scan() != capable ||
+                portable->using_subgroup_scan())
+                throw std::runtime_error("Region prefix native wave selection changed");
         }
-        negative_cases(stage, scans.get());
-        run_case(context, stage, scans.get(), 0u, 0u);
-        run_case(context, stage, scans.get(), 5u, 0u);
-        run_case(context, stage, scans.get(), 1u, 1u);
-        run_case(context, stage, scans.get(), 5u, 1u);
-        run_case(context, stage, scans.get(), 17u, 3u);
-        run_case(context, stage, scans.get(), 129u, 7u);
-        run_case(context, stage, scans.get(), 257u, 257u);
-        run_case(context, stage, scans.get(), 4099u, 11u);
-        run_case(context, stage, scans.get(), 8201u, 19u);
-        std::cout << (scans ? "PhysX region producer + four region scans PASS\\n" : "PhysX region producer PASS\\n");
+        // Both variants execute all four source-ordered histogram passes
+        // against the same independent CPU region + linear-prefix oracle.
+        // The BP_CREATE_REGIONS-only test keeps its original path.
+        std::vector<SapRegionHistogramsArenaStage*> variants{scans.get()};
+        if (portable) variants.push_back(portable.get());
+        for (auto* variant : variants) {
+            negative_cases(stage, variant);
+            run_case(context, stage, variant, 0u, 0u);
+            run_case(context, stage, variant, 5u, 0u);
+            run_case(context, stage, variant, 1u, 1u);
+            run_case(context, stage, variant, 5u, 1u);
+            run_case(context, stage, variant, 17u, 3u);
+            run_case(context, stage, variant, 129u, 7u);
+            run_case(context, stage, variant, 257u, 257u);
+            run_case(context, stage, variant, 4099u, 11u);
+            run_case(context, stage, variant, 8201u, 19u);
+        }
+        std::cout << (scans ? "PhysX region producer + native-wave/fallback histograms PASS\\n" :
+                              "PhysX region producer PASS\\n");
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "PhysX BP_CREATE_REGIONS FAILED: " << ex.what() << '\n';

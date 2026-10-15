@@ -62,6 +62,22 @@ Vulkan and D3D12 are independently feature-probed backends; do not
 model SM6.6 as a Vulkan bit. Feature selection is per-device and
 per-kernel, never a vendor-name shortcut.
 
+**Wave arithmetic versus WMMA (required distinction):** The
+source-faithful broadphase scan/reduction fast paths rely on
+**wave/subgroup arithmetic**, **not** WMMA. The D3D12 SM6.6 production
+baseline shall include actual `WaveOps` support; Vulkan 1.4 devices
+must advertise compute-subgroup arithmetic
+(`VK_SUBGROUP_FEATURE_ARITHMETIC_BIT`) for the current native-wave
+implementation, or qualify through a separately tested and
+**performance-acceptable** equivalent. Vulkan 1.4 alone does not
+promise all subgroup arithmetic. These non-matrix capabilities apply
+equally to cards without WMMA; no matrix support is needed for the
+broadphase. Missing WMMA must **never** trigger a slower broadphase
+variant. Software/legacy correctness fallbacks do not imply that
+the hardware is shipping-qualified. Production admission is tracked
+in [issue #47](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/47);
+it is not yet enforced by the current compute context.
+
 **Tiered execution strategy:**
 
 1. **Baseline:** optimized, source-faithful PhysX GPU kernels using

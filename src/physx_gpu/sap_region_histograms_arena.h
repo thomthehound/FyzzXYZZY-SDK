@@ -46,10 +46,15 @@ public:
                                  compute::ShaderBinary start_first,
                                  compute::ShaderBinary start_second,
                                  compute::ShaderBinary region_first,
-                                 compute::ShaderBinary region_second);
+                                 compute::ShaderBinary region_second,
+                                 compute::ShaderBinary start_first_wave,
+                                 compute::ShaderBinary region_first_wave,
+                                 bool force_portable = false);
     ~SapRegionHistogramsArenaStage();
     SapRegionHistogramsArenaStage(const SapRegionHistogramsArenaStage&) = delete;
     SapRegionHistogramsArenaStage& operator=(const SapRegionHistogramsArenaStage&) = delete;
+
+    bool using_subgroup_scan() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -59,6 +64,7 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipelines_[4] = {};
+    bool using_wave_ = false;
 };
 
 } // namespace fyzz::physx_gpu
