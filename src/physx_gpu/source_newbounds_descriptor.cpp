@@ -70,7 +70,7 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     // scalar counters are actual GPU memory locations, not invented copies.
     const auto descriptor = native_offset(
         layout.descriptor, addresses, layout, sizeof(physx::PxgBroadPhaseDesc));
-    const auto projection_count = checked_bytes(layout.current_boxes, 2u);
+    const auto projection_count = layout.projection_slots;
     const auto histogram_bytes = checked_bytes(projection_count, 64u * 4u);
     const auto handles_bytes = checked_bytes(projection_count, 4u);
     const auto sap_bytes = checked_bytes(layout.box_capacity, 8u);
