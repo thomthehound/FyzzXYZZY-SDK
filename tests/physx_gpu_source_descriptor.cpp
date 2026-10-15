@@ -52,7 +52,7 @@ public:
                                                sizeof(physx::PxgBroadPhaseDesc));
         tracked.push_back({descriptor_address,descriptor,
                            static_cast<std::uint32_t>(sizeof(physx::PxgBroadPhaseDesc))});
-        source.regionAccumTotal = kRegionWork;
+        source.regionAccumTotal = 0u; // GPU owns the live counter; host copy may be stale.
         source.numPreviousHandles = kBoxCount;
         source.max_found_lost_pairs = kPairs;
         source.numCreatedHandles = 1;
@@ -97,7 +97,8 @@ public:
     }
 
     SourceNewBoundsArenaLayout layout() const {
-        return {buffer_,kPhysicalBytes,descriptor_address,kBoxCount,kCapacity,kProjections};
+        return {buffer_,kPhysicalBytes,descriptor_address,kBoxCount,kCapacity,kProjections,
+                kRegionWork,kRegionWork};
     }
 
     CudaDeviceAddressMap& map_;
@@ -170,6 +171,14 @@ void verify_gpu(Context& ctx) {
     const auto layout=f.layout();
     const auto first=lower_source_newbounds_descriptor(f.source,addresses,layout);
     verify_fields(f,first);
+    // The runtime region total belongs to the GPU. Even a wildly stale
+    // host copy must have no effect on allocation-address lowering.
+    auto stale=f.source;
+    stale.regionAccumTotal=std::numeric_limits<std::uint32_t>::max();
+    const auto staleViews=lower_source_newbounds_descriptor(stale,addresses,layout);
+    require(staleViews.pairs.overlap_prefix_offset==first.pairs.overlap_prefix_offset &&
+            staleViews.pairs.region_work_total_offset==first.pairs.region_work_total_offset,
+            "Host readback of GPU-only region total leaked into native descriptor lowering");
 
     // The original native source descriptor still contains genuine 64-bit
     // CUDA-style virtual pointers. GPU scalar fields are inline at exactly
@@ -263,6 +272,10 @@ void verify_gpu(Context& ctx) {
     wrong.projection_slots=kBoxCount*2u; // omits removed projection slots.
     must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
                 "Source removed-handle projection extent incorrectly truncated");
+    wrong=relocatedLayout;
+    wrong.overlap_prefix_capacity=100000u;
+    must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
+                "Source allocation capacity overflow accepted");
     wrong=relocatedLayout;
     wrong.backing_bytes=f.descriptor+16u;
     must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
