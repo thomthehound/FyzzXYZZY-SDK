@@ -96,6 +96,40 @@ This audit is maintained alongside `GPU_PORT_PERFORMANCE.md`
 and must be updated with source-based evidence, correction PRs,
 newly discovered risks and eventually measured GPU timings.
 
+## Capability distinction: wave arithmetic is NOT WMMA
+
+**Wave/subgroup arithmetic is the baseline execution strategy for the
+ported broadphase**, not a matrix accelerator. The native wave paths
+use `WavePrefixSum`, `WaveActiveSum`, `WaveGetLaneCount` and
+`WaveReadLaneFirst`. These are HLSL Shader Model 6.0 wave operations;
+our compiled D3D12 fast binaries use SM6.6 to match the project floor.
+**None requires WMMA or cooperative matrix hardware.** Radeon RX5000/
+680M reference-class devices should be assessed for WaveOps/subgroup
+support independently of matrix features.
+
+- D3D12: host checks `D3D12_FEATURE_SHADER_MODEL >= 6_6`
+  **and** `D3D12_FEATURE_D3D12_OPTIONS1::WaveOps` before selecting
+  the native shader.
+- Vulkan: host queries `VkPhysicalDeviceSubgroupProperties` for
+  the **compute stage** plus
+  `VK_SUBGROUP_FEATURE_ARITHMETIC_BIT`; Vulkan 1.4 alone
+  guarantees *basic* subgroup support, **not every arithmetic
+  operation**. The production Vulkan 1.4 admission gate is still
+  outstanding (issue #47).
+- WMMA/cooperative matrices: a *separate optional acceleration tier*
+  applicable only where a real matrix-shaped workload warrants it.
+  No broadphase scan requires or probes WMMA.
+
+The retained high-barrier HLSL variants currently serve as
+independent correctness fallbacks on software/feature-poor development
+adapters; they are **not a satisfactory high-performance production
+path**. Before claiming a production device supported, require
+sufficient subgroup arithmetic (and all other necessary features)
+**or** demonstrate a measured adequately fast alternative. Do not
+quietly label a device production-supported and switch its critical
+kernels to our expensive correctness fallback. A lack of WMMA must
+never cause that fallback selection by itself.
+
 ## PR #48: region-histogram source-performance restoration (unmeasured)
 
 - **Source:** `broadphase.cu::computeHistogram<WARP_PERBLOCK_SIZE>`
