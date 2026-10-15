@@ -43,15 +43,20 @@ SourceRegionHistogramsNativeStage::SourceRegionHistogramsNativeStage(
     using_wave_=!force_portable && gpu.supports_wave_arithmetic &&
         gpu.subgroup_size>=4u && 256u%gpu.subgroup_size==0u;
     compute::ComputePipelineDesc desc;
-    desc.storage_buffer_binding_count=3u;
+    desc.storage_buffer_binding_count=2u;
     desc.push_constant_bytes=sizeof(Parameters);
     // GPU source allocations can all be slices of a single native root.
     // Consistent RAW UAV binding avoids mixed D3D12 subresource states.
-    desc.storage_buffer_views.assign(3u,
+    // The first pass touches only data/block arrays; the second additionally
+    // publishes a scalar into the original resident PxgBroadPhaseDesc.
+    desc.storage_buffer_views.assign(2u,
         compute::StorageBufferViewKind::RawReadWrite);
     try{
         desc.shader=using_wave_ ? std::move(first_wave) : std::move(first_portable);
         first_=context_.create_compute_pipeline(desc);
+        desc.storage_buffer_binding_count=3u;
+        desc.storage_buffer_views.push_back(
+            compute::StorageBufferViewKind::RawReadWrite);
         desc.shader=std::move(second);
         second_=context_.create_compute_pipeline(desc);
     }catch(...){
@@ -119,10 +124,10 @@ void SourceRegionHistogramsNativeStage::append(
                 alignment,1u,pass==0u?compute::BufferAccess::Write:
                                      compute::BufferAccess::Read,
                 params.blocks_bias,gpu.max_storage_buffer_range));
-            cmd.buffers.push_back(source_native_view(addresses,desc_offset,desc_bytes,
-                alignment,2u,pass==0u?compute::BufferAccess::Read:
-                                     compute::BufferAccess::Write,
-                params.descriptor_bias,gpu.max_storage_buffer_range));
+            if(pass==1u)
+                cmd.buffers.push_back(source_native_view(addresses,desc_offset,desc_bytes,
+                    alignment,2u,compute::BufferAccess::Write,
+                    params.descriptor_bias,gpu.max_storage_buffer_range));
             cmd.push_constants.resize(sizeof(params));
             std::memcpy(cmd.push_constants.data(),&params,sizeof(params));
             pending.emplace_back(std::move(cmd));
