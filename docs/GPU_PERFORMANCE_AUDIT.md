@@ -37,7 +37,7 @@ before touching. Separate *upstream-native* costs from port costs.
 | `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | Original port used 256-wide two-bank shared prefix, eight full-group rounds per iteration vs upstream per-warp scan and short warp-total prefix | **Corrective PR #48 under validation:** one `WavePrefixSum`/`WaveActiveSum` per lane, short wave-total prefix and **three barriers per 256-entry iteration**, 512 bytes shared scratch versus 2 KiB; preserve 32 block totals and original four dispatches; portable oracle remains |
 | `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Three-axis `uint3` 256-entry shared prefix uses eight group-wide scan rounds, unlike CUDA's three warp scans and short warp-total prefix | **PR #50 in validation:** three independent native 32-bit wave prefixes, 3 workgroup barriers/chunk vs ~11, 1536 B scratch vs 6144 B, original stage2/host dispatch and source oracle retained |
 | `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Two-output `uint2` shared prefix with eight rounds per batch; global report-count reservation still uses atomic increments | **P1:** wave-based packed/dual report scan, preserve original global reservations and report order; do not change candidate correctness rules |
-| `broadphase.cu::accumulateReportsStage_2` → `physx_broadphase_report_classification_second_arena.hlsl` | 256-thread shared scan and repeated per-block carry barriers | **P1:** examine wave prefix / report-label propagation, maintain original actor/aggregate found/lost classification |
+| `broadphase.cu::accumulateReportsStage_{1,2}` → `physx_broadphase_report_classification_{first,second}_arena.hlsl` | Original port introduced an eight-barrier 256-thread shared reduction for stage1 and eight-round shared-memory scans for stage2, unlike CUDA's warp ballots/reductions and warp-first stable compaction | **PR #51 under validation:** stage1 native per-wave reduction with one atomic update per wave; stage2 wave-prefix stable compaction with three group barriers/chunk. Original 32×4×256 dispatches, actor/aggregate found/lost output and copy-report publication unchanged |
 | Other copied/report producers and simple PhysX kernels (AABB encoding, initialized rank/index lists, removed projections/pairs, clear new flag, update handles) | No obvious **high-order new workgroup-wide scan** in static inspection; typically direct per-entry loops and/or source-sized workgroups. This is **not** a measured performance endorsement | **P2:** collect timestamps and source diff as these become integration-relevant; no speculative redesign |
 | 64-region dense histograms, large ordered arrays, multi-pass source radix and PhysX fixed 32-block SAP partitions | **Inherited from original PhysX**, regardless of whether modern hardware could do better | **Defer structural redesign** until source-faithful end-to-end GPU scene and representative benchmarks exist |
 | Full-arena storage bindings and GPU task graph | Current `ReadWrite` descriptor intent is often conservative; synchronization and whole-arena spans may exceed true resource dependencies. Host orchestration is not yet a live PhysX scene | **Cross-cutting P1/P2:** preserve PhysX GPU ordering and ownership, measure barriers/copies/descriptors when real GPU submission pipeline is integrated |
@@ -266,4 +266,62 @@ never cause that fallback selection by itself.
   not a measured latency win; many tiny waves could introduce
   a serial leader prefix cost, so benchmark native wave32/64
   devices when a meaningful GPU timeline is available.
+
+
+## PR #51: report classification and stable compaction (unmeasured)
+
+- **Pinned CUDA:** `broadphase.cu::accumulateReportsStage_1/2`.
+  Source stage1 counts actor/aggregate eligibility for found/lost
+  streams with warp ballot and per-warp reduction; stage2 prefixes
+  the 32 block counts and uses warp ballot/popcount plus a small
+  warp-total prefix to compact reports stably. It publishes
+  aggregate found/lost totals and preserves each stream's
+  original report order for the subsequent `copyReports` kernel.
+- **Introduced cost:** the original HLSL stage1 used a 256-value
+  shared reduction requiring eight group barriers after staging,
+  rather than CUDA's native warp reduction; stage2 used two
+  256-value shared scan arrays (**2 KiB**) with eight
+  workgroup-wide scan rounds per report iteration.
+- **Corrective stage1:** each thread counts eligible reports over
+  its original source-defined iterations; `WaveActiveSum`
+  reduces per hardware wave, and one wave leader atomically
+  adds the subtotal to a single shared `uint`. Two
+  workgroup barriers total. Compared with CUDA's warp ballot,
+  the reduction semantics are identical for integer counts;
+  integer commutativity makes native wave scheduling irrelevant.
+  This does introduce up to 64 wave-leader LDS atomics per
+  workgroup on hypothetical wave4 hardware, so check actual
+  GPU timings, wave width and contention before claiming parity.
+- **Corrective stage2:** `WavePrefixSum`/`WaveActiveSum` of
+  per-report 0/1 eligibility, using two 64-word wave-total
+  arrays (**512 B**) and three group barriers per 256
+  reports. Each physical subgroup claims a contiguous
+  **logical report range** once at kernel entry; its prefix
+  rank and previous-iteration carry are added to the source
+  32-block exclusive base. This preserves **stable** order
+  for all four streams. Aggregate totals are still published
+  exactly once by the source-designated workgroups.
+- **Kept unchanged:** the 32×4×256 stage1/stage2 launches,
+  single caller-owned arena, source pair buffers and volume
+  membership semantics, original found/lost/actor/aggregate
+  partitions, overflow/clamp capacities, downstream
+  `BP_COPY_REPORTS`, original CPU/GPU batch and publication
+  owner. There are no new source-dispatch boundaries.
+- **Alternatives:** retain the full-group Hillis–Steele scan
+  (known structural cost), fixed 32-lane CUDA ballot
+  translation (not portable to wave64), prefix the small
+  wave totals in parallel (extra barriers; assess only if
+  serial leader becomes measurable), subdivide into more
+  GPU kernels (unnecessary orchestration rewrite). Matrix
+  WMMA operations have no useful role in sparse report scans.
+- **Validation:** independent complete-arena GPU→CPU oracle
+  compares both native wave and forced-portable variants,
+  including aggregate/actor classification, cross-workgroup
+  stable found/lost report order, empty inputs, short-tail,
+  >8192 reports, overflow capacities, three-dispatch
+  classification + copy pipeline and canaries. Linux Vulkan,
+  Windows D3D12 and Codex remain PR acceptance gates.
+- **Performance:** all quoted barrier/LDS differences are
+  analytical, *not measured GPU-time improvements*. Source
+  structural costs and real-hardware profiling are separate.
 
