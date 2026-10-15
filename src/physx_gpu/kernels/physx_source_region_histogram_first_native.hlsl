@@ -13,10 +13,6 @@ RWByteAddressBuffer accum : register(u0, space0);
 [[vk::binding(1, 0)]]
 #endif
 RWByteAddressBuffer blocks : register(u1, space0);
-#ifdef __spirv__
-[[vk::binding(2, 0)]]
-#endif
-RWByteAddressBuffer sourceDesc : register(u2, space0);
 struct Parameters {
     uint boxes; uint accumBias; uint blockBias; uint descriptorBias;
     uint totalFieldOffset; uint r0; uint r1; uint r2;
