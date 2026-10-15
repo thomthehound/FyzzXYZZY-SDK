@@ -298,6 +298,17 @@ void run_case(Context& context, SapActiveRegionListsArenaStage& stage,
             catch(const std::exception&){ rejected=true; }
             if(!rejected || !nativeCommands.empty())
                 throw std::runtime_error("Late source allocation failure partially committed active passes");
+            for(const auto wrong : {
+                    fyzz::physx_gpu::SourceActiveRegionListsNativeLayout{
+                        descriptor,boxes,n,dense-1u},
+                    fyzz::physx_gpu::SourceActiveRegionListsNativeLayout{
+                        descriptor,boxes,n-1u,dense}}){
+                bool failed=false;
+                try{native->append(nativeCommands,source,addresses,wrong);}
+                catch(const std::exception&){failed=true;}
+                if(!failed || !nativeCommands.empty())
+                    throw std::runtime_error("Undersized source active-region capacity appended partial GPU work");
+            }
         }
         native->append(nativeCommands,source,addresses,layout);
         if(nativeCommands.size()!=(p.created?3u:0u))
