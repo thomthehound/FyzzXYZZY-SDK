@@ -81,11 +81,11 @@ void CudaDeviceAddressMap::relocate_slice(
     if (old_buffer != buffer) {
         // Acquire the new reference before releasing the old one so an
         // allocation failure cannot corrupt host lifetime bookkeeping.
-        auto [dest, inserted] = slice_counts_.try_emplace(buffer, 0u);
-        ++dest->second;
         auto source = slice_counts_.find(old_buffer);
         if (source == slice_counts_.end() || !source->second)
             throw std::logic_error("PhysX CUDA slice lifetime bookkeeping corrupted");
+        auto [dest, inserted] = slice_counts_.try_emplace(buffer, 0u);
+        ++dest->second;
         if (--source->second == 0u) slice_counts_.erase(source);
         it->second.buffer = buffer;
     }
