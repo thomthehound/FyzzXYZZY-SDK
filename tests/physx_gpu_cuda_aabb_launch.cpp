@@ -75,7 +75,7 @@ void verify_alignment_contract() {
         {2u,13u,1020u,bytes,BufferAccess::Read},
         {3u,14u,28u,bytes,BufferAccess::Write}
     }};
-    for (const std::uint64_t alignment : {256ull,1024ull}) {
+    for (const std::uint64_t alignment : {1ull,2ull,4ull,256ull,1024ull}) {
         const auto lowered=lower_aabb_storage_views(views,alignment,8192u);
         for (std::size_t i=0;i<4u;++i) {
             const auto& binding=lowered.bindings[i];
