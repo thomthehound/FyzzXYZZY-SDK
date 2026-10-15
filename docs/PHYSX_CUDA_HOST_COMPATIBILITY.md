@@ -72,7 +72,7 @@ are implemented.
 
 ## Source-native D32 fills at PhysX's existing stream call sites
 
-`PxgCudaBroadPhaseSap::computeStartAndActiveHistogramKernel()` performs two
+`PxgCudaBroadPhaseSap::computeRegionHistogramKernel()` performs two
 `mCudaContext->memsetD32Async` operations on `mStream` before starting the
 histogram launches, clearing `mActiveRegionTotalBuf` and
 `mStartRegionsTotalBuf` for the current `totalNbProjectionRegions`.
@@ -114,6 +114,38 @@ the host primitive production-optimal, compare fill and following
 kernel performance using representative small and large PhysX
 histograms and consider backend-native lowering without duplicating
 the source host scheduler.
+
+## Source native region creation: original first three host operations
+
+The source `computeRegionHistogramKernel()` checks
+`mUpdateData_CreatedHandleSize` and then enqueues, on the SAME original
+`mStream`: (1) `memsetD32Async(mActiveRegionTotalBuf)`,
+(2) `memsetD32Async(mStartRegionsTotalBuf)`,
+(3) `BP_CREATE_REGIONS` at 32 × 256 threads. This code lives in
+`PxgCudaBroadPhaseSap.cpp`, immediately before four source region-prefix
+kernels and the active-region histogram sequence.
+
+`SourceRegionCreateNativeStage` appends those exact three operations
+using the existing `SourceFillD32NativeStage` twice and a new
+source-addressed version of `broadphase.cu::createRegionsKernel`.
+It reads the original `PxgBroadPhaseDesc` pointers for X sorted handles,
+three SAP position buffers, three all-end histograms and the three output
+allocations, without staging or repacking them into a temporary GPU arena.
+The region-table clears derive their word count from the source's
+`(numPreviousHandles + numCreatedHandles)*2*64` expression (current
+boxes plus temporarily retained removed projections); the producer
+works on `(previous + created - removed)` current boxes. The host
+validates both dimensions against caller-owned source allocation capacities.
+
+The integration test begins with twelve separate device-local
+allocations at distinct four-byte interior positions, with nonzero
+region tables; it submits both clears and source region generation
+in one ordered native GPU batch, then checks every output against a
+separate per-box CPU oracle and untouched allocation canaries.
+No new host scheduler, scene task, or CPU synchronization point is
+introduced between those three source operations. The four following
+region histogram scans and the actual `PxScene` host integration
+remain work to do; passing this test is not a claim of a working scene.
 
 ### Still required before source-compatible GPU execution
 
