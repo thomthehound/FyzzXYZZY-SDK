@@ -14,6 +14,26 @@
 
 namespace fyzz::physx_gpu {
 
+std::uint32_t source_d32_fill_chunk_words(
+    const CudaDeviceAddressMap& addresses,
+    CudaDeviceAddressMap::Address address,
+    std::uint32_t remaining_words,
+    std::size_t alignment, std::uint64_t max_view_bytes) {
+    if (!remaining_words || !address || address % 4u ||
+        !alignment || alignment % 4u)
+        throw std::invalid_argument("Invalid PhysX source D32 fill chunk");
+    const auto physical = addresses.resolve(address, 4u);
+    const auto view_alignment = std::lcm(alignment, std::size_t{16u});
+    const auto delta = physical.offset % view_alignment;
+    const auto view_limit = std::min<std::uint64_t>(
+        max_view_bytes, static_cast<std::uint64_t>(
+            std::numeric_limits<std::uint32_t>::max()) & ~3ull);
+    if (view_limit <= delta || view_limit - delta < 4u)
+        throw std::out_of_range("PhysX D32 source GPU view range too small");
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+        remaining_words, (view_limit - delta) / 4u));
+}
+
 SourceFillD32NativeStage::SourceFillD32NativeStage(
     compute::Context& context, compute::ShaderBinary shader)
     : context_(context) {
@@ -61,13 +81,9 @@ void SourceFillD32NativeStage::append(
     std::uint64_t consumed_words = 0u;
     while (consumed_words < words) {
         const auto cursor = device_address + consumed_words * 4u;
-        const auto physical = addresses.resolve(cursor, 4u);
-        const auto delta = physical.offset % view_alignment;
-        if (view_limit <= delta || view_limit - delta < 4u)
-            throw std::out_of_range("PhysX D32 source GPU view range too small");
-        const auto chunk_words = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(words - consumed_words,
-                (view_limit - delta) / 4u));
+        const auto chunk_words = source_d32_fill_chunk_words(
+            addresses, cursor, static_cast<std::uint32_t>(
+                words - consumed_words), view_alignment, view_limit);
         const auto desired_groups = (std::uint64_t(chunk_words - 1u) / 256u) + 1u;
         const auto groups = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(
