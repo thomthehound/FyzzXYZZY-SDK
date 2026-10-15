@@ -83,8 +83,8 @@ enum class StorageBufferViewKind {
 struct ComputePipelineDesc {
     ShaderBinary shader;
     std::uint32_t storage_buffer_binding_count = 0;
-    std::vector<StorageBufferViewKind> storage_buffer_views;
     std::uint32_t push_constant_bytes = 0;
+    std::vector<StorageBufferViewKind> storage_buffer_views;
 };
 
 // Source-derived *access intent*, not a request to change shader bindings.
