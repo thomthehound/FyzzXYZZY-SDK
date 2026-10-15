@@ -163,7 +163,7 @@ void run(Context& context,SapNewBoundsPairsArenaStage& stage,Case c) {
         throw std::runtime_error("New-bounds created-handles gate changed");
     if(c.created) {
         const auto& dispatch=std::get<DispatchCommand>(ops.front());
-        if(dispatch.groups.x!=32u||dispatch.groups.y!=1u||
+        if(dispatch.groups.x!=64u||dispatch.groups.y!=1u||
            dispatch.groups.z!=1u||dispatch.push_constants.size()!=32u)
             throw std::runtime_error("New-bounds dispatch geometry changed");
     }
@@ -255,7 +255,7 @@ int main(int argc,char** argv){
         binary.bytes=load(argv[1]);
         SapNewBoundsPairsArenaStage stage(context,std::move(binary));
         negative(stage);
-        for(auto n:{2u,3u,19u,301u,8203u}) {
+        for(auto n:{2u,3u,19u,301u,16403u}) {
             Case c;c.boxes=n;
             run(context,stage,c);
             c.filters=true; run(context,stage,c);
