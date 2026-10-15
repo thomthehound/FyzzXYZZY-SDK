@@ -225,6 +225,18 @@ void verify_gpu(Context& ctx) {
     relocatedLayout.backing_bytes=kArenaGrowthBytes;
     const auto moved=lower_source_newbounds_descriptor(f.source,addresses,relocatedLayout);
     verify_fields(f,moved);
+    // 32-bit descriptors tolerate four-byte alignment, but the original
+    // PxgBroadPhaseDesc uint64 overlap prefix requires eight bytes.
+    // Reject a CUDA-virtual relocation to a physically misaligned slot.
+    const auto overlapAddr=static_cast<CudaDeviceAddressMap::Address>(
+        reinterpret_cast<std::uintptr_t>(f.source.overlapChecksRegion));
+    const auto originalOverlap=physical(addresses,f.source.overlapChecksRegion,
+                                       kRegionWork*8u);
+    addresses.relocate_slice(overlapAddr,grown,originalOverlap+4u);
+    must_reject([&]{(void)lower_source_newbounds_descriptor(
+        f.source,addresses,relocatedLayout);},
+        "Misaligned PhysX uint64 GPU overlap array accepted");
+    addresses.relocate_slice(overlapAddr,grown,originalOverlap);
     require(first.pairs.group_ids_offset!=moved.pairs.group_ids_offset,
             "Relocation didn't update GPU field offset");
     require(first.pairs.new_integer_bounds_offset==moved.pairs.new_integer_bounds_offset,
