@@ -165,13 +165,13 @@ void run_case(Context& ctx,const SourceRegionHistogramsNativeStage& stage,
         for(std::uint32_t i=0u;i<4u;++i){
             const auto& c=std::get<DispatchCommand>(ops[i]);
             check(c.groups.x==32u&&c.groups.y==1u&&c.groups.z==1u&&
-                  c.buffers.size()==3u&&c.push_constants.size()==32u,
+                  c.buffers.size()==(i%2u==0u?2u:3u)&&
+                  c.push_constants.size()==32u,
                   "PhysX source histogram native GPU launch shape changed");
             check(c.buffers[0].access==BufferAccess::ReadWrite&&
                   c.buffers[1].access==(i%2u==0u?
                       BufferAccess::Write:BufferAccess::Read)&&
-                  c.buffers[2].access==(i%2u==0u?
-                      BufferAccess::Read:BufferAccess::Write),
+                  (i%2u==0u || c.buffers[2].access==BufferAccess::Write),
                   "PhysX source histogram read/write intent changed");
         }
     }
