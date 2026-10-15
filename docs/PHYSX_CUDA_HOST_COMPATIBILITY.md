@@ -80,8 +80,11 @@ This ordering is part of the real PhysX host work graph, not a request to
 reconstruct a separate CUDA runtime or introduce a CPU staging pass.
 
 `SourceFillD32NativeStage` lowers the source's exact `CUdeviceptr`, uint32
-fill pattern, and word count into a single GPU dispatch appended to the
-**caller-owned ordered command list**. It reuses `CudaDeviceAddressMap`
+fill pattern, and word count into GPU dispatches appended to the
+**caller-owned ordered command list**. When a source allocation exceeds the
+backend's maximum storage-buffer view range, the stage splits the same
+allocation into directly bound views without allocating, copying, or inserting
+host waits; it validates all chunks before committing any commands. It reuses `CudaDeviceAddressMap`
 and `source_native_view`; the original pointer can be interior to a
 source-owned heap root and only four-byte aligned. The physical RAW GPU
 view begins at the backend-compliant aligned base; the push constant
