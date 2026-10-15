@@ -125,7 +125,7 @@ void negative(SapOverlapPrefixArenaStage& stage) {
     std::vector<BatchCommand> commands;
     stage.append(commands, 0u, 0u, 17u, 0u);
     if (!commands.empty()) throw std::runtime_error("Unexpected empty dispatch");
-    for (auto offset : {1u, 48u, 64u}) {
+    for (auto offset : {1u, 40u, 64u}) {
         bool rejected = false;
         try { stage.append(commands, 1u, 64u, offset, 1u); }
         catch (const std::invalid_argument&) { rejected = true; }
