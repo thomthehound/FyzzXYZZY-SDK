@@ -30,7 +30,7 @@ struct alignas(16) SapNewBoundsPairsArenaDesc {
     std::uint32_t found_reports_offset = 0;           // two u32 per pair
     std::uint32_t found_counter_offset = 0;           // single u32, host-owned lifecycle
     std::uint32_t max_found_lost_pairs = 0;           // cap, counter NOT capped
-    std::uint32_t current_boxes = 0;                  // new current handle count
+    std::uint32_t current_boxes = 0;                  // legacy ABI field; runtime uses per-frame push constant
     std::uint32_t box_capacity = 0;                   // bounds/group allocation count
     std::uint32_t has_environment_ids = 0;            // source USE_ENV_IDS runtime selection
     std::uint32_t reserved[4] = {};
@@ -51,9 +51,12 @@ public:
     SapNewBoundsPairsArenaStage(const SapNewBoundsPairsArenaStage&) = delete;
     SapNewBoundsPairsArenaStage& operator=(const SapNewBoundsPairsArenaStage&) = delete;
 
+    // Current box count is a per-frame PhysX value. Do not infer it
+    // from a GPU descriptor that may outlive a resize of the box set.
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
                 std::uint32_t descriptor_offset,
+                std::uint32_t current_boxes,
                 std::uint32_t created_handles) const;
 private:
     compute::Context& context_;

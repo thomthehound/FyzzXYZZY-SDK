@@ -15,7 +15,8 @@
 RWByteAddressBuffer arena : register(u0, space0);
 struct Parameters {
     uint descriptor_offset; uint arena_bytes;
-    uint r0; uint r1; uint r2; uint r3; uint r4; uint r5;
+    uint current_boxes;
+    uint r0; uint r1; uint r2; uint r3; uint r4;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters params;
@@ -72,7 +73,9 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint reports = arena.Load(d + 56u);
     const uint counter = arena.Load(d + 60u);
     const uint capacity = arena.Load(d + 64u);
-    const uint projections = 2u * arena.Load(d + 68u);
+    // Per-frame population is supplied by the original PhysX host. The
+    // long-lived arena descriptor may still describe an earlier frame.
+    const uint projections = 2u * params.current_boxes;
     const uint boxCapacity = arena.Load(d + 72u);
     const bool useEnv = arena.Load(d + 76u) != 0u;
 

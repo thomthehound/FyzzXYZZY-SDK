@@ -158,7 +158,7 @@ void run(Context& context,SapNewBoundsPairsArenaStage& stage,Case c) {
     const auto mirror=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
     context.upload(gpu,0u,f.words.data(),bytes);
     std::vector<BatchCommand> ops;
-    stage.append(ops,gpu,bytes,0u,c.created?1u:0u);
+    stage.append(ops,gpu,bytes,0u,c.boxes,c.created?1u:0u);
     if(ops.size()!=(c.created?1u:0u))
         throw std::runtime_error("New-bounds created-handles gate changed");
     if(c.created) {
@@ -166,6 +166,10 @@ void run(Context& context,SapNewBoundsPairsArenaStage& stage,Case c) {
         if(dispatch.groups.x!=64u||dispatch.groups.y!=1u||
            dispatch.groups.z!=1u||dispatch.push_constants.size()!=32u)
             throw std::runtime_error("New-bounds dispatch geometry changed");
+        std::uint32_t frameBoxes=0u;
+        std::memcpy(&frameBoxes,dispatch.push_constants.data()+8u,sizeof(frameBoxes));
+        if(frameBoxes!=c.boxes)
+            throw std::runtime_error("Found-pair shader did not receive frame box count");
     }
     ops.emplace_back(CopyCommand{gpu,0u,mirror,0u,bytes});
     context.wait_submission(context.submit_batch(ops));
@@ -216,16 +220,16 @@ void run(Context& context,SapNewBoundsPairsArenaStage& stage,Case c) {
 }
 void negative(SapNewBoundsPairsArenaStage& stage) {
     std::vector<BatchCommand> ops;
-    stage.append(ops,0u,0u,3u,0u);
+    stage.append(ops,0u,0u,3u,0u,0u);
     if(!ops.empty())throw std::runtime_error("Unexpected quiet-frame dispatch");
     for(auto bad : {1u,64u,96u}) {
         bool rejected=false;
-        try {stage.append(ops,1u,128u,bad,1u);}
+        try {stage.append(ops,1u,128u,bad,3u,1u);}
         catch(const std::invalid_argument&){rejected=true;}
         if(!rejected||!ops.empty())
             throw std::runtime_error("Invalid found-pair descriptor accepted");
     }
-    stage.append(ops,1u,128u,32u,1u);
+    stage.append(ops,1u,128u,32u,3u,1u);
     if(ops.size()!=1u)throw std::runtime_error("Valid exact-fit descriptor rejected");
 }
 }

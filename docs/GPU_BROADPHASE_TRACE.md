@@ -337,6 +337,81 @@ overlap-check and new-pair work. Next are
 host scheduling, ownership and result publication
 preserved.
 
+
+
+## 2d. Created-handles new-bounds four-kernel handoff (integrated adapter)
+
+The source `PxgCudaBroadPhaseSap::generatePairsForNewBounds` calls the
+following sequence, **only if `mUpdateData_CreatedHandleSize != 0`**:
+
+1. `BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS` (32 × 256)
+2. `BP_COMPUTE_OVERLAPCHECKS_HISTOGRAM` (32 × 256)
+3. `BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM` (32 × 256)
+4. `BP_GENERATE_FOUNDPAIR_NEWBOUNDS` (64 × 256)
+
+`SapNewBoundsSequenceArenaStage` now appends these four existing pipeline
+stages, in exactly that order, to the **caller's existing command list**.
+It neither allocates an arena nor creates a new scene update loop. The
+constructor receives existing stage references; the caller owns their
+pipelines and lifetimes. The caller's PhysX frame decision supplies its
+current-box count and created-handle count. On a no-created frame it
+appends nothing, even if the containing broadphase update continues for
+some other reason. It stages all four commands before modifying the
+caller's vector, so a later descriptor validation error cannot leave a
+half-appended new-bounds sequence.
+
+The per-frame `current_boxes` is pushed directly into the found-pair
+kernel, matching the count used for overlap-work generation; a persistently
+allocated pair descriptor is **not** authoritative for that changing field.
+A regression holds the pair descriptor's old count at two boxes while the
+live frame has three, and checks canonical ownership of a valid pair in
+region 1. This prevents the stale-stride error reported in Codex's P1.
+
+The three older arena subsets represent the **same** original
+`PxgBroadPhaseDesc` fields. To avoid divergent ad hoc bindings,
+`make_sap_newbounds_sequence_descriptors` derives the producer and
+prefix descriptors from the pair stage's authoritative shared offsets,
+plus the upstream per-projection region prefix and 32-block overlap
+scratch. The caller uploads those three small descriptor views whenever
+its existing arena layout is established/changed. The full sequence
+binds one caller-owned GPU arena in read/write mode on all four
+commands. The compute backend already orders dependent RW accesses in
+one batch using Vulkan compute memory barriers or D3D12 UAV barriers;
+no CPU downloads or per-stage fences are introduced between the four.
+All 64-bit overlaps and prefixes stay on GPU until final found-pair
+reporting. As in CUDA, the pair counter is 32-bit, retained across
+other found-pair writers in the frame, and output writes are bounded by
+`max_found_lost_pairs` without clamping the total counter.
+
+The new **integrated GPU fixture**, run on Vulkan and D3D12, starts
+with X-sorted handles, input region prefix, physically consistent
+multi-region membership histograms, ordered region handles, and
+integer bounds. It executes all four source kernels in one GPU batch,
+compares the producer's handle-region mapping, 64-bit exclusive
+comparison prefixes, all 32 block totals, grand total and final
+found-pair set to an independently enumerated CPU reference. Cases
+exercise new/non-new projection histograms, multi-region canonical
+duplicate suppression, group filtering, separated bounds,
+environment IDs and wildcard IDs, pre-existing pair count, capacity
+clipping, created-handle gating, zero region work, invalid descriptor
+rollback and untouched arena canaries. The existing
+`BroadPhaseCompletionGate` waits on the batch at the original fetch
+boundary; the CPU oracle checks all GPU results inside its publication
+callback **before** found/lost-pair task references are released. The
+no-created case exercises the zero-submission publication path. The GPU
+test therefore checks both **kernel-chain dataflow and source publication
+ordering**, not just isolated shader oracles.
+
+**Remaining integration boundary:** the live `PxgCudaBroadPhaseSap`
+implementation still owns its CUDA allocations, update/fetch task
+chain, buffer swaps, `gpuDMABack` and `PxgAABBManager` report
+publication. The new adapter makes the four-kernel submission a tested,
+source-aligned unit usable by the portable PhysX host, but it has **not**
+replaced those CUDA dispatches in a live PhysX scene. That replacement
+requires the broader source-owned scene GPU orchestration and resource
+lifetime port described in sections 1–3, not an invented surrogate
+simulation pipeline.
+
 ## 3. Buffer, ownership, and publication worksheet
 
 The precise allocation/free timeline still requires per-buffer tracing.

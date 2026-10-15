@@ -12,7 +12,8 @@ namespace {
 struct Parameters {
     std::uint32_t descriptor_offset;
     std::uint32_t arena_bytes;
-    std::uint32_t reserved[6] = {};
+    std::uint32_t current_boxes;
+    std::uint32_t reserved[5] = {};
 };
 static_assert(sizeof(Parameters) == 32, "PhysX new-bounds pair constants");
 }
@@ -43,14 +44,19 @@ SapNewBoundsPairsArenaStage::~SapNewBoundsPairsArenaStage() {
 void SapNewBoundsPairsArenaStage::append(
     std::vector<compute::BatchCommand>& commands,
     compute::BufferId arena, std::uint32_t arena_bytes,
-    std::uint32_t descriptor_offset, std::uint32_t created_handles) const {
+    std::uint32_t descriptor_offset, std::uint32_t current_boxes,
+    std::uint32_t created_handles) const {
     if (!created_handles) return;
     if (!arena || !arena_bytes || arena_bytes % 4u ||
+        current_boxes == 0u || current_boxes > 0x7fffffffu ||
+        created_handles > current_boxes ||
         descriptor_offset % alignof(SapNewBoundsPairsArenaDesc) ||
         descriptor_offset > arena_bytes ||
         sizeof(SapNewBoundsPairsArenaDesc) > arena_bytes - descriptor_offset)
         throw std::invalid_argument("Invalid PhysX new-bounds pair arena");
-    const Parameters params{descriptor_offset, arena_bytes, {}};
+    // PhysX's current frame population determines the dense region stride.
+    // Never re-read a potentially stale descriptor field on the GPU.
+    const Parameters params{descriptor_offset, arena_bytes, current_boxes, {}};
     compute::DispatchCommand command;
     command.pipeline = pipeline_;
     command.groups = {64u, 1u, 1u};
