@@ -107,6 +107,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
+    src/physx_gpu/sap_newbounds_sequence_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -969,7 +970,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_OVERLAP_PREFIX_second_SPV}")
       set_tests_properties(fyzzxyzzy_sap_overlap_prefix PROPERTIES
         SKIP_RETURN_CODE 77)
-      # PhysX BP_GENERATE_FOUNDPAIR_NEWBOUNDS, fixed 32x256 native-wave scan.
+      # PhysX BP_GENERATE_FOUNDPAIR_NEWBOUNDS, fixed 64x256 native-wave scan.
       set(FYZZXYZZY_NEWBOUNDS_PAIRS_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs.spv")
       add_custom_command(
@@ -995,6 +996,27 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}")
       set_tests_properties(fyzzxyzzy_sap_newbounds_pairs PROPERTIES
         SKIP_RETURN_CODE 77)
+      # One ordered PhysX new-bounds producer / prefix / report batch.
+      add_executable(fyzzxyzzy_sap_newbounds_sequence
+        tests/physx_gpu_sap_newbounds_sequence.cpp)
+      target_include_directories(fyzzxyzzy_sap_newbounds_sequence PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_sap_newbounds_sequence PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_sap_newbounds_sequence
+        fyzzxyzzy_sap_overlap_shader
+        fyzzxyzzy_overlap_prefix_first_spv
+        fyzzxyzzy_overlap_prefix_second_spv
+        fyzzxyzzy_newbounds_pairs_spv)
+      add_test(NAME fyzzxyzzy_sap_newbounds_sequence
+        COMMAND fyzzxyzzy_sap_newbounds_sequence
+          "${FYZZXYZZY_SAP_OVERLAP_SPV}"
+          "${FYZZXYZZY_OVERLAP_PREFIX_first_SPV}"
+          "${FYZZXYZZY_OVERLAP_PREFIX_second_SPV}"
+          "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}")
+      set_tests_properties(fyzzxyzzy_sap_newbounds_sequence PROPERTIES
+        SKIP_RETURN_CODE 77)
+
 
 
     endif()
@@ -1070,6 +1092,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
+    src/physx_gpu/sap_newbounds_sequence_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1909,6 +1932,28 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}")
     set_tests_properties(fyzzxyzzy_sap_newbounds_pairs_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77)
+    add_executable(fyzzxyzzy_sap_newbounds_sequence_d3d12
+      tests/physx_gpu_sap_newbounds_sequence.cpp)
+    target_compile_definitions(fyzzxyzzy_sap_newbounds_sequence_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_sap_newbounds_sequence_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_sap_newbounds_sequence_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_sap_newbounds_sequence_d3d12
+      fyzzxyzzy_d3d12_sap_overlap_shader
+      fyzzxyzzy_overlap_prefix_first_dxil
+      fyzzxyzzy_overlap_prefix_second_dxil
+      fyzzxyzzy_newbounds_pairs_dxil)
+    add_test(NAME fyzzxyzzy_sap_newbounds_sequence_d3d12
+      COMMAND fyzzxyzzy_sap_newbounds_sequence_d3d12
+        "${FYZZXYZZY_SAP_OVERLAP_DXIL}"
+        "${FYZZXYZZY_OVERLAP_PREFIX_first_DXIL}"
+        "${FYZZXYZZY_OVERLAP_PREFIX_second_DXIL}"
+        "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}")
+    set_tests_properties(fyzzxyzzy_sap_newbounds_sequence_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77)
+
 
 
   endif()
