@@ -59,6 +59,17 @@ and resource contract is satisfied.
 requiring CUDA, hardware wave support, or allocating multiple gigabytes.
 This unit test is necessary groundwork, **not** a successful CUDA adapter.
 
+The `fyzzxyzzy_physx_cuda_host_transfer` and
+`fyzzxyzzy_physx_cuda_host_transfer_d3d12` tests additionally exercise
+**actual Vulkan and D3D12 device-local allocations**. They resolve an
+interior CUDA-style address to a native buffer, enqueue a host-to-device
+upload and device-to-device copy without intermediate waits, immediately
+remove the source virtual address and call `retire_buffer`, then verify
+destination bytes and untouched canaries. These are concrete ownership and
+DMA prerequisites for PhysX's original host operations, not proof that
+translated shaders can dereference CUDA pointers or that stream events
+are implemented.
+
 ### Still required before source-compatible GPU execution
 
 1. **Kernel/descriptor lowering.** PhysX `CUfunction` handles and its
