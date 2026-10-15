@@ -279,7 +279,7 @@ void negative_cases(Context& context, SapRankedSortArenaStage& wr,
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 5)
+        if (argc != 7)
             throw std::invalid_argument(
                 "Expected radix count, scatter, initialize-ranks, update-handles shaders");
         Context context(
@@ -299,8 +299,14 @@ int main(int argc, char** argv) {
             result.bytes = load_shader(file);
             return result;
         };
-        RadixCountArenaStage count(context, shader(argv[1]));
-        RadixScatterArenaStage scatter(context, shader(argv[2]));
+        RadixCountArenaStage count(context, shader(argv[1]), shader(argv[5]));
+        RadixScatterArenaStage scatter(context, shader(argv[2]), shader(argv[6]));
+        const auto& caps = context.device_info();
+        const bool expectWave = caps.supports_wave_arithmetic &&
+            caps.subgroup_size >= 4u && 1024u % caps.subgroup_size == 0u;
+        if (count.using_wave_count() != expectWave ||
+            scatter.using_wave_scan() != expectWave)
+            throw std::runtime_error("SAP integration bypassed available packed radix fast path");
         SapRankedSortArenaStage wr(context, shader(argv[3]), shader(argv[4]));
         negative_cases(context, wr, count, scatter);
         run_case(context, wr, count, scatter, 0u);
