@@ -56,11 +56,12 @@ void BroadPhaseCompletionGate::fetch_and_release(
     continuation_setup_failed_ = true;
     install_continuations();
 
-    // Mark the gate consumed BEFORE calls into PhysX task dispatch. They
-    // can execute the owner's continuation immediately.
-    continuation_setup_failed_ = false;
+    // Keep the gate terminal until *both* original task releases succeed.
+    // removeReference() can dispatch work immediately and partial release
+    // cannot safely be replayed if the first task (or its dispatcher) fails.
     found.removeReference();
     lost.removeReference();
+    continuation_setup_failed_ = false;
 }
 
 void BroadPhaseCompletionGate::fetch_and_run_inline(
