@@ -105,6 +105,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
+    src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
@@ -935,6 +936,39 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_sap_overlap_work fyzzxyzzy_sap_overlap_shader)
       add_test(NAME fyzzxyzzy_sap_overlap_work
         COMMAND fyzzxyzzy_sap_overlap_work "${FYZZXYZZY_SAP_OVERLAP_SPV}")
+
+      # Pinned PhysX compute/output overlap histogram pair. Both kernels
+      # require 64-bit subgroup operations (Vulkan 1.2 extended types).
+      foreach(_pass IN ITEMS first second)
+        set(FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_pass}.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.2
+            -T cs_6_6 -E main
+            -Fo "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
+          VERBATIM)
+        add_custom_target(fyzzxyzzy_overlap_prefix_${_pass}_spv
+          DEPENDS "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}")
+      endforeach()
+      add_executable(fyzzxyzzy_sap_overlap_prefix
+        tests/physx_gpu_sap_overlap_prefix.cpp)
+      target_include_directories(fyzzxyzzy_sap_overlap_prefix PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      target_link_libraries(fyzzxyzzy_sap_overlap_prefix PRIVATE
+        fyzzxyzzy_physx_gpu_stages)
+      add_dependencies(fyzzxyzzy_sap_overlap_prefix
+        fyzzxyzzy_overlap_prefix_first_spv fyzzxyzzy_overlap_prefix_second_spv)
+      add_test(NAME fyzzxyzzy_sap_overlap_prefix
+        COMMAND fyzzxyzzy_sap_overlap_prefix
+          "${FYZZXYZZY_OVERLAP_PREFIX_first_SPV}"
+          "${FYZZXYZZY_OVERLAP_PREFIX_second_SPV}")
+      set_tests_properties(fyzzxyzzy_sap_overlap_prefix PROPERTIES
+        SKIP_RETURN_CODE 77)
+
     endif()
 
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
@@ -1006,6 +1040,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
+    src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
@@ -1787,6 +1822,38 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_dependencies(fyzzxyzzy_sap_overlap_work_d3d12 fyzzxyzzy_d3d12_sap_overlap_shader)
     add_test(NAME fyzzxyzzy_sap_overlap_work_d3d12
       COMMAND fyzzxyzzy_sap_overlap_work_d3d12 "${FYZZXYZZY_SAP_OVERLAP_DXIL}")
+
+    foreach(_pass IN ITEMS first second)
+      set(FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_pass}.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+          -Fo "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_overlap_prefix_${_pass}_dxil
+        DEPENDS "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}")
+    endforeach()
+    add_executable(fyzzxyzzy_sap_overlap_prefix_d3d12
+      tests/physx_gpu_sap_overlap_prefix.cpp)
+    target_compile_definitions(fyzzxyzzy_sap_overlap_prefix_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_sap_overlap_prefix_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_sap_overlap_prefix_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_sap_overlap_prefix_d3d12
+      fyzzxyzzy_overlap_prefix_first_dxil fyzzxyzzy_overlap_prefix_second_dxil)
+    add_test(NAME fyzzxyzzy_sap_overlap_prefix_d3d12
+      COMMAND fyzzxyzzy_sap_overlap_prefix_d3d12
+        "${FYZZXYZZY_OVERLAP_PREFIX_first_DXIL}"
+        "${FYZZXYZZY_OVERLAP_PREFIX_second_DXIL}")
+    set_tests_properties(fyzzxyzzy_sap_overlap_prefix_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77)
+
   endif()
 endif()
 

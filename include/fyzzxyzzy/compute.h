@@ -34,6 +34,9 @@ struct DeviceInfo {
     // Vulkan queries VK_SUBGROUP_FEATURE_ARITHMETIC_BIT; D3D12 queries
     // WaveOps and shader model via CheckFeatureSupport. Not a vendor ID.
     bool supports_wave_arithmetic = false;
+    // Resolved during adapter admission / logical-device creation, never dispatch.
+    bool supports_int64_shader = false;
+    bool supports_int64_wave = false; // 64-bit subgroup add/prefix is enabled.
     std::uint32_t subgroup_size = 0;
     std::uint32_t shader_model = 0; // D3D_SHADER_MODEL enum value, 0 on Vulkan.
 };

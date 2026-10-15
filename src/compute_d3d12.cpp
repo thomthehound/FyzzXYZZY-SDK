@@ -113,6 +113,11 @@ std::vector<Candidate> discover_adapters() {
             // The fast DXIL binary is compiled for cs_6_6, so SM6.0
             // WaveOps alone are insufficient to select this pipeline.
             waveOps && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
+        // Device admission is a setup-time decision. The native PhysX
+        // overlap scan requires both Int64ShaderOps and WaveOps.
+        info.supports_int64_shader = opts.Int64ShaderOps != FALSE;
+        info.supports_int64_wave = info.supports_int64_shader &&
+                                   info.supports_wave_arithmetic;
         info.subgroup_size = waveOps ? opts.WaveLaneCountMin : 0u;
         candidates.push_back({std::move(adapter), std::move(info)});
     };

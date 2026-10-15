@@ -39,8 +39,9 @@ VkInstance create_instance() {
         vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
     if (getVersion)
         require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
-    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_1
-        ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0;
+    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_2
+        ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
+            ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0);
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -105,6 +106,29 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                 info.supports_wave_arithmetic =
                     (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+            }
+            // Query shader integer and extended subgroup types once per
+            // physical device. Only Vulkan >=1.2 offers the core 64-bit
+            // subgroup feature; legacy compute contexts remain usable.
+            VkPhysicalDeviceFeatures basic{};
+            vkGetPhysicalDeviceFeatures(physical, &basic);
+            info.supports_int64_shader = basic.shaderInt64 == VK_TRUE;
+            if (properties.apiVersion >= VK_API_VERSION_1_2) {
+                auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                    vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
+                if (getFeatures2) {
+                    VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
+                    extended.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+                    VkPhysicalDeviceFeatures2 features{};
+                    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    features.pNext = &extended;
+                    getFeatures2(physical, &features);
+                    info.supports_int64_shader = features.features.shaderInt64 == VK_TRUE;
+                    info.supports_int64_wave = info.supports_int64_shader &&
+                        info.supports_wave_arithmetic &&
+                        extended.shaderSubgroupExtendedTypes == VK_TRUE;
+                }
             }
             for (std::size_t j = 0; j < 3; ++j) {
                 info.max_workgroup_count[j] = limits.maxComputeWorkGroupCount[j];
@@ -236,6 +260,18 @@ struct Context::Impl {
             create.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
             create.queueCreateInfoCount = 1;
             create.pQueueCreateInfos = &queue_info;
+            // Enabled only when supported; the native 64-bit PhysX stage
+            // enforces its own baseline at construction. No dispatch probes.
+            VkPhysicalDeviceFeatures enabled{};
+            enabled.shaderInt64 = info.supports_int64_shader ? VK_TRUE : VK_FALSE;
+            create.pEnabledFeatures = &enabled;
+            VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
+            if (info.supports_int64_wave) {
+                extended.sType =
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+                extended.shaderSubgroupExtendedTypes = VK_TRUE;
+                create.pNext = &extended;
+            }
             require(vkCreateDevice(physical, &create, nullptr, &device), "vkCreateDevice");
             vkGetDeviceQueue(device, selected.queue_family, 0, &queue);
 
