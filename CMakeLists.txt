@@ -130,6 +130,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
+    src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -280,8 +281,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_custom_target(fyzzxyzzy_physx_source_overlap_native_spv
         DEPENDS "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}")
       add_executable(fyzzxyzzy_physx_source_overlap_native
-        tests/physx_gpu_source_overlap_native.cpp
-        src/physx_gpu/source_overlap_work_native.cpp)
+        tests/physx_gpu_source_overlap_native.cpp)
       target_include_directories(fyzzxyzzy_physx_source_overlap_native PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
@@ -1207,6 +1207,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
+    src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -1315,8 +1316,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_custom_target(fyzzxyzzy_physx_source_overlap_native_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}")
     add_executable(fyzzxyzzy_physx_source_overlap_native_d3d12
-      tests/physx_gpu_source_overlap_native.cpp
-      src/physx_gpu/source_overlap_work_native.cpp)
+      tests/physx_gpu_source_overlap_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_overlap_native_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_physx_source_overlap_native_d3d12 PRIVATE
