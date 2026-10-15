@@ -27,19 +27,30 @@ static_assert(sizeof(Parameters) == 32, "PhysX region histogram constants change
 SapRegionHistogramsArenaStage::SapRegionHistogramsArenaStage(
     compute::Context& context, compute::ShaderBinary start_first,
     compute::ShaderBinary start_second, compute::ShaderBinary region_first,
-    compute::ShaderBinary region_second) : context_(context) {
+    compute::ShaderBinary region_second,
+    compute::ShaderBinary start_first_wave,
+    compute::ShaderBinary region_first_wave,
+    bool force_portable) : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
         device.max_workgroup_size[0] < kThreads ||
         device.max_workgroup_count[0] < kGroups)
         throw std::runtime_error("PhysX region histogram requires 32x256 groups");
 
+    // Source-faithful native-wave first pass on supported GPU devices.
+    // All callers supply both codepaths so fast-capable adapters cannot
+    // silently run the high-barrier fallback after integration.
+    using_wave_ = !force_portable && device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  256u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
     compute::ShaderBinary binaries[] = {
-        std::move(start_first), std::move(start_second),
-        std::move(region_first), std::move(region_second)
+        using_wave_ ? std::move(start_first_wave) : std::move(start_first),
+        std::move(start_second),
+        using_wave_ ? std::move(region_first_wave) : std::move(region_first),
+        std::move(region_second)
     };
     try {
         for (std::uint32_t i = 0; i < 4u; ++i) {
