@@ -131,6 +131,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/source_overlap_work_native.cpp
+    src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -292,6 +293,35 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_physx_source_overlap_native
         COMMAND fyzzxyzzy_physx_source_overlap_native
           "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}")
+
+      # Original 32x256 overlap histogram compute/output scans, source-owned
+      # independent roots and GPU-resident descriptor counters.
+      set(FYZZXYZZY_SOURCE_SCAN_SPV_FILES)
+      foreach(_phase first second)
+        set(_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_phase}_native.hlsl")
+        set(_spv "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_phase}_native.spv")
+        add_custom_command(OUTPUT "${_spv}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_0 -E main -Fo "${_spv}" "${_shader}"
+          DEPENDS "${_shader}" VERBATIM)
+        list(APPEND FYZZXYZZY_SOURCE_SCAN_SPV_FILES "${_spv}")
+      endforeach()
+      add_custom_target(fyzzxyzzy_physx_source_scan_spv
+        DEPENDS ${FYZZXYZZY_SOURCE_SCAN_SPV_FILES})
+      add_executable(fyzzxyzzy_physx_source_scan_native
+        tests/physx_gpu_source_overlap_prefix_native.cpp)
+      target_include_directories(fyzzxyzzy_physx_source_scan_native PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+      target_link_libraries(fyzzxyzzy_physx_source_scan_native PRIVATE
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+      add_dependencies(fyzzxyzzy_physx_source_scan_native
+        fyzzxyzzy_physx_source_scan_spv)
+      add_test(NAME fyzzxyzzy_physx_source_scan_native
+        COMMAND fyzzxyzzy_physx_source_scan_native
+          ${FYZZXYZZY_SOURCE_SCAN_SPV_FILES})
+      set_tests_properties(fyzzxyzzy_physx_source_scan_native PROPERTIES SKIP_RETURN_CODE 77)
 
       # Original PxgBroadPhaseDesc fields and source CUDA virtual pointers,
       # native persistent backing growth and descriptor-only re-materialization.
@@ -1208,6 +1238,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
     src/physx_gpu/source_overlap_work_native.cpp
+    src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -1329,6 +1360,34 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_source_overlap_native_d3d12
       COMMAND fyzzxyzzy_physx_source_overlap_native_d3d12
         "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}")
+
+    set(FYZZXYZZY_SOURCE_SCAN_DXIL_FILES)
+    foreach(_phase first second)
+      set(_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_phase}_native.hlsl")
+      set(_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_phase}_native.dxil")
+      add_custom_command(OUTPUT "${_dxil}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main -Fo "${_dxil}" "${_shader}"
+        DEPENDS "${_shader}" VERBATIM)
+      list(APPEND FYZZXYZZY_SOURCE_SCAN_DXIL_FILES "${_dxil}")
+    endforeach()
+    add_custom_target(fyzzxyzzy_physx_source_scan_dxil
+      DEPENDS ${FYZZXYZZY_SOURCE_SCAN_DXIL_FILES})
+    add_executable(fyzzxyzzy_physx_source_scan_native_d3d12
+      tests/physx_gpu_source_overlap_prefix_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_scan_native_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_scan_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_scan_native_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+    add_dependencies(fyzzxyzzy_physx_source_scan_native_d3d12
+      fyzzxyzzy_physx_source_scan_dxil)
+    add_test(NAME fyzzxyzzy_physx_source_scan_native_d3d12
+      COMMAND fyzzxyzzy_physx_source_scan_native_d3d12
+        ${FYZZXYZZY_SOURCE_SCAN_DXIL_FILES})
+    set_tests_properties(fyzzxyzzy_physx_source_scan_native_d3d12 PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(fyzzxyzzy_physx_source_descriptor_d3d12
       tests/physx_gpu_source_descriptor.cpp

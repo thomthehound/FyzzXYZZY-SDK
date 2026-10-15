@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_overlap_work_native.h"
+#include "physx_gpu/source_native_view.h"
 
 #include <algorithm>
 #include <array>
@@ -22,37 +23,6 @@ CudaDeviceAddressMap::Address address_of(const void* pointer) {
         reinterpret_cast<std::uintptr_t>(pointer));
 }
 
-std::size_t checked_bytes(std::uint64_t count, std::uint64_t element) {
-    if (!count || count > std::numeric_limits<std::size_t>::max() / element)
-        throw std::out_of_range("Invalid source overlap-work allocation capacity");
-    return static_cast<std::size_t>(count * element);
-}
-
-compute::BufferBinding native_view(
-    const CudaDeviceAddressMap& addresses,
-    CudaDeviceAddressMap::Address address,
-    std::size_t bytes, std::size_t alignment, std::uint32_t slot,
-    compute::BufferAccess access, std::uint32_t& local_offset,
-    std::uint64_t max_view_bytes) {
-    if (!address || !bytes || (address % 4u))
-        throw std::invalid_argument("Invalid PhysX CUDA overlap-work pointer");
-    const auto physical = addresses.resolve(address, bytes);
-    // Vulkan storage-buffer descriptors may require greater alignment than
-    // PhysX's 128-byte getDevicePtr() alignment. Bind the containing aligned
-    // physical range and shift only this shader field's local byte address.
-    const auto base = physical.offset - (physical.offset % alignment);
-    const auto delta = physical.offset - base;
-    if (delta > std::numeric_limits<std::uint32_t>::max() ||
-        bytes > std::numeric_limits<std::size_t>::max() - delta ||
-        delta + bytes > max_view_bytes ||
-        delta + bytes > std::numeric_limits<std::uint32_t>::max())
-        throw std::out_of_range("PhysX allocation exceeds a native storage view");
-    const auto view_bytes = delta + bytes;
-    if (view_bytes % 4u)
-        throw std::invalid_argument("PhysX native RAW view not word-aligned");
-    local_offset = static_cast<std::uint32_t>(delta);
-    return {slot, physical.buffer, base, view_bytes, access};
-}
 } // namespace
 
 SourceOverlapWorkNativeStage::SourceOverlapWorkNativeStage(
@@ -88,7 +58,6 @@ void SourceOverlapWorkNativeStage::append(
     if (!layout.descriptor || !layout.current_boxes ||
         layout.current_boxes > (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u ||
         layout.current_boxes > layout.box_capacity ||
-        source.numCreatedHandles > layout.current_boxes ||
         std::uint64_t(source.numPreviousHandles) + source.numCreatedHandles <
             source.numRemovedHandles ||
         std::uint64_t(source.numPreviousHandles) + source.numCreatedHandles -
@@ -128,15 +97,15 @@ void SourceOverlapWorkNativeStage::append(
         address_of(source.overlapChecksHandleRegiones)
     }};
     const std::array<std::size_t, kBindings> sizes{{
-        checked_bytes(layout.projection_slots, 4u),
-        checked_bytes(layout.box_capacity, 8u),
-        checked_bytes(layout.box_capacity, 32u),
-        checked_bytes(layout.projection_slots, 4u),
+        source_allocation_bytes(layout.projection_slots, 4u),
+        source_allocation_bytes(layout.box_capacity, 8u),
+        source_allocation_bytes(layout.box_capacity, 32u),
+        source_allocation_bytes(layout.projection_slots, 4u),
         sizeof(std::uint32_t),
-        checked_bytes(hist_entries, 4u),
-        checked_bytes(hist_entries, 4u),
-        checked_bytes(layout.region_work_capacity, 8u),
-        checked_bytes(layout.handle_region_capacity, 8u)
+        source_allocation_bytes(hist_entries, 4u),
+        source_allocation_bytes(hist_entries, 4u),
+        source_allocation_bytes(layout.region_work_capacity, 8u),
+        source_allocation_bytes(layout.handle_region_capacity, 8u)
     }};
 
     std::array<std::uint32_t, kParameters> params{};
@@ -148,7 +117,7 @@ void SourceOverlapWorkNativeStage::append(
     for (std::uint32_t i = 0; i < kBindings; ++i) {
         const auto access = i >= 7u
             ? compute::BufferAccess::Write : compute::BufferAccess::Read;
-        dispatch.buffers.push_back(native_view(
+        dispatch.buffers.push_back(source_native_view(
             addresses, pointers[i], sizes[i], alignment, i, access,
             params[i + 1u], gpu.max_storage_buffer_range));
     }

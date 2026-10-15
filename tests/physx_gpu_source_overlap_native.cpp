@@ -149,6 +149,18 @@ void run_case(Context& context, const char* shader, bool shared_input_root) {
     rejects([&]{ stage.append(commands, host, map, insufficient); },
             "Source overlap allocation smaller than original capacity accepted");
     require(commands.empty(), "Rejected source dispatch modified command list");
+    // A frame may create more handles than its final population when it
+    // also removes old handles. Source execution uses the resulting box count,
+    // not the transient created-handle count as a capacity restriction.
+    auto turnover = host;
+    turnover.numPreviousHandles = 0u;
+    turnover.numCreatedHandles = 3u;
+    turnover.numRemovedHandles = 1u;
+    std::vector<BatchCommand> turnover_commands;
+    stage.append(turnover_commands, turnover, map, layout);
+    require(turnover_commands.size() == 1u,
+            "Legitimate created/removed PhysX handle turnover was rejected");
+
 
     // Upload all source-owned roots in one ordered transfer, then submit the
     // original 32x256 shader without a host wait or per-kernel repacking.
