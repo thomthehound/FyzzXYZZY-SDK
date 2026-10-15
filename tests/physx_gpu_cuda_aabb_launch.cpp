@@ -65,10 +65,48 @@ void negative(CudaAabbLaunchLowering& bridge,
     rejected([&] { invoke(physx::PxgKernelIds::BP_TRANSLATE_AABBS,grid,256u,args.data(),10u); });
     rejected([&] { invoke(physx::PxgKernelIds::BP_TRANSLATE_AABBS,grid,256u,nullptr,11u); });
 }
+// Pure source-independent descriptor geometry test. CI adapters may report
+// offset alignment 4 or 16; force 256/1024 here to exercise strict Vulkan.
+void verify_alignment_contract() {
+    constexpr std::uint32_t bytes=120u;
+    const std::array<BufferBinding,4> views{{
+        {0u,11u,4u,bytes,BufferAccess::Read},
+        {1u,12u,260u,bytes,BufferAccess::Read},
+        {2u,13u,1020u,bytes,BufferAccess::Read},
+        {3u,14u,28u,bytes,BufferAccess::Write}
+    }};
+    for (const std::uint64_t alignment : {256ull,1024ull}) {
+        const auto lowered=lower_aabb_storage_views(views,alignment,8192u);
+        for (std::size_t i=0;i<4u;++i) {
+            const auto& binding=lowered.bindings[i];
+            if(binding.offset%alignment!=0u ||
+               binding.offset+std::size_t(lowered.element_bias[i])*4u!=views[i].offset ||
+               binding.bytes!=views[i].bytes+std::size_t(lowered.element_bias[i])*4u ||
+               binding.buffer!=views[i].buffer ||
+               binding.access!=views[i].access)
+                throw std::runtime_error("Strict native descriptor alignment mismatch");
+        }
+    }
+    auto fails=[&](auto f) {
+        bool rejected=false;
+        try {f();}
+        catch(const std::exception&) {rejected=true;}
+        if(!rejected)throw std::runtime_error("Invalid aligned descriptor contract passed");
+    };
+    fails([&]{(void)lower_aabb_storage_views(views,0u,8192u);});
+    fails([&]{(void)lower_aabb_storage_views(views,6u,8192u);});
+    fails([&]{(void)lower_aabb_storage_views(views,256u,128u);});
+    auto invalid=views;
+    invalid[1].offset=261u; // CUDA GPU words cannot be unaligned.
+    fails([&]{(void)lower_aabb_storage_views(invalid,256u,8192u);});
+}
+
 void run(Context& ctx, AabbEncodingStage& shader) {
     constexpr std::uint32_t n = 37u, pad = 19u;
-    constexpr std::size_t box_offset = 64u, dist_offset = 32u;
-    constexpr std::size_t env_offset = 16u, output_offset = 128u;
+    // Deliberately CUDA-valid but Vulkan-descriptor-invalid offsets on GPUs
+    // with minStorageBufferOffsetAlignment > 4.
+    constexpr std::size_t box_offset = 4u, dist_offset = 12u;
+    constexpr std::size_t env_offset = 20u, output_offset = 28u;
     const auto box_bytes = (n + pad) * sizeof(Box) + box_offset;
     const auto dist_bytes = (n + pad) * sizeof(float) + dist_offset;
     const auto env_bytes = (n + pad) * sizeof(std::uint32_t) + env_offset;
@@ -133,14 +171,37 @@ void run(Context& ctx, AabbEncodingStage& shader) {
     for(std::size_t i : {0u,2u}) {
         const auto& d = std::get<DispatchCommand>(commands[i]);
         if (d.groups.x!=(n+15u)/16u || d.buffers.size()!=4u ||
-            d.buffers[0].offset!=box_offset ||
-            d.buffers[1].offset!=dist_offset ||
-            d.buffers[3].offset!=output_offset ||
+            d.push_constants.size()!=32u ||
             d.buffers[0].buffer!=box ||
             d.buffers[3].buffer!=out ||
-            d.buffers[2].buffer!=(i?dist:env) ||
-            d.buffers[2].offset!=(i?dist_offset:env_offset))
+            d.buffers[2].buffer!=(i?dist:env))
             throw std::runtime_error("CUDA launch lowering lost source pointer binding");
+        std::array<std::uint32_t,8> constants{};
+        std::memcpy(constants.data(), d.push_constants.data(), sizeof(constants));
+        const auto pack = [](const std::uint8_t (&v)[3]) {
+            return std::uint32_t(v[0]) | (std::uint32_t(v[1])<<8u) |
+                   (std::uint32_t(v[2])<<16u);
+        };
+        if(constants[0]!=n || constants[1]!=pack(shifts) ||
+           constants[2]!=pack(envbits) || constants[3]!=(i==0u?1u:0u))
+            throw std::runtime_error("CUDA PxU8 shift ABI was incorrectly decoded");
+        const std::size_t sourceOffsets[] = {
+            box_offset, dist_offset, i==0u?env_offset:dist_offset, output_offset
+        };
+        const std::size_t semanticBytes[] = {
+            std::size_t(n)*sizeof(Box), std::size_t(n)*sizeof(float),
+            std::size_t(n)*sizeof(std::uint32_t), std::size_t(n)*sizeof(Encoded)
+        };
+        for (std::size_t slot=0;slot<4u;++slot) {
+            if(d.buffers[slot].offset %
+                   ctx.device_info().storage_buffer_offset_alignment != 0u ||
+               d.buffers[slot].offset + std::size_t(constants[4u+slot])*4u !=
+                   sourceOffsets[slot] ||
+               d.buffers[slot].bytes !=
+                   semanticBytes[slot] + std::size_t(constants[4u+slot])*4u)
+                throw std::runtime_error(
+                    "CUDA pointer did not lower to aligned descriptor plus element bias");
+        }
     }
     ctx.wait_submission(ctx.submit_batch(commands));
     std::vector<std::uint32_t> first(output_bytes/4u), second(output_bytes/4u);
@@ -194,6 +255,7 @@ int main(int argc,char** argv) {
 #endif
         shader.bytes=read_shader(argv[1]);
         AabbEncodingStage stage(ctx,std::move(shader));
+        verify_alignment_contract();
         run(ctx,stage);
         std::cout<<"PhysX source CUDA AABB launch to native GPU PASS\n";
         return 0;
