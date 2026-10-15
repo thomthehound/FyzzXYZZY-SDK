@@ -319,12 +319,28 @@ struct Context::Impl {
     }
 
     void wait_value(std::uint64_t value) {
-        if (fence->GetCompletedValue() >= value) return;
+        // ID3D12Fence returns UINT64_MAX when the device has been removed.
+        // Treating that as a completed fence conceals the failing dispatch;
+        // the next resource allocation then reports a misleading failure.
+        const auto completed = fence->GetCompletedValue();
+        if (completed == std::numeric_limits<std::uint64_t>::max()) {
+            const auto reason = device->GetDeviceRemovedReason();
+            throw std::runtime_error(
+                "D3D12 device removed during GPU submission (HRESULT " +
+                std::to_string(static_cast<unsigned long>(reason)) + ")");
+        }
+        if (completed >= value) return;
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
         DWORD result = WaitForSingleObject(completion_event, INFINITE);
         if (result != WAIT_OBJECT_0)
             throw std::runtime_error("D3D12 fence wait failed");
+        if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
+            const auto reason = device->GetDeviceRemovedReason();
+            throw std::runtime_error(
+                "D3D12 device removed during GPU submission (HRESULT " +
+                std::to_string(static_cast<unsigned long>(reason)) + ")");
+        }
     }
 
     void release_retired_through(std::uint64_t completed_fence) noexcept {
