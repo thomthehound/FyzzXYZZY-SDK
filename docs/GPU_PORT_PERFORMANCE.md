@@ -27,29 +27,78 @@ mapping and `PHYSX_GPU_PORT.md` for progress.
   remain necessary but are *not* a performance substitute. Do not
   claim a speedup or parity without a reproducible benchmark.
 
-## Minimum GPU capability target
+## Target hardware, API floors, and layered feature paths
 
-The intended shipping floor is **DirectX Shader Model 6.6 capable hardware
-or better**. Do not optimize for GPUs below that floor. This does **not**
-mean Vulkan exposes a single `SM6.6` bit: declare and query Vulkan
-equivalent capabilities separately (including subgroup arithmetic,
-supported subgroup stages, 64-bit ops, and any optional matrix or
-atomic operations used). Backend support must be explicit, not silently
-assumed. The product hardware floor may increase by user decision.
+**Shipping baseline (user direction, October 14, 2026):**
+- **DirectX 12 Shader Model 6.6 or better** for the D3D12 GPU
+  backend; query `D3D12_FEATURE_SHADER_MODEL`, not a driver name or
+  a DXC compiler version.
+- **Vulkan 1.4**, with individually probed optional extensions
+  and features, for the Vulkan GPU backend. Use the **physical device's**
+  supported API version, not merely the installed loader. Do not assume
+  API version alone guarantees subgroup *size*, WMMA, float formats,
+  cooperative matrices, or any optional arithmetic primitive.
+- The intended baseline architecture is approximately **AMD RDNA 1 /
+  Radeon RX 5000 series**. The intended **practical performance floor**
+  is approximately **RDNA 2 Radeon 680M**. These are *reference
+  targets*, not unverified universal product-support promises:
+  the actual adapter/driver/API feature set must pass runtime tests.
+  A fast-enough older architecture may still be excluded by its driver,
+  and an API-capable entry-level GPU might be too slow.
+- **Optional extended compatibility:** Polaris or Vega on Linux RADV,
+  only if *all actually required Vulkan shader, memory, subgroup and
+  device capabilities* are present; any driver exception must be
+  explicit and independently tested. Do **not** re-design the main
+  implementation for these legacy targets or silently lower the
+  shipping floor.
+- The floor may increase later, by project decision. Older API or
+  software adapters may continue to run **development-only functional
+  tests**, without constituting supported production GPU physics.
 
-The Vulkan and D3D12 CI runners—including software adapters—serve as
-**functional test environments**, not proof that a GPU meets the intended
-shipping floor or achieves acceptable throughput. Keep development CI
-usable independently of the release capability policy. Explicitly
-track D3D12 `D3D12_FEATURE_SHADER_MODEL >= 6_6` and relevant WaveOps
-availability before enabling an optimized native fast path; do not
-quietly equate shader compilation to device support. For Vulkan, query
-`VkPhysicalDeviceSubgroupProperties` including
-`VK_SUBGROUP_FEATURE_ARITHMETIC_BIT` and compute-stage support.
-For compatibility with CI software implementations, a portable
-**correctness fallback** may exist but should not dictate the
-released fast path. Fallbacks are not a reason to retain a slow
-implementation on supported hardware.
+**Do not conflate architecture, API, driver, and execution quality.**
+A GPU family name is not proof of Vulkan 1.4 *driver* support, Shader
+Model 6.6 support, subgroup performance, or adequate physics throughput.
+Vulkan and D3D12 are independently feature-probed backends; do not
+model SM6.6 as a Vulkan bit. Feature selection is per-device and
+per-kernel, never a vendor-name shortcut.
+
+**Tiered execution strategy:**
+
+1. **Baseline:** optimized, source-faithful PhysX GPU kernels using
+   SM6.6-era facilities (or Vulkan 1.4 core equivalents). Keep this
+   path genuinely fast. A correctness-only fallback on software test
+   adapters does **not** set the shipping floor.
+2. **Optional fast paths:** query actual capabilities and compile
+   distinct variants where useful—subgroup shape/control, lower
+   precision, 64-bit arithmetic/atomics, vendor acceleration,
+   cooperative matrix/WMMA, or newer shader-model features.
+   Automatically retain the baseline on devices without an optional
+   capability. Never make WMMA a blanket requirement.
+3. **Forward-looking SM6.7/6.8+:** evaluate features as *opportunities*,
+   not as reasons to raise the baseline. **SM6.8 wave-size range**
+   (`[WaveSize(min,max,preferred)]`) could reduce wave32/wave64
+   variant proliferation and enable a faster preferred wave size;
+   it still needs support probing and measurement. **Work Graphs**
+   might eventually help GPU-local task expansion, but only if they
+   preserve the original PhysX host/task dependencies and show
+   genuine benefits; do not rebuild the simulation architecture
+   around them. SM6.8 **does not promise WMMA**. Matrix facilities
+   require separately verified API/device/compiler support.
+
+**Deployment gates:** runtime enumeration must eventually report
+exact features, required missing capabilities, selected kernel
+variants, and expected/fallback throughput class. At present the
+compute API queries a subset of these features; the full Vulkan
+1.4 / SM6.6 production admission check is an **outstanding
+implementation task**, not something the current build has already
+enforced. Current Vulkan 1.0-compatible bootstrap exists for test
+harnesses and generic compute, not the target release floor.
+
+The Vulkan and D3D12 CI runners, including software adapters, are
+**functional harnesses only**. Retain smoke tests with portable
+fallbacks, but exercise production fast paths on actual target GPUs.
+The baseline should never inherit a severe performance penalty
+merely to satisfy a non-shipping software renderer.
 
 ## Required performance impact record for every nontrivial port
 
@@ -117,7 +166,7 @@ without a measurable matrix-shaped workload. Record negative
 findings as well as wins. WMMA is an optimization opportunity,
 not license to replace PhysX's simulation mathematics.
 
-## Performance-risk register (initial retroactive review)
+## Performance-risk register (retroactive review)
 
 | ID | Origin | Concern | Current disposition |
 | --- | --- | --- | --- |
