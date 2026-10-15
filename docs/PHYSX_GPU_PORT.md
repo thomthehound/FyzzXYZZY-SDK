@@ -990,6 +990,14 @@ shared caller-owned GPU arena, an authoritative set of descriptor aliases
 and the created-handle-only gate. No new scene scheduler, buffer-owner,
 frame-time device capability query, or intermediate CPU readback.
 
+For `BP_GENERATE_FOUNDPAIR_NEWBOUNDS`, the host passes the actual
+`current_boxes` value through a per-dispatch push constant. The GPU arena's
+long-lived pair descriptor does not determine the dense region stride after
+box additions/removals. The integration test explicitly holds the
+descriptor's count stale while exercising a valid report in region 1;
+both the overlap producer and the pair reporter must use the same frame
+population. This introduces no hot-path hardware queries or readbacks.
+
 The integrated Vulkan and D3D12 tests exercise the existing
 `decide_sap_update` host decision, actual producer-to-prefix-to-found-pair
 intermediate memory dependencies, per-start projection regions,
