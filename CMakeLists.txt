@@ -167,6 +167,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_executable(fyzzxyzzy_vulkan_memory_smoke tests/vulkan_memory_smoke.cpp)
     target_link_libraries(fyzzxyzzy_vulkan_memory_smoke PRIVATE FyzzXYZZY::Compute)
     add_test(NAME fyzzxyzzy_vulkan_memory_smoke COMMAND fyzzxyzzy_vulkan_memory_smoke)
+    # Exercise CUdeviceptr+offset host lowering against a real Vulkan
+    # device-local upload/copy and submission-safe buffer retirement.
+    add_executable(fyzzxyzzy_physx_cuda_host_transfer
+      tests/physx_gpu_cuda_host_transfer.cpp)
+    target_include_directories(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
+    add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
+      COMMAND fyzzxyzzy_physx_cuda_host_transfer)
+
 
     find_program(FYZZXYZZY_GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
     set(FYZZXYZZY_AFFINE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/affine.comp.spv")
@@ -1124,6 +1136,20 @@ if(FYZZXYZZY_BUILD_D3D12)
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib)
 
+
+  if(BUILD_TESTING)
+    add_executable(fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      tests/physx_gpu_cuda_host_transfer.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
+    add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
+      COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
+  endif()
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
   if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
