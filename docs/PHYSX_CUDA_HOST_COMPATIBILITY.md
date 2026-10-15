@@ -309,6 +309,15 @@ share a root as an engine invariant would be an architectural error.
   allocator's free-list reuse policy. It is a resolution table, not
   the GPU heap allocator. The owning host must validate physical
   extents and defer reuse until dependent submissions complete.
+- The source `PxgCudaBuffer` distinguishes the raw allocator-returned
+  `mPtr` from its 128-byte-aligned `getDevicePtr()` view. Its
+  `swapBuffer` and heap deallocation deliberately operate on **raw**
+  allocation pointers, not the aligned view. Our fixture's 256-aligned
+  slices make those two addresses coincide by construction and do NOT
+  exercise that distinction. The real allocator integration must
+  maintain raw ownership/free identities separately from shader-visible
+  aligned CUDA pointers, or demonstrate an allocator alignment guarantee
+  that genuinely makes the two equivalent.
 - A single arena uses 32-bit byte offsets and a whole-buffer storage
   binding; those are real range/scale limits, not unlimited GPU memory.
   Device capability and binding-range validation belongs at resource
