@@ -173,3 +173,67 @@ kernel ID/name lookups through the same source-backed lowering approach.
 After that, prove the original scene stream/event and AABB manager
 publication chain. This experiment does not yet establish that an
 unmodified `PxScene` runs GPU broadphase.
+
+
+## Original PxgBroadPhaseDesc GPU allocation/descriptor handoff
+
+`source_newbounds_descriptor.{h,cpp}` now consumes the real
+`physx::PxgBroadPhaseDesc` type and resolves the new-bounds sequence's
+source-named pointer fields: original integer bounds, collision groups,
+optional environment IDs, X SAP handles/positions, per-box region extents,
+region histograms and ordered handles, uint64 overlap counts, per-work-item
+handle/region pairs, block scratch, region prefix and bounded pair report
+storage. Importantly, **`regionAccumTotal`**, **`overlapChecksTotalRegion`**
+and **`sharedFoundPairIndex`** are already scalars *inside the GPU
+descriptor*; the lowering points the translated shader at their exact
+`offsetof(PxgBroadPhaseDesc, ...)` byte positions, rather than inventing
+separate counter allocations.
+
+This source descriptor is still uploaded by the original host when GPU
+buffer ownership or input state changes, **not reconstructed at every
+kernel dispatch**. The native pair/scan/work descriptors are small views
+of its source GPU allocations and share the same persistent backing.
+The original host's actual projection-slot count is supplied explicitly,
+including projection slots for removed handles; it must not be inferred
+from a stale box capacity.
+
+`CudaDeviceAddressMap` now allows **distinct logical CUDA allocations
+inside the same physical compute buffer**: `register_slice` creates a
+stable virtual CUDA pointer with its own bounds/liveness; `resolve`
+returns the backing offset; `relocate_slice` preserves the virtual
+pointer when source-ordered allocation growth copies data to new backing
+storage; and `unregister_slice` invalidates that logical allocation
+without claiming ownership of the shared native buffer. The original
+PhysX allocator/stream owner decides *when* to copy, retire, and reuse
+physical memory. These methods themselves neither launch kernels nor
+allocate or synchronize the GPU.
+
+The Vulkan/D3D12 `fyzzxyzzy_physx_source_descriptor` tests construct
+the actual source descriptor from separately bounded CUDA-virtual
+allocations sharing one device-local backing. They check **every mapped
+pointer and all three inline scalar aliases**, asynchronous source and
+translated descriptor uploads, a single ordered GPU copy of the arena
+on growth, an independently moved source-group allocation, descriptor
+re-materialization **at relocation**, and deferred retirement of the
+original backing without a CPU fence. They reject disjoint physical
+backing, missing/stale source allocations, impossible sizes and
+out-of-range inline fields, and check GPU-resident bytes after the
+copy/upload chain has completed. The CPU address-map test separately
+covers duplicate native backing with independently freed logical slices,
+64-bit interior pointers and stable virtual identity during relocation.
+
+**Performance contract:** This is a zero-per-kernel-copy *persistent
+shared-backing fast path*. Source-allocation growth can require source-
+ordered GPU copies, like PhysX's existing `allocateCopyOldDataAsync`,
+but there is no per-dispatch inter-allocation packing or host readback.
+It is not a claim that unrelated GPU buffers are magically contiguous:
+mappings backed by separate native buffers currently **fail explicitly**
+rather than silently copying them. Nor is it a production memory pool or
+a working GPU `PxScene` yet. The next engineering work is tying the
+**original PhysX heap allocation/growth/free decisions** to this backing
+and handling the capacity/fragmentation limits of an arena, or extending
+kernel binding for disjoint native resources where preferable. Existing
+arena shaders use 32-bit offsets and one storage-buffer descriptor, so
+this slice is bounded by native storage-buffer-range constraints; do not
+advertise unlimited device memory support. Real scene admission and
+multi-frame found/lost reporting remain the acceptance milestones.
