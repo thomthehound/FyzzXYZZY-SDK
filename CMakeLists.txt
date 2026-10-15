@@ -743,6 +743,29 @@ if(FYZZXYZZY_BUILD_VULKAN)
             DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}")
         endforeach()
       endforeach()
+      # Fast source-style warp-prefix lowering; source geometry stays
+      # 32x256 and the four scan/offset dispatches remain separate.
+      foreach(_region_kind IN ITEMS start region)
+        if(_region_kind STREQUAL "start")
+          set(_region_flag 1)
+        else()
+          set(_region_flag 0)
+        endif()
+        set(FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_wave.spv")
+        add_custom_command(
+          OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}"
+          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+            -T cs_6_6 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
+            -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
+          VERBATIM
+        )
+        add_custom_target(fyzzxyzzy_physx_sap_region_${_region_kind}_wave_shader
+          DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}")
+      endforeach()
       add_executable(fyzzxyzzy_physx_sap_region_histograms
         tests/physx_gpu_sap_region_producer.cpp)
       target_include_directories(fyzzxyzzy_physx_sap_region_histograms PRIVATE
@@ -754,14 +777,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_sap_region_start_first_shader
         fyzzxyzzy_physx_sap_region_start_second_shader
         fyzzxyzzy_physx_sap_region_region_first_shader
-        fyzzxyzzy_physx_sap_region_region_second_shader)
+        fyzzxyzzy_physx_sap_region_region_second_shader
+        fyzzxyzzy_physx_sap_region_start_wave_shader
+        fyzzxyzzy_physx_sap_region_region_wave_shader)
       add_test(NAME fyzzxyzzy_physx_sap_region_histograms
         COMMAND fyzzxyzzy_physx_sap_region_histograms
           "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_REGION_start_first_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_REGION_start_second_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_REGION_region_first_SHADER}"
-          "${FYZZXYZZY_PHYSX_SAP_REGION_region_second_SHADER}")
+          "${FYZZXYZZY_PHYSX_SAP_REGION_region_second_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_start_WAVE_SHADER}"
+          "${FYZZXYZZY_PHYSX_SAP_REGION_region_WAVE_SHADER}")
 
       # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
       foreach(_active_pass IN ITEMS writeout compute_wave compute_portable output)
@@ -1475,6 +1502,27 @@ if(FYZZXYZZY_BUILD_D3D12)
           DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}")
       endforeach()
     endforeach()
+    # Fast source-style warp-prefix lowering; 32x256 four-pass schedule.
+    foreach(_region_kind IN ITEMS start region)
+      if(_region_kind STREQUAL "start")
+        set(_region_flag 1)
+      else()
+        set(_region_flag 0)
+      endif()
+      set(FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_wave.dxil")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
+          -Fo "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
+        VERBATIM
+      )
+      add_custom_target(fyzzxyzzy_d3d12_sap_region_${_region_kind}_wave_shader
+        DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}")
+    endforeach()
     add_executable(fyzzxyzzy_physx_sap_region_histograms_d3d12
       tests/physx_gpu_sap_region_producer.cpp)
     target_compile_definitions(fyzzxyzzy_physx_sap_region_histograms_d3d12 PRIVATE
@@ -1488,14 +1536,18 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_d3d12_sap_region_start_first_shader
       fyzzxyzzy_d3d12_sap_region_start_second_shader
       fyzzxyzzy_d3d12_sap_region_region_first_shader
-      fyzzxyzzy_d3d12_sap_region_region_second_shader)
+      fyzzxyzzy_d3d12_sap_region_region_second_shader
+      fyzzxyzzy_d3d12_sap_region_start_wave_shader
+      fyzzxyzzy_d3d12_sap_region_region_wave_shader)
     add_test(NAME fyzzxyzzy_physx_sap_region_histograms_d3d12
       COMMAND fyzzxyzzy_physx_sap_region_histograms_d3d12
         "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_REGION_start_first_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_REGION_start_second_DXIL}"
         "${FYZZXYZZY_D3D12_SAP_REGION_region_first_DXIL}"
-        "${FYZZXYZZY_D3D12_SAP_REGION_region_second_DXIL}")
+        "${FYZZXYZZY_D3D12_SAP_REGION_region_second_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_start_WAVE_DXIL}"
+        "${FYZZXYZZY_D3D12_SAP_REGION_region_WAVE_DXIL}")
 
     # Three PhysX start/active-region kernels: 32x256, 64x512, 64x256.
     foreach(_active_pass IN ITEMS writeout compute_wave compute_portable output)
