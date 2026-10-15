@@ -3,9 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_region_create_native.h"
+#include "physx_gpu/source_region_histograms_native.h"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstring>
+#include <memory>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -53,12 +57,13 @@ struct Root {
 struct Endpoint {std::uint32_t key, handle, tag;};
 
 void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
+              const SourceRegionHistogramsNativeStage* scans,
               std::uint32_t boxes,std::uint32_t created,
               std::uint32_t removed=0u){
     check(created<=boxes,"Invalid source-created fixture population");
     CudaDeviceAddressMap map;
     std::vector<Root> roots;
-    roots.reserve(13u);
+    roots.reserve(15u);
     auto allocate=[&](std::uint32_t words)->std::size_t{
         const auto ordinal=static_cast<std::uint32_t>(roots.size());
         const std::uint32_t offset=260u+((ordinal%5u)*4u);
@@ -89,6 +94,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     const auto regions=allocate(slots);
     const auto active=allocate(cleared);
     const auto startHist=allocate(cleared);
+    const auto blockStarts=allocate(32u);
+    const auto blockRegions=allocate(32u);
+    const auto descriptor=allocate(
+        static_cast<std::uint32_t>(sizeof(physx::PxgBroadPhaseDesc)/4u));
+    static_assert(sizeof(physx::PxgBroadPhaseDesc)%4u==0u,
+                  "PhysX GPU source descriptor must be D32 aligned");
 
     auto set=[&](std::size_t root,std::uint32_t word,std::uint32_t val) {
         roots[root].input[roots[root].offset/4u+word]=val;
@@ -115,6 +126,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     desc.regionAccum=reinterpret_cast<decltype(desc.regionAccum)>(ptr(regions));
     desc.activeRegionsHistogram=reinterpret_cast<decltype(desc.activeRegionsHistogram)>(ptr(active));
     desc.startRegionsHistogram=reinterpret_cast<decltype(desc.startRegionsHistogram)>(ptr(startHist));
+    desc.blockStartRegionAccum=reinterpret_cast<decltype(desc.blockStartRegionAccum)>(ptr(blockStarts));
+    desc.blockRegionAccum=reinterpret_cast<decltype(desc.blockRegionAccum)>(ptr(blockRegions));
+    desc.startRegionAccumTotal=0xdeadbeefu;
+    desc.regionAccumTotal=0xdeadbeefu;
+    std::memcpy(roots[descriptor].input.data()+roots[descriptor].offset/4u,
+                &desc,sizeof(desc));
 
     for(std::uint32_t a=0u;a<3u;++a){
         std::vector<Endpoint> list;
@@ -168,6 +185,32 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
             setExpected(regions,endX,0u);
         }
     }
+    if(created && scans){
+        // Follow source createRegionsKernel with four source histogram passes.
+        // Independent CPU oracle over the first 2*live-box projections,
+        // preserving the temporary removed-projection tail.
+        const auto span=(((projections+255u)/256u+31u)/32u)*256u;
+        for(std::uint32_t kind=0u;kind<2u;++kind){
+            const auto data=kind==0u?starts:regions;
+            const auto blocks=kind==0u?blockStarts:blockRegions;
+            std::uint32_t running=0u;
+            for(std::uint32_t g=0u;g<32u;++g){
+                std::uint32_t subtotal=0u;
+                for(std::uint32_t i=g*span;
+                    i<std::min(projections,(g+1u)*span);++i){
+                    const auto v=roots[data].expected[roots[data].offset/4u+i];
+                    setExpected(data,i,running+subtotal);
+                    subtotal+=v;
+                }
+                setExpected(blocks,g,subtotal);
+                running+=subtotal;
+            }
+            const auto offset=kind==0u?
+                offsetof(physx::PxgBroadPhaseDesc,startRegionAccumTotal):
+                offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal);
+            setExpected(descriptor,static_cast<std::uint32_t>(offset/4u),running);
+        }
+    }
 
     const SourceRegionCreateNativeLayout layout{box_capacity,slots};
     std::vector<BatchCommand> operations;
@@ -200,6 +243,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         for(std::uint32_t i=7u;i<10u;++i)
             check(dispatch.buffers[i].access==BufferAccess::Write,
                   "Source create-regions output access changed");
+    }
+    if(scans){
+        scans->append(operations,desc,map,
+            {roots[descriptor].address,slots});
+        check(operations.size()==(created?7u:0u),
+              "Original PhysX seven region producer/histogram operations changed");
     }
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
@@ -259,6 +308,21 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         shared.regionAccum=reinterpret_cast<decltype(shared.regionAccum)>(ptr2(regions));
         shared.activeRegionsHistogram=reinterpret_cast<decltype(shared.activeRegionsHistogram)>(ptr2(active));
         shared.startRegionsHistogram=reinterpret_cast<decltype(shared.startRegionsHistogram)>(ptr2(startHist));
+        shared.blockStartRegionAccum=reinterpret_cast<decltype(shared.blockStartRegionAccum)>(ptr2(blockStarts));
+        shared.blockRegionAccum=reinterpret_cast<decltype(shared.blockRegionAccum)>(ptr2(blockRegions));
+        // The original GPU descriptor must contain CURRENT source CUDA
+        // pointers after relocation into the shared buddy-heap root.
+        const auto descriptorWord=placement[descriptor]/4u;
+        std::memcpy(initial.data()+descriptorWord,&shared,sizeof(shared));
+        std::memcpy(wanted.data()+descriptorWord,&shared,sizeof(shared));
+        if(scans && created){
+            for(const auto field:{
+                offsetof(physx::PxgBroadPhaseDesc,startRegionAccumTotal),
+                offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal)}) {
+                wanted[descriptorWord+field/4u]=
+                    roots[descriptor].expected[roots[descriptor].offset/4u+field/4u];
+            }
+        }
         std::vector<BatchCommand> aliasedCommands;
         stage.append(aliasedCommands,shared,sharedMap,layout);
         check(aliasedCommands.size()==3u,
@@ -267,6 +331,18 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         for(const auto& binding:producer.buffers)
             check(binding.buffer==backing,
                   "Source buddy-heap allocations silently used different roots");
+        if(scans){
+            scans->append(aliasedCommands,shared,sharedMap,
+                {alias[descriptor],slots});
+            check(aliasedCommands.size()==(created?7u:0u),
+                  "Shared original PhysX source region histogram launch chain changed");
+            for(std::size_t i=3u;i<aliasedCommands.size();++i){
+                const auto& histogram=std::get<DispatchCommand>(aliasedCommands[i]);
+                for(const auto& binding:histogram.buffers)
+                    check(binding.buffer==backing,
+                          "Source histogram escaped its original buddy-heap root");
+            }
+        }
         ctx.submit_upload_buffer(backing,0u,initial.data(),initial.size()*4u);
         ctx.wait_submission(ctx.submit_batch(aliasedCommands));
         std::vector<std::uint32_t> observed(initial.size());
@@ -281,7 +357,8 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
 
 int main(int argc,char** argv){
     try{
-        if(argc!=3)throw std::invalid_argument("Expected source fill and region-create shaders");
+        if(argc!=3 && argc!=6)throw std::invalid_argument(
+            "Expected source fill/create shaders and optional 3 region scan shaders");
         Context ctx(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -298,15 +375,27 @@ int main(int argc,char** argv){
         }
         SourceFillD32NativeStage fill(ctx,load(argv[1]));
         SourceRegionCreateNativeStage stage(ctx,load(argv[2]),fill);
-        exercise(ctx,stage,5u,0u);
-        for(const auto n:{1u,5u,129u,257u})
-            exercise(ctx,stage,n,n);
-        // Nontrivial source population: one created box, two removed
-        // projections' owners. Region-table clears must include removed
-        // capacity while the producer operates only on five live boxes.
-        exercise(ctx,stage,5u,1u,2u);
-        exercise(ctx,stage,129u,3u,4u);
-        std::cout<<"Original PhysX clears and BP_CREATE_REGIONS source-native PASS\n";
+        std::unique_ptr<SourceRegionHistogramsNativeStage> scans,portable;
+        if(argc==6){
+            scans=std::make_unique<SourceRegionHistogramsNativeStage>(
+                ctx,load(argv[3]),load(argv[4]),load(argv[5]));
+            portable=std::make_unique<SourceRegionHistogramsNativeStage>(
+                ctx,load(argv[3]),load(argv[4]),load(argv[5]),true);
+        }
+        const std::vector<const SourceRegionHistogramsNativeStage*> variants{
+            scans.get(),portable.get()};
+        for(const auto* scan:variants){
+            if(!scan && scans)continue;
+            exercise(ctx,stage,scan,5u,0u);
+            for(const auto n:{1u,5u,129u,257u})
+                exercise(ctx,stage,scan,n,n);
+            // Source retains removed projection capacity until buffer swap,
+            // whereas all histogram passes scan only live boxes.
+            exercise(ctx,stage,scan,5u,1u,2u);
+            exercise(ctx,stage,scan,129u,3u,4u);
+            if(!scan)break;
+        }
+        std::cout<<"Original PhysX source region clear/create/four scans PASS\n";
         return 0;
     }catch(const std::exception& e){
         std::cerr<<"Source region creation FAILED: "<<e.what()<<'\n';
