@@ -19,8 +19,11 @@ An optional Godot 4.7 GDExtension consumer exercises the same core.
 
 The optional standalone Vulkan compute backend supports device and buffer
 management, transfers, SPIR-V dispatch, ordered batches and submission
-synchronization. The first PhysX GPU stage being translated is broadphase
-AABB encoding; scene integration and collision-pair processing remain pending.
+synchronization. The GPU translation now includes independently tested PhysX SAP broadphase
+kernels and source-ordered stage chains, with known high-priority initial
+CUDA-to-HLSL performance regressions remediated. Integration into the live
+PhysX GPU scene/task graph, production GPU capability admission, and
+hardware performance acceptance remain pending.
 Its independent floor/contact demonstration is opt-in only
 (`FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`) and does not constitute a
 PhysX GPU port. Production GPU physics requires porting PhysX's original
@@ -34,7 +37,7 @@ algorithms, GPU contexts, scene orchestration and dataflow.
 - [Source-grounded GPU broadphase trace](docs/GPU_BROADPHASE_TRACE.md)
 - [GPU memory addressing and performance experiment RFC](docs/GPU_MEMORY_ADDRESSING_RFC.md)
 - [**GPU performance policy and shipping tiers (SM6.6, Vulkan 1.4, optional WMMA/SM6.8)**](docs/GPU_PORT_PERFORMANCE.md)
-- [Retroactive CUDA-to-HLSL performance audit and corrections](docs/GPU_PERFORMANCE_AUDIT.md)
+- [Retroactive CUDA-to-HLSL performance audit, corrections, and closure decision](docs/GPU_PERFORMANCE_AUDIT.md)
 - [Apache 2.0 license](LICENSE.md)
 
 New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
