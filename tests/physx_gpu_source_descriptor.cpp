@@ -175,12 +175,12 @@ void verify_gpu(Context& ctx) {
     // the original PxgBroadPhaseDesc offsets inside that same backing.
     std::vector<std::uint8_t> image(kPhysicalBytes,0xa5u);
     ctx.upload(initial,0u,image.data(),image.size());
-    const std::vector<UploadSpan> uploads{{
+    const std::vector<UploadSpan> uploads{
         {initial,f.descriptor,&f.source,sizeof(f.source)},
         {initial,f.workDescriptor,&first.work,sizeof(first.work)},
         {initial,f.prefixDescriptor,&first.prefix,sizeof(first.prefix)},
         {initial,f.pairDescriptor,&first.pairs,sizeof(first.pairs)}
-    }};
+    };
     const auto firstSubmission=ctx.submit_upload_batch(uploads);
     require(firstSubmission!=0u,"PhysX source descriptor upload wasn't submitted");
 
