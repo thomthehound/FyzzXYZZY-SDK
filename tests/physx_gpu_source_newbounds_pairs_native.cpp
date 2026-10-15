@@ -79,6 +79,11 @@ struct Case {
     std::uint32_t capacity = 0u;
 };
 void execute(Context& context, SourceNewBoundsPairsNativeStage& stage, Case c) {
+    std::cerr << "Source native pair case: boxes=" << c.boxes
+              << " env=" << c.env << " filters=" << c.filters
+              << " candidates=" << c.candidates << " enabled=" << c.enabled
+              << " shared=" << c.shared << " new=" << c.newFlag
+              << " prior=" << c.prior << " capacity=" << c.capacity << '\n';
     CudaDeviceAddressMap map;
     std::array<Root,4> roots;
     for (auto& r : roots)
