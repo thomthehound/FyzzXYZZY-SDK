@@ -55,10 +55,14 @@ static_assert(sizeof(SapIncrementalPairsArenaDesc) == 192, "PhysX pair descripto
 class SapIncrementalPairsArenaStage final {
 public:
     SapIncrementalPairsArenaStage(compute::Context& context,
-                                 compute::ShaderBinary shader);
+                                 compute::ShaderBinary shader,
+                                 compute::ShaderBinary wave_shader,
+                                 bool force_portable = false);
     ~SapIncrementalPairsArenaStage();
     SapIncrementalPairsArenaStage(const SapIncrementalPairsArenaStage&) = delete;
     SapIncrementalPairsArenaStage& operator=(const SapIncrementalPairsArenaStage&) = delete;
+
+    bool using_wave_reports() const noexcept { return using_wave_; }
 
     void append(std::vector<compute::BatchCommand>& commands,
                 compute::BufferId arena, std::uint32_t arena_bytes,
@@ -68,6 +72,7 @@ public:
 private:
     compute::Context& context_;
     compute::PipelineId pipeline_ = 0;
+    bool using_wave_ = false;
 };
 
 } // namespace fyzz::physx_gpu
