@@ -70,40 +70,62 @@ void AabbEncodingStage::append(std::vector<compute::BatchCommand>& commands,
                                compute::BufferId environment_ids,
                                compute::BufferId encoded_bounds,
                                const AabbEncodingParameters& parameters) const {
-    validate(parameters);
+    // Source-lowered CUDA pointer views use the same path as normal
+    // zero-offset native stage callers: no second shader implementation.
+    const std::uint64_t array_bytes =
+        static_cast<std::uint64_t>(parameters.count) * kCoordinateCount * sizeof(float);
+    const std::uint64_t scalar_bytes =
+        static_cast<std::uint64_t>(parameters.count) * sizeof(float);
+    if (array_bytes > std::numeric_limits<std::size_t>::max())
+        throw std::out_of_range("PhysX AABB array exceeds host address space");
+    std::array<compute::BufferBinding, 4> views{{
+        {0u, bounds, 0u, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Read},
+        {1u, contact_distances, 0u, static_cast<std::size_t>(scalar_bytes), compute::BufferAccess::Read},
+        {2u, environment_ids ? environment_ids : contact_distances, 0u,
+         static_cast<std::size_t>(scalar_bytes), compute::BufferAccess::Read},
+        {3u, encoded_bounds, 0u, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Write}
+    }};
+    append_views(commands, views, parameters, environment_ids != 0u);
+}
 
+void AabbEncodingStage::append_views(
+    std::vector<compute::BatchCommand>& commands,
+    const std::array<compute::BufferBinding, 4>& views,
+    const AabbEncodingParameters& parameters,
+    bool environment_enabled) const {
+    validate(parameters);
     const std::uint64_t groups =
         (static_cast<std::uint64_t>(parameters.count) + kAabbsPerWorkgroup - 1) /
         kAabbsPerWorkgroup;
-    if (groups > context_.device_info().max_workgroup_count[0]) {
+    if (groups > context_.device_info().max_workgroup_count[0])
         throw std::out_of_range("PhysX AABB encoding exceeds GPU dispatch limit");
-    }
 
     const std::uint64_t array_bytes =
         static_cast<std::uint64_t>(parameters.count) * kCoordinateCount * sizeof(float);
-    const std::uint64_t single_bytes =
+    const std::uint64_t scalar_bytes =
         static_cast<std::uint64_t>(parameters.count) * sizeof(float);
-    if (array_bytes > std::numeric_limits<std::size_t>::max()) {
+    if (array_bytes > std::numeric_limits<std::size_t>::max())
         throw std::out_of_range("PhysX AABB array exceeds host address space");
-    }
 
+    const auto expected = {array_bytes, scalar_bytes, scalar_bytes, array_bytes};
+    std::size_t index = 0u;
+    for (const auto required : expected) {
+        const auto& binding = views[index];
+        if (binding.slot != index || !binding.buffer ||
+            binding.offset % alignof(std::uint32_t) != 0u ||
+            binding.bytes != required)
+            throw std::invalid_argument("Invalid PhysX CUDA-lowered AABB view");
+        ++index;
+    }
     const ShaderParameters push{
         parameters.count, parameters.shift_x, parameters.shift_y, parameters.shift_z,
         parameters.env_bits_x, parameters.env_bits_y, parameters.env_bits_z,
-        environment_ids != 0 ? 1u : 0u
+        environment_enabled ? 1u : 0u
     };
     compute::DispatchCommand command;
     command.pipeline = pipeline_;
-    command.groups = {static_cast<std::uint32_t>(groups), 1, 1};
-    command.buffers = {
-        {0, bounds, 0, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Read},
-        {1, contact_distances, 0, static_cast<std::size_t>(single_bytes), compute::BufferAccess::Read},
-        // A dummy descriptor is used only when the optional PhysX env IDs
-        // array is absent. The shader never reads it in that configuration.
-        {2, environment_ids ? environment_ids : contact_distances, 0,
-         static_cast<std::size_t>(single_bytes), compute::BufferAccess::Read},
-        {3, encoded_bounds, 0, static_cast<std::size_t>(array_bytes), compute::BufferAccess::Write}
-    };
+    command.groups = {static_cast<std::uint32_t>(groups), 1u, 1u};
+    command.buffers.assign(views.begin(), views.end());
     command.push_constants.resize(sizeof(push));
     std::memcpy(command.push_constants.data(), &push, sizeof(push));
     commands.emplace_back(std::move(command));
