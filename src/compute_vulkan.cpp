@@ -89,6 +89,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.device_id = properties.deviceID;
             info.api_version = properties.apiVersion;
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
+            info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
             // Vulkan 1.0 loader/device pairs have no core subgroup
             // properties. Keep their old compute path and disable the

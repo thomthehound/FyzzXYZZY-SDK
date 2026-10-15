@@ -111,6 +111,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   # contracts; the PhysX scene integration is introduced incrementally.
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
     src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/created_pairs_arena.cpp
@@ -137,7 +138,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  )
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC FyzzXYZZY::Compute physx_lib)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -229,6 +231,20 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
       add_test(NAME fyzzxyzzy_physx_aabb_encoding
         COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+      # Original CUDA _launch ABI: 11 argument pointers, original 256-thread
+      # block layout, CUdeviceptr interior offsets, native shader lowering.
+      add_executable(fyzzxyzzy_physx_cuda_aabb_launch
+        tests/physx_gpu_cuda_aabb_launch.cpp)
+      target_include_directories(fyzzxyzzy_physx_cuda_aabb_launch PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include")
+      target_link_libraries(fyzzxyzzy_physx_cuda_aabb_launch PRIVATE
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+      add_dependencies(fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_physx_aabb_shader)
+      add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch
+        COMMAND fyzzxyzzy_physx_cuda_aabb_launch
+          "${FYZZXYZZY_PHYSX_AABB_SHADER}")
+
 
       # PhysX PxgAABBManager::postBroadPhase result-publication boundary:
       # GPU completion precedes found/lost-pair task reference release.
@@ -1108,6 +1124,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
     src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/created_pairs_arena.cpp
@@ -1132,7 +1149,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/broadphase_completion.cpp)
   target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib)
 
@@ -1181,6 +1200,21 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_aabb_encoding_d3d12
       COMMAND fyzzxyzzy_physx_aabb_encoding_d3d12
         "${FYZZXYZZY_D3D12_AABB_DXIL}")
+    add_executable(fyzzxyzzy_physx_cuda_aabb_launch_d3d12
+      tests/physx_gpu_cuda_aabb_launch.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include")
+    target_link_libraries(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+    add_dependencies(fyzzxyzzy_physx_cuda_aabb_launch_d3d12
+      fyzzxyzzy_d3d12_aabb_shader)
+    add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch_d3d12
+      COMMAND fyzzxyzzy_physx_cuda_aabb_launch_d3d12
+        "${FYZZXYZZY_D3D12_AABB_DXIL}")
+
 
     add_executable(fyzzxyzzy_physx_broadphase_completion_d3d12
       tests/physx_gpu_broadphase_completion.cpp)
