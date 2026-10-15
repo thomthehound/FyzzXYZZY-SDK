@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // broadphase.cu::generateFoundPairsForNewBoundsRegion,
-// BP_GENERATE_FOUNDPAIR_NEWBOUNDS, original 32 x 256 dispatch.
+// BP_GENERATE_FOUNDPAIR_NEWBOUNDS, original 64 x 256 dispatch.
 // Each thread tests one candidate (64-bit global work index), then
 // compacts its 0/1 result with native wave operations, reserving output
 // slots once per workgroup iteration using the original 32-bit counter.
@@ -76,9 +76,9 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint boxCapacity = arena.Load(d + 72u);
     const bool useEnv = arena.Load(d + 76u) != 0u;
 
-    // ceil(total/8192) without overflowing on total+8191.
+    // ceil(total/16384) without overflowing on total+8191.
     const uint64_t iterations = total == 0ull ? 0ull :
-        ((total - 1ull) / 8192ull + 1ull);
+        ((total - 1ull) / 16384ull + 1ull);
     if (thread.x == 0u) nextWave = 0u;
     GroupMemoryBarrierWithGroupSync();
     const uint lanes = WaveGetLaneCount();
