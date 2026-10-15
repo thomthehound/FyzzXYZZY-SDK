@@ -665,7 +665,11 @@ struct Context::Impl {
 
     void destroy_pipeline(PipelineId id) {
         get_pipeline(id);
-        wait_all();
+        // A removed D3D12 device cannot complete outstanding fences.
+        // Pipeline COM resources can still be released; do not let a
+        // cleanup wait throw during unwinding and hide the dispatch fault.
+        if (SUCCEEDED(device->GetDeviceRemovedReason()))
+            wait_all();
         pipelines.erase(id);
     }
 
