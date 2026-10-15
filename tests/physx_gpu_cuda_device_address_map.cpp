@@ -92,7 +92,7 @@ int main() {
         // Multiple independent PhysX CUDA heap allocations may share one
         // physical Vulkan/D3D12 buffer. Their virtual addresses still need
         // independent bounds, lifetime, and relocation semantics.
-        // Codex P2: a retireable owned buffer may NEVER be borrowed by
+        // A retireable owned buffer must never be borrowed by
         // non-owning slices, in either registration order or after a move.
         const auto owned = table.register_allocation(717u, 512u);
         rejected<std::invalid_argument>(
