@@ -31,8 +31,8 @@ void write64(uint offset, uint64_t value) {
 }
 
 groupshared uint nextWave;
-groupshared uint64_t waveTotals[8];
-groupshared uint64_t waveBases[8];
+groupshared uint64_t waveTotals[64];
+groupshared uint64_t waveBases[64];
 groupshared uint64_t blockCarry;
 groupshared uint64_t iterationCarry;
 [numthreads(256, 1, 1)]
