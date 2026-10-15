@@ -36,7 +36,7 @@ before touching. Separate *upstream-native* costs from port costs.
 | `broadphase.cu::firstPassEndPtsHistogram` → `physx_sap_endpoint_histogram_first_arena.hlsl` | Triple-`uint3` full-group shared Hillis–Steele prefix discarded the source's *already packed* three 10-bit counters and warp scan | **Resolved functionally in PR #49:** restore exact CUDA 10+10+10-bit packing, one native wave scan, 3 barriers/256-entry chunk, source second pass unchanged, CPU oracle both variants/frames |
 | `broadphase.cu::computeHistogram` → `physx_sap_region_histogram_first_arena.hlsl` | Original port used 256-wide two-bank shared prefix, eight full-group rounds per iteration vs upstream per-warp scan and short warp-total prefix | **Corrective PR #48 under validation:** one `WavePrefixSum`/`WaveActiveSum` per lane, short wave-total prefix and **three barriers per 256-entry iteration**, 512 bytes shared scratch versus 2 KiB; preserve 32 block totals and original four dispatches; portable oracle remains |
 | `broadphase.cu::computeIncrementalComparisonHistograms_Stage1` → `physx_sap_incremental_comparisons_first_arena.hlsl` | Three-axis `uint3` 256-entry shared prefix uses eight group-wide scan rounds, unlike CUDA's three warp scans and short warp-total prefix | **PR #50 in validation:** three independent native 32-bit wave prefixes, 3 workgroup barriers/chunk vs ~11, 1536 B scratch vs 6144 B, original stage2/host dispatch and source oracle retained |
-| `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Two-output `uint2` shared prefix with eight rounds per batch; global report-count reservation still uses atomic increments | **P1:** wave-based packed/dual report scan, preserve original global reservations and report order; do not change candidate correctness rules |
+| `broadphase.cu::performIncrementalSAP` → `physx_sap_incremental_pairs_arena.hlsl` | Original HLSL added eight rounds of full 256-thread shared `uint2` scan per found/lost batch where CUDA uses two warp scans plus small warp totals; original global reservation is correctly atomic | **PR #52 under validation:** one packed 16+16 native wave prefix per 256-candidate batch, three workgroup barriers, two original 32-bit global counter reservations and all original pair/filter rules retained |
 | `broadphase.cu::accumulateReportsStage_{1,2}` → `physx_broadphase_report_classification_{first,second}_arena.hlsl` | Original port introduced an eight-barrier 256-thread shared reduction for stage1 and eight-round shared-memory scans for stage2, unlike CUDA's warp ballots/reductions and warp-first stable compaction | **PR #51 under validation:** stage1 native per-wave reduction with one atomic update per wave; stage2 wave-prefix stable compaction with three group barriers/chunk. Original 32×4×256 dispatches, actor/aggregate found/lost output and copy-report publication unchanged |
 | Other copied/report producers and simple PhysX kernels (AABB encoding, initialized rank/index lists, removed projections/pairs, clear new flag, update handles) | No obvious **high-order new workgroup-wide scan** in static inspection; typically direct per-entry loops and/or source-sized workgroups. This is **not** a measured performance endorsement | **P2:** collect timestamps and source diff as these become integration-relevant; no speculative redesign |
 | 64-region dense histograms, large ordered arrays, multi-pass source radix and PhysX fixed 32-block SAP partitions | **Inherited from original PhysX**, regardless of whether modern hardware could do better | **Defer structural redesign** until source-faithful end-to-end GPU scene and representative benchmarks exist |
@@ -328,4 +328,66 @@ never cause that fallback selection by itself.
 - **Performance:** all quoted barrier/LDS differences are
   analytical, *not measured GPU-time improvements*. Source
   structural costs and real-hardware profiling are separate.
+
+
+## PR #52: source incremental SAP found/lost report compaction (unmeasured)
+
+- **Source:** `broadphase.cu::performIncrementalSAP`,
+  `BP_INCREMENTAL_SAP` in the pinned PhysX CUDA implementation,
+  maintains **256×3×256** original launch. Per 256 comparison batch
+  it computes a 0/1 found flag and 0/1 lost flag, scans them
+  separately within warps and prefixes the warp totals, then uses
+  at most two global 32-bit atomic reservations for the shared
+  found/lost pair streams. The output ordering **between**
+  unrelated GPU workgroups is not deterministic in the original,
+  but each reserved batch is internally stable.
+- **Introduced slow path:** two 256-element `uint2` shared scan
+  banks (**4 KiB**) and eight workgroup-wide Hillis–Steele
+  rounds per batch, plus reservation/sync overhead. CUDA uses
+  warp-local scans and at most a short prefix over eight
+  warp totals; this extra synchronization is ours.
+- **Native correction:** pack 0/1 found/lost flags into one
+  32-bit `(found << 16) | lost` sum. Each whole 256-entry
+  batch can produce at most 256 of each, so there can be **no**
+  16-bit cross-field carry. One `WavePrefixSum` +
+  `WaveActiveSum` per candidate and two 64-word wave-total
+  shared arrays (**512 B**) produce stable within-batch
+  found/lost ranks after three full group barriers.
+  Retain exactly the two original independent 32-bit global
+  atomic reservations per group/batch, skipping zero-count
+  reservations, and all output clipping/normalization rules.
+- **Workgroup mapping:** each hardware subgroup reserves
+  a contiguous logical projection slice once on entry,
+  preserving the original binary-search candidate pairing
+  and all logical rank order without assuming physical
+  subgroup indices equal `SV_GroupIndex / 32`. Actual
+  WaveOps/compute subgroup arithmetic is probed; this is
+  **not** a WMMA path. The old shared implementation remains
+  as an explicitly selected correctness fallback, not
+  the supported-hardware default.
+- **No architectural departure:** no new dispatches, CPU
+  staging, buffer ownership, counters, found/lost output
+  publication or filters. This change affects the *scan*
+  only; all original ranks, sorted handles, group/env
+  rules, old/new AABB overlap checks and shared-pair
+  allocation semantics are retained verbatim.
+- **Validation:** full source-order endpoint histogram +
+  incremental comparison + pair producer native GPU oracle
+  checks each optimized and forced-portable pair stage
+  against an independent CPU found/lost-pair model under
+  empty/short/overflow/movement/cross-block scenarios;
+  also tests portable comparison-prefix interoperability.
+  Both Vulkan and D3D12 targets compile and supply the
+  optimized shader explicitly.
+- **Alternatives:** two independent wave scans would also
+  preserve source dataflow, but double per-wave arithmetic;
+  16-bit packed scan saves one native prefix/reduction
+  without risking low-half overflow at 256 entries; a
+  full-workgroup shared scan recreates the regression,
+  extra parallel dispatches alter PhysX orchestration.
+  WMMA has no useful matrix-shaped workload here.
+- **Performance:** reduction in workgroup barriers and
+  shared scratch is analytic, **not** a hardware-benchmarked
+  win. Real AMD/NVIDIA timings and full-scene scheduling
+  remain separate acceptance work.
 

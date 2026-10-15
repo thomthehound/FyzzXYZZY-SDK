@@ -382,7 +382,7 @@ void negative_cases(SapIncrementalPairsArenaStage& pairs) {
 
 int main(int argc,char** argv) {
     try {
-        if(argc!=8)throw std::invalid_argument(
+        if(argc!=9)throw std::invalid_argument(
             "Expected endpoint first/second, comparison first/second, pair shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -408,21 +408,28 @@ int main(int argc,char** argv) {
         if (hist.using_packed_wave_scan() != waveCapable)
             throw std::runtime_error("Incremental SAP endpoint stage bypassed native packed wave path");
         SapIncrementalComparisonsArenaStage cmp(context,shader(argv[3]),shader(argv[4]),shader(argv[7]));
-        SapIncrementalComparisonsArenaStage portable(context,shader(argv[3]),shader(argv[4]),shader(argv[7]),true);
-        if (cmp.using_wave_scan() != waveCapable || portable.using_wave_scan())
+        SapIncrementalComparisonsArenaStage portableComparison(context,shader(argv[3]),shader(argv[4]),shader(argv[7]),true);
+        if (cmp.using_wave_scan() != waveCapable || portableComparison.using_wave_scan())
             throw std::runtime_error("Incremental comparison stage selected incorrect wave variant");
-        SapIncrementalPairsArenaStage pairs(context,shader(argv[5]));
-        negative_cases(pairs);
-        run_case(context,hist,cmp,pairs,0u,8u,false);
-        run_case(context,hist,cmp,pairs,1u,8u,false);
-        run_case(context,hist,cmp,pairs,16u,128u,false);
-        run_case(context,hist,cmp,pairs,129u,4096u,true);
-        run_case(context,hist,cmp,pairs,257u,16384u,true);
-        run_case(context,hist,cmp,pairs,257u,4u,true);
-        run_case(context,hist,cmp,pairs,129u,0u,false);
-        // The existing source-order pair oracle must also exercise the
-        // standalone fallback for its comparison-prefix predecessor.
-        run_case(context,hist,portable,pairs,129u,4096u,true);
+        SapIncrementalPairsArenaStage pairs(
+            context, shader(argv[5]), shader(argv[8]));
+        SapIncrementalPairsArenaStage portablePair(
+            context, shader(argv[5]), shader(argv[8]), true);
+        if (pairs.using_wave_reports() != waveCapable ||
+            portablePair.using_wave_reports())
+            throw std::runtime_error("SAP found/lost pair producer did not select native wave path");
+        for (auto* variant : {&pairs, &portablePair}) {
+            negative_cases(*variant);
+            run_case(context,hist,cmp,*variant,0u,8u,false);
+            run_case(context,hist,cmp,*variant,1u,8u,false);
+            run_case(context,hist,cmp,*variant,16u,128u,false);
+            run_case(context,hist,cmp,*variant,129u,4096u,true);
+            run_case(context,hist,cmp,*variant,257u,16384u,true);
+            run_case(context,hist,cmp,*variant,257u,4u,true);
+            run_case(context,hist,cmp,*variant,129u,0u,false);
+            // Keep the interop check with the portable comparison scan.
+            run_case(context,hist,portableComparison,*variant,257u,4u,true);
+        }
         std::cout<<"PhysX incremental SAP found/lost pair oracle PASS\n";
         return 0;
     } catch(const std::exception& e) {

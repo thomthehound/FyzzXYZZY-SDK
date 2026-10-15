@@ -27,7 +27,8 @@ static_assert(sizeof(Parameters) == 32, "PhysX incremental pair root layout chan
 }
 
 SapIncrementalPairsArenaStage::SapIncrementalPairsArenaStage(
-    compute::Context& context, compute::ShaderBinary shader)
+    compute::Context& context, compute::ShaderBinary shader,
+    compute::ShaderBinary wave_shader, bool force_portable)
     : context_(context) {
     const auto& device = context_.device_info();
     if (device.max_workgroup_invocations < kThreads ||
@@ -35,8 +36,11 @@ SapIncrementalPairsArenaStage::SapIncrementalPairsArenaStage(
         device.max_workgroup_count[0] < kBlocks ||
         device.max_workgroup_count[1] < kAxes)
         throw std::runtime_error("PhysX incremental SAP requires 256x3x256 launch");
+    using_wave_ = !force_portable && device.supports_wave_arithmetic &&
+                  device.subgroup_size >= 4u &&
+                  256u % device.subgroup_size == 0u;
     compute::ComputePipelineDesc desc;
-    desc.shader = std::move(shader);
+    desc.shader = using_wave_ ? std::move(wave_shader) : std::move(shader);
     desc.storage_buffer_binding_count = 1;
     desc.push_constant_bytes = sizeof(Parameters);
     pipeline_ = context_.create_compute_pipeline(desc);
