@@ -888,10 +888,11 @@ dispatch geometry, descriptor rejection and an independent two-handle
 count/reference comparison including multi-X-region enumeration with
 region-distinct histogram values, preserving untouched buffer canaries. This is
 a bounded producer test, not the complete overlap-prefix/found-pair pipeline.
-The 64-bit prefix kernels are now implemented as a separate ordered stage;
-this producer remains independently testable. The pair writer and integrated
-producer/prefix sequence must still be wired into the
-source-ordered host sequence before claiming full new-bounds pair generation.
+The 64-bit prefix kernels and found-pair writer are now translated in
+separate stages. `SapNewBoundsSequenceArenaStage` additionally submits all
+four in source order on a shared caller-owned arena and is covered by an
+integrated GPU oracle. The **live** `PxgCudaBroadPhaseSap` scene task/fetch
+and memory-ownership port remain outside this acceptance slice.
 
 
 ### Native 64-bit overlap-comparison prefix
@@ -977,3 +978,28 @@ explicitly reported as skipped, not verified. The stage intentionally does
 not claim real end-to-end PxgAABBManager integration or native GPU speed
 measurements; the owning PhysX host must chain the four original commands
 and publish their results through its existing task graph.
+
+
+### Integrated new-bounds GPU dispatch and PhysX completion handoff
+
+The GPU adapter `src/physx_gpu/sap_newbounds_sequence_arena.{h,cpp}`
+appends the four source `generatePairsForNewBounds` kernels to the caller's
+existing GPU batch in original order (**32 × 256 / 32 × 256 / 32 × 256 /
+64 × 256**). It reuses the three translated stage pipelines, a single
+shared caller-owned GPU arena, an authoritative set of descriptor aliases
+and the created-handle-only gate. No new scene scheduler, buffer-owner,
+frame-time device capability query, or intermediate CPU readback.
+
+The integrated Vulkan and D3D12 tests exercise the existing
+`decide_sap_update` host decision, actual producer-to-prefix-to-found-pair
+intermediate memory dependencies, per-start projection regions,
+64-bit prefixes/block totals and final found reports, with a CPU oracle
+checking the complete arena. They also pass the ordered GPU submission
+through `BroadPhaseCompletionGate`, verifying that result publication and
+validation occur before the existing found/lost task references are
+released. This tests a real **four-kernel GPU handoff** rather than four
+isolated shaders. It does **not** yet claim a running PhysX GPU scene:
+original `PxgCudaBroadPhaseSap` state allocations, upstream producers,
+GPU DMA, swaps and full `PxgAABBManager` task integration still need the
+larger host orchestration migration, as traced in
+[GPU_BROADPHASE_TRACE.md](GPU_BROADPHASE_TRACE.md).
