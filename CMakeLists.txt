@@ -209,6 +209,25 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
       # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
       find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      set(FYZZXYZZY_MULTI_RESOURCE_SPV
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_MULTI_RESOURCE_SPV}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main -Fo "${FYZZXYZZY_MULTI_RESOURCE_SPV}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_native_multi_resource_spv
+        DEPENDS "${FYZZXYZZY_MULTI_RESOURCE_SPV}")
+      add_executable(fyzzxyzzy_native_multi_resource
+        tests/physx_gpu_native_multi_resource.cpp)
+      target_link_libraries(fyzzxyzzy_native_multi_resource PRIVATE FyzzXYZZY::Compute)
+      add_dependencies(fyzzxyzzy_native_multi_resource fyzzxyzzy_native_multi_resource_spv)
+      add_test(NAME fyzzxyzzy_native_multi_resource
+        COMMAND fyzzxyzzy_native_multi_resource "${FYZZXYZZY_MULTI_RESOURCE_SPV}")
+      set_tests_properties(fyzzxyzzy_native_multi_resource PROPERTIES SKIP_RETURN_CODE 77)
       set(FYZZXYZZY_PHYSX_AABB_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
       add_custom_command(
@@ -1173,6 +1192,29 @@ if(FYZZXYZZY_BUILD_D3D12)
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
   if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    set(FYZZXYZZY_MULTI_RESOURCE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_MULTI_RESOURCE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_MULTI_RESOURCE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_native_multi_resource_dxil
+      DEPENDS "${FYZZXYZZY_MULTI_RESOURCE_DXIL}")
+    add_executable(fyzzxyzzy_native_multi_resource_d3d12
+      tests/physx_gpu_native_multi_resource.cpp)
+    target_compile_definitions(fyzzxyzzy_native_multi_resource_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_link_libraries(fyzzxyzzy_native_multi_resource_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12)
+    add_dependencies(fyzzxyzzy_native_multi_resource_d3d12
+      fyzzxyzzy_native_multi_resource_dxil)
+    add_test(NAME fyzzxyzzy_native_multi_resource_d3d12
+      COMMAND fyzzxyzzy_native_multi_resource_d3d12 "${FYZZXYZZY_MULTI_RESOURCE_DXIL}")
+    set_tests_properties(fyzzxyzzy_native_multi_resource_d3d12 PROPERTIES SKIP_RETURN_CODE 77)
     set(FYZZXYZZY_D3D12_AABB_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
     add_custom_command(
