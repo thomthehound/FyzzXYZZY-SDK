@@ -32,7 +32,7 @@ endif()
 # Pinned PhysX source provenance and upstream notices remain intact.
 FetchContent_Declare(fyzzxyzzy_physx
   GIT_REPOSITORY https://github.com/thomthehound/PhysX.git
-  GIT_TAG 6dc53585d7db07346f53d0598a5fd3bfdce47d8d
+  GIT_TAG fe2ab0a871350db0790c7a56f34d6193d575f241
   SOURCE_SUBDIR physx
   GIT_SHALLOW FALSE
 )
@@ -68,6 +68,15 @@ if(BUILD_TESTING)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
+
+  # Exercises the REAL pinned PhysX ScScene admission contract, not a
+  # separate mock scene or an SDK-only GPU selector.
+  add_executable(fyzzxyzzy_portable_gpu_factory_admission
+    tests/physx_portable_gpu_factory_admission.cpp)
+  target_compile_features(fyzzxyzzy_portable_gpu_factory_admission PRIVATE cxx_std_17)
+  target_link_libraries(fyzzxyzzy_portable_gpu_factory_admission PRIVATE physx_lib)
+  add_test(NAME fyzzxyzzy_portable_gpu_factory_admission
+    COMMAND fyzzxyzzy_portable_gpu_factory_admission)
 endif()
 
 # Native compute resources and operations do not depend on Godot or PhysX.
