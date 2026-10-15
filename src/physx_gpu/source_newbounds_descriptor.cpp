@@ -66,7 +66,8 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
         std::uint64_t(layout.current_boxes + std::uint64_t(d.numRemovedHandles))*2u !=
             layout.projection_slots ||
         !layout.descriptor ||
-        d.regionAccumTotal == 0u ||
+        !layout.overlap_prefix_capacity ||
+        !layout.handle_region_capacity ||
         d.max_found_lost_pairs == 0u)
         throw std::invalid_argument("Invalid source PhysX broadphase frame/arena");
 
@@ -81,7 +82,8 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     const auto bounds_bytes = checked_bytes(layout.box_capacity, 24u);
     const auto range_bytes = checked_bytes(layout.box_capacity, 32u);
     const auto pair_bytes = checked_bytes(d.max_found_lost_pairs, 8u);
-    const auto overlap_bytes = checked_bytes(d.regionAccumTotal, sizeof(physx::regionOverlapType));
+    const auto overlap_bytes = checked_bytes(layout.overlap_prefix_capacity,
+                                             sizeof(physx::regionOverlapType));
     const auto region_prefix_bytes = checked_bytes(projection_count, 4u);
     const auto block_bytes = checked_bytes(32u, sizeof(physx::regionOverlapType));
 
@@ -101,7 +103,7 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     pair.overlap_total_offset = inline_scalar(layout, descriptor,
         offsetof(physx::PxgBroadPhaseDesc, overlapChecksTotalRegion), sizeof(d.overlapChecksTotalRegion));
     pair.handle_regions_offset = native_pointer(d.overlapChecksHandleRegiones, addresses, layout,
-                                                checked_bytes(d.regionAccumTotal, 8u));
+                                                checked_bytes(layout.handle_region_capacity, 8u));
     pair.active_histograms_offset = native_pointer(d.activeRegionsHistogram, addresses, layout, histogram_bytes);
     pair.start_histograms_offset = native_pointer(d.startRegionsHistogram, addresses, layout, histogram_bytes);
     pair.ordered_active_handles_offset = native_pointer(d.orderedActiveRegionHandles, addresses, layout, histogram_bytes);
