@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -45,26 +47,52 @@ void SourceFillD32NativeStage::append(
     if (alignment % 4u || !gpu.max_storage_buffer_range)
         throw std::runtime_error("Native PhysX source D32 storage limits unavailable");
 
-    const auto desired_groups = (std::uint64_t(words - 1u) / 256u) + 1u;
-    const auto groups = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(
-            {desired_groups, gpu.max_workgroup_count[0], 65535u}));
-    if (!groups)
-        throw std::runtime_error("Native PhysX source D32 GPU launch unavailable");
+    // One PhysX CUDA allocation can exceed the backend's maximum storage
+    // view range. Slice that *same* native resource without allocating or
+    // copying it. Stage every chunk before modifying the caller's batch:
+    // an invalid trailing pointer must not leave a partial device fill.
+    const auto total_bytes = source_allocation_bytes(words, 4u);
+    addresses.resolve(device_address, total_bytes);
+    const auto view_limit = std::min<std::uint64_t>(
+        gpu.max_storage_buffer_range,
+        static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) & ~3ull);
+    const auto view_alignment = std::lcm(alignment, std::size_t{16u});
+    std::vector<compute::BatchCommand> pending;
+    std::uint64_t consumed_words = 0u;
+    while (consumed_words < words) {
+        const auto cursor = device_address + consumed_words * 4u;
+        const auto physical = addresses.resolve(cursor, 4u);
+        const auto delta = physical.offset % view_alignment;
+        if (view_limit <= delta || view_limit - delta < 4u)
+            throw std::out_of_range("PhysX D32 source GPU view range too small");
+        const auto chunk_words = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(words - consumed_words,
+                (view_limit - delta) / 4u));
+        const auto desired_groups = (std::uint64_t(chunk_words - 1u) / 256u) + 1u;
+        const auto groups = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(
+                {desired_groups, gpu.max_workgroup_count[0], 65535u}));
+        if (!groups)
+            throw std::runtime_error("Native PhysX source D32 GPU launch unavailable");
 
-    std::array<std::uint32_t, 4> params{0u, words, value, groups * 256u};
-    compute::DispatchCommand cmd;
-    cmd.pipeline = pipeline_;
-    cmd.groups = {groups, 1u, 1u};
-    // PhysX's CUDA scalar/device pointers can be four-byte aligned inside
-    // a native heap root. The common resolver preserves their exact offset,
-    // expanding the physical RAW UAV view base to 16-byte alignment.
-    cmd.buffers.push_back(source_native_view(
-        addresses, device_address, source_allocation_bytes(words, 4u),
-        alignment, 0u, compute::BufferAccess::Write,
-        params[0], gpu.max_storage_buffer_range));
-    cmd.push_constants.resize(sizeof(params));
-    std::memcpy(cmd.push_constants.data(), params.data(), sizeof(params));
-    commands.emplace_back(std::move(cmd));
+        std::array<std::uint32_t, 4> params{
+            0u, chunk_words, value, groups * 256u};
+        compute::DispatchCommand cmd;
+        cmd.pipeline = pipeline_;
+        cmd.groups = {groups, 1u, 1u};
+        // Four-byte interior CUDA pointers remain exact shader offsets;
+        // their physical RAW GPU descriptor bases remain 16-byte aligned.
+        cmd.buffers.push_back(source_native_view(
+            addresses, cursor, source_allocation_bytes(chunk_words, 4u),
+            alignment, 0u, compute::BufferAccess::Write,
+            params[0], view_limit));
+        cmd.push_constants.resize(sizeof(params));
+        std::memcpy(cmd.push_constants.data(), params.data(), sizeof(params));
+        pending.emplace_back(std::move(cmd));
+        consumed_words += chunk_words;
+    }
+    commands.reserve(commands.size() + pending.size());
+    for (auto& command : pending)
+        commands.emplace_back(std::move(command));
 }
 } // namespace fyzz::physx_gpu
