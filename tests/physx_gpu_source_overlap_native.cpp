@@ -198,6 +198,42 @@ void run_case(Context& context, const char* shader, bool shared_input_root) {
         require(actual == roots[i].image, "PhysX source input root was modified");
     }
 
+    // Original heap growth can relocate a live source allocation without
+    // changing its CUdeviceptr. Copy its bytes on the GPU, then rebind the
+    // next launch from the same source descriptor with no intermediate wait.
+    constexpr std::uint32_t kHistogramBytes = 64u * kProjectionSlots * 4u;
+    const int destinationRoot = shared_input_root ? 1 : 0;
+    const auto movedOffset = roots[destinationRoot].reserve(kHistogramBytes);
+    const auto oldVirtual = static_cast<CudaDeviceAddressMap::Address>(
+        reinterpret_cast<std::uintptr_t>(host.startRegionsHistogram));
+    map.relocate_slice(oldVirtual, roots[destinationRoot].native, movedOffset);
+
+    std::vector<BatchCommand> relocated{
+        CopyCommand{roots[histRoot].native, starts,
+                    roots[destinationRoot].native, movedOffset, kHistogramBytes}
+    };
+    stage.append(relocated, host, map, layout);
+    require(relocated.size() == 2u &&
+            std::get<DispatchCommand>(relocated[1]).buffers[6].buffer ==
+                roots[destinationRoot].native,
+            "Relocated source pointer did not produce the correct native binding");
+    context.wait_submission(context.submit_batch(relocated));
+
+    // Only the explicit PhysX-style source copy and the producer's two
+    // output arrays are allowed to change these roots.
+    std::memcpy(reinterpret_cast<std::uint8_t*>(
+                    roots[destinationRoot].image.data()) + movedOffset,
+                reinterpret_cast<const std::uint8_t*>(
+                    roots[histRoot].image.data()) + starts, kHistogramBytes);
+    for (int i = 0; i < 2; ++i) {
+        context.download(roots[i].native, 0u, actual.data(), kRootBytes);
+        require(actual == roots[i].image,
+                "Source GPU relocation corrupted a physical heap root");
+    }
+    context.download(roots[2].native, 0u, actual.data(), kRootBytes);
+    require(actual == expected,
+            "Relocated source view changed overlap work or output canaries");
+
     for (auto& r : roots) context.destroy_buffer(r.native);
 }
 } // namespace
