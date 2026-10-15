@@ -228,7 +228,17 @@ void run_case(Context& context, SapActiveRegionListsArenaStage& stage,
             " (boxes " + std::to_string(boxes) +
             ", created " + std::to_string(p.created) + ")");
     }
-    if(native){
+    if(native && !p.created){
+        // Source calls are gated before accessing CUDA pointers.
+        // This must also tolerate an entirely empty original descriptor.
+        std::vector<BatchCommand> noops;
+        physx::PxgBroadPhaseDesc empty{};
+        CudaDeviceAddressMap none;
+        native->append(noops,empty,none,{});
+        if(!noops.empty())
+            throw std::runtime_error("Original no-created source active stage dispatched GPU work");
+    }
+    if(native && p.created){
         // Restore original producer outputs. The original source bridge
         // operates on raw CUDA virtual addresses, not this arena layout.
         // Register separate source allocations as sub-slices of ONE actual
