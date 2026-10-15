@@ -53,7 +53,9 @@ struct Root {
 struct Endpoint {std::uint32_t key, handle, tag;};
 
 void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
-              std::uint32_t boxes,std::uint32_t created){
+              std::uint32_t boxes,std::uint32_t created,
+              std::uint32_t removed=0u){
+    check(created<=boxes,"Invalid source-created fixture population");
     CudaDeviceAddressMap map;
     std::vector<Root> roots;
     roots.reserve(13u);
@@ -70,9 +72,12 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         return roots.size()-1u;
     };
     const auto projections=boxes*2u;
-    const auto slots=(projections+3u)&~3u;
+    // The host retains removed projections while allocating and clearing
+    // region histograms. BP_CREATE_REGIONS itself sees only live boxes.
+    const auto retained=(boxes+removed)*2u;
+    const auto slots=(retained+3u)&~3u;
     const auto box_capacity=boxes+7u;
-    const auto cleared=(boxes*2u)*64u;
+    const auto cleared=retained*64u;
     const auto handles=allocate(slots);
     std::array<std::size_t,3> sap{},ends{};
     for(std::uint32_t axis=0;axis<3u;++axis){
@@ -96,9 +101,9 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         set(startHist,i,0xfeedcafeu);
     }
     physx::PxgBroadPhaseDesc desc{};
-    desc.numPreviousHandles=0u;
+    desc.numPreviousHandles=boxes-created+removed;
     desc.numCreatedHandles=created;
-    desc.numRemovedHandles=0u;
+    desc.numRemovedHandles=removed;
     const auto ptr=[&](std::size_t idx){return static_cast<std::uintptr_t>(roots[idx].address);};
     desc.boxHandles[0][0]=reinterpret_cast<std::remove_reference_t<decltype(desc.boxHandles[0][0])>>(ptr(handles));
     for(std::uint32_t a=0;a<3u;++a){
@@ -296,6 +301,11 @@ int main(int argc,char** argv){
         exercise(ctx,stage,5u,0u);
         for(const auto n:{1u,5u,129u,257u})
             exercise(ctx,stage,n,n);
+        // Nontrivial source population: one created box, two removed
+        // projections' owners. Region-table clears must include removed
+        // capacity while the producer operates only on five live boxes.
+        exercise(ctx,stage,5u,1u,2u);
+        exercise(ctx,stage,129u,3u,4u);
         std::cout<<"Original PhysX clears and BP_CREATE_REGIONS source-native PASS\n";
         return 0;
     }catch(const std::exception& e){
