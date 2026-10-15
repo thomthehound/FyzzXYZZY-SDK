@@ -289,7 +289,7 @@ void negative_cases(SapBoxIndicesArenaStage& sap) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 5)
+        if (argc != 7)
             throw std::invalid_argument("Expected created, count, scatter, SAP shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -309,8 +309,14 @@ int main(int argc, char** argv) {
             return out;
         };
         CreatedPairsArenaStage created(context, shader(argv[1]));
-        RadixCountArenaStage count(context, shader(argv[2]));
-        RadixScatterArenaStage scatter(context, shader(argv[3]));
+        RadixCountArenaStage count(context, shader(argv[2]), shader(argv[5]));
+        RadixScatterArenaStage scatter(context, shader(argv[3]), shader(argv[6]));
+        const auto& caps = context.device_info();
+        const bool expectWave = caps.supports_wave_arithmetic &&
+            caps.subgroup_size >= 4u && 1024u % caps.subgroup_size == 0u;
+        if (count.using_wave_count() != expectWave ||
+            scatter.using_wave_scan() != expectWave)
+            throw std::runtime_error("SAP integration bypassed available packed radix fast path");
         SapBoxIndicesArenaStage sap(context, shader(argv[4]));
         negative_cases(sap);
         run_case(context, created, count, scatter, sap, 0u);
