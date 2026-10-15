@@ -51,10 +51,17 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     if (WaveIsFirstLane()) InterlockedAdd(nextWave, 1u, wave);
     wave = WaveReadLaneFirst(wave);
     const uint position = wave * lanes + lane;
-    const uint64_t value = position < 32u ? read64(blocks + position * 8u) : 0ull;
-    const uint64_t prefix = WavePrefixSum(value);
-    const uint64_t waveSum = WaveActiveSum(value);
-    if (WaveIsFirstLane()) waveTotals[wave] = waveSum;
+    uint64_t prefix = 0ull;
+    // Only the first ceil(32/waveWidth) physical waves participate.
+    // The condition is uniform across each wave and leaves no divergent
+    // wave-intrinsic calls.
+    if (wave * lanes < 32u) {
+        const uint64_t value = position < 32u ?
+            read64(blocks + position * 8u) : 0ull;
+        prefix = WavePrefixSum(value);
+        const uint64_t waveSum = WaveActiveSum(value);
+        if (WaveIsFirstLane()) waveTotals[wave] = waveSum;
+    }
     GroupMemoryBarrierWithGroupSync();
 
     if (thread.x == 0u) {
