@@ -16,6 +16,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
@@ -24,6 +25,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -218,6 +220,7 @@ struct Context::Impl {
     };
 
     ComPtr<ID3D12Device> device;
+    ComPtr<ID3D12InfoQueue> debug_messages;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
     // Context is not thread-safe; one persistent completion event can serve
@@ -247,8 +250,23 @@ struct Context::Impl {
         if (ordinal >= adapters.size())
             throw std::out_of_range("D3D12 adapter ordinal does not exist");
         info = adapters[ordinal].info;
+        const char* debug_env = std::getenv("FYZZXYZZY_D3D12_DEBUG");
+        if (debug_env && std::string(debug_env) == "1") {
+            ComPtr<ID3D12Debug> debug;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+                debug->EnableDebugLayer();
+                ComPtr<ID3D12Debug1> gpu_debug;
+                if (SUCCEEDED(debug.As(&gpu_debug)))
+                    gpu_debug->SetEnableGPUBasedValidation(TRUE);
+                std::cerr << "Enabled D3D12 GPU-based validation for native WARP test\n";
+            } else {
+                std::cerr << "D3D12 debug layer not available on this runner\n";
+            }
+        }
         check(D3D12CreateDevice(adapters[ordinal].adapter.Get(), D3D_FEATURE_LEVEL_12_0,
                                 IID_PPV_ARGS(&device)), "D3D12CreateDevice");
+        if (debug_env && std::string(debug_env) == "1")
+            device.As(&debug_messages);
         D3D12_COMMAND_QUEUE_DESC q{};
         q.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
@@ -318,6 +336,28 @@ struct Context::Impl {
         return id;
     }
 
+    void print_debug_messages() noexcept {
+        if (!debug_messages) return;
+        try {
+            const auto count = debug_messages->GetNumStoredMessages();
+            const auto first = count > 80u ? count - 80u : 0u;
+            for (std::uint64_t i = first; i < count; ++i) {
+                SIZE_T size = 0;
+                if (FAILED(debug_messages->GetMessage(i, nullptr, &size)) || !size)
+                    continue;
+                std::vector<std::uint8_t> storage(size);
+                auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+                if (SUCCEEDED(debug_messages->GetMessage(i, message, &size)) &&
+                    (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                     message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ||
+                     message->Severity == D3D12_MESSAGE_SEVERITY_WARNING))
+                    std::cerr << "D3D12 validation ["
+                              << static_cast<int>(message->ID) << "]: "
+                              << message->pDescription << '\n';
+            }
+        } catch (...) {}
+    }
+
     void wait_value(std::uint64_t value) {
         // ID3D12Fence returns UINT64_MAX when the device has been removed.
         // Treating that as a completed fence conceals the failing dispatch;
@@ -325,6 +365,7 @@ struct Context::Impl {
         const auto completed = fence->GetCompletedValue();
         if (completed == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
+            print_debug_messages();
             throw std::runtime_error(
                 "D3D12 device removed during GPU submission (HRESULT " +
                 std::to_string(static_cast<unsigned long>(reason)) + ")");
@@ -337,6 +378,7 @@ struct Context::Impl {
             throw std::runtime_error("D3D12 fence wait failed");
         if (fence->GetCompletedValue() == std::numeric_limits<std::uint64_t>::max()) {
             const auto reason = device->GetDeviceRemovedReason();
+            print_debug_messages();
             throw std::runtime_error(
                 "D3D12 device removed during GPU submission (HRESULT " +
                 std::to_string(static_cast<unsigned long>(reason)) + ")");
