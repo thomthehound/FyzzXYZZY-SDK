@@ -44,7 +44,8 @@ compute::BufferBinding native_view(
     const auto delta = physical.offset - base;
     if (delta > std::numeric_limits<std::uint32_t>::max() ||
         bytes > std::numeric_limits<std::size_t>::max() - delta ||
-        delta + bytes > max_view_bytes)
+        delta + bytes > max_view_bytes ||
+        delta + bytes > std::numeric_limits<std::uint32_t>::max())
         throw std::out_of_range("PhysX allocation exceeds a native storage view");
     const auto view_bytes = delta + bytes;
     if (view_bytes % 4u)
@@ -85,6 +86,7 @@ void SourceOverlapWorkNativeStage::append(
     SourceOverlapWorkLayout layout) const {
     if (!source.numCreatedHandles) return;
     if (!layout.descriptor || !layout.current_boxes ||
+        layout.current_boxes > (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u ||
         layout.current_boxes > layout.box_capacity ||
         source.numCreatedHandles > layout.current_boxes ||
         std::uint64_t(source.numPreviousHandles) + source.numCreatedHandles <
