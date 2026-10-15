@@ -58,7 +58,6 @@ void SourceOverlapWorkNativeStage::append(
     if (!layout.descriptor || !layout.current_boxes ||
         layout.current_boxes > (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u ||
         layout.current_boxes > layout.box_capacity ||
-        source.numCreatedHandles > layout.current_boxes ||
         std::uint64_t(source.numPreviousHandles) + source.numCreatedHandles <
             source.numRemovedHandles ||
         std::uint64_t(source.numPreviousHandles) + source.numCreatedHandles -
