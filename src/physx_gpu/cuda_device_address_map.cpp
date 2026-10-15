@@ -12,8 +12,10 @@ CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_allocation(
     compute::BufferId buffer, std::size_t allocation_bytes) {
     if (!buffer || !allocation_bytes)
         throw std::invalid_argument("PhysX CUDA allocation requires buffer and size");
-    if (by_buffer_.find(buffer) != by_buffer_.end())
-        throw std::invalid_argument("PhysX CUDA buffer registered twice");
+    if (by_buffer_.find(buffer) != by_buffer_.end() ||
+        slice_counts_.find(buffer) != slice_counts_.end())
+        throw std::invalid_argument(
+            "PhysX CUDA dedicated buffer already owned or referenced by slices");
 
     // All arithmetic here is checked against the virtual address width,
     // independently of host size_t width.
@@ -41,8 +43,10 @@ CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_slice(
     compute::BufferId buffer, std::size_t backing_offset,
     std::size_t allocation_bytes) {
     if (!buffer || !allocation_bytes || backing_offset % 4u ||
-        backing_offset > std::numeric_limits<std::size_t>::max() - allocation_bytes)
-        throw std::invalid_argument("Invalid PhysX GPU arena allocation slice");
+        backing_offset > std::numeric_limits<std::size_t>::max() - allocation_bytes ||
+        by_buffer_.find(buffer) != by_buffer_.end())
+        throw std::invalid_argument(
+            "Invalid PhysX GPU arena slice or conflicting dedicated owner");
     constexpr Address max = std::numeric_limits<Address>::max();
     if (static_cast<Address>(allocation_bytes) > max - (kAlignment - 1u))
         throw std::overflow_error("PhysX GPU allocation slice size overflow");
@@ -54,6 +58,13 @@ CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_slice(
     const Address base = next_address_;
     allocations_.emplace(base, Allocation{buffer, allocation_bytes,
                                           backing_offset, false});
+    try {
+        auto [it, inserted] = slice_counts_.try_emplace(buffer, 0u);
+        ++it->second;
+    } catch (...) {
+        allocations_.erase(base);
+        throw;
+    }
     next_address_ += span;
     return base;
 }
@@ -63,9 +74,21 @@ void CudaDeviceAddressMap::relocate_slice(
     auto it = allocations_.find(base);
     if (it == allocations_.end() || it->second.owned || !buffer ||
         backing_offset % 4u ||
-        backing_offset > std::numeric_limits<std::size_t>::max() - it->second.bytes)
+        backing_offset > std::numeric_limits<std::size_t>::max() - it->second.bytes ||
+        by_buffer_.find(buffer) != by_buffer_.end())
         throw std::invalid_argument("Invalid PhysX GPU arena slice relocation");
-    it->second.buffer = buffer;
+    const auto old_buffer = it->second.buffer;
+    if (old_buffer != buffer) {
+        // Acquire the new reference before releasing the old one so an
+        // allocation failure cannot corrupt host lifetime bookkeeping.
+        auto [dest, inserted] = slice_counts_.try_emplace(buffer, 0u);
+        ++dest->second;
+        auto source = slice_counts_.find(old_buffer);
+        if (source == slice_counts_.end() || !source->second)
+            throw std::logic_error("PhysX CUDA slice lifetime bookkeeping corrupted");
+        if (--source->second == 0u) slice_counts_.erase(source);
+        it->second.buffer = buffer;
+    }
     it->second.backing_offset = backing_offset;
 }
 
@@ -75,6 +98,10 @@ CudaDeviceAddressMap::Resolved CudaDeviceAddressMap::unregister_slice(Address ba
         throw std::out_of_range("Free requires live PhysX arena slice base");
     const Resolved resolved{it->second.buffer, it->second.backing_offset,
                             it->second.bytes};
+    auto references = slice_counts_.find(it->second.buffer);
+    if (references == slice_counts_.end() || !references->second)
+        throw std::logic_error("PhysX CUDA slice lifetime bookkeeping corrupted");
+    if (--references->second == 0u) slice_counts_.erase(references);
     allocations_.erase(it);
     return resolved;
 }
