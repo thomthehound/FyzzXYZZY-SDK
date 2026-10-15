@@ -67,7 +67,10 @@ void SapIncrementalComparisonsArenaStage::append(
         descriptor_offset % alignof(SapIncrementalComparisonArenaDesc) ||
         descriptor_offset > arena_bytes ||
         sizeof(SapIncrementalComparisonArenaDesc) > arena_bytes - descriptor_offset ||
-        previous_num_boxes > std::numeric_limits<std::uint32_t>::max() / 2u)
+        // Both source and wave kernels round 2*boxes with +255 before /256.
+        // The projection count must leave room for that 32-bit addition.
+        previous_num_boxes >
+            (std::numeric_limits<std::uint32_t>::max() - 255u) / 2u)
         throw std::invalid_argument("Invalid PhysX incremental comparison dimensions");
 
     const Parameters params{descriptor_offset, previous_num_boxes, arena_bytes, {}};
