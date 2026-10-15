@@ -430,7 +430,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
         fyzzxyzzy_physx_source_d32_fill_spv fyzzxyzzy_physx_source_region_create_spv)
       add_test(NAME fyzzxyzzy_physx_source_region_create_native
         COMMAND fyzzxyzzy_physx_source_region_create_native
-          "${FYZZXYZZY_SOURCE_D32_FILL_SPV}" "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}")
+          "${FYZZXYZZY_SOURCE_D32_FILL_SPV}" "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv")
       set_tests_properties(fyzzxyzzy_physx_source_region_create_native PROPERTIES
         SKIP_RETURN_CODE 77)
 
@@ -452,6 +455,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         DEPENDS "${FYZZXYZZY_SOURCE_REGION_HIST_first_SPV}"
                 "${FYZZXYZZY_SOURCE_REGION_HIST_wave_SPV}"
                 "${FYZZXYZZY_SOURCE_REGION_HIST_second_SPV}")
+      add_dependencies(fyzzxyzzy_physx_source_region_create_native
+        fyzzxyzzy_physx_source_region_histograms_spv)
       add_executable(fyzzxyzzy_physx_source_region_histograms_native
         tests/physx_gpu_source_region_histograms_native.cpp)
       target_include_directories(fyzzxyzzy_physx_source_region_histograms_native PRIVATE
@@ -1646,7 +1651,10 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_physx_source_d32_fill_dxil fyzzxyzzy_physx_source_region_create_dxil)
     add_test(NAME fyzzxyzzy_physx_source_region_create_native_d3d12
       COMMAND fyzzxyzzy_physx_source_region_create_native_d3d12
-        "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}" "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}")
+        "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}" "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.dxil")
     set_tests_properties(fyzzxyzzy_physx_source_region_create_native_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
@@ -1667,6 +1675,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS "${FYZZXYZZY_SOURCE_REGION_HIST_first_DXIL}"
               "${FYZZXYZZY_SOURCE_REGION_HIST_wave_DXIL}"
               "${FYZZXYZZY_SOURCE_REGION_HIST_second_DXIL}")
+    add_dependencies(fyzzxyzzy_physx_source_region_create_native_d3d12
+      fyzzxyzzy_physx_source_region_histograms_dxil)
     add_executable(fyzzxyzzy_physx_source_region_histograms_native_d3d12
       tests/physx_gpu_source_region_histograms_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_region_histograms_native_d3d12
