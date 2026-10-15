@@ -56,6 +56,7 @@ public:
         source.numPreviousHandles = kBoxCount;
         source.max_found_lost_pairs = kPairs;
         source.numCreatedHandles = 1;
+        source.numRemovedHandles = 1; // (3 previous+1 created-1 removed)=3 current.
         source.sharedFoundPairIndex = 1;
         source.overlapChecksTotalRegion = 0;
 
@@ -258,6 +259,10 @@ void verify_gpu(Context& ctx) {
     wrong.current_boxes=kCapacity+1u;
     must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
                 "Invalid source PhysX frame capacity accepted");
+    wrong=relocatedLayout;
+    wrong.projection_slots=kBoxCount*2u; // omits removed projection slots.
+    must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
+                "Source removed-handle projection extent incorrectly truncated");
     wrong=relocatedLayout;
     wrong.backing_bytes=f.descriptor+16u;
     must_reject([&]{(void)lower_source_newbounds_descriptor(f.source,addresses,wrong);},
