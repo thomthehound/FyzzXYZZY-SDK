@@ -10,11 +10,12 @@
 
 namespace fyzz::physx_gpu {
 
-// Lossless, source-field-based lowering of the actual PxgBroadPhaseDesc
-// members consumed by the new-bounds GPU chain. The source CUDA allocations
-// are slices of one *persistent* caller-owned native broadphase backing
-// resource; no frame-time packing, per-kernel transfer, or shadow simulation
-// state. Other source kernels will need their own explicit field contracts.
+// EXPERIMENTAL, TEST-ONLY fast path for the actual PxgBroadPhaseDesc
+// fields consumed by the new-bounds GPU chain. This works only when every
+// required source CUDA allocation is a slice of ONE caller-owned backing.
+// The original PhysX buddy heap normally admits MULTIPLE roots and large
+// independent allocations, so this is NOT the production binding strategy
+// or an acceptance test for a live GPU scene. No copies are hidden here.
 struct SourceNewBoundsArenaLayout {
     compute::BufferId backing = 0;
     std::uint32_t backing_bytes = 0;
