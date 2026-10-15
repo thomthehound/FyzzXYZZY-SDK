@@ -4,10 +4,10 @@
 
 #include "physx_gpu/source_newbounds_descriptor.h"
 
-#include "PxgIntegerAABB.h"
-#include "PxgSapBox1D.h"
-#include "PxgBroadPhasePairReport.h"
-
+// The source GPU layout uses six uint32 integer-bound words, two uint32
+// min/max projection indices, two uint4 region extents and two uint32
+// pair handles. Keep the sizes explicit to avoid requiring CUDA headers
+// in a Vulkan/D3D12 host-only translation unit.
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -71,10 +71,10 @@ SapNewBoundsSequenceArenaDescriptors lower_source_newbounds_descriptor(
     const auto projection_count = checked_bytes(layout.current_boxes, 2u);
     const auto histogram_bytes = checked_bytes(projection_count, 64u * 4u);
     const auto handles_bytes = checked_bytes(projection_count, 4u);
-    const auto sap_bytes = checked_bytes(layout.box_capacity, sizeof(physx::PxgSapBox1D));
-    const auto bounds_bytes = checked_bytes(layout.box_capacity, sizeof(physx::PxgIntegerAABB));
-    const auto range_bytes = checked_bytes(layout.box_capacity, sizeof(physx::PxgIntegerRegion));
-    const auto pair_bytes = checked_bytes(d.max_found_lost_pairs, sizeof(physx::PxgBroadPhasePair));
+    const auto sap_bytes = checked_bytes(layout.box_capacity, 8u);
+    const auto bounds_bytes = checked_bytes(layout.box_capacity, 24u);
+    const auto range_bytes = checked_bytes(layout.box_capacity, 32u);
+    const auto pair_bytes = checked_bytes(d.max_found_lost_pairs, 8u);
     const auto overlap_bytes = checked_bytes(d.regionAccumTotal, sizeof(physx::regionOverlapType));
     const auto region_prefix_bytes = checked_bytes(projection_count, 4u);
     const auto block_bytes = checked_bytes(32u, sizeof(physx::regionOverlapType));
