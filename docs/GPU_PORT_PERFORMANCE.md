@@ -145,6 +145,10 @@ Do not inflate every change with speculative precision. A compact
 per-stage row can satisfy the record, but **no unreviewed fallback
 to high-barrier scalar/shared-memory implementations**.
 
+## Broadphase translation-defect closure
+
+The known high-priority static translation defects identified through PR #44 were corrected by merged PRs #44, #46 and #48–#52, with passing native-backend CI and final reviews. See [GPU_PERFORMANCE_AUDIT.md](GPU_PERFORMANCE_AUDIT.md#remediation-closure-decision-october-14-2026) for scope and evidence. This is a **functional/source-strategy closure**, not a native GPU throughput result, production admission, or completion of the PhysX scene port. Continue translation under this contract while separately tracking device benchmarking (#34), production capability admission (#47), and integrated host orchestration.
+
 ## Practical acceptance and review order
 
 - Confirm a faithful source dataflow/original host owner.
