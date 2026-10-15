@@ -8,6 +8,7 @@
 
 #include "fyzzxyzzy/compute.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -45,6 +46,15 @@ public:
                 compute::BufferId bounds, compute::BufferId contact_distances,
                 compute::BufferId environment_ids, compute::BufferId encoded_bounds,
                 const AabbEncodingParameters& parameters) const;
+
+    // Native lowerings of PhysX's original CUDA kernel parameters may
+    // reference interior CUdeviceptr addresses. Preserve the resource
+    // offsets and exact access intent instead of copying subranges to
+    // synthetic zero-offset buffers before every launch.
+    void append_views(std::vector<compute::BatchCommand>& commands,
+                      const std::array<compute::BufferBinding, 4>& views,
+                      const AabbEncodingParameters& parameters,
+                      bool environment_enabled) const;
 
 private:
     compute::Context& context_;
