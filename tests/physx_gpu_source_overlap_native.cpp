@@ -14,6 +14,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 using namespace fyzz::physx_gpu;
