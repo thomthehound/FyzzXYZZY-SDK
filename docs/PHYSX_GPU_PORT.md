@@ -859,3 +859,33 @@ The next cross-backend acceptance gates are:
 This matrix is a starting inventory. Every implementation PR must refine its
 row with concrete source entry points, input/output layouts, synchronization
 and behavioral tests. A passing compute smoke test is not PhysX GPU conformance.
+
+
+### Source new-bounds overlap-work count producer
+
+The next source-owned created-handle branch begins with
+`broadphase.cu::writeOutOverlapChecksForInsertedBoundsRegionsHistogram`
+(`BP_WRITEOUT_OVERLAPCHECKS_HISTOGRAM_NEWBOUNDS`, 32 × 256).
+`SapOverlapWorkArenaStage` lowers this independent per-item producer to the
+shared HLSL arena ABI on Vulkan and D3D12. It consumes the existing exclusive
+`regionAccum` prefix, current X-sorted handles, X SAP end positions,
+region ranges, and prior active/start-region prefix tables. It produces
+`overlapChecksRegion` (64-bit counts) and
+`overlapChecksHandleRegiones` (handle and region-array offset).
+
+The per-region difference between two histogram entries fits in 32 bits
+because each entry counts at most the current endpoint population. The output
+count remains 64 bits to match PhysX's subsequent 64-bit prefix and total.
+The 64-bit global accumulation belongs to the **next**
+`BP_COMPUTE_OVERLAPCHECKS_HISTOGRAM` and
+`BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM` stages; it has not been replaced with
+32-bit summation. No subgroup or optional device capability is needed in
+this producer; capability checks stay in stage construction rather than
+dispatch.
+
+The native cross-backend fixture exercises created and quiet frames, source
+dispatch geometry, descriptor rejection and an independent two-handle
+count/reference comparison, preserving untouched buffer canaries. This is
+a bounded producer test, not the complete overlap-prefix/found-pair pipeline.
+The follow-on 64-bit prefix and pair writer must be integrated into the
+source-ordered host sequence before claiming full new-bounds pair generation.
