@@ -63,9 +63,15 @@ between source kernels.
 5. Test optimized/wave-capable selection and portable fallback. CI pass is
    correctness evidence for the variants actually *executed*, not proof of
    physical wave32/wave64 performance or occupancy.
-6. Fail closed on bad addresses, insufficient source capacities or an
-   unsupported 64×512 device dispatch before queueing any partial sequence.
-   The fixture's readback/wait comes **after** the entire source batch.
+6. Validate bad addresses, insufficient source capacities and
+   unsupported 64×512 device dispatch *before each source stage appends*.
+   Individual stage appenders are transactional, but the full ten-stage
+   composition is **not** yet an all-or-nothing source host transaction:
+   an error while constructing a later stage can leave earlier commands
+   in the caller's list. Production host integration must either
+   prevalidate the full sequence or stage/commit its command list as a
+   unit and preserve the source abort/error behavior. The fixture's
+   readback/wait comes **after** the entire source batch.
 
 ## 2. Host-execution audit: what is implemented vs not
 
@@ -88,6 +94,11 @@ missing live-scene obligations in the bottom half of this table.
 
 ### P1 — correctness/architecture dependencies before GPU scene acceptance
 
+- **Full-chain error atomicity is not established.** Each source stage
+  validates and appends atomically, but a ten-stage run comprised of
+  successive appenders does not itself roll back earlier stages if a
+  later stage rejects a source pointer. Decide where the original host
+  validates, commits, or propagates aborts before wiring a live stream.
 - **Missing live ownership and task integration.** The per-stage `append`
   APIs deliberately borrow source data and append to a caller's batch.
   Production work must occur under PhysX's existing `PxgCudaBroadPhaseSap`
