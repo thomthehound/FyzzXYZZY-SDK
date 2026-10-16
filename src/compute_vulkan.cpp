@@ -105,8 +105,9 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             }
             // Coarse memory-heap capability only: actual VkBuffer
             // memoryTypeBits are validated by make_buffer at allocation.
-            info.cache_coherent_unified_memory =
-                info.unified_memory && info.supports_gpu_writable_host_visible;
+            // VK_MEMORY_PROPERTY_HOST_COHERENT_BIT defines required memory
+            // visibility, not a guarantee about shared CPU/GPU cache design.
+            info.cache_coherent_unified_memory = false;
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
@@ -634,7 +635,7 @@ struct Context::Impl {
         return get(id).placement == MemoryPlacement::HostVisible;
     }
 
-    void* map_buffer(BufferId id) {
+    void* map_buffer(BufferId id, HostMapAccess /*access*/) {
         auto& buffer = get(id);
         if (buffer.placement != MemoryPlacement::HostVisible)
             throw std::invalid_argument("Vulkan buffer is not host-visible");
@@ -1494,7 +1495,9 @@ void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->buffer_is_host_visible(id);
 }
-void* Context::map_buffer(BufferId id) { return impl_->map_buffer(id); }
+void* Context::map_buffer(BufferId id, HostMapAccess access) {
+    return impl_->map_buffer(id, access);
+}
 void Context::unmap_buffer(BufferId id) { impl_->unmap_buffer(id); }
 
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
