@@ -128,6 +128,37 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Source GPU report production connected to native fetch
+
+`lower_source_sap_report_descriptors()` resolves original
+`PxgBroadPhaseDesc` raw/aggregate counters, report pointers, block
+counters, mapped actor-pair outputs and overflow flag to **native views of
+the same caller-owned source allocations**. The existing native
+`BP_ACCUMULATE_REPORT_STAGE_1`, `BP_ACCUMULATE_REPORT_STAGE_2`, and
+`BP_COPY_REPORTS` launches then write the original GPU descriptor fields
+and mapped actor reports consumed by `fetch_source_sap_results()`.
+Submission and completion use `SourceSapDmaNative` and the existing
+`BroadPhaseCompletionGate`, not an independent frame driver.
+
+Source `Bp::VolumeData` embeds its `mAggregate` field after
+`mUserData`; the report-stage ABI now accepts a record stride and
+aggregate-member byte offset, so native shaders classify directly from
+the original structure-of-records. A zero stride maintains the compact
+tag-array convention used by earlier isolated conformance fixtures.
+Both portable and native-wave report stages use the same data source.
+
+Cross-backend tests run all three report kernels into original
+`PxgBroadPhaseDesc` counters and source-mapped actor report output,
+then read and publish those results into the original found/lost task
+gate. Aggregate and nonaggregate populations and overflow cases compare
+against independent CPU pair classification.
+
+**Remaining qualification:** the adapter currently supports report
+allocations sharing one native heap root. Real PhysX heaps can span
+multiple roots, and original mapped host pair memory will need native
+interop/transfer lowering. Thus this closes a real connected
+**source-shaped GPU dataflow**, not yet the live `PxScene` source path.
+
 ## Source SAP GPU fetch / original pair-task publication
 
 The native SAP host path can now hand the borrowed `SourceSapDmaNative`
