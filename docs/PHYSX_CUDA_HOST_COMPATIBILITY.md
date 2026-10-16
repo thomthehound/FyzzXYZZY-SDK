@@ -128,6 +128,48 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Original PhysX GPU buddy heap, now backend-neutral
+
+The original `Block` and `PxgHeapMemoryAllocator` implementation from
+`physx/source/gpucommon` has been brought **into the FyzzXYZZY engine source**
+under `src/physx_port/gpucommon/`, retaining its NVIDIA attribution and
+Apache-2.0 license. This source remains the authoritative buddy allocator;
+there is **no additional independent heap implementation**.
+
+The port's narrow source delta removes the requirement that the heap's
+lower-level root callback derive from CUDA-specific
+`PxgCudaAllocatorCallbackBase`. It now receives the **original**
+`Cm::VirtualAllocatorCallback&` plus a required backend-neutral abort
+callback and its owning context. The original CUDA variant reports
+duplicate allocation keys through `PxCudaContext::setAbortMode`;
+the neutral port reports the same condition to the native scene via the
+injected callback, without pretending a CUDA context exists. GPU device
+addresses are stored as opaque 64-bit values; source root+offset arithmetic
+uses `uintptr_t`, not CPU pointer arithmetic on non-dereferenceable addresses.
+
+The original GPU-heap manager factory (which still creates CUDA pinned/mapped
+allocators) is deliberately **not** imported. It must be lowered as part of
+native scene construction, alongside the original pinned-host report
+buffers and abort-mode wiring, rather than smuggling CUDA allocator state
+back into this neutral heap. The original source algorithms for block
+splitting, hash key tracking, exceptional allocations, buddy coalescence,
+deferred free and heap statistics otherwise remain intact.
+
+Linux Vulkan and Windows D3D12 conformance now construct the actual source
+`PxgHeapMemoryAllocator` with `SourcePhysxDeviceRootCallback`, allocate
+buddy and exceptional blocks, enqueue GPU DMA growth/copy chains across
+the original heap resources, retire an exceptional root while work is
+in flight, exercise the original `deallocateDeferred`/flush path, and
+verify physical/virtual root cleanup. This is **real original heap code**,
+not the earlier callback-only fixture.
+
+**Still pending:** the GPU-specific `PxgHeapMemoryAllocatorManager` factory
+and pinned-host allocator lowering, construction of original
+`PxgCudaBroadPhaseSap`/scene objects against this native heap, and
+live simulation. The shared compute engine's public `fyzzxyzzy/`
+API stays independent of CUDA, PhysX GPU internals, and any single
+vendor backend.
+
 ## Exact source virtual callback surface for PhysX heap roots
 
 The original `physx::Cm::VirtualAllocatorCallback` interface in
