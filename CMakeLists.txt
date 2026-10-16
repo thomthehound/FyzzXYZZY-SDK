@@ -450,6 +450,28 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.spv")
       set_tests_properties(fyzzxyzzy_physx_ten_operation_chain PROPERTIES
         SKIP_RETURN_CODE 77)
+      # Source native 7+3 region stages and four new-bounds kernels share
+      # original PxgBroadPhaseDesc, CUDA allocations, and one submission.
+      add_dependencies(fyzzxyzzy_physx_source_region_create_native
+        fyzzxyzzy_physx_source_overlap_native_spv
+        fyzzxyzzy_physx_source_scan_spv
+        fyzzxyzzy_physx_source_pairs_spv)
+      add_test(NAME fyzzxyzzy_physx_fourteen_operation_chain
+        COMMAND fyzzxyzzy_physx_source_region_create_native
+          "${FYZZXYZZY_SOURCE_D32_FILL_SPV}"
+          "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_writeout.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_wave.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_portable.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.spv"
+          "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}"
+          ${FYZZXYZZY_SOURCE_SCAN_SPV_FILES}
+          "${FYZZXYZZY_SOURCE_PAIRS_SPV}")
+      set_tests_properties(fyzzxyzzy_physx_fourteen_operation_chain PROPERTIES
+        SKIP_RETURN_CODE 77)
 
       # Source-ordered four region histogram scans; scalar totals remain
       # within their original GPU-resident PxgBroadPhaseDesc fields.
@@ -1728,6 +1750,27 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_portable.dxil"
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.dxil")
     set_tests_properties(fyzzxyzzy_physx_ten_operation_chain_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_dependencies(fyzzxyzzy_physx_source_region_create_native_d3d12
+      fyzzxyzzy_physx_source_overlap_native_dxil
+      fyzzxyzzy_physx_source_scan_dxil
+      fyzzxyzzy_physx_source_pairs_dxil)
+    add_test(NAME fyzzxyzzy_physx_fourteen_operation_chain_d3d12
+      COMMAND fyzzxyzzy_physx_source_region_create_native_d3d12
+        "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}"
+        "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_writeout.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_wave.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_portable.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.dxil"
+        "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}"
+        ${FYZZXYZZY_SOURCE_SCAN_DXIL_FILES}
+        "${FYZZXYZZY_SOURCE_PAIRS_DXIL}")
+    set_tests_properties(fyzzxyzzy_physx_fourteen_operation_chain_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
