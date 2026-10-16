@@ -1036,3 +1036,35 @@ context/stream execution seam. `PxCudaContext*, CUstream` is not yet
 provided as a generic host-compatible interface; no live GPU `PxScene`
 is implied. Source allocator abort/error translation and live
 scene teardown require review at that integration boundary.
+
+## Source `PxgCudaBroadPhaseSap::preBroadPhase` native input path (PR #90)
+
+`src/physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.{h,cpp}`
+ports the original source `preBroadPhase` allocation and HtoD upload
+sequence. It consumes `Bp::BroadPhaseUpdateData` directly and borrows
+the original `PxgTypedCudaBuffer` owners, using the existing
+`SourceSapDmaNative` stream; it does not create a second scheduler
+or manage a second frame state.
+
+The source semantics are retained:
+
+- Allocate distance and group buffers every call when growth is required.
+- Allocate environment-ID buffer only when the input provides IDs.
+- Allocate/upload FP bounds only when `getStateChanged()` is true.
+- Upload distances and groups on every call, and environment IDs
+  only when present.
+- Preserve existing GPU bounds/environment data across skipped uploads.
+
+The four original consecutive source HtoD operations are submitted as
+one ordered native upload group. Native staging copies input bytes before
+the caller can reuse its update arrays and retires after GPU completion.
+
+Conformance exercises the original buffer and buddy allocator across
+initial, non-dirty, resized and rejected-input frames, checking actual
+GPU storage on both native backends.
+
+Next host connection: install these borrowed buffer references in
+`PxgCudaBroadPhaseSap::preBroadPhase`, preserving its
+`mUpdateData_BoxesCapacity` update and `PxgAABBManager` task ordering.
+`gpuDMAUp` and its descriptor/sort buffers remain the next coherent
+source-owned transfer sequence.
