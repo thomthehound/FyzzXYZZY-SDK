@@ -4,6 +4,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
+#include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 
 #include <algorithm>
 #include <array>
@@ -415,6 +416,76 @@ void exercise_source_virtual_device_allocator(Context& context) {
     roots.close(&source);
 }
 
+
+void exercise_original_source_physx_buddy_heap(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    CudaDeviceAddressMap addresses;
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourceSapDmaNative source(context, addresses);
+    SourcePhysxDeviceRootCallback native(roots, &source);
+    bool aborted=false;
+    const auto abort=[](void* ctx) noexcept {
+        *static_cast<bool*>(ctx)=true;
+    };
+    std::array<std::uint8_t,256u> payload{}, observed{};
+    for(std::size_t i=0u;i<payload.size();++i)
+        payload[i]=static_cast<std::uint8_t>((i*59u+31u)%251u);
+    {
+        // This IS the original source's Block/PxgHeapMemoryAllocator
+        // implementation, using its original buddy lists, mHashMap,
+        // exceptional allocation policy and deferred free path. Only
+        // native root callback and abort notification are injected.
+        physx::PxgHeapMemoryAllocator heap(4096u,native,abort,&aborted);
+        void* a=heap.allocate(256u,0,__FILE__,__LINE__);
+        void* b=heap.allocate(384u,0,__FILE__,__LINE__);
+        void* exception=heap.allocate(3072u,0,__FILE__,__LINE__);
+        if(!a || !b || !exception || aborted)
+            throw std::runtime_error("Original PhysX buddy heap failed native allocation");
+        const auto addr=[](void* pointer) {
+            return static_cast<CudaDeviceAddressMap::Address>(
+                reinterpret_cast<std::uintptr_t>(pointer));
+        };
+        const auto aRaw=addr(a),bRaw=addr(b),exceptionRaw=addr(exception);
+        const auto ar=addresses.resolve(aRaw,256u);
+        const auto br=addresses.resolve(bRaw,256u);
+        const auto er=addresses.resolve(exceptionRaw,256u);
+        if(ar.buffer!=br.buffer || ar.buffer==er.buffer ||
+           ar.offset==br.offset || ar.offset+256u>4096u ||
+           br.offset+384u>4096u || er.offset!=0u ||
+           roots.live_roots()!=2u)
+            throw std::runtime_error("Native original PhysX buddy splitting or exceptional root mismatch");
+        source.queue_uploads({{aRaw,payload.data(),payload.size()}});
+        source.queue_device_copy(exceptionRaw,aRaw,payload.size());
+        source.queue_device_copy(bRaw,exceptionRaw,payload.size());
+        // Source exceptional free is a ROOT release through the exact
+        // Cm::VirtualAllocatorCallback; submits the original GPU stream
+        // but never waits on the CPU.
+        heap.deallocate(exception);
+        if(roots.live_roots()!=1u)
+            throw std::runtime_error("Original PhysX exceptional free did not retire its root");
+        source.wait_at_fetch();
+        context.download(br.buffer,br.offset,observed.data(),observed.size());
+        if(observed!=payload)
+            throw std::runtime_error("Original PhysX buddy heap interrupted native GPU copies");
+        heap.deallocateDeferred(b);
+        if(addresses.resolve(bRaw,1u).offset!=br.offset)
+            throw std::runtime_error("Source deferred deallocation released its buddy block prematurely");
+        heap.flushDeferredDeallocs();
+        heap.deallocate(a);
+        // Same source heap can reuse a released block; the root stays alive
+        // until the original heap's destructor, not a per-block native free.
+        void* reused=heap.allocate(256u,0,__FILE__,__LINE__);
+        if(!reused || roots.live_roots()!=1u)
+            throw std::runtime_error("Original PhysX buddy heap lost its free-list reuse contract");
+        heap.deallocate(reused);
+    }
+    if(aborted || roots.live_roots()!=0u ||
+       addresses.live_allocations()!=0u)
+        throw std::runtime_error("Original PhysX heap root lifetime or abort signaling changed");
+}
+
 } // namespace
 
 int main() {
@@ -482,6 +553,7 @@ int main() {
         exercise_native_physx_heap_roots(context);
         exercise_native_heap_raii_teardown(context);
         exercise_source_virtual_device_allocator(context);
+        exercise_original_source_physx_buddy_heap(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
