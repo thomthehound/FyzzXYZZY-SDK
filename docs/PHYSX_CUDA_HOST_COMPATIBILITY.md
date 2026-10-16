@@ -128,6 +128,45 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Original mapped actor-pair reports through native staged publication
+
+The original `PxgCudaBroadPhaseSap` allocates its
+`mFoundActorPairsMapped` and `mLostActorPairsMapped` arrays through
+`PxgAllocatorDesc::hostMappedAlloc` with pageable fallback **disabled**.
+Its report-copy GPU kernel writes those destination addresses, and the
+original CPU fetch reads their contents only after the source stream
+completes. On CUDA, `getMappedDevicePtr()` provides an alias into the
+same pinned, GPU-mapped host memory.
+
+`SourceStagedHostReportRoots` is an explicitly **staged native lowering**
+of that particular original fetch/publication contract. It implements the
+original `Cm::VirtualAllocatorCallback` for the source GPU heap manager's
+host-mapped root requests. Each CPU-visible root receives a matching
+device-local native buffer and a registered CUDA-style virtual GPU root.
+The source heap still splits and frees its original host blocks; their
+CPU-pointer offsets resolve to the corresponding GPU buffer offsets.
+
+Original report kernels can write those native device destinations with
+ordinary Vulkan/D3D12 UAVs. `publish_at_fetch()` waits the **existing
+source stream**, then copies only the requested GPU-written report range
+into the same original CPU array. The original manager owns the original
+heap roots, and retirement removes both the native allocation and its
+GPU pointer mapping. Linux and Windows tests now verify real source
+buddy-block host allocations, ordered GPU uploads/copies, separate found/
+lost report regions within a shared root, no premature CPU publication,
+bounded pointer translations, deferred host-heap release, and stale
+alias rejection after original manager destruction.
+
+**Important limitations:** This is not zero-copy, persistent GPU/CPU
+coherence, OS page locking, or a general CUDA-mapped host replacement.
+Direct CPU polling of a GPU-written mapped flag such as the original
+`mEventMapped` remains unsupported by this path; it must be replaced
+by the existing source completion gate or by a genuinely coherent native
+mapping where supported. This mechanism is valid for result arrays
+consumed at a synchronized fetch boundary, not arbitrary mapped-memory
+access. The existing `fetch_source_sap_results()` path remains usable
+when destinations are separately owned original PhysX host arrays.
+
 ## Original PhysX GPU heap manager with native callback selection
 
 The original `PxgHeapMemoryAllocatorManager` is now implemented beside
