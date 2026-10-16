@@ -138,6 +138,51 @@ int main() {
             "Freed PhysX source allocation remained mapped");
         demand(table.unregister_slice(sliceB).buffer==515u,
                "Independent source slice lost shared GPU backing");
+        // PxgCudaBuffer's allocator key is RAW mPtr; getDevicePtr()
+        // performs (mPtr + 127) & ~127; neither free nor swap use the
+        // aligned pointer. Legacy slices still preserve aligned bases.
+        rejected<std::invalid_argument>(
+            [&]{ (void)table.register_source_slice(515u,128u,512u,128u); },
+            "Out-of-range source raw pointer alignment accepted");
+        rejected<std::invalid_argument>(
+            [&]{ (void)table.register_source_slice(515u,1u,512u,4u); },
+            "Misaligned native root backing unexpectedly accepted");
+        const auto raw=table.register_source_slice(515u,260u,512u,4u);
+        const auto aligned=(raw+127u)&~CudaDeviceAddressMap::Address{127u};
+        demand(raw%128u==4u && aligned-raw==124u,
+               "Source allocator raw mPtr was silently aligned");
+        const auto rawPhysical=table.resolve(raw,512u);
+        const auto alignedPhysical=table.resolve(aligned,388u);
+        demand(rawPhysical.buffer==515u && rawPhysical.offset==260u &&
+               alignedPhysical.buffer==515u && alignedPhysical.offset==384u,
+               "Source getDevicePtr() must resolve 124 bytes after raw allocation");
+        rejected<std::out_of_range>(
+            [&]{ (void)table.unregister_slice(aligned); },
+            "Source getDevicePtr incorrectly accepted as allocator free key");
+        rejected<std::out_of_range>(
+            [&]{ (void)table.resolve(aligned,389u); },
+            "Aligned device view exceeded source raw allocation capacity");
+        const auto sourceBeyond=table.register_source_slice(515u,1408u,64u,127u);
+        demand(sourceBeyond%128u==127u &&
+               (((sourceBeyond+127u)&~CudaDeviceAddressMap::Address{127u})-sourceBeyond)==1u,
+               "Worst-case raw pointer low bits were lost");
+        rejected<std::out_of_range>(
+            [&]{ (void)table.resolve(sourceBeyond+64u,1u); },
+            "Source virtual allocation pad incorrectly exposed");
+        demand(table.unregister_slice(sourceBeyond).offset==1408u &&
+               table.unregister_slice(raw).offset==260u,
+               "Source raw allocator identity lost on release");
+        rejected<std::out_of_range>(
+            [&]{ (void)table.resolve(raw,1u); },
+            "Deferred source free left raw virtual allocation address mapped");
+        // Free/replace must never recycle a stale rounded virtual
+        // pointer into another allocation merely due to residues.
+        const auto replacement=table.register_source_slice(515u,1792u,512u,0u);
+        demand(replacement>aligned &&
+               table.resolve(replacement,512u).offset==1792u,
+               "Source raw-address registration reused old virtual range");
+        demand(table.unregister_slice(replacement).buffer==515u,
+               "Source backing incorrectly retired by logical slice free");
         const auto dedicated_after_release = table.register_allocation(515u,256u);
         demand(table.unregister_allocation(dedicated_after_release)==515u,
                "GPU resource remained spuriously borrowed after last slice freed");
