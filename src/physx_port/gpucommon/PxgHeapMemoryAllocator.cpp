@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PxgHeapMemAllocator.h"
+#include <cstdint>
 #include "foundation/PxAllocator.h"
 #include "foundation/PxErrors.h"
 #include "foundation/PxMath.h"
@@ -367,7 +368,7 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 			mBitfield = mBitfield & (~(1u << freeBlockIndex));
 		}
 
-		void* freeAddress = reinterpret_cast<void*>(reinterpret_cast<PxU8*>(reinterpret_cast<std::uintptr_t>(mRoots[rootIndex]) + offset));
+		void* freeAddress = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(mRoots[rootIndex]) + offset);
 		PX_ASSERT(!mHashMap.find(freeAddress));
 
 		mBlocks[blockIndex].insertBlockHeader(rootIndex, tBlock.mBlockSize + offset, mBlockHeaderPool);
@@ -424,7 +425,7 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 		{
 			mBitfield = mBitfield & (~(1u << blockIndex));
 		}
-		void* address = reinterpret_cast<void*>(reinterpret_cast<PxU8*>(reinterpret_cast<std::uintptr_t>(mRoots[rootIndex]) + offset));
+		void* address = reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(mRoots[rootIndex]) + offset);
 		PX_ASSERT(!mHashMap.find(address));
 
 		if(!mHashMap.insert(address, AllocationValue(blockIndex, rootIndex, byteSize, group)))
@@ -512,7 +513,7 @@ void PxgHeapMemoryAllocator::deallocate(void* ptr)
 	const PxU32 rootIndex = value.mRootIndex;
 	PxU32 blockIndex = value.mBlockIndex;
 
-	PxU32 offset = PxU32(reinterpret_cast<PxU8*>(ptr)-reinterpret_cast<PxU8*>(mRoots[rootIndex]));
+	PxU32 offset = PxU32(reinterpret_cast<std::uintptr_t>(ptr) - reinterpret_cast<std::uintptr_t>(mRoots[rootIndex]));
 
 	Block* block = &mBlocks[blockIndex];
 
