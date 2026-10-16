@@ -7,6 +7,8 @@
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
+#include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
+#include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
 #include <algorithm>
@@ -660,6 +662,157 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
 }
 
+void exercise_original_prebroadphase_native(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapPreBroadPhaseBuffers;
+    using fyzz::physx_gpu::pre_broadphase_native;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted = false;
+    const auto abort=[](void* value) noexcept {
+        *static_cast<bool*>(value) = true;
+    };
+    physx::Bp::BpFilter filter(false, false);
+
+    // The same four original PhysX buffers are reused across scene frames.
+    // Source capacity and dirty flags come from real BroadPhaseUpdateData.
+    {
+        physx::PxgHeapMemoryAllocator heap(8192u, callback, abort, &aborted);
+        physx::PxgTypedCudaBuffer<physx::PxBounds3> boundsBuf(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgTypedCudaBuffer<physx::PxReal> distancesBuf(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgTypedCudaBuffer<physx::PxU32> groupsBuf(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgTypedCudaBuffer<physx::PxU32> envBuf(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxU32 sourceBoxesCapacity=0u;
+        SourceSapPreBroadPhaseBuffers owners{
+            boundsBuf, distancesBuf, groupsBuf, envBuf, sourceBoxesCapacity};
+
+        std::array<physx::PxBounds3,4u> bounds{};
+        std::array<physx::PxReal,4u> distances{0.1f,0.2f,0.3f,0.4f};
+        std::array<physx::Bp::FilterGroup::Enum,4u> groups{
+            physx::Bp::FilterGroup::eSTATICS,
+            physx::Bp::FilterGroup::eDYNAMICS_BASE,
+            physx::Bp::FilterGroup::eSTATICS,
+            physx::Bp::FilterGroup::eDYNAMICS_BASE};
+        std::array<physx::PxU32,4u> env{2u,5u,7u,11u};
+        for(std::size_t i=0u;i<bounds.size();++i)
+            bounds[i] = physx::PxBounds3(
+                physx::PxVec3(static_cast<float>(i),0.0f,-1.0f),
+                physx::PxVec3(static_cast<float>(i)+1.0f,1.0f,1.0f));
+
+        auto run=[&](physx::PxU32 cap, bool changed, bool environment) {
+            const physx::Bp::BroadPhaseUpdateData update(
+                nullptr,0u, nullptr,0u, nullptr,0u,
+                bounds.data(), groups.data(), distances.data(),
+                environment ? env.data() : nullptr, cap,
+                filter, changed, false);
+            pre_broadphase_native(update, owners, stream);
+        };
+        auto verify=[&](const physx::PxgCudaBuffer& buffer,
+                        const void* expected, std::size_t length,
+                        const char* failure) {
+            if (!buffer.getDevicePtr() || buffer.getSize() < length)
+                throw std::runtime_error("Original source preBroadPhase buffer missing");
+            const auto destination = addresses.resolve(buffer.getDevicePtr(), length);
+            std::vector<std::uint8_t> actual(length);
+            context.download(destination.buffer, destination.offset,
+                             actual.data(), length);
+            if (std::memcmp(actual.data(), expected, length))
+                throw std::runtime_error(failure);
+        };
+        run(2u, true, true);
+        stream.wait_at_fetch();
+        if(sourceBoxesCapacity!=2u)
+            throw std::runtime_error("Original preBroadPhase capacity field not initialized");
+        verify(boundsBuf,bounds.data(),2u*sizeof(bounds[0]),
+               "Original source initial FP bounds were not uploaded");
+        verify(distancesBuf,distances.data(),2u*sizeof(distances[0]),
+               "Original source initial contact distances were not uploaded");
+        verify(groupsBuf,groups.data(),2u*sizeof(groups[0]),
+               "Original source initial group IDs were not uploaded");
+        verify(envBuf,env.data(),2u*sizeof(env[0]),
+               "Original source initial environment IDs were not uploaded");
+        const auto preservedBounds = boundsBuf.getDevicePtr();
+        const auto preservedEnv = envBuf.getDevicePtr();
+        const auto firstBounds = bounds;
+
+        // A non-dirty frame must neither upload nor reallocate FP bounds.
+        // Contact distances and groups are still updated; absent env IDs
+        // must not touch the existing GPU environment array.
+        distances[0]=0.75f;
+        groups[0]=physx::Bp::FilterGroup::eDYNAMICS_BASE;
+        env[0]=99u;
+        bounds[0]=physx::PxBounds3(
+            physx::PxVec3(50.0f),physx::PxVec3(60.0f));
+        run(2u, false, false);
+        stream.wait_at_fetch();
+        if(sourceBoxesCapacity!=2u ||
+           boundsBuf.getDevicePtr()!=preservedBounds ||
+           envBuf.getDevicePtr()!=preservedEnv)
+            throw std::runtime_error("Non-dirty source frame reallocated inactive data");
+        verify(boundsBuf,firstBounds.data(),2u*sizeof(bounds[0]),
+               "Non-dirty source preBroadPhase overwrote persistent FP bounds");
+        verify(distancesBuf,distances.data(),2u*sizeof(distances[0]),
+               "Non-dirty source frame skipped contact distances");
+        verify(groupsBuf,groups.data(),2u*sizeof(groups[0]),
+               "Non-dirty source frame skipped groups");
+        const std::array<physx::PxU32,2> priorEnv{2u,5u};
+        verify(envBuf,priorEnv.data(),sizeof(priorEnv),
+               "Absent env IDs changed persistent source GPU data");
+
+        // A larger dirty frame grows original PhysX buffers, still using
+        // the original buddy allocator and ordered native upload stream.
+        const auto uploadedBounds=bounds;
+        const auto uploadedDistances=distances;
+        const auto uploadedGroups=groups;
+        const auto uploadedEnv=env;
+        run(4u, true, true);
+        // PhysX update input arrays can be reused by CPU tasks after the
+        // nonblocking HtoD submission; native uploads own a staging snapshot.
+        bounds[1]=physx::PxBounds3(
+            physx::PxVec3(100.0f),physx::PxVec3(101.0f));
+        distances[1]=-77.0f;
+        groups[1]=physx::Bp::FilterGroup::eINVALID;
+        env[1]=123456u;
+        stream.wait_at_fetch();
+        if(sourceBoxesCapacity!=4u)
+            throw std::runtime_error("Resized source preBroadPhase lost box capacity");
+        verify(boundsBuf,uploadedBounds.data(),sizeof(bounds),
+               "Resized PhysX FP bounds upload lost input snapshot");
+        verify(distancesBuf,uploadedDistances.data(),sizeof(distances),
+               "Resized PhysX contact-distance upload lost input snapshot");
+        verify(groupsBuf,uploadedGroups.data(),sizeof(groups),
+               "Resized PhysX filter-group upload lost input snapshot");
+        verify(envBuf,uploadedEnv.data(),sizeof(env),
+               "Resized PhysX environment-ID upload lost input snapshot");
+
+        // Invalid source input must not enqueue any native GPU command or
+        // change buffer identities.
+        const auto existing=distancesBuf.getDevicePtr();
+        const physx::Bp::BroadPhaseUpdateData invalid(
+            nullptr,0u, nullptr,0u, nullptr,0u,
+            nullptr, groups.data(), distances.data(), env.data(), 4u,
+            filter, true, false);
+        bool rejected=false;
+        try {pre_broadphase_native(invalid, owners, stream);}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected || sourceBoxesCapacity!=4u ||
+           distancesBuf.getDevicePtr()!=existing ||
+           !stream.commands().empty())
+            throw std::runtime_error("Invalid PhysX source upload mutated native state");
+    }
+    if(aborted || roots.live_roots() || addresses.live_allocations())
+        throw std::runtime_error("Source preBroadPhase GPU heap roots leaked");
+}
+
 void exercise_source_gpu_heap_manager(Context& context) {
     using fyzz::physx_gpu::SourcePhysxHeapRoots;
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
@@ -1116,6 +1269,7 @@ int main() {
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
         exercise_original_native_physx_cuda_buffer(context);
+        exercise_original_prebroadphase_native(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
