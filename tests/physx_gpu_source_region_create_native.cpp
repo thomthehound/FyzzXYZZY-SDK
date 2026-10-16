@@ -6,6 +6,7 @@
 #include "physx_gpu/source_region_histograms_native.h"
 #include "physx_gpu/source_active_region_lists_native.h"
 #include "physx_gpu/source_region_newbounds_chain_native.h"
+#include "physx_gpu/source_sap_dma_native.h"
 
 #include <algorithm>
 #include <array>
@@ -436,7 +437,15 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     for(const auto& root:roots)
         uploads.push_back({root.buffer,0u,root.input.data(),root.input.size()*4u});
     ctx.submit_upload_batch(uploads);
-    if(!operations.empty())ctx.wait_submission(ctx.submit_batch(operations));
+    if(connected){
+        // The original gpuDMAUp descriptor upload shares the source mStream
+        // ordering with the fourteen following PhysX broadphase operations.
+        SourceSapDmaNative stream(ctx,map);
+        stream.queue_uploads({{roots[descriptor].address,&desc,sizeof(desc)}});
+        stream.commands()=std::move(operations);
+        stream.submit();
+        stream.wait_at_fetch();
+    }else if(!operations.empty())ctx.wait_submission(ctx.submit_batch(operations));
     std::vector<std::uint32_t> actual;
     for(const auto& root:roots) {
         actual.resize(root.input.size());
@@ -566,7 +575,13 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         }
         }
         ctx.submit_upload_buffer(backing,0u,initial.data(),initial.size()*4u);
-        ctx.wait_submission(ctx.submit_batch(aliasedCommands));
+        if(connected){
+            SourceSapDmaNative stream(ctx,sharedMap);
+            stream.queue_uploads({{alias[descriptor],&shared,sizeof(shared)}});
+            stream.commands()=std::move(aliasedCommands);
+            stream.submit();
+            stream.wait_at_fetch();
+        }else ctx.wait_submission(ctx.submit_batch(aliasedCommands));
         std::vector<std::uint32_t> observed(initial.size());
         ctx.download(backing,0u,observed.data(),observed.size()*4u);
         check(observed==wanted,
