@@ -437,6 +437,19 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv")
       set_tests_properties(fyzzxyzzy_physx_source_region_create_native PROPERTIES
         SKIP_RETURN_CODE 77)
+      add_test(NAME fyzzxyzzy_physx_ten_operation_chain
+        COMMAND fyzzxyzzy_physx_source_region_create_native
+          "${FYZZXYZZY_SOURCE_D32_FILL_SPV}"
+          "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_writeout.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_wave.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_portable.spv"
+          "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.spv")
+      set_tests_properties(fyzzxyzzy_physx_ten_operation_chain PROPERTIES
+        SKIP_RETURN_CODE 77)
 
       # Source-ordered four region histogram scans; scalar totals remain
       # within their original GPU-resident PxgBroadPhaseDesc fields.
@@ -457,7 +470,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
                 "${FYZZXYZZY_SOURCE_REGION_HIST_wave_SPV}"
                 "${FYZZXYZZY_SOURCE_REGION_HIST_second_SPV}")
       add_dependencies(fyzzxyzzy_physx_source_region_create_native
-        fyzzxyzzy_physx_source_region_histograms_spv)
+        fyzzxyzzy_physx_source_region_histograms_spv
+        fyzzxyzzy_physx_source_active_writeout_shader
+        fyzzxyzzy_physx_source_active_compute_wave_shader
+        fyzzxyzzy_physx_source_active_compute_portable_shader
+        fyzzxyzzy_physx_source_active_output_shader)
       add_executable(fyzzxyzzy_physx_source_region_histograms_native
         tests/physx_gpu_source_region_histograms_native.cpp)
       target_include_directories(fyzzxyzzy_physx_source_region_histograms_native PRIVATE
@@ -1699,6 +1716,20 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_physx_source_region_create_native_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_test(NAME fyzzxyzzy_physx_ten_operation_chain_d3d12
+      COMMAND fyzzxyzzy_physx_source_region_create_native_d3d12
+        "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}"
+        "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_writeout.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_wave.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_compute_portable.dxil"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_output.dxil")
+    set_tests_properties(fyzzxyzzy_physx_ten_operation_chain_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
     foreach(variant first wave second)
       set(FYZZXYZZY_SOURCE_REGION_HIST_${variant}_DXIL
@@ -1717,7 +1748,11 @@ if(FYZZXYZZY_BUILD_D3D12)
               "${FYZZXYZZY_SOURCE_REGION_HIST_wave_DXIL}"
               "${FYZZXYZZY_SOURCE_REGION_HIST_second_DXIL}")
     add_dependencies(fyzzxyzzy_physx_source_region_create_native_d3d12
-      fyzzxyzzy_physx_source_region_histograms_dxil)
+      fyzzxyzzy_physx_source_region_histograms_dxil
+      fyzzxyzzy_physx_source_active_writeout_dxil
+      fyzzxyzzy_physx_source_active_compute_wave_dxil
+      fyzzxyzzy_physx_source_active_compute_portable_dxil
+      fyzzxyzzy_physx_source_active_output_dxil)
     add_executable(fyzzxyzzy_physx_source_region_histograms_native_d3d12
       tests/physx_gpu_source_region_histograms_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_region_histograms_native_d3d12
