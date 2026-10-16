@@ -30,14 +30,17 @@ void PxgCudaBuffer::allocate(PxU64 size, const char* filename, PxI32 line) {
     if (capacity > std::numeric_limits<std::size_t>::max())
         throw std::overflow_error("PhysX GPU buffer exceeds native address range");
 
-    // Do not discard a live raw allocation on OOM. Normal source policy
-    // remains doubling and freeing the previous raw key, without a copy.
-    void* next = mDeviceAlloc.allocate(
-        static_cast<std::size_t>(capacity), mStatGroup, filename, line);
-    if (!next) throw std::bad_alloc();
+    // The original non-copying allocate() releases the prior raw block
+    // BEFORE requesting its replacement; retaining both would increase
+    // peak GPU heap demand and change the original source allocation policy.
     if (mPtr)
         mDeviceAlloc.deallocate(reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(mPtr)));
+    mPtr = 0;
+    mSize = 0;
+    void* next = mDeviceAlloc.allocate(
+        static_cast<std::size_t>(capacity), mStatGroup, filename, line);
+    if (!next) throw std::bad_alloc();
     mPtr = static_cast<CUdeviceptr>(reinterpret_cast<std::uintptr_t>(next));
     mSize = capacity;
 }
