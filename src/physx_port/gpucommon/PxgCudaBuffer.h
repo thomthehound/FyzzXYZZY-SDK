@@ -4,8 +4,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef FYZZXYZZY_PXG_CUDA_BUFFER_H
-#define FYZZXYZZY_PXG_CUDA_BUFFER_H
+#ifndef PXG_CUDA_BUFFER_H
+#define PXG_CUDA_BUFFER_H
 
 #include "foundation/PxPreprocessor.h"
 #include "foundation/PxAssert.h"
@@ -17,6 +17,8 @@
 // This source-port definition is a virtual address resolved by the native
 // compute adapter, not a CUDA driver allocation.
 using CUdeviceptr = unsigned long long;
+static_assert(sizeof(CUdeviceptr) == sizeof(std::uintptr_t),
+              "Native PhysX source buffer requires a 64-bit host address ABI");
 #include "PxgDevicePointer.h"
 
 namespace fyzz { namespace physx_gpu { class SourceSapDmaNative; } }
