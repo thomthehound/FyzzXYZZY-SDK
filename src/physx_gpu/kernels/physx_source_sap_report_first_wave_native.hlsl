@@ -3,13 +3,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_source_sap_report_multi_root_common.hlsli"
+#ifdef __spirv__
+[[vk::binding(0, 0)]]
+#endif
 RWByteAddressBuffer counts : register(u0,space0);
+#ifdef __spirv__
+[[vk::binding(1, 0)]]
+#endif
 RWByteAddressBuffer rawFound : register(u1,space0);
+#ifdef __spirv__
+[[vk::binding(2, 0)]]
+#endif
 RWByteAddressBuffer rawLost : register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3, 0)]]
+#endif
 RWByteAddressBuffer volume : register(u3,space0);
+#ifdef __spirv__
+[[vk::binding(4, 0)]]
+#endif
 RWByteAddressBuffer block0 : register(u4,space0);
+#ifdef __spirv__
+[[vk::binding(5, 0)]]
+#endif
 RWByteAddressBuffer block1 : register(u5,space0);
+#ifdef __spirv__
+[[vk::binding(6, 0)]]
+#endif
 RWByteAddressBuffer block2 : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7, 0)]]
+#endif
 RWByteAddressBuffer block3 : register(u7,space0);
 uint2 readPair(uint stream, uint index) {
     return stream == 0u ? rawFound.Load2(params.bias1 + index * 8u)
