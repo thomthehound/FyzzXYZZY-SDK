@@ -205,6 +205,17 @@ void exercise_native_physx_heap_roots(Context& context) {
     // The original heap callback may release the OLD ROOT once its owning
     // allocations have been deferred. Submit pending GPU work first, never
     // wait; the native Context retains in-flight storage until completion.
+    CudaDeviceAddressMap unrelatedAddresses;
+    SourceSapDmaNative unrelatedStream(context,unrelatedAddresses);
+    rejected=false;
+    try {roots.release_root(oldRoot,&unrelatedStream);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected || roots.live_roots()!=3u ||
+       addresses.resolve(oldRaw,1u).offset!=256u ||
+       source.commands().size()!=2u)
+        throw std::runtime_error(
+            "Foreign scene stream retired original PhysX GPU allocation");
+
     roots.release_root(oldRoot,&source);
     rejected=false;
     try {(void)addresses.resolve(oldRaw,1u);}
