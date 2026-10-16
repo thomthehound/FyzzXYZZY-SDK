@@ -31,7 +31,7 @@ struct SourceSapFetchedCounts {
     std::uint32_t found_actors = 0;
     std::uint32_t lost_actors = 0;
     std::uint32_t pairs_needed = 0;
-    std::uint32_t overlap_checks_total_region = 0;
+    std::uint64_t overlap_checks_total_region = 0;
     std::uint32_t start_region_accum_total = 0;
     std::uint32_t region_accum_total = 0;
     bool overflow = false;
