@@ -536,7 +536,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_executable(fyzzxyzzy_physx_broadphase_completion
         tests/physx_gpu_broadphase_completion.cpp)
       target_include_directories(fyzzxyzzy_physx_broadphase_completion PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
       target_link_libraries(fyzzxyzzy_physx_broadphase_completion PRIVATE
         fyzzxyzzy_physx_gpu_stages)
       add_test(NAME fyzzxyzzy_physx_broadphase_completion
@@ -1836,7 +1837,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_definitions(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12)
     target_include_directories(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
     target_link_libraries(fyzzxyzzy_physx_broadphase_completion_d3d12 PRIVATE
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_test(NAME fyzzxyzzy_physx_broadphase_completion_d3d12
