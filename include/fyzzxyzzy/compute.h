@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <variant>
@@ -23,6 +24,15 @@ enum class Backend { Vulkan, D3D12 };
 // reject it, never silently allocate a DEFAULT heap and label it mapped.
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
 enum class MemoryPlacement { Auto, HostVisible, DeviceLocal };
+
+// Only this explicit exception permits a higher-level source allocator to
+// fall back from direct mapped storage to staging. Allocation exhaustion,
+// lost devices and other failures must propagate, not silently downgrade.
+class UnsupportedMemoryPlacement final : public std::runtime_error {
+public:
+    explicit UnsupportedMemoryPlacement(const char* reason)
+        : std::runtime_error(reason) {}
+};
 // Map intent avoids claiming every read-only PhysX report was CPU-written.
 enum class HostMapAccess { Read, Write, ReadWrite };
 
