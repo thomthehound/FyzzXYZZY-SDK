@@ -14,6 +14,7 @@
 #include "foundation/PxMutex.h"
 #include "CmVirtualAllocatorCallback.h"
 #include "PxsHeapStats.h"
+#include "PxsHeapMemoryAllocator.h"
 #include "common/PxPhysXCommonConfig.h"
 
 #if PX_DEBUG
@@ -145,8 +146,59 @@ namespace physx
 		PX_NOCOPY(PxgHeapMemoryAllocator)
 	};
 
-	// GPU allocator manager factory is CUDA-host-specific and is kept in the
-	// original upstream implementation, not duplicated into this native heap.
+    // The original PxgHeapMemoryAllocatorManager lifetime and host-view
+    // aliasing rules, with its CUDA PxgMemoryManager factory dependency
+    // replaced by three borrowed, backend-neutral source allocator callbacks.
+    // The two host callbacks MUST implement actual host-pinned / GPU-mapped
+    // guarantees before a live GPU scene uses these addresses.
+    class PxgHeapMemoryAllocatorManager final
+#if PX_SUPPORT_GPU_PHYSX
+        : public PxsHeapMemoryAllocatorManager
+#else
+        : public PxUserAllocated
+#endif
+    {
+    public:
+        PxgHeapMemoryAllocatorManager(
+            PxU32 heapCapacity,
+            Cm::VirtualAllocatorCallback& deviceRoots,
+            Cm::VirtualAllocatorCallback& hostPinnedRoots,
+            Cm::VirtualAllocatorCallback& hostMappedRoots,
+            PxgHeapMemoryAllocator::AbortCallback abort,
+            void* abortData);
+        ~PxgHeapMemoryAllocatorManager()
+#if PX_SUPPORT_GPU_PHYSX
+            override
+#endif
+        ;
+
+        PxU64 getDeviceMemorySize() const
+#if PX_SUPPORT_GPU_PHYSX
+            override
+#endif
+        ;
+        PxsHeapStats getDeviceHeapStats() const
+#if PX_SUPPORT_GPU_PHYSX
+            override
+#endif
+        ;
+        void flushDeferredDeallocs()
+#if PX_SUPPORT_GPU_PHYSX
+            override
+#endif
+        ;
+
+        PxgHeapMemoryAllocator* mDeviceMemoryAllocator = nullptr;
+#if !PX_SUPPORT_GPU_PHYSX
+        // These slots live in PxsHeapMemoryAllocatorManager when GPU PhysX
+        // is enabled, but are absent from the CPU-only source build.
+        Cm::VirtualAllocatorCallback* mPinnedHostMemoryAllocator = nullptr;
+        Cm::VirtualAllocatorCallback* mPinnedHostMappedMemoryAllocator = nullptr;
+#endif
+
+    private:
+        PX_NOCOPY(PxgHeapMemoryAllocatorManager)
+    };
 
 }
 
