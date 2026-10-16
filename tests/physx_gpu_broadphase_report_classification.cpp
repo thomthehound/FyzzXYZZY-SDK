@@ -9,6 +9,7 @@
 #include "physx_gpu/source_sap_reports_native.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_fetch_native.h"
+#include "physx_gpu/source_sap_report_multi_root.h"
 #include "physx_gpu/broadphase_completion.h"
 #include "BpVolumeData.h"
 
@@ -281,7 +282,9 @@ struct SourcePairTask final : physx::PxBaseTask {
 
 void run_original_source_report_fetch(
     Context& context, BroadphaseReportClassificationArenaStage& classifier,
-    BroadphaseCopyReportsArenaStage& copy, bool useVolumeData, bool overflow) {
+    BroadphaseCopyReportsArenaStage& copy, bool useVolumeData, bool overflow,
+    fyzz::physx_gpu::SourceSapReportNativeStage* nativeStage=nullptr,
+    bool separateRoots=false) {
     using namespace fyzz::physx_gpu;
     using Pair=physx::PxgBroadPhasePair;
     constexpr std::uint32_t kBytes=32768u,kCapacity=8u,kVolumes=32u;
@@ -294,13 +297,20 @@ void run_original_source_report_fetch(
     context.upload(root,0u,initial.data(),kBytes);
     CudaDeviceAddressMap addresses;
     std::uint32_t cursor=256u;
+    std::vector<BufferId> owned;
     const auto allocate=[&](std::size_t bytes) {
+        if(separateRoots) {
+            const auto id=context.create_buffer(std::max<std::size_t>(bytes,256u),
+                                                MemoryPlacement::DeviceLocal);
+            owned.push_back(id);
+            return addresses.register_slice(id,0u,bytes);
+        }
         cursor=(cursor+255u)&~255u;
         if(!bytes || cursor+bytes>kBytes)
             throw std::runtime_error("Original report native heap exhausted");
-        auto address=addresses.register_slice(root,cursor,bytes);
+        auto result=addresses.register_slice(root,cursor,bytes);
         cursor+=static_cast<std::uint32_t>(bytes);
-        return address;
+        return result;
     };
     const auto descriptor=allocate(sizeof(physx::PxgBroadPhaseDesc));
     const auto classifyDesc=allocate(sizeof(BroadphaseReportClassificationArenaDesc));
@@ -356,21 +366,24 @@ void run_original_source_report_fetch(
         root,kBytes,descriptor,classifyDesc,copyDesc,kVolumes,
         static_cast<std::uint32_t>(kVolumeStride),8u
     };
-    auto lowered=lower_source_sap_report_descriptors(gpu,addresses,layout);
-    if(lowered.classification.raw_pair_counts_offset!=
-       addresses.resolve(descriptor+offsetof(physx::PxgBroadPhaseDesc,
-                                             sharedFoundPairIndex),8u).offset ||
-       lowered.copy.found_map_offset!=addresses.resolve(
-           mappedFound,sizeof(Pair)*kCapacity).offset ||
-       lowered.classification.volume_stride!=(useVolumeData?kVolumeStride:0u))
-        throw std::runtime_error("Source report descriptor lost original GPU aliases");
-    auto bad=layout;
-    bad.backing_bytes=128u;
-    bool invalidRejected=false;
-    try{(void)lower_source_sap_report_descriptors(gpu,addresses,bad);}
-    catch(const std::exception&){invalidRejected=true;}
-    if(!invalidRejected)
-        throw std::runtime_error("Source report lowering accepted invalid heap extent");
+    SourceSapNativeReportDescriptors lowered{};
+    if(!nativeStage) {
+        lowered=lower_source_sap_report_descriptors(gpu,addresses,layout);
+        if(lowered.classification.raw_pair_counts_offset!=
+           addresses.resolve(descriptor+offsetof(physx::PxgBroadPhaseDesc,
+                                                 sharedFoundPairIndex),8u).offset ||
+           lowered.copy.found_map_offset!=addresses.resolve(
+               mappedFound,sizeof(Pair)*kCapacity).offset ||
+           lowered.classification.volume_stride!=(useVolumeData?kVolumeStride:0u))
+            throw std::runtime_error("Source report descriptor lost original GPU aliases");
+        auto bad=layout;
+        bad.backing_bytes=128u;
+        bool invalidRejected=false;
+        try{(void)lower_source_sap_report_descriptors(gpu,addresses,bad);}
+        catch(const std::exception&){invalidRejected=true;}
+        if(!invalidRejected)
+            throw std::runtime_error("Source report lowering accepted invalid heap extent");
+    }
 
     std::array<Pair,kCapacity> created{},removed{};
     const std::array<std::pair<std::uint32_t,std::uint32_t>,8> createdInputs{{
@@ -386,22 +399,38 @@ void run_original_source_report_fetch(
         removed[i]=Pair(removedInputs[i].first,removedInputs[i].second);
 
     SourceSapDmaNative source(context,addresses);
-    source.queue_uploads({
+    std::vector<SourceSapUpload> uploads{
         {descriptor,&gpu,sizeof(gpu)},
-        {classifyDesc,&lowered.classification,sizeof(lowered.classification)},
-        {copyDesc,&lowered.copy,sizeof(lowered.copy)},
         {rawFound,created.data(),sizeof(created)},
         {rawLost,removed.data(),sizeof(removed)},
         {volumesAddress,volumes.data(),sizeof(volumes)}
-    });
+    };
+    if(!nativeStage) {
+        uploads.push_back({classifyDesc,&lowered.classification,sizeof(lowered.classification)});
+        uploads.push_back({copyDesc,&lowered.copy,sizeof(lowered.copy)});
+    }
+    source.queue_uploads(uploads);
     // Exact original BP_ACCUMULATE_REPORT_STAGE_1, STAGE_2,
     // BP_COPY_REPORTS launches, and no host synchronization between them.
-    classifier.append(source.commands(),root,kBytes,
-                      static_cast<std::uint32_t>(addresses.resolve(
-                          classifyDesc,sizeof(lowered.classification)).offset));
-    copy.append(source.commands(),root,kBytes,
-                static_cast<std::uint32_t>(addresses.resolve(
-                    copyDesc,sizeof(lowered.copy)).offset));
+    if(nativeStage) {
+        const SourceSapReportNativeLayout nativeLayout{
+            descriptor,kVolumes,static_cast<std::uint32_t>(kVolumeStride),8u};
+        auto malformed=gpu;
+        malformed.lostPairReportMap=reinterpret_cast<Pair*>(0x100u);
+        bool rejected=false;
+        try{nativeStage->append(source.commands(),malformed,addresses,nativeLayout);}
+        catch(const std::exception&){rejected=true;}
+        if(!rejected || !source.commands().empty())
+            throw std::runtime_error("Invalid original report GPU pointer partially appended stages");
+        nativeStage->append(source.commands(),gpu,addresses,nativeLayout);
+    } else {
+        classifier.append(source.commands(),root,kBytes,
+                          static_cast<std::uint32_t>(addresses.resolve(
+                              classifyDesc,sizeof(lowered.classification)).offset));
+        copy.append(source.commands(),root,kBytes,
+                    static_cast<std::uint32_t>(addresses.resolve(
+                        copyDesc,sizeof(lowered.copy)).offset));
+    }
     if(source.commands().size()!=3u)
         throw std::runtime_error("Source GPU reports did not append exactly three kernels");
     BroadPhaseCompletionGate gate(context);
@@ -451,6 +480,7 @@ void run_original_source_report_fetch(
         if(hostLost[i].mVolA!=expectedLost[i].mVolA ||
            hostLost[i].mVolB!=expectedLost[i].mVolB)
             throw std::runtime_error("Source lost-actor reports have wrong stable ordering");
+    for(const auto id:owned)context.destroy_buffer(id);
     context.destroy_buffer(root);
 }
 
@@ -458,8 +488,8 @@ void run_original_source_report_fetch(
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 6)
-            throw std::invalid_argument("Expected report stage1, stage2, copy, wave stage1, wave stage2");
+        if (argc != 11)
+            throw std::invalid_argument("Expected legacy five and native five PhysX report shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -484,11 +514,16 @@ int main(int argc, char** argv) {
             context, shader(argv[1]), shader(argv[2]),
             shader(argv[4]), shader(argv[5]), true);
         BroadphaseCopyReportsArenaStage copy(context, shader(argv[3]));
+        SourceSapReportNativeStage native(context,shader(argv[6]),shader(argv[7]),
+            shader(argv[8]),shader(argv[9]),shader(argv[10]));
+        SourceSapReportNativeStage nativePortable(context,shader(argv[6]),shader(argv[7]),
+            shader(argv[8]),shader(argv[9]),shader(argv[10]),true);
         const auto& caps = context.device_info();
         const bool capable = caps.supports_wave_arithmetic &&
             caps.subgroup_size >= 4u && 256u % caps.subgroup_size == 0u;
         if (classify.using_wave_reports() != capable ||
-            portable.using_wave_reports())
+            portable.using_wave_reports() ||
+            native.using_wave_reports()!=capable || nativePortable.using_wave_reports())
             throw std::runtime_error("Report classification skipped native-wave capability selection");
 
         // Compare entire original 2+1 kernel report stream against the
@@ -508,6 +543,13 @@ int main(int argc, char** argv) {
             run_original_source_report_fetch(context,*stage,copy,true,false);
             run_original_source_report_fetch(context,*stage,copy,true,true);
             run_original_source_report_fetch(context,*stage,copy,false,false);
+        }
+        for(auto* stage:{&native,&nativePortable}) {
+            for(const bool split:{false,true}) {
+                run_original_source_report_fetch(context,classify,copy,true,false,stage,split);
+                run_original_source_report_fetch(context,classify,copy,true,true,stage,split);
+                run_original_source_report_fetch(context,classify,copy,false,false,stage,split);
+            }
         }
         std::cout << "PhysX native-wave/fallback report classification + publication PASS\\n";
         return 0;
