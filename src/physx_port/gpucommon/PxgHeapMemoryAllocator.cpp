@@ -292,7 +292,6 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 	PxMutex::ScopedLock myLock(mMutex);
 
 	PX_ASSERT(group >= 0 && group < PxsHeapStats::eHEAPSTATS_COUNT);
-	mHeapStats.stats[group] += byteSize;
 
 	if ((byteSize * EXCEPTIONAL_ALLOC_FACTOR) > mAllocationSize)
 	{
@@ -321,7 +320,6 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 			//The address itself must not be freed here: it may well still belong to that first owner.
 			mExceptionalAllocs.popBack();
 			mTotalMem -= byteSize;
-			mHeapStats.stats[group] -= byteSize;
 			return NULL;
 		}
 
@@ -329,6 +327,7 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 		mMemTracker.registerMemory(reinterpret_cast<void*>(memorys), true, byteSize, file, line);
 #endif
 
+		mHeapStats.stats[group] += byteSize;
 		return memorys;
 	}
 
@@ -402,7 +401,6 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 
 			//PT: this one slot has no free-list header left and is not worth stitching back, so it stays out of
 			//circulation. Leaking it is a far better outcome than handing the address to a second owner.
-			mHeapStats.stats[group] -= byteSize;
 			return NULL;
 		}
 
@@ -410,6 +408,7 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 		mMemTracker.registerMemory(reinterpret_cast<void*>(freeAddress), true, byteSize, file, line);
 #endif
 
+		mHeapStats.stats[group] += byteSize;
 		return freeAddress;
 	}
 	else
@@ -434,7 +433,6 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 
 			//PT: as above, the slot stays out of circulation rather than being handed to a second owner. Nothing
 			//was carved up on this path, so that single slot is all it abandons.
-			mHeapStats.stats[group] -= byteSize;
 			return NULL;
 		}
 
@@ -442,6 +440,7 @@ void* PxgHeapMemoryAllocator::allocate(const size_t byteSize, const int group, c
 		mMemTracker.registerMemory(reinterpret_cast<void*>(address), true, byteSize, file, line);
 #endif
 
+		mHeapStats.stats[group] += byteSize;
 		return address;
 	}
 }
