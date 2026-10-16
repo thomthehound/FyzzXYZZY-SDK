@@ -42,20 +42,42 @@ CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_allocation(
 CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_slice(
     compute::BufferId buffer, std::size_t backing_offset,
     std::size_t allocation_bytes) {
+    return register_slice_impl(buffer, backing_offset, allocation_bytes, 0u);
+}
+
+CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_source_slice(
+    compute::BufferId buffer, std::size_t backing_offset,
+    std::size_t allocation_bytes, std::uint32_t raw_low_7_bits) {
+    return register_slice_impl(
+        buffer, backing_offset, allocation_bytes, raw_low_7_bits);
+}
+
+CudaDeviceAddressMap::Address CudaDeviceAddressMap::register_slice_impl(
+    compute::BufferId buffer, std::size_t backing_offset,
+    std::size_t allocation_bytes, std::uint32_t raw_low_7_bits) {
     if (!buffer || !allocation_bytes || backing_offset % 4u ||
+        raw_low_7_bits >= 128u ||
         backing_offset > std::numeric_limits<std::size_t>::max() - allocation_bytes ||
         by_buffer_.find(buffer) != by_buffer_.end())
         throw std::invalid_argument(
-            "Invalid PhysX GPU arena slice or conflicting dedicated owner");
+            "Invalid PhysX GPU arena slice/raw pointer or conflicting dedicated owner");
     constexpr Address max = std::numeric_limits<Address>::max();
-    if (static_cast<Address>(allocation_bytes) > max - (kAlignment - 1u))
-        throw std::overflow_error("PhysX GPU allocation slice size overflow");
+    // The physical root (whose ownership remains with PhysX) and the
+    // virtual CUDA address have different identities. Only the RAW
+    // allocation's low alignment bits are source-semantic: PxgCudaBuffer
+    // rounds those UP to 128 bytes when exposing getDevicePtr().
+    // Keep each raw address in a disjoint 256-byte reservation to avoid
+    // colliding with any successor even after alignment padding.
+    const auto residue = static_cast<Address>(raw_low_7_bits);
     const auto bytes = static_cast<Address>(allocation_bytes);
-    const auto span = (bytes + (kAlignment - 1u)) & ~(kAlignment - 1u);
+    if (bytes > max - residue - (kAlignment - 1u))
+        throw std::overflow_error("PhysX GPU source slice size overflow");
+    const Address span = (bytes + residue + (kAlignment - 1u)) &
+                         ~(kAlignment - 1u);
     if (span > max - next_address_)
-        throw std::overflow_error("PhysX GPU slice virtual address exhausted");
+        throw std::overflow_error("PhysX GPU source slice virtual address exhausted");
 
-    const Address base = next_address_;
+    const Address base = next_address_ + residue;
     allocations_.emplace(base, Allocation{buffer, allocation_bytes,
                                           backing_offset, false});
     try {

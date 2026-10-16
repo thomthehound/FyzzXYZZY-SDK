@@ -1095,7 +1095,12 @@ struct Context::Impl {
                 const Buffer& destination = get(copy->destination);
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(destination.bytes, copy->destination_offset, copy->bytes);
-                if (copy->bytes == 0 || copy->source == copy->destination ||
+                // Vulkan permits disjoint copies within one VkBuffer.
+                // Overlapping source/destination byte ranges are invalid.
+                const bool overlap = copy->source == copy->destination &&
+                    copy->source_offset < copy->destination_offset + copy->bytes &&
+                    copy->destination_offset < copy->source_offset + copy->bytes;
+                if (copy->bytes == 0 || overlap ||
                     (copy->source_offset % 4) != 0 ||
                     (copy->destination_offset % 4) != 0 ||
                     (copy->bytes % 4) != 0) {
@@ -1246,10 +1251,21 @@ struct Context::Impl {
 
             for (const BatchCommand& operation : operations) {
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                    before_operation({
-                        {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
-                        {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                    });
+                    if (copy->source == copy->destination) {
+                        // One buffer, one combined access in the dependency
+                        // map: no duplicate VkBufferMemoryBarrier entries
+                        // over the same resource in a single barrier call.
+                        before_operation({
+                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_ACCESS_TRANSFER_READ_BIT |
+                                VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                        });
+                    } else {
+                        before_operation({
+                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
+                            {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                        });
+                    }
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
                     region.dstOffset = copy->destination_offset;
@@ -1398,9 +1414,11 @@ struct Context::Impl {
             }
             throw std::invalid_argument("Asynchronous compute copy cannot be empty");
         }
-        if (source_id == destination_id) {
-            throw std::invalid_argument("In-place GPU buffer copies are not supported yet");
-        }
+        if (source_id == destination_id &&
+            source_offset < destination_offset + bytes &&
+            destination_offset < source_offset + bytes)
+            throw std::invalid_argument(
+                "Overlapping GPU buffer copy source and destination");
         return submit_copy(source, source_offset, destination, destination_offset, bytes);
     }
 };

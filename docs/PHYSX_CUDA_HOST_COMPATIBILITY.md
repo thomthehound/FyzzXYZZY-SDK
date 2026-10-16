@@ -70,6 +70,64 @@ DMA prerequisites for PhysX's original host operations, not proof that
 translated shaders can dereference CUDA pointers or that stream events
 are implemented.
 
+## Original PxgCudaBuffer raw pointer and aligned device view
+
+Original PhysX source (`gpucommon/include/PxgCudaBuffer.h`,
+`gpucommon/src/PxgCudaBuffer.cpp`) distinguishes the heap allocator's
+**raw** `mPtr` from `getDevicePtr() = (mPtr + 127) & ~127`. Heap free
+and deferred free use the **raw** pointer; `swapBuffer` swaps raw
+pointer identities and sizes, while `assign` releases the destination's
+raw allocation and takes the source's raw identity. Most importantly,
+`allocateCopyOldDataAsync` copies the original `mSize` bytes
+**raw-to-raw** onto `mStream`, doubles capacity when necessary, and
+defers reclamation of the old allocation until a later simulation step.
+
+Previously `CudaDeviceAddressMap::register_slice` produced only
+256-byte-aligned virtual allocation bases, obscuring that distinction.
+Its existing behavior remains intact. The added source-specific
+`register_source_slice` keeps the source allocator's **raw pointer
+modulo 128** in the emulated `CUdeviceptr`, while keeping the same
+borrowed native GPU root, range bounds and exact raw-pointer unmap
+semantics. It does *not* manufacture a physical CUDA pointer or
+change source allocator ownership.
+
+The plain host unit test checks nonaligned raw addresses, rounded
+device addresses, failed free via the aligned pointer, valid/invalid
+padding reads, non-recycled virtual addresses and retained root
+ownership. Linux Vulkan and Windows D3D12/WARP GPU host-transfer
+tests additionally perform the **original raw-to-raw growth copy**
+on a shared GPU root, with distinct old/new raw residues, deferred
+free after GPU completion, `swapBuffer` pointer/size rotation and
+`assign` ownership transfer; they compare the entire backing
+buffer including canaries and reject overlapping ranges through both
+single-copy and batched APIs.
+
+**Native same-root copying:** the source allocator can allocate the
+old and new raw blocks within one GPU root. The original
+`memcpyDtoDAsync` can therefore legitimately request a disjoint
+same-resource copy. Vulkan permits this directly through
+`vkCmdCopyBuffer` with one combined read/write transfer resource
+dependency. The current legacy-barrier D3D12 path cannot put one
+resource in both `COPY_SOURCE` and `COPY_DEST` states simultaneously.
+It lowers the same source command to two queue-ordered
+`CopyBufferRegion` operations via a *device-local*, fence-owned
+temporary buffer. Neither path performs an intermediate host wait or
+CPU staging/readback. The D3D12 lowering adds an extra GPU copy and
+temporary allocation **on the growth path only**; benchmark this and
+consider capability-gated Enhanced Barriers or reuse of small scratch
+allocations when optimizing the actual allocator integration.
+
+These are source-derived **contract tests**,
+not a live `PxgCudaBuffer` backend or the production heap allocator.
+
+What remains: actually connect original `PxgHeapMemoryAllocator`
+buddy root / exceptional allocations and their deferred reuse queue;
+wire original buffer calls to nonblocking GPU copy/submission and
+mStream/event completion, preserve historical resource identity
+across scene frames, and handle failures under PhysX's task graph.
+This focused work does not add an independent frame scheduler or
+claim G2/G3 acceptance.
+
 ## Source-native D32 fills at PhysX's existing stream call sites
 
 `PxgCudaBroadPhaseSap::computeRegionHistogramKernel()` performs two

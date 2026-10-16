@@ -216,6 +216,12 @@ struct Context::Impl {
         // One-off HtoD batch staging belongs to the submission itself.
         // It is dropped on fence completion, not retained in command cache.
         ComPtr<ID3D12Resource> owned_upload;
+        // Legacy D3D12 cannot set one subresource to both COPY_SOURCE
+        // and COPY_DEST. Non-overlapping same-resource DtoD therefore
+        // uses an all-device-local scratch resource, fence-owned by this
+        // submission. Enhanced-barrier native self-copy remains an
+        // optional future performance optimization.
+        std::vector<ComPtr<ID3D12Resource>> owned_copy_scratch;
         std::uint64_t fence_value = 0;
     };
 
@@ -318,6 +324,7 @@ struct Context::Impl {
 
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
+        submission.owned_copy_scratch.clear(); // GPU-local copies completed.
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
@@ -781,7 +788,10 @@ struct Context::Impl {
                 const auto& dest = get_buffer(copy->destination);
                 validate_range(source.bytes, copy->source_offset, copy->bytes);
                 validate_range(dest.bytes, copy->destination_offset, copy->bytes);
-                if (!copy->bytes || copy->source == copy->destination ||
+                const bool overlap = copy->source == copy->destination &&
+                    copy->source_offset < copy->destination_offset + copy->bytes &&
+                    copy->destination_offset < copy->source_offset + copy->bytes;
+                if (!copy->bytes || overlap ||
                     copy->source_offset % 4 || copy->destination_offset % 4 ||
                     copy->bytes % 4)
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
@@ -875,11 +885,36 @@ struct Context::Impl {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 auto& src = get_buffer(copy->source);
                 auto& dst = get_buffer(copy->destination);
-                require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
-                submission.commands->CopyBufferRegion(dst.resource.Get(), copy->destination_offset,
-                                                       src.resource.Get(), copy->source_offset,
-                                                       copy->bytes);
+                if (copy->source == copy->destination) {
+                    // Under legacy resource-state barriers a buffer cannot
+                    // have COPY_SOURCE and COPY_DEST simultaneously.
+                    // Stage through a device-LOCAL scratch copy, never a
+                    // host upload/readback or a new queue submission.
+                    // Source and destination ranges were checked disjoint.
+                    auto scratch = allocate_resource(device.Get(), copy->bytes,
+                        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
+                        D3D12_RESOURCE_STATE_COPY_DEST);
+                    // Hold GPU scratch through the submission fence before
+                    // executing either copy, including exceptions during
+                    // command recording.
+                    submission.owned_copy_scratch.push_back(scratch);
+                    require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    submission.commands->CopyBufferRegion(scratch.Get(), 0u,
+                        src.resource.Get(), copy->source_offset, copy->bytes);
+                    transition(submission.commands.Get(), scratch.Get(),
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
+                    submission.commands->CopyBufferRegion(dst.resource.Get(),
+                        copy->destination_offset, scratch.Get(), 0u,
+                        copy->bytes);
+                } else {
+                    require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
+                    submission.commands->CopyBufferRegion(dst.resource.Get(),
+                        copy->destination_offset, src.resource.Get(),
+                        copy->source_offset, copy->bytes);
+                }
                 resource_access[copy->destination].pending_write = true;
                 continue;
             }
