@@ -4,7 +4,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
-#include "physx_gpu/source_staged_host_report_roots.h"
+#include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include <PxPhysicsAPI.h>
 
@@ -702,17 +702,20 @@ void exercise_source_gpu_heap_manager(Context& context) {
 }
 
 
-void exercise_source_staged_mapped_pair_reports(Context& context) {
+void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
     using fyzz::physx_gpu::SourcePhysxHeapRoots;
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
-    using fyzz::physx_gpu::SourceStagedHostReportRoots;
+    using fyzz::physx_gpu::SourcePhysxMappedReportRoots;
     using fyzz::physx_gpu::SourceSapDmaNative;
 
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative source(context, addresses);
     SourcePhysxHeapRoots deviceRoots(context, addresses);
     SourcePhysxDeviceRootCallback device(deviceRoots, &source);
-    SourceStagedHostReportRoots mapped(context, addresses, source);
+    SourcePhysxMappedReportRoots mapped(
+        context, addresses, source,
+        force_staged ? SourcePhysxMappedReportRoots::Mode::ForceStaged
+                     : SourcePhysxMappedReportRoots::Mode::PreferDirect);
     bool aborted = false;
     const auto abort=[](void* user) noexcept {
         *static_cast<bool*>(user)=true;
@@ -743,9 +746,21 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         void* lost=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
                                       __FILE__,__LINE__);
         if(!found||!lost||mapped.live_roots()!=1u)
-            throw std::runtime_error("Original PhysX host report heap failed native staging");
-        std::memset(found,0,bytes);
-        std::memset(lost,0,bytes);
+            throw std::runtime_error("Original PhysX host report heap did not allocate root");
+        const bool direct=mapped.is_direct(found,bytes);
+        if(direct != mapped.is_direct(lost,bytes) ||
+           direct != (!force_staged &&
+                      context.device_info().supports_gpu_writable_host_visible))
+            throw std::runtime_error("Source mapped reports chose the wrong native memory path");
+        if((reinterpret_cast<std::uintptr_t>(found)&255u)!=0u ||
+           (reinterpret_cast<std::uintptr_t>(lost)&255u)!=0u)
+            throw std::runtime_error("Source mapped report host roots lost buddy alignment");
+        if(!direct) {
+            // Only staged CPU memory may be inspected BEFORE the GPU fence.
+            // Direct zero-copy is GPU-written and may not be read early.
+            std::memset(found,0,bytes);
+            std::memset(lost,0,bytes);
+        }
         const auto foundGPU=mapped.device_address(found,bytes);
         const auto lostGPU=mapped.device_address(lost,bytes);
         foundVirtual=foundGPU;
@@ -757,8 +772,9 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         auto foundView=addresses.resolve(foundGPU,bytes);
         auto lostView=addresses.resolve(lostGPU,bytes);
         if(foundView.buffer!=lostView.buffer ||
-           foundView.offset==lostView.offset)
-            throw std::runtime_error("PhysX mapped host report slices lost shared native heap root");
+           foundView.offset==lostView.offset ||
+           context.buffer_is_host_visible(foundView.buffer)!=direct)
+            throw std::runtime_error("PhysX mapped host report native root mapping or placement mismatch");
         auto rawCreated=deviceRoots.allocate_root(bytes);
         auto rawLost=deviceRoots.allocate_root(bytes);
         source.queue_uploads({
@@ -769,12 +785,12 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         source.queue_device_copy(lostGPU,rawLost,bytes);
         source.submit();
 
-        // CPU memory is NOT directly coherent on our staged path and MUST
-        // not be interpreted as an up-to-date CUDA-mapped report until
-        // source fetch. This is intentionally observable and tested.
-        if(static_cast<const std::uint8_t*>(found)[0]!=0u ||
-           static_cast<const std::uint8_t*>(lost)[0]!=0u)
+        if(!direct &&
+           (static_cast<const std::uint8_t*>(found)[0]!=0u ||
+            static_cast<const std::uint8_t*>(lost)[0]!=0u))
             throw std::runtime_error("GPU report staged copy reached CPU before fetch");
+        // No CPU read is permitted in the direct path until the original
+        // source completion fence is reaped by publish_at_fetch().
         mapped.publish_at_fetch(found,bytes);
         mapped.publish_at_fetch(lost,bytes);
         if(std::memcmp(found,created.data(),bytes)!=0 ||
@@ -973,7 +989,8 @@ int main() {
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
         exercise_source_gpu_heap_manager(context);
-        exercise_source_staged_mapped_pair_reports(context);
+        exercise_source_mapped_pair_reports(context,true);
+        exercise_source_mapped_pair_reports(context,false);
         exercise_true_native_host_visible(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
