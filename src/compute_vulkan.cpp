@@ -553,7 +553,7 @@ struct Context::Impl {
                 }
             }
             if (type_index == properties.memoryTypeCount) {
-                throw std::runtime_error("No compatible Vulkan memory type for buffer placement");
+                throw UnsupportedMemoryPlacement("No compatible Vulkan memory type for GPU buffer placement");
             }
 
             VkMemoryAllocateInfo allocation{};
