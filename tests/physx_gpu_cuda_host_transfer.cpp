@@ -582,6 +582,114 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
         throw std::runtime_error("Original PhysX heap root lifetime or abort signaling changed");
 }
 
+void exercise_source_gpu_heap_manager(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+
+    struct HostRoots final : physx::Cm::VirtualAllocatorCallback {
+        physx::PxDefaultAllocator backing;
+        std::size_t allocated=0,freed=0;
+        bool fail=false;
+        void* allocate(std::size_t bytes,int,const char* file,int line) override {
+            if(fail) throw std::bad_alloc();
+            void* p=backing.allocate(bytes,"SourcePinnedHostFixture",file,line);
+            if(p) ++allocated;
+            return p;
+        }
+        void deallocate(void* p) override {
+            if(!p) return;
+            ++freed;
+            backing.deallocate(p);
+        }
+    };
+
+    CudaDeviceAddressMap addresses;
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxDeviceRootCallback native(roots,&stream);
+    HostRoots plainHost,mappedHost;
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+
+    // Original non-debug constructor exposes TWO views of the SAME mapped
+    // pinned heap; the plain-host callback must never be selected.
+    {
+        physx::PxgHeapMemoryAllocatorManager manager(
+            2048u,native,plainHost,mappedHost,abort,&aborted);
+        if(manager.mPinnedHostMemoryAllocator!=
+               manager.mPinnedHostMappedMemoryAllocator ||
+           plainHost.allocated!=0u || mappedHost.allocated!=1u ||
+           roots.live_roots()!=1u || manager.getDeviceMemorySize()!=2048u)
+            throw std::runtime_error("Source normal GPU heap manager changed mapped-host aliasing");
+        auto* host=manager.mPinnedHostMappedMemoryAllocator;
+        void* hostBlock=host->allocate(256u,0,__FILE__,__LINE__);
+        if(!hostBlock || plainHost.allocated!=0u || mappedHost.allocated!=1u)
+            throw std::runtime_error("Source heap manager routed normal pinned memory incorrectly");
+        host->deallocate(hostBlock);
+        auto* device=manager.mDeviceMemoryAllocator;
+        void* b=device->allocate(512u,physx::PxsHeapStats::eBROADPHASE,
+                                 __FILE__,__LINE__);
+        if(!b || manager.getDeviceHeapStats().stats[
+                     physx::PxsHeapStats::eBROADPHASE]!=512u)
+            throw std::runtime_error("Original GPU manager discarded device heap accounting");
+        device->deallocateDeferred(b);
+        if(manager.getDeviceHeapStats().stats[
+               physx::PxsHeapStats::eBROADPHASE]!=512u)
+            throw std::runtime_error("GPU heap manager freed a deferred block early");
+        manager.flushDeferredDeallocs();
+        if(manager.getDeviceHeapStats().stats[
+               physx::PxsHeapStats::eBROADPHASE]!=0u)
+            throw std::runtime_error("GPU manager did not flush original deferred free");
+    }
+    if(roots.live_roots()!=0u || addresses.live_allocations()!=0u ||
+       mappedHost.allocated!=mappedHost.freed || plainHost.allocated!=0u)
+        throw std::runtime_error("Normal PhysX heap manager leaked or double-freed roots");
+
+    // Source heapCapacity==0 debug policy maintains separate plain and
+    // GPU-mapped host heap identities, and allocates exceptional roots.
+    {
+        physx::PxgHeapMemoryAllocatorManager manager(
+            0u,native,plainHost,mappedHost,abort,&aborted);
+        if(manager.mPinnedHostMemoryAllocator==
+               manager.mPinnedHostMappedMemoryAllocator ||
+           manager.getDeviceMemorySize()!=0u)
+            throw std::runtime_error("Original debug PhysX heap host identity changed");
+        void* plain=manager.mPinnedHostMemoryAllocator->
+            allocate(64u,0,__FILE__,__LINE__);
+        void* mapped=manager.mPinnedHostMappedMemoryAllocator->
+            allocate(64u,0,__FILE__,__LINE__);
+        void* device=manager.mDeviceMemoryAllocator->
+            allocate(256u,physx::PxsHeapStats::eSOLVER,__FILE__,__LINE__);
+        if(!plain || !mapped || !device ||
+           plainHost.allocated!=1u || mappedHost.allocated!=2u ||
+           manager.getDeviceMemorySize()!=256u ||
+           roots.live_roots()!=1u)
+            throw std::runtime_error("Debug PhysX heap manager did not allocate independent roots");
+    }
+    if(roots.live_roots()!=0u || addresses.live_allocations()!=0u ||
+       plainHost.allocated!=plainHost.freed ||
+       mappedHost.allocated!=mappedHost.freed || aborted)
+        throw std::runtime_error("Debug PhysX heap manager failed destruction ownership");
+
+    // If one of the original host pinned allocators fails during source
+    // manager construction, the device root already allocated must be
+    // cleaned up without stealing the callback's ownership.
+    mappedHost.fail=true;
+    bool failed=false;
+    try {
+        physx::PxgHeapMemoryAllocatorManager impossible(
+            2048u,native,plainHost,mappedHost,abort,&aborted);
+    } catch(const std::bad_alloc&) {failed=true;}
+    mappedHost.fail=false;
+    if(!failed || roots.live_roots()!=0u ||
+       addresses.live_allocations()!=0u ||
+       mappedHost.allocated!=mappedHost.freed || aborted)
+        throw std::runtime_error("Failed PhysX GPU heap manager construction leaked roots");
+}
+
 } // namespace
 
 int main() {
@@ -651,6 +759,7 @@ int main() {
         exercise_native_heap_raii_teardown(context);
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
+        exercise_source_gpu_heap_manager(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
