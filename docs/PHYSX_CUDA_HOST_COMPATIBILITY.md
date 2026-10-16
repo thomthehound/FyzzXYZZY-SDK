@@ -1005,3 +1005,33 @@ independent physical resources and GPU-owned counters. Follow it with original
 stream/event, deferred-free and scene publication integration. The concrete
 work items and cross-backend acceptance criteria are tracked in
 [PhysX GPU host front-end: multi-resource execution](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/62).
+
+## Native original `PxgCudaBuffer` ownership (PR #89)
+
+`src/physx_port/gpucommon/PxgCudaBuffer.{h,cpp}` now owns the original
+`physx::PxgCudaBuffer`/typed-buffer/buffer-family behavior against the
+ported `PxgHeapMemoryAllocator`. Original 128-byte aligned device
+views retain the underlying raw allocator keys through growth, swap,
+assignment, and deferred deallocation. The original GPU heap remains
+the sole allocator; no second buddy allocator or per-buffer GPU owner
+has been introduced.
+
+The source `allocateCopyOldDataAsync` copy boundary is lowered
+internally to `SourceSapDmaNative`: copy the entire **old raw allocation**
+on the original ordered stream and defer its buddy block until the
+source simulation-step flush. Initial/uncopied allocation growth retains
+the source doubling policy. Native allocation failure leaves an existing
+valid buffer owned by its caller rather than losing its raw key.
+
+The existing Linux/Vulkan and Windows/D3D12 host-transfer conformance
+now constructs the actual buffer object on source GPU heap roots, then
+exercises growth, same-root ordered copies, deferred reuse, history
+swaps, assignment, and teardown. The earlier pointer/size model
+remains as a separate address-mapping and alignment oracle.
+
+**Remaining source integration:** the actual `PxgCudaBroadPhaseSap`
+constructor/update/fetch calls must adopt this buffer and the portable
+context/stream execution seam. `PxCudaContext*, CUstream` is not yet
+provided as a generic host-compatible interface; no live GPU `PxScene`
+is implied. Source allocator abort/error translation and live
+scene teardown require review at that integration boundary.
