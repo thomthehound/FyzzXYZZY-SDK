@@ -877,6 +877,18 @@ void exercise_true_native_host_visible(Context& context) {
     if(!rejected)
         throw std::runtime_error("Mapped GPU host storage destroyed while held by CPU");
     context.unmap_buffer(mapped);
+    // Also verify the reverse direction: CPU writes shared storage, then
+    // a native GPU command reads it directly (no intervening host upload).
+    auto* cpuWrite=static_cast<std::uint8_t*>(
+        context.map_buffer(mapped,HostMapAccess::Write));
+    for(std::size_t i=0;i<bytes;++i)
+        cpuWrite[i]=static_cast<std::uint8_t>((i*17u+71u)%251u);
+    context.unmap_buffer(mapped);
+    context.wait_submission(context.submit_copy_buffer(mapped,0u,device,0u,bytes));
+    context.download(device,0u,observed.data(),bytes);
+    for(std::size_t i=0;i<bytes;++i)
+        if(observed[i]!=static_cast<std::uint8_t>((i*17u+71u)%251u))
+            throw std::runtime_error("CPU-written shared GPU memory not visible to native GPU copy");
     rejected=false;
     try {context.unmap_buffer(mapped);}
     catch(const std::logic_error&){rejected=true;}
