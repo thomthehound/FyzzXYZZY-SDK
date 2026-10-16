@@ -40,6 +40,10 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint pairs = arena.Load(desc + (stream == 0u ? 8u : 12u));
     const uint hasVolumes = arena.Load(desc + 64u);
     const uint volumeTags = arena.Load(desc + 48u);
+    // Source Bp::VolumeData is an array of structs, not compact u32 tags.
+    // Zero stride retains the existing compact-tag fixture ABI.
+    const uint volumeStride = arena.Load(desc + 68u) != 0u ? arena.Load(desc + 68u) : 4u;
+    const uint aggregateOffset = arena.Load(desc + 72u);
     const uint blocksRequired = (raw + 255u) / 256u;
     const uint iterations = (blocksRequired + 31u) / 32u;
 
@@ -54,8 +58,8 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
             const uint b = arena.Load(pairs + index * 8u + 4u);
             bool singleA = true, singleB = true;
             if (hasVolumes != 0u) {
-                singleA = arena.Load(volumeTags + a * 4u) == 0xffffffffu;
-                singleB = arena.Load(volumeTags + b * 4u) == 0xffffffffu;
+                singleA = arena.Load(volumeTags + a * volumeStride + aggregateOffset) == 0xffffffffu;
+                singleB = arena.Load(volumeTags + b * volumeStride + aggregateOffset) == 0xffffffffu;
             }
             if ((!(singleA && singleB)) == aggregate) ++localCount;
         }
