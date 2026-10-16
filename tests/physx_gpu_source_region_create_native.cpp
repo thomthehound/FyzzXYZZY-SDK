@@ -5,6 +5,7 @@
 #include "physx_gpu/source_region_create_native.h"
 #include "physx_gpu/source_region_histograms_native.h"
 #include "physx_gpu/source_active_region_lists_native.h"
+#include "physx_gpu/source_region_newbounds_chain_native.h"
 
 #include <algorithm>
 #include <array>
@@ -60,6 +61,7 @@ struct Endpoint {std::uint32_t key, handle, tag;};
 void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
               const SourceRegionHistogramsNativeStage* scans,
               const SourceActiveRegionListsNativeStage* activeStage,
+              const SourceRegionNewBoundsNativeStage* connected,
               std::uint32_t boxes,std::uint32_t created,
               std::uint32_t removed=0u){
     check(created<=boxes,"Invalid source-created fixture population");
@@ -100,6 +102,13 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     const auto orderedStarts=allocate(cleared);
     const auto blockStarts=allocate(32u);
     const auto blockRegions=allocate(32u);
+    // The next four source kernels consume the same region/active lists.
+    const auto regionWork=connected?allocate(boxes*64u*2u):0u;
+    const auto handleRegions=connected?allocate(boxes*64u*2u):0u;
+    const auto blockWork=connected?allocate(32u*2u):0u;
+    const auto bounds=connected?allocate(box_capacity*6u):0u;
+    const auto groups=connected?allocate(box_capacity):0u;
+    const auto reports=connected?allocate(16u*2u):0u;
     const auto descriptor=allocate(
         static_cast<std::uint32_t>(sizeof(physx::PxgBroadPhaseDesc)/4u));
     static_assert(sizeof(physx::PxgBroadPhaseDesc)%4u==0u,
@@ -136,6 +145,22 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     desc.blockRegionAccum=reinterpret_cast<decltype(desc.blockRegionAccum)>(ptr(blockRegions));
     desc.startRegionAccumTotal=0xdeadbeefu;
     desc.regionAccumTotal=0xdeadbeefu;
+    if(connected){
+        desc.overlapChecksRegion=reinterpret_cast<decltype(desc.overlapChecksRegion)>(ptr(regionWork));
+        desc.overlapChecksHandleRegiones=reinterpret_cast<decltype(desc.overlapChecksHandleRegiones)>(ptr(handleRegions));
+        desc.blockOverlapChecksRegion=reinterpret_cast<decltype(desc.blockOverlapChecksRegion)>(ptr(blockWork));
+        desc.newIntegerBounds=reinterpret_cast<decltype(desc.newIntegerBounds)>(ptr(bounds));
+        desc.updateData_groups=reinterpret_cast<decltype(desc.updateData_groups)>(ptr(groups));
+        desc.foundPairReport=reinterpret_cast<decltype(desc.foundPairReport)>(ptr(reports));
+        desc.max_found_lost_pairs=16u;
+        for(std::uint32_t h=0u;h<boxes;++h){
+            set(groups,h,7u); // all group-equal: no found-pair reports
+            for(std::uint32_t axis=0u;axis<3u;++axis){
+                set(bounds,h*6u+axis,0u);
+                set(bounds,h*6u+axis+3u,0xffffffffu);
+            }
+        }
+    }
     std::memcpy(roots[descriptor].input.data()+roots[descriptor].offset/4u,
                 &desc,sizeof(desc));
 
@@ -262,6 +287,63 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
                 }
             }
         }
+    }
+
+    if(created && connected){
+        // Independently enumerate region work using source logical starts.
+        // Region membership is derived from the CPU oracle, not GPU output.
+        const auto expectedWord=[&](std::size_t root,std::uint32_t index){
+            return roots[root].expected[roots[root].offset/4u+index];
+        };
+        const auto store64=[&](std::size_t root,std::uint32_t word,std::uint64_t n){
+            setExpected(root,word,static_cast<std::uint32_t>(n));
+            setExpected(root,word+1u,static_cast<std::uint32_t>(n>>32u));
+        };
+        const auto totalField=offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal)/4u;
+        const auto total=expectedWord(descriptor,static_cast<std::uint32_t>(totalField));
+        const std::uint32_t loops=((total+255u)/256u+31u)/32u;
+        std::array<std::uint64_t,32> blockSums{};
+        std::uint64_t running=0u;
+        std::uint32_t seen=0u;
+        for(std::uint32_t pos=0u;pos<projections;++pos){
+            const auto tagged=get(handles,pos);
+            if(!(tagged&1u))continue;
+            const auto h=tagged>>3u;
+            const auto at=h*8u;
+            const auto x0=expectedWord(ranges,at);
+            const auto x1=expectedWord(ranges,at+4u);
+            const auto y0=expectedWord(ranges,at+1u);
+            const auto y1=expectedWord(ranges,at+5u);
+            const auto z0=expectedWord(ranges,at+2u);
+            const auto z1=expectedWord(ranges,at+6u);
+            const auto endX=get(sap[0],h*2u+1u);
+            const auto prefix=expectedWord(regions,pos);
+            std::uint32_t local=0u;
+            for(auto x=x0;x<=x1;++x)
+                for(auto y=y0;y<=y1;++y)
+                    for(auto z=z0;z<=z1;++z){
+                        const auto work=prefix+local++;
+                        check(work<boxes*64u,"PhysX source region work capacity exceeded");
+                        const auto regionOffset=(x+y*4u+z*16u)*projections;
+                        const auto table=(tagged&2u)?startHist:active;
+                        const auto first=expectedWord(table,regionOffset+pos+1u);
+                        const auto last=expectedWord(table,regionOffset+endX);
+                        check(last>=first,"Invalid independent overlap interval");
+                        const auto count=last-first;
+                        store64(regionWork,work*2u,running);
+                        setExpected(handleRegions,work*2u,h);
+                        setExpected(handleRegions,work*2u+1u,regionOffset);
+                        running+=count;
+                        if(loops)blockSums[work/(loops*256u)]+=count;
+                        ++seen;
+                    }
+        }
+        check(seen==total,"Independent region work and GPU descriptor total disagree");
+        for(std::uint32_t i=0u;i<32u;++i)
+            store64(blockWork,i*2u,blockSums[i]);
+        const auto totalOverlap=static_cast<std::uint32_t>(
+            offsetof(physx::PxgBroadPhaseDesc,overlapChecksTotalRegion)/4u);
+        store64(descriptor,totalOverlap,running);
     }
 
     const SourceRegionCreateNativeLayout layout{box_capacity,slots};
