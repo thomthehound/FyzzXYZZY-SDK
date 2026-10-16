@@ -16,8 +16,9 @@
 
 namespace fyzz::physx_gpu {
 
-// One original PhysX Cm::VirtualAllocatorCallback for GPU-WRITTEN,
-// CPU-READ mapped broadphase reports. The original GPU heap manager and
+// One original PhysX Cm::VirtualAllocatorCallback for the source
+// pinned/mapped host heap: GPU-WRITTEN/CPU-READ broadphase reports AND
+// CPU-WRITTEN/GPU-READ pinned input descriptors. The GPU heap manager and
 // PxgHeapMemoryAllocator own the host buddy blocks. This callback owns ONLY
 // lower-level host roots, native GPU resources, and GPU address aliases.
 //
