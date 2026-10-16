@@ -53,6 +53,26 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Independently enforce the SDK's C++23 standard-library contract at
+# configure time, including production builds with BUILD_TESTING=OFF.
+# Compile AND link the same probe used by the optional runtime CTest,
+# so the two validation paths cannot drift apart.
+try_compile(FYZZXYZZY_CXX23_LIBRARY_SUPPORTED
+  "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-cxx23-probe"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp23_contract.cpp"
+  CMAKE_FLAGS
+    "-DCMAKE_CXX_STANDARD:STRING=23"
+    "-DCMAKE_CXX_STANDARD_REQUIRED:BOOL=ON"
+    "-DCMAKE_CXX_EXTENSIONS:BOOL=OFF"
+  OUTPUT_VARIABLE FYZZXYZZY_CXX23_PROBE_LOG)
+if(NOT FYZZXYZZY_CXX23_LIBRARY_SUPPORTED)
+  message(FATAL_ERROR
+    "FyzzXYZZY requires a compiler AND standard library supporting C++23 "
+    "(including std::expected and if consteval). "
+    "The C++23 configuration probe failed:\n"
+    "${FYZZXYZZY_CXX23_PROBE_LOG}")
+endif()
+
 # PhysX static consumers must not import symbols from PhysX DLLs on Windows.
 # The upstream static build defines this internally but does not export it
 # through the physx_lib interface target.
