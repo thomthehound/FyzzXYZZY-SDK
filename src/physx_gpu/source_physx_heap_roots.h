@@ -67,6 +67,9 @@ public:
         const auto it = roots_.find(root);
         if (it == roots_.end())
             throw std::out_of_range("Free requires original PhysX heap root");
+        if (stream && !stream->bound_to(context_, addresses_))
+            throw std::invalid_argument(
+                "PhysX heap root retirement uses an unrelated source GPU stream");
         if (stream) stream->submit();
         // Do the potentially failing retirement BEFORE invalidating the
         // original CUDA address; no stale mapping after successful retire.
