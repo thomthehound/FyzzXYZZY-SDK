@@ -6,6 +6,11 @@
 
 #include "physx_gpu/broadphase_report_classification_arena.h"
 #include "physx_gpu/broadphase_copy_reports_arena.h"
+#include "physx_gpu/source_sap_reports_native.h"
+#include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sap_fetch_native.h"
+#include "physx_gpu/broadphase_completion.h"
+#include "BpVolumeData.h"
 
 #include <algorithm>
 #include <array>
@@ -263,6 +268,192 @@ void negative_cases(BroadphaseReportClassificationArenaStage& classifier) {
     }
 }
 
+
+struct SourcePairTask final : physx::PxBaseTask {
+    int releases = 0;
+    void run() override {}
+    const char* getName() const override { return "Original GPU broadphase pair task"; }
+    void addReference() override {}
+    void removeReference() override { ++releases; }
+    int32_t getReference() const override { return 1; }
+    void release() override {}
+};
+
+void run_original_source_report_fetch(
+    Context& context, BroadphaseReportClassificationArenaStage& classifier,
+    BroadphaseCopyReportsArenaStage& copy, bool useVolumeData, bool overflow) {
+    using namespace fyzz::physx_gpu;
+    using Pair=physx::PxgBroadPhasePair;
+    constexpr std::uint32_t kBytes=32768u,kCapacity=8u,kVolumes=32u;
+    constexpr std::uint32_t kInvalidHandle=0xffffffffu;
+    constexpr std::size_t kVolumeStride=sizeof(physx::Bp::VolumeData);
+    static_assert(sizeof(void*)==8u && kVolumeStride==16u,
+                  "Original native Bp::VolumeData layout changed; inspect mAggregate offset");
+    std::vector<std::uint32_t> initial(kBytes/4u,kCanary);
+    const auto root=context.create_buffer(kBytes,MemoryPlacement::DeviceLocal);
+    context.upload(root,0u,initial.data(),kBytes);
+    CudaDeviceAddressMap addresses;
+    std::uint32_t cursor=256u;
+    const auto allocate=[&](std::size_t bytes) {
+        cursor=(cursor+255u)&~255u;
+        if(!bytes || cursor+bytes>kBytes)
+            throw std::runtime_error("Original report native heap exhausted");
+        auto address=addresses.register_slice(root,cursor,bytes);
+        cursor+=static_cast<std::uint32_t>(bytes);
+        return address;
+    };
+    const auto descriptor=allocate(sizeof(physx::PxgBroadPhaseDesc));
+    const auto classifyDesc=allocate(sizeof(BroadphaseReportClassificationArenaDesc));
+    const auto copyDesc=allocate(sizeof(BroadphaseCopyReportsArenaDesc));
+    const auto rawFound=allocate(sizeof(Pair)*kCapacity);
+    const auto rawLost=allocate(sizeof(Pair)*kCapacity);
+    const auto aggFound=allocate(sizeof(Pair)*kCapacity);
+    const auto aggLost=allocate(sizeof(Pair)*kCapacity);
+    const auto actorFound=allocate(sizeof(Pair)*kCapacity);
+    const auto actorLost=allocate(sizeof(Pair)*kCapacity);
+    const auto mappedFound=allocate(sizeof(Pair)*kCapacity);
+    const auto mappedLost=allocate(sizeof(Pair)*kCapacity);
+    std::array<CudaDeviceAddressMap::Address,4> blocks{};
+    for(auto& b:blocks)b=allocate(32u*sizeof(std::uint32_t));
+    const auto volumesAddress=allocate(kVolumes*kVolumeStride);
+    const auto ptr=[](CudaDeviceAddressMap::Address address) {
+        return reinterpret_cast<Pair*>(static_cast<std::uintptr_t>(address));
+    };
+    physx::PxgBroadPhaseDesc gpu{};
+    gpu.max_found_lost_pairs=kCapacity;
+    gpu.max_found_lost_agg_pairs=kCapacity;
+    gpu.sharedFoundPairIndex=overflow?10u:6u;
+    gpu.sharedLostPairIndex=4u;
+    gpu.foundPairReport=ptr(rawFound);
+    gpu.lostPairReport=ptr(rawLost);
+    gpu.foundAggPairReport=ptr(aggFound);
+    gpu.lostAggPairReport=ptr(aggLost);
+    gpu.foundActorPairReport=ptr(actorFound);
+    gpu.lostActorPairReport=ptr(actorLost);
+    gpu.foundPairReportMap=ptr(mappedFound);
+    gpu.lostPairReportMap=ptr(mappedLost);
+    gpu.aggReportBlock[0]=reinterpret_cast<std::uint32_t*>(
+        static_cast<std::uintptr_t>(blocks[0]));
+    gpu.actorReportBlock[0]=reinterpret_cast<std::uint32_t*>(
+        static_cast<std::uintptr_t>(blocks[1]));
+    gpu.aggReportBlock[1]=reinterpret_cast<std::uint32_t*>(
+        static_cast<std::uintptr_t>(blocks[2]));
+    gpu.actorReportBlock[1]=reinterpret_cast<std::uint32_t*>(
+        static_cast<std::uintptr_t>(blocks[3]));
+    std::array<physx::Bp::VolumeData,kVolumes> volumes{};
+    for(auto& v:volumes)v.reset();
+    volumes[4].setAggregate(2u);
+    volumes[10].setAggregated(2u);
+    std::uint32_t volAggregate=0;
+    std::memcpy(&volAggregate,
+                reinterpret_cast<const std::uint8_t*>(volumes.data())+8u,4u);
+    if(volAggregate!=kInvalidHandle)
+        throw std::runtime_error("Source VolumeData mAggregate offset changed");
+    if(useVolumeData)
+        gpu.aabbMngr_volumeData=reinterpret_cast<physx::Bp::VolumeData*>(
+            static_cast<std::uintptr_t>(volumesAddress));
+    const SourceSapNativeReportLayout layout{
+        root,kBytes,descriptor,classifyDesc,copyDesc,kVolumes,
+        static_cast<std::uint32_t>(kVolumeStride),8u
+    };
+    auto lowered=lower_source_sap_report_descriptors(gpu,addresses,layout);
+    if(lowered.classification.raw_pair_counts_offset!=
+       addresses.resolve(descriptor+offsetof(physx::PxgBroadPhaseDesc,
+                                             sharedFoundPairIndex),8u).offset ||
+       lowered.copy.found_map_offset!=addresses.resolve(
+           mappedFound,sizeof(Pair)*kCapacity).offset ||
+       lowered.classification.volume_stride!=(useVolumeData?kVolumeStride:0u))
+        throw std::runtime_error("Source report descriptor lost original GPU aliases");
+    auto bad=layout;
+    bad.backing_bytes=128u;
+    bool invalidRejected=false;
+    try{(void)lower_source_sap_report_descriptors(gpu,addresses,bad);}
+    catch(const std::exception&){invalidRejected=true;}
+    if(!invalidRejected)
+        throw std::runtime_error("Source report lowering accepted invalid heap extent");
+
+    std::array<Pair,kCapacity> created{},removed{};
+    const std::array<std::pair<std::uint32_t,std::uint32_t>,8> createdInputs{{
+        {1u,2u},{3u,4u},{5u,6u},{7u,8u},
+        {9u,10u},{11u,12u},{13u,14u},{15u,16u}
+    }};
+    const std::array<std::pair<std::uint32_t,std::uint32_t>,4> removedInputs{{
+        {1u,3u},{2u,4u},{7u,9u},{12u,13u}
+    }};
+    for(std::size_t i=0;i<createdInputs.size();++i)
+        created[i]=Pair(createdInputs[i].first,createdInputs[i].second);
+    for(std::size_t i=0;i<removedInputs.size();++i)
+        removed[i]=Pair(removedInputs[i].first,removedInputs[i].second);
+
+    SourceSapDmaNative source(context,addresses);
+    source.queue_uploads({
+        {descriptor,&gpu,sizeof(gpu)},
+        {classifyDesc,&lowered.classification,sizeof(lowered.classification)},
+        {copyDesc,&lowered.copy,sizeof(lowered.copy)},
+        {rawFound,created.data(),sizeof(created)},
+        {rawLost,removed.data(),sizeof(removed)},
+        {volumesAddress,volumes.data(),sizeof(volumes)}
+    });
+    // Exact original BP_ACCUMULATE_REPORT_STAGE_1, STAGE_2,
+    // BP_COPY_REPORTS launches, and no host synchronization between them.
+    classifier.append(source.commands(),root,kBytes,
+                      static_cast<std::uint32_t>(addresses.resolve(
+                          classifyDesc,sizeof(lowered.classification)).offset));
+    copy.append(source.commands(),root,kBytes,
+                static_cast<std::uint32_t>(addresses.resolve(
+                    copyDesc,sizeof(lowered.copy)).offset));
+    if(source.commands().size()!=3u)
+        throw std::runtime_error("Source GPU reports did not append exactly three kernels");
+    BroadPhaseCompletionGate gate(context);
+    gate.arm_source_stream(source);
+    SapFrameBufferRoles roles{};
+    roles.box_handles={1u,2u,3u,4u,5u,6u};
+    physx::PxgBroadPhaseDesc fetched{};
+    std::array<Pair,kCapacity> hostFound{},hostLost{};
+    SourceSapFetchedCounts counts{};
+    SourcePairTask foundTask,lostTask;
+    bool published=false,continued=false;
+    gate.fetch_and_release([&]{
+        counts=fetch_source_sap_results(context,addresses,descriptor,fetched,
+            {hostFound.data(),hostFound.size()},
+            {hostLost.data(),hostLost.size()},false,roles);
+        published=true;
+    },[&] {
+        if(!published)throw std::runtime_error("Original continuation before reports");
+        continued=true;
+    },foundTask,lostTask);
+    if(!published||!continued||foundTask.releases!=1||lostTask.releases!=1||
+       roles.box_handles[0]!=4u||roles.box_handles[3]!=1u)
+        throw std::runtime_error("Original SAP GPU report publication task order changed");
+    const std::uint32_t rawRetained=overflow?8u:6u;
+    std::vector<Pair> expectedFound,expectedLost;
+    auto aggregate=[&](std::uint32_t a,std::uint32_t b) {
+        return useVolumeData && (a==4u||b==4u||a==10u||b==10u);
+    };
+    for(std::uint32_t i=0u;i<rawRetained;++i)
+        if(!aggregate(createdInputs[i].first,createdInputs[i].second))
+            expectedFound.push_back(created[i]);
+    for(std::uint32_t i=0u;i<removedInputs.size();++i)
+        if(!aggregate(removedInputs[i].first,removedInputs[i].second))
+            expectedLost.push_back(removed[i]);
+    if(counts.found_actors!=expectedFound.size() ||
+       counts.lost_actors!=expectedLost.size() ||
+       counts.pairs_needed!=(overflow?10u:6u) ||
+       counts.overflow!=overflow ||
+       fetched.sharedFoundAggPairIndex!=(useVolumeData?2u:0u) ||
+       fetched.sharedLostAggPairIndex!=(useVolumeData?1u:0u))
+        throw std::runtime_error("Original SAP source classifier reported wrong actor or aggregate counts");
+    for(std::size_t i=0;i<expectedFound.size();++i)
+        if(hostFound[i].mVolA!=expectedFound[i].mVolA ||
+           hostFound[i].mVolB!=expectedFound[i].mVolB)
+            throw std::runtime_error("Source found-actor reports have wrong stable ordering");
+    for(std::size_t i=0;i<expectedLost.size();++i)
+        if(hostLost[i].mVolA!=expectedLost[i].mVolA ||
+           hostLost[i].mVolB!=expectedLost[i].mVolB)
+            throw std::runtime_error("Source lost-actor reports have wrong stable ordering");
+    context.destroy_buffer(root);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -314,6 +505,9 @@ int main(int argc, char** argv) {
             run_case(context, *stage, copy, 129u, 257u, 300u, 4u, true);
             run_case(context, *stage, copy, 8193u, 19u, 8193u, 100u, true);
             run_case(context, *stage, copy, 16385u, 1u, 16385u, 160u, false);
+            run_original_source_report_fetch(context,*stage,copy,true,false);
+            run_original_source_report_fetch(context,*stage,copy,true,true);
+            run_original_source_report_fetch(context,*stage,copy,false,false);
         }
         std::cout << "PhysX native-wave/fallback report classification + publication PASS\\n";
         return 0;

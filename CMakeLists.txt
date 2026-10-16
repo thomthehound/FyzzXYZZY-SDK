@@ -1097,7 +1097,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_executable(fyzzxyzzy_physx_bp_report_classification
         tests/physx_gpu_broadphase_report_classification.cpp)
       target_include_directories(fyzzxyzzy_physx_bp_report_classification PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
       target_link_libraries(fyzzxyzzy_physx_bp_report_classification PRIVATE
         fyzzxyzzy_physx_gpu_stages)
       add_dependencies(fyzzxyzzy_physx_bp_report_classification
@@ -2394,7 +2396,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_definitions(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12)
     target_include_directories(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
     target_link_libraries(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
       fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_bp_report_classification_d3d12
