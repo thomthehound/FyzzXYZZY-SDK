@@ -56,6 +56,27 @@ void exercise_source_raw_buffer_growth(Context& context) {
         root,newPhysical,growing.size,16u);
     const auto src=pointers.resolve(old.raw,old.size);
     const auto dst=pointers.resolve(growing.raw,old.size);
+    // The same-resource native operation is valid only for disjoint
+    // ranges; an overlapping copy is not the source buffer-growth
+    // contract and must be rejected before any GPU work is submitted.
+    bool overlappingRejected=false;
+    try {
+        (void)context.submit_copy_buffer(
+            root, oldPhysical, root, oldPhysical+4u, 128u);
+    } catch(const std::invalid_argument&) {
+        overlappingRejected=true;
+    }
+    if(!overlappingRejected)
+        throw std::runtime_error("Overlapping source native GPU copy was accepted");
+    overlappingRejected=false;
+    try {
+        (void)context.submit_batch({
+            CopyCommand{root,oldPhysical,root,oldPhysical+4u,128u}});
+    } catch(const std::invalid_argument&) {
+        overlappingRejected=true;
+    }
+    if(!overlappingRejected)
+        throw std::runtime_error("Overlapping batched native GPU copy was accepted");
     const auto copy=context.submit_copy_buffer(
         src.buffer,src.offset,dst.buffer,dst.offset,old.size);
     // Original deferred-free list must not permit physical block reuse
