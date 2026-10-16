@@ -721,10 +721,11 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
         *static_cast<bool*>(user)=true;
     };
     constexpr std::size_t bytes=256u;
-    std::array<std::uint8_t,bytes> created{},removed{};
+    std::array<std::uint8_t,bytes> created{},removed{},hostInput{},inputObserved{};
     for(std::size_t i=0;i<bytes;++i) {
         created[i]=static_cast<std::uint8_t>((i*19u+13u)%251u);
         removed[i]=static_cast<std::uint8_t>((i*41u+7u)%251u);
+        hostInput[i]=static_cast<std::uint8_t>((i*23u+113u)%251u);
     }
     CudaDeviceAddressMap::Address foundVirtual=0u;
     {
@@ -745,18 +746,25 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
                                        __FILE__,__LINE__);
         void* lost=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
                                       __FILE__,__LINE__);
-        if(!found||!lost||mapped.live_roots()!=1u)
+        void* cpuSource=hostHeap->allocate(
+            bytes,physx::PxsHeapStats::eBROADPHASE,__FILE__,__LINE__);
+        if(!found||!lost||!cpuSource||mapped.live_roots()!=1u)
             throw std::runtime_error("Original PhysX host report heap did not allocate root");
         const bool direct=mapped.is_direct(found,bytes);
         if(direct != mapped.is_direct(lost,bytes) ||
+           direct != mapped.is_direct(cpuSource,bytes) ||
            direct != (!force_staged &&
                       context.device_info().supports_gpu_writable_host_visible))
             throw std::runtime_error("Source mapped reports chose the wrong native memory path");
         if((reinterpret_cast<std::uintptr_t>(found)&255u)!=0u ||
            (reinterpret_cast<std::uintptr_t>(lost)&255u)!=0u)
             throw std::runtime_error("Source mapped report host roots lost buddy alignment");
+        // In PhysX's normal mode, hostAlloc and hostMappedAlloc alias.
+        // The third buddy block is a CPU-written pinned source descriptor,
+        // which must remain GPU-readable even on the direct report path.
+        std::memcpy(cpuSource,hostInput.data(),bytes);
         if(!direct) {
-            // Only staged CPU memory may be inspected BEFORE the GPU fence.
+            // Only staged CPU report memory may be inspected BEFORE the GPU fence.
             // Direct zero-copy is GPU-written and may not be read early.
             std::memset(found,0,bytes);
             std::memset(lost,0,bytes);
@@ -777,12 +785,22 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
             throw std::runtime_error("PhysX mapped host report native root mapping or placement mismatch");
         auto rawCreated=deviceRoots.allocate_root(bytes);
         auto rawLost=deviceRoots.allocate_root(bytes);
+        auto rawCPUInput=deviceRoots.allocate_root(bytes);
         source.queue_uploads({
             {rawCreated,created.data(),bytes},
             {rawLost,removed.data(),bytes}
         });
         source.queue_device_copy(foundGPU,rawCreated,bytes);
         source.queue_device_copy(lostGPU,rawLost,bytes);
+        if(direct) {
+            // An actual GPU operation must read the SAME CPU-authored
+            // pinned-host source bytes without an upload/staging step.
+            source.queue_device_copy(rawCPUInput,
+                                     mapped.device_address(cpuSource,bytes),bytes);
+        } else {
+            // Original staged pinned-host DMA supplies the source bytes.
+            source.queue_uploads({{rawCPUInput,cpuSource,bytes}});
+        }
         source.submit();
 
         if(!direct &&
@@ -796,6 +814,11 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
         if(std::memcmp(found,created.data(),bytes)!=0 ||
            std::memcmp(lost,removed.data(),bytes)!=0)
             throw std::runtime_error("Source mapped actor reports not published at native fetch");
+        const auto inputView=addresses.resolve(rawCPUInput,bytes);
+        context.download(inputView.buffer,inputView.offset,
+                         inputObserved.data(),bytes);
+        if(inputObserved!=hostInput)
+            throw std::runtime_error("Original PhysX pinned hostAlloc source not GPU-readable");
 
         bool rejected=false;
         try {
@@ -815,6 +838,7 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
             throw std::runtime_error("Foreign host pointer accepted as GPU-mapped source alias");
         hostHeap->deallocateDeferred(found);
         hostHeap->deallocateDeferred(lost);
+        hostHeap->deallocateDeferred(cpuSource);
         manager.flushDeferredDeallocs(); // device heap ONLY, per source!
         // The host heap retains its own deferred frees until its own flush.
         if(mapped.live_roots()!=1u)
@@ -822,6 +846,7 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
         hostHeap->flushDeferredDeallocs();
         deviceRoots.release_root(rawCreated,&source);
         deviceRoots.release_root(rawLost,&source);
+        deviceRoots.release_root(rawCPUInput,&source);
     }
     if(mapped.live_roots()!=0u || deviceRoots.live_roots()!=0u ||
        addresses.live_allocations()!=0u || aborted)
