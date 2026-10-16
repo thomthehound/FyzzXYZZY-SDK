@@ -32,6 +32,7 @@ using fyzz::physx_gpu::BroadphaseReportClassificationArenaDesc;
 using fyzz::physx_gpu::BroadphaseReportClassificationArenaStage;
 using fyzz::physx_gpu::BroadphaseCopyReportsArenaDesc;
 using fyzz::physx_gpu::BroadphaseCopyReportsArenaStage;
+using fyzz::physx_gpu::SourceSapReportNativeStage;
 
 constexpr std::uint32_t kCanary = 0xcdcdcdcd;
 constexpr std::uint32_t kInvalid = 0xffffffffu;
