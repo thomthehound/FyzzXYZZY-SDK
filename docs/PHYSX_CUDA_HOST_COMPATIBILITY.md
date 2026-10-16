@@ -128,6 +128,45 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Connected original broadphase fetch and task publication
+
+`fetch_source_sap_results()` now optionally consumes the actual
+`SourcePhysxMappedReportRoots` callback supplied to the original PhysX
+mapped-host heap (PR #87). At `BroadPhaseCompletionGate::fetch_and_release`,
+the original source stream GPU fence has completed. The existing
+`PxgBroadPhaseDesc` is downloaded and its original aggregate counts,
+actor count clamping, overflow and abort behavior are unchanged.
+
+Before publishing either array, the fetch validates **both** original
+GPU-report pointers, host capacities, and exact CPU ↔ virtual-GPU aliases
+of the original PhysX buddy-allocated actor-pair arrays. If the aliases
+do not match, it fails *before* mutating `host_descriptor`, swapping
+the seven history buffer families, or releasing either PhysX found/lost
+task. A corrected host-array selection may be retried at the same
+completed frame without scheduling new GPU work.
+
+In the direct mapped path, the GPU has already written into the
+original PhysX array itself; **no duplicate GPU→CPU copy is issued**.
+On unsupported host-visible memory, the same original callback performs
+the staged publication after the same source fence. Caller-provided
+unmapped host destinations retain the old guarded readback path.
+The existing `BroadPhaseCompletionGate` continues to install source
+continuations and release original found/lost tasks *only after*
+successful fetch and history rotation.
+
+Cross-backend tests exercise the actual original GPU heap manager,
+source-stream native GPU report writes, the original descriptor's
+found/lost mapped pointers, correct count/overflow metadata,
+sequential buffer-history rotation, alias-rejection and task-release
+ordering. Both direct-when-supported and forced-staged variants are
+tested; GPU hardware performance measurements are deferred.
+
+**Still pending:** constructing a live `PxgCudaBroadPhaseSap` and
+`PxgAABBManager` in a GPU-enabled scene, and binding the rest of
+their original kernel update paths to these allocations and source
+task/stream dependencies. This test integrates their host fetch
+boundary; it is not yet live GPU `PxScene` simulation.
+
 ## Source GPU fences and mapped actor-pair report allocation
 
 The original `PxgCudaBroadPhaseSap` allocates
