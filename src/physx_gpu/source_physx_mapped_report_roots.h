@@ -58,17 +58,28 @@ public:
         entry.bytes = bytes;
         std::size_t backing_bytes = bytes;
         try {
-            const bool direct = mode_ == Mode::PreferDirect &&
+            bool direct = mode_ == Mode::PreferDirect &&
                 context_.device_info().supports_gpu_writable_host_visible;
+            if (direct) {
+                // The adapter's general memory-type probe can be more
+                // permissive than a particular Vulkan STORAGE_BUFFER's
+                // memoryTypeBits. Only an explicit unsupported-placement
+                // error may select staged fallback; OOM must propagate.
+                if (bytes > std::numeric_limits<std::size_t>::max() - 255u)
+                    throw std::overflow_error("Mapped PhysX host root size overflows alignment");
+                backing_bytes = bytes + 255u;
+                try {
+                    entry.device = context_.create_buffer(
+                        backing_bytes, compute::MemoryPlacement::HostVisible);
+                } catch (const compute::UnsupportedMemoryPlacement&) {
+                    direct = false;
+                    backing_bytes = bytes;
+                }
+            }
             if (direct) {
                 // CUDA host-root alignment and original PhysX buddy-block
                 // arithmetic must remain 256-byte-safe even if a native
                 // Map() pointer has weaker platform alignment guarantees.
-                if (bytes > std::numeric_limits<std::size_t>::max() - 255u)
-                    throw std::overflow_error("Mapped PhysX host root size overflows alignment");
-                backing_bytes = bytes + 255u;
-                entry.device = context_.create_buffer(
-                    backing_bytes, compute::MemoryPlacement::HostVisible);
                 // In normal PhysX mode the manager aliases hostAlloc and
                 // hostMappedAlloc: original pinned descriptors can be
                 // CPU-written while actor reports are GPU-written. Both
