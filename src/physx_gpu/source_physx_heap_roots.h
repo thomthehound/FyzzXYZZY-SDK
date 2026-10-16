@@ -38,6 +38,25 @@ public:
     SourcePhysxHeapRoots(const SourcePhysxHeapRoots&) = delete;
     SourcePhysxHeapRoots& operator=(const SourcePhysxHeapRoots&) = delete;
 
+    // Scene/allocator teardown should call close() while it still owns the
+    // original stream. The fallback destructor also frees roots if setup or
+    // the original PhysX teardown path exits exceptionally. References to
+    // Context and CudaDeviceAddressMap MUST outlive this owner.
+    ~SourcePhysxHeapRoots() noexcept { cleanup_noexcept(); }
+
+    // Explicit normal shutdown. Submit any remaining ORIGINAL source stream
+    // commands first, without waiting, then retire the native heap roots.
+    // On failure, unretired roots remain owned by this object so teardown can
+    // retry; the noexcept destructor remains the final safety net.
+    void close(SourceSapDmaNative* stream = nullptr) {
+        if (stream && !stream->bound_to(context_, addresses_))
+            throw std::invalid_argument(
+                "PhysX heap shutdown uses an unrelated source GPU stream");
+        if (stream) stream->submit();
+        while (!roots_.empty())
+            release_root(roots_.begin()->first);
+    }
+
     // One PhysX heap page or exceptional root, not one PxgCudaBuffer block.
     // Same GPU-local allocation lifecycle as the original device allocator,
     // but returns a stable CUDA-style virtual root, never a native BufferId.
@@ -81,6 +100,30 @@ public:
     std::size_t live_roots() const noexcept { return roots_.size(); }
 
 private:
+    // Never throw from C++ stack unwinding. Retire every owned root behind
+    // already-submitted GPU work, then invalidate its virtual address. This
+    // path intentionally does not guess or submit another object's pending
+    // stream commands: only explicit close(stream) knows that stream.
+    void cleanup_noexcept() noexcept {
+        while (!roots_.empty()) {
+            const auto it = roots_.begin();
+            const auto root = it->first;
+            const auto buffer = it->second;
+            try {
+                context_.retire_buffer(buffer);
+            } catch (...) {
+                // Rare host-side retirement failure (e.g. allocation of
+                // retirement bookkeeping): fall back to blocking destroy.
+                // Normal teardown uses nonblocking native retirement.
+                try { context_.destroy_buffer(buffer); }
+                catch (...) { /* Unrecoverable context failure during unwind. */ }
+            }
+            try { (void)addresses_.unregister_allocation(root); }
+            catch (...) { /* Mapping may already have been invalidated. */ }
+            roots_.erase(it);
+        }
+    }
+
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
     std::map<Address, compute::BufferId> roots_;
