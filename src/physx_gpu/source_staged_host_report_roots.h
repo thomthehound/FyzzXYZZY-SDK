@@ -136,8 +136,23 @@ private:
         try { source_.submit(); } catch (...) {}
         while (!roots_.empty()) {
             const auto it = roots_.begin();
-            try { context_.retire_buffer(it->second.device); } catch (...) {}
-            try { addresses_.unregister_allocation(it->second.virtual_root); } catch (...) {}
+            const auto device = it->second.device;
+            // Usually nonblocking: the Context owns the backing resource
+            // until its last submitted fence completes. If retirement
+            // bookkeeping fails during exception unwinding, destroy the
+            // native buffer explicitly rather than dropping its last ID.
+            try {
+                context_.retire_buffer(device);
+            } catch (...) {
+                try { context_.destroy_buffer(device); }
+                catch (...) {
+                    // Context failure is unrecoverable during a noexcept
+                    // destructor. Normal deallocate() remains retryable:
+                    // it does not erase ownership on retirement failure.
+                }
+            }
+            try { addresses_.unregister_allocation(it->second.virtual_root); }
+            catch (...) { /* May already have been invalidated. */ }
             ::operator delete(it->second.host, std::align_val_t{256});
             roots_.erase(it);
         }
