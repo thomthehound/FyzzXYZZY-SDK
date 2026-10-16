@@ -64,7 +64,7 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
 
       - name: Godot 4.7.2 headless acceptance
