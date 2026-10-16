@@ -848,7 +848,7 @@ void exercise_true_native_host_visible(Context& context) {
     const auto mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
     if(!context.buffer_is_host_visible(mapped))
         throw std::runtime_error("Explicit HostVisible allocation silently used default heap");
-    auto* first=static_cast<std::uint8_t*>(context.map_buffer(mapped));
+    auto* first=static_cast<std::uint8_t*>(context.map_buffer(mapped,HostMapAccess::Write));
     if(!first) throw std::runtime_error("Native GPU-writable mapped buffer returned null");
     std::memset(first,0,bytes);
     rejected=false;
@@ -867,7 +867,7 @@ void exercise_true_native_host_visible(Context& context) {
     // GPU completion uses existing backend fences (D3D12 OS event / Vulkan
     // vkWaitForFences); never spin on a mapped CUDA completion flag.
     context.wait_submission(fence);
-    const auto* result=static_cast<const std::uint8_t*>(context.map_buffer(mapped));
+    const auto* result=static_cast<const std::uint8_t*>(context.map_buffer(mapped,HostMapAccess::Read));
     std::memcpy(observed.data(),result,bytes);
     if(observed!=input)
         throw std::runtime_error("GPU-written zero-copy host mapped reports not visible after fence");
