@@ -3,18 +3,57 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_source_sap_report_multi_root_common.hlsli"
+#ifdef __spirv__
+[[vk::binding(0, 0)]]
+#endif
 RWByteAddressBuffer rawCounts : register(u0,space0);
+#ifdef __spirv__
+[[vk::binding(1, 0)]]
+#endif
 RWByteAddressBuffer aggregateCounts : register(u1,space0);
+#ifdef __spirv__
+[[vk::binding(2, 0)]]
+#endif
 RWByteAddressBuffer foundRaw : register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3, 0)]]
+#endif
 RWByteAddressBuffer lostRaw : register(u3,space0);
+#ifdef __spirv__
+[[vk::binding(4, 0)]]
+#endif
 RWByteAddressBuffer volume : register(u4,space0);
+#ifdef __spirv__
+[[vk::binding(5, 0)]]
+#endif
 RWByteAddressBuffer block0 : register(u5,space0);
+#ifdef __spirv__
+[[vk::binding(6, 0)]]
+#endif
 RWByteAddressBuffer block1 : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7, 0)]]
+#endif
 RWByteAddressBuffer block2 : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8, 0)]]
+#endif
 RWByteAddressBuffer block3 : register(u8,space0);
+#ifdef __spirv__
+[[vk::binding(9, 0)]]
+#endif
 RWByteAddressBuffer foundAggregate : register(u9,space0);
+#ifdef __spirv__
+[[vk::binding(10, 0)]]
+#endif
 RWByteAddressBuffer foundActor : register(u10,space0);
+#ifdef __spirv__
+[[vk::binding(11, 0)]]
+#endif
 RWByteAddressBuffer lostAggregate : register(u11,space0);
+#ifdef __spirv__
+[[vk::binding(12, 0)]]
+#endif
 RWByteAddressBuffer lostActor : register(u12,space0);
 uint2 readPair(uint stream,uint index) {
     return stream==0u ? foundRaw.Load2(params.bias2+index*8u)
