@@ -3,6 +3,7 @@
 
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
+#include "physx_gpu/source_physx_root_callback.h"
 
 #include <algorithm>
 #include <array>
@@ -336,6 +337,84 @@ void exercise_native_heap_raii_teardown(Context& context) {
     source.wait_at_fetch();
 }
 
+
+void exercise_source_virtual_device_allocator(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    CudaDeviceAddressMap addresses;
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourceSapDmaNative source(context,addresses);
+    SourcePhysxDeviceRootCallback native(roots,&source);
+    // Use the EXACT source Cm::VirtualAllocatorCallback interface, not a
+    // lookalike function table or an invented CUDA context API.
+    physx::Cm::VirtualAllocatorCallback& callback=native;
+    if(callback.allocate(0u,1,"source-heap",7)!=nullptr)
+        throw std::runtime_error("Original PhysX zero-byte root request returned a pointer");
+    void* old=callback.allocate(4096u,1,"source-heap",17);
+    void* successor=callback.allocate(8192u,2,"source-heap",19);
+    void* exceptional=callback.allocate(2048u,3,"source-heap",21);
+    const auto address=[](void* p) {
+        return static_cast<CudaDeviceAddressMap::Address>(
+            reinterpret_cast<std::uintptr_t>(p));
+    };
+    const auto oldAddress=address(old);
+    const auto newAddress=address(successor);
+    const auto exceptionalAddress=address(exceptional);
+    if(!old || !successor || !exceptional ||
+       addresses.live_allocations()!=3u || roots.live_roots()!=3u ||
+       oldAddress==newAddress || newAddress==exceptionalAddress)
+        throw std::runtime_error("Source virtual heap callback lost root allocation identity");
+    const auto oldView=addresses.resolve(oldAddress+256u,512u);
+    const auto newView=addresses.resolve(newAddress+1024u,512u);
+    const auto exceptionalView=addresses.resolve(exceptionalAddress+128u,512u);
+    if(oldView.offset!=256u || newView.offset!=1024u ||
+       exceptionalView.offset!=128u ||
+       oldView.buffer==newView.buffer || newView.buffer==exceptionalView.buffer)
+        throw std::runtime_error("Source virtual callback lost buddy/exceptional root arithmetic");
+    bool invalid=false;
+    try {
+        callback.deallocate(reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(oldAddress+256u)));
+    } catch(const std::out_of_range&) {invalid=true;}
+    if(!invalid || roots.live_roots()!=3u)
+        throw std::runtime_error("Source callback accepted an interior buddy block as a root");
+
+    std::array<std::uint8_t,512u> initial{},actual{};
+    for(std::size_t i=0u;i<initial.size();++i)
+        initial[i]=static_cast<std::uint8_t>((i*43u+29u)%251u);
+    source.queue_uploads({{oldAddress+256u,initial.data(),initial.size()}});
+    source.queue_device_copy(newAddress+1024u,
+                             oldAddress+256u,initial.size());
+    source.queue_device_copy(exceptionalAddress+128u,
+                             newAddress+1024u,initial.size());
+    // Original PxgCudaDeviceMemoryAllocatorCallback::deallocate(ptr)
+    // receives the EXACT heap root from PxgHeapMemoryAllocator.
+    // This submits queued stream commands and retires the old native
+    // allocation, without blocking the CPU at a scene setup boundary.
+    callback.deallocate(old);
+    invalid=false;
+    try {(void)addresses.resolve(oldAddress+256u,1u);}
+    catch(const std::out_of_range&) {invalid=true;}
+    if(!invalid || roots.live_roots()!=2u)
+        throw std::runtime_error("Source virtual root free retained stale GPU address");
+    source.wait_at_fetch();
+    context.download(newView.buffer,newView.offset,actual.data(),actual.size());
+    if(actual!=initial)
+        throw std::runtime_error("Source allocator callback interrupted raw growth copy");
+    context.download(exceptionalView.buffer,exceptionalView.offset,actual.data(),
+                     actual.size());
+    if(actual!=initial)
+        throw std::runtime_error("Source allocator callback corrupted exceptional root copy");
+
+    callback.deallocate(exceptional);
+    callback.deallocate(successor);
+    callback.deallocate(nullptr);
+    if(roots.live_roots()!=0u || addresses.live_allocations()!=0u)
+        throw std::runtime_error("Original PhysX virtual allocator callback leaked roots");
+    roots.close(&source);
+}
+
 } // namespace
 
 int main() {
@@ -402,6 +481,7 @@ int main() {
         exercise_source_raw_buffer_growth(context);
         exercise_native_physx_heap_roots(context);
         exercise_native_heap_raii_teardown(context);
+        exercise_source_virtual_device_allocator(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
