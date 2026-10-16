@@ -128,94 +128,73 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
-## Native fences and the zero-copy target
+## Source GPU fences and mapped actor-pair report allocation
 
-The source completion path does **not** spin on mapped flags. The existing
-`BroadPhaseCompletionGate` already uses `SourceSapDmaNative::wait_at_fetch()`
-and the compute backend's submitted GPU fence: `vkWaitForFences` on Vulkan,
-or `ID3D12Fence::SetEventOnCompletion` with an OS event wait on D3D12.
-`gpu_complete()` performs a single optional nonblocking query when called,
-not a busy-poll loop. Applications should not repeatedly query it to spin.
-The original `mEventMapped` polling must be replaced with this source
-completion mechanism when lowering the scene host graph.
+The original `PxgCudaBroadPhaseSap` allocates
+`mFoundActorPairsMapped` and `mLostActorPairsMapped` through
+`PxgAllocatorDesc::hostMappedAlloc` with pageable fallback disabled.
+CUDA `getMappedDevicePtr()` provides a device alias of the *same host
+memory* and the CPU consumes the arrays after `gpuDMABack` completes.
 
-**Zero-copy is the preferred mapped-report implementation on capable
-hardware**, especially unified-memory integrated GPUs. This PR retains a
-correctness fallback while the portable compute interface lacks persistent
-mapped GPU-writable buffers. The next native adapter should expose a
-capability-checked host-readable GPU-write target, including physical memory
-properties and explicit fence/cache visibility obligations:
+`SourcePhysxMappedReportRoots` is now a single original
+`Cm::VirtualAllocatorCallback` serving this role through the unchanged
+source `PxgHeapMemoryAllocatorManager` and original buddy allocator.
+It has two lower-level paths, selected by native capabilities and an
+explicit conformance-mode override:
 
-* Vulkan: select a host-visible memory type suitable for device writes;
-  prefer host-cached, device-local memory when exposed; handle
-  noncoherent `vkInvalidateMappedMemoryRanges` after GPU completion.
-  Host-coherent alone does not imply CPU reads are cached or fast.
-* D3D12: **PR #85** now honors explicit
-  `MemoryPlacement::HostVisible` on adapters that pass a real
-  GPU-writable/UAV CPU-mapping test using a `CUSTOM` L0 heap. For
-  GPU-written, CPU-read PhysX reports it selects the
-  `GetCustomHeapProperties(D3D12_HEAP_TYPE_READBACK)` cache policy
-  (`WRITE_BACK`), **not** a restricted abstract READBACK heap or an
-  upload-oriented WRITE_COMBINE heap. `Auto` keeps the previous D3D12
-  DEFAULT-heap behavior. Direct access uses `map_buffer` /
-  `unmap_buffer` with explicit CPU read/write intent after the source
-  GPU submission fence. Unsupported adapters reject an explicit
-  `HostVisible` request so the original staged publication can run.
-* Preserve the *same original PhysX CPU allocation*, native GPU address
-  alias, source-owned fences, and original fetch/continuation ordering.
-  Staging remains the fallback for adapters that cannot expose the needed
-  cache/mapping guarantees efficiently.
+* **Direct mapped:** Request `MemoryPlacement::HostVisible`, map the
+  GPU-writable allocation *once* with `HostMapAccess::Read`, and return
+  the suitably aligned CPU pointer to the source heap. Its original
+  buddy-block offsets resolve to the same native GPU resource and bytes.
+  The GPU writes directly into that resource. After the source stream
+  fence, `publish_at_fetch` requires **no copy, shadow report list,
+  staging allocation or readback**. The low-level allocation callback
+  unmaps and retires the native resource only when the original PhysX
+  heap releases the entire host root.
+* **Staged fallback:** If the backend lacks genuinely GPU-writable,
+  CPU-mappable memory (or conformance explicitly requests fallback),
+  retain the source-compatible aligned CPU heap root with one
+  device-local GPU root. Publish only the requested report bytes to
+  that *same original CPU allocation* after the existing source stream
+  fence. This path is not described as zero-copy.
 
-**Integration still pending:** `SourceStagedHostReportRoots` has not
-yet been switched to these native mappings. Its original host-heap CPU
-pointer ownership and the GPU alias must be joined without breaking
-the source buddy allocator. The PR #85 tests establish the low-level
-mapped resource and fence contract only; GPU/CPU cache efficiency on
-physical Radeon 680M or discrete adapters remains unmeasured.
+Native `HostVisible` resources may have stricter pointer alignment
+than the original heap needs. The callback allocates up to 255
+additional bytes, aligns the returned CPU root to 256 bytes, and maps
+that same offset into the registered native GPU address. It preserves
+the original host-root and GPU-root ownership; all original buddy
+offsets continue to resolve inside the one backing allocation.
+It distinguishes source buddy-block lifetimes from the physical root
+lifetime and invalidates the exact GPU virtual root only at original
+heap destruction. No CUDA API or second heap algorithm is exposed.
 
-The performance decision is per-capability and benchmarked for
-GPU producer -> CPU report consumer traffic: data volume, cache policy,
-bandwidth, synchronization cost and GPU access patterns matter. No
-vendor-ID blacklist or alternate scene scheduler is required.
+Linux/Vulkan and Windows/D3D12 conformance now exercise **both**
+forced staged and capability-driven direct paths through the actual
+source manager: found/lost report pairs in the same original buddy
+root, two native GPU-written output regions, correct aligned address
+aliases, GPU/CPU data agreement only after the source fence,
+source-owned deferred frees, and stale address invalidation.
+Tests deliberately **do not read direct mapped CPU memory before its
+GPU fence**; the staged path also proves there is no premature copy.
 
-## Original mapped actor-pair reports through native staged publication
+The existing `BroadPhaseCompletionGate` uses PhysX's source stream
+submission fence. Vulkan `vkWaitForFences` and D3D12
+`ID3D12Fence::SetEventOnCompletion` + an OS event wait avoid CPU
+busy-waiting. This source-port bridge does **not** reproduce
+the original `spinWait(mEventMapped)` flag poll; the remaining live
+scene call sites must instead use that completion gate. No new
+scheduler or polling loop is introduced.
 
-The original `PxgCudaBroadPhaseSap` allocates its
-`mFoundActorPairsMapped` and `mLostActorPairsMapped` arrays through
-`PxgAllocatorDesc::hostMappedAlloc` with pageable fallback **disabled**.
-Its report-copy GPU kernel writes those destination addresses, and the
-original CPU fetch reads their contents only after the source stream
-completes. On CUDA, `getMappedDevicePtr()` provides an alias into the
-same pinned, GPU-mapped host memory.
-
-`SourceStagedHostReportRoots` is an explicitly **staged native lowering**
-of that particular original fetch/publication contract. It implements the
-original `Cm::VirtualAllocatorCallback` for the source GPU heap manager's
-host-mapped root requests. Each CPU-visible root receives a matching
-device-local native buffer and a registered CUDA-style virtual GPU root.
-The source heap still splits and frees its original host blocks; their
-CPU-pointer offsets resolve to the corresponding GPU buffer offsets.
-
-Original report kernels can write those native device destinations with
-ordinary Vulkan/D3D12 UAVs. `publish_at_fetch()` waits the **existing
-source stream**, then copies only the requested GPU-written report range
-into the same original CPU array. The original manager owns the original
-heap roots, and retirement removes both the native allocation and its
-GPU pointer mapping. Linux and Windows tests now verify real source
-buddy-block host allocations, ordered GPU uploads/copies, separate found/
-lost report regions within a shared root, no premature CPU publication,
-bounded pointer translations, deferred host-heap release, and stale
-alias rejection after original manager destruction.
-
-**Important limitations:** This is not zero-copy, persistent GPU/CPU
-coherence, OS page locking, or a general CUDA-mapped host replacement.
-Direct CPU polling of a GPU-written mapped flag such as the original
-`mEventMapped` remains unsupported by this path; it must be replaced
-by the existing source completion gate or by a genuinely coherent native
-mapping where supported. This mechanism is valid for result arrays
-consumed at a synchronized fetch boundary, not arbitrary mapped-memory
-access. The existing `fetch_source_sap_results()` path remains usable
-when destinations are separately owned original PhysX host arrays.
+**Remaining integration:** assemble the real `PxgCudaBroadPhaseSap`
+and `PxgAABBManager` source call paths with this callback, connect
+the source descriptor's GPU pair aliases and original fetch/resize
+continuations, and remove the actual `mEventMapped` polling site.
+The original `fetch_source_sap_results()` path remains for
+caller-owned CPU destination arrays. Performance comparisons between
+direct and staged paths, including cache behavior on Radeon 680M
+and discrete adapters, are **deliberately deferred** until an
+integrated GPU scene exists. Direct mapping is not claimed to be
+universally faster simply because it avoids copying.
 
 ## Original PhysX GPU heap manager with native callback selection
 
