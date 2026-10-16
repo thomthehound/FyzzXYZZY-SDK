@@ -733,7 +733,11 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         if(manager.mPinnedHostMemoryAllocator !=
            manager.mPinnedHostMappedMemoryAllocator)
             throw std::runtime_error("Original PhysX host-mapped report heap alias changed");
-        auto* hostHeap=manager.mPinnedHostMappedMemoryAllocator;
+        // The manager exposes the source generic callback ABI to consumers.
+        // Deferred frees belong to its actual original buddy heap, not to
+        // Cm::VirtualAllocatorCallback itself.
+        auto* hostHeap=static_cast<physx::PxgHeapMemoryAllocator*>(
+            manager.mPinnedHostMappedMemoryAllocator);
         void* found=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
                                        __FILE__,__LINE__);
         void* lost=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
