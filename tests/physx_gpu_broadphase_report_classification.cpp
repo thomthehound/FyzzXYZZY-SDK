@@ -277,6 +277,20 @@ void negative_cases(BroadphaseReportClassificationArenaStage& classifier) {
 }
 
 
+struct PhysxSourceFoundation {
+    physx::PxDefaultAllocator allocator;
+    physx::PxDefaultErrorCallback errors;
+    physx::PxFoundation* foundation=nullptr;
+    PhysxSourceFoundation() {
+        foundation=PxCreateFoundation(PX_PHYSICS_VERSION,allocator,errors);
+        if(!foundation)
+            throw std::runtime_error("Original PhysX Foundation unavailable for GPU heap");
+    }
+    ~PhysxSourceFoundation() {if(foundation)foundation->release();}
+    PhysxSourceFoundation(const PhysxSourceFoundation&)=delete;
+    PhysxSourceFoundation& operator=(const PhysxSourceFoundation&)=delete;
+};
+
 struct SourcePairTask final : physx::PxBaseTask {
     int releases = 0;
     void run() override {}
@@ -546,6 +560,7 @@ int main(int argc, char** argv) {
     try {
         if (argc != 11)
             throw std::invalid_argument("Expected legacy five and native five PhysX report shaders");
+        PhysxSourceFoundation sourceFoundation;
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -606,6 +621,15 @@ int main(int argc, char** argv) {
                 run_original_source_report_fetch(context,classify,copy,true,true,stage,split);
                 run_original_source_report_fetch(context,classify,copy,false,false,stage,split);
             }
+            // Connected SOURCE report kernel->original PhysX host buddy
+            // heap->mapped CPU pairs->original fetch->PxBaseTask release.
+            // Run both native zero-copy-when-capable and forced staging.
+            run_original_source_report_fetch(context,classify,copy,
+                true,false,stage,true,true,false);
+            run_original_source_report_fetch(context,classify,copy,
+                true,true,stage,true,true,true);
+            run_original_source_report_fetch(context,classify,copy,
+                false,false,stage,false,true,false);
         }
         std::cout << "PhysX native-wave/fallback report classification + publication PASS\\n";
         return 0;
