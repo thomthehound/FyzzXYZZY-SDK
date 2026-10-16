@@ -179,6 +179,7 @@ struct Context::Impl {
         // Transfer-only staging may exceed maxStorageBufferRange, which
         // constrains a bound shader descriptor, not a transfer source.
         bool storage_eligible = true;
+        bool cpu_mapped = false;
     };
     struct Pipeline {
         VkDescriptorSetLayout descriptors = VK_NULL_HANDLE;
@@ -563,7 +564,9 @@ struct Context::Impl {
         if (next_buffer == std::numeric_limits<BufferId>::max()) {
             throw std::overflow_error("Compute buffer ID range exhausted");
         }
-        const Buffer buffer = make_buffer(bytes, placement, storage_eligible);
+        const auto chosen = placement == MemoryPlacement::Auto
+            ? MemoryPlacement::HostVisible : placement;
+        const Buffer buffer = make_buffer(bytes, chosen, storage_eligible);
         try {
             const BufferId id = next_buffer;
             buffers.emplace(id, buffer);
@@ -576,6 +579,8 @@ struct Context::Impl {
     }
 
     void destroy_buffer(BufferId id) {
+        if (get(id).cpu_mapped)
+            throw std::logic_error("Cannot destroy a mapped Vulkan buffer");
         wait_all();
         const auto it = buffers.find(id);
         if (it == buffers.end()) {
@@ -589,6 +594,8 @@ struct Context::Impl {
         const auto it = buffers.find(id);
         if (it == buffers.end())
             throw std::out_of_range("Unknown compute buffer ID");
+        if (it->second.cpu_mapped)
+            throw std::logic_error("Cannot retire a mapped Vulkan buffer");
         if (submissions.empty()) {
             // No tracked in-flight work. Any earlier submitted work was
             // already waited on the ordered queue.
@@ -602,6 +609,33 @@ struct Context::Impl {
             retired_buffers.push_back({last, it->second});
         }
         buffers.erase(it);
+    }
+
+    bool buffer_is_host_visible(BufferId id) const {
+        return get(id).placement == MemoryPlacement::HostVisible;
+    }
+
+    void* map_buffer(BufferId id) {
+        auto& buffer = get(id);
+        if (buffer.placement != MemoryPlacement::HostVisible)
+            throw std::invalid_argument("Vulkan buffer is not host-visible");
+        if (buffer.cpu_mapped)
+            throw std::logic_error("Vulkan buffer already CPU mapped");
+        void* pointer = nullptr;
+        // The existing HostVisible memory selection requires HOST_COHERENT.
+        // GPU->CPU visibility still REQUIRES a completed source GPU fence.
+        require(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &pointer),
+                "vkMapMemory persistent buffer");
+        buffer.cpu_mapped = true;
+        return pointer;
+    }
+
+    void unmap_buffer(BufferId id) {
+        auto& buffer = get(id);
+        if (!buffer.cpu_mapped)
+            throw std::logic_error("Vulkan buffer is not CPU mapped");
+        vkUnmapMemory(device, buffer.memory);
+        buffer.cpu_mapped = false;
     }
 
     void map_transfer(const Buffer& buffer, std::size_t offset,
@@ -1438,6 +1472,11 @@ BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
 
 void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
 void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+bool Context::buffer_is_host_visible(BufferId id) const {
+    return impl_->buffer_is_host_visible(id);
+}
+void* Context::map_buffer(BufferId id) { return impl_->map_buffer(id); }
+void Context::unmap_buffer(BufferId id) { impl_->unmap_buffer(id); }
 
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->transfer(id, offset, const_cast<void*>(data), bytes, true);
