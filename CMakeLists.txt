@@ -99,9 +99,12 @@ endif()
 # abort sink; it is NOT a second allocation algorithm or an external patch.
 add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp
-  src/physx_port/gpucommon/PxgHeapMemoryAllocatorManager.cpp)
+  src/physx_port/gpucommon/PxgHeapMemoryAllocatorManager.cpp
+  src/physx_port/gpucommon/PxgCudaBuffer.cpp)
 target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_17)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include"
