@@ -470,9 +470,14 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
         if(observed!=payload)
             throw std::runtime_error("Original PhysX buddy heap interrupted native GPU copies");
         heap.deallocateDeferred(b);
-        if(addresses.resolve(bRaw,1u).offset!=br.offset)
-            throw std::runtime_error("Source deferred deallocation released its buddy block prematurely");
+        // The source heap (not the root address mapper) owns buddy
+        // suballocation lifetimes. Assert its actual accounting here;
+        // deterministic reuse is tested separately below.
+        if(heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=640u)
+            throw std::runtime_error("Source deferred free changed live allocation stats");
         heap.flushDeferredDeallocs();
+        if(heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=256u)
+            throw std::runtime_error("Source deferred flush did not release block accounting");
         heap.deallocate(a);
         // Same source heap can reuse a released block; the root stays alive
         // until the original heap's destructor, not a per-block native free.
@@ -481,6 +486,77 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
             throw std::runtime_error("Original PhysX buddy heap lost its free-list reuse contract");
         heap.deallocate(reused);
     }
+
+    // A full two-block heap lets us prove the actual deferred FREE LIST
+    // contract independently of the root address map. Without flushing,
+    // allocating an identically-sized block must take a new heap root;
+    // after flushing, once that new root is full, the next block MUST be
+    // the original deferred address. No allocator heuristics are guessed.
+    {
+        physx::PxgHeapMemoryAllocator heap(1024u,native,abort,&aborted);
+        void* a=heap.allocate(512u,0,__FILE__,__LINE__);
+        void* b=heap.allocate(512u,0,__FILE__,__LINE__);
+        if(!a||!b||roots.live_roots()!=1u)
+            throw std::runtime_error("Source deferred free fixture did not fill one root");
+        heap.deallocateDeferred(b);
+        void* early=heap.allocate(512u,0,__FILE__,__LINE__);
+        if(!early || early==b || roots.live_roots()!=2u)
+            throw std::runtime_error("Source buddy block reused BEFORE deferred flush");
+        void* fill=heap.allocate(512u,0,__FILE__,__LINE__);
+        if(!fill || fill==b || roots.live_roots()!=2u)
+            throw std::runtime_error("Source second root not filled before deferred flush");
+        heap.flushDeferredDeallocs();
+        void* recycled=heap.allocate(512u,0,__FILE__,__LINE__);
+        if(recycled!=b || roots.live_roots()!=2u)
+            throw std::runtime_error("Source buddy block not reusable AFTER deferred flush");
+        heap.deallocate(recycled);
+        heap.deallocate(fill);
+        heap.deallocate(early);
+        heap.deallocate(a);
+        if(heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=0u)
+            throw std::runtime_error("Source deferred free fixture leaked heap statistics");
+    }
+
+    // An actual GPU root allocator can return null on device OOM or throw
+    // during allocation. Neither path may account bytes that do not exist.
+    // Inject both failures AFTER constructor/root setup, in ordinary-root
+    // and exceptional-allocation paths.
+    struct FailingRoots final : physx::Cm::VirtualAllocatorCallback {
+        physx::Cm::VirtualAllocatorCallback& native;
+        int failure = 0;
+        explicit FailingRoots(physx::Cm::VirtualAllocatorCallback& allocator)
+            : native(allocator) {}
+        void* allocate(std::size_t bytes,int group,const char* file,int line) override {
+            if(failure==1) return nullptr;
+            if(failure==2) throw std::bad_alloc();
+            return native.allocate(bytes,group,file,line);
+        }
+        void deallocate(void* address) override {native.deallocate(address);}
+    } controlled(native);
+    {
+        physx::PxgHeapMemoryAllocator heap(1024u,controlled,abort,&aborted);
+        void* a=heap.allocate(512u,0,__FILE__,__LINE__);
+        void* b=heap.allocate(512u,0,__FILE__,__LINE__);
+        if(!a||!b||heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=1024u)
+            throw std::runtime_error("Source OOM fixture has incorrect baseline allocations");
+        for(int mode:{1,2}) {
+            controlled.failure=mode;
+            for(std::size_t bytes:{512u,2048u}) {
+                bool rejected=false;
+                try {rejected=heap.allocate(bytes,0,__FILE__,__LINE__)==nullptr;}
+                catch(const std::bad_alloc&){rejected=true;}
+                if(!rejected ||
+                   heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=1024u)
+                    throw std::runtime_error("Original PhysX heap charged a failed GPU allocation");
+            }
+        }
+        controlled.failure=0;
+        heap.deallocate(b);
+        heap.deallocate(a);
+        if(heap.getHeapStats().stats[physx::PxsHeapStats::eOTHER]!=0u)
+            throw std::runtime_error("Original PhysX GPU heap OOM fixture leaked statistics");
+    }
+
     if(aborted || roots.live_roots()!=0u ||
        addresses.live_allocations()!=0u)
         throw std::runtime_error("Original PhysX heap root lifetime or abort signaling changed");
