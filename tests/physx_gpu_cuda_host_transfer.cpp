@@ -691,8 +691,9 @@ void exercise_original_prebroadphase_native(Context& context) {
             heap, physx::PxsHeapStats::eBROADPHASE);
         physx::PxgTypedCudaBuffer<physx::PxU32> envBuf(
             heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxU32 sourceBoxesCapacity=0u;
         SourceSapPreBroadPhaseBuffers owners{
-            boundsBuf, distancesBuf, groupsBuf, envBuf};
+            boundsBuf, distancesBuf, groupsBuf, envBuf, sourceBoxesCapacity};
 
         std::array<physx::PxBounds3,4u> bounds{};
         std::array<physx::PxReal,4u> distances{0.1f,0.2f,0.3f,0.4f};
@@ -729,6 +730,8 @@ void exercise_original_prebroadphase_native(Context& context) {
         };
         run(2u, true, true);
         stream.wait_at_fetch();
+        if(sourceBoxesCapacity!=2u)
+            throw std::runtime_error("Original preBroadPhase capacity field not initialized");
         verify(boundsBuf,bounds.data(),2u*sizeof(bounds[0]),
                "Original source initial FP bounds were not uploaded");
         verify(distancesBuf,distances.data(),2u*sizeof(distances[0]),
@@ -751,7 +754,8 @@ void exercise_original_prebroadphase_native(Context& context) {
             physx::PxVec3(50.0f),physx::PxVec3(60.0f));
         run(2u, false, false);
         stream.wait_at_fetch();
-        if(boundsBuf.getDevicePtr()!=preservedBounds ||
+        if(sourceBoxesCapacity!=2u ||
+           boundsBuf.getDevicePtr()!=preservedBounds ||
            envBuf.getDevicePtr()!=preservedEnv)
             throw std::runtime_error("Non-dirty source frame reallocated inactive data");
         verify(boundsBuf,firstBounds.data(),2u*sizeof(bounds[0]),
@@ -779,6 +783,8 @@ void exercise_original_prebroadphase_native(Context& context) {
         groups[1]=physx::Bp::FilterGroup::eINVALID;
         env[1]=123456u;
         stream.wait_at_fetch();
+        if(sourceBoxesCapacity!=4u)
+            throw std::runtime_error("Resized source preBroadPhase lost box capacity");
         verify(boundsBuf,uploadedBounds.data(),sizeof(bounds),
                "Resized PhysX FP bounds upload lost input snapshot");
         verify(distancesBuf,uploadedDistances.data(),sizeof(distances),
@@ -798,7 +804,8 @@ void exercise_original_prebroadphase_native(Context& context) {
         bool rejected=false;
         try {pre_broadphase_native(invalid, owners, stream);}
         catch(const std::invalid_argument&) {rejected=true;}
-        if(!rejected || distancesBuf.getDevicePtr()!=existing ||
+        if(!rejected || sourceBoxesCapacity!=4u ||
+           distancesBuf.getDevicePtr()!=existing ||
            !stream.commands().empty())
             throw std::runtime_error("Invalid PhysX source upload mutated native state");
     }
