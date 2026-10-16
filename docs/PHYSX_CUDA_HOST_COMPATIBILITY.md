@@ -128,6 +128,35 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Exact source virtual callback surface for PhysX heap roots
+
+The original `physx::Cm::VirtualAllocatorCallback` interface in
+`CmVirtualAllocatorCallback.h` defines `allocate(size_t,int,const char*,int)`
+and `deallocate(void*)`. `SourcePhysxDeviceRootCallback` now implements
+**that exact virtual interface**, translating only lower-level PhysX device
+root requests to `SourcePhysxHeapRoots`. Allocations return the opaque
+CUDA-style virtual root that the original source heap expects to split via
+root+offset arithmetic; frees must use the exact original root identity.
+An associated original `SourceSapDmaNative` stream is submitted before
+root retirement, without a CPU wait.
+
+Vulkan and D3D12 conformance invoke the callback through a real
+`physx::Cm::VirtualAllocatorCallback&`, request ordinary and exceptional
+roots, verify source buddy-style offsets, perform asynchronous GPU
+growth/copy operations, free roots while work is queued, and reject
+interior-pointer frees. The original GPU data and retirement rules—not a
+new independent heap allocator—remain authoritative.
+
+**Remaining source integration constraint:** `PxgHeapMemoryAllocator` currently
+takes the narrower `PxgCudaAllocatorCallbackBase&`, a CUDA-context-aware
+subclass of `Cm::VirtualAllocatorCallback`. The SDK's new callback
+implements the underlying virtual interface but is **not** a
+`PxgCudaAllocatorCallbackBase` and cannot yet be passed to that original
+constructor. A real engine source integration must lower that CUDA-aware
+constructor/abort-mode dependency while keeping the source heap's original
+buddy logic, allocation statistics, and deferred flush decisions. Do not
+claim the virtual callback test is a live PhysX heap or GPU-backed scene.
+
 ## Native backing at the original PhysX heap ROOT callback
 
 PhysX already implements the essential GPU allocation policy in
