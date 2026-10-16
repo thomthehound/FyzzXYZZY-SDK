@@ -143,7 +143,7 @@ It has two lower-level paths, selected by native capabilities and an
 explicit conformance-mode override:
 
 * **Direct mapped:** Request `MemoryPlacement::HostVisible`, map the
-  GPU-writable allocation *once* with `HostMapAccess::Read`, and return
+  GPU-writable allocation *once* with `HostMapAccess::ReadWrite`, and return
   the suitably aligned CPU pointer to the source heap. Its original
   buddy-block offsets resolve to the same native GPU resource and bytes.
   The GPU writes directly into that resource. After the source stream
@@ -167,6 +167,13 @@ offsets continue to resolve inside the one backing allocation.
 It distinguishes source buddy-block lifetimes from the physical root
 lifetime and invalidates the exact GPU virtual root only at original
 heap destruction. No CUDA API or second heap algorithm is exposed.
+
+The original manager aliases `hostAlloc` with `hostMappedAlloc`
+in normal mode. That means the same root must additionally support
+CPU-authored pinned descriptors subsequently read by GPU source stages.
+The callback therefore maps bidirectionally, and native conformance
+verifies CPU-write/GPU-read traffic from a third original buddy block
+alongside the GPU-write/CPU-read found/lost report arrays.
 
 Linux/Vulkan and Windows/D3D12 conformance now exercise **both**
 forced staged and capability-driven direct paths through the actual
