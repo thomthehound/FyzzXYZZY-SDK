@@ -334,8 +334,12 @@ void run_original_source_report_fetch(
     if(sourceMappedHeap) {
         if(!nativeStage)
             throw std::invalid_argument("Mapped PhysX source heap needs original multi-root report shaders");
-        sourceHeapManager=std::make_unique<physx::PxgHeapMemoryAllocatorManager>(
-            4096u,deviceCallback,mappedCallback,mappedCallback,abort,&aborted);
+        // Original GPU manager inherits PxUserAllocated. Construct via
+        // PhysX's broadcast allocator, not std::make_unique/ordinary new.
+        // unique_ptr still invokes the original matching operator delete.
+        sourceHeapManager.reset(
+            PX_NEW(physx::PxgHeapMemoryAllocatorManager)(
+                4096u,deviceCallback,mappedCallback,mappedCallback,abort,&aborted));
         mappedHostHeap=static_cast<physx::PxgHeapMemoryAllocator*>(
             sourceHeapManager->mPinnedHostMappedMemoryAllocator);
         originalFound=static_cast<Pair*>(mappedHostHeap->allocate(
