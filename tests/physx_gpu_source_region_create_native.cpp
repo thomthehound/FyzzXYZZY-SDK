@@ -579,7 +579,7 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
 
 int main(int argc,char** argv){
     try{
-        if(argc!=3 && argc!=6 && argc!=10)throw std::invalid_argument(
+        if(argc!=3 && argc!=6 && argc!=10 && argc!=14)throw std::invalid_argument(
             "Expected fill/create, optional 3 region scan and optional 4 active-region shaders");
         Context ctx(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -605,7 +605,7 @@ int main(int argc,char** argv){
                 ctx,load(argv[3]),load(argv[4]),load(argv[5]),true);
         }
         std::unique_ptr<SourceActiveRegionListsNativeStage> activeWave,activePortable;
-        if(argc==10){
+        if(argc>=10){
             if(gpu.max_workgroup_invocations<512u||
                gpu.max_workgroup_size[0]<512u||gpu.max_workgroup_count[0]<64u){
                 std::cout<<"SKIP: Original PhysX active regions need 64x512 support\n";
@@ -616,19 +616,43 @@ int main(int argc,char** argv){
             activePortable=std::make_unique<SourceActiveRegionListsNativeStage>(
                 ctx,load(argv[6]),load(argv[7]),load(argv[8]),load(argv[9]),true);
         }
+        std::unique_ptr<SourceOverlapWorkNativeStage> work;
+        std::unique_ptr<SourceOverlapPrefixNativeStage> prefix;
+        std::unique_ptr<SourceNewBoundsPairsNativeStage> pairs;
+        std::unique_ptr<SourceNewBoundsSequenceNativeStage> sequence;
+        const bool runConnected=argc==14;
+        if(runConnected){
+            if(!gpu.supports_int64_shader || !gpu.supports_int64_wave ||
+               !gpu.supports_wave_arithmetic || gpu.subgroup_size<4u ||
+               gpu.subgroup_size>128u || 256u%gpu.subgroup_size!=0u){
+                std::cout<<"SKIP: PhysX source new-bounds wave/int64 features unavailable\n";
+                return 77;
+            }
+            work=std::make_unique<SourceOverlapWorkNativeStage>(ctx,load(argv[10]));
+            prefix=std::make_unique<SourceOverlapPrefixNativeStage>(ctx,load(argv[11]),load(argv[12]));
+            pairs=std::make_unique<SourceNewBoundsPairsNativeStage>(ctx,load(argv[13]));
+            sequence=std::make_unique<SourceNewBoundsSequenceNativeStage>(*work,*prefix,*pairs);
+        }
         const std::vector<const SourceRegionHistogramsNativeStage*> variants{
             scans.get(),portable.get()};
         std::size_t variation=0u;
         for(const auto* scan:variants){
             const auto* active=variation++==0u?activeWave.get():activePortable.get();
             if(!scan && scans)continue;
-            exercise(ctx,stage,scan,active,5u,0u);
-            for(const auto n:{1u,5u,129u,257u})
-                exercise(ctx,stage,scan,active,n,n);
-            // Source retains removed projection capacity until buffer swap,
-            // whereas all histogram passes scan only live boxes.
-            exercise(ctx,stage,scan,active,5u,1u,2u);
-            exercise(ctx,stage,scan,active,129u,3u,4u);
+            if(runConnected){
+                SourceRegionNewBoundsNativeStage chain(stage,*scan,*active,*sequence);
+                exercise(ctx,stage,scan,active,&chain,1u,1u);
+                exercise(ctx,stage,scan,active,&chain,5u,5u);
+                exercise(ctx,stage,scan,active,&chain,5u,1u,2u);
+            }else{
+                exercise(ctx,stage,scan,active,nullptr,5u,0u);
+                for(const auto n:{1u,5u,129u,257u})
+                    exercise(ctx,stage,scan,active,nullptr,n,n);
+                // Source retains removed projection capacity until buffer swap,
+                // whereas all histogram passes scan only live boxes.
+                exercise(ctx,stage,scan,active,nullptr,5u,1u,2u);
+                exercise(ctx,stage,scan,active,nullptr,129u,3u,4u);
+            }
             if(!scan)break;
         }
         std::cout<<"Original PhysX source region clear/create/scans/active pipeline PASS\n";
