@@ -347,7 +347,37 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
     }
 
     const SourceRegionCreateNativeLayout layout{box_capacity,slots};
+    const SourceRegionNewBoundsNativeLayout connectedLayout{
+        layout,{roots[descriptor].address,slots},
+        {roots[descriptor].address,box_capacity,slots,cleared},
+        {roots[descriptor].address,boxes,box_capacity,retained,boxes*64u}};
     std::vector<BatchCommand> operations;
+    if(connected){
+        auto bad=desc;
+        bad.foundPairReport=nullptr;
+        reject([&]{connected->append(operations,bad,map,connectedLayout);},
+               "Invalid final source found-report pointer accepted");
+        check(operations.empty(),"Late source pair failure committed earlier region work");
+        auto mismatched=connectedLayout;
+        mismatched.new_bounds.descriptor+=4u;
+        reject([&]{connected->append(operations,desc,map,mismatched);},
+               "Mismatched original GPU descriptors accepted");
+        check(operations.empty(),"Invalid source descriptor identity modified command list");
+        auto idle=desc;
+        idle.numCreatedHandles=0u;
+        connected->append(operations,idle,map,connectedLayout);
+        check(operations.empty(),"Original zero-created chain appended commands");
+        connected->append(operations,desc,map,connectedLayout);
+        check(operations.size()==14u,"Original PhysX source chain lost commands");
+        const std::uint32_t groupsExpected[]{32u,32u,32u,64u};
+        const std::uint32_t bindingsExpected[]{9u,4u,4u,16u};
+        for(std::size_t i=0u;i<4u;++i){
+            const auto& cmd=std::get<DispatchCommand>(operations[10u+i]);
+            check(cmd.groups.x==groupsExpected[i]&&
+                  cmd.buffers.size()==bindingsExpected[i],
+                  "Original new-bounds source launch geometry changed");
+        }
+    }else{
     if(created){
         // A bad last output pointer cannot commit the two earlier fills.
         auto bad=desc;
@@ -400,6 +430,7 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
                       "Source active-region dispatch deviates from original sequence");
             }
         }
+    }
     }
     std::vector<UploadSpan> uploads;
     for(const auto& root:roots)
@@ -463,6 +494,14 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         shared.orderedStartRegionHandles=reinterpret_cast<decltype(shared.orderedStartRegionHandles)>(ptr2(orderedStarts));
         shared.blockStartRegionAccum=reinterpret_cast<decltype(shared.blockStartRegionAccum)>(ptr2(blockStarts));
         shared.blockRegionAccum=reinterpret_cast<decltype(shared.blockRegionAccum)>(ptr2(blockRegions));
+        if(connected){
+            shared.overlapChecksRegion=reinterpret_cast<decltype(shared.overlapChecksRegion)>(ptr2(regionWork));
+            shared.overlapChecksHandleRegiones=reinterpret_cast<decltype(shared.overlapChecksHandleRegiones)>(ptr2(handleRegions));
+            shared.blockOverlapChecksRegion=reinterpret_cast<decltype(shared.blockOverlapChecksRegion)>(ptr2(blockWork));
+            shared.newIntegerBounds=reinterpret_cast<decltype(shared.newIntegerBounds)>(ptr2(bounds));
+            shared.updateData_groups=reinterpret_cast<decltype(shared.updateData_groups)>(ptr2(groups));
+            shared.foundPairReport=reinterpret_cast<decltype(shared.foundPairReport)>(ptr2(reports));
+        }
         // The original GPU descriptor must contain CURRENT source CUDA
         // pointers after relocation into the shared buddy-heap root.
         const auto descriptorWord=placement[descriptor]/4u;
@@ -471,12 +510,28 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
         if(scans && created){
             for(const auto field:{
                 offsetof(physx::PxgBroadPhaseDesc,startRegionAccumTotal),
-                offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal)}) {
+                offsetof(physx::PxgBroadPhaseDesc,regionAccumTotal),
+                offsetof(physx::PxgBroadPhaseDesc,overlapChecksTotalRegion),
+                offsetof(physx::PxgBroadPhaseDesc,overlapChecksTotalRegion)+4u}) {
                 wanted[descriptorWord+field/4u]=
                     roots[descriptor].expected[roots[descriptor].offset/4u+field/4u];
             }
         }
         std::vector<BatchCommand> aliasedCommands;
+        if(connected){
+            auto aliasedLayout=connectedLayout;
+            aliasedLayout.histograms.descriptor=alias[descriptor];
+            aliasedLayout.active.descriptor=alias[descriptor];
+            aliasedLayout.new_bounds.descriptor=alias[descriptor];
+            connected->append(aliasedCommands,shared,sharedMap,aliasedLayout);
+            check(aliasedCommands.size()==14u,
+                  "Original fourteen-operation source buddy-heap chain changed");
+            for(const auto& operation:aliasedCommands){
+                const auto& cmd=std::get<DispatchCommand>(operation);
+                for(const auto& view:cmd.buffers)
+                    check(view.buffer==backing,"Source chain escaped original buddy-heap root");
+            }
+        }else{
         stage.append(aliasedCommands,shared,sharedMap,layout);
         check(aliasedCommands.size()==3u,
               "Source buddy-heap aliased region sequence lost dispatches");
@@ -508,6 +563,7 @@ void exercise(Context& ctx,SourceRegionCreateNativeStage& stage,
                     check(binding.buffer==backing,
                           "PhysX active-region stage escaped shared source heap root");
             }
+        }
         }
         ctx.submit_upload_buffer(backing,0u,initial.data(),initial.size()*4u);
         ctx.wait_submission(ctx.submit_batch(aliasedCommands));
