@@ -13,8 +13,7 @@
 #include "foundation/PxPool.h"
 #include "foundation/PxMutex.h"
 #include "CmVirtualAllocatorCallback.h"
-#include "PxsHeapMemoryAllocator.h"
-#include "PxgAllocatorDesc.h"
+#include "PxsHeapStats.h"
 #include "common/PxPhysXCommonConfig.h"
 
 #if PX_DEBUG
