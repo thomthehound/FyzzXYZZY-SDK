@@ -45,6 +45,10 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     const uint blocks = arena.Load(desc + blockField);
     const uint hasVolumes = arena.Load(desc + 64u);
     const uint volumeTags = arena.Load(desc + 48u);
+    // Source Bp::VolumeData is an array of structs, not compact u32 tags.
+    // Zero stride retains the existing compact-tag fixture ABI.
+    const uint volumeStride = arena.Load(desc + 68u) != 0u ? arena.Load(desc + 68u) : 4u;
+    const uint aggregateOffset = arena.Load(desc + 72u);
     if (thread.x == 0u) {
         uint exclusive = 0u;
         uint all = 0u;
@@ -74,8 +78,8 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
             bool singleA = true;
             bool singleB = true;
             if (hasVolumes != 0u) {
-                singleA = arena.Load(volumeTags + pair.x * 4u) == 0xffffffffu;
-                singleB = arena.Load(volumeTags + pair.y * 4u) == 0xffffffffu;
+                singleA = arena.Load(volumeTags + pair.x * volumeStride + aggregateOffset) == 0xffffffffu;
+                singleB = arena.Load(volumeTags + pair.y * volumeStride + aggregateOffset) == 0xffffffffu;
             }
             eligible = (!(singleA && singleB)) == aggregate;
         }
