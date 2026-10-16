@@ -1020,8 +1020,9 @@ The source `allocateCopyOldDataAsync` copy boundary is lowered
 internally to `SourceSapDmaNative`: copy the entire **old raw allocation**
 on the original ordered stream and defer its buddy block until the
 source simulation-step flush. Initial/uncopied allocation growth retains
-the source doubling policy. Native allocation failure leaves an existing
-valid buffer owned by its caller rather than losing its raw key.
+the source doubling **and free-first** policy, avoiding extra peak GPU
+memory consumption. Copy-preserving growth allocates replacement storage
+before deferring its previous block, as required by the source copy ordering.
 
 The existing Linux/Vulkan and Windows/D3D12 host-transfer conformance
 now constructs the actual buffer object on source GPU heap roots, then
