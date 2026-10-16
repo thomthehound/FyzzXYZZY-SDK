@@ -418,8 +418,8 @@ void verify_source_native_fetch(Backend backend) {
     constexpr std::size_t bytes=4096u;
     const auto root=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
     const auto descriptor=addresses.register_slice(root,256u,sizeof(physx::PxgBroadPhaseDesc));
-    const auto foundAddress=addresses.register_slice(root,1024u,8u*sizeof(Pair));
-    const auto lostAddress=addresses.register_slice(root,2048u,8u*sizeof(Pair));
+    const auto foundAddress=addresses.register_slice(root,2048u,8u*sizeof(Pair));
+    const auto lostAddress=addresses.register_slice(root,3072u,8u*sizeof(Pair));
     const auto cpuVirtual=[](CudaDeviceAddressMap::Address pointer) {
         return reinterpret_cast<Pair*>(static_cast<std::uintptr_t>(pointer));
     };
