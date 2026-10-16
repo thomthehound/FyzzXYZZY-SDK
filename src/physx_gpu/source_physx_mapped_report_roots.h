@@ -69,7 +69,12 @@ public:
                 backing_bytes = bytes + 255u;
                 entry.device = context_.create_buffer(
                     backing_bytes, compute::MemoryPlacement::HostVisible);
-                auto* base = context_.map_buffer(entry.device, compute::HostMapAccess::Read);
+                // In normal PhysX mode the manager aliases hostAlloc and
+                // hostMappedAlloc: original pinned descriptors can be
+                // CPU-written while actor reports are GPU-written. Both
+                // directions are part of this host root's contract.
+                auto* base = context_.map_buffer(
+                    entry.device, compute::HostMapAccess::ReadWrite);
                 entry.cpu_mapped = true;
                 const auto raw = reinterpret_cast<std::uintptr_t>(base);
                 if (raw > std::numeric_limits<std::uintptr_t>::max() - 255u)
@@ -148,6 +153,8 @@ public:
     // Source mFoundActorPairsMapped/mLostActorPairsMapped CPU arrays become
     // valid only after the source GPU queue fence at the original fetch.
     // Direct: no copies, the *same memory* was written by GPU.
+    // The same source heap also owns CPU-written pinned host inputs; their
+    // visibility to GPU is ordered by the caller's source submission.
     // Staged: fetch then download into the *original PhysX CPU array*.
     void publish_at_fetch(void* host, std::size_t bytes) {
         if (!host || !bytes) return;
