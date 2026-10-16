@@ -24,6 +24,7 @@ struct SourceSapPreBroadPhaseBuffers {
     physx::PxgTypedCudaBuffer<physx::PxReal>& contact_distances;
     physx::PxgTypedCudaBuffer<physx::PxU32>& groups;
     physx::PxgTypedCudaBuffer<physx::PxU32>& environment_ids;
+    physx::PxU32& boxes_capacity;
 };
 
 // Source: PxgCudaBroadPhaseSap::preBroadPhase, including its conditional
