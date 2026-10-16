@@ -131,10 +131,9 @@ std::vector<Candidate> discover_adapters() {
             // capable CUSTOM heap can actually be created. Probe the exact
             // UAV resource + memory combination, not just an adapter name.
             if (info.unified_memory) {
-                const auto heap = probe->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_UPLOAD);
+                const auto heap = probe->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_READBACK);
                 if (heap.Type == D3D12_HEAP_TYPE_CUSTOM &&
-                    (heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
-                     heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) &&
+                    heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK &&
                     heap.MemoryPoolPreference == D3D12_MEMORY_POOL_L0) {
                     D3D12_RESOURCE_DESC desc{};
                     desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -477,14 +476,15 @@ struct Context::Impl {
                 throw std::runtime_error(
                     "D3D12 adapter has no GPU-writable CPU-mapped UMA buffer; use staged reports");
 
-            // On cache-coherent UMA, this is WRITE_BACK/L0; otherwise
-            // WRITE_COMBINE/L0. Let the driver determine real cache policy.
-            // This custom heap permits normal UAV/COPY state transitions
-            // unlike the restricted abstract UPLOAD/READBACK heap types.
-            const auto heap = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_UPLOAD);
+            // PhysX mapped actor reports are GPU-written then CPU-READ.
+            // The READBACK-derived CUSTOM heap selects WRITE_BACK/L0 even
+            // on non-cache-coherent UMA, avoiding very slow CPU reads from
+            // upload-oriented WRITE_COMBINE pages. The CUSTOM heap permits
+            // GPU UAV and normal state transitions; a regular READBACK heap
+            // does not. The admission probe exercises precisely this pairing.
+            const auto heap = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_READBACK);
             if (heap.Type != D3D12_HEAP_TYPE_CUSTOM ||
-                (heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_BACK &&
-                 heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) ||
+                heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
                 heap.MemoryPoolPreference != D3D12_MEMORY_POOL_L0)
                 throw std::runtime_error("D3D12 UMA did not expose a CPU-mappable L0 custom heap");
             D3D12_RESOURCE_DESC desc{};
