@@ -121,6 +121,16 @@ std::vector<Candidate> discover_adapters() {
         info.supports_int64_wave = info.supports_int64_shader &&
                                    info.supports_wave_arithmetic;
         info.subgroup_size = waveOps ? opts.WaveLaneCountMin : 0u;
+        D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+        architecture.NodeIndex = 0;
+        if (SUCCEEDED(probe->CheckFeatureSupport(
+                D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)))) {
+            info.unified_memory = architecture.UMA == TRUE;
+            info.cache_coherent_unified_memory = architecture.CacheCoherentUMA == TRUE;
+            // Actual allocation validity is checked on create_buffer;
+            // upload/readback heap types alone are not GPU-writable mappings.
+            info.supports_gpu_writable_host_visible = info.unified_memory;
+        }
         candidates.push_back({std::move(adapter), std::move(info)});
     };
 
@@ -196,6 +206,8 @@ struct Context::Impl {
     struct Buffer {
         ComPtr<ID3D12Resource> resource;
         std::size_t bytes = 0;
+        bool host_visible = false;
+        bool cpu_mapped = false;
     };
     struct Pipeline {
         ComPtr<ID3D12RootSignature> signature;
@@ -423,20 +435,87 @@ struct Context::Impl {
         release_retired_through(completed);
     }
 
-    BufferId create_buffer(std::size_t bytes, MemoryPlacement /*placement*/) {
+    BufferId create_buffer(std::size_t bytes, MemoryPlacement placement) {
         if (!bytes) throw std::invalid_argument("Compute buffer size must be positive");
         Buffer buffer;
-        buffer.resource = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_DEFAULT,
-                                             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                             D3D12_RESOURCE_STATE_COMMON);
+        if (placement == MemoryPlacement::HostVisible) {
+            // The PhysX actor-pair report output is GPU-writable AND
+            // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
+            // are not legal substitutes for a UAV destination.
+            if (!info.supports_gpu_writable_host_visible)
+                throw std::runtime_error(
+                    "D3D12 adapter has no GPU-writable CPU-mapped UMA buffer; use staged reports");
+
+            // On cache-coherent UMA, this is WRITE_BACK/L0; otherwise
+            // WRITE_COMBINE/L0. Let the driver determine real cache policy.
+            // This custom heap permits normal UAV/COPY state transitions
+            // unlike the restricted abstract UPLOAD/READBACK heap types.
+            const auto heap = device->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_UPLOAD);
+            if (heap.Type != D3D12_HEAP_TYPE_CUSTOM ||
+                (heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_BACK &&
+                 heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) ||
+                heap.MemoryPoolPreference != D3D12_MEMORY_POOL_L0)
+                throw std::runtime_error("D3D12 UMA did not expose a CPU-mappable L0 custom heap");
+            D3D12_RESOURCE_DESC desc{};
+            desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            desc.Width = static_cast<UINT64>(bytes);
+            desc.Height = 1;
+            desc.DepthOrArraySize = 1;
+            desc.MipLevels = 1;
+            desc.Format = DXGI_FORMAT_UNKNOWN;
+            desc.SampleDesc.Count = 1;
+            desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            check(device->CreateCommittedResource(
+                &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                nullptr, IID_PPV_ARGS(&buffer.resource)),
+                "Create GPU-writable CPU-visible D3D12 UMA buffer");
+            buffer.host_visible = true;
+        } else {
+            // Auto preserves the established D3D12 default, while explicit
+            // DeviceLocal remains a GPU-preferred DEFAULT allocation.
+            buffer.resource = allocate_resource(device.Get(), bytes, D3D12_HEAP_TYPE_DEFAULT,
+                                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                                 D3D12_RESOURCE_STATE_COMMON);
+        }
         buffer.bytes = bytes;
-        const BufferId id = next_buffer++;
+        const BufferId id = next_buffer;
         buffers.emplace(id, std::move(buffer));
+        ++next_buffer;
         return id;
     }
 
+    bool buffer_is_host_visible(BufferId id) { return get_buffer(id).host_visible; }
+
+    void* map_buffer(BufferId id) {
+        auto& buffer = get_buffer(id);
+        if (!buffer.host_visible)
+            throw std::invalid_argument("D3D12 buffer is not CPU-mappable GPU storage");
+        if (buffer.cpu_mapped)
+            throw std::logic_error("D3D12 buffer already CPU mapped");
+        void* pointer = nullptr;
+        D3D12_RANGE readable{0, buffer.bytes};
+        // Map does NOT synchronize. The source fence must have completed
+        // before CPU reads any GPU-produced PhysX report bytes.
+        check(buffer.resource->Map(0, &readable, &pointer), "Map D3D12 UMA buffer");
+        buffer.cpu_mapped = true;
+        return pointer;
+    }
+
+    void unmap_buffer(BufferId id) {
+        auto& buffer = get_buffer(id);
+        if (!buffer.cpu_mapped)
+            throw std::logic_error("D3D12 buffer is not CPU mapped");
+        // General read/write map. The GPU must not read data until the
+        // caller has released the CPU map and submitted ordered work.
+        D3D12_RANGE written{0, buffer.bytes};
+        buffer.resource->Unmap(0, &written);
+        buffer.cpu_mapped = false;
+    }
+
     void destroy_buffer(BufferId id) {
-        get_buffer(id);
+        if (get_buffer(id).cpu_mapped)
+            throw std::logic_error("Cannot destroy mapped D3D12 GPU storage");
         wait_all(); // original blocking API remains unchanged
         buffers.erase(id);
     }
@@ -445,6 +524,8 @@ struct Context::Impl {
         auto it = buffers.find(id);
         if (it == buffers.end())
             throw std::invalid_argument("Unknown D3D12 buffer");
+        if (it->second.cpu_mapped)
+            throw std::logic_error("Cannot retire mapped D3D12 GPU storage");
         if (!submissions.empty()) {
             std::uint64_t last_fence = 0;
             for (const auto& pending : submissions)
@@ -1045,6 +1126,11 @@ BufferId Context::create_buffer(std::size_t bytes, MemoryPlacement placement) {
 }
 void Context::destroy_buffer(BufferId id) { impl_->destroy_buffer(id); }
 void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
+bool Context::buffer_is_host_visible(BufferId id) const {
+    return impl_->get_buffer(id).host_visible;
+}
+void* Context::map_buffer(BufferId id) { return impl_->map_buffer(id); }
+void Context::unmap_buffer(BufferId id) { impl_->unmap_buffer(id); }
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->upload(id, offset, data, bytes);
 }
