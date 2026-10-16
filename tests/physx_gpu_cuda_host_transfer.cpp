@@ -766,16 +766,27 @@ void exercise_original_prebroadphase_native(Context& context) {
 
         // A larger dirty frame grows original PhysX buffers, still using
         // the original buddy allocator and ordered native upload stream.
+        const auto uploadedBounds=bounds;
+        const auto uploadedDistances=distances;
+        const auto uploadedGroups=groups;
+        const auto uploadedEnv=env;
         run(4u, true, true);
+        // PhysX update input arrays can be reused by CPU tasks after the
+        // nonblocking HtoD submission; native uploads own a staging snapshot.
+        bounds[1]=physx::PxBounds3(
+            physx::PxVec3(100.0f),physx::PxVec3(101.0f));
+        distances[1]=-77.0f;
+        groups[1]=physx::Bp::FilterGroup::eINVALID;
+        env[1]=123456u;
         stream.wait_at_fetch();
-        verify(boundsBuf,bounds.data(),sizeof(bounds),
-               "Resized PhysX FP bounds upload failed");
-        verify(distancesBuf,distances.data(),sizeof(distances),
-               "Resized PhysX contact-distance upload failed");
-        verify(groupsBuf,groups.data(),sizeof(groups),
-               "Resized PhysX filter-group upload failed");
-        verify(envBuf,env.data(),sizeof(env),
-               "Resized PhysX environment-ID upload failed");
+        verify(boundsBuf,uploadedBounds.data(),sizeof(bounds),
+               "Resized PhysX FP bounds upload lost input snapshot");
+        verify(distancesBuf,uploadedDistances.data(),sizeof(distances),
+               "Resized PhysX contact-distance upload lost input snapshot");
+        verify(groupsBuf,uploadedGroups.data(),sizeof(groups),
+               "Resized PhysX filter-group upload lost input snapshot");
+        verify(envBuf,uploadedEnv.data(),sizeof(env),
+               "Resized PhysX environment-ID upload lost input snapshot");
 
         // Invalid source input must not enqueue any native GPU command or
         // change buffer identities.
