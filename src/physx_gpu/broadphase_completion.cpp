@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/broadphase_completion.h"
+#include "physx_gpu/source_sap_dma_native.h"
 
 #include <stdexcept>
 
@@ -16,13 +17,26 @@ void BroadPhaseCompletionGate::arm(compute::SubmissionId submission) {
     if (armed_)
         throw std::logic_error("Broadphase completion already armed");
     submission_ = submission;
+    source_stream_ = nullptr;
+    armed_ = true;
+}
+
+void BroadPhaseCompletionGate::arm_source_stream(SourceSapDmaNative& stream) {
+    if (continuation_setup_failed_)
+        throw std::logic_error("Broadphase continuation setup failed; scene must abort");
+    if (armed_)
+        throw std::logic_error("Broadphase completion already armed");
+    stream.submit(); // Failure must leave the completion gate unarmed.
+    source_stream_ = &stream;
+    submission_ = 0;
     armed_ = true;
 }
 
 bool BroadPhaseCompletionGate::gpu_complete() const {
     if (!armed_)
         throw std::logic_error("Broadphase completion not armed");
-    return submission_ == 0 || context_.submission_complete(submission_);
+    return source_stream_ ? source_stream_->gpu_complete() :
+        (submission_ == 0 || context_.submission_complete(submission_));
 }
 
 void BroadPhaseCompletionGate::fetch_and_release(
@@ -37,7 +51,10 @@ void BroadPhaseCompletionGate::fetch_and_release(
     if (&found == &lost)
         throw std::invalid_argument("Broadphase pair tasks must be distinct");
 
-    if (submission_ != 0) {
+    if (source_stream_) {
+        source_stream_->wait_at_fetch();
+        source_stream_ = nullptr;
+    } else if (submission_ != 0) {
         // Original gpuDMABack waits at the fetch boundary; work queued
         // after this token on the same context is not part of this frame.
         context_.wait_submission(submission_);
@@ -73,7 +90,10 @@ void BroadPhaseCompletionGate::fetch_and_run_inline(
     if (!fetch_and_resize || !run_found_pair_task || !run_lost_pair_task)
         throw std::invalid_argument("Broadphase inline publication requires both original pair tasks");
 
-    if (submission_ != 0) {
+    if (source_stream_) {
+        source_stream_->wait_at_fetch();
+        source_stream_ = nullptr;
+    } else if (submission_ != 0) {
         context_.wait_submission(submission_);
         submission_ = 0;
     }

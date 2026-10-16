@@ -3,9 +3,13 @@
 
 #include "physx_gpu/broadphase_completion.h"
 #include "physx_gpu/sap_host_frame_roles.h"
+#include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sap_fetch_native.h"
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -402,6 +406,198 @@ void verify_source_frame_swaps(Context& context) {
     context.destroy_buffer(buffer);
 }
 
+
+void verify_source_native_fetch(Backend backend) {
+    using fyzz::physx_gpu::CudaDeviceAddressMap;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapFetchedCounts;
+    using fyzz::physx_gpu::fetch_source_sap_results;
+    using Pair = physx::PxgBroadPhasePair;
+    Context context(backend);
+    CudaDeviceAddressMap addresses;
+    constexpr std::size_t bytes=4096u;
+    const auto root=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    const auto descriptor=addresses.register_slice(root,256u,sizeof(physx::PxgBroadPhaseDesc));
+    const auto foundAddress=addresses.register_slice(root,2048u,8u*sizeof(Pair));
+    const auto lostAddress=addresses.register_slice(root,3072u,8u*sizeof(Pair));
+    const auto cpuVirtual=[](CudaDeviceAddressMap::Address pointer) {
+        return reinterpret_cast<Pair*>(static_cast<std::uintptr_t>(pointer));
+    };
+    physx::PxgBroadPhaseDesc gpu{};
+    gpu.max_found_lost_pairs=4u;
+    gpu.sharedFoundPairIndex=4u; gpu.sharedFoundAggPairIndex=1u;
+    gpu.sharedLostPairIndex=3u; gpu.sharedLostAggPairIndex=1u;
+    gpu.overlapChecksTotalRegion=0x100000039ull; // Original PxU64 counter.
+    gpu.startRegionAccumTotal=23u;
+    gpu.regionAccumTotal=61u;
+    gpu.foundPairReportMap=cpuVirtual(foundAddress);
+    gpu.lostPairReportMap=cpuVirtual(lostAddress);
+    std::array<Pair,8> foundGpu{},lostGpu{},foundHost{},lostHost{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        foundGpu[i]=Pair(100u+i,200u+i);
+        lostGpu[i]=Pair(300u+i,400u+i);
+    }
+    SourceSapDmaNative source(context,addresses);
+    // All three original updateData and GPU descriptor-like upload groups
+    // share a source ordered stream; no early host wait is permitted.
+    source.queue_uploads({
+        {descriptor,&gpu,sizeof(gpu)},
+        {foundAddress,foundGpu.data(),sizeof(foundGpu)},
+        {lostAddress,lostGpu.data(),sizeof(lostGpu)}
+    });
+    SapFrameBufferRoles roles;
+    for(std::uint32_t i=0;i<6u;++i) {
+        roles.box_handles[i]=1000u+i;
+        roles.end_histograms[i]=2000u+i;
+        roles.start_histograms[i]=3000u+i;
+        roles.block_start_histograms[i]=4000u+i;
+        roles.block_end_histograms[i]=5000u+i;
+        roles.ordered_start_handles[i]=6000u+i;
+        roles.ordered_end_handles[i]=7000u+i;
+    }
+    roles.old_integer_bounds=8001u;
+    roles.new_integer_bounds=8002u;
+    const auto prior=roles;
+    physx::PxgBroadPhaseDesc host{};
+    BroadPhaseCompletionGate gate(context);
+    gate.arm_source_stream(source);
+    require_throws([&] {gate.arm_source_stream(source);},
+                   "Original stream completion gate accepted overlapping frame");
+    std::vector<std::string> events;
+    PairTask foundTask("found",events),lostTask("lost",events);
+
+    SourceSapFetchedCounts result{};
+    gate.fetch_and_release([&] {
+        result=fetch_source_sap_results(context,addresses,descriptor,host,
+            {foundHost.data(),foundHost.size()},
+            {lostHost.data(),lostHost.size()},false,roles);
+        events.emplace_back("publish");
+    },[&]{events.emplace_back("continuations");},foundTask,lostTask);
+    check_event_order(events);
+    if(result.found_actors!=3u || result.lost_actors!=2u ||
+       result.pairs_needed!=4u || result.overflow ||
+       result.overlap_checks_total_region!=0x100000039ull ||
+       result.start_region_accum_total!=23u ||
+       result.region_accum_total!=61u ||
+       host.sharedFoundPairIndex!=4u)
+        throw std::runtime_error("Original source descriptor fetch counters changed");
+    for(std::uint32_t i=0u;i<8u;++i) {
+        if(i<3u && (foundHost[i].mVolA!=foundGpu[i].mVolA ||
+                     foundHost[i].mVolB!=foundGpu[i].mVolB))
+            throw std::runtime_error("Original found-pair mapped readback changed");
+        if(i<2u && (lostHost[i].mVolA!=lostGpu[i].mVolA ||
+                     lostHost[i].mVolB!=lostGpu[i].mVolB))
+            throw std::runtime_error("Original lost-pair mapped readback changed");
+    }
+    if(roles.box_handles[0]!=prior.box_handles[3] ||
+       roles.end_histograms[1]!=prior.end_histograms[4] ||
+       roles.start_histograms[2]!=prior.start_histograms[5] ||
+       roles.block_end_histograms[0]!=prior.block_end_histograms[3] ||
+       roles.block_start_histograms[1]!=prior.block_start_histograms[4] ||
+       roles.ordered_end_handles[2]!=prior.ordered_end_handles[5] ||
+       roles.ordered_start_handles[0]!=prior.ordered_start_handles[3] ||
+       roles.old_integer_bounds!=prior.old_integer_bounds ||
+       roles.new_integer_bounds!=prior.new_integer_bounds)
+        throw std::runtime_error("Source fetch swapped wrong history buffers");
+
+    // Failed source DtoH publication is retryable BEFORE continuations;
+    // the seven history families must NOT be double-swapped by that retry.
+    events.clear();
+    const auto snapshot=roles;
+    physx::PxgBroadPhaseDesc next=gpu;
+    next.sharedFoundPairIndex=8u; // capped by the source to four records.
+    next.sharedFoundAggPairIndex=1u;
+    next.sharedLostPairIndex=5u;
+    next.sharedLostAggPairIndex=2u;
+    next.found_lost_pairs_overflow_flags=true;
+    source.queue_uploads({{descriptor,&next,sizeof(next)}});
+    gate.arm_source_stream(source);
+    PairTask retryFound("found",events),retryLost("lost",events);
+    require_throws([&] {
+        gate.fetch_and_release([&] {
+            (void)fetch_source_sap_results(context,addresses,descriptor,host,
+                {foundHost.data(),1u}, {lostHost.data(),lostHost.size()},false,roles);
+            events.emplace_back("publish");
+        },[&]{events.emplace_back("continuations");},retryFound,retryLost);
+    },"Source published a frame despite undersized found-pair host buffer");
+    if(!gate.armed() || !events.empty() ||
+       retryFound.releases() || retryLost.releases() ||
+       roles.box_handles!=snapshot.box_handles ||
+       host.sharedFoundPairIndex!=gpu.sharedFoundPairIndex)
+        throw std::runtime_error("Failed source fetch mutated publication state");
+
+    gate.fetch_and_release([&]{
+        result=fetch_source_sap_results(context,addresses,descriptor,host,
+            {foundHost.data(),foundHost.size()},
+            {lostHost.data(),lostHost.size()},false,roles);
+        events.emplace_back("publish");
+    },[&]{events.emplace_back("continuations");},retryFound,retryLost);
+    check_event_order(events);
+    if(result.found_actors!=3u || result.lost_actors!=2u ||
+       result.pairs_needed!=8u || !result.overflow ||
+       roles.box_handles!=prior.box_handles)
+        throw std::runtime_error("Source overflow clamp or retry swap changed");
+
+    // Original isInAbortMode zeros both actor lists but retains descriptor
+    // totals and flips history even if no new kernel was launched.
+    events.clear();
+    next.sharedFoundPairIndex=100u;
+    next.sharedLostPairIndex=100u;
+    next.sharedFoundAggPairIndex=0u;
+    next.sharedLostAggPairIndex=0u;
+    source.queue_uploads({{descriptor,&next,sizeof(next)}});
+    gate.arm_source_stream(source);
+    PairTask abortFound("found",events),abortLost("lost",events);
+    gate.fetch_and_release([&]{
+        result=fetch_source_sap_results(context,addresses,descriptor,host,
+            {nullptr,0u},{nullptr,0u},true,roles);
+        events.emplace_back("publish");
+    },[&]{events.emplace_back("continuations");},abortFound,abortLost);
+    check_event_order(events);
+    if(result.found_actors || result.lost_actors ||
+       result.pairs_needed!=100u ||
+       roles.box_handles!=snapshot.box_handles)
+        throw std::runtime_error("Source abort path changed pair sizes or swaps");
+
+    // The source non-updated frame still fetches descriptor and swaps
+    // histories; a source stream with no submissions is valid.
+    events.clear();
+    gate.arm_source_stream(source);
+    PairTask idleFound("found",events),idleLost("lost",events);
+    gate.fetch_and_release([&]{
+        result=fetch_source_sap_results(context,addresses,descriptor,host,
+            {nullptr,0u},{nullptr,0u},true,roles);
+        events.emplace_back("publish");
+    },[&]{events.emplace_back("continuations");},idleFound,idleLost);
+    check_event_order(events);
+    if(roles.box_handles!=prior.box_handles)
+        throw std::runtime_error("Original idle fetch omitted buffer history rotation");
+
+    // Invalid GPU report counters must not underflow host pair counts or
+    // publish an invalid history swap; fixes require PhysX abort handling.
+    events.clear();
+    next.sharedFoundPairIndex=1u;
+    next.sharedFoundAggPairIndex=2u;
+    source.queue_uploads({{descriptor,&next,sizeof(next)}});
+    gate.arm_source_stream(source);
+    PairTask invalidFound("found",events),invalidLost("lost",events);
+    require_throws([&]{
+        gate.fetch_and_release([&]{
+            (void)fetch_source_sap_results(context,addresses,descriptor,host,
+                {nullptr,0u},{nullptr,0u},false,roles);
+            events.emplace_back("publish");
+        },[&]{events.emplace_back("continuations");},
+        invalidFound,invalidLost);
+    },"Invalid GPU descriptor counters were published");
+    if(!gate.armed() || !events.empty() ||
+       invalidFound.releases() || invalidLost.releases() ||
+       roles.box_handles!=prior.box_handles)
+        throw std::runtime_error("Invalid GPU counters released original tasks");
+    // Do not destroy the source resource while gate remains armed;
+    // in the real scene the original abort/teardown path handles that.
+    context.destroy_buffer(root);
+}
+
 } // namespace
 
 int main() {
@@ -410,10 +606,12 @@ int main() {
         exercise(Backend::D3D12);
         verify_source_update_gates();
         { Context context(Backend::D3D12); verify_source_frame_swaps(context); }
+        verify_source_native_fetch(Backend::D3D12);
 #else
         exercise(Backend::Vulkan);
         verify_source_update_gates();
         { Context context(Backend::Vulkan); verify_source_frame_swaps(context); }
+        verify_source_native_fetch(Backend::Vulkan);
 #endif
         std::cout << "PhysX broadphase completion gate PASS\n";
         return 0;

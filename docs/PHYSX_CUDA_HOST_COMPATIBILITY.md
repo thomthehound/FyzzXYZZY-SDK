@@ -128,6 +128,42 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Source SAP GPU fetch / original pair-task publication
+
+The native SAP host path can now hand the borrowed `SourceSapDmaNative`
+stream directly to `BroadPhaseCompletionGate::arm_source_stream()`, keeping
+one original source-stream completion and task-release boundary. It submits
+the remaining native GPU command segment without waiting. The completion
+gate queries readiness of the last native submission and reaps source
+upload/copy/dispatch tokens only in the original fetch phase.
+
+`fetch_source_sap_results()` consumes a real GPU-resident
+`PxgBroadPhaseDesc` via its registered source CUDA-style pointer and
+downloads source `foundPairReportMap` / `lostPairReportMap` records into
+the **caller-owned original actor-pair destinations**. It preserves source
+count semantics: actor pairs equal the clamped raw pair count minus the
+aggregate count; required capacity uses the raw maximum; abort mode
+publishes empty actor-pair lists; overflow is exposed without pretending
+lost pairs were retained. It also exposes the original region totals.
+
+Only after validating both CPU destinations and both GPU source views,
+downloading reports and copying the original descriptor to the host does it
+rotate the seven original X/Y/Z history-buffer families. The integer-bound
+swap is deliberately left at its earlier `update()` call site. Pass this
+fetch operation as the existing completion gate's fetch callback, so the
+original `PxgAABBManager` continuations cannot be installed or released
+before result publication. Publication errors remain retryable without
+double-swapping histories; partial task release remains terminal.
+
+The Linux Vulkan and Windows D3D12/WARP completion regression exercises
+the joined path with real native uploads/readbacks, pair-count overflow,
+abort, idle frames, invalid GPU counters, failed-fetch retry and original
+task release ordering. **This is not yet a live `PxScene` adapter**:
+source scene object lifetime, native copy-reports shader output production,
+PhysX's original allocator ownership, and real task dispatcher integration
+still require direct wiring. No new scene scheduler or fabricated GPU event
+chain is introduced.
+
 ## Source SAP mStream DMA ordering for native stages
 
 The internal `SourceSapDmaNative` now lowers adjacent

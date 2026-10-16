@@ -81,6 +81,15 @@ public:
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
+    // Readiness of the most recent source-ordered GPU submission. The caller
+    // must first submit the pending source stage commands (the completion
+    // gate's arm_source_stream() performs that submission).
+    bool gpu_complete() const {
+        if (!pending_.empty())
+            throw std::logic_error("PhysX source GPU commands not submitted");
+        return tokens_.empty() || context_.submission_complete(tokens_.back());
+    }
+
     // Called at the original GPU fetch/publication boundary, before
     // PxgAABBManager releases found/lost tasks. Reap all staging/command
     // tokens; waiting the last ordered submission implies GPU visibility
