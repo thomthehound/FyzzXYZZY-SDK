@@ -5,6 +5,11 @@
 #include "physx_gpu/sap_host_frame_roles.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_fetch_native.h"
+#include "physx_gpu/source_physx_heap_roots.h"
+#include "physx_gpu/source_physx_root_callback.h"
+#include "physx_gpu/source_physx_mapped_report_roots.h"
+#include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include <PxPhysicsAPI.h>
 
 #include <array>
 #include <cstdint>
@@ -598,6 +603,164 @@ void verify_source_native_fetch(Backend backend) {
     context.destroy_buffer(root);
 }
 
+
+void verify_original_mapped_heap_fetch(Backend backend, bool force_staged) {
+    using fyzz::physx_gpu::CudaDeviceAddressMap;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourcePhysxMappedReportRoots;
+    using fyzz::physx_gpu::fetch_source_sap_results;
+    using Pair = physx::PxgBroadPhasePair;
+
+    // Original PxgHeapMemoryAllocator uses PxGetFoundation() for its
+    // CPU-side metadata allocator: preserve the original initialization.
+    struct Foundation {
+        physx::PxDefaultAllocator allocator;
+        physx::PxDefaultErrorCallback errors;
+        physx::PxFoundation* native = nullptr;
+        Foundation() {
+            native = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
+            if (!native) throw std::runtime_error("PhysX Foundation unavailable");
+        }
+        ~Foundation() { if (native) native->release(); }
+    } foundation;
+
+    Context context(backend);
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative source(context, addresses);
+    SourcePhysxHeapRoots deviceRoots(context, addresses);
+    SourcePhysxDeviceRootCallback device(deviceRoots, &source);
+    SourcePhysxMappedReportRoots mapped(
+        context, addresses, source,
+        force_staged ? SourcePhysxMappedReportRoots::Mode::ForceStaged
+                     : SourcePhysxMappedReportRoots::Mode::PreferDirect);
+    bool aborted = false;
+    const auto abort = [](void* ptr) noexcept { *static_cast<bool*>(ptr) = true; };
+    using Address = CudaDeviceAddressMap::Address;
+    const auto descriptor = deviceRoots.allocate_root(sizeof(physx::PxgBroadPhaseDesc));
+
+    {
+        // The ORIGINAL PhysX heap manager and pinned/mapped host buddy
+        // allocator own the CPU arrays; this fetch consumes those very
+        // arrays, not a duplicated test-side shadow report buffer.
+        physx::PxgHeapMemoryAllocatorManager manager(
+            4096u, device, mapped, mapped, abort, &aborted);
+        auto* heap=static_cast<physx::PxgHeapMemoryAllocator*>(
+            manager.mPinnedHostMappedMemoryAllocator);
+        constexpr std::size_t capacity=8u;
+        auto* found=static_cast<Pair*>(heap->allocate(
+            capacity*sizeof(Pair),physx::PxsHeapStats::eBROADPHASE,
+            __FILE__,__LINE__));
+        auto* lost=static_cast<Pair*>(heap->allocate(
+            capacity*sizeof(Pair),physx::PxsHeapStats::eBROADPHASE,
+            __FILE__,__LINE__));
+        if(!found || !lost || mapped.live_roots()!=1u ||
+           mapped.is_direct(found) != mapped.is_direct(lost))
+            throw std::runtime_error("Original mapped PhysX host heap lost report roots");
+        const auto gpuFound=mapped.device_address(found,capacity*sizeof(Pair));
+        const auto gpuLost=mapped.device_address(lost,capacity*sizeof(Pair));
+        if(gpuFound==gpuLost)
+            throw std::runtime_error("Source found/lost mapped aliases overlapped");
+
+        std::array<Pair,capacity> foundGPU{}, lostGPU{};
+        for(std::uint32_t i=0;i<capacity;++i){
+            foundGPU[i]=Pair(31u+i,71u+i);
+            lostGPU[i]=Pair(101u+i,201u+i);
+        }
+        const auto srcFound=deviceRoots.allocate_root(sizeof(foundGPU));
+        const auto srcLost=deviceRoots.allocate_root(sizeof(lostGPU));
+        physx::PxgBroadPhaseDesc gpu{};
+        gpu.max_found_lost_pairs=static_cast<std::uint32_t>(capacity);
+        gpu.sharedFoundPairIndex=4u;
+        gpu.sharedFoundAggPairIndex=1u;
+        gpu.sharedLostPairIndex=3u;
+        gpu.sharedLostAggPairIndex=1u;
+        gpu.foundPairReportMap=reinterpret_cast<Pair*>(
+            static_cast<std::uintptr_t>(gpuFound));
+        gpu.lostPairReportMap=reinterpret_cast<Pair*>(
+            static_cast<std::uintptr_t>(gpuLost));
+        gpu.overlapChecksTotalRegion=0x10000000aull;
+
+        source.queue_uploads({
+            {descriptor,&gpu,sizeof(gpu)},
+            {srcFound,foundGPU.data(),sizeof(foundGPU)},
+            {srcLost,lostGPU.data(),sizeof(lostGPU)}
+        });
+        source.queue_device_copy(gpuFound,srcFound,sizeof(foundGPU));
+        source.queue_device_copy(gpuLost,srcLost,sizeof(lostGPU));
+        SapFrameBufferRoles roles;
+        for(std::size_t i=0;i<6u;++i) roles.box_handles[i]=100u+i;
+        const auto previous=roles;
+        physx::PxgBroadPhaseDesc host{};
+        std::vector<std::string> events;
+        BroadPhaseCompletionGate gate(context);
+        gate.arm_source_stream(source);
+        PairTask foundTask("found",events),lostTask("lost",events);
+        fyzz::physx_gpu::SourceSapFetchedCounts counts{};
+        gate.fetch_and_release([&]{
+            counts=fetch_source_sap_results(
+                context,addresses,descriptor,host,
+                {found,capacity},{lost,capacity},false,roles,&mapped);
+            events.emplace_back("publish");
+        },[&]{events.emplace_back("continuations");},foundTask,lostTask);
+        check_event_order(events);
+        if(counts.found_actors!=3u || counts.lost_actors!=2u ||
+           counts.pairs_needed!=4u || host.overlapChecksTotalRegion!=
+           0x10000000aull || roles.box_handles[0]!=previous.box_handles[3])
+            throw std::runtime_error("Original mapped PhysX GPU fetch/count/swap contract changed");
+        for(std::size_t i=0;i<3u;++i)
+            if(found[i].mVolA!=foundGPU[i].mVolA ||
+               found[i].mVolB!=foundGPU[i].mVolB)
+                throw std::runtime_error("Mapped original found reports differ from native GPU output");
+        for(std::size_t i=0;i<2u;++i)
+            if(lost[i].mVolA!=lostGPU[i].mVolA ||
+               lost[i].mVolB!=lostGPU[i].mVolB)
+                throw std::runtime_error("Mapped original lost reports differ from native GPU output");
+
+        // Incorrect caller-provided CPU host array MUST reject without
+        // releasing original tasks or rotating history. Unlike descriptor
+        // corruption, this is retryable using the same completed GPU frame
+        // and the correct ORIGINAL PhysX host allocation.
+        events.clear();
+        gate.arm_source_stream(source);
+        PairTask rejectFound("found",events),rejectLost("lost",events);
+        const auto before=roles;
+        require_throws([&] {
+            gate.fetch_and_release([&] {
+                (void)fetch_source_sap_results(
+                    context,addresses,descriptor,host,
+                    {lost,capacity},{found,capacity},false,roles,&mapped);
+                events.emplace_back("publish");
+            },[&]{events.emplace_back("continuations");},
+            rejectFound,rejectLost);
+        },"Original broadphase accepted a mismatched mapped host alias");
+        if(!events.empty() || rejectFound.releases() || rejectLost.releases() ||
+           roles.box_handles!=before.box_handles)
+            throw std::runtime_error("Mapped host alias error released original PhysX tasks");
+        // Retry a failed publication before task continuation setup,
+        // without submitting a new frame or silently waiting elsewhere.
+        gate.fetch_and_release([&] {
+            counts=fetch_source_sap_results(
+                context,addresses,descriptor,host,
+                {found,capacity},{lost,capacity},false,roles,&mapped);
+            events.emplace_back("publish");
+        },[&]{events.emplace_back("continuations");},
+        rejectFound,rejectLost);
+        check_event_order(events);
+
+        heap->deallocateDeferred(found);
+        heap->deallocateDeferred(lost);
+        heap->flushDeferredDeallocs();
+        deviceRoots.release_root(srcFound,&source);
+        deviceRoots.release_root(srcLost,&source);
+    }
+    deviceRoots.release_root(descriptor,&source);
+    if (aborted || mapped.live_roots()!=0u ||
+        deviceRoots.live_roots()!=0u || addresses.live_allocations()!=0u)
+        throw std::runtime_error("Original mapped PhysX source fetch leaked allocator roots");
+}
+
 } // namespace
 
 int main() {
@@ -607,11 +770,15 @@ int main() {
         verify_source_update_gates();
         { Context context(Backend::D3D12); verify_source_frame_swaps(context); }
         verify_source_native_fetch(Backend::D3D12);
+        verify_original_mapped_heap_fetch(Backend::D3D12,true);
+        verify_original_mapped_heap_fetch(Backend::D3D12,false);
 #else
         exercise(Backend::Vulkan);
         verify_source_update_gates();
         { Context context(Backend::Vulkan); verify_source_frame_swaps(context); }
         verify_source_native_fetch(Backend::Vulkan);
+        verify_original_mapped_heap_fetch(Backend::Vulkan,true);
+        verify_original_mapped_heap_fetch(Backend::Vulkan,false);
 #endif
         std::cout << "PhysX broadphase completion gate PASS\n";
         return 0;

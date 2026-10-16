@@ -5,6 +5,7 @@
 
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sap_mapped_report_view.h"
 #include "CmVirtualAllocatorCallback.h"
 
 #include <cstddef>
@@ -35,7 +36,8 @@ namespace fyzz::physx_gpu {
 // This is NOT a generic coherent allocation callback for arbitrary CUDA
 // pointers/flags. Original mEventMapped busy polling is not supported;
 // BroadPhaseCompletionGate owns source GPU completion and task publication.
-class SourcePhysxMappedReportRoots final : public physx::Cm::VirtualAllocatorCallback {
+class SourcePhysxMappedReportRoots final : public physx::Cm::VirtualAllocatorCallback,
+                                         public SourceSapMappedReportView {
 public:
     using Address = CudaDeviceAddressMap::Address;
     enum class Mode { PreferDirect, ForceStaged };
@@ -150,7 +152,7 @@ public:
         roots_.erase(it);
     }
 
-    Address device_address(const void* host, std::size_t bytes) const {
+    Address device_address(const void* host, std::size_t bytes) const override {
         if (!host || !bytes)
             throw std::invalid_argument("PhysX mapped report GPU view must be nonempty");
         const auto location = find(host, bytes);
@@ -168,7 +170,7 @@ public:
     // The same source heap also owns CPU-written pinned host inputs; their
     // visibility to GPU is ordered by the caller's source submission.
     // Staged: fetch then download into the *original PhysX CPU array*.
-    void publish_at_fetch(void* host, std::size_t bytes) {
+    void publish_at_fetch(void* host, std::size_t bytes) override {
         if (!host || !bytes) return;
         if (!source_.bound_to(context_, addresses_))
             throw std::invalid_argument("Foreign source stream for mapped report fetch");

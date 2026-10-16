@@ -6,6 +6,7 @@
 
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/sap_host_frame_roles.h"
+#include "physx_gpu/source_sap_mapped_report_view.h"
 
 #include "PxgBroadPhaseDesc.h"
 #include "PxgBroadPhasePairReport.h"
@@ -47,6 +48,9 @@ struct SourceSapFetchedCounts {
 // created here; Context::download is the native synchronous DtoH operation at
 // the original fetch boundary. Copies into the caller's existing pinned pair
 // arrays are performed only after validating both destinations and sources.
+// When mapped_roots is supplied, GPU destination aliases must EXACTLY match
+// original PhysX host buddy allocations; native direct mappings require no
+// DtoH copy. The staged fallback remains on the same source GPU fence.
 // The original seven buffer history families rotate after successful fetch,
 // including the no-update path. Integer bounds swap separately in update().
 inline SourceSapFetchedCounts fetch_source_sap_results(
@@ -57,7 +61,8 @@ inline SourceSapFetchedCounts fetch_source_sap_results(
     SourceSapActorPairDestination found,
     SourceSapActorPairDestination lost,
     bool abort_mode,
-    SapFrameBufferRoles& roles) {
+    SapFrameBufferRoles& roles,
+    SourceSapMappedReportView* mapped_roots = nullptr) {
 
     const auto desc_source = addresses.resolve(
         descriptor_address, sizeof(physx::PxgBroadPhaseDesc));
@@ -104,19 +109,47 @@ inline SourceSapFetchedCounts fetch_source_sap_results(
             std::size_t(count) * sizeof(physx::PxgBroadPhasePair));
     };
 
-    // Both sources must validate BEFORE writing into either pinned host array.
+    // Validate BOTH original source GPU pointers and capacities before
+    // publishing either CPU array or mutating PhysX frame history.
     const auto found_source = checked_pair_source(
         gpu_desc.foundPairReportMap, found, counts.found_actors);
     const auto lost_source = checked_pair_source(
         gpu_desc.lostPairReportMap, lost, counts.lost_actors);
-    if (counts.found_actors)
-        context.download(found_source.buffer, found_source.offset, found.data,
-                         std::size_t(counts.found_actors) *
-                             sizeof(physx::PxgBroadPhasePair));
-    if (counts.lost_actors)
-        context.download(lost_source.buffer, lost_source.offset, lost.data,
-                         std::size_t(counts.lost_actors) *
-                             sizeof(physx::PxgBroadPhasePair));
+    const auto found_bytes = std::size_t(counts.found_actors) *
+                             sizeof(physx::PxgBroadPhasePair);
+    const auto lost_bytes = std::size_t(counts.lost_actors) *
+                            sizeof(physx::PxgBroadPhasePair);
+    if (mapped_roots) {
+        // Original PxgCudaBroadPhaseSap::gpuDMABack reads the SAME mapped
+        // host arrays the source GPU copyReports kernel wrote. Resolving
+        // both aliases here prevents inadvertently skipping a real copy
+        // because a caller passed an unrelated CPU allocation.
+        if (counts.found_actors &&
+            mapped_roots->device_address(found.data, found_bytes) !=
+                static_cast<CudaDeviceAddressMap::Address>(
+                    reinterpret_cast<std::uintptr_t>(gpu_desc.foundPairReportMap)))
+            throw std::invalid_argument("Found pair GPU alias does not match original PhysX mapped host allocation");
+        if (counts.lost_actors &&
+            mapped_roots->device_address(lost.data, lost_bytes) !=
+                static_cast<CudaDeviceAddressMap::Address>(
+                    reinterpret_cast<std::uintptr_t>(gpu_desc.lostPairReportMap)))
+            throw std::invalid_argument("Lost pair GPU alias does not match original PhysX mapped host allocation");
+        // Gate::fetch_and_release() has already waited the original GPU
+        // fence. publish_at_fetch() performs no second wait if all source
+        // tokens have been reaped; direct mappings need NO CPU copy.
+        // The original staged fallback copies only these consumed bytes.
+        if (found_bytes) mapped_roots->publish_at_fetch(found.data, found_bytes);
+        if (lost_bytes) mapped_roots->publish_at_fetch(lost.data, lost_bytes);
+    } else {
+        // Legacy caller-owned PhysX destinations (not mapped by callback):
+        // preserve the original guarded GPU-to-CPU result transfer.
+        if (found_bytes)
+            context.download(found_source.buffer, found_source.offset,
+                             found.data, found_bytes);
+        if (lost_bytes)
+            context.download(lost_source.buffer, lost_source.offset,
+                             lost.data, lost_bytes);
+    }
 
     host_descriptor = gpu_desc;
     roles.swap_histories_after_fetch();
