@@ -36,6 +36,8 @@ void pre_broadphase_native(
     const auto groups_bytes = capacity * sizeof(physx::PxU32);
     const auto env_bytes = capacity * sizeof(physx::PxU32);
 
+    buffers.boxes_capacity = capacity;
+
     // Retain the original allocation conditions and free-first buffer
     // growth semantics. Inactive bounds keep their previous GPU contents;
     // absence of environment IDs does not reallocate or upload their buffer.
