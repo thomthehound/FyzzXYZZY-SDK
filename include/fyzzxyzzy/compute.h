@@ -48,6 +48,12 @@ struct DeviceInfo {
     // D3D12: device architecture + custom-heap support, not mere upload/
     // readback heaps. Vulkan: available host-visible/coherent memory type.
     bool supports_gpu_writable_host_visible = false;
+    // A Vulkan DEVICE_LOCAL|HOST_VISIBLE memory type is possible even on
+    // non-UMA systems (e.g. CPU-accessible discrete GPU memory). Do not
+    // infer unified CPU/GPU architecture from this memory-type property.
+    bool has_device_local_host_visible_memory = false;
+    // These describe architecture-level UMA/cache guarantees where actually
+    // exposed (D3D12 architecture query), not Vulkan HOST_COHERENT.
     bool unified_memory = false;
     bool cache_coherent_unified_memory = false;
     // Resolved during adapter admission / logical-device creation, never dispatch.
