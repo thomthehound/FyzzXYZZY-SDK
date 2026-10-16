@@ -6,6 +6,7 @@
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include <PxPhysicsAPI.h>
 
 #include <algorithm>
@@ -584,6 +585,81 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
         throw std::runtime_error("Original PhysX heap root lifetime or abort signaling changed");
 }
 
+void exercise_original_native_physx_cuda_buffer(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted = false;
+    const auto abort=[](void* value) noexcept {
+        *static_cast<bool*>(value) = true;
+    };
+    std::array<std::uint8_t,256u> bytes{}, received{};
+    for(std::size_t i=0; i<bytes.size(); ++i)
+        bytes[i] = static_cast<std::uint8_t>((i * 37u + 19u) % 251u);
+
+    {
+        physx::PxgHeapMemoryAllocator heap(8192u, callback, abort, &aborted);
+        {
+            // Instantiate the real PhysX buffer object, not a fixture
+            // reproducing its pointer and size fields.
+            physx::PxgCudaBuffer buffer(heap, physx::PxsHeapStats::eBROADPHASE);
+            buffer.allocate(256u, __FILE__, __LINE__);
+            const auto old = buffer.getDevicePtr();
+            if (!old || buffer.getSize() != 256u)
+                throw std::runtime_error("PhysX source buffer failed initial device allocation");
+            stream.queue_uploads({{old, bytes.data(), bytes.size()}});
+            buffer.allocateCopyOldDataAsync(513u, stream, __FILE__, __LINE__);
+            const auto newer = buffer.getDevicePtr();
+            if (!newer || newer == old || buffer.getSize() != 513u)
+                throw std::runtime_error("Original PhysX buffer growth lost raw identity/capacity");
+            if (addresses.resolve(old, bytes.size()).buffer !=
+                    addresses.resolve(newer, bytes.size()).buffer)
+                throw std::runtime_error("PhysX buffer fixture did not exercise a shared native heap root");
+
+            // The old raw block must remain allocated until the original
+            // heap's deferred-flush boundary, including after GPU submission.
+            physx::PxgCudaBufferN<2> history(heap, physx::PxsHeapStats::eBROADPHASE);
+            history[0].allocate(256u, __FILE__, __LINE__);
+            if (history[0].getDevicePtr() == old)
+                throw std::runtime_error("PhysX deferred buffer was reused before flush");
+            history[1].allocate(128u, __FILE__, __LINE__);
+            const auto first = history[0].getDevicePtr();
+            const auto second = history[1].getDevicePtr();
+            physx::PxgCudaBuffer::swapBuffer(history[0], history[1]);
+            if (history[0].getDevicePtr() != second ||
+                history[1].getDevicePtr() != first)
+                throw std::runtime_error("Original PhysX history swap lost raw allocation identity");
+
+            stream.wait_at_fetch();
+            const auto dst = addresses.resolve(newer, bytes.size());
+            context.download(dst.buffer, dst.offset, received.data(), received.size());
+            if (received != bytes)
+                throw std::runtime_error("Original PxgCudaBuffer native raw growth copy changed payload");
+            heap.flushDeferredDeallocs();
+
+            // assign() releases the destination and transfers the source
+            // allocation, leaving exactly one owner of the raw heap key.
+            history[0].assign(history[1]);
+            if (history[0].getDevicePtr() != first ||
+                history[1].getDevicePtr() || history[1].getSize())
+                throw std::runtime_error("Original PhysX buffer assign changed ownership");
+            buffer.deallocateDeferred();
+            if (buffer.getDevicePtr() || buffer.getSize())
+                throw std::runtime_error("Deferred source buffer free retained ownership");
+            heap.flushDeferredDeallocs();
+        }
+        if (heap.getHeapStats().stats[physx::PxsHeapStats::eBROADPHASE] != 0u)
+            throw std::runtime_error("Original PhysX buffer destructors leaked GPU heap accounting");
+    }
+    if (aborted || roots.live_roots() || addresses.live_allocations())
+        throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
 void exercise_source_gpu_heap_manager(Context& context) {
     using fyzz::physx_gpu::SourcePhysxHeapRoots;
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
@@ -1039,6 +1115,7 @@ int main() {
         exercise_native_heap_raii_teardown(context);
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
+        exercise_original_native_physx_cuda_buffer(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
