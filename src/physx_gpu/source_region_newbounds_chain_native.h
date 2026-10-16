@@ -74,11 +74,18 @@ public:
         std::vector<compute::BatchCommand> pending;
         pending.reserve(14u);
         create_.append(pending, source, addresses, layout.create);
+        const auto created_commands = pending.size();
+        // The two source D32 clears can be segmented over a native device's
+        // maximum view range. Their physical command count need not be two.
+        if (created_commands < 3u)
+            throw std::logic_error("Missing original source region producer/clears");
         histograms_.append(pending, source, addresses, layout.histograms);
         active_.append(pending, source, addresses, layout.active);
         new_bounds_.append(pending, source, addresses, layout.new_bounds);
-        if (pending.size() != 14u)
-            throw std::logic_error("Original PhysX 14-operation region/pair chain changed");
+        // The remaining eleven original launches each lower to one native
+        // dispatch, regardless of the number of D32 clear chunks.
+        if (pending.size() != created_commands + 11u)
+            throw std::logic_error("Original PhysX region/pair launch chain changed");
         commands.reserve(commands.size() + pending.size());
         commands.insert(commands.end(),
             std::make_move_iterator(pending.begin()),
