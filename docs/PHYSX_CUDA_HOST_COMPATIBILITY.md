@@ -128,6 +128,37 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Original PhysX report allocations across multiple GPU heap roots
+
+`SourceSapReportNativeStage` lowers original
+`BP_ACCUMULATE_REPORT_STAGE_1`, `BP_ACCUMULATE_REPORT_STAGE_2` and
+`BP_COPY_REPORTS` into bounded views of **the original PhysX allocations**.
+Each CUDA-style source pointer is independently mapped to its native resource
+and view-local byte offset. Report arrays, 32-block scratch, source counters,
+volume metadata, mapped actor outputs and the descriptor's overflow field
+can occupy different GPU heap roots—or share buddy-heap slices—with no
+per-launch arena repacking, allocation or staging copy.
+
+The original two 32 × 4 × 256 classification launches and 64 × 256
+publication launch remain in the existing source stream. Both portable and
+native-wave classification variants operate on original
+`Bp::VolumeData::mAggregate` within actual source record strides.
+`SourceSapDmaNative`, `BroadPhaseCompletionGate` and
+`fetch_source_sap_results` retain the source's GPU completion, host fetch,
+history-buffer rotation and original found/lost task release ordering.
+
+Linux Vulkan and Windows D3D12/WARP conformance run the connected GPU
+report production→original descriptor→host fetch→task publication path
+with separate native roots and one shared root. No scene-owned pair lists
+are fabricated between the source kernels and their fetch. The previous
+single-root view lowering remains as a legacy conformance reference,
+not a requirement of the new native report stage.
+
+**Still outside scope:** actual `PxgCudaBroadPhaseSap` call-site rewiring,
+PhysX buddy-heap allocation/retirement integration and native CUDA-mapped
+host report interoperability. Those remain prerequisites to shipping a
+real native-backed `PxScene` GPU broadphase.
+
 ## Source GPU report production connected to native fetch
 
 `lower_source_sap_report_descriptors()` resolves original
