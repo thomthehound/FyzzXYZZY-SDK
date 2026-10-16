@@ -17,8 +17,12 @@ namespace fyzz::compute {
 // separate implementation of Context until shared runtime selection lands.
 enum class Backend { Vulkan, D3D12 };
 
-// HostVisible supports direct mapping; DeviceLocal uses staging for host transfers.
-enum class MemoryPlacement { HostVisible, DeviceLocal };
+// Auto preserves each backend's established default (Vulkan currently selects
+// HostVisible; D3D12 selects DeviceLocal). HostVisible is an explicit, strict
+// request for CPU-mappable, GPU-writeable storage: unsupported adapters
+// reject it, never silently allocate a DEFAULT heap and label it mapped.
+// DeviceLocal retains normal GPU-preferred storage with staging transfers.
+enum class MemoryPlacement { Auto, HostVisible, DeviceLocal };
 
 struct DeviceInfo {
     std::uint32_t ordinal = 0;
@@ -38,6 +42,12 @@ struct DeviceInfo {
     // Vulkan queries VK_SUBGROUP_FEATURE_ARITHMETIC_BIT; D3D12 queries
     // WaveOps and shader model via CheckFeatureSupport. Not a vendor ID.
     bool supports_wave_arithmetic = false;
+    // Physical GPU-writable buffer memory that can also be CPU-mapped.
+    // D3D12: device architecture + custom-heap support, not mere upload/
+    // readback heaps. Vulkan: available host-visible/coherent memory type.
+    bool supports_gpu_writable_host_visible = false;
+    bool unified_memory = false;
+    bool cache_coherent_unified_memory = false;
     // Resolved during adapter admission / logical-device creation, never dispatch.
     bool supports_int64_shader = false;
     bool supports_int64_wave = false; // 64-bit subgroup add/prefix is enabled.
@@ -151,10 +161,11 @@ public:
 
     const DeviceInfo& device_info() const;
 
-    // DeviceLocal buffers use GPU-preferred memory with internal staging.
-    // HostVisible remains the default for existing callers.
+    // Auto retains the pre-existing backend default. An explicit
+    // HostVisible request must produce CPU-mappable GPU-writable memory,
+    // or fail at creation rather than silently allocating device-only memory.
     BufferId create_buffer(std::size_t bytes,
-                           MemoryPlacement placement = MemoryPlacement::HostVisible);
+                           MemoryPlacement placement = MemoryPlacement::Auto);
     void destroy_buffer(BufferId id);
 
     // Invalidates the handle immediately without waiting for the GPU.
@@ -164,6 +175,17 @@ public:
     // async grow/copy. Pending submissions must still be waited or retired
     // through their normal API. The Context owns the retired allocation.
     void retire_buffer(BufferId id);
+
+    // Direct CPU access to a GPU-writable HostVisible buffer; never
+    // implicitly synchronize. Callers must wait the existing source GPU
+    // fence BEFORE reading GPU writes; finish CPU accesses before GPU uses
+    // the resource. map_buffer returns a pointer valid until unmap_buffer.
+    // Unmap makes CPU writes visible per backend memory-coherency rules.
+    // Neither API stages a transfer or takes ownership of the buffer.
+    // Mapping twice or freeing/retiring a mapped buffer is invalid.
+    bool buffer_is_host_visible(BufferId id) const;
+    void* map_buffer(BufferId id);
+    void unmap_buffer(BufferId id);
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes);
 
