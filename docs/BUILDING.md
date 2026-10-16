@@ -7,6 +7,21 @@ The CPU implementation uses **upstream PhysX CPU** as its physics implementation
 Godot-independent `FyzzXYZZY::Core` C++ target. CUDA is disabled. The shader translation and
 portable GPU runtimes are separate milestones.
 
+## C++ toolchain requirement
+
+FyzzXYZZY-owned native libraries, test executables and the Godot GDExtension
+require **C++23**, including a standard library with `std::expected`.
+CMake must be 3.21 or newer. The SDK uses standard C++23 mode, not GNU
+dialect extensions; the build fails rather than falling back to C++20/17.
+The `FyzzXYZZY::Core` target propagates its C++23 compile requirement to
+downstream native consumers. This does not change the upstream PhysX
+source's independently configured language requirements.
+
+The `fyzzxyzzy_cpp23_contract` test compiles a C++23 `if consteval`
+expression and exercises `std::expected`. Both platform CI jobs run
+it before the longer shader and full SDK builds, and the offline source
+distribution exercises it as well.
+
 ## Source layout and provenance
 
 - During the transition to an in-tree PhysX-derived engine, CMake uses
@@ -25,11 +40,11 @@ portable GPU runtimes are separate milestones.
 
 ## Linux: Ninja
 
-Prerequisites: CMake 3.21+, Ninja, supported C++ compiler, and Git (only if fetching source).
+Prerequisites: CMake 3.21+, Ninja, a C++23-capable compiler and standard library (GCC 13+ is used by Linux CI), and Git (only if fetching source).
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
+cmake --build build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir build --output-on-failure
 ```
 
@@ -38,12 +53,12 @@ For a local PhysX checkout, add
 
 ## Windows: Developer PowerShell
 
-Prerequisites: Visual Studio 2022 C++ tools, CMake 3.21+, Ninja, and Git (only if
+Prerequisites: current Visual Studio 2022 C++ tools with C++23 preview/latest mode, CMake 3.21+, Ninja, and Git (only if
 fetching source). Invoke from a Developer PowerShell environment where `cl` is available.
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
+cmake --build build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir build --output-on-failure
 ```
 
@@ -68,7 +83,7 @@ Extract the archive and configure the CPU library without network access:
 ```sh
 cmake -E tar xzf build/fyzzxyzzy-source.tar.gz
 cmake -S FyzzXYZZY-SDK -B FyzzXYZZY-SDK/build -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-cmake --build FyzzXYZZY-SDK/build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
+cmake --build FyzzXYZZY-SDK/build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test
 ctest --test-dir FyzzXYZZY-SDK/build --output-on-failure
 ```
 
@@ -81,6 +96,7 @@ godot-cpp separately and are not offline-complete in this archive.
 The test creates a floor and dynamic box, advances 180 fixed 60 Hz steps, and checks
 that the box falls, contacts the floor and settles.
 
+The C++23 language/library contract is compiled and executed before full CI builds.
 The CPU test suite also checks the internal 64-bit CUDA-style host
 device-address registry, including >4 GiB virtual offsets, allocation bounds,
 and stale pointer rejection (without allocating GPU memory). Both executables
