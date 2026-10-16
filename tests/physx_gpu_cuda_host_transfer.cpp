@@ -5,6 +5,7 @@
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include <PxPhysicsAPI.h>
 
 #include <algorithm>
 #include <array>
@@ -19,6 +20,25 @@ using namespace fyzz::compute;
 using fyzz::physx_gpu::CudaDeviceAddressMap;
 
 namespace {
+// PhysX source buddy-heap bookkeeping uses PxReflectionAllocator/PxPool,
+// which call PxGetBroadcastAllocator(). The original PhysX foundation must
+// therefore be alive BEFORE constructing this heap; without it, source
+// allocation bookkeeping dereferences an uninitialized foundation pointer.
+struct SourcePhysxFoundation {
+    physx::PxDefaultAllocator allocator;
+    physx::PxDefaultErrorCallback errors;
+    physx::PxFoundation* foundation = nullptr;
+    SourcePhysxFoundation() {
+        foundation = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
+        if (!foundation)
+            throw std::runtime_error("Unable to initialize original PhysX allocation foundation");
+    }
+    ~SourcePhysxFoundation() {
+        if (foundation) foundation->release();
+    }
+    SourcePhysxFoundation(const SourcePhysxFoundation&) = delete;
+    SourcePhysxFoundation& operator=(const SourcePhysxFoundation&) = delete;
+};
 // Model only PxgCudaBuffer's source-visible pointer/size fields; PhysX
 // remains the owner of the real allocation and device context.
 struct SourceBufferState {
@@ -566,6 +586,7 @@ void exercise_original_source_physx_buddy_heap(Context& context) {
 
 int main() {
     try {
+        SourcePhysxFoundation originalPhysxRuntime;
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
 #else
