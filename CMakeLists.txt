@@ -1145,9 +1145,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       target_include_directories(fyzzxyzzy_physx_bp_report_classification PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
-        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
       target_link_libraries(fyzzxyzzy_physx_bp_report_classification PRIVATE
-        fyzzxyzzy_physx_gpu_stages)
+        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_original_gpu_heap)
       add_dependencies(fyzzxyzzy_physx_bp_report_classification
         fyzzxyzzy_physx_bp_report_class_first_shader
         fyzzxyzzy_physx_bp_report_class_second_shader
@@ -2477,9 +2480,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_include_directories(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+         "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_bp_report_classification_d3d12 PRIVATE
-      fyzzxyzzy_physx_gpu_stages_d3d12)
+      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_original_gpu_heap)
     add_dependencies(fyzzxyzzy_physx_bp_report_classification_d3d12
       fyzzxyzzy_d3d12_bp_report_class_first_shader
       fyzzxyzzy_d3d12_bp_report_class_second_shader
