@@ -753,9 +753,27 @@ void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
         const bool direct=mapped.is_direct(found,bytes);
         if(direct != mapped.is_direct(lost,bytes) ||
            direct != mapped.is_direct(cpuSource,bytes) ||
-           direct != (!force_staged &&
-                      context.device_info().supports_gpu_writable_host_visible))
+           (direct && (force_staged ||
+                       !context.device_info().supports_gpu_writable_host_visible)))
             throw std::runtime_error("Source mapped reports chose the wrong native memory path");
+        if(!force_staged &&
+           context.device_info().supports_gpu_writable_host_visible &&
+           !direct) {
+            // The general Vulkan memory-type capability may lack a
+            // compatible storage-buffer memoryTypeBits intersection.
+            // An unsupported-placement error must be the ONLY cause
+            // for this permitted fallback; don't hide OOM/driver errors.
+            bool incompatible=false;
+            try {
+                const auto probe=context.create_buffer(
+                    4096u+255u,MemoryPlacement::HostVisible);
+                context.destroy_buffer(probe);
+            } catch (const UnsupportedMemoryPlacement&) {
+                incompatible=true;
+            }
+            if(!incompatible)
+                throw std::runtime_error("PhysX mapped path fell back without an incompatible memory type");
+        }
         if((reinterpret_cast<std::uintptr_t>(found)&255u)!=0u ||
            (reinterpret_cast<std::uintptr_t>(lost)&255u)!=0u)
             throw std::runtime_error("Source mapped report host roots lost buddy alignment");
@@ -886,7 +904,15 @@ void exercise_true_native_host_visible(Context& context) {
         context.destroy_buffer(device);
         return; // Discrete GPU/WARP without mapped UAV capability uses staged fallback.
     }
-    const auto mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+    BufferId mapped=0;
+    try {
+        mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+    } catch(const UnsupportedMemoryPlacement&) {
+        // Vulkan's per-buffer memoryTypeBits can rule out a host-coherent
+        // type despite a general physical-device memory-type capability.
+        context.destroy_buffer(device);
+        return;
+    }
     if(!context.buffer_is_host_visible(mapped))
         throw std::runtime_error("Explicit HostVisible allocation silently used default heap");
     auto* first=static_cast<std::uint8_t*>(context.map_buffer(mapped,HostMapAccess::Write));
