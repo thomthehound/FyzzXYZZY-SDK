@@ -101,12 +101,13 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) ==
                              (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
-                    info.unified_memory = true;
+                    info.has_device_local_host_visible_memory = true;
             }
             // Coarse memory-heap capability only: actual VkBuffer
             // memoryTypeBits are validated by make_buffer at allocation.
-            // VK_MEMORY_PROPERTY_HOST_COHERENT_BIT defines required memory
-            // visibility, not a guarantee about shared CPU/GPU cache design.
+            // Device-local host visibility can also come from discrete
+            // GPU BAR mappings; neither that nor HOST_COHERENT establishes
+            // architectural UMA or shared CPU/GPU cache design.
             info.cache_coherent_unified_memory = false;
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
