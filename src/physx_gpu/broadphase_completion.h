@@ -10,6 +10,8 @@
 
 namespace fyzz::physx_gpu {
 
+class SourceSapDmaNative;
+
 // Completion boundary for the pinned PhysX 5.11 broadphase host flow:
 // PxgCudaBroadPhaseSap::gpuDMABack/fetchBroadPhaseResults waits for the
 // results, and PxgAABBManager::postBroadPhase publishes/resizes pair arrays
@@ -26,6 +28,10 @@ public:
     // still has a publication boundary. Nonzero is a Context submission ID.
     // A subsequent frame can be armed only after successful publication.
     void arm(compute::SubmissionId submission);
+
+    // Borrow the original source stream and submit its last GPU segment.
+    // Wait and reap the source-ordered submissions only at fetch.
+    void arm_source_stream(SourceSapDmaNative& stream);
 
     // This is a readiness check only. It never publishes CPU-visible data
     // or removes a PhysX task reference.
@@ -59,6 +65,7 @@ public:
 private:
     compute::Context& context_;
     compute::SubmissionId submission_ = 0;
+    SourceSapDmaNative* source_stream_ = nullptr;
     bool armed_ = false;
     // Partial continuation installation or inline task execution cannot be
     // replayed safely by a new GPU frame.
