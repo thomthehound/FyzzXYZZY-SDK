@@ -88,6 +88,25 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.vendor_id = properties.vendorID;
             info.device_id = properties.deviceID;
             info.api_version = properties.apiVersion;
+            VkPhysicalDeviceMemoryProperties memory{};
+            vkGetPhysicalDeviceMemoryProperties(physical, &memory);
+            for (std::uint32_t m = 0; m < memory.memoryTypeCount; ++m) {
+                const auto flags = memory.memoryTypes[m].propertyFlags;
+                if ((flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+                    info.supports_gpu_writable_host_visible = true;
+                if ((flags & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) ==
+                             (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                    info.unified_memory = true;
+            }
+            // Coarse memory-heap capability only: actual VkBuffer
+            // memoryTypeBits are validated by make_buffer at allocation.
+            info.cache_coherent_unified_memory =
+                info.unified_memory && info.supports_gpu_writable_host_visible;
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
