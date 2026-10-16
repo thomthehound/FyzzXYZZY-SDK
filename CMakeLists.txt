@@ -98,7 +98,8 @@ endif()
 # This is a source port with an injected generic virtual root callback and
 # abort sink; it is NOT a second allocation algorithm or an external patch.
 add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
-  src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp)
+  src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp
+  src/physx_port/gpucommon/PxgHeapMemoryAllocatorManager.cpp)
 target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_17)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon"

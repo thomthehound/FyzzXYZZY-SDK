@@ -128,6 +128,37 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Original PhysX GPU heap manager with native callback selection
+
+The original `PxgHeapMemoryAllocatorManager` is now implemented beside
+the source-derived `PxgHeapMemoryAllocator`. Its **original ownership and
+routing policy** is preserved: one device heap; separate ordinary pinned
+and GPU-mapped pinned host heaps in zero-capacity/debug mode; one *shared
+mapped-host* heap exposed through both host callback slots in ordinary
+mode. Only the original manager's CUDA-bound `PxgMemoryManager` lookup
+is replaced with three caller-provided
+`Cm::VirtualAllocatorCallback&` instances and the neutral abort sink.
+The original `getDeviceMemorySize`, `getDeviceHeapStats`, and
+`flushDeferredDeallocs` behavior is retained. Partial construction is
+transactional: unsuccessful host heap construction releases the
+already-created device heap without leaking its native roots.
+
+The conformance test constructs the **actual source manager**, verifies
+normal alias identity and debug separation, correct host-callback
+selection, device heap accounting and deferred-flush ownership, and
+destruction of every native and host root. A failing host allocator
+exercises exceptional setup cleanup. Those tests use ordinary CPU host
+allocations **only to prove callback selection and ownership**. They
+do not claim that the test host pointers are page-locked or GPU-mapped.
+
+**A live GPU scene still requires genuine backend-specific pinned and
+mapped host implementations.** An ordinary CPU allocation is not
+substitutable for PhysX's `CU_MEMHOSTALLOC_DEVICEMAP` behavior. Native
+scene construction must provide GPU-visible host report views with
+correct synchronization and lifetimes, alongside the source GPU task
+and stream orchestration. These host facilities remain internal
+infrastructure, not a CUDA requirement on FyzzXYZZY applications.
+
 ## Original PhysX GPU buddy heap, now backend-neutral
 
 The original `Block` and `PxgHeapMemoryAllocator` implementation from
