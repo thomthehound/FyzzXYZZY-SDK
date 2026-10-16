@@ -128,6 +128,42 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Connected original three-pass GPU reporting into the PhysX mapped host heap
+
+The source `BP_ACCUMULATE_REPORT_STAGE_1`,
+`BP_ACCUMULATE_REPORT_STAGE_2`, and `BP_COPY_REPORTS` kernels
+already operate through `SourceSapReportNativeStage`, which accepts
+the *original* `PxgBroadPhaseDesc` and resolves each source pointer
+independently (multiple original PhysX roots, not a copied global
+arena). Previously their conformance fed fabricated GPU storage slices
+for `foundPairReportMap`/`lostPairReportMap`.
+
+The connected source conformance (PR #88) now constructs the **original**
+`PxgHeapMemoryAllocatorManager` and its **original**
+`PxgHeapMemoryAllocator` for mapped host allocation. Those same
+`PxgBroadPhasePair` CPU pointers have exact GPU aliases in the
+`CudaDeviceAddressMap`. The three real native report GPU kernels
+write into those aliases, and `BroadPhaseCompletionGate` waits their
+original ordered `SourceSapDmaNative` stream, fetches the descriptor
+and original PhysX pair arrays through `fetch_source_sap_results`,
+rotates the seven source history families, and releases the original
+found/lost `PxBaseTask` references.
+
+Conformance runs on Linux/Vulkan and Windows/D3D12/WARP using
+direct host mapping when available and the staged fallback by force.
+The original source classification and copy behavior is checked
+against a CPU oracle for actor/aggregate pairs, stable order, overflow
+and reports. The PhysX heap manager, native GPU buffers and CPU
+report roots are released through the original allocator lifetimes;
+no report-list shadow copy or alternate simulation scheduler is
+introduced.
+
+**Still pending:** the actual `PxgCudaBroadPhaseSap` and
+`PxgAABBManager` source objects and their `ScPipeline` scene task
+integration. This is real GPU shader execution with the original
+host heap and completion gate, not yet a GPU-enabled `PxScene`.
+Hardware timing comparisons remain deferred.
+
 ## Connected original broadphase fetch and task publication
 
 `fetch_source_sap_results()` now optionally consumes the actual
