@@ -427,7 +427,7 @@ void verify_source_native_fetch(Backend backend) {
     gpu.max_found_lost_pairs=4u;
     gpu.sharedFoundPairIndex=4u; gpu.sharedFoundAggPairIndex=1u;
     gpu.sharedLostPairIndex=3u; gpu.sharedLostAggPairIndex=1u;
-    gpu.overlapChecksTotalRegion=57u;
+    gpu.overlapChecksTotalRegion=0x100000039ull; // Original PxU64 counter.
     gpu.startRegionAccumTotal=23u;
     gpu.regionAccumTotal=61u;
     gpu.foundPairReportMap=cpuVirtual(foundAddress);
@@ -476,7 +476,7 @@ void verify_source_native_fetch(Backend backend) {
     check_event_order(events);
     if(result.found_actors!=3u || result.lost_actors!=2u ||
        result.pairs_needed!=4u || result.overflow ||
-       result.overlap_checks_total_region!=57u ||
+       result.overlap_checks_total_region!=0x100000039ull ||
        result.start_region_accum_total!=23u ||
        result.region_accum_total!=61u ||
        host.sharedFoundPairIndex!=4u)
