@@ -3,6 +3,7 @@
 
 #include "physx_gpu/source_fill_d32_native.h"
 #include "physx_gpu/source_native_view.h"
+#include "physx_gpu/source_sap_dma_native.h"
 
 #include <algorithm>
 #include <array>
@@ -143,6 +144,61 @@ void run(Context& ctx, SourceFillD32NativeStage& stage) {
     }
     for(auto id:buffers)ctx.destroy_buffer(id);
 }
+
+void exercise_source_dma_order(Context& ctx, SourceFillD32NativeStage& stage) {
+    // The original SAP host enqueues uploads before gpuDMAUp's 14-source-
+    // operation segment. Buffer growth may insert raw DtoD copies between
+    // upload groups; later descriptor uploads cannot bypass those copies.
+    constexpr std::size_t words=1024u, oldAt=260u, grownAt=784u, descriptorAt=2048u;
+    const auto root=ctx.create_buffer(words*4u,MemoryPlacement::DeviceLocal);
+    std::vector<std::uint32_t> initial(words,kCanary), expected=initial;
+    ctx.upload(root,0u,initial.data(),initial.size()*4u);
+
+    CudaDeviceAddressMap addresses;
+    const auto rawOld=addresses.register_source_slice(root,oldAt,256u,4u);
+    const auto rawGrown=addresses.register_source_slice(root,grownAt,512u,16u);
+    const auto descriptor=addresses.register_slice(root,descriptorAt,256u);
+    std::array<std::uint32_t,64> before{},after{};
+    std::array<std::uint32_t,16> header{};
+    for(std::uint32_t i=0u;i<64u;++i){
+        before[i]=i*31u+9u;
+        after[i]=i*19u+7u;
+    }
+    header.fill(0x13572468u);
+    SourceSapDmaNative stream(ctx,addresses);
+
+    // A malformed later upload invalidates the whole adjacent group,
+    // before any native transfer is submitted.
+    reject([&]{
+        stream.queue_uploads({{rawOld,before.data(),sizeof(before)},
+                              {rawOld+253u,after.data(),sizeof(after)}});
+    },"PhysX source DMA accepted a partially invalid upload group");
+    stream.queue_uploads({{rawOld,before.data(),sizeof(before)},
+                          {descriptor,header.data(),sizeof(header)}});
+    // Source gpuDMAUp growth preserves the raw allocation's old bytes.
+    stream.queue_device_copy(rawGrown,rawOld,sizeof(before));
+    reject([&]{stream.queue_device_copy(rawGrown+4u,rawGrown,128u);},
+           "PhysX source DMA accepted overlapping device copy");
+
+    // A subsequent HtoD upload must remain AFTER the earlier DtoD, even
+    // though that device copy was only queued in a native command batch.
+    stream.queue_uploads({{rawOld,after.data(),sizeof(after)}});
+    stage.append(stream.commands(),addresses,descriptor,0xcafebabeu,16u);
+    stream.queue_device_copy(rawGrown+256u,descriptor,sizeof(header));
+    check(stream.submit()!=0u,"Source GPU DMA stream lost its final submission");
+    stream.wait_at_fetch();
+
+    std::copy(before.begin(),before.end(),expected.begin()+grownAt/4u);
+    std::copy(after.begin(),after.end(),expected.begin()+oldAt/4u);
+    std::fill_n(expected.begin()+descriptorAt/4u,header.size(),0xcafebabeu);
+    std::fill_n(expected.begin()+(grownAt+256u)/4u,header.size(),0xcafebabeu);
+    std::vector<std::uint32_t> observed(words);
+    ctx.download(root,0u,observed.data(),observed.size()*4u);
+    check(observed==expected,
+          "Original PhysX SAP HtoD/DtoD/dispatch source order or canaries changed");
+    ctx.destroy_buffer(root);
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
@@ -163,6 +219,7 @@ int main(int argc,char** argv) {
         }
         SourceFillD32NativeStage stage(ctx,load_shader(argv[1]));
         run(ctx,stage);
+        exercise_source_dma_order(ctx,stage);
         std::cout<<"Original PhysX CUDA memsetD32Async native GPU fill PASS\n";
         return 0;
     }catch(const std::exception& e){

@@ -128,6 +128,41 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Source SAP mStream DMA ordering for native stages
+
+The internal `SourceSapDmaNative` now lowers adjacent
+`PxgCudaBroadPhaseSap::preBroadPhase` / `gpuDMAUp`
+`memcpyHtoDAsync` transfers, original raw-pointer `memcpyDtoDAsync`
+growth copies, and source-native kernel batches onto the existing
+`compute::Context` ordered queue. It retains all original
+`CudaDeviceAddressMap` allocations and does not introduce a new frame owner,
+heap, source descriptor, or event scheduler.
+
+- An adjacent HtoD group resolves and validates all source pointers before
+  submission. `Context::submit_upload_batch` snapshots caller memory and
+  owns staging until the group's completion token is reaped.
+- Raw DtoD copies and existing source-native dispatches are appended to the
+  same GPU command segment. If a later HtoD group follows, pending GPU
+  commands submit first; **no CPU wait is introduced**.
+- Submission tokens remain live through the source fetch boundary.
+  `wait_at_fetch` reaps source-ordered submissions without a queue-wide
+  `wait_all` or premature staging reclamation.
+- The D32 source regression tests cover HtoD → raw growth DtoD → HtoD →
+  dispatch → DtoD on actual native GPU resources, including disjoint same-root
+  allocation slices, rejected overlap/cross-allocation access, and full-root
+  canaries. The connected fourteen-operation fixture also uploads its
+  original GPU descriptor through this path before source dispatch.
+
+**Uncompleted integration:** this is a thin, single-source-stream
+transfer adapter used in native GPU fixtures. The original
+`PxgCudaBroadPhaseSap` caller, heap allocation and deferred-free queue,
+multi-stream/event dependencies, DMA-back publication, and live
+`PxScene` task lifecycle are not yet connected. Consecutive upload/GPU
+command segments may require distinct ordered submissions; evaluate
+submission overhead on physical GPUs before adopting this as a production
+stream implementation. Nothing in the source host path mandates a wait
+between those segments.
+
 ## Source-native D32 fills at PhysX's existing stream call sites
 
 `PxgCudaBroadPhaseSap::computeRegionHistogramKernel()` performs two
