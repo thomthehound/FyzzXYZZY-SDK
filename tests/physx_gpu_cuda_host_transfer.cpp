@@ -4,7 +4,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
-#include "physx_gpu/source_staged_host_report_roots.h"
+#include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include <PxPhysicsAPI.h>
 
@@ -702,26 +702,30 @@ void exercise_source_gpu_heap_manager(Context& context) {
 }
 
 
-void exercise_source_staged_mapped_pair_reports(Context& context) {
+void exercise_source_mapped_pair_reports(Context& context, bool force_staged) {
     using fyzz::physx_gpu::SourcePhysxHeapRoots;
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
-    using fyzz::physx_gpu::SourceStagedHostReportRoots;
+    using fyzz::physx_gpu::SourcePhysxMappedReportRoots;
     using fyzz::physx_gpu::SourceSapDmaNative;
 
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative source(context, addresses);
     SourcePhysxHeapRoots deviceRoots(context, addresses);
     SourcePhysxDeviceRootCallback device(deviceRoots, &source);
-    SourceStagedHostReportRoots mapped(context, addresses, source);
+    SourcePhysxMappedReportRoots mapped(
+        context, addresses, source,
+        force_staged ? SourcePhysxMappedReportRoots::Mode::ForceStaged
+                     : SourcePhysxMappedReportRoots::Mode::PreferDirect);
     bool aborted = false;
     const auto abort=[](void* user) noexcept {
         *static_cast<bool*>(user)=true;
     };
     constexpr std::size_t bytes=256u;
-    std::array<std::uint8_t,bytes> created{},removed{};
+    std::array<std::uint8_t,bytes> created{},removed{},hostInput{},inputObserved{};
     for(std::size_t i=0;i<bytes;++i) {
         created[i]=static_cast<std::uint8_t>((i*19u+13u)%251u);
         removed[i]=static_cast<std::uint8_t>((i*41u+7u)%251u);
+        hostInput[i]=static_cast<std::uint8_t>((i*23u+113u)%251u);
     }
     CudaDeviceAddressMap::Address foundVirtual=0u;
     {
@@ -742,10 +746,47 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
                                        __FILE__,__LINE__);
         void* lost=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
                                       __FILE__,__LINE__);
-        if(!found||!lost||mapped.live_roots()!=1u)
-            throw std::runtime_error("Original PhysX host report heap failed native staging");
-        std::memset(found,0,bytes);
-        std::memset(lost,0,bytes);
+        void* cpuSource=hostHeap->allocate(
+            bytes,physx::PxsHeapStats::eBROADPHASE,__FILE__,__LINE__);
+        if(!found||!lost||!cpuSource||mapped.live_roots()!=1u)
+            throw std::runtime_error("Original PhysX host report heap did not allocate root");
+        const bool direct=mapped.is_direct(found,bytes);
+        if(direct != mapped.is_direct(lost,bytes) ||
+           direct != mapped.is_direct(cpuSource,bytes) ||
+           (direct && (force_staged ||
+                       !context.device_info().supports_gpu_writable_host_visible)))
+            throw std::runtime_error("Source mapped reports chose the wrong native memory path");
+        if(!force_staged &&
+           context.device_info().supports_gpu_writable_host_visible &&
+           !direct) {
+            // The general Vulkan memory-type capability may lack a
+            // compatible storage-buffer memoryTypeBits intersection.
+            // An unsupported-placement error must be the ONLY cause
+            // for this permitted fallback; don't hide OOM/driver errors.
+            bool incompatible=false;
+            try {
+                const auto probe=context.create_buffer(
+                    4096u+255u,MemoryPlacement::HostVisible);
+                context.destroy_buffer(probe);
+            } catch (const UnsupportedMemoryPlacement&) {
+                incompatible=true;
+            }
+            if(!incompatible)
+                throw std::runtime_error("PhysX mapped path fell back without an incompatible memory type");
+        }
+        if((reinterpret_cast<std::uintptr_t>(found)&255u)!=0u ||
+           (reinterpret_cast<std::uintptr_t>(lost)&255u)!=0u)
+            throw std::runtime_error("Source mapped report host roots lost buddy alignment");
+        // In PhysX's normal mode, hostAlloc and hostMappedAlloc alias.
+        // The third buddy block is a CPU-written pinned source descriptor,
+        // which must remain GPU-readable even on the direct report path.
+        std::memcpy(cpuSource,hostInput.data(),bytes);
+        if(!direct) {
+            // Only staged CPU report memory may be inspected BEFORE the GPU fence.
+            // Direct zero-copy is GPU-written and may not be read early.
+            std::memset(found,0,bytes);
+            std::memset(lost,0,bytes);
+        }
         const auto foundGPU=mapped.device_address(found,bytes);
         const auto lostGPU=mapped.device_address(lost,bytes);
         foundVirtual=foundGPU;
@@ -757,29 +798,45 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         auto foundView=addresses.resolve(foundGPU,bytes);
         auto lostView=addresses.resolve(lostGPU,bytes);
         if(foundView.buffer!=lostView.buffer ||
-           foundView.offset==lostView.offset)
-            throw std::runtime_error("PhysX mapped host report slices lost shared native heap root");
+           foundView.offset==lostView.offset ||
+           context.buffer_is_host_visible(foundView.buffer)!=direct)
+            throw std::runtime_error("PhysX mapped host report native root mapping or placement mismatch");
         auto rawCreated=deviceRoots.allocate_root(bytes);
         auto rawLost=deviceRoots.allocate_root(bytes);
+        auto rawCPUInput=deviceRoots.allocate_root(bytes);
         source.queue_uploads({
             {rawCreated,created.data(),bytes},
             {rawLost,removed.data(),bytes}
         });
         source.queue_device_copy(foundGPU,rawCreated,bytes);
         source.queue_device_copy(lostGPU,rawLost,bytes);
+        if(direct) {
+            // An actual GPU operation must read the SAME CPU-authored
+            // pinned-host source bytes without an upload/staging step.
+            source.queue_device_copy(rawCPUInput,
+                                     mapped.device_address(cpuSource,bytes),bytes);
+        } else {
+            // Original staged pinned-host DMA supplies the source bytes.
+            source.queue_uploads({{rawCPUInput,cpuSource,bytes}});
+        }
         source.submit();
 
-        // CPU memory is NOT directly coherent on our staged path and MUST
-        // not be interpreted as an up-to-date CUDA-mapped report until
-        // source fetch. This is intentionally observable and tested.
-        if(static_cast<const std::uint8_t*>(found)[0]!=0u ||
-           static_cast<const std::uint8_t*>(lost)[0]!=0u)
+        if(!direct &&
+           (static_cast<const std::uint8_t*>(found)[0]!=0u ||
+            static_cast<const std::uint8_t*>(lost)[0]!=0u))
             throw std::runtime_error("GPU report staged copy reached CPU before fetch");
+        // No CPU read is permitted in the direct path until the original
+        // source completion fence is reaped by publish_at_fetch().
         mapped.publish_at_fetch(found,bytes);
         mapped.publish_at_fetch(lost,bytes);
         if(std::memcmp(found,created.data(),bytes)!=0 ||
            std::memcmp(lost,removed.data(),bytes)!=0)
             throw std::runtime_error("Source mapped actor reports not published at native fetch");
+        const auto inputView=addresses.resolve(rawCPUInput,bytes);
+        context.download(inputView.buffer,inputView.offset,
+                         inputObserved.data(),bytes);
+        if(inputObserved!=hostInput)
+            throw std::runtime_error("Original PhysX pinned hostAlloc source not GPU-readable");
 
         bool rejected=false;
         try {
@@ -799,6 +856,7 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
             throw std::runtime_error("Foreign host pointer accepted as GPU-mapped source alias");
         hostHeap->deallocateDeferred(found);
         hostHeap->deallocateDeferred(lost);
+        hostHeap->deallocateDeferred(cpuSource);
         manager.flushDeferredDeallocs(); // device heap ONLY, per source!
         // The host heap retains its own deferred frees until its own flush.
         if(mapped.live_roots()!=1u)
@@ -806,6 +864,7 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         hostHeap->flushDeferredDeallocs();
         deviceRoots.release_root(rawCreated,&source);
         deviceRoots.release_root(rawLost,&source);
+        deviceRoots.release_root(rawCPUInput,&source);
     }
     if(mapped.live_roots()!=0u || deviceRoots.live_roots()!=0u ||
        addresses.live_allocations()!=0u || aborted)
@@ -845,7 +904,15 @@ void exercise_true_native_host_visible(Context& context) {
         context.destroy_buffer(device);
         return; // Discrete GPU/WARP without mapped UAV capability uses staged fallback.
     }
-    const auto mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+    BufferId mapped=0;
+    try {
+        mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+    } catch(const UnsupportedMemoryPlacement&) {
+        // Vulkan's per-buffer memoryTypeBits can rule out a host-coherent
+        // type despite a general physical-device memory-type capability.
+        context.destroy_buffer(device);
+        return;
+    }
     if(!context.buffer_is_host_visible(mapped))
         throw std::runtime_error("Explicit HostVisible allocation silently used default heap");
     auto* first=static_cast<std::uint8_t*>(context.map_buffer(mapped,HostMapAccess::Write));
@@ -973,7 +1040,8 @@ int main() {
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
         exercise_source_gpu_heap_manager(context);
-        exercise_source_staged_mapped_pair_reports(context);
+        exercise_source_mapped_pair_reports(context,true);
+        exercise_source_mapped_pair_reports(context,false);
         exercise_true_native_host_visible(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";

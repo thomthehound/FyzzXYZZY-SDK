@@ -474,7 +474,7 @@ struct Context::Impl {
             // CPU-readable; UPLOAD (GENERIC_READ) and READBACK (COPY_DEST)
             // are not legal substitutes for a UAV destination.
             if (!info.supports_gpu_writable_host_visible)
-                throw std::runtime_error(
+                throw UnsupportedMemoryPlacement(
                     "D3D12 adapter has no GPU-writable CPU-mapped UMA buffer; use staged reports");
 
             // PhysX mapped actor reports are GPU-written then CPU-READ.
@@ -487,7 +487,7 @@ struct Context::Impl {
             if (heap.Type != D3D12_HEAP_TYPE_CUSTOM ||
                 heap.CPUPageProperty != D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
                 heap.MemoryPoolPreference != D3D12_MEMORY_POOL_L0)
-                throw std::runtime_error("D3D12 UMA did not expose a CPU-mappable L0 custom heap");
+                throw UnsupportedMemoryPlacement("D3D12 UMA did not expose a CPU-mappable L0 custom heap");
             D3D12_RESOURCE_DESC desc{};
             desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
             desc.Width = static_cast<UINT64>(bytes);
