@@ -624,6 +624,11 @@ void exercise_source_gpu_heap_manager(Context& context) {
            plainHost.allocated!=0u || mappedHost.allocated!=1u ||
            roots.live_roots()!=1u || manager.getDeviceMemorySize()!=2048u)
             throw std::runtime_error("Source normal GPU heap manager changed mapped-host aliasing");
+        const auto desc=physx::PxgCreateAllocatorDesc(manager);
+        if(&desc.deviceAlloc!=manager.mDeviceMemoryAllocator ||
+           &desc.hostAlloc!=manager.mPinnedHostMemoryAllocator ||
+           &desc.hostMappedAlloc!=manager.mPinnedHostMappedMemoryAllocator)
+            throw std::runtime_error("Original PxgAllocatorDesc changed normal heap references");
         auto* host=manager.mPinnedHostMappedMemoryAllocator;
         void* hostBlock=host->allocate(256u,0,__FILE__,__LINE__);
         if(!hostBlock || plainHost.allocated!=0u || mappedHost.allocated!=1u)
@@ -657,6 +662,10 @@ void exercise_source_gpu_heap_manager(Context& context) {
                manager.mPinnedHostMappedMemoryAllocator ||
            manager.getDeviceMemorySize()!=0u)
             throw std::runtime_error("Original debug PhysX heap host identity changed");
+        const auto desc=physx::PxgCreateAllocatorDesc(manager);
+        if(&desc.hostAlloc==&desc.hostMappedAlloc ||
+           &desc.deviceAlloc!=manager.mDeviceMemoryAllocator)
+            throw std::runtime_error("Source GPU debug allocator descriptor aliased distinct hosts");
         void* plain=manager.mPinnedHostMemoryAllocator->
             allocate(64u,0,__FILE__,__LINE__);
         void* mapped=manager.mPinnedHostMappedMemoryAllocator->
