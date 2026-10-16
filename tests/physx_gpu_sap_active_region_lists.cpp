@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/sap_active_region_lists_arena.h"
+#include "physx_gpu/source_active_region_lists_native.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,8 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <type_traits>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -23,6 +26,8 @@ namespace {
 using namespace fyzz::compute;
 using fyzz::physx_gpu::SapActiveRegionListsArenaDesc;
 using fyzz::physx_gpu::SapActiveRegionListsArenaStage;
+using fyzz::physx_gpu::SourceActiveRegionListsNativeStage;
+using fyzz::physx_gpu::CudaDeviceAddressMap;
 constexpr std::uint32_t kCanary = 0xcdcdcdcd;
 
 std::vector<std::uint8_t> load_shader(const char* file) {
@@ -187,6 +192,7 @@ void reference(Packed& p) {
 }
 
 void run_case(Context& context, SapActiveRegionListsArenaStage& stage,
+              const SourceActiveRegionListsNativeStage* native,
               std::uint32_t boxes, bool hasCreated) {
     auto p = build(boxes, hasCreated);
     auto expected = p;
@@ -221,6 +227,113 @@ void run_case(Context& context, SapActiveRegionListsArenaStage& stage,
             std::to_string(std::distance(observed.begin(), mismatch.first)) +
             " (boxes " + std::to_string(boxes) +
             ", created " + std::to_string(p.created) + ")");
+    }
+    if(native && !p.created){
+        // Source calls are gated before accessing CUDA pointers.
+        // This must also tolerate an entirely empty original descriptor.
+        std::vector<BatchCommand> noops;
+        physx::PxgBroadPhaseDesc empty{};
+        CudaDeviceAddressMap none;
+        native->append(noops,empty,none,{});
+        if(!noops.empty())
+            throw std::runtime_error("Original no-created source active stage dispatched GPU work");
+    }
+    if(native && p.created){
+        // Restore original producer outputs. The original source bridge
+        // operates on raw CUDA virtual addresses, not this arena layout.
+        // Register separate source allocations as sub-slices of ONE actual
+        // native buddy heap; both SRV/UAV aliasing and 4-byte interior
+        // address bias are exercised on D3D12 and Vulkan.
+        context.upload(gpu,0u,p.arena.data(),bytes);
+        CudaDeviceAddressMap addresses;
+        const auto ptr=[&](std::uint32_t offset,std::size_t count)
+            ->CudaDeviceAddressMap::Address {
+            return addresses.register_slice(gpu,offset,count);
+        };
+        const auto n=boxes*2u;
+        const auto dense=64u*n;
+        physx::PxgBroadPhaseDesc source{};
+        source.numPreviousHandles=boxes-p.created;
+        source.numCreatedHandles=p.created;
+        source.numRemovedHandles=0u;
+        const auto x=ptr(p.desc.sorted_x_handles_offset,n*4u);
+        source.boxHandles[0][0]=reinterpret_cast<std::remove_reference_t<
+            decltype(source.boxHandles[0][0])>>(static_cast<std::uintptr_t>(x));
+        const auto sap=ptr(p.desc.x_sap_positions_offset,n*4u);
+        source.boxSapBox1D[0]=reinterpret_cast<std::remove_reference_t<
+            decltype(source.boxSapBox1D[0])>>(static_cast<std::uintptr_t>(sap));
+        source.regionRange=reinterpret_cast<decltype(source.regionRange)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.region_ranges_offset,boxes*32u)));
+        source.startRegionAccum=reinterpret_cast<decltype(source.startRegionAccum)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.start_region_prefix_offset,n*4u)));
+        source.activeRegionsHistogram=reinterpret_cast<decltype(source.activeRegionsHistogram)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.active_histograms_offset,dense*4u)));
+        source.startRegionsHistogram=reinterpret_cast<decltype(source.startRegionsHistogram)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.start_histograms_offset,dense*4u)));
+        source.orderedActiveRegionHandles=reinterpret_cast<decltype(source.orderedActiveRegionHandles)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.ordered_active_handles_offset,dense*4u)));
+        source.orderedStartRegionHandles=reinterpret_cast<decltype(source.orderedStartRegionHandles)>(
+            static_cast<std::uintptr_t>(ptr(p.desc.ordered_start_handles_offset,dense*4u)));
+        // Original previous kernels write this field to the original
+        // GPU-resident PxgBroadPhaseDesc. Intentionally diverge the CPU
+        // shadow, so a wrong host read yields zero work and fails.
+        source.startRegionAccumTotal=0u;
+        const auto descriptorTotal=p.at(p.desc.start_region_total_offset);
+        physx::PxgBroadPhaseDesc onGpu=source;
+        onGpu.startRegionAccumTotal=descriptorTotal;
+        const auto descriptorBuffer=context.create_buffer(
+            sizeof(onGpu)+512u,MemoryPlacement::DeviceLocal);
+        context.upload(descriptorBuffer,256u,&onGpu,sizeof(onGpu));
+        const auto descriptor=addresses.register_slice(
+            descriptorBuffer,256u,sizeof(onGpu));
+        const fyzz::physx_gpu::SourceActiveRegionListsNativeLayout layout{
+            descriptor,boxes,n,dense};
+        std::vector<BatchCommand> nativeCommands;
+        if(p.created){
+            auto bad=source;
+            bad.orderedActiveRegionHandles=reinterpret_cast<
+                decltype(bad.orderedActiveRegionHandles)>(std::uintptr_t{0x1234});
+            bool rejected=false;
+            try { native->append(nativeCommands,bad,addresses,layout); }
+            catch(const std::exception&){ rejected=true; }
+            if(!rejected || !nativeCommands.empty())
+                throw std::runtime_error("Late source allocation failure partially committed active passes");
+            for(const auto wrong : {
+                    fyzz::physx_gpu::SourceActiveRegionListsNativeLayout{
+                        descriptor,boxes,n,dense-1u},
+                    fyzz::physx_gpu::SourceActiveRegionListsNativeLayout{
+                        descriptor,boxes,n-1u,dense}}){
+                bool failed=false;
+                try{native->append(nativeCommands,source,addresses,wrong);}
+                catch(const std::exception&){failed=true;}
+                if(!failed || !nativeCommands.empty())
+                    throw std::runtime_error("Undersized source active-region capacity appended partial GPU work");
+            }
+        }
+        native->append(nativeCommands,source,addresses,layout);
+        if(nativeCommands.size()!=(p.created?3u:0u))
+            throw std::runtime_error("Original source active-region command count changed");
+        if(p.created){
+            const std::uint32_t groups[]{32u,64u,64u};
+            const std::uint32_t bindings[]{6u,2u,9u};
+            for(std::size_t i=0u;i<nativeCommands.size();++i){
+                const auto& dispatch=std::get<DispatchCommand>(nativeCommands[i]);
+                if(dispatch.groups.x!=groups[i]||
+                   dispatch.buffers.size()!=bindings[i]||
+                   dispatch.push_constants.size()!=48u)
+                    throw std::runtime_error("Original source active launch geometry or binding manifest changed");
+            }
+            context.wait_submission(context.submit_batch(nativeCommands));
+        }
+        std::vector<std::uint32_t> sourceObserved(p.arena.size());
+        context.download(gpu,0u,sourceObserved.data(),bytes);
+        if(sourceObserved!=expected.arena){
+            const auto first=std::mismatch(sourceObserved.begin(),sourceObserved.end(),expected.arena.begin());
+            throw std::runtime_error("PhysX native CUDA allocations active-region mismatch at word "+
+                std::to_string(std::distance(sourceObserved.begin(),first.first))+
+                " for "+std::to_string(boxes)+" boxes");
+        }
+        context.destroy_buffer(descriptorBuffer);
     }
     context.destroy_buffer(mirror);
     context.destroy_buffer(gpu);
@@ -257,8 +370,8 @@ void negative_cases(SapActiveRegionListsArenaStage& stage) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 5)
-            throw std::invalid_argument("Expected writeout, wave, portable and output shaders");
+        if (argc != 5 && argc != 9)
+            throw std::invalid_argument("Expected four arena shaders and optionally four source-native shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -289,16 +402,34 @@ int main(int argc, char** argv) {
         if (stage.using_subgroup_scan() != context.device_info().supports_wave_arithmetic ||
             portable.using_subgroup_scan())
             throw std::runtime_error("Active-region capability selection changed");
+        std::unique_ptr<SourceActiveRegionListsNativeStage> sourceOptimized, sourcePortable;
+        if(argc==9){
+            sourceOptimized=std::make_unique<SourceActiveRegionListsNativeStage>(
+                context,shader(argv[5]),shader(argv[6]),shader(argv[7]),shader(argv[8]));
+            sourcePortable=std::make_unique<SourceActiveRegionListsNativeStage>(
+                context,shader(argv[5]),shader(argv[6]),shader(argv[7]),shader(argv[8]),true);
+            if(sourceOptimized->using_subgroup_scan() !=
+                    (context.device_info().supports_wave_arithmetic &&
+                     context.device_info().subgroup_size>=4u &&
+                     512u%context.device_info().subgroup_size==0u) ||
+                sourcePortable->using_subgroup_scan())
+                throw std::runtime_error("Source active-region native wave selection changed");
+        }
         negative_cases(stage);
         negative_cases(portable);
-        for (auto* implementation : {&stage, &portable}) {
-            run_case(context, *implementation, 0u, false);
-            run_case(context, *implementation, 5u, false);
-            run_case(context, *implementation, 1u, true);
-            run_case(context, *implementation, 5u, true);
-            run_case(context, *implementation, 129u, true);
-            run_case(context, *implementation, 257u, true);
-            run_case(context, *implementation, 1027u, true);
+        const std::array<SapActiveRegionListsArenaStage*,2> implementations{&stage,&portable};
+        const std::array<const SourceActiveRegionListsNativeStage*,2> native{
+            sourceOptimized.get(),sourcePortable.get()};
+        for(std::size_t v=0u;v<implementations.size();++v){
+            auto& implementation=*implementations[v];
+            const auto* source=native[v];
+            run_case(context,implementation,source,0u,false);
+            run_case(context,implementation,source,5u,false);
+            run_case(context,implementation,source,1u,true);
+            run_case(context,implementation,source,5u,true);
+            run_case(context,implementation,source,129u,true);
+            run_case(context,implementation,source,257u,true);
+            run_case(context,implementation,source,1027u,true);
         }
         std::cout << "PhysX SAP packed-wave and fallback source oracle PASS\\n";
         return 0;
