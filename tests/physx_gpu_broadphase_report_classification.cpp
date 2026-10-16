@@ -8,6 +8,11 @@
 #include "physx_gpu/broadphase_copy_reports_arena.h"
 #include "physx_gpu/source_sap_reports_native.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_physx_heap_roots.h"
+#include "physx_gpu/source_physx_root_callback.h"
+#include "physx_gpu/source_physx_mapped_report_roots.h"
+#include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include <PxPhysicsAPI.h>
 #include "physx_gpu/source_sap_fetch_native.h"
 #include "physx_gpu/source_sap_report_multi_root.h"
 #include "physx_gpu/broadphase_completion.h"
@@ -20,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -271,6 +277,20 @@ void negative_cases(BroadphaseReportClassificationArenaStage& classifier) {
 }
 
 
+struct PhysxSourceFoundation {
+    physx::PxDefaultAllocator allocator;
+    physx::PxDefaultErrorCallback errors;
+    physx::PxFoundation* foundation=nullptr;
+    PhysxSourceFoundation() {
+        foundation=PxCreateFoundation(PX_PHYSICS_VERSION,allocator,errors);
+        if(!foundation)
+            throw std::runtime_error("Original PhysX Foundation unavailable for GPU heap");
+    }
+    ~PhysxSourceFoundation() {if(foundation)foundation->release();}
+    PhysxSourceFoundation(const PhysxSourceFoundation&)=delete;
+    PhysxSourceFoundation& operator=(const PhysxSourceFoundation&)=delete;
+};
+
 struct SourcePairTask final : physx::PxBaseTask {
     int releases = 0;
     void run() override {}
@@ -285,7 +305,8 @@ void run_original_source_report_fetch(
     Context& context, BroadphaseReportClassificationArenaStage& classifier,
     BroadphaseCopyReportsArenaStage& copy, bool useVolumeData, bool overflow,
     fyzz::physx_gpu::SourceSapReportNativeStage* nativeStage=nullptr,
-    bool separateRoots=false) {
+    bool separateRoots=false, bool sourceMappedHeap=false,
+    bool forceStaged=false) {
     using namespace fyzz::physx_gpu;
     using Pair=physx::PxgBroadPhasePair;
     constexpr std::uint32_t kBytes=32768u,kCapacity=8u,kVolumes=32u;
@@ -297,6 +318,38 @@ void run_original_source_report_fetch(
     const auto root=context.create_buffer(kBytes,MemoryPlacement::DeviceLocal);
     context.upload(root,0u,initial.data(),kBytes);
     CudaDeviceAddressMap addresses;
+    SourceSapDmaNative source(context,addresses);
+    SourcePhysxHeapRoots deviceRoots(context,addresses);
+    SourcePhysxDeviceRootCallback deviceCallback(deviceRoots,&source);
+    SourcePhysxMappedReportRoots mappedCallback(
+        context,addresses,source,
+        forceStaged ? SourcePhysxMappedReportRoots::Mode::ForceStaged
+                    : SourcePhysxMappedReportRoots::Mode::PreferDirect);
+    bool aborted=false;
+    const auto abort=[](void* p) noexcept { *static_cast<bool*>(p)=true; };
+    std::unique_ptr<physx::PxgHeapMemoryAllocatorManager> sourceHeapManager;
+    physx::PxgHeapMemoryAllocator* mappedHostHeap=nullptr;
+    Pair* originalFound=nullptr;
+    Pair* originalLost=nullptr;
+    if(sourceMappedHeap) {
+        if(!nativeStage)
+            throw std::invalid_argument("Mapped PhysX source heap needs original multi-root report shaders");
+        // Original GPU manager inherits PxUserAllocated. Construct via
+        // PhysX's broadcast allocator, not std::make_unique/ordinary new.
+        // unique_ptr still invokes the original matching operator delete.
+        sourceHeapManager.reset(
+            PX_NEW(physx::PxgHeapMemoryAllocatorManager)(
+                4096u,deviceCallback,mappedCallback,mappedCallback,abort,&aborted));
+        mappedHostHeap=static_cast<physx::PxgHeapMemoryAllocator*>(
+            sourceHeapManager->mPinnedHostMappedMemoryAllocator);
+        originalFound=static_cast<Pair*>(mappedHostHeap->allocate(
+            8u*sizeof(Pair),physx::PxsHeapStats::eBROADPHASE,__FILE__,__LINE__));
+        originalLost=static_cast<Pair*>(mappedHostHeap->allocate(
+            8u*sizeof(Pair),physx::PxsHeapStats::eBROADPHASE,__FILE__,__LINE__));
+        if(!originalFound||!originalLost || mappedCallback.live_roots()!=1u ||
+           mappedCallback.is_direct(originalFound)!=mappedCallback.is_direct(originalLost))
+            throw std::runtime_error("Original PhysX host heap did not own GPU report destinations");
+    }
     std::uint32_t cursor=256u;
     std::vector<BufferId> owned;
     const auto allocate=[&](std::size_t bytes) {
@@ -322,8 +375,12 @@ void run_original_source_report_fetch(
     const auto aggLost=allocate(sizeof(Pair)*kCapacity);
     const auto actorFound=allocate(sizeof(Pair)*kCapacity);
     const auto actorLost=allocate(sizeof(Pair)*kCapacity);
-    const auto mappedFound=allocate(sizeof(Pair)*kCapacity);
-    const auto mappedLost=allocate(sizeof(Pair)*kCapacity);
+    const auto mappedFound=sourceMappedHeap
+        ? mappedCallback.device_address(originalFound,sizeof(Pair)*kCapacity)
+        : allocate(sizeof(Pair)*kCapacity);
+    const auto mappedLost=sourceMappedHeap
+        ? mappedCallback.device_address(originalLost,sizeof(Pair)*kCapacity)
+        : allocate(sizeof(Pair)*kCapacity);
     std::array<CudaDeviceAddressMap::Address,4> blocks{};
     for(auto& b:blocks)b=allocate(32u*sizeof(std::uint32_t));
     const auto volumesAddress=allocate(kVolumes*kVolumeStride);
@@ -399,7 +456,6 @@ void run_original_source_report_fetch(
     for(std::size_t i=0;i<removedInputs.size();++i)
         removed[i]=Pair(removedInputs[i].first,removedInputs[i].second);
 
-    SourceSapDmaNative source(context,addresses);
     std::vector<SourceSapUpload> uploads{
         {descriptor,&gpu,sizeof(gpu)},
         {rawFound,created.data(),sizeof(created)},
@@ -440,13 +496,16 @@ void run_original_source_report_fetch(
     roles.box_handles={1u,2u,3u,4u,5u,6u};
     physx::PxgBroadPhaseDesc fetched{};
     std::array<Pair,kCapacity> hostFound{},hostLost{};
+    auto* publishedFound = sourceMappedHeap ? originalFound : hostFound.data();
+    auto* publishedLost = sourceMappedHeap ? originalLost : hostLost.data();
     SourceSapFetchedCounts counts{};
     SourcePairTask foundTask,lostTask;
     bool published=false,continued=false;
     gate.fetch_and_release([&]{
         counts=fetch_source_sap_results(context,addresses,descriptor,fetched,
-            {hostFound.data(),hostFound.size()},
-            {hostLost.data(),hostLost.size()},false,roles);
+            {publishedFound,kCapacity},
+            {publishedLost,kCapacity},false,roles,
+            sourceMappedHeap ? &mappedCallback : nullptr);
         published=true;
     },[&] {
         if(!published)throw std::runtime_error("Original continuation before reports");
@@ -474,13 +533,27 @@ void run_original_source_report_fetch(
        fetched.sharedLostAggPairIndex!=(useVolumeData?1u:0u))
         throw std::runtime_error("Original SAP source classifier reported wrong actor or aggregate counts");
     for(std::size_t i=0;i<expectedFound.size();++i)
-        if(hostFound[i].mVolA!=expectedFound[i].mVolA ||
-           hostFound[i].mVolB!=expectedFound[i].mVolB)
+        if(publishedFound[i].mVolA!=expectedFound[i].mVolA ||
+           publishedFound[i].mVolB!=expectedFound[i].mVolB)
             throw std::runtime_error("Source found-actor reports have wrong stable ordering");
     for(std::size_t i=0;i<expectedLost.size();++i)
-        if(hostLost[i].mVolA!=expectedLost[i].mVolA ||
-           hostLost[i].mVolB!=expectedLost[i].mVolB)
+        if(publishedLost[i].mVolA!=expectedLost[i].mVolA ||
+           publishedLost[i].mVolB!=expectedLost[i].mVolB)
             throw std::runtime_error("Source lost-actor reports have wrong stable ordering");
+    if(sourceMappedHeap) {
+        // Source GPU report kernels wrote directly to this ORIGINAL
+        // PhysX host buddy heap (or its capability-gated staged backing).
+        if(mappedCallback.device_address(originalFound,sizeof(Pair)*kCapacity)!=mappedFound ||
+           mappedCallback.device_address(originalLost,sizeof(Pair)*kCapacity)!=mappedLost)
+            throw std::runtime_error("PhysX mapped host report alias moved across fetch");
+        mappedHostHeap->deallocateDeferred(originalFound);
+        mappedHostHeap->deallocateDeferred(originalLost);
+        mappedHostHeap->flushDeferredDeallocs();
+        sourceHeapManager.reset();
+        if(mappedCallback.live_roots()!=0u || deviceRoots.live_roots()!=0u ||
+           aborted)
+            throw std::runtime_error("Original PhysX source report heap leaked or entered abort mode");
+    }
     for(const auto id:owned)context.destroy_buffer(id);
     context.destroy_buffer(root);
 }
@@ -491,6 +564,7 @@ int main(int argc, char** argv) {
     try {
         if (argc != 11)
             throw std::invalid_argument("Expected legacy five and native five PhysX report shaders");
+        PhysxSourceFoundation sourceFoundation;
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -551,6 +625,15 @@ int main(int argc, char** argv) {
                 run_original_source_report_fetch(context,classify,copy,true,true,stage,split);
                 run_original_source_report_fetch(context,classify,copy,false,false,stage,split);
             }
+            // Connected SOURCE report kernel->original PhysX host buddy
+            // heap->mapped CPU pairs->original fetch->PxBaseTask release.
+            // Run both native zero-copy-when-capable and forced staging.
+            run_original_source_report_fetch(context,classify,copy,
+                true,false,stage,true,true,false);
+            run_original_source_report_fetch(context,classify,copy,
+                true,true,stage,true,true,true);
+            run_original_source_report_fetch(context,classify,copy,
+                false,false,stage,false,true,false);
         }
         std::cout << "PhysX native-wave/fallback report classification + publication PASS\\n";
         return 0;
