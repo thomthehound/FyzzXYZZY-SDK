@@ -718,13 +718,11 @@ void verify_original_mapped_heap_fetch(Backend backend, bool force_staged) {
                lost[i].mVolB!=lostGPU[i].mVolB)
                 throw std::runtime_error("Mapped original lost reports differ from native GPU output");
 
-        // Mismatched descriptor host alias MUST reject without releasing
-        // original found/lost task references or rotating history.
+        // Incorrect caller-provided CPU host array MUST reject without
+        // releasing original tasks or rotating history. Unlike descriptor
+        // corruption, this is retryable using the same completed GPU frame
+        // and the correct ORIGINAL PhysX host allocation.
         events.clear();
-        auto invalid=gpu;
-        invalid.foundPairReportMap=reinterpret_cast<Pair*>(
-            static_cast<std::uintptr_t>(gpuLost));
-        source.queue_uploads({{descriptor,&invalid,sizeof(invalid)}});
         gate.arm_source_stream(source);
         PairTask rejectFound("found",events),rejectLost("lost",events);
         const auto before=roles;
@@ -732,7 +730,7 @@ void verify_original_mapped_heap_fetch(Backend backend, bool force_staged) {
             gate.fetch_and_release([&] {
                 (void)fetch_source_sap_results(
                     context,addresses,descriptor,host,
-                    {found,capacity},{lost,capacity},false,roles,&mapped);
+                    {lost,capacity},{found,capacity},false,roles,&mapped);
                 events.emplace_back("publish");
             },[&]{events.emplace_back("continuations");},
             rejectFound,rejectLost);
@@ -740,8 +738,8 @@ void verify_original_mapped_heap_fetch(Backend backend, bool force_staged) {
         if(!events.empty() || rejectFound.releases() || rejectLost.releases() ||
            roles.box_handles!=before.box_handles)
             throw std::runtime_error("Mapped host alias error released original PhysX tasks");
-        source.queue_uploads({{descriptor,&gpu,sizeof(gpu)}});
-        // Retry a failed publication before task continuation setup.
+        // Retry a failed publication before task continuation setup,
+        // without submitting a new frame or silently waiting elsewhere.
         gate.fetch_and_release([&] {
             counts=fetch_source_sap_results(
                 context,addresses,descriptor,host,
