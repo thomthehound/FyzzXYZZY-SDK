@@ -94,6 +94,19 @@ if(BUILD_TESTING)
     COMMAND fyzzxyzzy_physx_cuda_address_test)
 endif()
 
+# Original PhysX GPU buddy heap source, owned by this independent engine.
+# This is a source port with an injected generic virtual root callback and
+# abort sink; it is NOT a second allocation algorithm or an external patch.
+add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
+  src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp)
+target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_17)
+target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon"
+  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include"
+  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
+target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
+
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 if(FYZZXYZZY_BUILD_VULKAN)
@@ -186,9 +199,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
-      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address physx_lib)
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
       COMMAND fyzzxyzzy_physx_cuda_host_transfer)
 
@@ -1529,9 +1544,11 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
-      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address physx_lib)
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
       COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
   endif()
