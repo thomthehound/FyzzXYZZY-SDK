@@ -164,6 +164,22 @@ asynchronous root retirement during those copies, exact-root free
 validation and stale-address rejection. The shader/report conformance
 from PR #79 already consumes `CudaDeviceAddressMap` multi-root views.
 
+**Lifetime and failure contract:** normal scene shutdown calls
+`SourcePhysxHeapRoots::close(sourceStream)` while the existing PhysX stream is
+available; it submits (does not wait for) pending native commands before
+retiring the allocator-owned roots. `close()` is idempotent, and a stream
+from another scene/address map is rejected before touching the roots. If
+scene initialization or teardown throws, the owner destructor provides a
+`noexcept` fallback that retires **all remaining** native roots and
+unregisters their device-address mappings. This fallback assumes that
+any operations referring to those roots have already been submitted;
+only the source stream owner can submit pending CPU-side command lists.
+The context and address map must outlive the heap root owner.
+
+The same Vulkan/D3D12 native host tests cover implicit destructor teardown
+with GPU transfers in flight, exception unwinding with multiple live roots,
+stale-address rejection, and explicit/repeated `close()` operations.
+
 **Integration qualification:** this is the native backing operation that
 a future internal `PxgCudaAllocatorCallbackBase` implementation will
 call. It is not yet installed into the actual PhysX memory manager, nor
