@@ -6,7 +6,7 @@
 
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/sap_host_frame_roles.h"
-#include "physx_gpu/source_physx_mapped_report_roots.h"
+#include "physx_gpu/source_sap_mapped_report_view.h"
 
 #include "PxgBroadPhaseDesc.h"
 #include "PxgBroadPhasePairReport.h"
@@ -62,7 +62,7 @@ inline SourceSapFetchedCounts fetch_source_sap_results(
     SourceSapActorPairDestination lost,
     bool abort_mode,
     SapFrameBufferRoles& roles,
-    SourcePhysxMappedReportRoots* mapped_roots = nullptr) {
+    SourceSapMappedReportView* mapped_roots = nullptr) {
 
     const auto desc_source = addresses.resolve(
         descriptor_address, sizeof(physx::PxgBroadPhaseDesc));
