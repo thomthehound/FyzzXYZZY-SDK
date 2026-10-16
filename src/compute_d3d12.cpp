@@ -155,6 +155,7 @@ std::vector<Candidate> discover_adapters() {
                             D3D12_RANGE written{0, 0};
                             trial->Unmap(0, &written);
                             info.supports_gpu_writable_host_visible = true;
+                            info.has_device_local_host_visible_memory = true;
                         }
                     }
                 }
