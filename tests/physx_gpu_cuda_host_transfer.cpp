@@ -4,6 +4,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
+#include "physx_gpu/source_staged_host_report_roots.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include <PxPhysicsAPI.h>
 
@@ -11,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -699,6 +701,122 @@ void exercise_source_gpu_heap_manager(Context& context) {
         throw std::runtime_error("Failed PhysX GPU heap manager construction leaked roots");
 }
 
+
+void exercise_source_staged_mapped_pair_reports(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceStagedHostReportRoots;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative source(context, addresses);
+    SourcePhysxHeapRoots deviceRoots(context, addresses);
+    SourcePhysxDeviceRootCallback device(deviceRoots, &source);
+    SourceStagedHostReportRoots mapped(context, addresses, source);
+    bool aborted = false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    constexpr std::size_t bytes=256u;
+    std::array<std::uint8_t,bytes> created{},removed{};
+    for(std::size_t i=0;i<bytes;++i) {
+        created[i]=static_cast<std::uint8_t>((i*19u+13u)%251u);
+        removed[i]=static_cast<std::uint8_t>((i*41u+7u)%251u);
+    }
+    CudaDeviceAddressMap::Address foundVirtual=0u;
+    {
+        // These are the ORIGINAL PhysX GPU manager and buddy heaps, not
+        // special fixture-managed actor pair buffers. The ordinary-mode
+        // source host and mapped-host slots alias the same host heap.
+        physx::PxgHeapMemoryAllocatorManager manager(
+            4096u,device,mapped,mapped,abort,&aborted);
+        if(manager.mPinnedHostMemoryAllocator !=
+           manager.mPinnedHostMappedMemoryAllocator)
+            throw std::runtime_error("Original PhysX host-mapped report heap alias changed");
+        // The manager exposes the source generic callback ABI to consumers.
+        // Deferred frees belong to its actual original buddy heap, not to
+        // Cm::VirtualAllocatorCallback itself.
+        auto* hostHeap=static_cast<physx::PxgHeapMemoryAllocator*>(
+            manager.mPinnedHostMappedMemoryAllocator);
+        void* found=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
+                                       __FILE__,__LINE__);
+        void* lost=hostHeap->allocate(bytes,physx::PxsHeapStats::eBROADPHASE,
+                                      __FILE__,__LINE__);
+        if(!found||!lost||mapped.live_roots()!=1u)
+            throw std::runtime_error("Original PhysX host report heap failed native staging");
+        std::memset(found,0,bytes);
+        std::memset(lost,0,bytes);
+        const auto foundGPU=mapped.device_address(found,bytes);
+        const auto lostGPU=mapped.device_address(lost,bytes);
+        foundVirtual=foundGPU;
+        if(foundGPU==lostGPU || addresses.resolve(foundGPU,bytes).buffer !=
+                                addresses.resolve(lostGPU,bytes).buffer)
+            // Both actor reports are slices of one original pinned heap
+            // ROOT: distinct virtual subranges of the SAME native buffer.
+            throw std::runtime_error("PhysX mapped host buddy regions did not retain source root ownership");
+        auto foundView=addresses.resolve(foundGPU,bytes);
+        auto lostView=addresses.resolve(lostGPU,bytes);
+        if(foundView.buffer!=lostView.buffer ||
+           foundView.offset==lostView.offset)
+            throw std::runtime_error("PhysX mapped host report slices lost shared native heap root");
+        auto rawCreated=deviceRoots.allocate_root(bytes);
+        auto rawLost=deviceRoots.allocate_root(bytes);
+        source.queue_uploads({
+            {rawCreated,created.data(),bytes},
+            {rawLost,removed.data(),bytes}
+        });
+        source.queue_device_copy(foundGPU,rawCreated,bytes);
+        source.queue_device_copy(lostGPU,rawLost,bytes);
+        source.submit();
+
+        // CPU memory is NOT directly coherent on our staged path and MUST
+        // not be interpreted as an up-to-date CUDA-mapped report until
+        // source fetch. This is intentionally observable and tested.
+        if(static_cast<const std::uint8_t*>(found)[0]!=0u ||
+           static_cast<const std::uint8_t*>(lost)[0]!=0u)
+            throw std::runtime_error("GPU report staged copy reached CPU before fetch");
+        mapped.publish_at_fetch(found,bytes);
+        mapped.publish_at_fetch(lost,bytes);
+        if(std::memcmp(found,created.data(),bytes)!=0 ||
+           std::memcmp(lost,removed.data(),bytes)!=0)
+            throw std::runtime_error("Source mapped actor reports not published at native fetch");
+
+        bool rejected=false;
+        try {
+            (void)mapped.device_address(
+                static_cast<const std::uint8_t*>(found)+bytes-8u,16u);
+        } catch(const std::out_of_range&) {rejected=true;}
+        // This range is inside the original 4096-byte HOST ROOT even though
+        // it crosses a 256-byte buddy allocation: only the source heap
+        // decides buddy-block access validity, never the root mapper.
+        if(rejected)
+            throw std::runtime_error("Native source host root map conflated buddy and root lifetime");
+        rejected=false;
+        try {
+            (void)mapped.device_address(reinterpret_cast<const void*>(0x1234u),8u);
+        } catch(const std::out_of_range&) {rejected=true;}
+        if(!rejected)
+            throw std::runtime_error("Foreign host pointer accepted as GPU-mapped source alias");
+        hostHeap->deallocateDeferred(found);
+        hostHeap->deallocateDeferred(lost);
+        manager.flushDeferredDeallocs(); // device heap ONLY, per source!
+        // The host heap retains its own deferred frees until its own flush.
+        if(mapped.live_roots()!=1u)
+            throw std::runtime_error("PhysX device-only deferred flush retired mapped host root");
+        hostHeap->flushDeferredDeallocs();
+        deviceRoots.release_root(rawCreated,&source);
+        deviceRoots.release_root(rawLost,&source);
+    }
+    if(mapped.live_roots()!=0u || deviceRoots.live_roots()!=0u ||
+       addresses.live_allocations()!=0u || aborted)
+        throw std::runtime_error("Original PhysX mapped host report roots leaked");
+    bool stale=false;
+    try {(void)addresses.resolve(foundVirtual,1u);}
+    catch(const std::out_of_range&) {stale=true;}
+    if(!stale)
+        throw std::runtime_error("Source mapped host report GPU alias survived root retirement");
+}
+
 } // namespace
 
 int main() {
@@ -769,6 +887,7 @@ int main() {
         exercise_source_virtual_device_allocator(context);
         exercise_original_source_physx_buddy_heap(context);
         exercise_source_gpu_heap_manager(context);
+        exercise_source_staged_mapped_pair_reports(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
