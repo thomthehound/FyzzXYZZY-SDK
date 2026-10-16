@@ -185,9 +185,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
       tests/physx_gpu_cuda_host_transfer.cpp)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
-      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
       COMMAND fyzzxyzzy_physx_cuda_host_transfer)
 
@@ -1527,9 +1528,10 @@ if(FYZZXYZZY_BUILD_D3D12)
       PRIVATE FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
-      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
       COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
   endif()
