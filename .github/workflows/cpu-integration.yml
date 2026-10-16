@@ -68,6 +68,9 @@ jobs:
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
           cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
+          # Production/distribution configurations must also reject toolchains
+          # lacking C++23 std::expected when BUILD_TESTING=OFF.
+          cmake -S FyzzXYZZY-SDK -B offline-production -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
 
       - name: Godot 4.7.2 headless acceptance
         shell: bash
