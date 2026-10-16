@@ -40,6 +40,22 @@ public:
     Address register_slice(compute::BufferId buffer, std::size_t backing_offset,
                            std::size_t allocation_bytes);
 
+    // Original PxgCudaBuffer stores the allocator's RAW mPtr, whereas
+    // getDevicePtr() rounds that pointer UP to 128 bytes. The legacy
+    // register_slice() above models aligned roots; an actual source heap
+    // can return a raw pointer with any residue modulo 128. Preserve that
+    // residue in the emulated CUdeviceptr without changing who owns the
+    // physical buddy-heap root or its allocation/free bookkeeping.
+    //
+    // raw_low_7_bits comes from the source allocator's raw pointer,
+    // never from a guessed Vulkan/D3D12 GPU virtual address. The host
+    // caller remains responsible for ensuring the aligned device view
+    // fits inside the source allocation's requested capacity.
+    Address register_source_slice(compute::BufferId buffer,
+                                  std::size_t backing_offset,
+                                  std::size_t allocation_bytes,
+                                  std::uint32_t raw_low_7_bits);
+
     // A source-ordered GPU copy must already have been enqueued before a
     // live slice moves to a grown arena. This changes future host lowering
     // without invalidating prior submitted GPU commands or virtual pointers.
@@ -69,6 +85,10 @@ private:
         std::size_t backing_offset = 0u;
         bool owned = true; // dedicated allocation; slices never retire backing.
     };
+    Address register_slice_impl(compute::BufferId buffer,
+                                std::size_t backing_offset,
+                                std::size_t allocation_bytes,
+                                std::uint32_t raw_low_7_bits);
     static constexpr Address kAlignment = 256;
     Address next_address_ = 0x100000000ull; // all generated pointers >32-bit
     std::map<Address, Allocation> allocations_;
