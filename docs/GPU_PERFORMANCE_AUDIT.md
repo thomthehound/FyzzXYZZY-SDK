@@ -12,6 +12,26 @@ relative to source PhysX; not invent a faster broadphase, and not
 micro-optimize every instruction before the GPU scene exists.
 See [the binding policy](GPU_PORT_PERFORMANCE.md).
 
+## Active cross-backend memory optimization ledger (October 16, 2026)
+
+This ledger records our **own design and translation departures** that impose
+avoidable synchronization, bandwidth, or architectural costs. A source-faithful
+kernel port is not sufficient unless the original PhysX GPU/CPU allocation and
+publication mechanisms have been audited as well. Keep entries open until
+validated on a real target workload, not merely green software-renderer CI.
+
+| Debt / root cause | Severity and consequence | Corrective work / remaining acceptance |
+| --- | --- | --- |
+| **D3D12 ignored `MemoryPlacement::HostVisible` entirely.** Every buffer was placed in a device-only DEFAULT heap, despite the API claiming that `HostVisible` supported mapping. A kernel-centric, overly literal CUDA lowering failed to account for PhysX's CPU-readable, GPU-written mapped broadphase pair reports and completion flags. | **P1 correctness/architecture; P0 candidate performance** on bandwidth-constrained UMA (e.g. Radeon 680M). Forced GPU→CPU staging and extra memory traffic could erase the benefits of GPU simulation; the actual speed penalty is not yet measured. | **PR #85**: implement strict GPU-writable CPU-mappable `HostVisible`, D3D12 UMA custom-heap policy and capability discovery, fence-based mapped-buffer access and cross-backend conformance. Do not silently return device-only memory for an explicit host-visible request. **Still open**: integrate zero-copy mapped pairs with the original source host heap, test read/write cache effects and noncoherent device behavior, benchmark against staged publication on real UMA and discrete adapters. |
+| **Busy-poll inheritance from upstream `PxgCudaBroadPhaseSap::gpuDMABack`** (`spinWait` on `mEventMapped` before stream synchronization). A literal port would waste CPU cycles and potentially read poorly cached mapped memory. | **P1 host-side scheduling and synchronization.** Source task graph must remain intact, but a polled flag need not be emulated as a CPU spin. | Existing `BroadPhaseCompletionGate` uses source submission fences: Vulkan `vkWaitForFences`, D3D12 `ID3D12Fence::SetEventOnCompletion` + OS event. **Still open**: wire into the real GPU scene and remove the original mapped-flag polling call site; assert no busy-poll loop is introduced. |
+| **Source actor-pair mapped-host writes initially implemented as staged report copies** in PR #84. Correctly preserves publication order but duplicates bytes even on devices with fast coherent UMA. | **P1/P2 bandwidth and latency.** Staging is a required compatibility fallback, not the desired default for integrated GPUs. | Use actual GPU-writable host-visible mapped storage when capability and workload permit; retain staged path for unsupported/slow hardware, compare complete producer→fetch timing, memory bandwidth and contention. |
+
+**Guardrail:** every future source integration review must inspect the CUDA
+host allocations, GPU aliasing, cache-policy requirements, CPU/GPU completion
+signals and allocation/retirement contracts **before** choosing native
+storage and dispatch designs. Any deliberate departure gets an entry here
+with functional coverage and eventual performance evidence.
+
 ## Audit method and limitations
 
 Reviewed kernel source for workgroups, per-thread work, scratch arrays,

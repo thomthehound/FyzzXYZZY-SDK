@@ -150,14 +150,28 @@ properties and explicit fence/cache visibility obligations:
   prefer host-cached, device-local memory when exposed; handle
   noncoherent `vkInvalidateMappedMemoryRanges` after GPU completion.
   Host-coherent alone does not imply CPU reads are cached or fast.
-* D3D12: query `UMA` / `CacheCoherentUMA` and heap support and choose
-  a legal GPU-writable CPU-mappable resource and mapping policy for the
-  adapter; do not assume `MemoryPlacement::HostVisible` currently works
-  because the D3D12 backend still creates default heaps for that enum.
+* D3D12: **PR #85** now honors explicit
+  `MemoryPlacement::HostVisible` on adapters that pass a real
+  GPU-writable/UAV CPU-mapping test using a `CUSTOM` L0 heap. For
+  GPU-written, CPU-read PhysX reports it selects the
+  `GetCustomHeapProperties(D3D12_HEAP_TYPE_READBACK)` cache policy
+  (`WRITE_BACK`), **not** a restricted abstract READBACK heap or an
+  upload-oriented WRITE_COMBINE heap. `Auto` keeps the previous D3D12
+  DEFAULT-heap behavior. Direct access uses `map_buffer` /
+  `unmap_buffer` with explicit CPU read/write intent after the source
+  GPU submission fence. Unsupported adapters reject an explicit
+  `HostVisible` request so the original staged publication can run.
 * Preserve the *same original PhysX CPU allocation*, native GPU address
   alias, source-owned fences, and original fetch/continuation ordering.
   Staging remains the fallback for adapters that cannot expose the needed
   cache/mapping guarantees efficiently.
+
+**Integration still pending:** `SourceStagedHostReportRoots` has not
+yet been switched to these native mappings. Its original host-heap CPU
+pointer ownership and the GPU alias must be joined without breaking
+the source buddy allocator. The PR #85 tests establish the low-level
+mapped resource and fence contract only; GPU/CPU cache efficiency on
+physical Radeon 680M or discrete adapters remains unmeasured.
 
 The performance decision is per-capability and benchmarked for
 GPU producer -> CPU report consumer traffic: data volume, cache policy,
