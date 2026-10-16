@@ -23,6 +23,8 @@ enum class Backend { Vulkan, D3D12 };
 // reject it, never silently allocate a DEFAULT heap and label it mapped.
 // DeviceLocal retains normal GPU-preferred storage with staging transfers.
 enum class MemoryPlacement { Auto, HostVisible, DeviceLocal };
+// Map intent avoids claiming every read-only PhysX report was CPU-written.
+enum class HostMapAccess { Read, Write, ReadWrite };
 
 struct DeviceInfo {
     std::uint32_t ordinal = 0;
@@ -184,7 +186,8 @@ public:
     // Neither API stages a transfer or takes ownership of the buffer.
     // Mapping twice or freeing/retiring a mapped buffer is invalid.
     bool buffer_is_host_visible(BufferId id) const;
-    void* map_buffer(BufferId id);
+    void* map_buffer(BufferId id,
+                     HostMapAccess access = HostMapAccess::ReadWrite);
     void unmap_buffer(BufferId id);
 
     void upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes);
