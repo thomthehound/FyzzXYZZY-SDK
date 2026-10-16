@@ -208,6 +208,7 @@ struct Context::Impl {
         std::size_t bytes = 0;
         bool host_visible = false;
         bool cpu_mapped = false;
+        HostMapAccess map_access = HostMapAccess::ReadWrite;
     };
     struct Pipeline {
         ComPtr<ID3D12RootSignature> signature;
@@ -487,18 +488,19 @@ struct Context::Impl {
 
     bool buffer_is_host_visible(BufferId id) { return get_buffer(id).host_visible; }
 
-    void* map_buffer(BufferId id) {
+    void* map_buffer(BufferId id, HostMapAccess access) {
         auto& buffer = get_buffer(id);
         if (!buffer.host_visible)
             throw std::invalid_argument("D3D12 buffer is not CPU-mappable GPU storage");
         if (buffer.cpu_mapped)
             throw std::logic_error("D3D12 buffer already CPU mapped");
         void* pointer = nullptr;
-        D3D12_RANGE readable{0, buffer.bytes};
+        D3D12_RANGE readable{0, access == HostMapAccess::Write ? 0u : buffer.bytes};
         // Map does NOT synchronize. The source fence must have completed
         // before CPU reads any GPU-produced PhysX report bytes.
         check(buffer.resource->Map(0, &readable, &pointer), "Map D3D12 UMA buffer");
         buffer.cpu_mapped = true;
+        buffer.map_access = access;
         return pointer;
     }
 
@@ -508,7 +510,8 @@ struct Context::Impl {
             throw std::logic_error("D3D12 buffer is not CPU mapped");
         // General read/write map. The GPU must not read data until the
         // caller has released the CPU map and submitted ordered work.
-        D3D12_RANGE written{0, buffer.bytes};
+        D3D12_RANGE written{0, buffer.map_access == HostMapAccess::Read
+                               ? 0u : buffer.bytes};
         buffer.resource->Unmap(0, &written);
         buffer.cpu_mapped = false;
     }
@@ -1129,7 +1132,9 @@ void Context::retire_buffer(BufferId id) { impl_->retire_buffer(id); }
 bool Context::buffer_is_host_visible(BufferId id) const {
     return impl_->get_buffer(id).host_visible;
 }
-void* Context::map_buffer(BufferId id) { return impl_->map_buffer(id); }
+void* Context::map_buffer(BufferId id, HostMapAccess access) {
+    return impl_->map_buffer(id, access);
+}
 void Context::unmap_buffer(BufferId id) { impl_->unmap_buffer(id); }
 void Context::upload(BufferId id, std::size_t offset, const void* data, std::size_t bytes) {
     impl_->upload(id, offset, data, bytes);
