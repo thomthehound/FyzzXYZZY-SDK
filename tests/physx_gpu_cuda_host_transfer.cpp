@@ -244,6 +244,98 @@ void exercise_native_physx_heap_roots(Context& context) {
     roots.release_root(again);
 }
 
+
+void exercise_native_heap_raii_teardown(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative source(context, addresses);
+    constexpr std::size_t bytes=4096u, offset=512u, length=256u;
+    std::array<std::uint8_t,length> pattern{};
+    for (std::size_t i=0u;i<pattern.size();++i)
+        pattern[i]=static_cast<std::uint8_t>((i*29u+7u)%251u);
+    CudaDeviceAddressMap::Address oldRoot=0u, newRoot=0u;
+    BufferId oldNative=0u, newNative=0u;
+    {
+        SourcePhysxHeapRoots roots(context,addresses);
+        oldRoot=roots.allocate_root(bytes);
+        newRoot=roots.allocate_root(bytes);
+        oldNative=addresses.resolve(oldRoot,1u).buffer;
+        newNative=addresses.resolve(newRoot,1u).buffer;
+        source.queue_uploads({{oldRoot+offset,pattern.data(),length}});
+        source.queue_device_copy(newRoot+offset,oldRoot+offset,length);
+        source.submit(); // source caller must submit before unwinding owner
+        // Neither root is explicitly freed. Destructor must retire both,
+        // invalidate mappings and preserve submitted upload/copy order.
+    }
+    if(addresses.live_allocations()!=0u)
+        throw std::runtime_error("Implicit PhysX heap shutdown left CUDA root mappings");
+    for(const auto pointer:{oldRoot,newRoot}) {
+        bool invalid=false;
+        try {(void)addresses.resolve(pointer,1u);}
+        catch(const std::out_of_range&){invalid=true;}
+        if(!invalid)
+            throw std::runtime_error("RAII-retired PhysX root address remained resolvable");
+    }
+    source.wait_at_fetch();
+    for(const auto buffer:{oldNative,newNative}) {
+        bool invalid=false;
+        try {context.destroy_buffer(buffer);}
+        catch(const std::out_of_range&){invalid=true;}
+        catch(const std::invalid_argument&){invalid=true;}
+        if(!invalid)
+            throw std::runtime_error("RAII PhysX heap owner left backing compute buffer live");
+    }
+
+    // Scene initialization failure is also a normal RAII cleanup path.
+    // Address map and GPU context intentionally outlive the owner.
+    CudaDeviceAddressMap::Address exceptionalRoot=0u;
+    BufferId exceptionalNative=0u;
+    bool threw=false;
+    try {
+        SourcePhysxHeapRoots roots(context,addresses);
+        exceptionalRoot=roots.allocate_root(1024u);
+        exceptionalNative=addresses.resolve(exceptionalRoot,1u).buffer;
+        (void)roots.allocate_root(2048u);
+        throw std::runtime_error("Original PhysX scene setup failed");
+    } catch(const std::runtime_error&) {threw=true;}
+    if(!threw||addresses.live_allocations()!=0u)
+        throw std::runtime_error("Scene-setup exception leaked native PhysX heap allocations");
+    bool stale=false;
+    try {(void)addresses.resolve(exceptionalRoot,1u);}
+    catch(const std::out_of_range&){stale=true;}
+    if(!stale)
+        throw std::runtime_error("Exceptional scene teardown left a stale CUDA root");
+    stale=false;
+    try {context.destroy_buffer(exceptionalNative);}
+    catch(const std::out_of_range&){stale=true;}
+    catch(const std::invalid_argument&){stale=true;}
+    if(!stale)
+        throw std::runtime_error("Exceptional scene teardown leaked an owned GPU buffer");
+
+    // Normal close must also perform source-stream submission exactly once,
+    // reject alien streams without changing ownership, and be idempotent.
+    CudaDeviceAddressMap foreignAddresses;
+    SourceSapDmaNative foreign(context,foreignAddresses);
+    CudaDeviceAddressMap::Address normalRoot=0u;
+    {
+        SourcePhysxHeapRoots roots(context,addresses);
+        normalRoot=roots.allocate_root(bytes);
+        source.queue_uploads({{normalRoot+offset,pattern.data(),length}});
+        bool rejected=false;
+        try {roots.close(&foreign);}
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected || roots.live_roots()!=1u ||
+           addresses.resolve(normalRoot,1u).offset!=0u)
+            throw std::runtime_error("Alien PhysX close mutated live heap ownership");
+        roots.close(&source);
+        roots.close(&source);
+        if(roots.live_roots()!=0u||addresses.live_allocations()!=0u)
+            throw std::runtime_error("Explicit native PhysX heap shutdown left roots live");
+    }
+    source.wait_at_fetch();
+}
+
 } // namespace
 
 int main() {
@@ -309,6 +401,7 @@ int main() {
             throw std::runtime_error("GPU transfer mapping leak");
         exercise_source_raw_buffer_growth(context);
         exercise_native_physx_heap_roots(context);
+        exercise_native_heap_raii_teardown(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
