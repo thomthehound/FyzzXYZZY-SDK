@@ -128,6 +128,66 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Native backing at the original PhysX heap ROOT callback
+
+PhysX already implements the essential GPU allocation policy in
+`PxgHeapMemoryAllocator`, not in `PxgCudaBuffer`: its buddy allocator
+splits 128-byte blocks from root pages, handles exceptional allocations,
+tracks exact raw allocation keys, defers freed blocks and flushes them at
+its existing simulation-step boundary. Reimplementing that bookkeeping
+inside the Vulkan/D3D12 port would create competing lifetime decisions.
+
+`SourcePhysxHeapRoots` therefore provides the **lower-level allocation
+callback boundary** for the original heap's device roots. Each callback
+allocation creates one native `compute::BufferId` and registers one
+monotonic CUDA-style virtual root in `CudaDeviceAddressMap`. The original
+PhysX heap can perform its own root-plus-offset buddy arithmetic without
+registering individual suballocations or requiring all roots to share one
+native buffer. Exceptional allocations also receive their own roots.
+Pointers returned from this boundary are opaque GPU addresses, never
+CPU-dereferenceable pointers.
+
+At the original ROOT deallocation boundary, optionally flush pending
+source-native stream commands to their **existing ordered queue, not a CPU
+wait**, then invalidate the root's virtual address and retire the native
+backing with `Context::retire_buffer`. Outstanding submitted copies and
+dispatches retain the physical resource until the queue fence completes.
+Do **not** call root release for an in-heap buddy block, or while the
+original source heap still owns live suballocations of that root. The
+original allocator, not this lower-level adapter, still decides when a
+root may actually be returned.
+
+The existing Vulkan/D3D12 native CUDA host transfer conformance now
+covers root addresses with buddy-style offsets, exceptional roots,
+original raw grow-copy dependencies over multiple GPU resources,
+asynchronous root retirement during those copies, exact-root free
+validation and stale-address rejection. The shader/report conformance
+from PR #79 already consumes `CudaDeviceAddressMap` multi-root views.
+
+**Lifetime and failure contract:** normal scene shutdown calls
+`SourcePhysxHeapRoots::close(sourceStream)` while the existing PhysX stream is
+available; it submits (does not wait for) pending native commands before
+retiring the allocator-owned roots. `close()` is idempotent, and a stream
+from another scene/address map is rejected before touching the roots. If
+scene initialization or teardown throws, the owner destructor provides a
+`noexcept` fallback that retires **all remaining** native roots and
+unregisters their device-address mappings. This fallback assumes that
+any operations referring to those roots have already been submitted;
+only the source stream owner can submit pending CPU-side command lists.
+The context and address map must outlive the heap root owner.
+
+The same Vulkan/D3D12 native host tests cover implicit destructor teardown
+with GPU transfers in flight, exception unwinding with multiple live roots,
+stale-address rejection, and explicit/repeated `close()` operations.
+
+**Integration qualification:** this is the native backing operation that
+a future internal `PxgCudaAllocatorCallbackBase` implementation will
+call. It is not yet installed into the actual PhysX memory manager, nor
+is a live `PxScene` using it. Host source callback wiring, failure/abort
+translation, original heap destruction ordering and mapping of GPU-pinned
+host reports are still required. No new independent PhysX buddy allocator
+or game-engine integration API has been introduced.
+
 ## Original PhysX report allocations across multiple GPU heap roots
 
 `SourceSapReportNativeStage` lowers original

@@ -74,6 +74,13 @@ public:
             destination.buffer, destination.offset, bytes});
     }
 
+    // Prevent PhysX heap root retirement from accidentally submitting a
+    // different scene/context's source commands before releasing memory.
+    bool bound_to(const compute::Context& context,
+                  const CudaDeviceAddressMap& addresses) const noexcept {
+        return &context_ == &context && &addresses_ == &addresses;
+    }
+
     // Source-native kernel stages append into this existing mStream segment.
     // Appenders provide their own all-or-nothing source field validation.
     std::vector<compute::BatchCommand>& commands() noexcept { return pending_; }
