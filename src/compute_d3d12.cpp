@@ -127,9 +127,39 @@ std::vector<Candidate> discover_adapters() {
                 D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)))) {
             info.unified_memory = architecture.UMA == TRUE;
             info.cache_coherent_unified_memory = architecture.CacheCoherentUMA == TRUE;
-            // Actual allocation validity is checked on create_buffer;
-            // upload/readback heap types alone are not GPU-writable mappings.
-            info.supports_gpu_writable_host_visible = info.unified_memory;
+            // UMA alone does not guarantee that a GPU-writable, CPU-map
+            // capable CUSTOM heap can actually be created. Probe the exact
+            // UAV resource + memory combination, not just an adapter name.
+            if (info.unified_memory) {
+                const auto heap = probe->GetCustomHeapProperties(0, D3D12_HEAP_TYPE_UPLOAD);
+                if (heap.Type == D3D12_HEAP_TYPE_CUSTOM &&
+                    (heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK ||
+                     heap.CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE) &&
+                    heap.MemoryPoolPreference == D3D12_MEMORY_POOL_L0) {
+                    D3D12_RESOURCE_DESC desc{};
+                    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                    desc.Width = 256;
+                    desc.Height = 1;
+                    desc.DepthOrArraySize = 1;
+                    desc.MipLevels = 1;
+                    desc.SampleDesc.Count = 1;
+                    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                    ComPtr<ID3D12Resource> trial;
+                    if (SUCCEEDED(probe->CreateCommittedResource(
+                            &heap, D3D12_HEAP_FLAG_NONE, &desc,
+                            D3D12_RESOURCE_STATE_COMMON, nullptr,
+                            IID_PPV_ARGS(&trial)))) {
+                        void* pointer = nullptr;
+                        D3D12_RANGE read{0, 0};
+                        if (SUCCEEDED(trial->Map(0, &read, &pointer)) && pointer) {
+                            D3D12_RANGE written{0, 0};
+                            trial->Unmap(0, &written);
+                            info.supports_gpu_writable_host_visible = true;
+                        }
+                    }
+                }
+            }
         }
         candidates.push_back({std::move(adapter), std::move(info)});
     };
