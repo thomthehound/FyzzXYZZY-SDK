@@ -103,7 +103,7 @@ target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_17)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include"
+  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
 target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
 
@@ -201,7 +201,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include")
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
       FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
@@ -1546,7 +1546,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/include")
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
