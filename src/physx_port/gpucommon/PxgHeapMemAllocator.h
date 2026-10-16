@@ -15,6 +15,7 @@
 #include "CmVirtualAllocatorCallback.h"
 #include "PxsHeapStats.h"
 #include "PxsHeapMemoryAllocator.h"
+#include "PxgAllocatorDesc.h"
 #include "common/PxPhysXCommonConfig.h"
 
 #if PX_DEBUG
@@ -199,6 +200,18 @@ namespace physx
     private:
         PX_NOCOPY(PxgHeapMemoryAllocatorManager)
     };
+
+    // Original PxgCreateAllocatorDesc convenience function. Downstream
+    // PhysX GPU components receive the three source heaps, not a new
+    // FyzzXYZZY-specific allocation object or a CUDA context.
+    PX_INLINE PxgAllocatorDesc PxgCreateAllocatorDesc(
+        PxgHeapMemoryAllocatorManager& manager)
+    {
+        return PxgAllocatorDesc(
+            *manager.mDeviceMemoryAllocator,
+            *manager.mPinnedHostMemoryAllocator,
+            *manager.mPinnedHostMappedMemoryAllocator);
+    }
 
 }
 
