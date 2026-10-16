@@ -128,6 +128,42 @@ across scene frames, and handle failures under PhysX's task graph.
 This focused work does not add an independent frame scheduler or
 claim G2/G3 acceptance.
 
+## Native fences and the zero-copy target
+
+The source completion path does **not** spin on mapped flags. The existing
+`BroadPhaseCompletionGate` already uses `SourceSapDmaNative::wait_at_fetch()`
+and the compute backend's submitted GPU fence: `vkWaitForFences` on Vulkan,
+or `ID3D12Fence::SetEventOnCompletion` with an OS event wait on D3D12.
+`gpu_complete()` performs a single optional nonblocking query when called,
+not a busy-poll loop. Applications should not repeatedly query it to spin.
+The original `mEventMapped` polling must be replaced with this source
+completion mechanism when lowering the scene host graph.
+
+**Zero-copy is the preferred mapped-report implementation on capable
+hardware**, especially unified-memory integrated GPUs. This PR retains a
+correctness fallback while the portable compute interface lacks persistent
+mapped GPU-writable buffers. The next native adapter should expose a
+capability-checked host-readable GPU-write target, including physical memory
+properties and explicit fence/cache visibility obligations:
+
+* Vulkan: select a host-visible memory type suitable for device writes;
+  prefer host-cached, device-local memory when exposed; handle
+  noncoherent `vkInvalidateMappedMemoryRanges` after GPU completion.
+  Host-coherent alone does not imply CPU reads are cached or fast.
+* D3D12: query `UMA` / `CacheCoherentUMA` and heap support and choose
+  a legal GPU-writable CPU-mappable resource and mapping policy for the
+  adapter; do not assume `MemoryPlacement::HostVisible` currently works
+  because the D3D12 backend still creates default heaps for that enum.
+* Preserve the *same original PhysX CPU allocation*, native GPU address
+  alias, source-owned fences, and original fetch/continuation ordering.
+  Staging remains the fallback for adapters that cannot expose the needed
+  cache/mapping guarantees efficiently.
+
+The performance decision is per-capability and benchmarked for
+GPU producer -> CPU report consumer traffic: data volume, cache policy,
+bandwidth, synchronization cost and GPU access patterns matter. No
+vendor-ID blacklist or alternate scene scheduler is required.
+
 ## Original mapped actor-pair reports through native staged publication
 
 The original `PxgCudaBroadPhaseSap` allocates its
