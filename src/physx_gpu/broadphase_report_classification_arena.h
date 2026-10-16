@@ -31,12 +31,14 @@ struct alignas(16) BroadphaseReportClassificationArenaDesc {
     std::uint32_t found_actor_block_offset = 0;
     std::uint32_t lost_aggregate_block_offset = 0;
     std::uint32_t lost_actor_block_offset = 0;
-    std::uint32_t volume_aggregate_tags_offset = 0; // one Bp::VolumeData::mAggregate per volume
+    std::uint32_t volume_aggregate_tags_offset = 0; // base of native Bp::VolumeData array or compact tags
     std::uint32_t volume_capacity = 0;
     std::uint32_t raw_report_capacity = 0;          // max_found_lost_pairs
     std::uint32_t aggregate_report_capacity = 0;    // max_found_lost_agg_pairs
     std::uint32_t has_volume_data = 0;               // null pointer => all single actors
-    std::uint32_t reserved[3] = {};
+    std::uint32_t volume_stride = 0; // 0 => compact 4-byte tags (older arena fixture)
+    std::uint32_t aggregate_member_offset = 0; // original mAggregate field within VolumeData
+    std::uint32_t reserved = 0;
 };
 static_assert(sizeof(BroadphaseReportClassificationArenaDesc) == 80,
               "PhysX report classification descriptor ABI changed");
