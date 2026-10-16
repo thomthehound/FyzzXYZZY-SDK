@@ -99,7 +99,25 @@ tests additionally perform the **original raw-to-raw growth copy**
 on a shared GPU root, with distinct old/new raw residues, deferred
 free after GPU completion, `swapBuffer` pointer/size rotation and
 `assign` ownership transfer; they compare the entire backing
-buffer including canaries. These are source-derived **contract tests**,
+buffer including canaries and reject overlapping ranges through both
+single-copy and batched APIs.
+
+**Native same-root copying:** the source allocator can allocate the
+old and new raw blocks within one GPU root. The original
+`memcpyDtoDAsync` can therefore legitimately request a disjoint
+same-resource copy. Vulkan permits this directly through
+`vkCmdCopyBuffer` with one combined read/write transfer resource
+dependency. The current legacy-barrier D3D12 path cannot put one
+resource in both `COPY_SOURCE` and `COPY_DEST` states simultaneously.
+It lowers the same source command to two queue-ordered
+`CopyBufferRegion` operations via a *device-local*, fence-owned
+temporary buffer. Neither path performs an intermediate host wait or
+CPU staging/readback. The D3D12 lowering adds an extra GPU copy and
+temporary allocation **on the growth path only**; benchmark this and
+consider capability-gated Enhanced Barriers or reuse of small scratch
+allocations when optimizing the actual allocator integration.
+
+These are source-derived **contract tests**,
 not a live `PxgCudaBuffer` backend or the production heap allocator.
 
 What remains: actually connect original `PxgHeapMemoryAllocator`
