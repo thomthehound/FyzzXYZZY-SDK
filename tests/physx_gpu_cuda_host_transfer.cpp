@@ -90,6 +90,25 @@ void exercise_source_raw_buffer_growth(Context& context) {
     if(observed!=expected)
         throw std::runtime_error("PhysX raw DtoD growth copy or surrounding canaries changed");
 
+    // Same-root GPU copies must also compose inside the caller's native
+    // source-ordered batch; standalone submit_copy_buffer is not the
+    // only path a future PxCudaContext stream adapter can exercise.
+    // The second copy consumes bytes written by the first without
+    // inserting a host wait between the two.
+    constexpr std::size_t chainedDestination=3072u;
+    const std::vector<BatchCommand> nativeCopies{
+        CopyCommand{root,newPhysical,root,standbyPhysical,oldSize},
+        CopyCommand{root,standbyPhysical,root,chainedDestination,oldSize}};
+    context.wait_submission(context.submit_batch(nativeCopies));
+    std::copy_n(initial.begin()+oldPhysical,oldSize,
+                expected.begin()+standbyPhysical);
+    std::copy_n(initial.begin()+oldPhysical,oldSize,
+                expected.begin()+chainedDestination);
+    context.download(root,0u,observed.data(),rootBytes);
+    if(observed!=expected)
+        throw std::runtime_error(
+            "Ordered same-root GPU copy batch corrupted source data or canaries");
+
     if(growing.size!=old.size*2u ||
        pointers.resolve(growing.device(),growing.size-
            static_cast<std::size_t>(growing.device()-growing.raw)).offset!=
