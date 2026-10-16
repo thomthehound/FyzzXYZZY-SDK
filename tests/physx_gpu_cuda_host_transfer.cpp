@@ -817,6 +817,80 @@ void exercise_source_staged_mapped_pair_reports(Context& context) {
         throw std::runtime_error("Source mapped host report GPU alias survived root retirement");
 }
 
+
+void exercise_true_native_host_visible(Context& context) {
+    // PhysX actor report semantics: GPU writes a storage buffer, the host
+    // reads ONLY AFTER the existing source submission fence completes.
+    constexpr std::size_t bytes=1024u;
+    std::array<std::uint8_t,bytes> input{},observed{};
+    for(std::size_t i=0;i<bytes;++i)
+        input[i]=static_cast<std::uint8_t>((i*37u+11u)%251u);
+    const auto device=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    if(context.buffer_is_host_visible(device))
+        throw std::runtime_error("DeviceLocal buffer unexpectedly claims direct CPU mapping");
+    bool rejected=false;
+    try {(void)context.map_buffer(device);}
+    catch(const std::invalid_argument&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("DeviceLocal GPU buffer allowed direct CPU mapping");
+
+    if(!context.device_info().supports_gpu_writable_host_visible) {
+        rejected=false;
+        try {
+            const auto bad=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+            context.destroy_buffer(bad);
+        } catch(const std::runtime_error&){rejected=true;}
+        if(!rejected)
+            throw std::runtime_error("Unsupported host-visible UAV allocated silently");
+        context.destroy_buffer(device);
+        return; // Discrete GPU/WARP without mapped UAV capability uses staged fallback.
+    }
+    const auto mapped=context.create_buffer(bytes,MemoryPlacement::HostVisible);
+    if(!context.buffer_is_host_visible(mapped))
+        throw std::runtime_error("Explicit HostVisible allocation silently used default heap");
+    auto* first=static_cast<std::uint8_t*>(context.map_buffer(mapped));
+    if(!first) throw std::runtime_error("Native GPU-writable mapped buffer returned null");
+    std::memset(first,0,bytes);
+    rejected=false;
+    try {(void)context.map_buffer(mapped);}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("GPU host storage accepted simultaneous CPU maps");
+    rejected=false;
+    try {context.retire_buffer(mapped);}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("Mapped GPU host storage retired before unmap");
+    context.unmap_buffer(mapped);
+    context.upload(device,0u,input.data(),bytes);
+    const auto fence=context.submit_copy_buffer(device,0u,mapped,0u,bytes);
+    // GPU completion uses existing backend fences (D3D12 OS event / Vulkan
+    // vkWaitForFences); never spin on a mapped CUDA completion flag.
+    context.wait_submission(fence);
+    const auto* result=static_cast<const std::uint8_t*>(context.map_buffer(mapped));
+    std::memcpy(observed.data(),result,bytes);
+    if(observed!=input)
+        throw std::runtime_error("GPU-written zero-copy host mapped reports not visible after fence");
+    rejected=false;
+    try {context.destroy_buffer(mapped);}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("Mapped GPU host storage destroyed while held by CPU");
+    context.unmap_buffer(mapped);
+    rejected=false;
+    try {context.unmap_buffer(mapped);}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("GPU host storage unmap without map accepted");
+    context.retire_buffer(mapped);
+    rejected=false;
+    try {(void)context.buffer_is_host_visible(mapped);}
+    catch(const std::exception&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("Retired GPU mapped buffer stayed addressable");
+    context.destroy_buffer(device);
+}
+
 } // namespace
 
 int main() {
@@ -888,6 +962,7 @@ int main() {
         exercise_original_source_physx_buddy_heap(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_staged_mapped_pair_reports(context);
+        exercise_true_native_host_visible(context);
 
         std::cout << "PhysX CUDA-style host pointer to native GPU transfer PASS\n";
         return 0;
