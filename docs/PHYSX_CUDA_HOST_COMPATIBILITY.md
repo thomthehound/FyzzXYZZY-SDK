@@ -1356,3 +1356,45 @@ This is a **GPU-host pathway conformance test**, not yet execution of the
 source SAP GPU task graph from a real `PxScene`. Completing that owner
 binding, actual AABB-manager getter provenance, report-mapping lifecycle
 and shader dispatch dependencies remains necessary.
+
+## Single-call source `PxgCudaBroadPhaseSap::gpuDMAUp` bridge (PR #99)
+
+`PxgSapDmaUpFrameNative.{h,cpp}` composes the previously reviewed
+original-source allocation, descriptor construction and GPU DMA helpers
+inside **one explicit call boundary**. The `SourceSapDmaUpFrameMembers`
+argument contains only borrowed references to fields of the existing
+`PxgCudaBroadPhaseSap`; the structure owns no stream, heap, shader
+pipeline, frame state or GPU resources.
+
+The exact operation sequence is now executable as a single unit:
+
+1. Read original `Bp::BroadPhaseUpdateData` and update source counters.
+2. Grow old integer bounds with copy-preserving GPU history.
+3. For each axis 0–2, run the source six-operation prefix immediately
+   followed by its **two** `j*3+i` endpoint-history branches and four
+   axis scratch allocations, then move to the next axis.
+4. Allocate post-axis report and region scratch, changed-handle buffers,
+   then **new** integer bounds.
+5. Build the original `PxgBroadPhaseDesc` and both six-element radix
+   descriptor arrays using **post-allocation** device addresses and
+   source-supplied AABB-manager/mapped report pointer aliases.
+6. Queue original created/removed/feature-enabled updated-handle HtoD,
+   broadphase HtoD, six ordinary radix records and six WOR records,
+   all on the **same native source stream**, without a host wait.
+
+Dedicated Vulkan and D3D12 native regression tests build a complete
+borrowed source-member bundle from the original GPU buddy-heap objects,
+execute a second frame with mixed created/removed/updated handles,
+exercise **real copy-preserving GPU projection history growth** and the
+entire ordered descriptor transfer sequence, overwrite borrowed CPU
+input arrays after enqueue, and verify every GPU record and preserved
+history byte at the original fetch boundary.
+
+**Remaining critical integration boundary:** this composition is not yet
+called from a compiled native `PxgCudaBroadPhaseSap::update` method and
+does not drive `PxgAABBManager`'s real lifecycle or the SAP source
+kernel/task graph. The next phase must lower the real owner binding,
+mapped report/AABB-manager getter provenance and native source dispatch
+order, preserving the original update/no-change/forced-update behavior.
+The fixture intentionally supplies a borrowed AABB-manager getter view;
+it does not pretend to create a source `PxgAABBManager`.
