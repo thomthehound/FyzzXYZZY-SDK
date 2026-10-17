@@ -55,8 +55,9 @@ PhysX source is disabled. The same actor lifecycle operations are available
 through the separately compiled PhysX CPU reference adapter. Relocating a
 reference actor preserves its orientation (including the rotated local plane
 of `PxCreatePlane`); native infinite planes translate without changing
-their fixed +Y normal. **Its `step()` still throws** because CPU narrowphase, dynamics,
-island state, contacts and solver execution are not yet ported. Direct
+their fixed +Y normal. Its `step()` executes the explicitly limited translation-constrained CPU
+subset; general source rigid-body solver/island/task/rotational capabilities
+are not yet ported. Direct
 `advance_broadphase` is an internal integration and conformance seam, **not**
 a substitute public physics simulation path. Infinite-plane overlaps are
 candidates, not physical contact claims; native narrowphase must reject
@@ -100,9 +101,51 @@ No new owner, shader controller, scene clock or solver loop was added.
 contact clipping/manifold caching, angular inertia, solver constraints,
 islands, dynamics, CCD, aggregates, articulation or backend GPU execution.
 The narrowphase method is not claimed equivalent to the complete
-`GuContactBoxBox.cpp` implementation. Native `World::step()` continues
-to reject simulation until the source-derived CPU solver and scheduler are
-actually connected; this is an N1 *intermediate integration*, not an N1 pass.
+`GuContactBoxBox.cpp` implementation. Native `World::step()` now runs the limited translation-constrained CPU
+dynamics pipeline described below; the general-purpose source CPU solver,
+task continuations and N1 acceptance remain incomplete.
+
+## N1 translational CPU dynamics — integrated source-derived subset
+
+The SDK's *actual* \`World(ExecutionMode::NativeCpu).step(dt)\` now owns an
+end-to-end bounded timestep: unconstrained gravity/linear velocity from
+\`DyBodyCoreIntegrator.h\`, a predicted position in the same actor store,
+native SAP and source-derived contact manifold publication, normal-contact
+constraint preparation from \`DyContactPrep.cpp\`, and accumulated unilateral
+PGS impulse solution specialized from \`DySolverConstraints.cpp\`. Contact
+response uses inverse masses computed once per dynamic box, bounded
+penetration bias and unilateral nonnegative normal impulses. One manifold
+has one translational normal Jacobian; its four/eight geometric points do
+not create four/eight redundant whole-body impulses. This keeps actor
+state and constraint impulses in the existing scene, with inline
+per-manifold solver state and reusable buffers.
+
+**Exact supported subset:** axis-aligned, translation-constrained boxes,
+horizontal infinite planes, gravity, dynamic/static and dynamic/dynamic
+normal contacts. The API has no quaternion/rotational DOFs; these bodies
+are intentionally translation-constrained. A default 0.2 contact
+restitution, provisional 0.02m per-shape contact offset and simple
+normal-only frictionless patch response are *provisional*, not a claim of
+exact PhysX tuning. Normal impulses cannot supply torque, angular
+momentum or Coulomb friction. True source BoxBox edge/corner contacts,
+full manifold correlation/cache, islands, constraints, CCD, broadphase
+incremental optimization, GPU SAP, callbacks, full task continuations and
+rigid-body parity remain **not implemented**. No general-purpose physics
+claim or N1 acceptance is made.
+
+Scheduling departure: position prediction occurs before native broadphase
+and contact generation so the contacts and published positions describe
+the same frame, with the velocity constraint applied afterward. This is
+not yet an exact \`ScPipeline\` scheduling/lifetime translation and must
+be reconciled when porting the full task DAG. There is exactly one frame
+increment per timestep and no reference \`PxScene\`, second solver owner,
+standalone floor engine, queue synchronization or new per-contact heap.
+
+Acceptance tests exercise source-free native gravity/floor settling,
+multi-body vertical support, actor removal after live contacts, separate
+scenes, published contact events and public SDK actor state. These are
+integration/regression tests for the admitted subset, not acceptance of
+N1's full CPU solver.
 
 ## Gate N2 — native source-derived SAP and AABB owner
 

@@ -32,16 +32,9 @@ int main() {
                 {0.25f,0.25f,0.25f}, {0,2,0}, 1);
             if (native_cpu.body_state(native_id).position.y != 2)
                 throw std::runtime_error("Native CPU scene did not own actor state");
-            bool incomplete_solver_rejected = false;
-            try {
-                native_cpu.step(1.0f / 60.0f);
-            } catch (const std::logic_error& error) {
-                incomplete_solver_rejected =
-                    std::string(error.what()).find("narrowphase and solver") !=
-                    std::string::npos;
-            }
-            if (!incomplete_solver_rejected)
-                throw std::runtime_error("Native CPU executed without a solver");
+            native_cpu.step(1.0f / 60.0f);
+            if (native_cpu.body_state(native_id).position.y >= 2.0f)
+                throw std::runtime_error("Native CPU did not integrate gravity");
             native_cpu.set_body_position(native_id, {0,3,0});
             if (native_cpu.body_state(native_id).position.y != 3)
                 throw std::runtime_error("Native CPU scene relocation failed");

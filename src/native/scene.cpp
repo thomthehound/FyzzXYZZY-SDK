@@ -76,6 +76,16 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
     a.half_extents = h;
     a.position = p;
     a.density = density;
+    // Cache source-derived inverse mass once, with a checked double
+    // intermediate so extreme but finite dimensions cannot silently
+    // turn a dynamic body into an infinite-mass actor.
+    const double mass = 8.0 * static_cast<double>(h.x) * h.y * h.z * density;
+    const double inverse = 1.0 / mass;
+    if (!std::isfinite(inverse) || inverse <= 0.0 ||
+        inverse > std::numeric_limits<float>::max() ||
+        static_cast<float>(inverse) == 0.0f)
+        throw std::invalid_argument("Native dynamic-box mass outside supported range");
+    a.inverse_mass = static_cast<float>(inverse);
     return add(a);
 }
 Scene::Actor& Scene::require(BodyId id) {
@@ -319,6 +329,109 @@ void Scene::update_contacts() {
         lost_contacts_.push_back(old->pair);
     manifolds_.swap(next_manifolds_);
 }
+// Source correspondence:
+//   DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
+//     unconstrained linear velocity += gravity * dt
+//   DyContactPrep.cpp: normal contact response from inverse masses,
+//     separation and target velocity
+//   DySolverConstraints.cpp::solveContact: unilateral accumulated PGS impulse
+// Angular terms are constrained to zero in the present nonrotating-box API;
+// this is not a general PhysX rigid-body solver, TGS or articulation port.
+//
+// Predict positions first, then generate contacts at published positions.
+// This explicit scheduling departure avoids a second broadphase rebuild
+// solely to display final contacts; full ScPipeline continuation parity
+// remains a separate N1 acceptance requirement.
+void Scene::prepare_constraints(float seconds) {
+    constexpr float positional_bias = 0.2f;
+    constexpr float max_depenetration_speed = 3.0f;
+    constexpr float bounce_threshold = 2.0f;
+    constexpr float restitution = 0.2f;
+    for (auto& manifold : manifolds_) {
+        const Actor& a = actors_[manifold.pair.a];
+        const Actor& b = actors_[manifold.pair.b];
+        const Vec3 n = manifold.points[0].normal;
+        const float relative_velocity =
+            (a.velocity.x - b.velocity.x) * n.x +
+            (a.velocity.y - b.velocity.y) * n.y +
+            (a.velocity.z - b.velocity.z) * n.z;
+        float separation = manifold.points[0].separation;
+        for (unsigned k = 1; k < manifold.count; ++k)
+            separation = std::min(separation, manifold.points[k].separation);
+        // Positive-separation (speculative) constraints never pull bodies
+        // together; negative separation requests bounded correction.
+        manifold.velocity_target = separation >= 0.0f
+            ? -separation / seconds
+            : std::min(max_depenetration_speed,
+                       -positional_bias * separation / seconds);
+        if (separation <= 0.0f && relative_velocity < -bounce_threshold)
+            manifold.velocity_target = std::max(
+                manifold.velocity_target, -restitution * relative_velocity);
+        manifold.normal_impulse = 0.0f;
+    }
+}
+void Scene::solve_constraints() {
+    // DySolverConstraints::solveContact restricted to zero angular
+    // response. All vertices in a face patch share a translational normal
+    // Jacobian: do not apply the same rigid impulse four/eight times.
+    constexpr unsigned position_iterations = 4;
+    constexpr unsigned velocity_iterations = 2;
+    for (unsigned iter = 0;
+         iter < position_iterations + velocity_iterations; ++iter) {
+        for (auto& manifold : manifolds_) {
+            Actor& a = actors_[manifold.pair.a];
+            Actor& b = actors_[manifold.pair.b];
+            const float response = a.inverse_mass + b.inverse_mass;
+            if (response <= 0.0f) continue;
+            const Vec3 n = manifold.points[0].normal;
+            const float normal_velocity =
+                (a.velocity.x - b.velocity.x) * n.x +
+                (a.velocity.y - b.velocity.y) * n.y +
+                (a.velocity.z - b.velocity.z) * n.z;
+            const float candidate = manifold.normal_impulse +
+                (manifold.velocity_target - normal_velocity) / response;
+            const float next = std::max(0.0f, candidate);
+            const float impulse = next - manifold.normal_impulse;
+            manifold.normal_impulse = next;
+            const float da = impulse * a.inverse_mass;
+            const float db = impulse * b.inverse_mass;
+            a.velocity.x += n.x * da;
+            a.velocity.y += n.y * da;
+            a.velocity.z += n.z * da;
+            b.velocity.x -= n.x * db;
+            b.velocity.y -= n.y * db;
+            b.velocity.z -= n.z * db;
+        }
+    }
+}
+void Scene::step(float seconds) {
+    if (!std::isfinite(seconds) || seconds <= 0.0f)
+        throw std::invalid_argument("Native CPU timestep must be finite and positive");
+    constexpr double gravity = -9.81;
+    for (auto& actor : actors_) {
+        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        const double vy = static_cast<double>(actor.velocity.y) + gravity * seconds;
+        const Vec3 p{
+            static_cast<float>(static_cast<double>(actor.position.x) +
+                               actor.velocity.x * static_cast<double>(seconds)),
+            static_cast<float>(static_cast<double>(actor.position.y) +
+                               vy * static_cast<double>(seconds)),
+            static_cast<float>(static_cast<double>(actor.position.z) +
+                               actor.velocity.z * static_cast<double>(seconds))};
+        if (!finite(p) || !std::isfinite(vy) ||
+            !std::isfinite(static_cast<float>(vy)))
+            throw std::overflow_error("Native CPU velocity or position overflow");
+        actor.velocity.y = static_cast<float>(vy);
+        actor.position = p;
+        dirty_ = true;
+    }
+    // One owned frame progression; no second task graph, host PxScene,
+    // per-contact heap allocation or GPU synchronization.
+    advance_collision();
+    prepare_constraints(seconds);
+    solve_constraints();
+}
+
 void Scene::advance_collision(bool force_update) {
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
@@ -353,10 +466,7 @@ public:
     BodyId add_dynamic_box(Vec3 h, Vec3 p, float density) override {
         return scene_.add_dynamic_box(h, p, density);
     }
-    void step(float) override {
-        // The native scene owns actors and broadphase; dynamics is not ported.
-        throw std::logic_error("Native CPU narrowphase and solver are not yet integrated");
-    }
+    void step(float seconds) override { scene_.step(seconds); }
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }
     void set_body_position(BodyId id, Vec3 p) override {
         scene_.set_position(id, p);

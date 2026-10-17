@@ -223,6 +223,49 @@ int main() {
                "Valid single-axis proximity contact was lost");
     }
 
+
+    // End-to-end native CPU execution, without a reference PxScene.
+    {
+        Scene falling_scene;
+        falling_scene.add_static_floor(0);
+        const auto falling = falling_scene.add_dynamic_box(
+            {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+        for (int frame = 0; frame < 360; ++frame)
+            falling_scene.step(1.0f / 120.0f);
+        const auto state = falling_scene.body_state(falling);
+        expect(std::isfinite(state.position.y) &&
+               std::abs(state.position.y - 0.25f) < 0.06f &&
+               std::abs(state.velocity.y) < 0.6f,
+               "Native CPU floor contact did not settle");
+        expect(falling_scene.frame_index() == 360 &&
+               falling_scene.contacts().size() == 1,
+               "Native step must publish exactly one collision frame");
+        falling_scene.remove(falling);
+        falling_scene.step(1.0f / 120.0f);
+        expect(falling_scene.contacts().empty() &&
+               !falling_scene.lost_contacts().empty(),
+               "Native CPU actor retirement failed to publish touch loss");
+    }
+    {
+        Scene stacked;
+        stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
+        const auto lower = stacked.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,2,0},1);
+        const auto upper = stacked.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,3.5f,0},1);
+        for (int frame = 0; frame < 600; ++frame)
+            stacked.step(1.0f / 120.0f);
+        const auto lo = stacked.body_state(lower);
+        const auto hi = stacked.body_state(upper);
+        expect(std::isfinite(lo.position.y) &&
+               std::isfinite(hi.position.y) &&
+               lo.position.y > 0.37f && lo.position.y < 0.65f &&
+               hi.position.y > 1.25f && hi.position.y < 1.70f &&
+               std::abs(lo.velocity.y) < 0.8f &&
+               std::abs(hi.velocity.y) < 0.8f,
+               "Native two-body contact chain failed");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
@@ -231,13 +274,9 @@ int main() {
     native_world.set_body_position(owned, {0,3,0});
     expect(native_world.body_state(owned).position.y == 3,
            "World did not relocate its native actor");
-    bool unavailable = false;
-    try { native_world.step(1.0f/60.0f); }
-    catch (const std::logic_error& e) {
-        unavailable = std::string(e.what()).find("narrowphase and solver") !=
-                      std::string::npos;
-    }
-    expect(unavailable, "incomplete native CPU solver silently executed");
+    native_world.step(1.0f/60.0f);
+    expect(native_world.body_state(owned).position.y < 3.0f,
+           "Native World step did not advance gravity and actor state");
     native_world.remove_body(owned);
     bool retired = false;
     try { (void)native_world.body_state(owned); }
