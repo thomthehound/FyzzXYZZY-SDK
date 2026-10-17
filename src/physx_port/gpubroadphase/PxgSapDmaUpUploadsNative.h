@@ -10,6 +10,9 @@
 #include "PxgBroadPhaseDesc.h"
 #include "PxgRadixSortDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
+#include "physx_gpu/source_sap_dma_native.h"
+
+#include <vector>
 
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
@@ -34,6 +37,15 @@ void validate_sap_dma_up_descriptor_buffers_native(
 // batch retains the exact source ordering: BP descriptor, six regular
 // radix descriptors, then six without-ranks radix descriptors. This
 // function allocates nothing and does not wait/poll for GPU completion.
+// Append original descriptor transfers to the same source frame HtoD
+// list as handle uploads, preserving the source stream ordering.
+void append_sap_dma_up_descriptors_native(
+    const physx::PxgBroadPhaseDesc& bp_desc,
+    const physx::PxgRadixSortDesc* radix_descs,
+    const physx::PxgRadixSortDesc* radix_wor_descs,
+    SourceSapDmaUpDescriptorBuffers buffers,
+    std::vector<SourceSapUpload>& uploads);
+
 void queue_sap_dma_up_descriptors_native(
     const physx::PxgBroadPhaseDesc& bp_desc,
     const physx::PxgRadixSortDesc* radix_descs,
