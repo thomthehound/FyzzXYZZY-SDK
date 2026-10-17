@@ -1398,3 +1398,14 @@ mapped report/AABB-manager getter provenance and native source dispatch
 order, preserving the original update/no-change/forced-update behavior.
 The fixture intentionally supplies a borrowed AABB-manager getter view;
 it does not pretend to create a source `PxgAABBManager`.
+
+A source member-declaration audit during #99 also corrected an older
+type-level mismatch: pinned `PxgCudaBroadPhaseSap.h` declares
+`mTotalEndPtHistogramBuf` and `mBlockTotalEndPtHistogramBuf` as
+`PxgCudaBufferN<6>`, **not** `N<3>`. Upstream's implementation accesses
+only the three spatial-axis entries. Both the history-growth and
+descriptor-binding helpers now borrow the exact six-element source
+member type; their tests instantiate six-element original buffers while
+allocating/checking only axes 0–2. This correction is essential for
+binding the bridge directly to the source owner without reinterpret casts,
+shadow arrays or a replacement broadphase state.
