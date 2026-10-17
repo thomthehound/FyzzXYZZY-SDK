@@ -777,12 +777,13 @@ void exercise_original_sap_post_axis_buffers_native(Context& context) {
             priorCapacities[i]=regions[i]->getSize();
         }
         const auto firstReport=aggregateBlocks[0].getDevicePtr();
-        const auto firstBounds=newBounds.getDevicePtr();
         const auto oldBoundsSize=newBounds.getSize();
 
         // A second frame grows selected source buffers, not the fixed-grid
-        // report/block scratch. The GPU buffer allocator must use original
-        // non-copying growth and must not force a host wait.
+        // report/block scratch. Source non-copying allocate() releases the
+        // old allocation BEFORE requesting the larger one, so the buddy
+        // heap is permitted to reuse the very same raw device address.
+        // Test source capacity growth, NOT a fictitious relocation rule.
         const std::array<physx::PxU32,3> more{2u,3u,4u};
         const physx::Bp::BroadPhaseUpdateData second(
             more.data(),3u,nullptr,0u,nullptr,0u,
@@ -792,15 +793,28 @@ void exercise_original_sap_post_axis_buffers_native(Context& context) {
         if(b.previous_boxes!=2u||b.current_boxes!=5u||
            b.projections!=10u||b.padded_projections!=12u||
            aggregateBlocks[0].getDevicePtr()!=firstReport ||
-           newBounds.getSize()<=oldBoundsSize ||
-           newBounds.getDevicePtr()==firstBounds)
+           newBounds.getSize()!=std::max(
+               std::uint64_t(b.capacity)*24u, std::uint64_t(oldBoundsSize)*2u))
             throw std::runtime_error("Original SAP post-axis growth policy changed");
         const auto after=required(b);
+        std::size_t grew=0, stayed=0;
         for(std::size_t i=0;i<regions.size();++i) {
-            const bool grows=after[i]>priorCapacities[i];
-            if((regions[i]->getDevicePtr()!=priorPointers[i])!=grows)
-                throw std::runtime_error("SAP post-axis native buffer growth classification changed");
+            const auto previous=priorCapacities[i];
+            const bool grows=after[i]>previous;
+            const auto expectedCapacity=grows
+                ? std::max(after[i], std::uint64_t(previous)*2u)
+                : std::uint64_t(previous);
+            if(regions[i]->getSize()!=expectedCapacity)
+                throw std::runtime_error("SAP post-axis native buffer capacity growth changed");
+            // A non-growing buffer MUST retain its address. When growth
+            // occurs, reallocating in-place or at a new address are both
+            // legal allocator outcomes; only its new capacity matters.
+            if(!grows && regions[i]->getDevicePtr()!=priorPointers[i])
+                throw std::runtime_error("No-growth PhysX post-axis buffer relocated");
+            grows ? ++grew : ++stayed;
         }
+        if(!grew || !stayed)
+            throw std::runtime_error("SAP post-axis test missed growing or fixed buffers");
 
         // Source's zero-change frame preserves all allocation identities;
         // it does not recreate region scratch on every frame.
