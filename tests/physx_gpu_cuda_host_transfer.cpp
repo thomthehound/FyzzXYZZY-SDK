@@ -688,13 +688,23 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
             heap, physx::PxsHeapStats::eBROADPHASE);
         physx::PxgTypedCudaBuffer<physx::PxU32> removed(
             heap, physx::PxsHeapStats::eBROADPHASE);
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
         physx::PxgTypedCudaBuffer<physx::PxU32> updated(
             heap, physx::PxsHeapStats::eBROADPHASE);
-        physx::PxU32 numBoxes=0, capacity=0,createdSize=0,
-                     removedSize=0,updatedSize=0;
+#endif
+        physx::PxU32 numBoxes=0, capacity=0,createdSize=0,removedSize=0;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxU32 updatedSize=0;
         SourceSapGpuDMAUpCountMembers state{
             numBoxes,capacity,createdSize,removedSize,updatedSize};
         SourceSapGpuDMAUpHandleBuffers arrays{created,removed,updated};
+#else
+        // Default source GPU/AABB-manager layout has no updated-handle
+        // counter or allocation. A helper requiring either cannot bind it.
+        SourceSapGpuDMAUpCountMembers state{
+            numBoxes,capacity,createdSize,removedSize};
+        SourceSapGpuDMAUpHandleBuffers arrays{created,removed};
+#endif
 
         auto verify=[&](const physx::PxgCudaBuffer& buffer,
                         const physx::PxU32* expected, std::size_t n,
@@ -717,7 +727,11 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
         auto firstCounts=prepare_gpu_dma_up_counts_native(first,state);
         if(firstCounts.previous_boxes!=0u || numBoxes!=2u ||
            firstCounts.projections!=4u || firstCounts.padded_projections!=4u ||
-           createdSize!=2u || updatedSize || removedSize)
+           createdSize!=2u || removedSize
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           || updatedSize
+#endif
+           )
             throw std::runtime_error("PhysX first gpuDMAUp count/size state changed");
         allocate_gpu_dma_up_handles_native(firstCounts,arrays);
         queue_gpu_dma_up_handles_native(first,firstCounts,arrays,stream);
@@ -741,7 +755,11 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
         auto secondCounts=prepare_gpu_dma_up_counts_native(second,state);
         if(secondCounts.previous_boxes!=2u || numBoxes!=3u ||
            secondCounts.projections!=8u || secondCounts.padded_projections!=8u ||
-           createdSize!=2u || removedSize!=1u || updatedSize!=1u)
+           createdSize!=2u || removedSize!=1u
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           || updatedSize!=1u
+#endif
+           )
             throw std::runtime_error("Mixed source gpuDMAUp sizing/handles lost");
         allocate_gpu_dma_up_handles_native(secondCounts,arrays);
         queue_gpu_dma_up_handles_native(second,secondCounts,arrays,stream);
@@ -754,8 +772,14 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
                "PhysX source created handles lost input snapshot");
         verify(removed,expectedRemoved.data(),1u,
                "PhysX source removed handles lost input snapshot");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
         verify(updated,expectedUpdated.data(),1u,
                "PhysX source updated handles lost input snapshot");
+#else
+        // Original default gpuDMAUp does not enqueue updated handle uploads:
+        // the GPU AABB manager supplies its changed-handle bitmap instead.
+        (void)expectedUpdated;
+#endif
         if(created.getDevicePtr()!=rawCreated)
             throw std::runtime_error("Original GPU created-handle allocation grew unnecessarily");
 
@@ -776,7 +800,9 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
         stream.wait_at_fetch();
         verify(created,thirdCreated.data(),1u,"Original downsize created handles incorrect");
         verify(removed,thirdRemoved.data(),2u,"Original downsize removed handles incorrect");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
         verify(updated,thirdUpdated.data(),1u,"Original downsize updated handles incorrect");
+#endif
         if(created.getDevicePtr()!=rawCreated)
             throw std::runtime_error("Source changed handles shrank device allocation");
 
@@ -788,7 +814,10 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
         const auto emptyCounts=prepare_gpu_dma_up_counts_native(empty,state);
         allocate_gpu_dma_up_handles_native(emptyCounts,arrays);
         queue_gpu_dma_up_handles_native(empty,emptyCounts,arrays,stream);
-        if(numBoxes!=2u || createdSize || removedSize || updatedSize ||
+        if(numBoxes!=2u || createdSize || removedSize ||
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           updatedSize ||
+#endif
            emptyCounts.projections!=4u || emptyCounts.padded_projections!=4u ||
            !stream.commands().empty() || created.getDevicePtr()!=rawCreated)
             throw std::runtime_error("Empty source frame mutated GPU handles or state");
@@ -819,6 +848,17 @@ void exercise_original_gpu_dma_up_handles_native(Context& context) {
         catch(const std::invalid_argument&) {rejected=true;}
         if(!rejected || !stream.commands().empty())
             throw std::runtime_error("Mismatched PhysX source frame enqueued GPU writes");
+
+#ifndef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        // A malformed optional updated list must not become a dependency
+        // of default source GPU staging (which never reads this list).
+        const physx::Bp::BroadPhaseUpdateData noUpdatedArray(
+            nullptr,0u,nullptr,1u,nullptr,0u,
+            nullptr,nullptr,nullptr,4u,filter,false,false);
+        const auto unchanged=prepare_gpu_dma_up_counts_native(noUpdatedArray,state);
+        if(unchanged.current_boxes!=numBoxes || unchanged.created || unchanged.removed)
+            throw std::runtime_error("Default GPU build incorrectly requires optional updated handles");
+#endif
     }
     if(aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original gpuDMAUp changed-handle buffers leaked GPU heap roots");
