@@ -1345,7 +1345,7 @@ PhysX GPU buddy heap, native DMA stream, real
   updated-array ABI, with no source-inconsistent member offsets.
 - The source handle HtoD transfers precede the three descriptor
   transfers on a *single ordered native queue*.
-- All seven transferred records/groups retain their original bytes after
+- All six transfer groups retain their original bytes after
   the CPU input arrays and descriptors are overwritten, and a subsequent
   queued GPU-to-GPU copy observes those uploaded bytes without requiring a
   CPU wait between stages.
