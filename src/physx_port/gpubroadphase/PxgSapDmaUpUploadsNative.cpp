@@ -10,6 +10,15 @@
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
+void validate_sap_dma_up_descriptor_buffers_native(
+    SourceSapDmaUpDescriptorBuffers buffers) {
+    constexpr std::size_t radix_bytes = sizeof(physx::PxgRadixSortDesc) * 6u;
+    if (buffers.broadphase.getSize() < sizeof(physx::PxgBroadPhaseDesc) ||
+        buffers.radix.getSize() < radix_bytes ||
+        buffers.radix_without_ranks.getSize() < radix_bytes)
+        throw std::logic_error("PhysX gpuDMAUp original GPU descriptor buffers not allocated");
+}
+
 void queue_sap_dma_up_descriptors_native(
     const physx::PxgBroadPhaseDesc& bp_desc,
     const physx::PxgRadixSortDesc* radix_descs,
@@ -21,10 +30,7 @@ void queue_sap_dma_up_descriptors_native(
     constexpr std::size_t radix_bytes = sizeof(physx::PxgRadixSortDesc) * 6u;
     if (!radix_descs || !radix_wor_descs)
         throw std::invalid_argument("PhysX gpuDMAUp has null radix descriptor records");
-    if (buffers.broadphase.getSize() < sizeof(physx::PxgBroadPhaseDesc) ||
-        buffers.radix.getSize() < radix_bytes ||
-        buffers.radix_without_ranks.getSize() < radix_bytes)
-        throw std::logic_error("PhysX gpuDMAUp original GPU descriptor buffers not allocated");
+    validate_sap_dma_up_descriptor_buffers_native(buffers);
 
     // The original three memcpyHtoDAsync calls are adjacent and ordered.
     // SourceSapDmaNative snapshots host data immediately and submits
