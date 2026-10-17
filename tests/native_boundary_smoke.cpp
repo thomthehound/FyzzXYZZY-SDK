@@ -7,9 +7,8 @@
 #include <stdexcept>
 #include <string>
 
-// This target deliberately builds without any PhysX dependency. Until
-// the native scene/solver ships, neither execution mode may masquerade as
-// working physics. The compute types must remain independent of PhysX.
+// Built without any PhysX dependency: verify a real native CPU timestep
+// and explicit native GPU rejection, never a reference backend fallback.
 int main() {
     using fyzz::ExecutionMode;
     using fyzz::World;
@@ -34,16 +33,9 @@ int main() {
     native_cpu.set_body_position(native_id, {0,3,0});
     if (native_cpu.body_state(native_id).position.y != 3)
         throw std::runtime_error("Native-only actor relocation failed");
-    bool incomplete_solver_rejected = false;
-    try {
-        native_cpu.step(1.0f / 60.0f);
-    } catch (const std::logic_error& error) {
-        incomplete_solver_rejected =
-            std::string(error.what()).find("narrowphase and solver") !=
-            std::string::npos;
-    }
-    if (!incomplete_solver_rejected)
-        throw std::runtime_error("Incomplete native CPU solver silently executed");
+    native_cpu.step(1.0f / 60.0f);
+    if (native_cpu.body_state(native_id).position.y >= 3.0f)
+        throw std::runtime_error("Native-only CPU did not integrate gravity");
     native_cpu.remove_body(native_id);
     bool retired = false;
     try { (void)native_cpu.body_state(native_id); }

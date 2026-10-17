@@ -35,6 +35,10 @@ struct ContactManifold {
     Pair pair{};
     std::array<ContactPoint, 8> points{};
     std::uint8_t count = 0;
+    // Per-frame scalar PGS contact constraint: one physical patch, not
+    // duplicate per-vertex full-body impulses.
+    float velocity_target = 0.0f;
+    double normal_impulse = 0.0;  // wide scalar response for extreme mass ratios
 };
 
 class Scene final {
@@ -51,6 +55,10 @@ public:
     // Dynamics/constraints/solver/fetch are intentionally not admitted.
     // Returned spans remain valid until the next successful advance.
     void advance_collision(bool force_update = false);
+    // Native CPU translation-constrained rigid bodies: single scene clock,
+    // collision stream, unilateral normal constraint solver and publication.
+    // Angular DOFs/friction/joints/CCD remain unsupported.
+    void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
     std::span<const Pair> lost_pairs() const noexcept { return lost_; }
@@ -70,6 +78,7 @@ private:
         Vec3 position{};
         Vec3 velocity{};
         float density = 0.0f;
+        float inverse_mass = 0.0f;  // immutable cached derived body property
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
     struct Endpoint {
@@ -83,6 +92,8 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
+    void prepare_constraints(float seconds);
+    void solve_constraints();
 
     std::vector<Actor> actors_;
     std::vector<Endpoint> endpoints_;
