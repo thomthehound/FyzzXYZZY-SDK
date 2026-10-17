@@ -85,13 +85,21 @@ if(BUILD_TESTING)
   add_test(NAME fyzzxyzzy_cpp23_contract COMMAND fyzzxyzzy_cpp23_contract)
 endif()
 
+add_library(fyzzxyzzy_reference_physx_cpu STATIC src/reference/physx_cpu_world.cpp)
+add_library(FyzzXYZZY::ReferencePhysXCpu ALIAS fyzzxyzzy_reference_physx_cpu)
+target_compile_features(fyzzxyzzy_reference_physx_cpu PUBLIC cxx_std_23)
+target_include_directories(fyzzxyzzy_reference_physx_cpu PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(fyzzxyzzy_reference_physx_cpu PUBLIC physx_lib)
+set_target_properties(fyzzxyzzy_reference_physx_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(fyzzxyzzy_core STATIC src/world.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(fyzzxyzzy_core PRIVATE physx_lib)
+target_link_libraries(fyzzxyzzy_core PRIVATE fyzzxyzzy_reference_physx_cpu)
 set_target_properties(fyzzxyzzy_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
