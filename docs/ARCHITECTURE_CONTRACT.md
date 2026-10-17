@@ -89,7 +89,16 @@ sections, also instantiated by `.github/pull_request_template.md`:
 4. **Redundancy and retirement:** what was reused, consolidated or retired,
    or why an additional representation is indispensable
 
-The CI `architecture-review` job checks that a non-draft code PR supplies
-substantive sections. This is a review gate, **not** a claim that text
+The lightweight `SDK architecture contract` workflow checks that a
+non-draft code PR supplies substantive sections and reruns on PR-body
+edits/ready-for-review. This is a review gate, **not** a claim that text
 alone proves runtime correctness. Reviewers must reject ungrounded claims
 and require executable evidence for changes that affect behavior.
+
+**GitHub merge enforcement requires branch protection:** configure a
+ruleset covering `main` to require the `Architecture ownership and runtime
+review` status check, as well as Linux and Windows SDK CI. A check that
+runs but is not required by branch rules is informative, not sufficient to
+prevent a bad merge. The SDK cannot configure repository-wide rulesets from
+its source tree; this is a repository-owner setting and must be verified
+separately.
