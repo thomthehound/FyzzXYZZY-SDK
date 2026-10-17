@@ -26,16 +26,21 @@ int main() {
     if (!reference_unavailable)
         throw std::runtime_error("Reference-only build boundary bypassed");
 
-    bool native_cpu_unavailable = false;
+    World native_cpu(WorldOptions{ExecutionMode::NativeCpu});
+    const auto native_id = native_cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+    if (native_cpu.body_state(native_id).position.y != 2)
+        throw std::runtime_error("Native-only build did not own actor state");
+    bool incomplete_solver_rejected = false;
     try {
-        World world(WorldOptions{ExecutionMode::NativeCpu});
+        native_cpu.step(1.0f / 60.0f);
     } catch (const std::logic_error& error) {
-        native_cpu_unavailable =
-            std::string(error.what()).find("CPU scene and solver") !=
+        incomplete_solver_rejected =
+            std::string(error.what()).find("narrowphase and solver") !=
             std::string::npos;
     }
-    if (!native_cpu_unavailable)
-        throw std::runtime_error("Native CPU request silently admitted");
+    if (!incomplete_solver_rejected)
+        throw std::runtime_error("Incomplete native CPU solver silently executed");
 
     bool native_unavailable = false;
     try {

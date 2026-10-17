@@ -26,17 +26,22 @@ int main() {
             if (!rejected_gpu)
                 throw std::runtime_error("Native GPU request silently created reference PhysX scene");
 
-            bool rejected_native_cpu = false;
+            fyzz::World native_cpu(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            const auto native_id = native_cpu.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+            if (native_cpu.body_state(native_id).position.y != 2)
+                throw std::runtime_error("Native CPU scene did not own actor state");
+            bool incomplete_solver_rejected = false;
             try {
-                fyzz::World unsupported(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                native_cpu.step(1.0f / 60.0f);
             } catch (const std::logic_error& error) {
-                rejected_native_cpu =
-                    std::string(error.what()).find("CPU scene and solver") !=
+                incomplete_solver_rejected =
+                    std::string(error.what()).find("narrowphase and solver") !=
                     std::string::npos;
             }
-            if (!rejected_native_cpu)
-                throw std::runtime_error("Native CPU request silently created reference PhysX scene");
+            if (!incomplete_solver_rejected)
+                throw std::runtime_error("Native CPU executed without a solver");
 
             bool rejected_unknown = false;
             try {

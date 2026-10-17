@@ -103,12 +103,15 @@ target_link_libraries(fyzzxyzzy_reference_physx_cpu PUBLIC physx_lib)
 set_target_properties(fyzzxyzzy_reference_physx_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-add_library(fyzzxyzzy_core STATIC src/world.cpp)
+add_library(fyzzxyzzy_core STATIC
+  src/world.cpp
+  src/native/scene.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
+target_include_directories(fyzzxyzzy_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_definitions(fyzzxyzzy_core PRIVATE
   FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
@@ -135,6 +138,15 @@ if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   target_link_libraries(fyzzxyzzy_native_boundary_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_native_boundary_smoke
     COMMAND fyzzxyzzy_native_boundary_smoke)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_native_scene_smoke tests/native_scene_smoke.cpp)
+  target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE FyzzXYZZY::Core)
+  add_test(NAME fyzzxyzzy_native_scene_smoke
+    COMMAND fyzzxyzzy_native_scene_smoke)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into

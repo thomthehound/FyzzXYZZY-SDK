@@ -39,6 +39,35 @@ Represent task dependencies explicitly from `ScPipeline.cpp`: first/second AABB 
 
 **Pass:** ordinary SDK `World` with native CPU execution can create/move/remove shapes, simulate multiple frames, produce contacts and publish results with comparable PhysX-reference behavior; no PhysX Foundation/PxScene instance is needed. Exercise reinitialization, multiple scenes, resource retirement and Godot consumer behavior.
 
+## N1 implementation status — native scene owner established, solver pending
+
+The SDK-owned `src/native/scene.{h,cpp}` now owns stable actor IDs, static
+boxes, dynamic boxes, planes, mutable poses, conservative PhysX-style encoded
+integer bounds, source-ordered SAP candidate overlaps, and persistent
+found/lost pair history. Pair state is per scene and survives quiet, forced,
+create, remove and relocate updates. There is one owner and one pair-report
+publication method; no added GPU context, independent dynamics scheduler,
+per-kernel controller or replicated actor collection.
+
+The ordinary `World(ExecutionMode::NativeCpu)` now constructs this native
+owner and can author and inspect native bodies even when external PhysX source
+is disabled. **Its `step()` still throws** because CPU narrowphase, dynamics,
+island state, contacts and solver execution are not yet ported. Direct
+`advance_broadphase` is an internal integration and conformance seam, **not**
+a substitute public physics simulation path. Infinite-plane overlaps are
+candidates, not physical contact claims; native narrowphase must reject
+noncontacts. This owner will receive the source-derived ScPipeline task
+continuations and CPU collision/dynamics port; N1 remains OPEN until it can
+actually step and solve multi-frame physics.
+
+Source correspondences: `BpBroadPhaseIntegerAABB.h` integer float encoding,
+`BpBroadPhaseSap.cpp` sorted-axis candidate and incremental pair semantics,
+`ScPipeline.cpp` CPU ordering first BP pass -> BP update ->
+post-broadphase publication. This first path does **not** claim parity with
+PhysX's optimized multi-axis incremental SAP, aggregate processing, MBP/PABP,
+or CPU contact solver. The shape contact offset is provisionally 0.02m;
+move it to the imported per-shape material/contact-distance state during N1.
+
 ## Gate N2 — native source-derived SAP and AABB owner
 
 Consolidate `PxgCudaBroadPhaseSap` and `PxgAABBManager` source behavior into two cohesive native owner implementations. Own one persistent buffer/history representation; remove borrowed frame-member scaffolding when its tests have migrated. Drive the original first-pass/second-pass/update/fetch order, including state-changed/forced/idle logic, AABB and aggregate preparation, three-axis projection/region/rank/sort work, pair/report kernels, capacity and abort checks, old/new bounds swap and the seven fetch-history swaps.
