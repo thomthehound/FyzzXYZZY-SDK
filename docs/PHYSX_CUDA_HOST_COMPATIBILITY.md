@@ -1111,3 +1111,35 @@ without redefining the production PhysX library's feature macro. These remain in
 a live `PxScene` broadphase test; the full source construction,
 descriptor population, and shader/task graph attachment are still pending.
 
+
+## `gpuDMAUp` persistent SAP history (PR #93)
+
+`PxgSapHistoryGrowthNative.{h,cpp}` begins the original memory-growth
+sequence following the counter preparation from PR #92. It borrows exactly
+the source `PxgCudaBuffer` objects; PhysX retains all GPU heap, deferred
+retirement, device identity, and stream ownership.
+
+- `grow_sap_old_bounds_native` performs the **first** source
+  `mOldIntegerBoundsBuf.allocateCopyOldDataAsync` operation, using the
+  original `PxgIntegerAABB` six-`PxU32` (24-byte) layout.
+- `grow_sap_history_axis_prefix_native` performs the **first six**
+  operations of a **single axis** in upstream's three-axis loop, in exact
+  source order: copy-preserving SAP boxes, new SAP scratch, copy-preserving
+  projections, ranks, and two temporary buffers. `PxgSapBox1D` is
+  directly included from the pinned original source.
+- The caller must still execute the source's inner histogram/handle
+  allocations and remaining per-axis scratch **before advancing to the
+  next axis**. This helper must not be called for all three axes up front
+  when reconstructing a complete `gpuDMAUp`: doing so would reorder the
+  original allocator/copy dependencies.
+- The unchanged source `PxgCudaBuffer::allocateCopyOldDataAsync` owns
+  raw-buffer identity, source-sized GPU DtoD copies and deferred free.
+  Non-copying `allocate` is retained on the source's new/scratch buffers.
+
+Cross-backend host transfer tests stage the previous frame's contents,
+grow from 2 to 6 slots, verify original bytes across asynchronous GPU
+copy (without a CPU wait between writes and copies), test all three axes
+and check stable device identities on a no-growth frame. The full
+`gpuDMAUp` history/scratch loop, source descriptors, GPU scene and shader
+task graph remain subsequent integration stages. No measured performance
+benefit is claimed yet.
