@@ -6,8 +6,6 @@
 #include "physx_gpu/cuda_device_address_map.h"
 
 #include <cstddef>
-#include <cstring>
-#include <span>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
@@ -29,42 +27,46 @@ struct SourceSapUpload {
 // descriptor, stream lifetime and task/scene ownership. This class neither
 // creates a scheduler nor introduces cross-stream/event semantics.
 //
-// Adjacent source HtoD calls across groups coalesce in one native batch;
+// Source HtoD calls in one adjacent group submit as one native upload batch;
 // GPU copies and shader launches form ordered native command batches. A host
 // upload following GPU commands forces their submission first, NOT a wait.
 // All submission tokens are reaped only at the source fetch boundary.
 class SourceSapDmaNative final {
 public:
+    struct SubmissionStats {
+        std::size_t upload_batches = 0;
+        std::size_t command_batches = 0;
+        std::size_t upload_spans = 0;
+        std::size_t upload_bytes = 0;
+    };
+    const SubmissionStats& submission_stats() const noexcept { return stats_; }
+
     SourceSapDmaNative(compute::Context& context,
                        const CudaDeviceAddressMap& addresses) noexcept
         : context_(context), addresses_(addresses) {}
 
-    // The public source semantics are snapshot-at-enqueue, NOT submit per
-    // call. Adjacent HtoD calls share one native submission until a DtoD
-    // copy, shader command, explicit submit or fetch establishes an order
-    // boundary. This avoids a fresh staging allocation and driver submit
-    // for each of the source's handle/descriptor upload groups.
     void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
-        std::vector<PendingUpload> staged;
-        staged.reserve(uploads.size());
+        std::vector<compute::UploadSpan> resolved;
+        resolved.reserve(uploads.size());
         for (const auto& upload : uploads) {
+            // CUDA zero-byte HtoD copies enqueue no transfer.
             if (!upload.bytes) continue;
             if (!upload.data)
                 throw std::invalid_argument("PhysX source HtoD upload has no host data");
             const auto target = addresses_.resolve(upload.destination, upload.bytes);
-            PendingUpload entry;
-            entry.buffer = target.buffer;
-            entry.offset = target.offset;
-            entry.bytes.resize(upload.bytes);
-            std::memcpy(entry.bytes.data(), upload.data, upload.bytes);
-            staged.push_back(std::move(entry));
+            resolved.push_back({target.buffer, target.offset,
+                                upload.data, upload.bytes});
         }
-        if (staged.empty()) return;
-        // Prior GPU commands must submit before subsequent uploads.
-        // Do this only after all new uploads have passed validation.
-        pending_uploads_.reserve(pending_uploads_.size()+staged.size());
+        if (resolved.empty()) return;
+        tokens_.reserve(tokens_.size() + (pending_.empty() ? 1u : 2u));
         flush_gpu_commands();
-        for (auto& item : staged) pending_uploads_.push_back(std::move(item));
+        // The Context snapshots host bytes and owns the GPU staging resource
+        // until the corresponding completion token is reaped.
+        const auto token = context_.submit_upload_batch(resolved);
+        tokens_.push_back(token);
+        ++stats_.upload_batches;
+        stats_.upload_spans += resolved.size();
+        for (const auto& span : resolved) stats_.upload_bytes += span.bytes;
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -79,8 +81,6 @@ public:
             source.offset < destination.offset + bytes &&
             destination.offset < source.offset + bytes)
             throw std::invalid_argument("PhysX source GPU copy overlaps itself");
-        // DtoD follows all earlier HtoD transfers, not vice versa.
-        flush_uploads();
         pending_.emplace_back(compute::CopyCommand{
             source.buffer, source.offset,
             destination.buffer, destination.offset, bytes});
@@ -95,22 +95,16 @@ public:
 
     // Source-native kernel stages append into this existing mStream segment.
     // Appenders provide their own all-or-nothing source field validation.
-    std::vector<compute::BatchCommand>& commands() {
-        flush_uploads();
-        return pending_;
-    }
+    std::vector<compute::BatchCommand>& commands() noexcept { return pending_; }
 
     // Submit existing source-ordered device commands without a host wait.
-    compute::SubmissionId submit() {
-        flush_uploads();
-        return flush_gpu_commands();
-    }
+    compute::SubmissionId submit() { return flush_gpu_commands(); }
 
     // Readiness of the most recent source-ordered GPU submission. The caller
     // must first submit the pending source stage commands (the completion
     // gate's arm_source_stream() performs that submission).
     bool gpu_complete() const {
-        if (!pending_.empty() || !pending_uploads_.empty())
+        if (!pending_.empty())
             throw std::logic_error("PhysX source GPU commands not submitted");
         return tokens_.empty() || context_.submission_complete(tokens_.back());
     }
@@ -120,7 +114,6 @@ public:
     // tokens; waiting the last ordered submission implies GPU visibility
     // of the preceding submissions on the same Context queue.
     void wait_at_fetch() {
-        flush_uploads();
         flush_gpu_commands();
         std::size_t completed = 0;
         try {
@@ -135,45 +128,7 @@ public:
         tokens_.clear();
     }
 
-    // Source frame instrumentation, not a second scheduling state machine.
-    // Lifetime totals allow CI and later hardware tests to catch submission
-    // inflation when composing actual PhysX operations.
-    struct SubmissionStats {
-        std::size_t upload_batches = 0;
-        std::size_t command_batches = 0;
-        std::size_t upload_spans = 0;
-        std::size_t upload_bytes = 0;
-    };
-    const SubmissionStats& submission_stats() const noexcept { return stats_; }
-
 private:
-    struct PendingUpload {
-        compute::BufferId buffer = 0;
-        std::size_t offset = 0;
-        std::vector<std::byte> bytes;
-    };
-
-    void flush_uploads() {
-        if (pending_uploads_.empty()) return;
-        std::vector<compute::UploadSpan> spans;
-        spans.reserve(pending_uploads_.size());
-        std::size_t total_bytes = 0;
-        for (const auto& upload : pending_uploads_) {
-            spans.push_back({upload.buffer, upload.offset,
-                             upload.bytes.data(), upload.bytes.size()});
-            total_bytes += upload.bytes.size();
-        }
-        tokens_.reserve(tokens_.size()+1u);
-        // Context snapshots into GPU-safe staging synchronously before
-        // returning. Only NOW can our CPU snapshots be discarded.
-        const auto token = context_.submit_upload_batch(spans);
-        tokens_.push_back(token);
-        ++stats_.upload_batches;
-        stats_.upload_spans += spans.size();
-        stats_.upload_bytes += total_bytes;
-        pending_uploads_.clear();
-    }
-
     compute::SubmissionId flush_gpu_commands() {
         if (pending_.empty()) return tokens_.empty() ? 0 : tokens_.back();
         tokens_.reserve(tokens_.size() + 1u);
@@ -187,9 +142,8 @@ private:
     compute::Context& context_;
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
-    std::vector<PendingUpload> pending_uploads_;
-    SubmissionStats stats_;
     std::vector<compute::SubmissionId> tokens_;
+    SubmissionStats stats_;
 };
 
 } // namespace fyzz::physx_gpu
