@@ -106,6 +106,17 @@ if(BUILD_TESTING)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
+
+  # Compiles against the REAL source PhysX scene descriptor/factory ABI,
+  # not a test-owned replacement GPU scene. No portable GPU provider is
+  # constructed here, and no G3 scene-execution claim is made.
+  add_executable(fyzzxyzzy_physx_portable_scene_source_contract
+    tests/physx_portable_scene_source_contract.cpp)
+  target_include_directories(fyzzxyzzy_physx_portable_scene_source_contract PRIVATE
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/simulationcontroller/include")
+  target_link_libraries(fyzzxyzzy_physx_portable_scene_source_contract PRIVATE physx_lib)
+  add_test(NAME fyzzxyzzy_physx_portable_scene_source_contract
+    COMMAND fyzzxyzzy_physx_portable_scene_source_contract)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into
