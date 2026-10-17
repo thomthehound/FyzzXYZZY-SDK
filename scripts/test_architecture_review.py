@@ -3,7 +3,7 @@
 """Covers the review gate's nontrivial PR-body parsing and empty templates."""
 import unittest
 
-from check_architecture_review import SECTIONS, documentation_only, validate
+from check_architecture_review import SECTIONS, documentation_only, complete_documentation_only, validate
 
 
 class ArchitectureReviewTest(unittest.TestCase):
@@ -37,6 +37,22 @@ class ArchitectureReviewTest(unittest.TestCase):
             {"filename": "docs/architecture.md", "status": "modified"},
         ]))
         self.assertFalse(documentation_only([]))
+
+    def test_truncated_all_docs_list_never_exempts_code(self):
+        # GitHub's files endpoint caps its return at 3,000 entries even
+        # when the PR's changed_files count is larger.
+        docs = [{"filename": f"docs/page-{i}.md"} for i in range(3000)]
+        self.assertTrue(documentation_only(docs))
+        self.assertFalse(complete_documentation_only(docs, 3001))
+        self.assertFalse(complete_documentation_only(docs, None))
+        self.assertFalse(complete_documentation_only(docs, True))
+        self.assertTrue(complete_documentation_only(docs, 3000))
+
+    def test_partial_page_mismatch_rejects_docs_exemption(self):
+        docs = [{"filename": "docs/a.md"}, {"filename": "README.md"}]
+        self.assertFalse(complete_documentation_only(docs, 3))
+        self.assertTrue(complete_documentation_only(docs, 2))
+        self.assertFalse(complete_documentation_only([], 0))
 
     def test_mixed_code_or_renamed_code_needs_review(self):
         self.assertFalse(documentation_only([
