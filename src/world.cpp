@@ -213,7 +213,7 @@ struct PhysXCpuWorld final : WorldBackend {
 // test-local substitute for PhysX's scene/AABB-manager ownership.
 // Portable GPU admission must be implemented by the actual source
 // Sc::Scene/factory/task path before it may return a World.
-std::unique_ptr<WorldBackend> create_physx_scene_backend(WorldOptions options) {
+static std::unique_ptr<WorldBackend> create_physx_scene_backend(WorldOptions options) {
     switch (options.broadphase) {
     case BroadphaseMode::PhysXCpu:
         return std::make_unique<PhysXCpuWorld>();
