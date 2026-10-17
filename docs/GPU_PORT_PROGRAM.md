@@ -531,8 +531,9 @@ admission and GPU dynamics are separate.
 This SDK integration branch tests the actual pinned PhysX scene
 descriptor's factory ABI and invalid combinations, and runs ordinary
 CPU world simulations against that modified source on Linux and
-Windows. During review only, `FetchContent` selects the feature
-branch; restore `GIT_TAG main` after merging the PhysX source PR.
+Windows. The source change merged as PhysX commit `a1545b4`; the
+SDK's `FetchContent` again selects PhysX `main`, so no development
+branch remains in the production dependency path.
 
 **The concrete native SAP and AABB-manager objects are not implemented
 by this factory change.** The SDK's `PhysXPortableGpu` production
