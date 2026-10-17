@@ -92,8 +92,8 @@ void Scene::set_position(BodyId id, Vec3 position) {
     if (!finite(position))
         throw std::invalid_argument("Native scene position must be finite");
     auto& actor = require(id);
-    if (actor.kind == Kind::StaticPlane)
-        throw std::logic_error("An infinite plane is set by its height");
+    // Infinite planes have a fixed world +Y normal in the current native
+    // shape model. Translating one changes its height, not its orientation.
     actor.position = position;
     dirty_ = true;
 }

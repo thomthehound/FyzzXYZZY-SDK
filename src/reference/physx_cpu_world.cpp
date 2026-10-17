@@ -167,7 +167,13 @@ struct PhysXCpuWorld final : WorldBackend {
     void set_body_position(BodyId id, Vec3 position) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        actors[id]->setGlobalPose(physx::PxTransform(to_physx(position)));
+        // PxCreatePlane uses a non-identity pose quaternion to align its
+        // local +X plane normal with world +Y. A position-only transform
+        // would reset that rotation (and any dynamic body's rotation).
+        // Preserve the existing orientation, changing translation only.
+        auto pose = actors[id]->getGlobalPose();
+        pose.p = to_physx(position);
+        actors[id]->setGlobalPose(pose);
     }
 
     void remove_body(BodyId id) override {

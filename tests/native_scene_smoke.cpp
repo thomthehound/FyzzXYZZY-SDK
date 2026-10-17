@@ -60,6 +60,9 @@ int main() {
            independent.body_state(second).position.x == 1,
            "separate native scene was modified");
     auto floor = independent.add_static_floor(-100);
+    independent.set_position(floor, {0, 0.75f, 0});
+    expect(independent.body_state(floor).position.y == 0.75f,
+           "Native static plane failed to relocate");
     independent.advance_broadphase();
     expect(has(independent.found_pairs(), floor, second),
            "infinite floor broadphase candidate missing");

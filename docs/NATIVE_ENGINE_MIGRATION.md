@@ -52,7 +52,10 @@ per-kernel controller or replicated actor collection.
 The ordinary `World(ExecutionMode::NativeCpu)` now constructs this native
 owner and can author, relocate, remove and inspect native bodies even when external
 PhysX source is disabled. The same actor lifecycle operations are available
-through the separately compiled PhysX CPU reference adapter. **Its `step()` still throws** because CPU narrowphase, dynamics,
+through the separately compiled PhysX CPU reference adapter. Relocating a
+reference actor preserves its orientation (including the rotated local plane
+of `PxCreatePlane`); native infinite planes translate without changing
+their fixed +Y normal. **Its `step()` still throws** because CPU narrowphase, dynamics,
 island state, contacts and solver execution are not yet ported. Direct
 `advance_broadphase` is an internal integration and conformance seam, **not**
 a substitute public physics simulation path. Infinite-plane overlaps are

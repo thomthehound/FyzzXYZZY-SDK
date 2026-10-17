@@ -82,6 +82,26 @@ int main() {
             if (!reference_retired)
                 throw std::runtime_error("Reference actor removal failed");
 
+            // PxCreatePlane creates a rotated local +X plane. Relocating
+            // its position must preserve this quaternion: replacing it
+            // with an identity rotation changes a floor into a wall.
+            fyzz::World raised_floor(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto raised_floor_id = raised_floor.add_static_floor(0.0f);
+            raised_floor.set_body_position(raised_floor_id, {0,0.75f,0});
+            const auto dropped_on_raised_floor = raised_floor.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2.5f,0}, 1.0f);
+            for (int frame = 0; frame < 300; ++frame)
+                raised_floor.step(1.0f / 120.0f);
+            const auto settled_above_floor =
+                raised_floor.body_state(dropped_on_raised_floor);
+            if (!std::isfinite(settled_above_floor.position.y) ||
+                std::abs(settled_above_floor.position.y - 1.0f) > 0.08f ||
+                std::abs(settled_above_floor.velocity.y) > 1.0f) {
+                throw std::runtime_error(
+                    "Relocating PhysX reference plane changed its orientation");
+            }
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
