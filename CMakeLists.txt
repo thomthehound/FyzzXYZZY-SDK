@@ -136,7 +136,8 @@ add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpucommon/PxgCudaBuffer.cpp
   src/physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.cpp
   src/physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.cpp
-  src/physx_port/gpubroadphase/PxgSapHistoryGrowthNative.cpp)
+  src/physx_port/gpubroadphase/PxgSapHistoryGrowthNative.cpp
+  src/physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.cpp)
 target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
