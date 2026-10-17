@@ -5,6 +5,7 @@
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
+#include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "BpBroadPhaseUpdate.h"
 #include "PxgRadixSortKernelIndices.h"
@@ -363,6 +364,100 @@ int main() {
                          "Source ordered WOR radix descriptor GPU upload failed");
                 checkGpu(copyAfterDescriptors,savedCreated.data(),sizeof(savedCreated),
                          "Source-ordered GPU copy after descriptor DMA lost handle upload");
+
+                // Exercise the complete source gpuDMAUp call-site bridge,
+                // rather than independently invoking the individual stage
+                // helpers. PhysX still owns the SAME buffers and source
+                // stream: there is no second broadphase or heap.
+                const std::array<physx::PxU32,8> previousProjection{
+                    0x9a11u,0x9b22u,0x9c33u,0x9d44u,
+                    0x9e55u,0x9f66u,0xa077u,0xa188u
+                };
+                {
+                    const auto view=addresses.resolve(
+                        projections[0].getDevicePtr(),sizeof(previousProjection));
+                    context.upload(view.buffer,view.offset,
+                                   previousProjection.data(),sizeof(previousProjection));
+                }
+                const auto earlierProjectionSize=projections[0].getSize();
+                std::array<physx::PxU32,2> additionalCreated{9u,10u};
+                std::array<physx::PxU32,1> additionalRemoved{1u};
+                std::array<physx::PxU32,1> additionalUpdated{2u};
+                const auto sourceCreated=additionalCreated;
+                const auto sourceRemoved=additionalRemoved;
+                const auto sourceUpdated=additionalUpdated;
+                physx::Bp::BroadPhaseUpdateData nextUpdate(
+                    additionalCreated.data(),2u,
+                    additionalUpdated.data(),1u,
+                    additionalRemoved.data(),1u,
+                    nullptr,nullptr,nullptr,6u,filter,true,true);
+
+                std::array<SourceSapHistoryAxisBuffers,3> axes{{
+                    {sap[0],newSap[0],projections[0],ranks[0],tempKeys[0],tempHandles[0]},
+                    {sap[1],newSap[1],projections[1],ranks[1],tempKeys[1],tempHandles[1]},
+                    {sap[2],newSap[2],projections[2],ranks[2],tempKeys[2],tempHandles[2]}
+                }};
+                SourceSapDmaUpFrameMembers borrowed{
+                    members,handles,singles[3],axes,
+                    {boxHandles,endHist,blockEndHist,endHandles,
+                     startHist,blockStartHist,startHandles,
+                     incremental,blockIncremental,totalEnd,blockTotalEnd},
+                    {aggBlocks,actorBlocks,singles[15],singles[16],
+                     singles[17],singles[18],singles[20],singles[19],
+                     singles[21],singles[22],singles[23],singles[24],
+                     singles[25],singles[26]},
+                    singles[4],buffers,in,
+                    {projections,ranks,tempKeys,tempHandles,radixCounts,boxHandles},
+                    recordBuffers,desc,normal.data(),wor.data()
+                };
+                const auto nextCounts=gpu_dma_up_sap_frame_native(
+                    nextUpdate,borrowed,stream);
+                if(nextCounts.previous_boxes!=3u ||
+                   nextCounts.current_boxes!=4u ||
+                   nextCounts.capacity!=6u ||
+                   nextCounts.projections!=10u ||
+                   nextCounts.padded_projections!=12u ||
+                   nextCounts.updated!=1u ||
+                   projections[0].getSize()<=earlierProjectionSize ||
+                   desc.numPreviousHandles!=3u ||
+                   desc.numCreatedHandles!=2u ||
+                   desc.numRemovedHandles!=1u ||
+                   desc.aabbMngr_changedHandleBitMapWordCounts!=3u ||
+                   desc.updateData_updatedHandles ||
+                   desc.numUpdatedHandles ||
+                   desc.boxProjections[0]!=
+                       reinterpret_cast<physx::PxU32*>(projections[0].getDevicePtr()))
+                    throw std::runtime_error("Full source SAP gpuDMAUp frame order or owner bindings changed");
+
+                const auto nextExpectedDesc=desc;
+                const auto nextExpectedNormal=normal;
+                const auto nextExpectedWor=wor;
+                additionalCreated.fill(0xdeadbeefu);
+                additionalRemoved.fill(0xdeadbeefu);
+                additionalUpdated.fill(0xdeadbeefu);
+                std::memset(&desc,0xa5,sizeof(desc));
+                for(auto& r:normal)r.outputKeys=nullptr;
+                for(auto& r:wor)r.outputRanks=nullptr;
+                stream.wait_at_fetch();
+                checkGpu(created,sourceCreated.data(),sizeof(sourceCreated),
+                         "Source gpuDMAUp frame lost created-handle transfer");
+                checkGpu(removed,sourceRemoved.data(),sizeof(sourceRemoved),
+                         "Source gpuDMAUp frame lost removed-handle transfer");
+                checkGpu(updated,sourceUpdated.data(),sizeof(sourceUpdated),
+                         "Source gpuDMAUp frame lost updated-handle transfer");
+                checkGpu(descriptorDevice,&nextExpectedDesc,sizeof(nextExpectedDesc),
+                         "Source gpuDMAUp frame lost broadphase descriptor");
+                checkGpu(normalGpu,nextExpectedNormal.data(),sizeof(nextExpectedNormal),
+                         "Source gpuDMAUp frame lost normal radix descriptor");
+                checkGpu(withoutRanksGpu,nextExpectedWor.data(),sizeof(nextExpectedWor),
+                         "Source gpuDMAUp frame lost WOR radix descriptor");
+                // The first 32 bytes of the old projection allocation must
+                // survive a larger native copy-preserving allocation,
+                // including DtoD GPU command ordering before descriptor HtoD.
+                checkGpu(projections[0],previousProjection.data(),
+                         sizeof(previousProjection),
+                         "Source gpuDMAUp frame destroyed prior GPU projection history");
+
 
             }
             if(aborted||roots.live_roots()||addresses.live_allocations())
