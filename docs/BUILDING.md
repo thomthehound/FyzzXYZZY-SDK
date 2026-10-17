@@ -17,10 +17,13 @@ The `FyzzXYZZY::Core` target propagates its C++23 compile requirement to
 downstream native consumers. This does not change the upstream PhysX
 source's independently configured language requirements.
 
-The `fyzzxyzzy_cpp23_contract` test compiles a C++23 `if consteval`
-expression and exercises `std::expected`. Both platform CI jobs run
-it before the longer shader and full SDK builds, and the offline source
-distribution exercises it as well.
+An unconditional CMake configure-time compile-and-link check of
+`tests/cpp23_contract.cpp` verifies C++23 `if consteval` and
+`std::expected`, including in production with `BUILD_TESTING=OFF`.
+When testing is enabled, the same file is also built and executed as
+`fyzzxyzzy_cpp23_contract` in CTest. Both platform CI jobs run the
+test before longer shader and full SDK builds; Linux's offline source
+distribution CI also configures a `BUILD_TESTING=OFF` production build.
 
 ## Source layout and provenance
 
