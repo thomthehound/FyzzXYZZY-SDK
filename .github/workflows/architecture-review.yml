@@ -27,3 +27,4 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_architecture_review.py'
           python3 scripts/check_architecture_review.py
+          python3 scripts/check_native_boundary.py

@@ -15,9 +15,13 @@ FyzzXYZZY is an **independent, PhysX-derived, general-purpose physics SDK** with
 - Public SDK APIs must not expose Godot types, CUDA types, Vulkan/D3D12 resource objects, or shader compiler details.
 - Functional simulation and observed plausibility matter more than bit-for-bit correspondence with CUDA. Test stability, conservation behavior where appropriate, collisions, contacts, and performance independently.
 
+## Current migration priority
+
+The current `World` default uses a PhysX CPU *reference backend*. It is a temporary integration oracle, not the final native CPU engine. The native FyzzXYZZY scene must own actor/bounds state, scheduling, buffer lifetimes, GPU SAP reports and eventual CPU/GPU narrowphase/solver execution. Extract and consolidate the source-derived components before adding further stage wrappers. The measurable gates and retirement conditions are in [Native engine migration](NATIVE_ENGINE_MIGRATION.md).
+
 ## Repository and dependency posture
 
-- Keep `thomthehound/PhysX` as the upstream reference/tracking fork.
+- Keep `thomthehound/PhysX` as an unmodified source-reference/tracking fork; SDK GPU execution must not depend on proprietary patches installed into the fork.
 - Import a clearly identified PhysX SDK 5.11 baseline into FyzzXYZZY (only required components; do not take on Blast, Flow, Omniverse, or the third-party Godot module merely because they exist).
 - Preserve source provenance and SPDX notices. A root Apache-2.0 license does not erase differing third-party requirements.
 - Favor reproducible normal CMake builds and an SDK that downstream consumers can package without requiring CUDA, NVIDIA GPU binaries, or Godot.
@@ -69,13 +73,13 @@ GPU/renderer sharing is an optional *later* optimization with explicit lifetime/
 
 **Gate:** the same FyzzXYZZY workload runs on AMD Vulkan *outside Godot* and via Godot's FyzzXYZZY adapter, with checked output and no CUDA installation or NVIDIA driver dependency. Record and resolve the HLSL-vs-Slang decision.
 
-### M2 — First complete GPU physics pathway
-- Port an identifiable **PhysX-derived** coherent pathway through the existing PhysX scene, GPU context, task orchestration and data contracts: e.g. a selected bounds/broadphase stage through its original launch and result-processing path. Do not substitute an unrelated world or simplified contact solver.
+### M2 — First complete native GPU physics pathway
+- Port an identifiable **PhysX-derived** coherent pathway through FyzzXYZZY's native scene, source-derived task orchestration and data contracts: e.g. a selected bounds/broadphase stage through its original launch and result-processing path. Do not substitute an unrelated world or simplified contact solver.
 - Reuse or translate scan, sort, compaction and dispatch utilities as required by the pathway; leave nonessential kernel families unported.
 - Support a fixed-step interactive test scene with rigid bodies and visibly correct collision/response.
 - Document GPU/CPU state transfer semantics; measure synchronization and readback overhead.
 
-**Gate:** a demonstrably PhysX-derived GPU pathway integrated with PhysX scene orchestration, with traced source, verified stage ordering and contact/constraint behavior as applicable. A separate Vulkan physics prototype is not sufficient.
+**Gate:** a demonstrably PhysX-derived GPU pathway integrated with FyzzXYZZY's native scene orchestration, with traced source, verified stage ordering and contact/constraint behavior as applicable. A separate Vulkan physics prototype is not sufficient.
 
 ### M3 — First reciprocal deformable/rigid pathway
 - Add enough existing PhysX particle/PBD/FEM/contact functionality to support an interacting deformable body or garment against FyzzXYZZY rigid bodies.
@@ -118,7 +122,7 @@ Each GPU milestone uses a paired standalone-and-Godot scenario from the **same F
 
 No hash/checksum ceremony is needed for normal verification; use ordinary builds, tests, source history, and behavioral validation.
 
-## Immediate work package
+## Historical M0/M1 work package
 
 1. Import and build the minimal PhysX 5.11 SDK CPU baseline in FyzzXYZZY; preserve provenance and legal files.
 2. Establish separate `fyzzxyzzy-core`, `fyzzxyzzy-vulkan` (initially stub), `fyzzxyzzy-godot` and standalone test targets, without gratuitously replacing working PhysX types.

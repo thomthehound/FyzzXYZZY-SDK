@@ -13,22 +13,21 @@ Godot 4.7 is the first target consumer and acceptance harness, **not a core
 dependency**. The SDK is intended to support Linux, Windows, native C++
 applications and other host engines.
 
-The CPU SDK provides a world facade and headless smoke test using PhysX-derived
-solver source. Linux and Windows builds are covered by GitHub Actions.
+The current CPU path is an explicitly isolated PhysX **reference backend** used for behavioral comparison and transitional compatibility. The native scene, CPU path, and portable GPU pipeline remain under development. Linux and Windows builds are covered by GitHub Actions.
 An optional Godot 4.7 GDExtension consumer exercises the same core.
 
 The optional standalone Vulkan compute backend supports device and buffer
 management, transfers, SPIR-V dispatch, ordered batches and submission
 synchronization. The GPU translation now includes independently tested PhysX SAP broadphase
 kernels and source-ordered stage chains, with known high-priority initial
-CUDA-to-HLSL performance regressions remediated. Integration into the live
-PhysX GPU scene/task graph, production GPU capability admission, and
-hardware performance acceptance remain pending.
+CUDA-to-HLSL performance regressions remediated. Integration into FyzzXYZZY's **own** scene and task graph, native GPU
+execution, and hardware performance acceptance remain pending.
 Its independent floor/contact demonstration is opt-in only
 (`FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`) and does not constitute a
 PhysX GPU port. Production GPU physics requires porting PhysX's original
 algorithms, GPU contexts, scene orchestration and dataflow.
 
+- [Native engine ownership and migration plan](docs/NATIVE_ENGINE_MIGRATION.md)
 - [SDK-wide enforced architecture contract](docs/ARCHITECTURE_CONTRACT.md)
 - [Development roadmap](docs/ROADMAP.md)
 - [CPU SDK build and testing](docs/BUILDING.md)

@@ -3,6 +3,12 @@
 
 # Returning to the PhysX host execution path
 
+> **Reference host trace.** Here `PxScene` denotes original source behavior
+> or historical test targets. Native FyzzXYZZY GPU execution uses the SDK-owned
+> scene and task graph. See [native engine migration](NATIVE_ENGINE_MIGRATION.md)
+> for current acceptance.
+
+
 **Status:** October 2026. Source-grounded feasibility work; the engine still has
 no live portable GPU `PxScene`. This is not a new public API proposal.
 
@@ -469,7 +475,7 @@ not a requirement of the new native report stage.
 **Still outside scope:** actual `PxgCudaBroadPhaseSap` call-site rewiring,
 PhysX buddy-heap allocation/retirement integration and native CUDA-mapped
 host report interoperability. Those remain prerequisites to shipping a
-real native-backed `PxScene` GPU broadphase.
+real GPU broadphase in a FyzzXYZZY-owned native scene.
 
 ## Source GPU report production connected to native fetch
 
@@ -743,7 +749,7 @@ execution.
    `PxPhysXGpu` factory is required as an architectural premise.
 5. **Performance and acceptance.** Benchmark native execution on supported
    hardware; do not ship a scan fallback merely to run on unsupported cards.
-   Require a real multi-frame `PxScene::simulate/fetchResults` overlap and
+   Require a real multi-frame native `fyzz::World` overlap and
    contact test (create/update/remove/idle), comparing normal found/lost
    reporting and deferred resource lifetimes.
 
@@ -1353,7 +1359,7 @@ PhysX GPU buddy heap, native DMA stream, real
   unallocated GPU destination before enqueuing partial transfers.
 
 This is a **GPU-host pathway conformance test**, not yet execution of the
-source SAP GPU task graph from a real `PxScene`. Completing that owner
+source SAP GPU task graph from a FyzzXYZZY-owned native scene. Completing that owner
 binding, actual AABB-manager getter provenance, report-mapping lifecycle
 and shader dispatch dependencies remains necessary.
 
@@ -1513,5 +1519,5 @@ spans/bytes for performance acceptance and future SDK-wide auditing.
 This consolidation removes one driver submission and one corresponding
 staging-allocation group per applicable full SAP update frame; it is **not**
 a claim about measured hardware frame-time improvement or G3 completion.
-The production `PxScene`/factory owner connection remains an open
+The native FyzzXYZZY scene/SAP/AABB owner connection remains an open
 acceptance item in #101.

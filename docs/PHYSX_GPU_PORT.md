@@ -3,6 +3,14 @@
 
 # PhysX GPU port: execution architecture and traceability
 
+> **Reference source trace.** Names such as `PxScene`, `Sc::Scene` and
+> `PxgCudaBroadPhaseSap` describe original PhysX behavior and task contracts,
+> not the required runtime owner of FyzzXYZZY. Historical sections describing
+> "PhysX scene integration" refer to source correspondence; the production
+> integration target is the SDK-owned native scene and scheduler.
+> See [native engine migration](NATIVE_ENGINE_MIGRATION.md) for current gates.
+
+
 See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md)
 and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 **All GPU work is also bound by the [GPU performance contract](GPU_PORT_PERFORMANCE.md)**, which requires explicit review of throughput costs and modern hardware primitives for every deviation from source PhysX.
@@ -13,7 +21,7 @@ D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed ext
 
 ## Port boundary
 
-FyzzXYZZY ports PhysX GPU physics **within the PhysX simulation pipeline**.
+FyzzXYZZY ports PhysX GPU physics **into its own native simulation pipeline**, preserving the original source task and dataflow dependencies.
 Kernel translation and host-side orchestration are equally part of the port.
 The portable GPU implementation must retain the causal dependencies between
 scene updates, collision detection, contact management, constraint preparation,
@@ -760,8 +768,10 @@ The upstream source makes the ordering precise:
   continuation and removes its initial task reference. The existing PhysX
   task manager dispatches those tasks and releases their continuations.
 
-The source-faithful first CPU/GPU boundary is a **blocking fetch on the
-actual PhysX post-broadphase path**, not a new GPU callback scheduler.
+The upstream source's first CPU/GPU publication boundary is a **blocking
+fetch within its post-broadphase task path**. FyzzXYZZY must reproduce
+the dependency and publication semantics in its own scene/task graph,
+without adding a competing GPU callback scheduler.
 `src/physx_gpu/broadphase_completion.{h,cpp}` now provides a minimal
 `BroadPhaseCompletionGate`: it associates one compute submission with
 one frame, waits before caller-provided fetch/resize, installs the
@@ -782,8 +792,9 @@ Vulkan/D3D12 submissions**, but is **not yet wired into
 providing the original continuation-setup operation, reading the descriptor/pair streams,
 checking overflow/abort flags, updating report storage, and swapping state.
 It does not make the existing SDK GPU-broadphase-capable or add a worker
-thread. Next integration attaches this boundary to actual PhysX broadphase
-factory/scene objects as the relevant kernel family becomes runnable.
+thread. Native integration must attach the translated publication and
+continuation behavior to the FyzzXYZZY-owned SAP/AABB manager and scene,
+not to a modified reference PhysX broadphase factory.
 
 ## Vulkan and D3D12: concurrent portability gates
 
@@ -836,9 +847,9 @@ The next cross-backend acceptance gates are:
 
 ## Implementation sequence and acceptance gates
 
-1. **Integrate at the PhysX scene boundary.** Identify the narrowest replacement
-   seam in `PxPhysXGpu`, GPU contexts and task completions, preserving
-   `Sc::Scene` scheduling. Produce an exact call/dependency map for selected
+1. **Integrate at the native FyzzXYZZY scene boundary.** Trace the source
+   `PxPhysXGpu`, GPU context and `Sc::Scene` task completion interfaces;
+   port their ownership and dependencies into the SDK's single scheduler. Produce an exact call/dependency map for selected
    GPU rigid-body configuration(s), including CPU/GPU BP combinations.
 2. **Trace memory/descriptor ownership end to end.** Follow host-pinned,
    mapped and device allocations; buffer aliasing; contact/patch streams;
@@ -851,8 +862,8 @@ The next cross-backend acceptance gates are:
 4. **Build dual-backend execution contracts.** Validate Vulkan/SPIR-V and
    D3D12/DXIL resource and scheduling semantics before treating Vulkan-specific
    bindings as the canonical design.
-5. **Connect, verify, and extend.** Execute the PhysX-origin slice at its real
-   scene pipeline boundary. Compare behavior with CPU PhysX and original CUDA
+5. **Connect, verify, and extend.** Execute the PhysX-origin slice at its
+   native FyzzXYZZY scene pipeline boundary. Compare behavior with CPU PhysX and original CUDA
    PhysX where available; test ordering, contacts, constraints, sleeping and
    result publication as relevant. Exact floating-point identity is not a gate.
 
@@ -1006,7 +1017,7 @@ checking the complete arena. They also pass the ordered GPU submission
 through `BroadPhaseCompletionGate`, verifying that result publication and
 validation occur before the existing found/lost task references are
 released. This tests a real **four-kernel GPU handoff** rather than four
-isolated shaders. It does **not** yet claim a running PhysX GPU scene:
+isolated shaders. It does **not** yet claim a running native FyzzXYZZY GPU scene:
 original `PxgCudaBroadPhaseSap` state allocations, upstream producers,
 GPU DMA, swaps and full `PxgAABBManager` task integration still need the
 larger host orchestration migration, as traced in

@@ -3,7 +3,7 @@
 
 # PhysX-to-portable-GPU engineering program
 
-Status: planning and source audit, October 2026. This is the program-level
+Status: source audit and native-engine migration, October 2026. This is the program-level
 companion to [the execution trace](PHYSX_GPU_PORT.md) and
 [the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
 completed PhysX GPU functionality. Source audit follows the PhysX family in `thomthehound/PhysX` and
@@ -13,8 +13,8 @@ Proposals below are explicitly distinguished from behavior observed upstream.
 
 ## 0. Objective, scope, and truthfulness
 
-The deliverable is a **port of PhysX's GPU execution path**, including the
-existing PhysX scene lifecycle, host task orchestration, algorithms, data
+The deliverable is an **independent FyzzXYZZY port of PhysX's GPU execution path**, including the
+source-derived scene lifecycle, host task orchestration, algorithms, data
 representations, synchronization, and reporting. CUDA driver entry points,
 CUDA device pointers, CUDA streams/events, warp intrinsics and compiled kernels
 must be translated to portable mechanisms. PhysX's domain algorithms and
@@ -65,9 +65,9 @@ infrastructure experimentation. They stay opt-in and outside production.
 
 **Required first architectural deliverable:** a source-to-task DAG with
 submission, dependency, completion and result-publication edges for the
-targeted scene mode. The portable GPU queues provide execution; **PhysX
-remains the scene scheduler and authority**. Preserve scene task continuations
-instead of introducing a second physics tick or duplicate actor state.
+targeted scene mode. The portable GPU queues provide execution; **FyzzXYZZY owns the scene scheduler and authoritative state**. Port the
+source task continuations and dependencies into that scheduler instead of
+running a parallel PhysX scene or duplicating actor state.
 
 ### 1.2 GPU broadphase is persistent, incremental, and observable
 
@@ -219,8 +219,9 @@ Requirements for the internal compute substrate, independent of Vulkan/D3D12:
 - Multi-queue and CPU task completion semantics when demanded by PhysX.
   A single queue may initially *serialize* an identified subgraph, but must
   not silently erase required task edges, publication or CPU concurrency.
-- GPU failures and abort propagation into PhysX scene continuation cleanup;
-  task references must be released on every success/failure/early-out.
+- GPU failures and abort propagation into FyzzXYZZY's native scene task
+  completion/cleanup; no task reference or frame may be stranded after
+  success, failure or early-out.
 - Low allocation churn: transient command/descriptors, cached pipelines
   and rings/pools rather than one device submission per kernel.
 - CPU trace/diagnostics showing source task, buffer version, submission,
@@ -255,8 +256,8 @@ state machine or a backend-specific body ownership model.
 | --- | --- | --- |
 | G0 - baseline | Source/scene map; build modes; CPU test oracle; trace/profiling format | Source-grounded PhysX call/dependency map, CPU regression fixtures, reproducible builds |
 | G1 - two execution backends | Native Vulkan and D3D12 compute, same AABB shader and identical reference fixtures | SPIR-V and DXIL compilation, dispatch, copy, resource barriers, readback, fence and failure tests; native Windows D3D12 execution |
-| G2 - addressing and tasks | Portable device descriptor schema, allocation/lifetime policy and GPU completion bridge into PhysX continuations | Real pointer-rich descriptor traversal on both backends; task continuation exactly once; resize, alias, abort, sequencing cases |
-| G3 - coherent GPU broadphase | Source-derived SAP/sort/region/aggregate/pair pipeline entered from a real PhysX scene | Found/lost-pair parity, frame-to-frame state, forced update, aggregation, overflow, scene publication, CPU dynamics with GPU BP |
+| G2 - addressing and tasks | Portable device descriptor schema, allocation/lifetime policy and GPU completion bridge into the native FyzzXYZZY task graph | Real pointer-rich descriptor traversal on both backends; native completion exactly once; resize, alias, abort and sequencing cases |
+| G3 - coherent GPU broadphase | Native FyzzXYZZY scene owns the source-derived SAP/sort/region/aggregate/pair pipeline and schedules it without a reference PhysX scene | Native-scene found/lost-pair parity, frame-to-frame state, forced update, aggregation, overflow, publication into native narrowphase and CPU dynamics with GPU BP on Vulkan and D3D12; explicit no-PhysX-host proof |
 | G4 - body/shape pipeline | Portable simulation-controller body/shape updates, contact stream ownership and GPU narrowphase foundation | Original GPU/CPU fallback matrix, contact/patch output, touch/CCD/trigger interaction and island input |
 | G5 - rigid solver | Source-derived PGS/TGS constraint preparation, partitioning, rigid solver and integration | Stable bodies, contacts, joints, restitution/friction, sleep/wake, callback/report semantics, multi-frame regression |
 | G6 - articulation | GPU articulation streams, data prep, solve/feedback consistent with PhysX | Chains/loops where supported; joints/tendons; edge cases and CPU fallbacks clearly classified |
@@ -264,8 +265,8 @@ state machine or a backend-specific body ownership model.
 | G8 - production | Direct GPU API policy, interop, tuning, hardware matrices, packaging and engine consumers | Honest public support matrix, profiling, robust recovery and repeatable release acceptance |
 
 **Implementation priority:** G0/G1/G2 *before* adding lots of CUDA kernels.
-G3 is the first scene-integrated PhysX GPU milestone. G4/G5 are the main
-rigid-body product milestone. G6/G7 are significant projects in themselves;
+G3 is the first scene-integrated **native FyzzXYZZY** GPU milestone. G4/G5
+are the main rigid-body product milestone. G6/G7 are significant projects in themselves;
 do not imply full PhysX 5.11 GPU parity merely because G5 works. Gates can
 overlap where dependencies allow, but no acceptance gate is waived.
 
@@ -332,10 +333,11 @@ portable execution and software correctness without that burden:
 
 **Hardware checkpoints are coherent subsystem events, not PR events:**
 
-1. **First AMD profiling session:** GPU broadphase entered through an
-   actual PhysX scene with CPU dynamics, spanning multiple frames, persistent
-   SAP state, pair publication, realistic creation/removal traffic, and
-   representative batching. Exercise native AMD Vulkan and D3D12 where
+1. **First AMD profiling session:** GPU broadphase entered through a
+   FyzzXYZZY-owned native scene and task graph with native CPU dynamics,
+   spanning multiple frames, persistent SAP state, pair publication, realistic
+   creation/removal traffic, and representative batching. The native scene must
+   not allocate or drive a reference PhysX `PxScene`. Exercise native AMD Vulkan and D3D12 where
    practical. This is the first point when end-to-end timing can meaningfully
    guide memory and dispatch choices.
 2. **Second major session:** native GPU narrowphase and a meaningful
@@ -384,7 +386,7 @@ actual source-derived prototypes, not preference.
    Sketch the DAG and identify every observable output.
 2. **Record a dataflow ledger:** who allocates each buffer, who mutates it,
    stream/queue ownership, when copies happen, and which event publishes it.
-3. **Implement one incremental, testable path** in PhysX architecture.
+3. **Implement one incremental, testable path** in the native FyzzXYZZY architecture.
    Compile the shared shader for both platforms as soon as that operation
    exists; reserve Vulkan-first runtime bring-up without indefinitely
    deferring D3D12.
@@ -419,8 +421,8 @@ fully generalized compute framework completed before any more kernels.
    relocated PhysX arenas must survive until the actual completing fence/
    timeline value. Asynchronous upload, copy, download and deferred free
    need to correspond to PhysX's existing copy manager and stream/event
-   semantics. Implement a thin completion-to-PhysX-task continuation
-   bridge; do not invent a separate physics scheduler.
+   semantics. Implement completion-to-native-task continuation
+   signaling; do not invent a second physics scheduler.
 3. **Compile kernels from one behavioral source.** Establish a repeatable
    mapping from CUDA source function and host launch configuration to
    common shader, parameter/descriptor layout, backend capability and
@@ -483,33 +485,17 @@ Upstream interpretation is authoritative for what **PhysX does**;
 this document's suggested architecture and gate ordering are decisions for
 FyzzXYZZY, not claims made by NVIDIA.
 
-## Production PhysX scene admission milestone (PR #104)
+## Native scene ownership and G3 acceptance
 
-The public `fyzz::World` now owns a **single explicit production scene
-selection** via `WorldOptions::broadphase`, rather than presenting a
-test-only compute world as evidence that PhysX's own GPU scene is working.
-The default is the original CPU PhysX scene. An explicit CPU request
-sets `PxSceneDesc.broadPhaseType = ePABP` and verifies the *created*
-`PxScene::getBroadPhaseType()` agrees. A request for
-`PhysXPortableGpu` currently **fails closed before scene construction**
-with an actionable explanation; it never creates an ABP scene and reports
-that as portable GPU success.
+The default `fyzz::World` presently uses an isolated PhysX reference CPU backend.
+The production API explicitly rejects `NativePortableGpu` until the SDK owns a
+native scene and source-derived GPU SAP/AABB manager, native task lifecycle,
+GPU-completion publication, and a corresponding narrowphase/dynamics path.
+The short-lived source-level factory experiment in the PhysX fork was reverted;
+no production GPU integration shall depend on patching the reference PhysX
+`PxSceneDesc` or `Sc::Scene`.
 
-This is intentional and temporary. The pinned upstream
-`Sc::Scene` currently accepts `eGPU` only behind
-`PX_SUPPORT_GPU_PHYSX` and CUDA manager architecture checks; in the
-SDK's present CUDA-free build, it **silently substitutes** `eABP`
-otherwise. Adding an `eGPU` flag to the current scene descriptor
-would therefore be a false-positive integration claim. Production
-`World` is now the real selection boundary whose GPU arm must be
-connected directly to the **portable source-derived SAP owner and AABB
-manager inside the PhysX scene factory and task graph**, tracked in
-[Issue #101](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101).
+Implementation dependencies, measurable gates, runtime ownership and code
+retirement are specified in [NATIVE_ENGINE_MIGRATION.md](NATIVE_ENGINE_MIGRATION.md)
+and tracked in [issue #101](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101).
 
-The headless regression checks the default and explicit-CPU behavior,
-CPU rigid-body simulation, rejected GPU admission and unknown selectors
-through the **production `World` constructor**, without staging an
-unrelated simulation pipeline. This milestone establishes an honest
-production entry point, **not a working GPU scene**. Do not mark G3
-complete until multi-frame `PxScene::simulate/fetchResults` with
-the portable SAP publishes correct found/lost pairs to PhysX.

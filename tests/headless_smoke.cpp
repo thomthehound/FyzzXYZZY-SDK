@@ -18,26 +18,26 @@ int main() {
             bool rejected_gpu = false;
             try {
                 fyzz::World unsupported(fyzz::WorldOptions{
-                    fyzz::BroadphaseMode::PhysXPortableGpu});
+                    fyzz::ExecutionMode::NativePortableGpu});
             } catch (const std::logic_error& e) {
-                rejected_gpu = std::string(e.what()).find("not scene-integrated")
+                rejected_gpu = std::string(e.what()).find("not yet implemented")
                     != std::string::npos;
             }
             if (!rejected_gpu)
-                throw std::runtime_error("Portable GPU request silently created CPU PhysX scene");
+                throw std::runtime_error("Native GPU request silently created reference PhysX scene");
 
             bool rejected_unknown = false;
             try {
                 fyzz::World unsupported(fyzz::WorldOptions{
-                    static_cast<fyzz::BroadphaseMode>(0xff)});
+                    static_cast<fyzz::ExecutionMode>(0xff)});
             } catch (const std::invalid_argument&) {
                 rejected_unknown = true;
             }
             if (!rejected_unknown)
-                throw std::runtime_error("Invalid production broadphase selection was accepted");
+                throw std::runtime_error("Invalid SDK execution selection was accepted");
 
             fyzz::World explicit_cpu(fyzz::WorldOptions{
-                fyzz::BroadphaseMode::PhysXCpu});
+                fyzz::ExecutionMode::ReferencePhysXCpu});
             explicit_cpu.add_static_floor(0.0f);
             const auto cpu_test = explicit_cpu.add_dynamic_box(
                 {0.2f, 0.2f, 0.2f}, {0.0f, 1.0f, 0.0f}, 1.0f);
