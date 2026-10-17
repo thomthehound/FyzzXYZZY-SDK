@@ -201,6 +201,23 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+  # These independent physics demonstrations are not translations of PhysX
+  # GPU algorithms or orchestration. Do not link them into the SDK by default.
+  option(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES
+    "Build non-PhysX experimental Vulkan physics demonstrations" OFF)
+  if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
+    target_sources(fyzzxyzzy_compute PRIVATE src/floor_contact.cpp)
+    add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
+    add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
+    target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_23)
+    target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_link_libraries(fyzzxyzzy_vulkan_world PUBLIC
+      FyzzXYZZY::Core FyzzXYZZY::Compute
+    )
+  endif()
+
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
@@ -249,22 +266,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-  # These independent physics demonstrations are not translations of PhysX
-  # GPU algorithms or orchestration. Do not link them into the SDK by default.
-  option(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES
-    "Build non-PhysX experimental Vulkan physics demonstrations" OFF)
-  if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
-    target_sources(fyzzxyzzy_compute PRIVATE src/floor_contact.cpp)
-    add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
-    add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
-    target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_23)
-    target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    )
-    target_link_libraries(fyzzxyzzy_vulkan_world PUBLIC
-      FyzzXYZZY::Core FyzzXYZZY::Compute
-    )
-  endif()
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute PRIVATE /W4)
   else()
@@ -1548,6 +1549,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     endif()
 
+  endif()
+  endif() # source-port GPU stages and source-based conformance tests
+  if(BUILD_TESTING AND FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
+    find_program(FYZZXYZZY_GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
     if(FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES)
       set(FYZZXYZZY_FLOOR_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/rigid_floor.comp.spv")
       add_custom_command(
@@ -1567,14 +1572,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_vulkan_floor_physics
         COMMAND fyzzxyzzy_vulkan_floor_physics "${FYZZXYZZY_FLOOR_SHADER}")
   
+      # This oracle comparison needs the transitional reference CPU scene.
+      if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
       add_executable(fyzzxyzzy_vulkan_world_smoke tests/vulkan_world_smoke.cpp)
       target_link_libraries(fyzzxyzzy_vulkan_world_smoke PRIVATE FyzzXYZZY::VulkanWorld)
       add_dependencies(fyzzxyzzy_vulkan_world_smoke fyzzxyzzy_floor_shader)
       add_test(NAME fyzzxyzzy_vulkan_world_smoke
         COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
+      endif()
     endif()
   endif()
-  endif() # source-port GPU stages and source-based conformance tests
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
     add_executable(fyzzxyzzy_vulkan_memory_smoke tests/vulkan_memory_smoke.cpp)
     target_link_libraries(fyzzxyzzy_vulkan_memory_smoke PRIVATE FyzzXYZZY::Compute)

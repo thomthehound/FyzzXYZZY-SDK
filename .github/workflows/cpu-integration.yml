@@ -205,9 +205,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Vulkan SDK
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers glslang-tools
       - name: Configure without external source or network
-        run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+        run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build and test native core and compute
         shell: bash
         run: |
