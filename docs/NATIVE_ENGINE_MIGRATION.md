@@ -87,6 +87,13 @@ SAT face-contact case from `GuContactBoxBox.cpp`, specialized to the
 native scene's unrotated boxes. It retains source authorship in the
 implementation. The source's current 0.02m shape offsets yield a 0.04m
 pair contact distance until per-shape material/contact state is imported.
+Plane contact normals are oriented by canonical pair order (shape1 toward
+shape0), not actor creation order. The axis-aligned box/box face path
+requires transverse face intersection; diagonal gaps are rejected rather
+than producing fictional face contacts, **even when their true edge/corner
+distance is within the contact offset**. Source-derived edge/corner
+generation is required before claiming complete box/box narrowphase parity.
+Degenerate face intervals produce only distinct points, not duplicates.
 No new owner, shader controller, scene clock or solver loop was added.
 
 **Not yet supported:** rotated box/box contacts, full multi-axis PhysX

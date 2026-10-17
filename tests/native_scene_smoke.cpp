@@ -131,6 +131,33 @@ int main() {
                "Actor retirement failed to report lost physical touch");
     }
     {
+        // The ordered pair must not determine which way gravity would
+        // be opposed: creating the box before the floor reverses IDs
+        // but not the physical plane orientation.
+        Scene reversed;
+        const auto box = reversed.add_dynamic_box(
+            {1,1,1}, {0,1.02f,0}, 1);
+        const auto floor = reversed.add_static_floor(0);
+        reversed.advance_collision();
+        expect(has(reversed.found_pairs(), box, floor) &&
+               has(reversed.found_contacts(), box, floor) &&
+               reversed.contacts().size() == 1 &&
+               reversed.contacts()[0].count == 4,
+               "Box-before-floor contact stream absent");
+        for (unsigned i = 0; i < reversed.contacts()[0].count; ++i) {
+            const auto& point = reversed.contacts()[0].points[i];
+            expect(point.normal.x == 0.0f && point.normal.y == 1.0f &&
+                   point.normal.z == 0.0f &&
+                   std::abs(point.separation - 0.02f) < 0.0001f,
+                   "Box-before-floor contact normal or separation incorrect");
+        }
+        reversed.set_position(box, {0,20,0});
+        reversed.advance_collision();
+        expect(has(reversed.lost_contacts(), box, floor) &&
+               reversed.lost_pairs().empty(),
+               "Box-before-floor touch loss emitted wrong events");
+    }
+    {
         Scene box_scene;
         const auto fixed = box_scene.add_static_box(
             {1,1,1},{0,0,0});
@@ -159,6 +186,41 @@ int main() {
         box_scene.advance_collision();
         expect(has(box_scene.found_contacts(), fixed, moveable),
                "Box re-entry did not recreate narrowphase touch");
+
+        // Per-axis AABBs still overlap inside the pair contact offset,
+        // but diagonal gaps have no intersecting incident/reference faces.
+        // This face-only implementation must not invent a midpoint contact.
+        box_scene.set_position(moveable, {2.03f,2.03f,0});
+        box_scene.advance_collision();
+        expect(has(box_scene.pairs(), fixed, moveable) &&
+               box_scene.contacts().empty() &&
+               has(box_scene.lost_contacts(), fixed, moveable) &&
+               box_scene.lost_pairs().empty(),
+               "Diagonal gap fabricated a face manifold");
+        box_scene.advance_collision(true);
+        expect(box_scene.contacts().empty() &&
+               box_scene.found_contacts().empty() &&
+               box_scene.lost_contacts().empty(),
+               "Forced diagonal-gap update published spurious touch");
+        // The true edge distance here is within the offset, but accurate
+        // edge contacts are not yet ported: reject rather than fabricate.
+        box_scene.set_position(moveable, {2.01f,2.01f,0});
+        box_scene.advance_collision();
+        expect(has(box_scene.pairs(), fixed, moveable) &&
+               box_scene.contacts().empty() &&
+               box_scene.found_contacts().empty(),
+               "Unimplemented edge contact was misreported as a face");
+
+        // A single-axis near contact with positive separation is still
+        // supported when the two transverse face intervals overlap.
+        box_scene.set_position(moveable, {1.5f,2.03f,0});
+        box_scene.advance_collision();
+        expect(has(box_scene.found_contacts(), fixed, moveable) &&
+               box_scene.contacts().size() == 1 &&
+               box_scene.contacts()[0].count == 4 &&
+               box_scene.contacts()[0].points[0].normal.y == -1.0f &&
+               box_scene.contacts()[0].points[0].separation > 0.029f,
+               "Valid single-axis proximity contact was lost");
     }
 
     // Exercise the actual World selection, not only the owner fixture.

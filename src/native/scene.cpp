@@ -199,6 +199,12 @@ void Scene::update_contacts() {
             const Actor& box = a.kind == Kind::StaticPlane ? b : a;
             if (box.kind != Kind::DynamicBox)
                 continue;
+            // The canonical pair is ordered by body ID, not by geometry.
+            // Source contact normals always point from shape1 (b) to
+            // shape0 (a), regardless of which actor was created first.
+            const Vec3 normal = a.kind == Kind::StaticPlane
+                ? Vec3{0.0f, -1.0f, 0.0f}
+                : Vec3{0.0f, 1.0f, 0.0f};
             for (unsigned corner = 0; corner < 8; ++corner) {
                 const float sx = (corner & 1u) ? 1.0f : -1.0f;
                 const float sy = (corner & 2u) ? 1.0f : -1.0f;
@@ -209,10 +215,8 @@ void Scene::update_contacts() {
                     box.position.z + sz * box.half_extents.z};
                 const float separation = point.y - plane.position.y;
                 if (separation < contact_distance) {
-                    // Fixed global +Y plane: source normal is its negative,
-                    // from the box toward the plane.
                     manifold.points[manifold.count++] =
-                        {point, Vec3{0.0f, -1.0f, 0.0f}, separation};
+                        {point, normal, separation};
                 }
             }
         } else {
@@ -258,24 +262,29 @@ void Scene::update_contacts() {
                 center_a[v] - half_a[v], center_b[v] - half_b[v]);
             const float high_v = std::min(
                 center_a[v] + half_a[v], center_b[v] + half_b[v]);
-            // Within contactDistance, transverse faces may have a tiny gap.
-            // Its midpoint is a valid proximity contact point.
-            const float span_u[2] = {
-                low_u <= high_u ? low_u : (low_u + high_u) * 0.5f,
-                low_u <= high_u ? high_u : (low_u + high_u) * 0.5f};
-            const float span_v[2] = {
-                low_v <= high_v ? low_v : (low_v + high_v) * 0.5f,
-                low_v <= high_v ? high_v : (low_v + high_v) * 0.5f};
+            // A face manifold requires overlapping transverse intervals.
+            // A diagonal edge/corner gap is NOT a face contact even when
+            // the gaps are individually inside the contact distance.
+            // Reserve these cases for source-derived edge/corner generation;
+            // do not manufacture an intersection at a gap midpoint.
+            if (low_u > high_u || low_v > high_v)
+                continue;
+            const float span_u[2] = {low_u, high_u};
+            const float span_v[2] = {low_v, high_v};
+            const unsigned count_u = low_u == high_u ? 1u : 2u;
+            const unsigned count_v = low_v == high_v ? 1u : 2u;
             std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
             normal[axis] = sign; // from shape b to a
-            for (unsigned i = 0; i < 4; ++i) {
-                auto point = face;
-                point[u] = span_u[i & 1u];
-                point[v] = span_v[(i >> 1u) & 1u];
-                manifold.points[manifold.count++] = {
-                    Vec3{point[0], point[1], point[2]},
-                    Vec3{normal[0], normal[1], normal[2]},
-                    signed_gaps[axis]};
+            for (unsigned iv = 0; iv < count_v; ++iv) {
+                for (unsigned iu = 0; iu < count_u; ++iu) {
+                    auto point = face;
+                    point[u] = span_u[iu];
+                    point[v] = span_v[iv];
+                    manifold.points[manifold.count++] = {
+                        Vec3{point[0], point[1], point[2]},
+                        Vec3{normal[0], normal[1], normal[2]},
+                        signed_gaps[axis]};
+                }
             }
         }
         if (manifold.count > 0)
