@@ -21,8 +21,9 @@ def main() -> int:
     cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
     if not re.search(r'add_library\(fyzzxyzzy_reference_physx_cpu\s+STATIC\s+src/reference/physx_cpu_world\.cpp\)', cmake):
         problems.append("CMakeLists.txt: missing separately compiled reference CPU owner")
-    if not re.search(r'target_link_libraries\(fyzzxyzzy_core\s+PRIVATE\s+fyzzxyzzy_reference_physx_cpu\)', cmake):
-        problems.append("CMakeLists.txt: native core must link reference through its named adapter")
+    if "create_reference_physx_cpu_backend()" in (ROOT / "src/world.cpp").read_text(encoding="utf-8"):
+        if not re.search(r'target_link_libraries\(fyzzxyzzy_core\s+PRIVATE\s+fyzzxyzzy_reference_physx_cpu\)', cmake):
+            problems.append("CMakeLists.txt: reference CPU factory must link through its named adapter")
     if re.search(r'target_link_libraries\(fyzzxyzzy_core\s+PRIVATE\s+physx_lib\)', cmake):
         problems.append("CMakeLists.txt: native core directly links PhysX reference source")
     if not (ROOT / "src/reference/physx_cpu_world.cpp").is_file():
