@@ -1255,3 +1255,57 @@ its GPU ABI in isolation; it does NOT put the two radix DMA transfers
 ahead of broadphase-descriptor construction in the production path.
 The substantial source `updateDescriptor` logic, including pointers
 provided by the GPU AABB manager, is the next integration task.
+
+## Source SAP broadphase descriptor and AABB-manager provenance (PR #97)
+
+`PxgSapBroadphaseDescriptorNative.{h,cpp}` ports upstream
+`PxgCudaBroadPhaseSap::updateDescriptor` with the **original**
+`PxgBroadPhaseDesc` record. No parallel descriptor ABI, scene, GPU heap,
+or changed-handle bitmap is introduced. All persistent and scratch
+addresses are queried from borrowed original `PxgCudaBuffer` owners at
+descriptor-build time, **after** the preceding `gpuDMAUp` allocations.
+
+Source-specific contracts worth retaining:
+
+- The pinned `PxgBroadPhaseDesc.h` itself defines
+  `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU`, which enables the descriptor's
+  standalone updated-list fields. Descriptor translation is compiled in a
+  separate translation unit and its GPU ABI test is also isolated, so this
+  upstream include cannot silently change the compile-time layout of the
+  existing changed-handle helper. The actual source feature/layout choice
+  must be unified when wiring the owning live SAP instance.
+- With a real GPU AABB manager, the descriptor reads **its** changed,
+  added, removed, aggregated-bound and volume-data GPU pointers, plus
+  its changed-handle bitmap word count. It does **not** substitute the
+  standalone updated-handle array. Without an AABB manager, original
+  `updateDescriptor` sets the optional updated-list fields instead;
+  manager-only fields remain zeroed. The native helper accepts a
+  **borrowed view** of those manager getters but cannot yet construct a
+  real `PxgAABBManager` on a CUDA-free host. The test binds actual
+  source GPU-buffer allocations as input aliases; it is not a live
+  source-AABB-manager lifecycle test.
+- Original `PxMemZero` clears every descriptor field before repopulation.
+  The previous-handle count is derived from post-update live count,
+  removed count and created count. Shared indices, incremental totals,
+  region-start total and overflow flag reset to zero; region and overlap
+  totals and pair-report capacities follow the source's current fields.
+  The `j*3+i` history indexing must stay consistent with the GPU
+  allocator and the existing radix descriptors.
+- The source's mapped found/lost actor-report aliases come from its
+  **existing pinned host mapping**; no new host-visible buffer is
+  allocated merely to fill the descriptor. This helper takes the actual
+  mapped-device alias values at the integration boundary.
+
+Dedicated native Vulkan and D3D12 conformance tests cover all per-axis
+and 2x3 descriptor pointer bindings, source-provided report/region
+pointers, the manager-versus-standalone branch, zeroed fields, prior-box
+arithmetic, rebinding after GPU growth, rejection of overflowed counts
+without mutation, exact original binary record GPU upload/readback and
+GPU heap teardown. No live `PxScene` execution is claimed.
+
+The original `gpuDMAUp` upload sequence remains: **changed-handle arrays,
+one broadphase descriptor, six radix descriptors, six WOR radix
+descriptors**, all queued on the source stream. The three descriptor
+uploads and integration into the actual `PxgCudaBroadPhaseSap` member
+lifetime/task graph are the next stage, rather than operations added
+ahead of their dependency boundary in this PR.
