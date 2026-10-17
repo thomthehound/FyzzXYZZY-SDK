@@ -19,12 +19,12 @@ void validate_sap_dma_up_descriptor_buffers_native(
         throw std::logic_error("PhysX gpuDMAUp original GPU descriptor buffers not allocated");
 }
 
-void queue_sap_dma_up_descriptors_native(
+void append_sap_dma_up_descriptors_native(
     const physx::PxgBroadPhaseDesc& bp_desc,
     const physx::PxgRadixSortDesc* radix_descs,
     const physx::PxgRadixSortDesc* radix_wor_descs,
     SourceSapDmaUpDescriptorBuffers buffers,
-    SourceSapDmaNative& stream) {
+    std::vector<SourceSapUpload>& uploads) {
     // Validate the complete source upload group before submitting ANY
     // descriptor HtoD. Keep the six-entry source record ABI unchanged.
     constexpr std::size_t radix_bytes = sizeof(physx::PxgRadixSortDesc) * 6u;
@@ -35,10 +35,23 @@ void queue_sap_dma_up_descriptors_native(
     // The original three memcpyHtoDAsync calls are adjacent and ordered.
     // SourceSapDmaNative snapshots host data immediately and submits
     // them on the already-owning GPU queue, without an invented fence.
-    stream.queue_uploads({
+    uploads.insert(uploads.end(), {
         {buffers.broadphase.getDevicePtr(), &bp_desc, sizeof(bp_desc)},
         {buffers.radix.getDevicePtr(), radix_descs, radix_bytes},
         {buffers.radix_without_ranks.getDevicePtr(), radix_wor_descs, radix_bytes}
     });
 }
+void queue_sap_dma_up_descriptors_native(
+    const physx::PxgBroadPhaseDesc& bp_desc,
+    const physx::PxgRadixSortDesc* radix_descs,
+    const physx::PxgRadixSortDesc* radix_wor_descs,
+    SourceSapDmaUpDescriptorBuffers buffers,
+    SourceSapDmaNative& stream) {
+    std::vector<SourceSapUpload> uploads;
+    uploads.reserve(3u);
+    append_sap_dma_up_descriptors_native(
+        bp_desc, radix_descs, radix_wor_descs, buffers, uploads);
+    stream.queue_uploads(uploads);
+}
+
 } // namespace fyzz::physx_gpu
