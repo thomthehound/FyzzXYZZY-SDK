@@ -7,6 +7,8 @@
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
 #include "BpBroadPhaseUpdate.h"
 
+#include <cstdint>
+
 namespace fyzz::physx_gpu {
 
 bool should_execute_sap_update_after_dma_up_native(
