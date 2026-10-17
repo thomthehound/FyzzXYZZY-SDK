@@ -1068,3 +1068,46 @@ Next host connection: install these borrowed buffer references in
 `mUpdateData_BoxesCapacity` update and `PxgAABBManager` task ordering.
 `gpuDMAUp` and its descriptor/sort buffers remain the next coherent
 source-owned transfer sequence.
+
+## Original `PxgCudaBroadPhaseSap::gpuDMAUp` handle/count staging (PR #92)
+
+`src/physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.{h,cpp}`
+now covers the first source bookkeeping and later changed-handle HtoD
+portions of `gpuDMAUp`, consuming the actual
+`Bp::BroadPhaseUpdateData`. The exposed members are borrowed references to
+`PxgCudaBroadPhaseSap` counters and its three original
+`PxgTypedCudaBuffer<PxU32>` objects, **not** a parallel broadphase.
+The **default** PhysX GPU/AABB-manager mode has only created/removed
+counters and buffers. The updated-handle counter, buffer, validation,
+allocation and HtoD are all guarded by upstream's
+`SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` feature macro and do not exist in
+the default layout. We do not invent updated-handle storage simply because
+`BroadPhaseUpdateData` exposes an updated list.
+
+The helper boundaries deliberately retain the upstream sequence:
+
+1. Prepare created/removed/updated counts, live-box totals and
+   pre-removal/padded projection sizes, rejecting invalid counts or overflow
+   before mutating the source members.
+2. Leave room for **the original persistent history/scratch allocation and
+   copy-preserving growth** (not yet ported into this helper).
+3. Allocate source created/removed/updated handle buffers using
+   `PxgCudaBuffer` and the native buddy allocator.
+4. Leave room for the original `updateDescriptor` /
+   `updateRadixSortDesc` and mapped-host report pointer setup (pending).
+5. Upload created/removed/updated handle arrays on the existing
+   `SourceSapDmaNative` GPU stream before the future descriptor uploads.
+
+This ordering matters: the split does **not** move new handle allocations
+ahead of source history-preserving copies or descriptor construction.
+
+The default host-transfer test covers mixed add/remove/update inputs (without
+staging the optional updated-handle list), 32-bit sizing,
+grow-only buffer behavior, CPU-array snapshot after enqueue, zero-change
+frames, invalid handle pointers/counts, and original GPU-root teardown on
+Vulkan/Linux and D3D12/Windows. Both CI jobs also compile the guarded
+standalone-BP helper with `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` enabled,
+without redefining the production PhysX library's feature macro. These remain integration tests rather than
+a live `PxScene` broadphase test; the full source construction,
+descriptor population, and shader/task graph attachment are still pending.
+

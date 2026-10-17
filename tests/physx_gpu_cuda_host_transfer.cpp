@@ -8,6 +8,7 @@
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
+#include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -662,6 +663,207 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
 }
 
+void exercise_original_gpu_dma_up_handles_native(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapGpuDMAUpCountMembers;
+    using fyzz::physx_gpu::SourceSapGpuDMAUpHandleBuffers;
+    using fyzz::physx_gpu::prepare_gpu_dma_up_counts_native;
+    using fyzz::physx_gpu::allocate_gpu_dma_up_handles_native;
+    using fyzz::physx_gpu::queue_gpu_dma_up_handles_native;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    physx::Bp::BpFilter filter(false, false);
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u, callback, abort, &aborted);
+        physx::PxgTypedCudaBuffer<physx::PxU32> created(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgTypedCudaBuffer<physx::PxU32> removed(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxgTypedCudaBuffer<physx::PxU32> updated(
+            heap, physx::PxsHeapStats::eBROADPHASE);
+#endif
+        physx::PxU32 numBoxes=0, capacity=0,createdSize=0,removedSize=0;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxU32 updatedSize=0;
+        SourceSapGpuDMAUpCountMembers state{
+            numBoxes,capacity,createdSize,removedSize,updatedSize};
+        SourceSapGpuDMAUpHandleBuffers arrays{created,removed,updated};
+#else
+        // Default source GPU/AABB-manager layout has no updated-handle
+        // counter or allocation. A helper requiring either cannot bind it.
+        SourceSapGpuDMAUpCountMembers state{
+            numBoxes,capacity,createdSize,removedSize};
+        SourceSapGpuDMAUpHandleBuffers arrays{created,removed};
+#endif
+
+        auto verify=[&](const physx::PxgCudaBuffer& buffer,
+                        const physx::PxU32* expected, std::size_t n,
+                        const char* diagnostic) {
+            if(!n) return;
+            const auto bytes=n*sizeof(physx::PxU32);
+            if(buffer.getSize()<bytes)
+                throw std::runtime_error("Original PhysX GPU changed-handle capacity is too small");
+            const auto physical=addresses.resolve(buffer.getDevicePtr(),bytes);
+            std::vector<physx::PxU32> observed(n);
+            context.download(physical.buffer,physical.offset,observed.data(),bytes);
+            if(std::memcmp(observed.data(),expected,bytes))
+                throw std::runtime_error(diagnostic);
+        };
+
+        const std::array<physx::PxU32,2> firstCreated{1u,3u};
+        const physx::Bp::BroadPhaseUpdateData first(
+            firstCreated.data(),2u, nullptr,0u, nullptr,0u,
+            nullptr,nullptr,nullptr,4u,filter,true,true);
+        auto firstCounts=prepare_gpu_dma_up_counts_native(first,state);
+        if(firstCounts.previous_boxes!=0u || numBoxes!=2u ||
+           firstCounts.projections!=4u || firstCounts.padded_projections!=4u ||
+           createdSize!=2u || removedSize
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           || updatedSize
+#endif
+           )
+            throw std::runtime_error("PhysX first gpuDMAUp count/size state changed");
+        allocate_gpu_dma_up_handles_native(firstCounts,arrays);
+        queue_gpu_dma_up_handles_native(first,firstCounts,arrays,stream);
+        stream.wait_at_fetch();
+        verify(created,firstCreated.data(),firstCreated.size(),
+               "First PhysX source created-handle upload failed");
+        const auto rawCreated=created.getDevicePtr();
+
+        // Mixed insertion, removal and update: source projection history
+        // includes previous+created, NOT post-removal live boxes.
+        std::array<physx::PxU32,2> secondCreated{0u,2u};
+        std::array<physx::PxU32,1> secondRemoved{3u};
+        std::array<physx::PxU32,1> secondUpdated{1u};
+        const auto expectedCreated=secondCreated;
+        const auto expectedRemoved=secondRemoved;
+        const auto expectedUpdated=secondUpdated;
+        const physx::Bp::BroadPhaseUpdateData second(
+            secondCreated.data(),2u,secondUpdated.data(),1u,
+            secondRemoved.data(),1u,nullptr,nullptr,nullptr,4u,
+            filter,true,true);
+        auto secondCounts=prepare_gpu_dma_up_counts_native(second,state);
+        if(secondCounts.previous_boxes!=2u || numBoxes!=3u ||
+           secondCounts.projections!=8u || secondCounts.padded_projections!=8u ||
+           createdSize!=2u || removedSize!=1u
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           || updatedSize!=1u
+#endif
+           )
+            throw std::runtime_error("Mixed source gpuDMAUp sizing/handles lost");
+        allocate_gpu_dma_up_handles_native(secondCounts,arrays);
+        queue_gpu_dma_up_handles_native(second,secondCounts,arrays,stream);
+        // The source update arrays are borrowed and may be reused after HtoD.
+        secondCreated[0]=99u;
+        secondRemoved[0]=99u;
+        secondUpdated[0]=99u;
+        stream.wait_at_fetch();
+        verify(created,expectedCreated.data(),2u,
+               "PhysX source created handles lost input snapshot");
+        verify(removed,expectedRemoved.data(),1u,
+               "PhysX source removed handles lost input snapshot");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        verify(updated,expectedUpdated.data(),1u,
+               "PhysX source updated handles lost input snapshot");
+#else
+        // Original default gpuDMAUp does not enqueue updated handle uploads:
+        // the GPU AABB manager supplies its changed-handle bitmap instead.
+        (void)expectedUpdated;
+#endif
+        if(created.getDevicePtr()!=rawCreated)
+            throw std::runtime_error("Original GPU created-handle allocation grew unnecessarily");
+
+        // Downsize without releasing source buffers or silently shrinking
+        // the original grow-only PxgCudaBuffer allocation.
+        const std::array<physx::PxU32,1> thirdCreated{3u};
+        const std::array<physx::PxU32,2> thirdRemoved{0u,2u};
+        const std::array<physx::PxU32,1> thirdUpdated{1u};
+        const physx::Bp::BroadPhaseUpdateData third(
+            thirdCreated.data(),1u,thirdUpdated.data(),1u,
+            thirdRemoved.data(),2u,nullptr,nullptr,nullptr,4u,filter,true,true);
+        const auto thirdCounts=prepare_gpu_dma_up_counts_native(third,state);
+        if(numBoxes!=2u || thirdCounts.projections!=8u ||
+           thirdCounts.padded_projections!=8u)
+            throw std::runtime_error("Source gpuDMAUp projection capacity ignored removed boxes");
+        allocate_gpu_dma_up_handles_native(thirdCounts,arrays);
+        queue_gpu_dma_up_handles_native(third,thirdCounts,arrays,stream);
+        stream.wait_at_fetch();
+        verify(created,thirdCreated.data(),1u,"Original downsize created handles incorrect");
+        verify(removed,thirdRemoved.data(),2u,"Original downsize removed handles incorrect");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        verify(updated,thirdUpdated.data(),1u,"Original downsize updated handles incorrect");
+#endif
+        if(created.getDevicePtr()!=rawCreated)
+            throw std::runtime_error("Source changed handles shrank device allocation");
+
+        // Empty unchanged source frame: no GPU transfer, original device
+        // buffers and count state persist.
+        const physx::Bp::BroadPhaseUpdateData empty(
+            nullptr,0u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,4u,filter,false,false);
+        const auto emptyCounts=prepare_gpu_dma_up_counts_native(empty,state);
+        allocate_gpu_dma_up_handles_native(emptyCounts,arrays);
+        queue_gpu_dma_up_handles_native(empty,emptyCounts,arrays,stream);
+        if(numBoxes!=2u || createdSize || removedSize ||
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+           updatedSize ||
+#endif
+           emptyCounts.projections!=4u || emptyCounts.padded_projections!=4u ||
+           !stream.commands().empty() || created.getDevicePtr()!=rawCreated)
+            throw std::runtime_error("Empty source frame mutated GPU handles or state");
+
+        // Invalid source inputs must fail before touching counters, GPU
+        // memory or the native stream. Source Bp ownership stays unchanged.
+        const std::array<physx::PxU32,3> excessive{0u,1u,2u};
+        const physx::Bp::BroadPhaseUpdateData invalid(
+            nullptr,0u,nullptr,0u,excessive.data(),3u,
+            nullptr,nullptr,nullptr,4u,filter,false,false);
+        bool rejected=false;
+        try {(void)prepare_gpu_dma_up_counts_native(invalid,state);}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected || numBoxes!=2u || removedSize || capacity!=4u)
+            throw std::runtime_error("Invalid PhysX source remove corrupted live box count");
+        const physx::Bp::BroadPhaseUpdateData noData(
+            nullptr,1u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,4u,filter,false,false);
+        rejected=false;
+        try {(void)prepare_gpu_dma_up_counts_native(noData,state);}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected || numBoxes!=2u || createdSize)
+            throw std::runtime_error("Null PhysX created list corrupted live box count");
+
+        // Stale frame sizes may not enqueue a partial upload.
+        rejected=false;
+        try {queue_gpu_dma_up_handles_native(third,emptyCounts,arrays,stream);}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected || !stream.commands().empty())
+            throw std::runtime_error("Mismatched PhysX source frame enqueued GPU writes");
+
+#ifndef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        // A malformed optional updated list must not become a dependency
+        // of default source GPU staging (which never reads this list).
+        const physx::Bp::BroadPhaseUpdateData noUpdatedArray(
+            nullptr,0u,nullptr,1u,nullptr,0u,
+            nullptr,nullptr,nullptr,4u,filter,false,false);
+        const auto unchanged=prepare_gpu_dma_up_counts_native(noUpdatedArray,state);
+        if(unchanged.current_boxes!=numBoxes || unchanged.created || unchanged.removed)
+            throw std::runtime_error("Default GPU build incorrectly requires optional updated handles");
+#endif
+    }
+    if(aborted || roots.live_roots() || addresses.live_allocations())
+        throw std::runtime_error("Original gpuDMAUp changed-handle buffers leaked GPU heap roots");
+}
+
 void exercise_original_prebroadphase_native(Context& context) {
     using fyzz::physx_gpu::SourcePhysxHeapRoots;
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
@@ -1270,6 +1472,7 @@ int main() {
         exercise_original_source_physx_buddy_heap(context);
         exercise_original_native_physx_cuda_buffer(context);
         exercise_original_prebroadphase_native(context);
+        exercise_original_gpu_dma_up_handles_native(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
