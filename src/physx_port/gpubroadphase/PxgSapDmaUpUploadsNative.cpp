@@ -1,0 +1,38 @@
+// Copyright (c) 2001-2004 NovodeX AG. All rights reserved.
+// Copyright (c) 2004-2008 AGEIA Technologies, Inc. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2008-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+// SPDX-License-Identifier: Apache-2.0
+
+#include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
+#include "physx_gpu/source_sap_dma_native.h"
+
+#include <stdexcept>
+
+namespace fyzz::physx_gpu {
+void queue_sap_dma_up_descriptors_native(
+    const physx::PxgBroadPhaseDesc& bp_desc,
+    const physx::PxgRadixSortDesc* radix_descs,
+    const physx::PxgRadixSortDesc* radix_wor_descs,
+    SourceSapDmaUpDescriptorBuffers buffers,
+    SourceSapDmaNative& stream) {
+    // Validate the complete source upload group before submitting ANY
+    // descriptor HtoD. Keep the six-entry source record ABI unchanged.
+    constexpr std::size_t radix_bytes = sizeof(physx::PxgRadixSortDesc) * 6u;
+    if (!radix_descs || !radix_wor_descs)
+        throw std::invalid_argument("PhysX gpuDMAUp has null radix descriptor records");
+    if (buffers.broadphase.getSize() < sizeof(physx::PxgBroadPhaseDesc) ||
+        buffers.radix.getSize() < radix_bytes ||
+        buffers.radix_without_ranks.getSize() < radix_bytes)
+        throw std::logic_error("PhysX gpuDMAUp original GPU descriptor buffers not allocated");
+
+    // The original three memcpyHtoDAsync calls are adjacent and ordered.
+    // SourceSapDmaNative snapshots host data immediately and submits
+    // them on the already-owning GPU queue, without an invented fence.
+    stream.queue_uploads({
+        {buffers.broadphase.getDevicePtr(), &bp_desc, sizeof(bp_desc)},
+        {buffers.radix.getDevicePtr(), radix_descs, radix_bytes},
+        {buffers.radix_without_ranks.getDevicePtr(), radix_wor_descs, radix_bytes}
+    });
+}
+} // namespace fyzz::physx_gpu
