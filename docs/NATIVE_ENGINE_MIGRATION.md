@@ -114,7 +114,10 @@ native SAP and source-derived contact manifold publication, normal-contact
 constraint preparation from `DyContactPrep.cpp`, and accumulated unilateral
 PGS impulse solution specialized from `DySolverConstraints.cpp`. Contact
 response uses inverse masses computed once per dynamic box, bounded
-penetration bias and unilateral nonnegative normal impulses. One manifold
+penetration bias and unilateral nonnegative normal impulses. Its scalar
+inverse-mass response and accumulated impulse use double precision to
+avoid overflow when two individually finite high inverse masses meet;
+actor positions and velocities remain float. One manifold
 has one translational normal Jacobian; its four/eight geometric points do
 not create four/eight redundant whole-body impulses. This keeps actor
 state and constraint impulses in the existing scene, with inline

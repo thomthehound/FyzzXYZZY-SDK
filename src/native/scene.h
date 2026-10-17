@@ -38,7 +38,7 @@ struct ContactManifold {
     // Per-frame scalar PGS contact constraint: one physical patch, not
     // duplicate per-vertex full-body impulses.
     float velocity_target = 0.0f;
-    float normal_impulse = 0.0f;
+    double normal_impulse = 0.0;  // wide scalar response for extreme mass ratios
 };
 
 class Scene final {

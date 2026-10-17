@@ -266,6 +266,24 @@ int main() {
                "Native two-body contact chain failed");
     }
 
+    {
+        // Finite per-body inverse masses can add to an infinite float
+        // response. The scalar double solver must still resolve an overlap.
+        Scene very_light;
+        const auto left = very_light.add_dynamic_box(
+            {1,1,1},{0,5,0},5.0e-40f);
+        const auto right = very_light.add_dynamic_box(
+            {1,1,1},{1.5f,5,0},5.0e-40f);
+        very_light.step(1.0f / 120.0f);
+        const auto lv = very_light.body_state(left);
+        const auto rv = very_light.body_state(right);
+        expect(std::isfinite(lv.velocity.x) &&
+               std::isfinite(rv.velocity.x) &&
+               lv.velocity.x < -0.1f && rv.velocity.x > 0.1f &&
+               very_light.contacts().size() == 1,
+               "Finite tiny-mass collision was silently discarded");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);

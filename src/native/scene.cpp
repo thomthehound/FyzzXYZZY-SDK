@@ -381,26 +381,32 @@ void Scene::solve_constraints() {
         for (auto& manifold : manifolds_) {
             Actor& a = actors_[manifold.pair.a];
             Actor& b = actors_[manifold.pair.b];
-            const float response = a.inverse_mass + b.inverse_mass;
-            if (response <= 0.0f) continue;
+            // Two individually finite inverse masses can overflow when
+            // added in float (tiny but otherwise admitted dynamic boxes).
+            // Accumulate the scalar response/impulse in double; retain
+            // float storage and SIMD-friendly vector state for bodies.
+            const double response =
+                static_cast<double>(a.inverse_mass) + b.inverse_mass;
+            if (response <= 0.0) continue;
             const Vec3 n = manifold.points[0].normal;
             const float normal_velocity =
                 (a.velocity.x - b.velocity.x) * n.x +
                 (a.velocity.y - b.velocity.y) * n.y +
                 (a.velocity.z - b.velocity.z) * n.z;
-            const float candidate = manifold.normal_impulse +
-                (manifold.velocity_target - normal_velocity) / response;
-            const float next = std::max(0.0f, candidate);
-            const float impulse = next - manifold.normal_impulse;
+            const double candidate = manifold.normal_impulse +
+                (static_cast<double>(manifold.velocity_target) -
+                 normal_velocity) / response;
+            const double next = std::max(0.0, candidate);
+            const double impulse = next - manifold.normal_impulse;
             manifold.normal_impulse = next;
-            const float da = impulse * a.inverse_mass;
-            const float db = impulse * b.inverse_mass;
-            a.velocity.x += n.x * da;
-            a.velocity.y += n.y * da;
-            a.velocity.z += n.z * da;
-            b.velocity.x -= n.x * db;
-            b.velocity.y -= n.y * db;
-            b.velocity.z -= n.z * db;
+            const double da = impulse * a.inverse_mass;
+            const double db = impulse * b.inverse_mass;
+            a.velocity.x = static_cast<float>(a.velocity.x + n.x * da);
+            a.velocity.y = static_cast<float>(a.velocity.y + n.y * da);
+            a.velocity.z = static_cast<float>(a.velocity.z + n.z * da);
+            b.velocity.x = static_cast<float>(b.velocity.x - n.x * db);
+            b.velocity.y = static_cast<float>(b.velocity.y - n.y * db);
+            b.velocity.z = static_cast<float>(b.velocity.z - n.z * db);
         }
     }
 }
