@@ -24,18 +24,14 @@ constexpr physx::PxU64 kHandleRegionBytes = 2u * sizeof(physx::PxU32);
 constexpr physx::PxU64 kIntegerRegionBytes = 8u * sizeof(physx::PxU32);
 static_assert(kHandleRegionBytes == 8u);
 static_assert(kIntegerRegionBytes == 32u);
-constexpr physx::PxU64 kRegionSlotsPerProjection = 64u;
 }
 
 void allocate_sap_post_axis_buffers_native(
     const SourceSapGpuDMAUpCounts& counts,
     SourceSapPostAxisBuffers buffers) {
-    const auto expanded = physx::PxU64(counts.projections) * kRegionSlotsPerProjection;
-    const auto region_slots = (expanded + 3u) & ~physx::PxU64{3u};
-    // Upstream stores totalNbProjectionRegions in PxU32; reject overflow
-    // rather than wrapping its GPU buffer sizes and aliasing GPU history.
-    if (region_slots > std::numeric_limits<physx::PxU32>::max())
-        throw std::overflow_error("PhysX SAP region slot count exceeds PxU32");
+    // The same source PxU32-region limit is checked before committing
+    // gpuDMAUp counters, and again here for direct allocator callers.
+    const auto region_slots = checked_sap_region_slots_native(counts.projections);
 
     for (physx::PxU32 i = 0; i < 2u; ++i) {
         buffers.aggregate_report_blocks[i].allocate(32u * sizeof(physx::PxU32), PX_FL);
@@ -48,12 +44,12 @@ void allocate_sap_post_axis_buffers_native(
     buffers.ordered_start_handles.allocate(region_slots * sizeof(int), PX_FL);
 
     buffers.overlap_checks.allocate(
-        kRegionSlotsPerProjection * counts.current_boxes * sizeof(physx::PxU64), PX_FL);
+        kSapRegionSlotsPerProjection * counts.current_boxes * sizeof(physx::PxU64), PX_FL);
     buffers.block_overlap_checks.allocate(
         physx::PxU64(physx::PxgBPKernelGridDim::BP_OUTPUT_OVERLAPCHECKS_HISTOGRAM)
             * sizeof(physx::PxU64), PX_FL);
     buffers.overlap_handle_regions.allocate(
-        kRegionSlotsPerProjection * counts.current_boxes * kHandleRegionBytes, PX_FL);
+        kSapRegionSlotsPerProjection * counts.current_boxes * kHandleRegionBytes, PX_FL);
     buffers.region_range.allocate(
         physx::PxU64(counts.capacity) * kIntegerRegionBytes, PX_FL);
     buffers.start_region_accum.allocate(
