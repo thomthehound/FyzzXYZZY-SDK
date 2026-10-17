@@ -35,7 +35,9 @@ endif()
 # external version-locked provider/factory dependency.
 FetchContent_Declare(fyzzxyzzy_physx
   GIT_REPOSITORY https://github.com/thomthehound/PhysX.git
-  GIT_TAG main
+  # Temporary integration validation of thomthehound/PhysX PR #2.
+  # Restore main after the source PR merges.
+  GIT_TAG feature/portable-gpu-scene-broadphase-admission
   SOURCE_SUBDIR physx
   GIT_SHALLOW FALSE
 )
