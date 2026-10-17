@@ -329,14 +329,27 @@ int main() {
                 const auto expectedWor=wor;
                 // Actual source upload order: created, removed, updated,
                 // broadphase, normal radix[6], WOR radix[6], same mStream.
+                const auto beforeUploadBatch=stream.submission_stats();
                 queue_gpu_dma_up_handles_native(frame,counts,handles,stream);
                 queue_sap_dma_up_descriptors_native(
                     desc,normal.data(),wor.data(),recordBuffers,stream);
+                // Two source helper calls describe one contiguous set of
+                // six GPU HtoD transfers. Neither call should submit or
+                // allocate a GPU staging resource until the next boundary.
+                if(stream.submission_stats().upload_batches != beforeUploadBatch.upload_batches)
+                    throw std::runtime_error(
+                        "Source SAP split handle/descriptor calls submitted separately");
                 physx::PxgCudaBuffer copyAfterDescriptors(heap,group);
                 copyAfterDescriptors.allocate(sizeof(savedCreated),PX_FL);
                 stream.queue_device_copy(
                     copyAfterDescriptors.getDevicePtr(),created.getDevicePtr(),
                     sizeof(savedCreated));
+                const auto& uploadStats=stream.submission_stats();
+                if(uploadStats.upload_batches!=beforeUploadBatch.upload_batches+1u ||
+                   uploadStats.upload_spans!=beforeUploadBatch.upload_spans+6u ||
+                   uploadStats.upload_bytes<=beforeUploadBatch.upload_bytes)
+                    throw std::runtime_error(
+                        "Source SAP adjacent HtoD groups not coalesced at DtoD boundary");
                 // The source may reuse host update arrays immediately. The
                 // native submission snapshots ALL records before returning.
                 createdInput.fill(0xeeeeeeeeu);
