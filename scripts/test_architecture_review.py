@@ -3,7 +3,7 @@
 """Covers the review gate's nontrivial PR-body parsing and empty templates."""
 import unittest
 
-from check_architecture_review import SECTIONS, validate
+from check_architecture_review import SECTIONS, documentation_only, validate
 
 
 class ArchitectureReviewTest(unittest.TestCase):
@@ -30,6 +30,23 @@ class ArchitectureReviewTest(unittest.TestCase):
         body += f"\n\n## {SECTIONS[-1]}\nNone."
         self.assertEqual(1, len(validate(body)))
         self.assertIn(SECTIONS[-1], validate(body)[0])
+
+    def test_docs_only_gets_explicit_green_status(self):
+        self.assertTrue(documentation_only([
+            {"filename": "README.md", "status": "modified"},
+            {"filename": "docs/architecture.md", "status": "modified"},
+        ]))
+        self.assertFalse(documentation_only([]))
+
+    def test_mixed_code_or_renamed_code_needs_review(self):
+        self.assertFalse(documentation_only([
+            {"filename": "docs/notes.md"},
+            {"filename": "src/world.cpp"},
+        ]))
+        self.assertFalse(documentation_only([
+            {"filename": "docs/former_code.md",
+             "previous_filename": "src/world.cpp", "status": "renamed"},
+        ]))
 
     def test_unrelated_headings_do_not_satisfy_contract(self):
         body = "\n\n".join(
