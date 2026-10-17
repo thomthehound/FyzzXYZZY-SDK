@@ -13,11 +13,11 @@ namespace {
 // concrete source-derived SAP + AABB manager provider.
 class UnavailableTestFactory final : public physx::Sc::PortableGpuBroadPhaseFactory {
 public:
-    physx::Bp::BroadPhase* createBroadPhase(
+    physx::Bp::BroadPhase& createBroadPhase(
         const physx::PxSceneDesc&, physx::PxU64) override {
         throw std::logic_error("Fixture must not instantiate a GPU broadphase");
     }
-    physx::Bp::AABBManagerBase* createAABBManager(
+    physx::Bp::AABBManagerBase& createAABBManager(
         const physx::PxSceneDesc&, physx::Bp::BroadPhase&,
         physx::Bp::BoundsArray&, physx::Cm::PinnableArray<physx::PxReal>&,
         physx::Cm::VirtualAllocatorCallback&, physx::PxU64) override {
