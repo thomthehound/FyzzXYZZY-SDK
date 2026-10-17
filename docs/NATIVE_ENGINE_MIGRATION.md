@@ -39,7 +39,7 @@ Represent task dependencies explicitly from `ScPipeline.cpp`: first/second AABB 
 
 **Pass:** ordinary SDK `World` with native CPU execution can create/move/remove shapes, simulate multiple frames, produce contacts and publish results with comparable PhysX-reference behavior; no PhysX Foundation/PxScene instance is needed. Exercise reinitialization, multiple scenes, resource retirement and Godot consumer behavior.
 
-## N1 implementation status — native scene owner established, solver pending
+## N1 implementation status — native scene, contact streams and bounded dynamics
 
 The SDK-owned `src/native/scene.{h,cpp}` now owns stable actor IDs, static
 boxes, dynamic boxes, planes, mutable poses, conservative PhysX-style encoded
@@ -57,13 +57,12 @@ reference actor preserves its orientation (including the rotated local plane
 of `PxCreatePlane`); native infinite planes translate without changing
 their fixed +Y normal. Its `step()` executes the explicitly limited translation-constrained CPU
 subset; general source rigid-body solver/island/task/rotational capabilities
-are not yet ported. Direct
-`advance_broadphase` is an internal integration and conformance seam, **not**
-a substitute public physics simulation path. Infinite-plane overlaps are
-candidates, not physical contact claims; native narrowphase must reject
-noncontacts. This owner will receive the source-derived ScPipeline task
-continuations and CPU collision/dynamics port; N1 remains OPEN until it can
-actually step and solve multi-frame physics.
+are not yet ported. Internal `advance_collision` is the scene's geometry
+collision-and-contact pipeline; public `World::step` executes the bounded
+translation-constrained dynamics path built on that pipeline. Infinite-plane
+overlaps are candidates, not physical contact claims; narrowphase rejects
+noncontacts. N1 remains OPEN until full source-derived dynamics, actor/shape
+state, island preparation, task continuations and Godot acceptance are proven.
 
 Source correspondences: `BpBroadPhaseIntegerAABB.h` integer float encoding,
 `BpBroadPhaseSap.cpp` sorted-axis candidate and incremental pair semantics,
@@ -95,11 +94,12 @@ than producing fictional face contacts, **even when their true edge/corner
 distance is within the contact offset**. Source-derived edge/corner
 generation is required before claiming complete box/box narrowphase parity.
 Degenerate face intervals produce only distinct points, not duplicates.
-No new owner, shader controller, scene clock or solver loop was added.
+The contact stage adds no owner, shader controller or duplicate scene clock;
+the downstream normal-only constraint solver executes in this same scene.
 
 **Not yet supported:** rotated box/box contacts, full multi-axis PhysX
-contact clipping/manifold caching, angular inertia, solver constraints,
-islands, dynamics, CCD, aggregates, articulation or backend GPU execution.
+contact clipping/manifold caching, angular inertia, general solver constraints,
+islands, rotational dynamics, CCD, aggregates, articulation or GPU execution.
 The narrowphase method is not claimed equivalent to the complete
 `GuContactBoxBox.cpp` implementation. Native `World::step()` now runs the limited translation-constrained CPU
 dynamics pipeline described below; the general-purpose source CPU solver,
@@ -107,12 +107,12 @@ task continuations and N1 acceptance remain incomplete.
 
 ## N1 translational CPU dynamics — integrated source-derived subset
 
-The SDK's *actual* \`World(ExecutionMode::NativeCpu).step(dt)\` now owns an
+The SDK's *actual* `World(ExecutionMode::NativeCpu).step(dt)` now owns an
 end-to-end bounded timestep: unconstrained gravity/linear velocity from
-\`DyBodyCoreIntegrator.h\`, a predicted position in the same actor store,
+`DyBodyCoreIntegrator.h`, a predicted position in the same actor store,
 native SAP and source-derived contact manifold publication, normal-contact
-constraint preparation from \`DyContactPrep.cpp\`, and accumulated unilateral
-PGS impulse solution specialized from \`DySolverConstraints.cpp\`. Contact
+constraint preparation from `DyContactPrep.cpp`, and accumulated unilateral
+PGS impulse solution specialized from `DySolverConstraints.cpp`. Contact
 response uses inverse masses computed once per dynamic box, bounded
 penetration bias and unilateral nonnegative normal impulses. One manifold
 has one translational normal Jacobian; its four/eight geometric points do
@@ -136,9 +136,9 @@ claim or N1 acceptance is made.
 Scheduling departure: position prediction occurs before native broadphase
 and contact generation so the contacts and published positions describe
 the same frame, with the velocity constraint applied afterward. This is
-not yet an exact \`ScPipeline\` scheduling/lifetime translation and must
+not yet an exact `ScPipeline` scheduling/lifetime translation and must
 be reconciled when porting the full task DAG. There is exactly one frame
-increment per timestep and no reference \`PxScene\`, second solver owner,
+increment per timestep and no reference `PxScene`, second solver owner,
 standalone floor engine, queue synchronization or new per-contact heap.
 
 Acceptance tests exercise source-free native gravity/floor settling,

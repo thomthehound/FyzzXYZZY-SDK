@@ -95,6 +95,34 @@ int main() {
                     "Relocating PhysX reference plane changed its orientation");
             }
 
+
+            // Compare an actually integrated native scene against its
+            // independent PhysX CPU oracle. Tolerances cover different
+            // contact solvers; they do not excuse falling through the floor.
+            fyzz::World native_compare(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_compare(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            native_compare.add_static_floor(0.0f);
+            reference_compare.add_static_floor(0.0f);
+            const auto native_box = native_compare.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+            const auto ref_box = reference_compare.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+            for (int frame = 0; frame < 360; ++frame) {
+                native_compare.step(1.0f / 120.0f);
+                reference_compare.step(1.0f / 120.0f);
+            }
+            const auto ns = native_compare.body_state(native_box);
+            const auto rs = reference_compare.body_state(ref_box);
+            if (!std::isfinite(ns.position.y) ||
+                std::abs(ns.position.y - rs.position.y) > 0.09f ||
+                std::abs(ns.velocity.y) > 0.6f ||
+                std::abs(rs.velocity.y) > 0.6f) {
+                throw std::runtime_error(
+                    "Native CPU gravity/contact diverged from reference PhysX");
+            }
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
