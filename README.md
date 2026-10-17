@@ -45,3 +45,4 @@ New FyzzXYZZY code uses SPDX Apache-2.0 headers; imported upstream/third-party
 code retains its original license and attribution.
 
 The C++ API uses the `fyzz` namespace; the public headers are under `fyzzxyzzy/`.
+FyzzXYZZY native targets and consumers require **C++23**; see [build requirements](docs/BUILDING.md).

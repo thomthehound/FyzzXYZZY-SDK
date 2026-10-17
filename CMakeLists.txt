@@ -45,6 +45,34 @@ if(NOT TARGET physx_lib)
   message(FATAL_ERROR "Expected PhysX 5.11 CMake interface target 'physx_lib'")
 endif()
 
+# Require C++23 for every FyzzXYZZY-owned native target, including tests and
+# the Godot adapter. Upstream PhysX is configured above with its own source
+# contract; do not unilaterally change that third-party build requirement.
+# The required property prevents silently downgrading to an older dialect.
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Independently enforce the SDK's C++23 standard-library contract at
+# configure time, including production builds with BUILD_TESTING=OFF.
+# Compile AND link the same probe used by the optional runtime CTest,
+# so the two validation paths cannot drift apart.
+try_compile(FYZZXYZZY_CXX23_LIBRARY_SUPPORTED
+  "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-cxx23-probe"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp23_contract.cpp"
+  CMAKE_FLAGS
+    "-DCMAKE_CXX_STANDARD:STRING=23"
+    "-DCMAKE_CXX_STANDARD_REQUIRED:BOOL=ON"
+    "-DCMAKE_CXX_EXTENSIONS:BOOL=OFF"
+  OUTPUT_VARIABLE FYZZXYZZY_CXX23_PROBE_LOG)
+if(NOT FYZZXYZZY_CXX23_LIBRARY_SUPPORTED)
+  message(FATAL_ERROR
+    "FyzzXYZZY requires a compiler AND standard library supporting C++23 "
+    "(including std::expected and if consteval). "
+    "The C++23 configuration probe failed:\n"
+    "${FYZZXYZZY_CXX23_PROBE_LOG}")
+endif()
+
 # PhysX static consumers must not import symbols from PhysX DLLs on Windows.
 # The upstream static build defines this internally but does not export it
 # through the physx_lib interface target.
@@ -52,9 +80,14 @@ if(PX_GENERATE_STATIC_LIBRARIES)
   target_compile_definitions(physx_lib INTERFACE PX_PHYSX_STATIC_LIB)
 endif()
 
+if(BUILD_TESTING)
+  add_executable(fyzzxyzzy_cpp23_contract tests/cpp23_contract.cpp)
+  add_test(NAME fyzzxyzzy_cpp23_contract COMMAND fyzzxyzzy_cpp23_contract)
+endif()
+
 add_library(fyzzxyzzy_core STATIC src/world.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
-target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_17)
+target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
@@ -78,7 +111,7 @@ endif()
 # host scheduler, and is testable without a GPU or CUDA SDK.
 add_library(fyzzxyzzy_physx_cuda_host_address STATIC
   src/physx_gpu/cuda_device_address_map.cpp)
-target_compile_features(fyzzxyzzy_physx_cuda_host_address PUBLIC cxx_std_17)
+target_compile_features(fyzzxyzzy_physx_cuda_host_address PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_cuda_host_address PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -102,7 +135,7 @@ add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpucommon/PxgHeapMemoryAllocatorManager.cpp
   src/physx_port/gpucommon/PxgCudaBuffer.cpp
   src/physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.cpp)
-target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_17)
+target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -119,7 +152,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   find_package(Vulkan REQUIRED)
   add_library(fyzzxyzzy_compute STATIC src/compute_vulkan.cpp)
   add_library(FyzzXYZZY::Compute ALIAS fyzzxyzzy_compute)
-  target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_17)
+  target_compile_features(fyzzxyzzy_compute PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_compute PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
@@ -163,7 +196,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
     src/physx_gpu/broadphase_completion.cpp
   )
-  target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_17)
+  target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
@@ -181,7 +214,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_sources(fyzzxyzzy_compute PRIVATE src/floor_contact.cpp)
     add_library(fyzzxyzzy_vulkan_world STATIC src/world_vulkan.cpp)
     add_library(FyzzXYZZY::VulkanWorld ALIAS fyzzxyzzy_vulkan_world)
-    target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_17)
+    target_compile_features(fyzzxyzzy_vulkan_world PUBLIC cxx_std_23)
     target_include_directories(fyzzxyzzy_vulkan_world PUBLIC
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     )
@@ -1496,7 +1529,7 @@ if(FYZZXYZZY_BUILD_D3D12)
   endif()
   add_library(fyzzxyzzy_compute_d3d12 STATIC src/compute_d3d12.cpp)
   add_library(FyzzXYZZY::ComputeD3D12 ALIAS fyzzxyzzy_compute_d3d12)
-  target_compile_features(fyzzxyzzy_compute_d3d12 PUBLIC cxx_std_17)
+  target_compile_features(fyzzxyzzy_compute_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_compute_d3d12 PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   target_link_libraries(fyzzxyzzy_compute_d3d12 PUBLIC d3d12 dxgi d3dcompiler)
@@ -1540,7 +1573,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
     src/physx_gpu/broadphase_completion.cpp)
-  target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_17)
+  target_compile_features(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
@@ -2813,7 +2846,7 @@ if(FYZZXYZZY_BUILD_GODOT)
     godot/src/fyzzxyzzy_godot_world.cpp
     godot/src/register_types.cpp
   )
-  target_compile_features(fyzzxyzzy_godot PRIVATE cxx_std_17)
+  target_compile_features(fyzzxyzzy_godot PRIVATE cxx_std_23)
   target_link_libraries(fyzzxyzzy_godot PRIVATE FyzzXYZZY::Core godot::cpp)
   set_target_properties(fyzzxyzzy_godot PROPERTIES PREFIX "" OUTPUT_NAME "fyzzxyzzy_godot")
 

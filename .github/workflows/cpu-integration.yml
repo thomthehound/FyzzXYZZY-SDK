@@ -39,6 +39,10 @@ jobs:
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+      - name: Verify SDK C++23 compiler and standard library
+        run: |
+          cmake --build build --target fyzzxyzzy_cpp23_contract --parallel 2
+          ctest --test-dir build -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
       - name: Validate shared PhysX HLSL to SPIR-V before full SDK build
         shell: bash
         run: |
@@ -62,8 +66,11 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
+          # Production/distribution configurations must also reject toolchains
+          # lacking C++23 std::expected when BUILD_TESTING=OFF.
+          cmake -S FyzzXYZZY-SDK -B offline-production -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
 
       - name: Godot 4.7.2 headless acceptance
         shell: bash
@@ -125,6 +132,13 @@ jobs:
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Verify SDK C++23 compiler and standard library
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target fyzzxyzzy_cpp23_contract --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Execute native D3D12 PhysX AABB conformance (WARP)
         shell: pwsh
         env:
