@@ -10,6 +10,7 @@
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
+#include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -662,6 +663,175 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_original_sap_post_axis_buffers_native(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapPostAxisBuffers;
+    using fyzz::physx_gpu::prepare_gpu_dma_up_counts_native;
+    using fyzz::physx_gpu::allocate_sap_post_axis_buffers_native;
+    using fyzz::physx_gpu::allocate_sap_new_integer_bounds_native;
+    using fyzz::physx_gpu::allocate_gpu_dma_up_handles_native;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    physx::Bp::BpFilter filter(false,false);
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        constexpr auto group=physx::PxsHeapStats::eBROADPHASE;
+        physx::PxgCudaBufferN<2> aggregateBlocks(heap,group),actorBlocks(heap,group);
+        physx::PxgCudaBuffer active(heap,group),start(heap,group);
+        physx::PxgCudaBuffer orderedActive(heap,group),orderedStart(heap,group);
+        physx::PxgCudaBuffer overlap(heap,group),blockOverlap(heap,group);
+        physx::PxgCudaBuffer handleRegions(heap,group),regionRange(heap,group);
+        physx::PxgCudaBuffer startAccum(heap,group),blockStartAccum(heap,group);
+        physx::PxgCudaBuffer regionAccum(heap,group),blockRegionAccum(heap,group);
+        physx::PxgCudaBuffer newBounds(heap,group);
+        physx::PxgTypedCudaBuffer<physx::PxU32> created(
+            heap,physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgTypedCudaBuffer<physx::PxU32> removed(
+            heap,physx::PxsHeapStats::eBROADPHASE);
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxgTypedCudaBuffer<physx::PxU32> updated(
+            heap,physx::PxsHeapStats::eBROADPHASE);
+#endif
+        SourceSapPostAxisBuffers buffers{
+            aggregateBlocks,actorBlocks,
+            active,start,orderedActive,orderedStart,
+            overlap,blockOverlap,handleRegions,regionRange,
+            startAccum,blockStartAccum,regionAccum,blockRegionAccum};
+        const std::array<physx::PxgCudaBuffer*,12> regions{
+            &active,&start,&orderedActive,&orderedStart,&overlap,
+            &blockOverlap,&handleRegions,&regionRange,
+            &startAccum,&blockStartAccum,&regionAccum,&blockRegionAccum};
+
+        physx::PxU32 numBoxes=0,capacity=0,createdSize=0,removedSize=0;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxU32 updatedSize=0;
+        fyzz::physx_gpu::SourceSapGpuDMAUpCountMembers state{
+            numBoxes,capacity,createdSize,removedSize,updatedSize};
+        fyzz::physx_gpu::SourceSapGpuDMAUpHandleBuffers handles{created,removed,updated};
+#else
+        fyzz::physx_gpu::SourceSapGpuDMAUpCountMembers state{
+            numBoxes,capacity,createdSize,removedSize};
+        fyzz::physx_gpu::SourceSapGpuDMAUpHandleBuffers handles{created,removed};
+#endif
+        const auto required=[&](const fyzz::physx_gpu::SourceSapGpuDMAUpCounts& c) {
+            const std::uint64_t regionSlots=
+                (std::uint64_t(c.projections)*64u+3u)&~std::uint64_t{3u};
+            return std::array<std::uint64_t,12>{
+                regionSlots*sizeof(int), regionSlots*sizeof(int),
+                regionSlots*sizeof(int), regionSlots*sizeof(int),
+                64u*std::uint64_t(c.current_boxes)*sizeof(physx::PxU64),
+                32u*sizeof(physx::PxU64),
+                64u*std::uint64_t(c.current_boxes)*8u,
+                std::uint64_t(c.capacity)*32u,
+                std::uint64_t(c.projections)*sizeof(int),
+                32u*sizeof(int),
+                std::uint64_t(c.projections)*sizeof(int),
+                32u*sizeof(int)};
+        };
+        const auto verify=[&](const fyzz::physx_gpu::SourceSapGpuDMAUpCounts& c) {
+            const auto req=required(c);
+            for(std::size_t i=0;i<regions.size();++i)
+                if(regions[i]->getSize()<req[i])
+                    throw std::runtime_error("Original SAP post-axis GPU buffer too small");
+            for(physx::PxU32 i=0;i<2u;++i)
+                if(aggregateBlocks[i].getSize()<32u*sizeof(physx::PxU32) ||
+                   actorBlocks[i].getSize()<32u*sizeof(physx::PxU32))
+                    throw std::runtime_error("Source GPU report block size changed");
+            if(newBounds.getSize()<std::uint64_t(c.capacity)*24u)
+                throw std::runtime_error("Original new integer AABB buffer too small");
+        };
+        const auto allocate=[&](const fyzz::physx_gpu::SourceSapGpuDMAUpCounts& c) {
+            // The original sequence after ALL three completed axes:
+            // report and region scratch, changed-handle buffers, and only
+            // then new integer bounds; descriptor construction comes next.
+            allocate_sap_post_axis_buffers_native(c,buffers);
+            allocate_gpu_dma_up_handles_native(c,handles);
+            allocate_sap_new_integer_bounds_native(c,newBounds);
+            verify(c);
+        };
+        const std::array<physx::PxU32,2> initial{0u,1u};
+        const physx::Bp::BroadPhaseUpdateData first(
+            initial.data(),2u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,2u,filter,true,true);
+        const auto a=prepare_gpu_dma_up_counts_native(first,state);
+        allocate(a);
+        if(a.current_boxes!=2u || a.projections!=4u ||
+           a.padded_projections!=4u || numBoxes!=2u)
+            throw std::runtime_error("Original SAP post-axis first frame sizing wrong");
+        std::array<CUdeviceptr,12> priorPointers{};
+        std::array<physx::PxU64,12> priorCapacities{};
+        for(std::size_t i=0;i<regions.size();++i) {
+            priorPointers[i]=regions[i]->getDevicePtr();
+            priorCapacities[i]=regions[i]->getSize();
+        }
+        const auto firstReport=aggregateBlocks[0].getDevicePtr();
+        const auto firstBounds=newBounds.getDevicePtr();
+        const auto oldBoundsSize=newBounds.getSize();
+
+        // A second frame grows selected source buffers, not the fixed-grid
+        // report/block scratch. The GPU buffer allocator must use original
+        // non-copying growth and must not force a host wait.
+        const std::array<physx::PxU32,3> more{2u,3u,4u};
+        const physx::Bp::BroadPhaseUpdateData second(
+            more.data(),3u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,6u,filter,true,true);
+        const auto b=prepare_gpu_dma_up_counts_native(second,state);
+        allocate(b);
+        if(b.previous_boxes!=2u||b.current_boxes!=5u||
+           b.projections!=10u||b.padded_projections!=12u||
+           aggregateBlocks[0].getDevicePtr()!=firstReport ||
+           newBounds.getSize()<=oldBoundsSize ||
+           newBounds.getDevicePtr()==firstBounds)
+            throw std::runtime_error("Original SAP post-axis growth policy changed");
+        const auto after=required(b);
+        for(std::size_t i=0;i<regions.size();++i) {
+            const bool grows=after[i]>priorCapacities[i];
+            if((regions[i]->getDevicePtr()!=priorPointers[i])!=grows)
+                throw std::runtime_error("SAP post-axis native buffer growth classification changed");
+        }
+
+        // Source's zero-change frame preserves all allocation identities;
+        // it does not recreate region scratch on every frame.
+        const physx::Bp::BroadPhaseUpdateData stable(
+            nullptr,0u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,6u,filter,false,false);
+        const auto c=prepare_gpu_dma_up_counts_native(stable,state);
+        std::array<CUdeviceptr,12> stablePointers{};
+        for(std::size_t i=0;i<regions.size();++i)
+            stablePointers[i]=regions[i]->getDevicePtr();
+        const auto stableNew=newBounds.getDevicePtr();
+        allocate(c);
+        if(newBounds.getDevicePtr()!=stableNew ||
+           aggregateBlocks[0].getDevicePtr()!=firstReport)
+            throw std::runtime_error("Unchanged SAP post-axis allocation moved device storage");
+        for(std::size_t i=0;i<regions.size();++i)
+            if(regions[i]->getDevicePtr()!=stablePointers[i])
+                throw std::runtime_error("Unchanged SAP region buffer was needlessly reallocated");
+
+        // Region count computation is stored in PxU32 in source PhysX:
+        // reject an impossible projection count BEFORE touching the GPU.
+        auto overflow=c;
+        overflow.projections=std::numeric_limits<physx::PxU32>::max();
+        bool rejected=false;
+        try {allocate_sap_post_axis_buffers_native(overflow,buffers);}
+        catch(const std::overflow_error&) {rejected=true;}
+        if(!rejected || active.getDevicePtr()!=stablePointers[0] ||
+           !stream.commands().empty())
+            throw std::runtime_error("Overflowed SAP region sizing modified GPU heap or stream");
+    }
+    if(aborted||roots.live_roots()||addresses.live_allocations())
+        throw std::runtime_error("Source post-axis GPU allocations leaked original PhysX roots");
 }
 
 void exercise_original_sap_history_growth_native(Context& context) {
@@ -1699,6 +1869,7 @@ int main() {
         exercise_original_prebroadphase_native(context);
         exercise_original_gpu_dma_up_handles_native(context);
         exercise_original_sap_history_growth_native(context);
+        exercise_original_sap_post_axis_buffers_native(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
