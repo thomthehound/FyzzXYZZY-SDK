@@ -1396,6 +1396,14 @@ does not drive `PxgAABBManager`'s real lifecycle or the SAP source
 kernel/task graph. The next phase must lower the real owner binding,
 mapped report/AABB-manager getter provenance and native source dispatch
 order, preserving the original update/no-change/forced-update behavior.
+The combined frame bridge also preflights all three original
+constructor-owned GPU descriptor allocations **before** advancing any
+mutable SAP counters, allocating frame GPU storage, or submitting HtoD
+copies. This prevents retrying a rejected frame with counts already
+applied. The split descriptor uploader retains the same size checks,
+and conformance tests exercise rejection of an unallocated descriptor
+through the complete combined-frame entry point.
+
 The fixture intentionally supplies a borrowed AABB-manager getter view;
 it does not pretend to create a source `PxgAABBManager`.
 
