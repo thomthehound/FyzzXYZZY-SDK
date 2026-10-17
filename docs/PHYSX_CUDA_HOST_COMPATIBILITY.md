@@ -1077,6 +1077,12 @@ portions of `gpuDMAUp`, consuming the actual
 `Bp::BroadPhaseUpdateData`. The exposed members are borrowed references to
 `PxgCudaBroadPhaseSap` counters and its three original
 `PxgTypedCudaBuffer<PxU32>` objects, **not** a parallel broadphase.
+The **default** PhysX GPU/AABB-manager mode has only created/removed
+counters and buffers. The updated-handle counter, buffer, validation,
+allocation and HtoD are all guarded by upstream's
+`SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` feature macro and do not exist in
+the default layout. We do not invent updated-handle storage simply because
+`BroadPhaseUpdateData` exposes an updated list.
 
 The helper boundaries deliberately retain the upstream sequence:
 
@@ -1095,10 +1101,13 @@ The helper boundaries deliberately retain the upstream sequence:
 This ordering matters: the split does **not** move new handle allocations
 ahead of source history-preserving copies or descriptor construction.
 
-The host-transfer test covers mixed add/remove/update, 32-bit sizing,
+The default host-transfer test covers mixed add/remove/update inputs (without
+staging the optional updated-handle list), 32-bit sizing,
 grow-only buffer behavior, CPU-array snapshot after enqueue, zero-change
 frames, invalid handle pointers/counts, and original GPU-root teardown on
-Vulkan/Linux and D3D12/Windows. These remain integration tests rather than
+Vulkan/Linux and D3D12/Windows. Both CI jobs also compile the guarded
+standalone-BP helper with `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` enabled,
+without redefining the production PhysX library's feature macro. These remain integration tests rather than
 a live `PxScene` broadphase test; the full source construction,
 descriptor population, and shader/task graph attachment are still pending.
 
