@@ -749,7 +749,7 @@ execution.
    `PxPhysXGpu` factory is required as an architectural premise.
 5. **Performance and acceptance.** Benchmark native execution on supported
    hardware; do not ship a scan fallback merely to run on unsupported cards.
-   Require a real multi-frame `PxScene::simulate/fetchResults` overlap and
+   Require a real multi-frame native `fyzz::World` overlap and
    contact test (create/update/remove/idle), comparing normal found/lost
    reporting and deferred resource lifetimes.
 
@@ -1519,5 +1519,5 @@ spans/bytes for performance acceptance and future SDK-wide auditing.
 This consolidation removes one driver submission and one corresponding
 staging-allocation group per applicable full SAP update frame; it is **not**
 a claim about measured hardware frame-time improvement or G3 completion.
-The production `PxScene`/factory owner connection remains an open
+The native FyzzXYZZY scene/SAP/AABB owner connection remains an open
 acceptance item in #101.

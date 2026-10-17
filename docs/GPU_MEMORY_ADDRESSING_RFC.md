@@ -288,7 +288,8 @@ economic constraints. Document precisely which path loses and why.
 source-derived PhysX work units on an AMD Ryzen AI NPU, with MLIR-AIE/IRON
 as a possible compiler and runtime path. This is **not** a proposal to
 recompile arbitrary Vulkan SPIR-V/D3D12 DXIL or pointer-heavy HLSL
-automatically onto the NPU, nor to replace PhysX's scene scheduler.
+automatically onto the NPU, nor to introduce a competing scheduler beside
+FyzzXYZZY's authoritative native scene scheduler.
 
 Unlike a GPU, the AIE array is built around local scratchpads, stream/DMA
 routing, placement, and producer/consumer dataflow. IRON exposes Workers,

@@ -844,9 +844,9 @@ The next cross-backend acceptance gates are:
 
 ## Implementation sequence and acceptance gates
 
-1. **Integrate at the PhysX scene boundary.** Identify the narrowest replacement
-   seam in `PxPhysXGpu`, GPU contexts and task completions, preserving
-   `Sc::Scene` scheduling. Produce an exact call/dependency map for selected
+1. **Integrate at the native FyzzXYZZY scene boundary.** Trace the source
+   `PxPhysXGpu`, GPU context and `Sc::Scene` task completion interfaces;
+   port their ownership and dependencies into the SDK's single scheduler. Produce an exact call/dependency map for selected
    GPU rigid-body configuration(s), including CPU/GPU BP combinations.
 2. **Trace memory/descriptor ownership end to end.** Follow host-pinned,
    mapped and device allocations; buffer aliasing; contact/patch streams;
@@ -859,8 +859,8 @@ The next cross-backend acceptance gates are:
 4. **Build dual-backend execution contracts.** Validate Vulkan/SPIR-V and
    D3D12/DXIL resource and scheduling semantics before treating Vulkan-specific
    bindings as the canonical design.
-5. **Connect, verify, and extend.** Execute the PhysX-origin slice at its real
-   scene pipeline boundary. Compare behavior with CPU PhysX and original CUDA
+5. **Connect, verify, and extend.** Execute the PhysX-origin slice at its
+   native FyzzXYZZY scene pipeline boundary. Compare behavior with CPU PhysX and original CUDA
    PhysX where available; test ordering, contacts, constraints, sleeping and
    result publication as relevant. Exact floating-point identity is not a gate.
 
@@ -1014,7 +1014,7 @@ checking the complete arena. They also pass the ordered GPU submission
 through `BroadPhaseCompletionGate`, verifying that result publication and
 validation occur before the existing found/lost task references are
 released. This tests a real **four-kernel GPU handoff** rather than four
-isolated shaders. It does **not** yet claim a running PhysX GPU scene:
+isolated shaders. It does **not** yet claim a running native FyzzXYZZY GPU scene:
 original `PxgCudaBroadPhaseSap` state allocations, upstream producers,
 GPU DMA, swaps and full `PxgAABBManager` task integration still need the
 larger host orchestration migration, as traced in
