@@ -12,6 +12,7 @@
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
+#include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
 #include "PxgRadixSortKernelIndices.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
@@ -666,6 +667,144 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_original_sap_update_fetch_lifecycle(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapFetchHistoryBuffers;
+    using fyzz::physx_gpu::should_execute_sap_update_after_dma_up_native;
+    using fyzz::physx_gpu::swap_sap_integer_bounds_after_pairs_native;
+    using fyzz::physx_gpu::swap_sap_endpoint_histories_after_fetch_native;
+
+    // Source mForceUpdate is initialized TRUE by its constructor. This
+    // policy is evaluated AFTER gpuDMAUp, including on empty frames.
+    physx::Bp::BpFilter filter(false,false);
+    bool force=true;
+    const physx::Bp::BroadPhaseUpdateData idle(
+        nullptr,0u,nullptr,0u,nullptr,0u,
+        nullptr,nullptr,nullptr,8u,filter,false,false);
+    if(!should_execute_sap_update_after_dma_up_native(idle,force) || force)
+        throw std::runtime_error("Source SAP first idle frame must force final GPU pass");
+    if(should_execute_sap_update_after_dma_up_native(idle,force) || force)
+        throw std::runtime_error("Source SAP second idle frame must skip GPU kernels");
+
+    const std::array<physx::PxU32,1u> one{1u};
+    const physx::Bp::BroadPhaseUpdateData created(
+        one.data(),1u,nullptr,0u,nullptr,0u,
+        nullptr,nullptr,nullptr,8u,filter,false,false);
+    if(!should_execute_sap_update_after_dma_up_native(created,force)||!force)
+        throw std::runtime_error("Source SAP created handle did not arm forced quiet pass");
+    if(!should_execute_sap_update_after_dma_up_native(idle,force)||force ||
+       should_execute_sap_update_after_dma_up_native(idle,force))
+        throw std::runtime_error("Source SAP final quiet pass was not exactly once");
+
+    const physx::Bp::BroadPhaseUpdateData gpuState(
+        nullptr,0u,nullptr,0u,nullptr,0u,
+        nullptr,nullptr,nullptr,8u,filter,false,true);
+    if(!should_execute_sap_update_after_dma_up_native(gpuState,force)||!force)
+        throw std::runtime_error("Source SAP GPU-only change incorrectly skipped kernels");
+    const physx::Bp::BroadPhaseUpdateData cpuState(
+        nullptr,0u,nullptr,0u,nullptr,0u,
+        nullptr,nullptr,nullptr,8u,filter,true,false);
+    if(!should_execute_sap_update_after_dma_up_native(cpuState,force)||!force)
+        throw std::runtime_error("Source SAP CPU state change incorrectly skipped kernels");
+    force=false;
+    const physx::Bp::BroadPhaseUpdateData removed(
+        nullptr,0u,nullptr,0u,one.data(),1u,
+        nullptr,nullptr,nullptr,8u,filter,false,false);
+    if(!should_execute_sap_update_after_dma_up_native(removed,force)||!force)
+        throw std::runtime_error("Source SAP removed handle incorrectly skipped kernels");
+    force=false;
+    const physx::Bp::BroadPhaseUpdateData onlyUpdated(
+        nullptr,0u,one.data(),1u,nullptr,0u,
+        nullptr,nullptr,nullptr,8u,filter,false,false);
+    // Upstream uses the created/removed counts and state flags to
+    // decide; a bare updated list does not change this policy.
+    if(should_execute_sap_update_after_dma_up_native(onlyUpdated,force)||force)
+        throw std::runtime_error("Source SAP altered the original updated-only gate");
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        constexpr auto group=physx::PxsHeapStats::eBROADPHASE;
+        physx::PxgCudaBuffer oldBounds(heap,group),newBounds(heap,group);
+        oldBounds.allocate(64u,PX_FL);
+        newBounds.allocate(256u,PX_FL);
+        const auto oldAddress=oldBounds.getDevicePtr();
+        const auto newAddress=newBounds.getDevicePtr();
+        const auto oldSize=oldBounds.getSize();
+        const auto newSize=newBounds.getSize();
+        std::array<physx::PxU32,4u> oldPattern{13u,29u,41u,57u};
+        std::array<physx::PxU32,4u> newPattern{71u,89u,97u,113u};
+        stream.queue_uploads({
+            {oldAddress,oldPattern.data(),sizeof(oldPattern)},
+            {newAddress,newPattern.data(),sizeof(newPattern)}
+        });
+        stream.wait_at_fetch(); // Fixture's prior completed GPU work.
+        swap_sap_integer_bounds_after_pairs_native(newBounds,oldBounds);
+        if(newBounds.getDevicePtr()!=oldAddress||newBounds.getSize()!=oldSize ||
+           oldBounds.getDevicePtr()!=newAddress||oldBounds.getSize()!=newSize)
+            throw std::runtime_error("Source update() integer-bounds swap lost GPU ownership");
+        const auto check=[&](const physx::PxgCudaBuffer& owner,
+                             const auto& expected) {
+            const auto ptr=addresses.resolve(owner.getDevicePtr(),sizeof(expected));
+            std::array<physx::PxU32,4u> observed{};
+            context.download(ptr.buffer,ptr.offset,observed.data(),sizeof(observed));
+            if(observed!=expected)
+                throw std::runtime_error("Source integer bounds swap lost existing GPU bytes");
+        };
+        check(newBounds,oldPattern);
+        check(oldBounds,newPattern);
+
+        physx::PxgCudaBufferN<6> handles(heap,group),blockEnd(heap,group);
+        physx::PxgCudaBufferN<6> endHist(heap,group),endHandles(heap,group);
+        physx::PxgCudaBufferN<6> blockStart(heap,group),startHist(heap,group);
+        physx::PxgCudaBufferN<6> startHandles(heap,group);
+        const std::array<physx::PxgCudaBufferN<6>*,7> owners{
+            &handles,&blockEnd,&endHist,&endHandles,
+            &blockStart,&startHist,&startHandles};
+        std::array<std::array<CUdeviceptr,6>,7> initialPointers{};
+        std::array<std::array<physx::PxU64,6>,7> initialSizes{};
+        for(std::size_t kind=0;kind<owners.size();++kind)
+            for(physx::PxU32 i=0;i<6u;++i) {
+                auto& buffer=(*owners[kind])[i];
+                buffer.allocate(32u + 24u*i + 8u*kind,PX_FL);
+                initialPointers[kind][i]=buffer.getDevicePtr();
+                initialSizes[kind][i]=buffer.getSize();
+            }
+        SourceSapFetchHistoryBuffers source{
+            handles,blockEnd,endHist,endHandles,blockStart,startHist,startHandles};
+        // Completion/readback belongs to gpuDMABack; fetch swaps only
+        // the 7x3 original buffer ownership pairs, NEVER copies memory.
+        swap_sap_endpoint_histories_after_fetch_native(source);
+        for(std::size_t kind=0;kind<owners.size();++kind)
+            for(physx::PxU32 i=0;i<6u;++i) {
+                const physx::PxU32 opposite=i<3u ? i+3u : i-3u;
+                const auto& buffer=(*owners[kind])[i];
+                if(buffer.getDevicePtr()!=initialPointers[kind][opposite] ||
+                   buffer.getSize()!=initialSizes[kind][opposite])
+                    throw std::runtime_error("Source fetch endpoint/history swap mapping changed");
+            }
+        swap_sap_endpoint_histories_after_fetch_native(source);
+        for(std::size_t kind=0;kind<owners.size();++kind)
+            for(physx::PxU32 i=0;i<6u;++i)
+                if((*owners[kind])[i].getDevicePtr()!=initialPointers[kind][i] ||
+                   (*owners[kind])[i].getSize()!=initialSizes[kind][i])
+                    throw std::runtime_error("Repeated source fetch swap did not restore owners");
+        if(!stream.commands().empty())
+            throw std::runtime_error("Source SAP update/fetch ownership swaps queued GPU commands");
+    }
+    if(aborted||roots.live_roots()||addresses.live_allocations())
+        throw std::runtime_error("PhysX SAP update/fetch source GPU heap leak");
 }
 
 void exercise_original_sap_radix_descriptors_native(Context& context) {
@@ -2025,6 +2164,7 @@ int main() {
         exercise_original_sap_history_growth_native(context);
         exercise_original_sap_post_axis_buffers_native(context);
         exercise_original_sap_radix_descriptors_native(context);
+        exercise_original_sap_update_fetch_lifecycle(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
