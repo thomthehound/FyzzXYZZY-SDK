@@ -54,8 +54,8 @@ struct SourceSapBroadphaseDescriptorBuffers {
     const physx::PxgCudaBufferN<3>& ranks;
     const physx::PxgCudaBufferN<3>& projections;
     const physx::PxgCudaBufferN<6>& projection_handles;
-    const physx::PxgCudaBufferN<3>& total_end_histograms;
-    const physx::PxgCudaBufferN<3>& block_total_end_histograms;
+    const physx::PxgCudaBufferN<6>& total_end_histograms;
+    const physx::PxgCudaBufferN<6>& block_total_end_histograms;
     const physx::PxgCudaBufferN<6>& end_histograms;
     const physx::PxgCudaBufferN<6>& block_end_histograms;
     const physx::PxgCudaBufferN<6>& start_histograms;
