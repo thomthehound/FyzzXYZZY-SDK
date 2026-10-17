@@ -28,6 +28,20 @@ void check_handle_inputs(const physx::Bp::BroadPhaseUpdateData& update) {
 }
 }
 
+physx::PxU64 checked_sap_region_slots_native(physx::PxU64 projections) {
+    // Original SAP computes (nbProjections * 64 + 3) & ~3, then stores
+    // the result in PxU32. Use 64-bit arithmetic and reject overflow
+    // BEFORE committing any owning SAP counters or GPU history copies.
+    if (projections > (std::numeric_limits<physx::PxU64>::max() - 3u)
+                          / kSapRegionSlotsPerProjection)
+        throw std::overflow_error("PhysX SAP region slot computation overflows PxU64");
+    const auto expanded = projections * kSapRegionSlotsPerProjection;
+    const auto slots = (expanded + 3u) & ~physx::PxU64{3u};
+    if (slots > std::numeric_limits<physx::PxU32>::max())
+        throw std::overflow_error("PhysX SAP region slot count exceeds PxU32");
+    return slots;
+}
+
 SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapGpuDMAUpCountMembers members) {
@@ -51,6 +65,10 @@ SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
     if (live > capacity ||
         projections > std::numeric_limits<physx::PxU32>::max() - 3u)
         throw std::overflow_error("PhysX gpuDMAUp box/projection sizing exceeds source range");
+    // The post-axis allocator requires 64 region slots per projection.
+    // Reject its known source PxU32 overflow before changing any borrowed
+    // counters; otherwise retrying this frame applies creation twice.
+    (void)checked_sap_region_slots_native(projections);
     const auto unpadded = static_cast<physx::PxU32>(projections);
     const auto padded = (unpadded + 3u) & ~physx::PxU32{3u};
 

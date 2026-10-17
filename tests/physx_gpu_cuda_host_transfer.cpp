@@ -1018,7 +1018,9 @@ void exercise_original_sap_history_growth_native(Context& context) {
         physx::PxgCudaBufferN<6> startHistogram(heap,group),blockStartHistogram(heap,group);
         physx::PxgCudaBufferN<6> startHandles(heap,group);
         physx::PxgCudaBufferN<3> incremental(heap,group),blockIncremental(heap,group);
-        physx::PxgCudaBufferN<3> totalEndHistogram(heap,group),blockTotalEndHistogram(heap,group);
+        // Original PxgCudaBroadPhaseSap.h declares N<6>, though only
+        // the first three indices are used for x/y/z per-axis totals.
+        physx::PxgCudaBufferN<6> totalEndHistogram(heap,group),blockTotalEndHistogram(heap,group);
         SourceSapHistoryAxisRemainderBuffers rest{
             endpointHandles,endHistogram,blockEndHistogram,endHandles,
             startHistogram,blockStartHistogram,startHandles,

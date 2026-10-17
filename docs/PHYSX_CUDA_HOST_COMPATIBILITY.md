@@ -1356,3 +1356,79 @@ This is a **GPU-host pathway conformance test**, not yet execution of the
 source SAP GPU task graph from a real `PxScene`. Completing that owner
 binding, actual AABB-manager getter provenance, report-mapping lifecycle
 and shader dispatch dependencies remains necessary.
+
+## Single-call source `PxgCudaBroadPhaseSap::gpuDMAUp` bridge (PR #99)
+
+`PxgSapDmaUpFrameNative.{h,cpp}` composes the previously reviewed
+original-source allocation, descriptor construction and GPU DMA helpers
+inside **one explicit call boundary**. The `SourceSapDmaUpFrameMembers`
+argument contains only borrowed references to fields of the existing
+`PxgCudaBroadPhaseSap`; the structure owns no stream, heap, shader
+pipeline, frame state or GPU resources.
+
+The exact operation sequence is now executable as a single unit:
+
+1. Read original `Bp::BroadPhaseUpdateData` and update source counters.
+2. Grow old integer bounds with copy-preserving GPU history.
+3. For each axis 0–2, run the source six-operation prefix immediately
+   followed by its **two** `j*3+i` endpoint-history branches and four
+   axis scratch allocations, then move to the next axis.
+4. Allocate post-axis report and region scratch, changed-handle buffers,
+   then **new** integer bounds.
+5. Build the original `PxgBroadPhaseDesc` and both six-element radix
+   descriptor arrays using **post-allocation** device addresses and
+   source-supplied AABB-manager/mapped report pointer aliases.
+6. Queue original created/removed/feature-enabled updated-handle HtoD,
+   broadphase HtoD, six ordinary radix records and six WOR records,
+   all on the **same native source stream**, without a host wait.
+
+Dedicated Vulkan and D3D12 native regression tests build a complete
+borrowed source-member bundle from the original GPU buddy-heap objects,
+execute a second frame with mixed created/removed/updated handles,
+exercise **real copy-preserving GPU projection history growth** and the
+entire ordered descriptor transfer sequence, overwrite borrowed CPU
+input arrays after enqueue, and verify every GPU record and preserved
+history byte at the original fetch boundary.
+
+**Remaining critical integration boundary:** this composition is not yet
+called from a compiled native `PxgCudaBroadPhaseSap::update` method and
+does not drive `PxgAABBManager`'s real lifecycle or the SAP source
+kernel/task graph. The next phase must lower the real owner binding,
+mapped report/AABB-manager getter provenance and native source dispatch
+order, preserving the original update/no-change/forced-update behavior.
+Original `gpuDMAUp` also computes
+`totalNbProjectionRegions = (nbProjections * 64 + 3) & ~3`,
+which it stores in a `PxU32`. A source count of **33,554,432
+previous-plus-created boxes** already implies 67,108,864 projections
+and 4,294,967,296 region slots, too many for that field. The
+shared checked region-slot function now runs inside
+`prepare_gpu_dma_up_counts_native`, **before source counters are
+committed**; the post-axis allocator invokes the same check for
+direct callers. Both paths reject rather than wrapping the original
+32-bit region count. Native boundary tests exercise one box below
+the limit and at the first overflowing box, and verify a rejected
+combined frame leaves counters, buffers, host descriptors and
+pending GPU commands unchanged. The boundary itself is checked
+arithmetically without attempting gigantic GPU allocations.
+
+The combined frame bridge also preflights all three original
+constructor-owned GPU descriptor allocations **before** advancing any
+mutable SAP counters, allocating frame GPU storage, or submitting HtoD
+copies. This prevents retrying a rejected frame with counts already
+applied. The split descriptor uploader retains the same size checks,
+and conformance tests exercise rejection of an unallocated descriptor
+through the complete combined-frame entry point.
+
+The fixture intentionally supplies a borrowed AABB-manager getter view;
+it does not pretend to create a source `PxgAABBManager`.
+
+A source member-declaration audit during #99 also corrected an older
+type-level mismatch: pinned `PxgCudaBroadPhaseSap.h` declares
+`mTotalEndPtHistogramBuf` and `mBlockTotalEndPtHistogramBuf` as
+`PxgCudaBufferN<6>`, **not** `N<3>`. Upstream's implementation accesses
+only the three spatial-axis entries. Both the history-growth and
+descriptor-binding helpers now borrow the exact six-element source
+member type; their tests instantiate six-element original buffers while
+allocating/checking only axes 0–2. This correction is essential for
+binding the bridge directly to the source owner without reinterpret casts,
+shadow arrays or a replacement broadphase state.

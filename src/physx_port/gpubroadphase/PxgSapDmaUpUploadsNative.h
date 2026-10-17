@@ -23,6 +23,11 @@ struct SourceSapDmaUpDescriptorBuffers {
     const physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc>& radix_without_ranks;
 };
 
+// Original constructor descriptor buffers must exist BEFORE a frame
+// mutates persistent SAP count state. Validate all three as one group.
+void validate_sap_dma_up_descriptor_buffers_native(
+    SourceSapDmaUpDescriptorBuffers buffers);
+
 // Source PxgCudaBroadPhaseSap::gpuDMAUp descriptor HtoD sequence. Must be
 // called AFTER source queue_gpu_dma_up_handles_native on the SAME mStream,
 // following updateDescriptor and updateRadixSortDesc. One native upload

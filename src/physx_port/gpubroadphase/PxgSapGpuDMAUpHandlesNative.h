@@ -56,6 +56,14 @@ struct SourceSapGpuDMAUpCounts {
     physx::PxU32 padded_projections;
 };
 
+// Pinned PxgCudaBroadPhaseSap::gpuDMAUp reserves 64 slots for each
+// projection, storing the rounded totalNbProjectionRegions in PxU32.
+// Keep this source constraint shared between count preflight and the
+// post-axis allocation helper, so the frame never commits counts before
+// discovering deterministic region-slot overflow.
+inline constexpr physx::PxU64 kSapRegionSlotsPerProjection = 64u;
+physx::PxU64 checked_sap_region_slots_native(physx::PxU64 projections);
+
 // Source ordering is essential:
 // 1. Derive/commit counts from original Bp::BroadPhaseUpdateData.
 // 2. Grow old integer bounds, then all three per-axis prefix/remainder

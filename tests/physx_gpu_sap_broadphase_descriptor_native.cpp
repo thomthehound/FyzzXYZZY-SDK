@@ -5,6 +5,7 @@
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
+#include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "BpBroadPhaseUpdate.h"
 #include "PxgRadixSortKernelIndices.h"
@@ -56,18 +57,24 @@ int main() {
                 removed.allocateElements(8u,PX_FL);
                 updated.allocateElements(8u,PX_FL);
                 physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group),ranks(heap,group);
-                physx::PxgCudaBufferN<3> projections(heap,group),totalEnd(heap,group);
-                physx::PxgCudaBufferN<3> blockTotalEnd(heap,group),incremental(heap,group),blockIncremental(heap,group);
+                physx::PxgCudaBufferN<3> projections(heap,group);
+                // Source members are N<6>, not N<3>; only axes 0..2 are used.
+                physx::PxgCudaBufferN<6> totalEnd(heap,group),blockTotalEnd(heap,group);
+                physx::PxgCudaBufferN<3> incremental(heap,group),blockIncremental(heap,group);
                 physx::PxgCudaBufferN<6> boxHandles(heap,group),endHist(heap,group),blockEndHist(heap,group);
                 physx::PxgCudaBufferN<6> startHist(heap,group),blockStartHist(heap,group),endHandles(heap,group),startHandles(heap,group);
                 physx::PxgCudaBufferN<2> aggBlocks(heap,group),actorBlocks(heap,group);
                 physx::PxgCudaBufferN<6> managerBuffers(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxgBroadPhaseDesc> descriptorDevice(heap,group);
                 for(physx::PxU32 i=0;i<27;++i) singles[i].allocate(32u,PX_FL);
-                const std::array<physx::PxgCudaBufferN<3>*,8> axis3{
-                    &sap,&newSap,&ranks,&projections,&totalEnd,&blockTotalEnd,&incremental,&blockIncremental};
+                const std::array<physx::PxgCudaBufferN<3>*,6> axis3{
+                    &sap,&newSap,&ranks,&projections,&incremental,&blockIncremental};
                 for(auto* a:axis3)
                     for(physx::PxU32 i=0;i<3;++i) (*a)[i].allocate(32u,PX_FL);
+                for(physx::PxU32 i=0;i<3;++i) {
+                    totalEnd[i].allocate(32u,PX_FL);
+                    blockTotalEnd[i].allocate(32u,PX_FL);
+                }
                 const std::array<physx::PxgCudaBufferN<6>*,7> axis6{
                     &boxHandles,&endHist,&blockEndHist,&startHist,&blockStartHist,&endHandles,&startHandles};
                 for(auto* a:axis6)
@@ -363,6 +370,197 @@ int main() {
                          "Source ordered WOR radix descriptor GPU upload failed");
                 checkGpu(copyAfterDescriptors,savedCreated.data(),sizeof(savedCreated),
                          "Source-ordered GPU copy after descriptor DMA lost handle upload");
+
+                // Exercise the complete source gpuDMAUp call-site bridge,
+                // rather than independently invoking the individual stage
+                // helpers. PhysX still owns the SAME buffers and source
+                // stream: there is no second broadphase or heap.
+                const std::array<physx::PxU32,8> previousProjection{
+                    0x9a11u,0x9b22u,0x9c33u,0x9d44u,
+                    0x9e55u,0x9f66u,0xa077u,0xa188u
+                };
+                {
+                    const auto view=addresses.resolve(
+                        projections[0].getDevicePtr(),sizeof(previousProjection));
+                    context.upload(view.buffer,view.offset,
+                                   previousProjection.data(),sizeof(previousProjection));
+                }
+                const auto earlierProjectionSize=projections[0].getSize();
+                std::array<physx::PxU32,2> additionalCreated{9u,10u};
+                std::array<physx::PxU32,1> additionalRemoved{1u};
+                std::array<physx::PxU32,1> additionalUpdated{2u};
+                const auto sourceCreated=additionalCreated;
+                const auto sourceRemoved=additionalRemoved;
+                const auto sourceUpdated=additionalUpdated;
+                physx::Bp::BroadPhaseUpdateData nextUpdate(
+                    additionalCreated.data(),2u,
+                    additionalUpdated.data(),1u,
+                    additionalRemoved.data(),1u,
+                    nullptr,nullptr,nullptr,6u,filter,true,true);
+
+                std::array<SourceSapHistoryAxisBuffers,3> axes{{
+                    {sap[0],newSap[0],projections[0],ranks[0],tempKeys[0],tempHandles[0]},
+                    {sap[1],newSap[1],projections[1],ranks[1],tempKeys[1],tempHandles[1]},
+                    {sap[2],newSap[2],projections[2],ranks[2],tempKeys[2],tempHandles[2]}
+                }};
+                SourceSapDmaUpFrameMembers borrowed{
+                    members,handles,singles[3],axes,
+                    {boxHandles,endHist,blockEndHist,endHandles,
+                     startHist,blockStartHist,startHandles,
+                     incremental,blockIncremental,totalEnd,blockTotalEnd},
+                    {aggBlocks,actorBlocks,singles[15],singles[16],
+                     singles[17],singles[18],singles[20],singles[19],
+                     singles[21],singles[22],singles[23],singles[24],
+                     singles[25],singles[26]},
+                    singles[4],buffers,in,
+                    {projections,ranks,tempKeys,tempHandles,radixCounts,boxHandles},
+                    recordBuffers,desc,normal.data(),wor.data()
+                };
+                // A missing original constructor-owned GPU descriptor must
+                // reject the ENTIRE frame before counters or GPU commands
+                // change. Retrying valid storage then applies changes once.
+                SourceSapDmaUpFrameMembers unallocatedFrame{
+                    borrowed.counts,borrowed.handles,borrowed.old_integer_bounds,
+                    borrowed.axes,borrowed.remainder,borrowed.post_axis,
+                    borrowed.new_integer_bounds,borrowed.broadphase_buffers,
+                    borrowed.descriptor_inputs,borrowed.radix_buffers,
+                    {descriptorDevice,normalGpu,missingRecord},
+                    borrowed.broadphase_descriptor,
+                    borrowed.radix_descriptors,borrowed.radix_wor_descriptors
+                };
+                const auto untouchedLive=liveBoxes;
+                const auto untouchedCapacity=boxesCapacity;
+                const auto untouchedProjectionSize=projections[0].getSize();
+                const auto untouchedCreatedCount=createdCount;
+                const auto untouchedRemovedCount=removedCount;
+                const auto untouchedUpdatedCount=updatedCount;
+                bool rejectedUnallocatedFrame=false;
+                try {
+                    (void)gpu_dma_up_sap_frame_native(
+                        nextUpdate,unallocatedFrame,stream);
+                } catch(const std::logic_error&) {
+                    rejectedUnallocatedFrame=true;
+                }
+                if(!rejectedUnallocatedFrame ||
+                   liveBoxes!=untouchedLive || boxesCapacity!=untouchedCapacity ||
+                   createdCount!=untouchedCreatedCount ||
+                   removedCount!=untouchedRemovedCount ||
+                   updatedCount!=untouchedUpdatedCount ||
+                   projections[0].getSize()!=untouchedProjectionSize ||
+                   !stream.commands().empty())
+                    throw std::runtime_error(
+                        "Rejected source SAP frame mutated counters or queued GPU copies");
+
+                // Boundary of upstream totalNbProjectionRegions (PxU32):
+                // 33,554,431 live+created boxes -> 67,108,862
+                // projections -> 4,294,967,168 region slots (fits);
+                // adding one more box would require 4,294,967,296 slots.
+                // Neither case needs a multi-gigabyte GPU allocation:
+                // this is a pure source count/region preflight test.
+                constexpr physx::PxU32 maxSafeBoxes=33'554'431u;
+                physx::PxU32 hugeBoxes=maxSafeBoxes;
+                physx::PxU32 hugeCapacity=911u;
+                physx::PxU32 hugeCreated=921u,hugeRemoved=931u,hugeUpdated=941u;
+                SourceSapGpuDMAUpCountMembers hugeMembers{
+                    hugeBoxes,hugeCapacity,hugeCreated,hugeRemoved,hugeUpdated};
+                const std::array<physx::PxU32,1u> oneNewHandle{17u};
+                const physx::Bp::BroadPhaseUpdateData overRegionLimit(
+                    oneNewHandle.data(),1u,nullptr,0u,nullptr,0u,
+                    nullptr,nullptr,nullptr,maxSafeBoxes+1u,
+                    filter,true,true);
+                SourceSapDmaUpFrameMembers overflowFrame{
+                    hugeMembers,borrowed.handles,borrowed.old_integer_bounds,
+                    borrowed.axes,borrowed.remainder,borrowed.post_axis,
+                    borrowed.new_integer_bounds,borrowed.broadphase_buffers,
+                    borrowed.descriptor_inputs,borrowed.radix_buffers,
+                    borrowed.descriptor_gpu_buffers,borrowed.broadphase_descriptor,
+                    borrowed.radix_descriptors,borrowed.radix_wor_descriptors
+                };
+                const auto unchangedHistorySize=projections[0].getSize();
+                const auto unchangedOldBoundsSize=singles[3].getSize();
+                const auto unchangedDescriptor=desc;
+                bool rejectedOversizedRegion=false;
+                try {
+                    (void)gpu_dma_up_sap_frame_native(
+                        overRegionLimit,overflowFrame,stream);
+                } catch(const std::overflow_error&) {
+                    rejectedOversizedRegion=true;
+                }
+                if(!rejectedOversizedRegion || hugeBoxes!=maxSafeBoxes ||
+                   hugeCapacity!=911u || hugeCreated!=921u ||
+                   hugeRemoved!=931u || hugeUpdated!=941u ||
+                   projections[0].getSize()!=unchangedHistorySize ||
+                   singles[3].getSize()!=unchangedOldBoundsSize ||
+                   std::memcmp(&desc,&unchangedDescriptor,sizeof(desc))!=0 ||
+                   !stream.commands().empty())
+                    throw std::runtime_error(
+                        "Region overflow committed SAP counters or queued partial GPU history");
+                const physx::Bp::BroadPhaseUpdateData atRegionLimit(
+                    nullptr,0u,nullptr,0u,nullptr,0u,
+                    nullptr,nullptr,nullptr,maxSafeBoxes,
+                    filter,false,false);
+                const auto acceptedBoundary=prepare_gpu_dma_up_counts_native(
+                    atRegionLimit,hugeMembers);
+                if(acceptedBoundary.current_boxes!=maxSafeBoxes ||
+                   acceptedBoundary.projections!=67'108'862u ||
+                   checked_sap_region_slots_native(acceptedBoundary.projections)
+                        !=4'294'967'168ull ||
+                   hugeCapacity!=maxSafeBoxes ||
+                   hugeCreated || hugeRemoved || hugeUpdated)
+                    throw std::runtime_error(
+                        "SAP region-slot preflight rejected its valid PxU32 boundary");
+                if(!stream.commands().empty())
+                    throw std::runtime_error(
+                        "Valid source count preflight incorrectly enqueued GPU work");
+
+                const auto nextCounts=gpu_dma_up_sap_frame_native(
+                    nextUpdate,borrowed,stream);
+                if(nextCounts.previous_boxes!=3u ||
+                   nextCounts.current_boxes!=4u ||
+                   nextCounts.capacity!=6u ||
+                   nextCounts.projections!=10u ||
+                   nextCounts.padded_projections!=12u ||
+                   nextCounts.updated!=1u ||
+                   projections[0].getSize()<=earlierProjectionSize ||
+                   desc.numPreviousHandles!=3u ||
+                   desc.numCreatedHandles!=2u ||
+                   desc.numRemovedHandles!=1u ||
+                   desc.aabbMngr_changedHandleBitMapWordCounts!=3u ||
+                   desc.updateData_updatedHandles ||
+                   desc.numUpdatedHandles ||
+                   desc.boxProjections[0]!=
+                       reinterpret_cast<physx::PxU32*>(projections[0].getDevicePtr()))
+                    throw std::runtime_error("Full source SAP gpuDMAUp frame order or owner bindings changed");
+
+                const auto nextExpectedDesc=desc;
+                const auto nextExpectedNormal=normal;
+                const auto nextExpectedWor=wor;
+                additionalCreated.fill(0xdeadbeefu);
+                additionalRemoved.fill(0xdeadbeefu);
+                additionalUpdated.fill(0xdeadbeefu);
+                std::memset(&desc,0xa5,sizeof(desc));
+                for(auto& r:normal)r.outputKeys=nullptr;
+                for(auto& r:wor)r.outputRanks=nullptr;
+                stream.wait_at_fetch();
+                checkGpu(created,sourceCreated.data(),sizeof(sourceCreated),
+                         "Source gpuDMAUp frame lost created-handle transfer");
+                checkGpu(removed,sourceRemoved.data(),sizeof(sourceRemoved),
+                         "Source gpuDMAUp frame lost removed-handle transfer");
+                checkGpu(updated,sourceUpdated.data(),sizeof(sourceUpdated),
+                         "Source gpuDMAUp frame lost updated-handle transfer");
+                checkGpu(descriptorDevice,&nextExpectedDesc,sizeof(nextExpectedDesc),
+                         "Source gpuDMAUp frame lost broadphase descriptor");
+                checkGpu(normalGpu,nextExpectedNormal.data(),sizeof(nextExpectedNormal),
+                         "Source gpuDMAUp frame lost normal radix descriptor");
+                checkGpu(withoutRanksGpu,nextExpectedWor.data(),sizeof(nextExpectedWor),
+                         "Source gpuDMAUp frame lost WOR radix descriptor");
+                // The first 32 bytes of the old projection allocation must
+                // survive a larger native copy-preserving allocation,
+                // including DtoD GPU command ordering before descriptor HtoD.
+                checkGpu(projections[0],previousProjection.data(),
+                         sizeof(previousProjection),
+                         "Source gpuDMAUp frame destroyed prior GPU projection history");
+
 
             }
             if(aborted||roots.live_roots()||addresses.live_allocations())

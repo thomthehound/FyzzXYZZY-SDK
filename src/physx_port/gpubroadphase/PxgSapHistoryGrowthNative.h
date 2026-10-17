@@ -52,8 +52,8 @@ struct SourceSapHistoryAxisRemainderBuffers {
     physx::PxgCudaBufferN<6>& start_handles;
     physx::PxgCudaBufferN<3>& incremental_comparisons;
     physx::PxgCudaBufferN<3>& incremental_block_comparisons;
-    physx::PxgCudaBufferN<3>& total_end_histograms;
-    physx::PxgCudaBufferN<3>& block_total_end_histograms;
+    physx::PxgCudaBufferN<6>& total_end_histograms;
+    physx::PxgCudaBufferN<6>& block_total_end_histograms;
 };
 
 // Invoke AFTER grow_sap_history_axis_prefix_native for this axis and
