@@ -8,6 +8,9 @@
 #include "physx_gpu/source_sap_dma_native.h"
 
 #include "PxgSapBox1D.h"
+#include "PxgBroadPhaseKernelIndices.h"
+
+#include <stdexcept>
 
 #include <cstdint>
 
@@ -51,6 +54,51 @@ void grow_sap_history_axis_prefix_native(
         physx::PxU64(counts.padded_projections) * sizeof(int), PX_FL);
     buffers.temporary_handles.allocate(
         physx::PxU64(counts.padded_projections) * sizeof(int), PX_FL);
+}
+
+void grow_sap_history_axis_remainder_native(
+    const SourceSapGpuDMAUpCounts& counts,
+    physx::PxU32 axis,
+    SourceSapHistoryAxisRemainderBuffers buffers,
+    SourceSapDmaNative& stream) {
+    if (axis >= 3u)
+        throw std::out_of_range("PhysX SAP history has exactly three spatial axes");
+    static_assert(sizeof(int) == sizeof(physx::PxU32),
+                  "Original SAP endpoint and radix buffers require 32-bit int");
+    // Retain upstream's j*3+i layout and the seven original allocation/
+    // GPU-copy calls PER j; batching all N<6> arrays by category would
+    // reorder deferred frees and the original PxgCudaBuffer dependencies.
+    for (physx::PxU32 j = 0; j < 2u; ++j) {
+        const auto index = j * 3u + axis;
+        buffers.projection_handles[index].allocateCopyOldDataAsync(
+            physx::PxU64(counts.padded_projections) * sizeof(int), stream, PX_FL);
+        buffers.end_histograms[index].allocateCopyOldDataAsync(
+            physx::PxU64(counts.projections) * sizeof(int), stream, PX_FL);
+        buffers.block_end_histograms[index].allocateCopyOldDataAsync(
+            physx::PxU64(physx::PxgBPKernelGridDim::BP_OUTPUT_ENDPT_HISTOGRAM)
+                * sizeof(int), stream, PX_FL);
+        buffers.end_handles[index].allocateCopyOldDataAsync(
+            physx::PxU64(counts.current_boxes) * sizeof(int), stream, PX_FL);
+        buffers.start_histograms[index].allocateCopyOldDataAsync(
+            physx::PxU64(counts.projections) * sizeof(int), stream, PX_FL);
+        buffers.block_start_histograms[index].allocateCopyOldDataAsync(
+            physx::PxU64(physx::PxgBPKernelGridDim::BP_OUTPUT_ENDPT_HISTOGRAM)
+                * sizeof(int), stream, PX_FL);
+        buffers.start_handles[index].allocateCopyOldDataAsync(
+            physx::PxU64(counts.current_boxes) * sizeof(int), stream, PX_FL);
+    }
+
+    // Original per-axis scratch is allocated WITHOUT preserving old data.
+    buffers.incremental_comparisons[axis].allocate(
+        physx::PxU64(counts.projections) * sizeof(int), PX_FL);
+    buffers.incremental_block_comparisons[axis].allocate(
+        physx::PxU64(physx::PxgBPKernelGridDim::BP_COMPUTE_INCREMENTAL_CMP_COUNTS1)
+            * sizeof(int), PX_FL);
+    buffers.total_end_histograms[axis].allocate(
+        physx::PxU64(counts.projections) * sizeof(physx::PxU32), PX_FL);
+    buffers.block_total_end_histograms[axis].allocate(
+        physx::PxU64(physx::PxgBPKernelGridDim::BP_OUTPUT_ENDPT_HISTOGRAM)
+            * sizeof(physx::PxU32), PX_FL);
 }
 
 } // namespace fyzz::physx_gpu
