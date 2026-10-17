@@ -1219,3 +1219,39 @@ reused**. Only the source copy-preserving grow path requires retaining
 the old block until the queued device-to-device copy finishes. This is a host-path correctness step:
 real `PxgCudaBroadPhaseSap` member binding, descriptors, kernel dispatch
 and `PxScene` integration remain to be built.
+
+## Original PhysX SAP radix descriptor construction (PR #96)
+
+`PxgSapRadixDescriptorsNative.{h,cpp}` faithfully lowers upstream
+`PxgCudaBroadPhaseSap::updateRadixSortDesc` using the **actual**
+`PxgRadixSortDesc` struct and borrowed `PxgCudaBufferN` GPU array
+owners. It fills the existing six regular and six **WOR** (without
+ranks) host descriptors without introducing a new descriptor
+format, GPU heap, or scheduler.
+
+Each spatial axis `i = 0,1,2` produces forward descriptor `i` and
+reverse descriptor `i+3`; each reverse record exchanges input
+and output projection buffers. In the WOR records, the input ranks
+for the forward pass and output ranks for the reverse pass use
+`mBoxPtHandlesBuf[i]`, not the ordinary projection-rank buffer.
+The radix-count pointer is the same original constructor-allocated
+buffer for both directions. The source method does **not** assign
+the `count` field: the lowering preserves existing `count` values,
+which are managed by the source execution path.
+
+Cross-platform Vulkan and D3D12 host tests verify every forward/reverse
+field, special WOR handle binding, unchanged `count` fields, pointer
+rebinding after GPU buffer growth, the original grid-derived radix
+count allocation, native GPU upload/readback of both six-element
+arrays, host input snapshot stability, and source GPU heap teardown.
+
+**Important integration boundary:** the real `gpuDMAUp` constructs
+`PxgBroadPhaseDesc` **before** these radix arrays are uploaded.
+The three final GPU descriptor HtoD transfers must remain in this
+strict source order: broadphase descriptor, six regular radix
+descriptors, then six WOR radix descriptors (following changed-handle
+uploads). This PR implements `updateRadixSortDesc` and validates
+its GPU ABI in isolation; it does NOT put the two radix DMA transfers
+ahead of broadphase-descriptor construction in the production path.
+The substantial source `updateDescriptor` logic, including pointers
+provided by the GPU AABB manager, is the next integration task.
