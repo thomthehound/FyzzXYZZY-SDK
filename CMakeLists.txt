@@ -1633,7 +1633,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
       COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
-  endif()
     add_executable(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12
       tests/physx_gpu_sap_broadphase_descriptor_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -1648,6 +1647,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
     add_test(NAME fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 COMMAND fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12)
+  endif()
 
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
