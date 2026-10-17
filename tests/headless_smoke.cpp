@@ -8,10 +8,43 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 int main() {
     try {
         {
+            // The real production constructor must never report GPU
+            // admission when the underlying PhysX scene is CPU-only.
+            bool rejected_gpu = false;
+            try {
+                fyzz::World unsupported(fyzz::WorldOptions{
+                    fyzz::BroadphaseMode::PhysXPortableGpu});
+            } catch (const std::logic_error& e) {
+                rejected_gpu = std::string(e.what()).find("not scene-integrated")
+                    != std::string::npos;
+            }
+            if (!rejected_gpu)
+                throw std::runtime_error("Portable GPU request silently created CPU PhysX scene");
+
+            bool rejected_unknown = false;
+            try {
+                fyzz::World unsupported(fyzz::WorldOptions{
+                    static_cast<fyzz::BroadphaseMode>(0xff)});
+            } catch (const std::invalid_argument&) {
+                rejected_unknown = true;
+            }
+            if (!rejected_unknown)
+                throw std::runtime_error("Invalid production broadphase selection was accepted");
+
+            fyzz::World explicit_cpu(fyzz::WorldOptions{
+                fyzz::BroadphaseMode::PhysXCpu});
+            explicit_cpu.add_static_floor(0.0f);
+            const auto cpu_test = explicit_cpu.add_dynamic_box(
+                {0.2f, 0.2f, 0.2f}, {0.0f, 1.0f, 0.0f}, 1.0f);
+            explicit_cpu.step(1.0f / 60.0f);
+            if (explicit_cpu.body_state(cpu_test).position.y >= 1.0f)
+                throw std::runtime_error("Explicit production CPU PhysX scene failed");
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
