@@ -14,6 +14,17 @@ struct Vec3 {
     float z;
 };
 
+// Source PhysX remains the scene and task-graph owner. Choosing a GPU
+// broadphase must never silently admit a CPU scene as a successful GPU path.
+enum class BroadphaseMode : std::uint8_t {
+    PhysXCpu,
+    PhysXPortableGpu,
+};
+
+struct WorldOptions {
+    BroadphaseMode broadphase = BroadphaseMode::PhysXCpu;
+};
+
 using BodyId = std::uint32_t;
 
 struct BodyState {
@@ -36,6 +47,7 @@ public:
 class World final {
 public:
     World();
+    explicit World(WorldOptions options);
     explicit World(std::unique_ptr<WorldBackend> backend);
     ~World();
 

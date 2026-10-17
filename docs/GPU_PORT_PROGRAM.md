@@ -482,3 +482,34 @@ Source reference paths in the PhysX family (not a dependency pin):
 Upstream interpretation is authoritative for what **PhysX does**;
 this document's suggested architecture and gate ordering are decisions for
 FyzzXYZZY, not claims made by NVIDIA.
+
+## Production PhysX scene admission milestone (PR #104)
+
+The public `fyzz::World` now owns a **single explicit production scene
+selection** via `WorldOptions::broadphase`, rather than presenting a
+test-only compute world as evidence that PhysX's own GPU scene is working.
+The default is the original CPU PhysX scene. An explicit CPU request
+sets `PxSceneDesc.broadPhaseType = ePABP` and verifies the *created*
+`PxScene::getBroadPhaseType()` agrees. A request for
+`PhysXPortableGpu` currently **fails closed before scene construction**
+with an actionable explanation; it never creates an ABP scene and reports
+that as portable GPU success.
+
+This is intentional and temporary. The pinned upstream
+`Sc::Scene` currently accepts `eGPU` only behind
+`PX_SUPPORT_GPU_PHYSX` and CUDA manager architecture checks; in the
+SDK's present CUDA-free build, it **silently substitutes** `eABP`
+otherwise. Adding an `eGPU` flag to the current scene descriptor
+would therefore be a false-positive integration claim. Production
+`World` is now the real selection boundary whose GPU arm must be
+connected directly to the **portable source-derived SAP owner and AABB
+manager inside the PhysX scene factory and task graph**, tracked in
+[Issue #101](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101).
+
+The headless regression checks the default and explicit-CPU behavior,
+CPU rigid-body simulation, rejected GPU admission and unknown selectors
+through the **production `World` constructor**, without staging an
+unrelated simulation pipeline. This milestone establishes an honest
+production entry point, **not a working GPU scene**. Do not mark G3
+complete until multi-frame `PxScene::simulate/fetchResults` with
+the portable SAP publishes correct found/lost pairs to PhysX.
