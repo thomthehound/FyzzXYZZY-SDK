@@ -3,9 +3,8 @@
 
 # CPU SDK build and test
 
-The CPU implementation uses **upstream PhysX CPU** as its physics implementation, through the
-Godot-independent `FyzzXYZZY::Core` C++ target. CUDA is disabled. The shader translation and
-portable GPU runtimes are separate milestones.
+The transitional CPU **reference backend** uses unmodified PhysX CPU through the
+`FyzzXYZZY::ReferencePhysXCpu` library. The public `FyzzXYZZY::Core` implementation compiles without PhysX headers, but still links the reference backend for default CPU execution until the native CPU scene passes its acceptance gate. CUDA is disabled. The independent native scene and portable GPU runtimes are [separate migration milestones](NATIVE_ENGINE_MIGRATION.md).
 
 ## C++ toolchain requirement
 

@@ -3,6 +3,12 @@
 
 # Returning to the PhysX host execution path
 
+> **Reference host trace.** Here `PxScene` denotes original source behavior
+> or historical test targets. Native FyzzXYZZY GPU execution uses the SDK-owned
+> scene and task graph. See [native engine migration](NATIVE_ENGINE_MIGRATION.md)
+> for current acceptance.
+
+
 **Status:** October 2026. Source-grounded feasibility work; the engine still has
 no live portable GPU `PxScene`. This is not a new public API proposal.
 

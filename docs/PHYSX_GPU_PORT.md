@@ -3,6 +3,14 @@
 
 # PhysX GPU port: execution architecture and traceability
 
+> **Reference source trace.** Names such as `PxScene`, `Sc::Scene` and
+> `PxgCudaBroadPhaseSap` describe original PhysX behavior and task contracts,
+> not the required runtime owner of FyzzXYZZY. Historical sections describing
+> "PhysX scene integration" refer to source correspondence; the production
+> integration target is the SDK-owned native scene and scheduler.
+> See [native engine migration](NATIVE_ENGINE_MIGRATION.md) for current gates.
+
+
 See also [the multi-month GPU port program, blockers and acceptance gates](GPU_PORT_PROGRAM.md)
 and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 **All GPU work is also bound by the [GPU performance contract](GPU_PORT_PERFORMANCE.md)**, which requires explicit review of throughput costs and modern hardware primitives for every deviation from source PhysX.
@@ -13,7 +21,7 @@ D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed ext
 
 ## Port boundary
 
-FyzzXYZZY ports PhysX GPU physics **within the PhysX simulation pipeline**.
+FyzzXYZZY ports PhysX GPU physics **into its own native simulation pipeline**, preserving the original source task and dataflow dependencies.
 Kernel translation and host-side orchestration are equally part of the port.
 The portable GPU implementation must retain the causal dependencies between
 scene updates, collision detection, contact management, constraint preparation,
