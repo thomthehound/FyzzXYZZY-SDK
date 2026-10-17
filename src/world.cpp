@@ -100,5 +100,12 @@ void World::step(float seconds) {
 BodyState World::body_state(BodyId id) const {
     return impl_->body_state(id);
 }
+void World::set_body_position(BodyId id, Vec3 position) {
+    validate_position(position);
+    impl_->set_body_position(id, position);
+}
+void World::remove_body(BodyId id) {
+    impl_->remove_body(id);
+}
 
 } // namespace fyzz

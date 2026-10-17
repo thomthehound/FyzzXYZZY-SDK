@@ -213,6 +213,10 @@ public:
         throw std::logic_error("Native CPU narrowphase and solver are not yet integrated");
     }
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }
+    void set_body_position(BodyId id, Vec3 p) override {
+        scene_.set_position(id, p);
+    }
+    void remove_body(BodyId id) override { scene_.remove(id); }
 private:
     native::Scene scene_;
 };

@@ -78,6 +78,9 @@ int main() {
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
     expect(native_world.body_state(owned).position.y == 1,
            "SDK World did not own native actor state");
+    native_world.set_body_position(owned, {0,3,0});
+    expect(native_world.body_state(owned).position.y == 3,
+           "World did not relocate its native actor");
     bool unavailable = false;
     try { native_world.step(1.0f/60.0f); }
     catch (const std::logic_error& e) {
@@ -85,5 +88,10 @@ int main() {
                       std::string::npos;
     }
     expect(unavailable, "incomplete native CPU solver silently executed");
+    native_world.remove_body(owned);
+    bool retired = false;
+    try { (void)native_world.body_state(owned); }
+    catch (const std::out_of_range&) { retired = true; }
+    expect(retired, "World did not retire the native actor");
     return 0;
 }

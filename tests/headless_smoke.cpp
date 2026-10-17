@@ -42,6 +42,15 @@ int main() {
             }
             if (!incomplete_solver_rejected)
                 throw std::runtime_error("Native CPU executed without a solver");
+            native_cpu.set_body_position(native_id, {0,3,0});
+            if (native_cpu.body_state(native_id).position.y != 3)
+                throw std::runtime_error("Native CPU scene relocation failed");
+            native_cpu.remove_body(native_id);
+            bool retired_native_actor = false;
+            try { (void)native_cpu.body_state(native_id); }
+            catch (const std::out_of_range&) { retired_native_actor = true; }
+            if (!retired_native_actor)
+                throw std::runtime_error("Native CPU scene failed to retire actor");
 
             bool rejected_unknown = false;
             try {
@@ -61,6 +70,17 @@ int main() {
             explicit_cpu.step(1.0f / 60.0f);
             if (explicit_cpu.body_state(cpu_test).position.y >= 1.0f)
                 throw std::runtime_error("Explicit production CPU PhysX scene failed");
+            const auto reference_retire = explicit_cpu.add_dynamic_box(
+                {0.2f,0.2f,0.2f}, {0,4,0}, 1.0f);
+            explicit_cpu.set_body_position(reference_retire, {0,5,0});
+            if (explicit_cpu.body_state(reference_retire).position.y != 5)
+                throw std::runtime_error("Reference actor relocation failed");
+            explicit_cpu.remove_body(reference_retire);
+            bool reference_retired = false;
+            try { (void)explicit_cpu.body_state(reference_retire); }
+            catch (const std::out_of_range&) { reference_retired = true; }
+            if (!reference_retired)
+                throw std::runtime_error("Reference actor removal failed");
 
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});

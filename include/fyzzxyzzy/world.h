@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 
 namespace fyzz {
 
@@ -43,6 +44,14 @@ public:
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
+    // All built-in CPU backends implement scene actor lifecycle. Additional
+    // backends must reject unsupported operations explicitly.
+    virtual void set_body_position(BodyId, Vec3) {
+        throw std::logic_error("This backend cannot relocate an actor");
+    }
+    virtual void remove_body(BodyId) {
+        throw std::logic_error("This backend cannot remove an actor");
+    }
 };
 
 class World final {
@@ -62,6 +71,8 @@ public:
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
+    void set_body_position(BodyId id, Vec3 position);
+    void remove_body(BodyId id);
 
 private:
     std::unique_ptr<WorldBackend> impl_;
