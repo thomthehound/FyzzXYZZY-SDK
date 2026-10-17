@@ -11,6 +11,8 @@
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
+#include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
+#include "PxgRadixSortKernelIndices.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -664,6 +666,141 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_original_sap_radix_descriptors_native(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapRadixDescriptorBuffers;
+    using fyzz::physx_gpu::prepare_sap_radix_descriptors_native;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourcePhysxDeviceRootCallback callback(roots,&stream);
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        constexpr auto group=physx::PxsHeapStats::eBROADPHASE;
+        physx::PxgCudaBufferN<3> projections(heap,group),ranks(heap,group);
+        physx::PxgCudaBufferN<3> tempKeys(heap,group),tempHandles(heap,group);
+        physx::PxgCudaBufferN<3> radixCounts(heap,group);
+        physx::PxgCudaBufferN<6> boxHandles(heap,group);
+        physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc> gpuNormal(heap,group);
+        physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc> gpuWOR(heap,group);
+        gpuNormal.allocateElements(6u,PX_FL);
+        gpuWOR.allocateElements(6u,PX_FL);
+
+        SourceSapRadixDescriptorBuffers source{
+            projections,ranks,tempKeys,tempHandles,radixCounts,boxHandles};
+        std::array<physx::PxgRadixSortDesc,6u> normal{},withoutRanks{};
+        for (std::size_t i=0;i<6u;++i) {
+            normal[i].count=static_cast<physx::PxU32>(100u+i);
+            withoutRanks[i].count=static_cast<physx::PxU32>(200u+i);
+        }
+        bool rejected=false;
+        try {prepare_sap_radix_descriptors_native(nullptr,withoutRanks.data(),source);}
+        catch(const std::invalid_argument&) {rejected=true;}
+        if(!rejected)
+            throw std::runtime_error("Original SAP radix descriptor allowed null input");
+
+        // Original constructor allocates radix-count buffers once; the
+        // history arrays come from the source gpuDMAUp three-axis loop.
+        for(physx::PxU32 i=0;i<3u;++i) {
+            projections[i].allocate(16u,PX_FL);
+            ranks[i].allocate(16u,PX_FL);
+            tempKeys[i].allocate(16u,PX_FL);
+            tempHandles[i].allocate(16u,PX_FL);
+            radixCounts[i].allocate(physx::PxgRadixSortKernelGridDim::RADIX_SORT * 16u * sizeof(physx::PxU32),PX_FL);
+        }
+        for(physx::PxU32 i=0;i<6u;++i)
+            boxHandles[i].allocate(16u,PX_FL);
+
+        auto check=[&]() {
+            for (physx::PxU32 i=0;i<3u;++i) {
+                const auto k=reinterpret_cast<physx::PxU32*>(projections[i].getDevicePtr());
+                const auto r=reinterpret_cast<physx::PxU32*>(ranks[i].getDevicePtr());
+                const auto tk=reinterpret_cast<physx::PxU32*>(tempKeys[i].getDevicePtr());
+                const auto tr=reinterpret_cast<physx::PxU32*>(tempHandles[i].getDevicePtr());
+                const auto counts=reinterpret_cast<physx::PxU32*>(radixCounts[i].getDevicePtr());
+                const auto h=reinterpret_cast<physx::PxU32*>(boxHandles[i].getDevicePtr());
+                const auto j=i+3u;
+                if(normal[i].inputKeys!=k || normal[i].inputRanks!=r ||
+                   normal[i].outputKeys!=tk || normal[i].outputRanks!=tr ||
+                   normal[i].radixBlockCounts!=counts ||
+                   normal[j].inputKeys!=tk || normal[j].inputRanks!=tr ||
+                   normal[j].outputKeys!=k || normal[j].outputRanks!=r ||
+                   normal[j].radixBlockCounts!=counts ||
+                   withoutRanks[i].inputKeys!=k || withoutRanks[i].inputRanks!=h ||
+                   withoutRanks[i].outputKeys!=tk || withoutRanks[i].outputRanks!=tr ||
+                   withoutRanks[i].radixBlockCounts!=counts ||
+                   withoutRanks[j].inputKeys!=tk || withoutRanks[j].inputRanks!=tr ||
+                   withoutRanks[j].outputKeys!=k || withoutRanks[j].outputRanks!=h ||
+                   withoutRanks[j].radixBlockCounts!=counts)
+                    throw std::runtime_error("Original SAP radix forward/reverse/WOR pointer wiring changed");
+                if(normal[i].count!=100u+i || normal[j].count!=100u+j ||
+                   withoutRanks[i].count!=200u+i ||
+                   withoutRanks[j].count!=200u+j)
+                    throw std::runtime_error("Source radix descriptor count was unexpectedly overwritten");
+            }
+        };
+
+        prepare_sap_radix_descriptors_native(normal.data(),withoutRanks.data(),source);
+        check();
+        // Source expects source GPU pointer rebinding after history buffer
+        // growth; the allocator is allowed to reuse raw pointers.
+        for(physx::PxU32 i=0;i<3u;++i) {
+            projections[i].allocate(128u,PX_FL);
+            ranks[i].allocate(128u,PX_FL);
+            tempKeys[i].allocate(128u,PX_FL);
+            tempHandles[i].allocate(128u,PX_FL);
+            boxHandles[i].allocate(128u,PX_FL);
+        }
+        prepare_sap_radix_descriptors_native(normal.data(),withoutRanks.data(),source);
+        check();
+
+        // These two GPU descriptors are source bitwise records, not a
+        // reinterpretation of host-side Context/Vulkan/D3D12 objects.
+        // The actual gpuDMAUp upload order additionally requires the
+        // broadphase descriptor FIRST; here we test only raw GPU ABI.
+        stream.queue_uploads({
+            {gpuNormal.getDevicePtr(),normal.data(),sizeof(normal)},
+            {gpuWOR.getDevicePtr(),withoutRanks.data(),sizeof(withoutRanks)}
+        });
+        // Upload batches snapshot source host bytes at enqueue.
+        const auto savedNormal=normal;
+        const auto savedWOR=withoutRanks;
+        for(auto& x:normal)x.inputKeys=nullptr;
+        for(auto& x:withoutRanks)x.inputRanks=nullptr;
+        stream.wait_at_fetch();
+        std::array<physx::PxgRadixSortDesc,6u> actualNormal{},actualWOR{};
+        const auto read=[&](const physx::PxgCudaBuffer& owner,auto& output) {
+            const auto resolved=addresses.resolve(owner.getDevicePtr(),sizeof(output));
+            context.download(resolved.buffer,resolved.offset,output.data(),sizeof(output));
+        };
+        read(gpuNormal,actualNormal);
+        read(gpuWOR,actualWOR);
+        for(std::size_t i=0;i<6u;++i) {
+            const auto assertMatch=[&](const physx::PxgRadixSortDesc& expected,
+                                      const physx::PxgRadixSortDesc& actual){
+                if(expected.inputKeys!=actual.inputKeys ||
+                   expected.inputRanks!=actual.inputRanks ||
+                   expected.outputKeys!=actual.outputKeys ||
+                   expected.outputRanks!=actual.outputRanks ||
+                   expected.radixBlockCounts!=actual.radixBlockCounts ||
+                   expected.count!=actual.count)
+                    throw std::runtime_error("Source radix GPU descriptor upload changed ABI or host snapshot");
+            };
+            assertMatch(savedNormal[i],actualNormal[i]);
+            assertMatch(savedWOR[i],actualWOR[i]);
+        }
+    }
+    if(aborted||roots.live_roots()||addresses.live_allocations())
+        throw std::runtime_error("Original PhysX radix descriptor test leaked GPU heap roots");
 }
 
 void exercise_original_sap_post_axis_buffers_native(Context& context) {
@@ -1885,6 +2022,7 @@ int main() {
         exercise_original_gpu_dma_up_handles_native(context);
         exercise_original_sap_history_growth_native(context);
         exercise_original_sap_post_axis_buffers_native(context);
+        exercise_original_sap_radix_descriptors_native(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
