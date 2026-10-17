@@ -14,15 +14,17 @@ namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
 
-// Borrow the original PxgCudaBroadPhaseSap member fields: all lifetime,
-// counters, and device buffers remain owned by that source broadphase.
-// The result describes source projection sizing for the next gpuDMAUp slice.
-struct SourceSapGpuDMAUpHandleMembers {
+// These are references to the EXISTING PxgCudaBroadPhaseSap member fields;
+// neither helper introduces a separate broadphase state or ownership model.
+struct SourceSapGpuDMAUpCountMembers {
     physx::PxU32& num_boxes;
     physx::PxU32& boxes_capacity;
     physx::PxU32& created_size;
     physx::PxU32& removed_size;
     physx::PxU32& updated_size;
+};
+
+struct SourceSapGpuDMAUpHandleBuffers {
     physx::PxgTypedCudaBuffer<physx::PxU32>& created;
     physx::PxgTypedCudaBuffer<physx::PxU32>& removed;
     physx::PxgTypedCudaBuffer<physx::PxU32>& updated;
@@ -39,14 +41,26 @@ struct SourceSapGpuDMAUpCounts {
     physx::PxU32 padded_projections;
 };
 
-// Source: initial and final handle-array portions of
-// PxgCudaBroadPhaseSap::gpuDMAUp. The caller inserts the original
-// intermediate persistent SAP buffer allocation, updateDescriptor,
-// and updateRadixSortDesc before the final source descriptor uploads.
-// No independent scene state or altered PhysX scheduling is introduced.
-SourceSapGpuDMAUpCounts gpu_dma_up_handles_native(
+// Source ordering is essential:
+// 1. Derive/commit counts from original Bp::BroadPhaseUpdateData.
+// 2. Allocate/copy old projection and histogram GPU histories (next slice).
+// 3. Allocate the three changed-handle arrays (this slice).
+// 4. Build original broadphase/radix descriptors (next slice).
+// 5. Queue the handle uploads, then descriptor uploads on the same mStream.
+// These functions correspond to steps 1, 3 and 5. They can be called around
+// step 2/4 without changing the original source's allocation/copy order.
+SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
     const physx::Bp::BroadPhaseUpdateData& update,
-    SourceSapGpuDMAUpHandleMembers members,
+    SourceSapGpuDMAUpCountMembers members);
+
+void allocate_gpu_dma_up_handles_native(
+    const SourceSapGpuDMAUpCounts& counts,
+    SourceSapGpuDMAUpHandleBuffers buffers);
+
+void queue_gpu_dma_up_handles_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    SourceSapGpuDMAUpHandleBuffers buffers,
     SourceSapDmaNative& stream);
 
 } // namespace fyzz::physx_gpu
