@@ -16,18 +16,24 @@ class SourceSapDmaNative;
 
 // These are references to the EXISTING PxgCudaBroadPhaseSap member fields;
 // neither helper introduces a separate broadphase state or ownership model.
+// Match the upstream SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU feature switch:
+// the default GPU/AABB-manager path has NO updated-handle field or buffer.
 struct SourceSapGpuDMAUpCountMembers {
     physx::PxU32& num_boxes;
     physx::PxU32& boxes_capacity;
     physx::PxU32& created_size;
     physx::PxU32& removed_size;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     physx::PxU32& updated_size;
+#endif
 };
 
 struct SourceSapGpuDMAUpHandleBuffers {
     physx::PxgTypedCudaBuffer<physx::PxU32>& created;
     physx::PxgTypedCudaBuffer<physx::PxU32>& removed;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     physx::PxgTypedCudaBuffer<physx::PxU32>& updated;
+#endif
 };
 
 struct SourceSapGpuDMAUpCounts {
@@ -36,7 +42,9 @@ struct SourceSapGpuDMAUpCounts {
     physx::PxU32 capacity;
     physx::PxU32 created;
     physx::PxU32 removed;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     physx::PxU32 updated;
+#endif
     physx::PxU32 projections;
     physx::PxU32 padded_projections;
 };
