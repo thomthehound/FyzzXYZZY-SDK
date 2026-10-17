@@ -3,7 +3,7 @@
 
 # PhysX-to-portable-GPU engineering program
 
-Status: planning and source audit, October 2026. This is the program-level
+Status: source audit and native-engine migration, October 2026. This is the program-level
 companion to [the execution trace](PHYSX_GPU_PORT.md) and
 [the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
 completed PhysX GPU functionality. Source audit follows the PhysX family in `thomthehound/PhysX` and
@@ -13,8 +13,8 @@ Proposals below are explicitly distinguished from behavior observed upstream.
 
 ## 0. Objective, scope, and truthfulness
 
-The deliverable is a **port of PhysX's GPU execution path**, including the
-existing PhysX scene lifecycle, host task orchestration, algorithms, data
+The deliverable is an **independent FyzzXYZZY port of PhysX's GPU execution path**, including the
+source-derived scene lifecycle, host task orchestration, algorithms, data
 representations, synchronization, and reporting. CUDA driver entry points,
 CUDA device pointers, CUDA streams/events, warp intrinsics and compiled kernels
 must be translated to portable mechanisms. PhysX's domain algorithms and
@@ -65,9 +65,9 @@ infrastructure experimentation. They stay opt-in and outside production.
 
 **Required first architectural deliverable:** a source-to-task DAG with
 submission, dependency, completion and result-publication edges for the
-targeted scene mode. The portable GPU queues provide execution; **PhysX
-remains the scene scheduler and authority**. Preserve scene task continuations
-instead of introducing a second physics tick or duplicate actor state.
+targeted scene mode. The portable GPU queues provide execution; **FyzzXYZZY owns the scene scheduler and authoritative state**. Port the
+source task continuations and dependencies into that scheduler instead of
+running a parallel PhysX scene or duplicating actor state.
 
 ### 1.2 GPU broadphase is persistent, incremental, and observable
 
@@ -384,7 +384,7 @@ actual source-derived prototypes, not preference.
    Sketch the DAG and identify every observable output.
 2. **Record a dataflow ledger:** who allocates each buffer, who mutates it,
    stream/queue ownership, when copies happen, and which event publishes it.
-3. **Implement one incremental, testable path** in PhysX architecture.
+3. **Implement one incremental, testable path** in the native FyzzXYZZY architecture.
    Compile the shared shader for both platforms as soon as that operation
    exists; reserve Vulkan-first runtime bring-up without indefinitely
    deferring D3D12.
@@ -419,8 +419,8 @@ fully generalized compute framework completed before any more kernels.
    relocated PhysX arenas must survive until the actual completing fence/
    timeline value. Asynchronous upload, copy, download and deferred free
    need to correspond to PhysX's existing copy manager and stream/event
-   semantics. Implement a thin completion-to-PhysX-task continuation
-   bridge; do not invent a separate physics scheduler.
+   semantics. Implement completion-to-native-task continuation
+   signaling; do not invent a second physics scheduler.
 3. **Compile kernels from one behavioral source.** Establish a repeatable
    mapping from CUDA source function and host launch configuration to
    common shader, parameter/descriptor layout, backend capability and
@@ -483,33 +483,17 @@ Upstream interpretation is authoritative for what **PhysX does**;
 this document's suggested architecture and gate ordering are decisions for
 FyzzXYZZY, not claims made by NVIDIA.
 
-## Production PhysX scene admission milestone (PR #104)
+## Native scene ownership and G3 acceptance
 
-The public `fyzz::World` now owns a **single explicit production scene
-selection** via `WorldOptions::broadphase`, rather than presenting a
-test-only compute world as evidence that PhysX's own GPU scene is working.
-The default is the original CPU PhysX scene. An explicit CPU request
-sets `PxSceneDesc.broadPhaseType = ePABP` and verifies the *created*
-`PxScene::getBroadPhaseType()` agrees. A request for
-`PhysXPortableGpu` currently **fails closed before scene construction**
-with an actionable explanation; it never creates an ABP scene and reports
-that as portable GPU success.
+The default `fyzz::World` presently uses an isolated PhysX reference CPU backend.
+The production API explicitly rejects `NativePortableGpu` until the SDK owns a
+native scene and source-derived GPU SAP/AABB manager, native task lifecycle,
+GPU-completion publication, and a corresponding narrowphase/dynamics path.
+The short-lived source-level factory experiment in the PhysX fork was reverted;
+no production GPU integration shall depend on patching the reference PhysX
+`PxSceneDesc` or `Sc::Scene`.
 
-This is intentional and temporary. The pinned upstream
-`Sc::Scene` currently accepts `eGPU` only behind
-`PX_SUPPORT_GPU_PHYSX` and CUDA manager architecture checks; in the
-SDK's present CUDA-free build, it **silently substitutes** `eABP`
-otherwise. Adding an `eGPU` flag to the current scene descriptor
-would therefore be a false-positive integration claim. Production
-`World` is now the real selection boundary whose GPU arm must be
-connected directly to the **portable source-derived SAP owner and AABB
-manager inside the PhysX scene factory and task graph**, tracked in
-[Issue #101](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101).
+Implementation dependencies, measurable gates, runtime ownership and code
+retirement are specified in [NATIVE_ENGINE_MIGRATION.md](NATIVE_ENGINE_MIGRATION.md)
+and tracked in [issue #101](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101).
 
-The headless regression checks the default and explicit-CPU behavior,
-CPU rigid-body simulation, rejected GPU admission and unknown selectors
-through the **production `World` constructor**, without staging an
-unrelated simulation pipeline. This milestone establishes an honest
-production entry point, **not a working GPU scene**. Do not mark G3
-complete until multi-frame `PxScene::simulate/fetchResults` with
-the portable SAP publishes correct found/lost pairs to PhysX.

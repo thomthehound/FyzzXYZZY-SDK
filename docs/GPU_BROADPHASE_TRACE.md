@@ -3,7 +3,7 @@
 
 # GPU broadphase source trace and migration ledger
 
-Scope: **actual PhysX 5.11 GPU broadphase and its scene contract**.
+Scope: **PhysX 5.11 GPU broadphase source behavior and the native FyzzXYZZY port contract**. The original PhysX scene is a reference for dependencies and correctness, not the runtime that will host FyzzXYZZY's GPU execution. See [native migration](NATIVE_ENGINE_MIGRATION.md).
 Source family: PhysX GPU broadphase; no specific source revision is required by the SDK.
 This page is a focused implementation worksheet; it complements
 [the port program](GPU_PORT_PROGRAM.md) and

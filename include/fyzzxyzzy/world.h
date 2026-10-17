@@ -14,15 +14,15 @@ struct Vec3 {
     float z;
 };
 
-// Source PhysX remains the scene and task-graph owner. Choosing a GPU
-// broadphase must never silently admit a CPU scene as a successful GPU path.
-enum class BroadphaseMode : std::uint8_t {
-    PhysXCpu,
-    PhysXPortableGpu,
+// Reference PhysX CPU execution is transitional and isolated from the native
+// FyzzXYZZY engine. Native execution must never silently select the reference.
+enum class ExecutionMode : std::uint8_t {
+    ReferencePhysXCpu,
+    NativePortableGpu,
 };
 
 struct WorldOptions {
-    BroadphaseMode broadphase = BroadphaseMode::PhysXCpu;
+    ExecutionMode execution = ExecutionMode::ReferencePhysXCpu;
 };
 
 using BodyId = std::uint32_t;
