@@ -1396,6 +1396,21 @@ does not drive `PxgAABBManager`'s real lifecycle or the SAP source
 kernel/task graph. The next phase must lower the real owner binding,
 mapped report/AABB-manager getter provenance and native source dispatch
 order, preserving the original update/no-change/forced-update behavior.
+Original `gpuDMAUp` also computes
+`totalNbProjectionRegions = (nbProjections * 64 + 3) & ~3`,
+which it stores in a `PxU32`. A source count of **33,554,432
+previous-plus-created boxes** already implies 67,108,864 projections
+and 4,294,967,296 region slots, too many for that field. The
+shared checked region-slot function now runs inside
+`prepare_gpu_dma_up_counts_native`, **before source counters are
+committed**; the post-axis allocator invokes the same check for
+direct callers. Both paths reject rather than wrapping the original
+32-bit region count. Native boundary tests exercise one box below
+the limit and at the first overflowing box, and verify a rejected
+combined frame leaves counters, buffers, host descriptors and
+pending GPU commands unchanged. The boundary itself is checked
+arithmetically without attempting gigantic GPU allocations.
+
 The combined frame bridge also preflights all three original
 constructor-owned GPU descriptor allocations **before** advancing any
 mutable SAP counters, allocating frame GPU storage, or submitting HtoD
