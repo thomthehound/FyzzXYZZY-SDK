@@ -13,6 +13,9 @@
 // member-view ABI, regardless of the including translation unit.
 #include "PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
+#include "physx_gpu/source_sap_dma_native.h"
+
+#include <vector>
 
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
 
@@ -84,6 +87,15 @@ SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
 void allocate_gpu_dma_up_handles_native(
     const SourceSapGpuDMAUpCounts& counts,
     SourceSapGpuDMAUpHandleBuffers buffers);
+
+// Append to caller-owned frame HtoD list without submitting. Used by
+// the real gpuDMAUp contiguous handle/descriptor transfer sequence; the
+// legacy individual queue function remains valid for targeted tests.
+void append_gpu_dma_up_handles_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    SourceSapGpuDMAUpHandleBuffers buffers,
+    std::vector<SourceSapUpload>& uploads);
 
 void queue_gpu_dma_up_handles_native(
     const physx::Bp::BroadPhaseUpdateData& update,
