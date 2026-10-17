@@ -138,7 +138,8 @@ add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.cpp
   src/physx_port/gpubroadphase/PxgSapHistoryGrowthNative.cpp
   src/physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.cpp
-  src/physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.cpp)
+  src/physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.cpp
+  src/physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.cpp)
 target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -267,6 +268,20 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
       COMMAND fyzzxyzzy_physx_cuda_host_transfer)
 
+
+    add_executable(fyzzxyzzy_physx_sap_broadphase_descriptor_native
+      tests/physx_gpu_sap_broadphase_descriptor_native.cpp)
+    target_include_directories(fyzzxyzzy_physx_sap_broadphase_descriptor_native PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
+    target_link_libraries(fyzzxyzzy_physx_sap_broadphase_descriptor_native PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
+    add_test(NAME fyzzxyzzy_physx_sap_broadphase_descriptor_native COMMAND fyzzxyzzy_physx_sap_broadphase_descriptor_native)
 
     find_program(FYZZXYZZY_GLSLANG_VALIDATOR NAMES glslangValidator REQUIRED)
     set(FYZZXYZZY_AFFINE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/affine.comp.spv")
@@ -1619,6 +1634,21 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
       COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
   endif()
+    add_executable(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12
+      tests/physx_gpu_sap_broadphase_descriptor_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
+    target_link_libraries(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
+    add_test(NAME fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 COMMAND fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12)
+
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
   if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
