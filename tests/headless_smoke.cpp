@@ -26,17 +26,31 @@ int main() {
             if (!rejected_gpu)
                 throw std::runtime_error("Native GPU request silently created reference PhysX scene");
 
-            bool rejected_native_cpu = false;
+            fyzz::World native_cpu(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            const auto native_id = native_cpu.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+            if (native_cpu.body_state(native_id).position.y != 2)
+                throw std::runtime_error("Native CPU scene did not own actor state");
+            bool incomplete_solver_rejected = false;
             try {
-                fyzz::World unsupported(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                native_cpu.step(1.0f / 60.0f);
             } catch (const std::logic_error& error) {
-                rejected_native_cpu =
-                    std::string(error.what()).find("CPU scene and solver") !=
+                incomplete_solver_rejected =
+                    std::string(error.what()).find("narrowphase and solver") !=
                     std::string::npos;
             }
-            if (!rejected_native_cpu)
-                throw std::runtime_error("Native CPU request silently created reference PhysX scene");
+            if (!incomplete_solver_rejected)
+                throw std::runtime_error("Native CPU executed without a solver");
+            native_cpu.set_body_position(native_id, {0,3,0});
+            if (native_cpu.body_state(native_id).position.y != 3)
+                throw std::runtime_error("Native CPU scene relocation failed");
+            native_cpu.remove_body(native_id);
+            bool retired_native_actor = false;
+            try { (void)native_cpu.body_state(native_id); }
+            catch (const std::out_of_range&) { retired_native_actor = true; }
+            if (!retired_native_actor)
+                throw std::runtime_error("Native CPU scene failed to retire actor");
 
             bool rejected_unknown = false;
             try {
@@ -56,6 +70,37 @@ int main() {
             explicit_cpu.step(1.0f / 60.0f);
             if (explicit_cpu.body_state(cpu_test).position.y >= 1.0f)
                 throw std::runtime_error("Explicit production CPU PhysX scene failed");
+            const auto reference_retire = explicit_cpu.add_dynamic_box(
+                {0.2f,0.2f,0.2f}, {0,4,0}, 1.0f);
+            explicit_cpu.set_body_position(reference_retire, {0,5,0});
+            if (explicit_cpu.body_state(reference_retire).position.y != 5)
+                throw std::runtime_error("Reference actor relocation failed");
+            explicit_cpu.remove_body(reference_retire);
+            bool reference_retired = false;
+            try { (void)explicit_cpu.body_state(reference_retire); }
+            catch (const std::out_of_range&) { reference_retired = true; }
+            if (!reference_retired)
+                throw std::runtime_error("Reference actor removal failed");
+
+            // PxCreatePlane creates a rotated local +X plane. Relocating
+            // its position must preserve this quaternion: replacing it
+            // with an identity rotation changes a floor into a wall.
+            fyzz::World raised_floor(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto raised_floor_id = raised_floor.add_static_floor(0.0f);
+            raised_floor.set_body_position(raised_floor_id, {0,0.75f,0});
+            const auto dropped_on_raised_floor = raised_floor.add_dynamic_box(
+                {0.25f,0.25f,0.25f}, {0,2.5f,0}, 1.0f);
+            for (int frame = 0; frame < 300; ++frame)
+                raised_floor.step(1.0f / 120.0f);
+            const auto settled_above_floor =
+                raised_floor.body_state(dropped_on_raised_floor);
+            if (!std::isfinite(settled_above_floor.position.y) ||
+                std::abs(settled_above_floor.position.y - 1.0f) > 0.08f ||
+                std::abs(settled_above_floor.velocity.y) > 1.0f) {
+                throw std::runtime_error(
+                    "Relocating PhysX reference plane changed its orientation");
+            }
 
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});

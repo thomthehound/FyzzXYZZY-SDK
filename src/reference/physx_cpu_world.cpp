@@ -110,7 +110,8 @@ struct PhysXCpuWorld final : WorldBackend {
     }
 
     void cleanup() noexcept {
-        for (physx::PxRigidActor* actor : actors) actor->release();
+        for (physx::PxRigidActor* actor : actors)
+            if (actor) actor->release();
         actors.clear();
         if (material) {
             material->release();
@@ -163,8 +164,27 @@ struct PhysXCpuWorld final : WorldBackend {
         }
     }
 
+    void set_body_position(BodyId id, Vec3 position) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        // PxCreatePlane uses a non-identity pose quaternion to align its
+        // local +X plane normal with world +Y. A position-only transform
+        // would reset that rotation (and any dynamic body's rotation).
+        // Preserve the existing orientation, changing translation only.
+        auto pose = actors[id]->getGlobalPose();
+        pose.p = to_physx(position);
+        actors[id]->setGlobalPose(pose);
+    }
+
+    void remove_body(BodyId id) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        actors[id]->release();  // PhysX removes it from the scene.
+        actors[id] = nullptr;
+    }
+
     BodyState body_state(BodyId id) const override {
-        if (id >= actors.size()) {
+        if (id >= actors.size() || !actors[id]) {
             throw std::out_of_range("Unknown FyzzXYZZY body ID");
         }
         const auto* actor = actors[id];
