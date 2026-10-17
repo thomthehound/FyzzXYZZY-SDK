@@ -17,6 +17,9 @@ SourceSapGpuDMAUpCounts gpu_dma_up_sap_frame_native(
     SourceSapDmaNative& stream) {
     if (!members.radix_descriptors || !members.radix_wor_descriptors)
         throw std::invalid_argument("PhysX SAP gpuDMAUp requires source radix host records");
+    // The source constructor allocates these GPU buffers. Reject missing
+    // descriptor storage BEFORE source box counters or GPU allocations change.
+    validate_sap_dma_up_descriptor_buffers_native(members.descriptor_gpu_buffers);
 
     // Exactly the original source sequence. Keep each prefix, inner j
     // remainder, then four per-axis scratch allocations adjacent before
