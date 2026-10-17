@@ -11,6 +11,7 @@ on:
       - '**/*.md'
       - 'docs/**'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     branches:
       - main
     paths-ignore:
