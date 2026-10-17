@@ -6,6 +6,41 @@
 The transitional CPU **reference backend** uses unmodified PhysX CPU through the
 `FyzzXYZZY::ReferencePhysXCpu` library. The public `FyzzXYZZY::Core` implementation compiles without PhysX headers, but still links the reference backend for default CPU execution until the native CPU scene passes its acceptance gate. CUDA is disabled. The independent native scene and portable GPU runtimes are [separate migration milestones](NATIVE_ENGINE_MIGRATION.md).
 
+
+## Reference-free native build (intermediate ownership proof)
+
+Set `FYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF` to configure the native core and
+standalone compute backend without `FetchContent`, source headers, linking,
+or source packaging from the PhysX fork. It is **not yet a functional physics
+scene**: without the reference CPU solver, the public `World` factory rejects
+reference requests, and native GPU admission remains fail-closed until N1–N3.
+This mode is useful for proving the SDK can be built without owning a foreign
+PhysX runtime and for testing Vulkan/D3D12 buffer/queue functionality.
+
+The default is ON for transitional CPU/Godot compatibility and existing SAP
+port conformance fixtures. The source-import debt remains until N4; turning
+the flag OFF does not magically complete native CPU or GPU simulation.
+
+Linux (Vulkan SDK installed):
+
+```sh
+cmake -S . -B build-native -G Ninja -DBUILD_TESTING=ON \\
+  -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF \\
+  -DFYZZXYZZY_BUILD_VULKAN=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+cmake --build build-native --parallel 4
+ctest --test-dir build-native --output-on-failure
+```
+
+Windows (Visual Studio C++23 and Windows SDK):
+
+```powershell
+cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON `
+  -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF `
+  -DFYZZXYZZY_BUILD_D3D12=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+cmake --build build-native --config Release --parallel 4
+ctest --test-dir build-native -C Release --output-on-failure
+```
+
 ## C++ toolchain requirement
 
 FyzzXYZZY-owned native libraries, test executables and the Godot GDExtension

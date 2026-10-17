@@ -14,7 +14,7 @@ The original PhysX scheduler and GPU host pipeline **must be ported**, not ignor
 | Area | Current state | Destination |
 | --- | --- | --- |
 | `World` public API | Core facade; default reference PhysX CPU | Provider-neutral native scene facade, reference adapter removable |
-| PhysX CPU scene | External PhysX source built for CPU and current Godot acceptance | Isolated reference/test backend; native CPU solver/narrowphase imported or ported into engine |
+| PhysX CPU scene | External PhysX source built for CPU and current Godot acceptance | Optional reference/test backend (build flag `FYZZXYZZY_ENABLE_PHYSX_SOURCE`); native CPU solver/narrowphase imported or ported into engine |
 | Portable Vulkan/D3D12 compute | Native buffer/dispatch/submission backends, stage fixtures | Device-scoped runtime serving native scene jobs |
 | PhysX GPU heap and CUDA-style address lowering | Source-derived internal code in SDK | Scene/device-owned allocations and deferred retirement, with no duplicate GPU buffer owner |
 | `src/physx_port/gpubroadphase` | Nine source host-stage implementations, many borrowed member views | Consolidated into native SAP/AABB owner method boundaries |
@@ -29,7 +29,7 @@ The original PhysX scheduler and GPU host pipeline **must be ported**, not ignor
 - Use an explicit **execution mode**, not a `PxBroadPhaseType` selector masquerading as backend selection. Native GPU must reject until implemented. Existing CPU behavior and Godot tests must remain green.
 - Apply this ownership rule to all documentation and architecture reviews.
 
-**Pass:** fork source restored; isolated reference backend and explicit native selection compiled on Linux/Windows; no production factory ABI depends on the modified PhysX fork.
+**Pass:** fork source restored; isolated reference backend and explicit native selection compiled on Linux/Windows; no production factory ABI depends on the modified PhysX fork. Also require a reference-free CMake build of `FyzzXYZZY::Core` and native Vulkan/D3D12 compute without fetching PhysX. This is a packaging/ownership proof, **not** proof of a native CPU physics implementation.
 
 ## Gate N1 — authoritative native scene and source task graph
 
