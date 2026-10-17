@@ -26,6 +26,18 @@ int main() {
             if (!rejected_gpu)
                 throw std::runtime_error("Native GPU request silently created reference PhysX scene");
 
+            bool rejected_native_cpu = false;
+            try {
+                fyzz::World unsupported(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+            } catch (const std::logic_error& error) {
+                rejected_native_cpu =
+                    std::string(error.what()).find("CPU scene and solver") !=
+                    std::string::npos;
+            }
+            if (!rejected_native_cpu)
+                throw std::runtime_error("Native CPU request silently created reference PhysX scene");
+
             bool rejected_unknown = false;
             try {
                 fyzz::World unsupported(fyzz::WorldOptions{

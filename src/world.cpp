@@ -41,6 +41,9 @@ std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
             "Reference PhysX CPU backend was disabled at SDK build time; "
             "the native CPU solver is not yet integrated");
 #endif
+    case ExecutionMode::NativeCpu:
+        throw std::logic_error(
+            "Native FyzzXYZZY CPU scene and solver are not yet implemented");
     case ExecutionMode::NativePortableGpu:
         throw std::logic_error(
             "Native FyzzXYZZY GPU scene is not yet implemented; "

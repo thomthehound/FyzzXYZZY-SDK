@@ -18,6 +18,7 @@ struct Vec3 {
 // FyzzXYZZY engine. Native execution must never silently select the reference.
 enum class ExecutionMode : std::uint8_t {
     ReferencePhysXCpu,
+    NativeCpu,
     NativePortableGpu,
 };
 

@@ -26,6 +26,17 @@ int main() {
     if (!reference_unavailable)
         throw std::runtime_error("Reference-only build boundary bypassed");
 
+    bool native_cpu_unavailable = false;
+    try {
+        World world(WorldOptions{ExecutionMode::NativeCpu});
+    } catch (const std::logic_error& error) {
+        native_cpu_unavailable =
+            std::string(error.what()).find("CPU scene and solver") !=
+            std::string::npos;
+    }
+    if (!native_cpu_unavailable)
+        throw std::runtime_error("Native CPU request silently admitted");
+
     bool native_unavailable = false;
     try {
         World world(WorldOptions{ExecutionMode::NativePortableGpu});
