@@ -329,6 +329,9 @@ int main() {
                 const auto expectedWor=wor;
                 // Actual source upload order: created, removed, updated,
                 // broadphase, normal radix[6], WOR radix[6], same mStream.
+                // Standalone helpers keep immediate-submit semantics for
+                // unrelated callers; only the *combined source frame*
+                // safely joins known adjacent HtoD transfers.
                 queue_gpu_dma_up_handles_native(frame,counts,handles,stream);
                 queue_sap_dma_up_descriptors_native(
                     desc,normal.data(),wor.data(),recordBuffers,stream);
@@ -337,6 +340,7 @@ int main() {
                 stream.queue_device_copy(
                     copyAfterDescriptors.getDevicePtr(),created.getDevicePtr(),
                     sizeof(savedCreated));
+
                 // The source may reuse host update arrays immediately. The
                 // native submission snapshots ALL records before returning.
                 createdInput.fill(0xeeeeeeeeu);
@@ -513,8 +517,15 @@ int main() {
                     throw std::runtime_error(
                         "Valid source count preflight incorrectly enqueued GPU work");
 
+                const auto beforeFrameBatches=stream.submission_stats();
                 const auto nextCounts=gpu_dma_up_sap_frame_native(
                     nextUpdate,borrowed,stream);
+                const auto afterFrameBatches=stream.submission_stats();
+                if(afterFrameBatches.upload_batches!=beforeFrameBatches.upload_batches+1u ||
+                   afterFrameBatches.upload_spans!=beforeFrameBatches.upload_spans+6u ||
+                   afterFrameBatches.upload_bytes<=beforeFrameBatches.upload_bytes)
+                    throw std::runtime_error(
+                        "Source SAP full-frame handle+descriptor HtoD was split into extra submissions");
                 if(nextCounts.previous_boxes!=3u ||
                    nextCounts.current_boxes!=4u ||
                    nextCounts.capacity!=6u ||

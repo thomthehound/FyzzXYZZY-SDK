@@ -99,11 +99,11 @@ void allocate_gpu_dma_up_handles_native(
 #endif
 }
 
-void queue_gpu_dma_up_handles_native(
+void append_gpu_dma_up_handles_native(
     const physx::Bp::BroadPhaseUpdateData& update,
     const SourceSapGpuDMAUpCounts& counts,
     SourceSapGpuDMAUpHandleBuffers buffers,
-    SourceSapDmaNative& stream) {
+    std::vector<SourceSapUpload>& uploads) {
     check_handle_inputs(update);
     if (counts.created != update.getNumCreatedHandles() ||
         counts.removed != update.getNumRemovedHandles() ||
@@ -122,7 +122,7 @@ void queue_gpu_dma_up_handles_native(
 
     // Original source executes these adjacent HtoD calls after building the
     // descriptors. The stream snapshots the borrowed inputs before return.
-    const std::vector<SourceSapUpload> uploads{
+    uploads.insert(uploads.end(), {
         {buffers.created.getDevicePtr(), update.getCreatedHandles(),
          std::size_t(counts.created)*sizeof(physx::PxU32)},
         {buffers.removed.getDevicePtr(), update.getRemovedHandles(),
@@ -131,7 +131,17 @@ void queue_gpu_dma_up_handles_native(
         {buffers.updated.getDevicePtr(), update.getUpdatedHandles(),
          std::size_t(counts.updated)*sizeof(physx::PxU32)}
 #endif
-    };
+    });
+}
+
+void queue_gpu_dma_up_handles_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    SourceSapGpuDMAUpHandleBuffers buffers,
+    SourceSapDmaNative& stream) {
+    std::vector<SourceSapUpload> uploads;
+    uploads.reserve(3u);
+    append_gpu_dma_up_handles_native(update, counts, buffers, uploads);
     stream.queue_uploads(uploads);
 }
 

@@ -33,6 +33,14 @@ struct SourceSapUpload {
 // All submission tokens are reaped only at the source fetch boundary.
 class SourceSapDmaNative final {
 public:
+    struct SubmissionStats {
+        std::size_t upload_batches = 0;
+        std::size_t command_batches = 0;
+        std::size_t upload_spans = 0;
+        std::size_t upload_bytes = 0;
+    };
+    const SubmissionStats& submission_stats() const noexcept { return stats_; }
+
     SourceSapDmaNative(compute::Context& context,
                        const CudaDeviceAddressMap& addresses) noexcept
         : context_(context), addresses_(addresses) {}
@@ -54,7 +62,11 @@ public:
         flush_gpu_commands();
         // The Context snapshots host bytes and owns the GPU staging resource
         // until the corresponding completion token is reaped.
-        tokens_.push_back(context_.submit_upload_batch(resolved));
+        const auto token = context_.submit_upload_batch(resolved);
+        tokens_.push_back(token);
+        ++stats_.upload_batches;
+        stats_.upload_spans += resolved.size();
+        for (const auto& span : resolved) stats_.upload_bytes += span.bytes;
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -123,6 +135,7 @@ private:
         const auto token = context_.submit_batch(pending_);
         pending_.clear();
         tokens_.push_back(token);
+        ++stats_.command_batches;
         return token;
     }
 
@@ -130,6 +143,7 @@ private:
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
     std::vector<compute::SubmissionId> tokens_;
+    SubmissionStats stats_;
 };
 
 } // namespace fyzz::physx_gpu

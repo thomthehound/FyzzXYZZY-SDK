@@ -1479,3 +1479,39 @@ actual compiled `PxgCudaBroadPhaseSap` update/fetch methods, GPU
 kernel sequence, AABB-manager native getter provenance, and source
 completion/readback/report publication. The helper is intentionally
 not an independent simulation or source task-graph replacement.
+
+## Native source-stream HtoD coalescing and owner-first policy (PR #102)
+
+Original `PxgCudaBroadPhaseSap::gpuDMAUp` issues three changed-handle
+HtoD copies immediately followed by one `PxgBroadPhaseDesc` and two
+six-record radix descriptor copies on **the same CUDA stream**, without
+any intervening allocation, GPU dispatch, readback or synchronization.
+
+Earlier port stages exposed those two groups through separate
+`SourceSapDmaNative::queue_uploads` calls. Each call submits a GPU
+upload batch with corresponding host-to-GPU staging memory.
+The original source boundary can safely aggregate them: the combined
+`gpu_dma_up_sap_frame_native` now validates/collects **all six** HtoD
+transfers into one `Context::submit_upload_batch`, retaining the exact
+source sequence and snapshotting host inputs before return.
+
+Crucially, **the generic source stream still submits `queue_uploads`
+immediately**. We rejected a more speculative approach that deferred
+arbitrary uploads across allocator operations: a source GPU allocation
+could otherwise be retired or relocated before submission. Only this
+precisely identified adjacent group is coalesced. Pre-broadphase inputs
+and nonadjacent history DtoD copies are not reordered. No extra CPU
+wait, fence or polling is introduced.
+
+The existing Linux/Vulkan and Windows/D3D12 GPU regression verifies
+all handle and descriptor bytes after host inputs are overwritten and
+now asserts that the combined source frame uses **one HtoD submission
+with six spans**, rather than two submissions. The native stream exposes
+lightweight cumulative upload/command submission counts and upload
+spans/bytes for performance acceptance and future SDK-wide auditing.
+
+This consolidation removes one driver submission and one corresponding
+staging-allocation group per applicable full SAP update frame; it is **not**
+a claim about measured hardware frame-time improvement or G3 completion.
+The production `PxScene`/factory owner connection remains an open
+acceptance item in #101.

@@ -57,11 +57,19 @@ SourceSapGpuDMAUpCounts gpu_dma_up_sap_frame_native(
     // Original adjacent HtoD calls: created, removed, optional updated,
     // then one BP descriptor, six regular radix and six WOR radix records,
     // all enqueued on the original mStream with no extra host wait.
-    queue_gpu_dma_up_handles_native(update, counts, members.handles, stream);
-    queue_sap_dma_up_descriptors_native(
+    // These six consecutive source HtoD calls have no intervening CUDA
+    // copy, launch or wait. Resolve/validate both groups BEFORE one native
+    // submission. The Context snapshots CPU inputs before return; source
+    // owner allocation/retirement semantics outside this exact boundary
+    // remain unchanged.
+    std::vector<SourceSapUpload> uploads;
+    uploads.reserve(6u);
+    append_gpu_dma_up_handles_native(update, counts, members.handles, uploads);
+    append_sap_dma_up_descriptors_native(
         members.broadphase_descriptor, members.radix_descriptors,
         members.radix_wor_descriptors, members.descriptor_gpu_buffers,
-        stream);
+        uploads);
+    stream.queue_uploads(uploads);
     return counts;
 }
 

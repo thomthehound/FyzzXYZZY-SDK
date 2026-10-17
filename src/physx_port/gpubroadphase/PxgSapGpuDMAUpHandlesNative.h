@@ -14,10 +14,13 @@
 #include "PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
+#include <vector>
+
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
 
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
+struct SourceSapUpload;
 
 // These are references to the EXISTING PxgCudaBroadPhaseSap member fields;
 // neither helper introduces a separate broadphase state or ownership model.
@@ -84,6 +87,15 @@ SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
 void allocate_gpu_dma_up_handles_native(
     const SourceSapGpuDMAUpCounts& counts,
     SourceSapGpuDMAUpHandleBuffers buffers);
+
+// Append to caller-owned frame HtoD list without submitting. Used by
+// the real gpuDMAUp contiguous handle/descriptor transfer sequence; the
+// legacy individual queue function remains valid for targeted tests.
+void append_gpu_dma_up_handles_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    SourceSapGpuDMAUpHandleBuffers buffers,
+    std::vector<SourceSapUpload>& uploads);
 
 void queue_gpu_dma_up_handles_native(
     const physx::Bp::BroadPhaseUpdateData& update,

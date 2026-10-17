@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+# SPDX-License-Identifier: Apache-2.0
+
+name: SDK architecture contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  architecture-review:
+    name: Architecture ownership and runtime review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate review gate and its unit tests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_architecture_review.py'
+          python3 scripts/check_architecture_review.py
