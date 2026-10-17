@@ -1143,3 +1143,35 @@ and check stable device identities on a no-growth frame. The full
 `gpuDMAUp` history/scratch loop, source descriptors, GPU scene and shader
 task graph remain subsequent integration stages. No measured performance
 benefit is claimed yet.
+
+## Original per-axis SAP endpoint and histogram history (PR #94)
+
+The second half of the original `gpuDMAUp` three-axis loop is now
+available as `grow_sap_history_axis_remainder_native`. For each axis
+`i=0..2`, it must be called immediately **after**
+`grow_sap_history_axis_prefix_native` and **before** the next axis.
+The source's inner `j=0..1` loop uses exactly `index=j*3+i`, not
+`i*2+j`, and the seven GPU history buffers execute in original order:
+
+1. Copy-preserving projection handles (padded projections);
+2. Copy-preserving endpoint histogram (unpadded projections);
+3. Copy-preserving block endpoint histogram (original grid dimension);
+4. Copy-preserving endpoint handles (post-update live boxes);
+5. Copy-preserving start histogram (unpadded projections);
+6. Copy-preserving block start histogram (original grid dimension);
+7. Copy-preserving start handles (post-update live boxes).
+
+Following **both** `j` passes, the original four `i`-indexed scratch
+buffers use non-copying allocation: incremental comparisons and their
+block counts, total endpoint histogram and block total histogram. Sizes
+come from source `PxgBPKernelGridDim`, not hardcoded replacements.
+
+The expanded cross-backend test exercises all **42** (`7*2*3`)
+source endpoint/history buffers with prior-frame GPU data and enqueued
+GPU DtoD growth; it checks exact preservation, allocation growth versus
+stable capacity, source-derived scratch sizes, no-growth persistence and
+invalid-axis rejection. All GPU work remains ordered on the existing
+source stream without host polling. The remainder of `gpuDMAUp`
+outside the per-axis loop (aggregate reports, region arrays, new integer
+bounds, descriptors and uploads) is not yet assembled into a real source
+broadphase scene.
