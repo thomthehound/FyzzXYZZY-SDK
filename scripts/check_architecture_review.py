@@ -31,6 +31,18 @@ def documentation_only(files: list[dict]) -> bool:
     )
 
 
+def complete_documentation_only(files: list[dict], changed_files: object) -> bool:
+    """Never exempt a possibly truncated GitHub REST file listing.
+
+    GitHub lists at most 3,000 PR files. 'changed_files' from the PR
+    payload reflects the full PR, so a mismatch fails closed into the
+    ordinary substantive architecture review.
+    """
+    return (isinstance(changed_files, int) and
+            not isinstance(changed_files, bool) and
+            len(files) == changed_files and documentation_only(files))
+
+
 def github_pr_files(repository: str, number: int, token: str) -> list[dict]:
     """Use GitHub's PR file list, not fragile git diff/fetch-depth guessing."""
     if not repository or not repository.replace("-", "").replace("_", "").replace("/", "").isalnum():
@@ -92,7 +104,8 @@ def main() -> int:
         repo = os.getenv("GITHUB_REPOSITORY", "")
         number = pr.get("number")
         if token and repo and isinstance(number, int):
-            if documentation_only(github_pr_files(repo, number, token)):
+            files = github_pr_files(repo, number, token)
+            if complete_documentation_only(files, pr.get("changed_files")):
                 print("Architecture review: docs-only PR, explicit successful check.")
                 return 0
     except (OSError, ValueError, TimeoutError) as exc:
