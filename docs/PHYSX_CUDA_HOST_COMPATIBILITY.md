@@ -1432,3 +1432,50 @@ member type; their tests instantiate six-element original buffers while
 allocating/checking only axes 0–2. This correction is essential for
 binding the bridge directly to the source owner without reinterpret casts,
 shadow arrays or a replacement broadphase state.
+
+## Source SAP update and fetch ownership lifecycle (PR #100)
+
+Original `PxgCudaBroadPhaseSap::update` invokes `gpuDMAUp`
+**before** testing whether the frame has changed. The pinned constructor
+initializes `mForceUpdate = true`. On a quiet frame, `update`
+still executes the complete `gpuDMAUp` host staging, then either
+executes **one final GPU pass** if `mForceUpdate` was set or returns
+without GPU kernel execution if it was already clear. Any frame with
+created/removed handles or with the CPU or GPU changed-state flag set
+executes kernels and rearms the final quiet pass. The policy deliberately
+does not use the optional updated-handle array *by itself* to decide
+activity; this matches the original source.
+
+`PxgSapUpdateFetchNative.{h,cpp}` ports this post-DMA branch as
+`should_execute_sap_update_after_dma_up_native(update, mForceUpdate)`,
+borrowing the actual owning state field. It **never** bypasses DMA
+staging or launches replacement kernels. The caller invokes it **after**
+`gpu_dma_up_sap_frame_native`. It also ports the two source ownership
+swap boundaries:
+
+- After `generateNewPairsKernel` and before `clearNewFlagKernel`,
+  source `update()` swaps `mNewIntegerBoundsBuf` and
+  `mOldIntegerBoundsBuf`.
+- In `fetchBroadPhaseResults`, only **after** `gpuDMABack` has
+  completed descriptor readback, signaled completion and published
+  found/lost reports, the source swaps history indices `i` and
+  `i+3` for all three axes across seven GPU buffer groups:
+  projection handles; block/end histograms; end handles; block/start
+  histograms; and start handles.
+
+Both swaps call original `PxgCudaBuffer::swapBuffer`, preserving
+raw allocator pointer/size ownership; they allocate nothing, enqueue
+no GPU transfers, and perform no host waits or polling. The GPU
+completion mechanism remains the original source fetch boundary.
+Tests run on the same native PhysX buddy heap for Vulkan/Linux and
+D3D12/Windows, covering initial quiet/forced pass, subsequent quiet
+skip, activity rearming, GPU-only changed state, CPU changed state,
+created/removed handles, updated-array-only semantics, prior GPU byte
+preservation across integer-bounds swap, all 42 history owner pointer
+and capacity mappings, second-swap restoration and clean heap teardown.
+
+**Still to integrate:** Binding this decision and fetch swap to the
+actual compiled `PxgCudaBroadPhaseSap` update/fetch methods, GPU
+kernel sequence, AABB-manager native getter provenance, and source
+completion/readback/report publication. The helper is intentionally
+not an independent simulation or source task-graph replacement.
