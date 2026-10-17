@@ -29,6 +29,7 @@ Its independent floor/contact demonstration is opt-in only
 PhysX GPU port. Production GPU physics requires porting PhysX's original
 algorithms, GPU contexts, scene orchestration and dataflow.
 
+- [SDK-wide enforced architecture contract](docs/ARCHITECTURE_CONTRACT.md)
 - [Development roadmap](docs/ROADMAP.md)
 - [CPU SDK build and testing](docs/BUILDING.md)
 - [Portable compute backend](docs/COMPUTE.md)
