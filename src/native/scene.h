@@ -23,6 +23,20 @@ struct Pair {
     }
 };
 
+// Matches Gu::PxContactPoint semantics for the presently supported shapes:
+// normal points from shape1 toward shape0, signed separation is negative
+// for penetration. Contacts are geometry results, not solved impulses.
+struct ContactPoint {
+    Vec3 position{};
+    Vec3 normal{};
+    float separation = 0.0f;
+};
+struct ContactManifold {
+    Pair pair{};
+    std::array<ContactPoint, 8> points{};
+    std::uint8_t count = 0;
+};
+
 class Scene final {
 public:
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
@@ -32,13 +46,19 @@ public:
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 
-    // Source-ordered bounds -> broadphase -> pair publication only.
-    // No native contact generation/solver/fetch is claimed.
-    // Returned spans remain valid until the next scene mutation/advance.
-    void advance_broadphase(bool force_update = false);
+    // One scene-owned collision progression: update bounds -> SAP ->
+    // overlap publication -> narrowphase -> contact publication.
+    // Dynamics/constraints/solver/fetch are intentionally not admitted.
+    // Returned spans remain valid until the next successful advance.
+    void advance_collision(bool force_update = false);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
     std::span<const Pair> lost_pairs() const noexcept { return lost_; }
+    std::span<const ContactManifold> contacts() const noexcept {
+        return manifolds_;
+    }
+    std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
+    std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
 
 private:
@@ -62,6 +82,7 @@ private:
     void update_bounds();
     void update_pairs();
     void publish_pairs();
+    void update_contacts();
 
     std::vector<Actor> actors_;
     std::vector<Endpoint> endpoints_;
@@ -70,6 +91,14 @@ private:
     std::vector<Pair> pending_pairs_;
     std::vector<Pair> found_;
     std::vector<Pair> lost_;
+
+    // Source contact streams (GuContactPlaneBox/GuContactBoxBox) are owned
+    // here, not by a second narrowphase scene or external reference PxScene.
+    // Reuse both vectors' allocations across frames, swap only at publish.
+    std::vector<ContactManifold> manifolds_;
+    std::vector<ContactManifold> next_manifolds_;
+    std::vector<Pair> found_contacts_;
+    std::vector<Pair> lost_contacts_;
     std::uint64_t frame_index_ = 0;
     bool dirty_ = true;
 };
