@@ -72,6 +72,31 @@ PhysX's optimized multi-axis incremental SAP, aggregate processing, MBP/PABP,
 or CPU contact solver. The shape contact offset is provisionally 0.02m;
 move it to the imported per-shape material/contact-distance state during N1.
 
+## N1 collision contact streams — first source-derived narrowphase
+
+The single native scene now advances **one** collision pipeline: bounds,
+SAP candidates, broadphase found/lost publication, geometry narrowphase, and
+physical touch found/lost publication. It owns a persistent per-pair contact
+manifold with inline storage for up to eight points, and reuses its two
+vectors across frames. Contact separation uses PhysX's signed convention
+(negative means penetration); a broadphase pair need not have a contact.
+
+For the *currently admitted geometry only*, narrowphase implements the
+eight-vertex plane/box test from `GuContactPlaneBox.cpp` and the Class I/II
+SAT face-contact case from `GuContactBoxBox.cpp`, specialized to the
+native scene's unrotated boxes. It retains source authorship in the
+implementation. The source's current 0.02m shape offsets yield a 0.04m
+pair contact distance until per-shape material/contact state is imported.
+No new owner, shader controller, scene clock or solver loop was added.
+
+**Not yet supported:** rotated box/box contacts, full multi-axis PhysX
+contact clipping/manifold caching, angular inertia, solver constraints,
+islands, dynamics, CCD, aggregates, articulation or backend GPU execution.
+The narrowphase method is not claimed equivalent to the complete
+`GuContactBoxBox.cpp` implementation. Native `World::step()` continues
+to reject simulation until the source-derived CPU solver and scheduler are
+actually connected; this is an N1 *intermediate integration*, not an N1 pass.
+
 ## Gate N2 — native source-derived SAP and AABB owner
 
 Consolidate `PxgCudaBroadPhaseSap` and `PxgAABBManager` source behavior into two cohesive native owner implementations. Own one persistent buffer/history representation; remove borrowed frame-member scaffolding when its tests have migrated. Drive the original first-pass/second-pass/update/fetch order, including state-changed/forced/idle logic, AABB and aggregate preparation, three-axis projection/region/rank/sort work, pair/report kernels, capacity and abort checks, old/new bounds swap and the seven fetch-history swaps.

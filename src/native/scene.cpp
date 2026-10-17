@@ -179,16 +179,152 @@ void Scene::publish_pairs() {
                         std::back_inserter(lost_));
     previous_pairs_.swap(pending_pairs_);
 }
-void Scene::advance_broadphase(bool force_update) {
-    // ScPipeline.cpp CPU ordering: BP first pass -> BP update ->
-    // postBroadPhase publication. Never claim narrowphase/solve/fetch here.
+void Scene::update_contacts() {
+    // The source's default contact offsets are currently 0.02m per shape.
+    // The near-contact generation distance is their *sum* (0.04m).
+    // Once N1 imports per-shape state, this is computed per candidate.
+    constexpr float contact_distance = 0.04f;
+    next_manifolds_.clear();
+    for (const Pair pair : previous_pairs_) {
+        const Actor& a = actors_[pair.a];
+        const Actor& b = actors_[pair.b];
+        ContactManifold manifold{};
+        manifold.pair = pair;
+
+        if (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane) {
+            // Adapted from GuContactPlaneBox.cpp::contactPlaneBox:
+            // test the eight box vertices against the plane and preserve
+            // signed separation; a far broadphase candidate has no contact.
+            const Actor& plane = a.kind == Kind::StaticPlane ? a : b;
+            const Actor& box = a.kind == Kind::StaticPlane ? b : a;
+            if (box.kind != Kind::DynamicBox)
+                continue;
+            for (unsigned corner = 0; corner < 8; ++corner) {
+                const float sx = (corner & 1u) ? 1.0f : -1.0f;
+                const float sy = (corner & 2u) ? 1.0f : -1.0f;
+                const float sz = (corner & 4u) ? 1.0f : -1.0f;
+                const Vec3 point{
+                    box.position.x + sx * box.half_extents.x,
+                    box.position.y + sy * box.half_extents.y,
+                    box.position.z + sz * box.half_extents.z};
+                const float separation = point.y - plane.position.y;
+                if (separation < contact_distance) {
+                    // Fixed global +Y plane: source normal is its negative,
+                    // from the box toward the plane.
+                    manifold.points[manifold.count++] =
+                        {point, Vec3{0.0f, -1.0f, 0.0f}, separation};
+                }
+            }
+        } else {
+            // GuContactBoxBox.cpp Class I/II SAT restricted to the shapes
+            // this native scene actually represents (unrotated boxes).
+            // With identity orientations the three unique face axes are
+            // sufficient; cross-product axes vanish. Clip the incident face
+            // rectangle to the reference box's corresponding face extents.
+            const std::array<float, 3> center_a{
+                a.position.x, a.position.y, a.position.z};
+            const std::array<float, 3> center_b{
+                b.position.x, b.position.y, b.position.z};
+            const std::array<float, 3> half_a{
+                a.half_extents.x, a.half_extents.y, a.half_extents.z};
+            const std::array<float, 3> half_b{
+                b.half_extents.x, b.half_extents.y, b.half_extents.z};
+            std::array<float, 3> signed_gaps{};
+            bool separated = false;
+            unsigned axis = 0;
+            for (unsigned k = 0; k < 3; ++k) {
+                signed_gaps[k] = std::abs(center_b[k] - center_a[k]) -
+                                 (half_a[k] + half_b[k]);
+                if (signed_gaps[k] > contact_distance) {
+                    separated = true;
+                    break;
+                }
+                if (signed_gaps[k] > signed_gaps[axis])
+                    axis = k;
+            }
+            if (separated)
+                continue;
+            const float sign = center_b[axis] >= center_a[axis]
+                ? -1.0f : 1.0f;
+            std::array<float, 3> face = center_b;
+            face[axis] += sign * half_b[axis];
+            const unsigned u = (axis + 1) % 3;
+            const unsigned v = (axis + 2) % 3;
+            const float low_u = std::max(
+                center_a[u] - half_a[u], center_b[u] - half_b[u]);
+            const float high_u = std::min(
+                center_a[u] + half_a[u], center_b[u] + half_b[u]);
+            const float low_v = std::max(
+                center_a[v] - half_a[v], center_b[v] - half_b[v]);
+            const float high_v = std::min(
+                center_a[v] + half_a[v], center_b[v] + half_b[v]);
+            // Within contactDistance, transverse faces may have a tiny gap.
+            // Its midpoint is a valid proximity contact point.
+            const float span_u[2] = {
+                low_u <= high_u ? low_u : (low_u + high_u) * 0.5f,
+                low_u <= high_u ? high_u : (low_u + high_u) * 0.5f};
+            const float span_v[2] = {
+                low_v <= high_v ? low_v : (low_v + high_v) * 0.5f,
+                low_v <= high_v ? high_v : (low_v + high_v) * 0.5f};
+            std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
+            normal[axis] = sign; // from shape b to a
+            for (unsigned i = 0; i < 4; ++i) {
+                auto point = face;
+                point[u] = span_u[i & 1u];
+                point[v] = span_v[(i >> 1u) & 1u];
+                manifold.points[manifold.count++] = {
+                    Vec3{point[0], point[1], point[2]},
+                    Vec3{normal[0], normal[1], normal[2]},
+                    signed_gaps[axis]};
+            }
+        }
+        if (manifold.count > 0)
+            next_manifolds_.push_back(manifold);
+    }
+
+    // BP pair found/lost and narrowphase touch found/lost are distinct
+    // source events. Report changed touch pairs exactly once per frame.
+    found_contacts_.clear();
+    lost_contacts_.clear();
+    const auto pair_less = [](const ContactManifold& lhs,
+                              const ContactManifold& rhs) {
+        return lhs.pair < rhs.pair;
+    };
+    // Sorted broadphase candidate iteration preserves manifold order.
+    auto next = next_manifolds_.begin();
+    auto old = manifolds_.begin();
+    while (next != next_manifolds_.end() && old != manifolds_.end()) {
+        if (pair_less(*next, *old)) {
+            found_contacts_.push_back(next->pair);
+            ++next;
+        } else if (pair_less(*old, *next)) {
+            lost_contacts_.push_back(old->pair);
+            ++old;
+        } else {
+            ++next; ++old;
+        }
+    }
+    for (; next != next_manifolds_.end(); ++next)
+        found_contacts_.push_back(next->pair);
+    for (; old != manifolds_.end(); ++old)
+        lost_contacts_.push_back(old->pair);
+    manifolds_.swap(next_manifolds_);
+}
+void Scene::advance_collision(bool force_update) {
+    // ScPipeline.cpp CPU ordering:
+    // BP first pass -> BP update -> post-BP pair publication ->
+    // Gu narrowphase -> physical touch publication.
+    // No parallel timestep or dynamics scheduler is introduced.
     if (dirty_ || force_update) {
         update_bounds();
         update_pairs();
         publish_pairs();
+        update_contacts();
     } else {
         found_.clear();
         lost_.clear();
+        found_contacts_.clear();
+        lost_contacts_.clear();
     }
     dirty_ = false;
     ++frame_index_;
