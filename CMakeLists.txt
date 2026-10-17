@@ -139,7 +139,8 @@ add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
   src/physx_port/gpubroadphase/PxgSapHistoryGrowthNative.cpp
   src/physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.cpp
   src/physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.cpp
-  src/physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.cpp)
+  src/physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.cpp
+  src/physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.cpp)
 target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -151,21 +152,6 @@ target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
 target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
-
-# Compile the alternative standalone-BP source feature layout as well.
-# Normal host-transfer tests exercise the default AABB-manager build;
-# the optional source variant is compile-checked without changing PhysX's
-# main library ABI or requiring a fictitious updated-handle member there.
-if(BUILD_TESTING)
-  add_library(fyzzxyzzy_physx_dma_handles_optional_compile OBJECT
-    src/physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.cpp)
-  target_compile_features(fyzzxyzzy_physx_dma_handles_optional_compile PRIVATE cxx_std_23)
-  target_compile_definitions(fyzzxyzzy_physx_dma_handles_optional_compile
-    PRIVATE SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU)
-  target_include_directories(fyzzxyzzy_physx_dma_handles_optional_compile PRIVATE
-    "$<TARGET_PROPERTY:fyzzxyzzy_physx_original_gpu_heap,INCLUDE_DIRECTORIES>")
-  target_link_libraries(fyzzxyzzy_physx_dma_handles_optional_compile PRIVATE physx_lib)
-endif()
 
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
@@ -262,6 +248,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
       FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
@@ -1628,6 +1615,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)

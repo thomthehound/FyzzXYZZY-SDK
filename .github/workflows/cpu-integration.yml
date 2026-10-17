@@ -41,7 +41,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Verify SDK C++23 compiler and standard library
         run: |
-          cmake --build build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_physx_dma_handles_optional_compile --parallel 2
+          cmake --build build --target fyzzxyzzy_cpp23_contract --parallel 2
           ctest --test-dir build -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
       - name: Validate shared PhysX HLSL to SPIR-V before full SDK build
         shell: bash
@@ -135,7 +135,7 @@ jobs:
       - name: Verify SDK C++23 compiler and standard library
         shell: pwsh
         run: |
-          cmake --build build --config Release --target fyzzxyzzy_cpp23_contract fyzzxyzzy_physx_dma_handles_optional_compile --parallel 2
+          cmake --build build --config Release --target fyzzxyzzy_cpp23_contract --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

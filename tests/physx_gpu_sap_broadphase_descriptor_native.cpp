@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
+#include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
+#include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
+#include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include "BpBroadPhaseUpdate.h"
+#include "PxgRadixSortKernelIndices.h"
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -15,6 +20,8 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 #include <stdexcept>
 
 using namespace fyzz::compute;
@@ -42,6 +49,12 @@ int main() {
                 physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
                 constexpr int group=physx::PxsHeapStats::eBROADPHASE;
                 physx::PxgCudaBufferN<27> singles(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> created(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> removed(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> updated(heap,group);
+                created.allocateElements(8u,PX_FL);
+                removed.allocateElements(8u,PX_FL);
+                updated.allocateElements(8u,PX_FL);
                 physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group),ranks(heap,group);
                 physx::PxgCudaBufferN<3> projections(heap,group),totalEnd(heap,group);
                 physx::PxgCudaBufferN<3> blockTotalEnd(heap,group),incremental(heap,group),blockIncremental(heap,group);
@@ -67,7 +80,7 @@ int main() {
                 descriptorDevice.allocateElements(1u,PX_FL);
 
                 SourceSapBroadphaseDescriptorBuffers buffers{
-                    singles[0],singles[1],singles[2],singles[3],singles[4],
+                    created,removed,updated,singles[3],singles[4],
                     singles[5],singles[6],singles[7],singles[8],
                     singles[9],singles[10],singles[11],singles[12],singles[13],singles[14],
                     sap,newSap,ranks,projections,boxHandles,totalEnd,blockTotalEnd,
@@ -92,8 +105,8 @@ int main() {
                 physx::PxgBroadPhaseDesc desc{};
                 std::memset(&desc,0xaa,sizeof(desc));
                 prepare_sap_broadphase_descriptor_native(desc,buffers,in);
-                expect(desc.updateData_createdHandles,singles[0]);
-                expect(desc.updateData_removedHandles,singles[1]);
+                expect(desc.updateData_createdHandles,created);
+                expect(desc.updateData_removedHandles,removed);
                 expect(desc.oldIntegerBounds,singles[3]);
                 expect(desc.newIntegerBounds,singles[4]);
                 expect(desc.updateData_fpBounds,singles[5]);
@@ -155,7 +168,7 @@ int main() {
                 for(const auto count:desc.totalIncrementalComparisons)
                     if(count)throw std::runtime_error("Original descriptor zero initialization lost");
 #ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
-                expect(desc.updateData_updatedHandles,singles[2]);
+                expect(desc.updateData_updatedHandles,updated);
                 if(desc.numUpdatedHandles!=5u)
                     throw std::runtime_error("Standalone SAP descriptor did not retain updated count");
 #endif
@@ -212,6 +225,145 @@ int main() {
                 context.download(view.buffer,view.offset,&gpu,sizeof(gpu));
                 if(std::memcmp(&expected,&gpu,sizeof(gpu))!=0)
                     throw std::runtime_error("Source broadphase descriptor ABI or GPU upload snapshot changed");
+
+                // Integrated source host stage: all records are built BEFORE
+                // the first changed-handle HtoD. The pinned PhysX SAP owner
+                // includes PxgBroadPhaseDesc.h before declaring the optional
+                // updated members, so these count/buffer views must match.
+                static_assert(sizeof(SourceSapGpuDMAUpCounts)==8u*sizeof(physx::PxU32));
+                physx::PxU32 liveBoxes=2u,boxesCapacity=0u;
+                physx::PxU32 createdCount=0u,removedCount=0u,updatedCount=0u;
+                SourceSapGpuDMAUpCountMembers members{
+                    liveBoxes,boxesCapacity,createdCount,removedCount,updatedCount};
+                SourceSapGpuDMAUpHandleBuffers handles{created,removed,updated};
+                physx::Bp::BpFilter filter(false,false);
+                std::array<physx::PxU32,2> createdInput{7u,8u};
+                std::array<physx::PxU32,1> removedInput{0u};
+                std::array<physx::PxU32,1> updatedInput{1u};
+                const auto savedCreated=createdInput;
+                const auto savedRemoved=removedInput;
+                const auto savedUpdated=updatedInput;
+                physx::Bp::BroadPhaseUpdateData frame(
+                    createdInput.data(),2u,updatedInput.data(),1u,
+                    removedInput.data(),1u,
+                    nullptr,nullptr,nullptr,4u,filter,true,true);
+                const auto counts=prepare_gpu_dma_up_counts_native(frame,members);
+                if(counts.previous_boxes!=2u || counts.current_boxes!=3u ||
+                   counts.updated!=1u || createdCount!=2u ||
+                   removedCount!=1u || updatedCount!=1u)
+                    throw std::runtime_error("Source SAP feature macro/layout broke updated-handle count binding");
+                allocate_gpu_dma_up_handles_native(counts,handles);
+
+                // Use original source buffer collections to build BOTH
+                // forms of radix descriptors; their six-element host
+                // arrays and GPU storage are owned by the SAP instance.
+                physx::PxgCudaBufferN<3> tempKeys(heap,group),tempHandles(heap,group),radixCounts(heap,group);
+                for(physx::PxU32 i=0;i<3u;++i) {
+                    tempKeys[i].allocate(64u,PX_FL);
+                    tempHandles[i].allocate(64u,PX_FL);
+                    radixCounts[i].allocate(
+                        sizeof(physx::PxU32) *
+                        physx::PxgRadixSortKernelGridDim::RADIX_SORT * 16u,PX_FL);
+                }
+                physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc> normalGpu(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc> withoutRanksGpu(heap,group);
+                normalGpu.allocateElements(6u,PX_FL);
+                withoutRanksGpu.allocateElements(6u,PX_FL);
+                std::array<physx::PxgRadixSortDesc,6> normal{},wor{};
+                for(physx::PxU32 i=0;i<6u;++i) {
+                    normal[i].count=10u+i;
+                    wor[i].count=20u+i;
+                }
+                prepare_sap_radix_descriptors_native(
+                    normal.data(),wor.data(),
+                    {projections,ranks,tempKeys,tempHandles,radixCounts,boxHandles});
+
+                in.num_boxes=counts.current_boxes;
+                in.created_count=counts.created;
+                in.removed_count=counts.removed;
+                in.updated_count=counts.updated;
+                in.aabb_manager=nullptr;
+                prepare_sap_broadphase_descriptor_native(desc,buffers,in);
+                if(desc.updateData_updatedHandles!=updated.getTypedPtr() ||
+                   desc.numUpdatedHandles!=1u ||
+                   desc.updateData_createdHandles!=created.getTypedPtr())
+                    throw std::runtime_error("Source standalone update-list descriptor ABI disagrees with handles");
+                in.aabb_manager=&manager;
+                prepare_sap_broadphase_descriptor_native(desc,buffers,in);
+                if(desc.updateData_updatedHandles || desc.numUpdatedHandles ||
+                   desc.aabbMngr_changedHandleBitMapWordCounts!=manager.changed_bitmap_word_count)
+                    throw std::runtime_error("Source manager descriptor incorrectly bound optional updated list");
+
+                SourceSapDmaUpDescriptorBuffers recordBuffers{
+                    descriptorDevice,normalGpu,withoutRanksGpu};
+                bool rejectedNoRadix=false;
+                try {
+                    queue_sap_dma_up_descriptors_native(
+                        desc,normal.data(),nullptr,recordBuffers,stream);
+                } catch(const std::invalid_argument&) {
+                    rejectedNoRadix=true;
+                }
+                if(!rejectedNoRadix)
+                    throw std::runtime_error("PhysX SAP queued incomplete descriptor upload group");
+                physx::PxgTypedCudaBuffer<physx::PxgRadixSortDesc> missingRecord(heap,group);
+                bool rejectedUnallocated=false;
+                try {
+                    queue_sap_dma_up_descriptors_native(
+                        desc,normal.data(),wor.data(),
+                        {descriptorDevice,normalGpu,missingRecord},stream);
+                } catch(const std::logic_error&) {
+                    rejectedUnallocated=true;
+                }
+                if(!rejectedUnallocated)
+                    throw std::runtime_error("PhysX SAP uploaded into an unallocated descriptor destination");
+
+                const auto expectedBp=desc;
+                const auto expectedNormal=normal;
+                const auto expectedWor=wor;
+                // Actual source upload order: created, removed, updated,
+                // broadphase, normal radix[6], WOR radix[6], same mStream.
+                queue_gpu_dma_up_handles_native(frame,counts,handles,stream);
+                queue_sap_dma_up_descriptors_native(
+                    desc,normal.data(),wor.data(),recordBuffers,stream);
+                physx::PxgCudaBuffer copyAfterDescriptors(heap,group);
+                copyAfterDescriptors.allocate(sizeof(savedCreated),PX_FL);
+                stream.queue_device_copy(
+                    copyAfterDescriptors.getDevicePtr(),created.getDevicePtr(),
+                    sizeof(savedCreated));
+                // The source may reuse host update arrays immediately. The
+                // native submission snapshots ALL records before returning.
+                createdInput.fill(0xeeeeeeeeu);
+                removedInput.fill(0xeeeeeeeeu);
+                updatedInput.fill(0xeeeeeeeeu);
+                std::memset(&desc,0xdd,sizeof(desc));
+                for(auto& r:normal)r.inputKeys=nullptr;
+                for(auto& r:wor)r.inputRanks=nullptr;
+                stream.wait_at_fetch();
+
+                const auto checkGpu=[&](const physx::PxgCudaBuffer& owner,
+                                       const void* expectedBytes,std::size_t bytes,
+                                       const char* diagnostic) {
+                    const auto v=addresses.resolve(owner.getDevicePtr(),bytes);
+                    std::vector<std::uint8_t> got(bytes);
+                    context.download(v.buffer,v.offset,got.data(),bytes);
+                    if(std::memcmp(got.data(),expectedBytes,bytes)!=0)
+                        throw std::runtime_error(diagnostic);
+                };
+                checkGpu(created,savedCreated.data(),sizeof(savedCreated),
+                         "Source ordered created-handle GPU upload failed");
+                checkGpu(removed,savedRemoved.data(),sizeof(savedRemoved),
+                         "Source ordered removed-handle GPU upload failed");
+                checkGpu(updated,savedUpdated.data(),sizeof(savedUpdated),
+                         "Source ordered updated-handle GPU upload failed");
+                checkGpu(descriptorDevice,&expectedBp,sizeof(expectedBp),
+                         "Source ordered broadphase descriptor GPU upload failed");
+                checkGpu(normalGpu,expectedNormal.data(),sizeof(expectedNormal),
+                         "Source ordered normal radix descriptor GPU upload failed");
+                checkGpu(withoutRanksGpu,expectedWor.data(),sizeof(expectedWor),
+                         "Source ordered WOR radix descriptor GPU upload failed");
+                checkGpu(copyAfterDescriptors,savedCreated.data(),sizeof(savedCreated),
+                         "Source-ordered GPU copy after descriptor DMA lost handle upload");
+
             }
             if(aborted||roots.live_roots()||addresses.live_allocations())
                 throw std::runtime_error("Original SAP descriptor leaked GPU buddy heap roots");

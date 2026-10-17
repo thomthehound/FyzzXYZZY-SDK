@@ -7,6 +7,11 @@
 #ifndef FYZZXYZZY_PXG_SAP_GPU_DMA_UP_HANDLES_NATIVE_H
 #define FYZZXYZZY_PXG_SAP_GPU_DMA_UP_HANDLES_NATIVE_H
 
+// The pinned PxgCudaBroadPhaseSap.h imports this source header BEFORE
+// declaring conditional updated-handle members. It defines
+// SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU and must also control the native
+// member-view ABI, regardless of the including translation unit.
+#include "PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
@@ -16,8 +21,10 @@ class SourceSapDmaNative;
 
 // These are references to the EXISTING PxgCudaBroadPhaseSap member fields;
 // neither helper introduces a separate broadphase state or ownership model.
-// Match the upstream SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU feature switch:
-// the default GPU/AABB-manager path has NO updated-handle field or buffer.
+// Match the feature switch established by the pinned source descriptor
+// header BEFORE defining these views. The AABB-manager path still owns the
+// updated-array members when the feature is compiled, but its descriptor
+// uses the manager's bitmap instead of the updated list.
 struct SourceSapGpuDMAUpCountMembers {
     physx::PxU32& num_boxes;
     physx::PxU32& boxes_capacity;
@@ -57,8 +64,9 @@ struct SourceSapGpuDMAUpCounts {
 //    PxgSapPostAxisBuffersNative.
 // 4. Allocate created/removed/(optional updated) handle arrays (this file).
 // 5. Allocate new integer bounds via PxgSapPostAxisBuffersNative.
-// 6. Build original broadphase/radix descriptors (pending).
-// 7. Queue handle uploads (this file), followed by descriptor uploads.
+// 6. Build original broadphase/radix descriptors.
+// 7. Queue handle uploads (this file), then broadphase, regular radix
+//    and WOR radix descriptors (PxgSapDmaUpUploadsNative).
 // The helpers are separated to preserve exact source allocation/copy order
 // when integrated back into the owning PhysX SAP broadphase.
 SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(

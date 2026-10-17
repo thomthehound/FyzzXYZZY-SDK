@@ -1077,12 +1077,15 @@ portions of `gpuDMAUp`, consuming the actual
 `Bp::BroadPhaseUpdateData`. The exposed members are borrowed references to
 `PxgCudaBroadPhaseSap` counters and its three original
 `PxgTypedCudaBuffer<PxU32>` objects, **not** a parallel broadphase.
-The **default** PhysX GPU/AABB-manager mode has only created/removed
-counters and buffers. The updated-handle counter, buffer, validation,
-allocation and HtoD are all guarded by upstream's
-`SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` feature macro and do not exist in
-the default layout. We do not invent updated-handle storage simply because
-`BroadPhaseUpdateData` exposes an updated list.
+The original source gates the updated-handle counter, buffer, validation,
+allocation and HtoD on `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU`. **In the
+pinned PhysX fork**, however, `PxgCudaBroadPhaseSap.h` itself includes
+`PxgBroadPhaseDesc.h` *before* declaring those members, and that header
+defines the feature macro. Therefore the actual pinned source SAP owner
+contains all three handle arrays in both manager-backed and standalone
+modes, even though `updateDescriptor` only binds the updated array when
+the GPU AABB manager is absent. PR #98 makes the port include that
+source header before defining these member views too.
 
 The helper boundaries deliberately retain the upstream sequence:
 
@@ -1093,23 +1096,25 @@ The helper boundaries deliberately retain the upstream sequence:
    copy-preserving growth** (not yet ported into this helper).
 3. Allocate source created/removed/updated handle buffers using
    `PxgCudaBuffer` and the native buddy allocator.
-4. Leave room for the original `updateDescriptor` /
-   `updateRadixSortDesc` and mapped-host report pointer setup (pending).
+4. Build the original `updateDescriptor` /
+   `updateRadixSortDesc` records from current source-owned buffers and
+   source-managed mapped report pointers.
 5. Upload created/removed/updated handle arrays on the existing
-   `SourceSapDmaNative` GPU stream before the future descriptor uploads.
+   `SourceSapDmaNative` GPU stream, then enqueue the broadphase,
+   six regular radix and six without-ranks radix descriptor records.
 
 This ordering matters: the split does **not** move new handle allocations
 ahead of source history-preserving copies or descriptor construction.
 
-The default host-transfer test covers mixed add/remove/update inputs (without
-staging the optional updated-handle list), 32-bit sizing,
-grow-only buffer behavior, CPU-array snapshot after enqueue, zero-change
-frames, invalid handle pointers/counts, and original GPU-root teardown on
-Vulkan/Linux and D3D12/Windows. Both CI jobs also compile the guarded
-standalone-BP helper with `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` enabled,
-without redefining the production PhysX library's feature macro. These remain integration tests rather than
-a live `PxScene` broadphase test; the full source construction,
-descriptor population, and shader/task graph attachment are still pending.
+The original host-transfer test now exercises the pinned source's
+updated-handle array as well as add/remove inputs, 32-bit sizing, grow-only
+buffer behavior, CPU-array snapshot after enqueue, zero-change frames,
+invalid handle pointers/counts and original GPU-root teardown on both
+backends. A separate dedicated source-descriptor test exercises the complete
+four-group upload sequence. The redundant, source-inconsistent
+alternate-macro compilation target was removed in PR #98. These tests still
+do not instantiate the source `PxgCudaBroadPhaseSap` owner within a live
+`PxScene`, and the live shader/task graph remains to be attached.
 
 
 ## `gpuDMAUp` persistent SAP history (PR #93)
@@ -1269,11 +1274,10 @@ Source-specific contracts worth retaining:
 
 - The pinned `PxgBroadPhaseDesc.h` itself defines
   `SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU`, which enables the descriptor's
-  standalone updated-list fields. Descriptor translation is compiled in a
-  separate translation unit and its GPU ABI test is also isolated, so this
-  upstream include cannot silently change the compile-time layout of the
-  existing changed-handle helper. The actual source feature/layout choice
-  must be unified when wiring the owning live SAP instance.
+  standalone updated-list fields. In PR #98 the changed-handle helpers
+  import this **same source header before their member-view declarations**.
+  This reconciles the source owner, counter/handle structures and descriptor
+  record ABI instead of compiling mutually incompatible host structures.
 - With a real GPU AABB manager, the descriptor reads **its** changed,
   added, removed, aggregated-bound and volume-data GPU pointers, plus
   its changed-handle bitmap word count. It does **not** substitute the
@@ -1309,3 +1313,46 @@ descriptors**, all queued on the source stream. The three descriptor
 uploads and integration into the actual `PxgCudaBroadPhaseSap` member
 lifetime/task graph are the next stage, rather than operations added
 ahead of their dependency boundary in this PR.
+
+## Original `gpuDMAUp` descriptor transfers and consistent feature ABI (PR #98)
+
+`PxgSapDmaUpUploadsNative.{h,cpp}` completes the ordered source HtoD
+stage after the handle, region, and descriptor-build helpers. It consumes
+the **three actual constructor-owned** GPU descriptor buffers:
+`mBPDescBuf`, `mRadixSortDescBuf`, and `mRadixSortWORDescBuf`, with
+the original binary record sizes. Its single source-stream upload batch
+enqueues exactly one broadphase record, six normal radix records, and
+six without-ranks radix records, **after**
+`queue_gpu_dma_up_handles_native` has enqueued created, removed and
+feature-enabled updated handles. No new device queue, fence, polling,
+memory ownership or invented host broadphase is introduced.
+
+Upstream's descriptor header is now included before the changed-handle
+counter/buffer structures are declared. In the pinned source it enables
+`SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU` as part of the actual SAP owner
+ABI, even when a GPU AABB manager is present. The source's manager path
+still populates the bitmap fields instead of the standalone updated-array
+descriptor fields. The old redundant optional-layout object-only CI
+compilation has been eliminated in favor of the real native runtime
+test on both backends.
+
+The extended source-descriptor conformance test uses the same original
+PhysX GPU buddy heap, native DMA stream, real
+`Bp::BroadPhaseUpdateData`, source handle-counter state, original
+`PxgBroadPhaseDesc`, and `updateRadixSortDesc` records to validate:
+
+- Both AABB-manager and standalone descriptor branches use the correct
+  updated-array ABI, with no source-inconsistent member offsets.
+- The source handle HtoD transfers precede the three descriptor
+  transfers on a *single ordered native queue*.
+- All six transfer groups retain their original bytes after
+  the CPU input arrays and descriptors are overwritten, and a subsequent
+  queued GPU-to-GPU copy observes those uploaded bytes without requiring a
+  CPU wait between stages.
+- The entire descriptor group rejects a missing radix record or
+  unallocated GPU destination before enqueuing partial transfers.
+
+This is a **GPU-host pathway conformance test**, not yet execution of the
+source SAP GPU task graph from a real `PxScene`. Completing that owner
+binding, actual AABB-manager getter provenance, report-mapping lifecycle
+and shader dispatch dependencies remains necessary.
