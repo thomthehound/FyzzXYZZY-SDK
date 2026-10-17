@@ -13,7 +13,6 @@
 // member-view ABI, regardless of the including translation unit.
 #include "PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
-#include "physx_gpu/source_sap_dma_native.h"
 
 #include <vector>
 
@@ -21,6 +20,7 @@ namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
 
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
+struct SourceSapUpload;
 
 // These are references to the EXISTING PxgCudaBroadPhaseSap member fields;
 // neither helper introduces a separate broadphase state or ownership model.
