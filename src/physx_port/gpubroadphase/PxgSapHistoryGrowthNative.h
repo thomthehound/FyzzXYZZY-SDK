@@ -38,5 +38,31 @@ void grow_sap_history_axis_prefix_native(
     SourceSapHistoryAxisBuffers buffers,
     SourceSapDmaNative& stream);
 
+// Remaining original per-axis loop body. Each N<6> index is j*3 + axis;
+// N<3> indexes the outer axis directly. The source owner retains all
+// arrays and their original buddy-heap/deferred-copy lifetime semantics.
+struct SourceSapHistoryAxisRemainderBuffers {
+    physx::PxgCudaBufferN<6>& projection_handles;
+    physx::PxgCudaBufferN<6>& end_histograms;
+    physx::PxgCudaBufferN<6>& block_end_histograms;
+    physx::PxgCudaBufferN<6>& end_handles;
+    physx::PxgCudaBufferN<6>& start_histograms;
+    physx::PxgCudaBufferN<6>& block_start_histograms;
+    physx::PxgCudaBufferN<6>& start_handles;
+    physx::PxgCudaBufferN<3>& incremental_comparisons;
+    physx::PxgCudaBufferN<3>& incremental_block_comparisons;
+    physx::PxgCudaBufferN<3>& total_end_histograms;
+    physx::PxgCudaBufferN<3>& block_total_end_histograms;
+};
+
+// Invoke AFTER grow_sap_history_axis_prefix_native for this axis and
+// BEFORE the prefix of the next axis. Implements both original j=0,1
+// seven-buffer sequences followed by the four per-axis scratch buffers.
+void grow_sap_history_axis_remainder_native(
+    const SourceSapGpuDMAUpCounts& counts,
+    physx::PxU32 axis,
+    SourceSapHistoryAxisRemainderBuffers buffers,
+    SourceSapDmaNative& stream);
+
 } // namespace fyzz::physx_gpu
 #endif

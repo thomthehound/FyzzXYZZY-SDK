@@ -669,9 +669,11 @@ void exercise_original_sap_history_growth_native(Context& context) {
     using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
     using fyzz::physx_gpu::SourceSapDmaNative;
     using fyzz::physx_gpu::SourceSapHistoryAxisBuffers;
+    using fyzz::physx_gpu::SourceSapHistoryAxisRemainderBuffers;
     using fyzz::physx_gpu::prepare_gpu_dma_up_counts_native;
     using fyzz::physx_gpu::grow_sap_old_bounds_native;
     using fyzz::physx_gpu::grow_sap_history_axis_prefix_native;
+    using fyzz::physx_gpu::grow_sap_history_axis_remainder_native;
 
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context, addresses);
@@ -689,6 +691,19 @@ void exercise_original_sap_history_growth_native(Context& context) {
         physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group);
         physx::PxgCudaBufferN<3> projections(heap,group),ranks(heap,group);
         physx::PxgCudaBufferN<3> tempKeys(heap,group),tempRanks(heap,group);
+        physx::PxgCudaBufferN<6> endpointHandles(heap,group),endHistogram(heap,group);
+        physx::PxgCudaBufferN<6> blockEndHistogram(heap,group),endHandles(heap,group);
+        physx::PxgCudaBufferN<6> startHistogram(heap,group),blockStartHistogram(heap,group);
+        physx::PxgCudaBufferN<6> startHandles(heap,group);
+        physx::PxgCudaBufferN<3> incremental(heap,group),blockIncremental(heap,group);
+        physx::PxgCudaBufferN<3> totalEndHistogram(heap,group),blockTotalEndHistogram(heap,group);
+        SourceSapHistoryAxisRemainderBuffers rest{
+            endpointHandles,endHistogram,blockEndHistogram,endHandles,
+            startHistogram,blockStartHistogram,startHandles,
+            incremental,blockIncremental,totalEndHistogram,blockTotalEndHistogram};
+        const std::array<physx::PxgCudaBufferN<6>*,7u> histories{
+            &endpointHandles,&endHistogram,&blockEndHistogram,&endHandles,
+            &startHistogram,&blockStartHistogram,&startHandles};
 
         physx::PxU32 numBoxes=0,capacity=0,createdSize=0,removedSize=0;
 #ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
@@ -730,8 +745,10 @@ void exercise_original_sap_history_growth_native(Context& context) {
         if(a.capacity!=2u||a.padded_projections!=4u)
             throw std::runtime_error("Original SAP initial source sizing changed");
         grow_sap_old_bounds_native(a,oldBounds,stream);
-        for(physx::PxU32 i=0;i<3u;++i)
+        for(physx::PxU32 i=0;i<3u;++i) {
             grow_sap_history_axis_prefix_native(a,axis(i),stream);
+            grow_sap_history_axis_remainder_native(a,i,rest,stream);
+        }
 
         std::array<std::uint8_t,48u> boundsPattern{};
         std::array<std::array<std::uint8_t,16u>,3u> sapPattern{},projectionPattern{};
@@ -753,6 +770,26 @@ void exercise_original_sap_history_growth_native(Context& context) {
         const auto sourceSap=sapPattern;
         const auto sourceProjection=projectionPattern;
 
+        // Populate all fourteen copy-preserving arrays per spatial axis
+        // (seven buffers for each j=0,1), including fixed-size block
+        // histograms. Uploads stay queued before the next frame's DtoD growth.
+        std::array<std::array<std::array<std::uint8_t,8>,6>,7> historyPatterns{};
+        std::array<std::array<CUdeviceptr,6>,7> originalPointers{};
+        std::array<std::array<physx::PxU64,6>,7> originalCapacities{};
+        for (std::size_t type=0;type<histories.size();++type)
+            for (physx::PxU32 index=0;index<6u;++index) {
+                auto& original=(*histories[type])[index];
+                if (original.getSize()<8u)
+                    throw std::runtime_error("Source initial endpoint history buffer undersized");
+                auto& pattern=historyPatterns[type][index];
+                for (std::size_t k=0;k<pattern.size();++k)
+                    pattern[k]=static_cast<std::uint8_t>((type*23u+index*17u+k*29u+3u)%251u);
+                upload(original,pattern.data(),pattern.size());
+                originalPointers[type][index]=original.getDevicePtr();
+                originalCapacities[type][index]=original.getSize();
+            }
+        const auto savedHistory=historyPatterns;
+
         // Second frame grows to 6 slots and 12 padded projections. DtoD
         // must copy original old raw allocation bytes, including any
         // preceding HtoD data still queued on the same source GPU stream.
@@ -765,13 +802,17 @@ void exercise_original_sap_history_growth_native(Context& context) {
            b.projections!=10u || b.padded_projections!=12u)
             throw std::runtime_error("Source SAP growth sizes lost pre-removal history");
         grow_sap_old_bounds_native(b,oldBounds,stream);
-        for(physx::PxU32 i=0;i<3u;++i)
+        for(physx::PxU32 i=0;i<3u;++i) {
             grow_sap_history_axis_prefix_native(b,axis(i),stream);
+            grow_sap_history_axis_remainder_native(b,i,rest,stream);
+        }
         // The copied contents are snapshot at the source queue enqueue,
         // not when the host input is later reused.
         boundsPattern.fill(0xaa);
         for(auto& v:sapPattern)v.fill(0xbb);
         for(auto& v:projectionPattern)v.fill(0xcc);
+        for(auto& kind:historyPatterns)
+            for(auto& pattern:kind) pattern.fill(0xdd);
         stream.wait_at_fetch();
         if(oldBounds.getDevicePtr()==priorOld ||
            sap[1].getDevicePtr()==priorSap ||
@@ -789,7 +830,29 @@ void exercise_original_sap_history_growth_native(Context& context) {
                tempKeys[i].getSize()<12u*sizeof(int) ||
                tempRanks[i].getSize()<12u*sizeof(int))
                 throw std::runtime_error("Original scratch/swap buffer sizing changed");
+            if(incremental[i].getSize()<b.projections*sizeof(int) ||
+               blockIncremental[i].getSize()<32u*sizeof(int) ||
+               totalEndHistogram[i].getSize()<b.projections*sizeof(physx::PxU32) ||
+               blockTotalEndHistogram[i].getSize()<32u*sizeof(physx::PxU32))
+                throw std::runtime_error("Source per-axis histogram scratch sizing changed");
         }
+
+        const std::array<physx::PxU64,7> required{
+            physx::PxU64(b.padded_projections)*sizeof(int),
+            physx::PxU64(b.projections)*sizeof(int),
+            32u*sizeof(int), physx::PxU64(b.current_boxes)*sizeof(int),
+            physx::PxU64(b.projections)*sizeof(int),
+            32u*sizeof(int), physx::PxU64(b.current_boxes)*sizeof(int)};
+        for (std::size_t type=0;type<histories.size();++type)
+            for (physx::PxU32 index=0;index<6u;++index) {
+                const auto& owner=(*histories[type])[index];
+                const bool hadToGrow=required[type]>originalCapacities[type][index];
+                if(owner.getSize()<required[type] ||
+                   (owner.getDevicePtr()!=originalPointers[type][index])!=hadToGrow)
+                    throw std::runtime_error("Source endpoint buffer growth condition changed");
+                check(owner,savedHistory[type][index].data(),8u,
+                      "Source histogram/endpoint history lost across ordered GPU growth");
+            }
 
         // No growth on an unchanged capacity: stable raw device pointers
         // and the original source's retained history remain unchanged.
@@ -800,14 +863,26 @@ void exercise_original_sap_history_growth_native(Context& context) {
         const auto keepOld=oldBounds.getDevicePtr();
         const auto keepProj=projections[0].getDevicePtr();
         grow_sap_old_bounds_native(c,oldBounds,stream);
-        for(physx::PxU32 i=0;i<3u;++i)
+        for(physx::PxU32 i=0;i<3u;++i) {
             grow_sap_history_axis_prefix_native(c,axis(i),stream);
+            grow_sap_history_axis_remainder_native(c,i,rest,stream);
+        }
         if(oldBounds.getDevicePtr()!=keepOld ||
            projections[0].getDevicePtr()!=keepProj ||
            !stream.commands().empty())
             throw std::runtime_error("Source SAP history was reallocated on a no-growth frame");
         check(oldBounds,sourceBounds.data(),sourceBounds.size(),
               "No-growth source SAP frame destroyed persistent history");
+        for (std::size_t type=0;type<histories.size();++type)
+            for (physx::PxU32 index=0;index<6u;++index)
+                check((*histories[type])[index],savedHistory[type][index].data(),8u,
+                      "No-growth frame destroyed endpoint history");
+        // Reject invalid axis before touching source GPU allocations.
+        bool invalidAxisRejected=false;
+        try {grow_sap_history_axis_remainder_native(c,3u,rest,stream);}
+        catch (const std::out_of_range&) {invalidAxisRejected=true;}
+        if (!invalidAxisRejected || !stream.commands().empty())
+            throw std::runtime_error("Invalid SAP axis accepted or mutated native GPU stream");
     }
     if(aborted||roots.live_roots()||addresses.live_allocations())
         throw std::runtime_error("Source SAP native history growth leaked PhysX GPU roots");
