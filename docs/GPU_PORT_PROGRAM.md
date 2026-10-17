@@ -513,3 +513,30 @@ unrelated simulation pipeline. This milestone establishes an honest
 production entry point, **not a working GPU scene**. Do not mark G3
 complete until multi-frame `PxScene::simulate/fetchResults` with
 the portable SAP publishes correct found/lost pairs to PhysX.
+
+## Original PhysX scene factory integration dependency (PhysX PR #2)
+
+The SDK's CUDA-free pinned PhysX source previously exposed `eGPU`
+only through `PX_SUPPORT_GPU_PHYSX` and a CUDA SM check, silently
+substituting `eABP` when CUDA was absent. The *source-fork* change in
+[PhysX PR #2](https://github.com/thomthehound/PhysX/pull/2)
+edits `Sc::Scene` itself, adding a per-scene, borrowed portable GPU
+factory to `PxSceneDesc`. On a supported CPU-dynamics/GPU-broadphase
+configuration, PhysX creates a source-derived `Bp::BroadPhase` and
+matching `Bp::AABBManagerBase` at the **original** scene ownership
+points. CPU memory manager and dynamics remain under PhysX; the
+existing GPU-broadphase task graph remains in control. CUDA-only
+admission and GPU dynamics are separate.
+
+This SDK integration branch tests the actual pinned PhysX scene
+descriptor's factory ABI and invalid combinations, and runs ordinary
+CPU world simulations against that modified source on Linux and
+Windows. During review only, `FetchContent` selects the feature
+branch; restore `GIT_TAG main` after merging the PhysX source PR.
+
+**The concrete native SAP and AABB-manager objects are not implemented
+by this factory change.** The SDK's `PhysXPortableGpu` production
+request must remain fail-closed until both real source owners,
+gpuDMAUp/dispatch/fetch, and found/lost report publication are wired
+and multi-frame `PxScene::simulate/fetchResults` succeeds. A descriptor
+`isValid()` test cannot be used as G3 acceptance.
