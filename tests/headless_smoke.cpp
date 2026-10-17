@@ -74,6 +74,16 @@ int main() {
             catch (const std::out_of_range&) { reference_retired = true; }
             if (!reference_retired)
                 throw std::runtime_error("Reference actor removal failed");
+            const auto launched_reference = explicit_cpu.add_dynamic_box(
+                {0.2f,0.2f,0.2f}, {0,5,0}, 1.0f);
+            explicit_cpu.set_body_velocity(launched_reference, {2,0,0});
+            if (explicit_cpu.body_state(launched_reference).velocity.x != 2)
+                throw std::runtime_error("Reference dynamic velocity edit failed");
+            bool reference_static_rejected = false;
+            try { explicit_cpu.set_body_velocity(0, {1,0,0}); }
+            catch (const std::logic_error&) { reference_static_rejected = true; }
+            if (!reference_static_rejected)
+                throw std::runtime_error("Reference static velocity edit was admitted");
 
             // PxCreatePlane creates a rotated local +X plane. Relocating
             // its position must preserve this quaternion: replacing it

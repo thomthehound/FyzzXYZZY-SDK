@@ -183,6 +183,15 @@ struct PhysXCpuWorld final : WorldBackend {
         actors[id] = nullptr;
     }
 
+    void set_body_velocity(BodyId id, Vec3 velocity) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* dynamic = actors[id]->is<physx::PxRigidDynamic>();
+        if (!dynamic)
+            throw std::logic_error("Static actors have no linear velocity");
+        dynamic->setLinearVelocity(to_physx(velocity));
+    }
+
     BodyState body_state(BodyId id) const override {
         if (id >= actors.size() || !actors[id]) {
             throw std::out_of_range("Unknown FyzzXYZZY body ID");

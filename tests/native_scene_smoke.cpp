@@ -284,6 +284,50 @@ int main() {
                "Finite tiny-mass collision was silently discarded");
     }
 
+
+    {
+        // Real three-dimensional Coulomb response in the native scene.
+        // The original reference adapter creates material(0.5,0.5,0.2).
+        Scene sliding;
+        const auto floor = sliding.add_static_floor(0.0f);
+        const auto box = sliding.add_dynamic_box(
+            {0.25f,0.25f,0.25f}, {0,0.25f,0}, 1);
+        sliding.set_velocity(box, {3.0f,0,4.0f});
+        for (int frame = 0; frame < 240; ++frame)
+            sliding.step(1.0f / 120.0f);
+        const auto state = sliding.body_state(box);
+        expect(std::isfinite(state.position.y) &&
+               std::abs(state.position.y - 0.25f) < 0.08f &&
+               std::hypot(state.velocity.x, state.velocity.z) < 0.35f &&
+               std::hypot(state.position.x, state.position.z) < 4.0f,
+               "Native contact friction did not arrest diagonal sliding");
+        expect(has(sliding.pairs(), floor, box) &&
+               sliding.contacts().size() == 1 &&
+               sliding.contacts()[0].normal_impulse > 0.0,
+               "Native contact patch did not retain normal impulse state");
+        sliding.step(1.0f / 120.0f);
+        expect(sliding.contacts()[0].normal_impulse > 0.0,
+               "Persistent contact lost its normal warm-start");
+        sliding.set_velocity(box, {1.0f,0,0});
+        expect(sliding.contacts()[0].normal_impulse == 0.0 &&
+               sliding.contacts()[0].tangent_impulses[0] == 0.0 &&
+               sliding.contacts()[0].tangent_impulses[1] == 0.0,
+               "External actor velocity edit reused stale contact impulses");
+        sliding.set_position(box, {0,10,0});
+        sliding.step(1.0f / 120.0f);
+        expect(sliding.contacts().empty() &&
+               has(sliding.lost_contacts(), floor, box),
+               "Separating bodies retained a warm-start contact");
+        bool invalid = false;
+        try { sliding.set_velocity(box, {INFINITY,0,0}); }
+        catch (const std::invalid_argument&) { invalid = true; }
+        expect(invalid, "Invalid velocity was admitted");
+        bool rejected_static = false;
+        try { sliding.set_velocity(floor, {1,0,0}); }
+        catch (const std::logic_error&) { rejected_static = true; }
+        expect(rejected_static, "Static floor admitted linear velocity");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
@@ -292,8 +336,10 @@ int main() {
     native_world.set_body_position(owned, {0,3,0});
     expect(native_world.body_state(owned).position.y == 3,
            "World did not relocate its native actor");
+    native_world.set_body_velocity(owned, {1.0f,0.0f,0.0f});
     native_world.step(1.0f/60.0f);
-    expect(native_world.body_state(owned).position.y < 3.0f,
+    expect(native_world.body_state(owned).position.x > 0.0f &&
+           native_world.body_state(owned).position.y < 3.0f,
            "Native World step did not advance gravity and actor state");
     native_world.remove_body(owned);
     bool retired = false;

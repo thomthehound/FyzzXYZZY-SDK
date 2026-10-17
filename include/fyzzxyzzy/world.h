@@ -52,6 +52,9 @@ public:
     virtual void remove_body(BodyId) {
         throw std::logic_error("This backend cannot remove an actor");
     }
+    virtual void set_body_velocity(BodyId, Vec3) {
+        throw std::logic_error("This backend cannot set linear velocity");
+    }
 };
 
 class World final {
@@ -73,6 +76,7 @@ public:
     BodyState body_state(BodyId id) const;
     void set_body_position(BodyId id, Vec3 position);
     void remove_body(BodyId id);
+    void set_body_velocity(BodyId id, Vec3 velocity);
 
 private:
     std::unique_ptr<WorldBackend> impl_;
