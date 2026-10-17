@@ -1175,3 +1175,47 @@ source stream without host polling. The remainder of `gpuDMAUp`
 outside the per-axis loop (aggregate reports, region arrays, new integer
 bounds, descriptors and uploads) is not yet assembled into a real source
 broadphase scene.
+
+## Original `gpuDMAUp` post-axis allocations (PR #95)
+
+`PxgSapPostAxisBuffersNative.{h,cpp}` ports the original
+`PxgCudaBroadPhaseSap::gpuDMAUp` allocations that follow the completed
+three-axis SAP history loop. Like all preceding stages, it borrows the
+original PhysX GPU buffer objects and its allocator; there is no separate
+broadphase controller, GPU heap, copy/synchronization scheduler, or scene
+frame state.
+
+**Source execution order** is:
+
+1. Prepare the original `BroadPhaseUpdateData` counts;
+2. Allocate/copy old integer bounds, then run **both** original
+   history-prefix and history-remainder helpers for each axis `0..2`;
+3. Allocate the two aggregate-report and actor-report blocks (32
+   `PxU32` per element), four 64-region projection arrays, overlap
+   check and block arrays, handle regions, region ranges, and both
+   start/region accumulation arrays;
+4. Allocate original created/removed/optional updated-handle buffers;
+5. Allocate the **new** integer bounds (24 bytes per `PxgIntegerAABB`);
+6. Assemble original broadphase and six-entry radix-sort descriptor
+   records, then DMA handles/descriptors on the same ordered stream
+   (pending).
+
+All post-axis buffers here use original **non-copying**
+`PxgCudaBuffer::allocate`; no asynchronous old-history copying was added.
+The 64 region slots per projection, source grid block sizes and the
+`PxgHandleRegion`/CUDA `uint4` record byte widths are matched without
+introducing a CUDA toolkit dependency. We compute region slots in 64-bit
+arithmetic and reject overflow of the source `PxU32` slot count before
+allocating anything.
+
+Native Vulkan and D3D12 host integration tests check exact requested
+sizes, original doubling-versus-required-capacity growth for a 2-to-5
+box workload, source report/block scratch that does **not** grow, unchanged
+pointer identities on no-growth frames, 32-bit region-slot overflow rejection,
+and clean original PhysX allocator teardown. Non-copying
+`PxgCudaBuffer::allocate` releases the old block before requesting the
+new block: when growth is necessary, **the same raw GPU address may be
+reused**. Only the source copy-preserving grow path requires retaining
+the old block until the queued device-to-device copy finishes. This is a host-path correctness step:
+real `PxgCudaBroadPhaseSap` member binding, descriptors, kernel dispatch
+and `PxScene` integration remain to be built.

@@ -21,9 +21,10 @@ void grow_sap_old_bounds_native(
     SourceSapDmaNative& stream);
 
 // Source: the first six operations in EACH axis of gpuDMAUp's original
-// three-axis loop. The caller must execute the original inner j=0,1
-// histogram/handle updates and per-axis scratch allocations BEFORE
-// calling this helper for the next axis. No cross-axis batching/reordering.
+// three-axis loop. The caller must invoke
+// grow_sap_history_axis_remainder_native(i) immediately afterwards,
+// completing both inner j passes and per-axis scratch BEFORE advancing
+// to the next axis. No cross-axis batching/reordering.
 struct SourceSapHistoryAxisBuffers {
     physx::PxgCudaBuffer& box_sap_1d;
     physx::PxgCudaBuffer& new_box_sap_1d;

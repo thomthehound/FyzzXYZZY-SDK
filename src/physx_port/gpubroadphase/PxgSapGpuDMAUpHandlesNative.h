@@ -51,12 +51,16 @@ struct SourceSapGpuDMAUpCounts {
 
 // Source ordering is essential:
 // 1. Derive/commit counts from original Bp::BroadPhaseUpdateData.
-// 2. Allocate/copy old projection and histogram GPU histories (next slice).
-// 3. Allocate the three changed-handle arrays (this slice).
-// 4. Build original broadphase/radix descriptors (next slice).
-// 5. Queue the handle uploads, then descriptor uploads on the same mStream.
-// These functions correspond to steps 1, 3 and 5. They can be called around
-// step 2/4 without changing the original source's allocation/copy order.
+// 2. Grow old integer bounds, then all three per-axis prefix/remainder
+//    buffer sequences via PxgSapHistoryGrowthNative.
+// 3. Allocate original aggregate report and region scratch storage via
+//    PxgSapPostAxisBuffersNative.
+// 4. Allocate created/removed/(optional updated) handle arrays (this file).
+// 5. Allocate new integer bounds via PxgSapPostAxisBuffersNative.
+// 6. Build original broadphase/radix descriptors (pending).
+// 7. Queue handle uploads (this file), followed by descriptor uploads.
+// The helpers are separated to preserve exact source allocation/copy order
+// when integrated back into the owning PhysX SAP broadphase.
 SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapGpuDMAUpCountMembers members);
