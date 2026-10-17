@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
+#include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
+#include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
+#include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include "BpBroadPhaseUpdate.h"
+#include "PxgRadixSortKernelIndices.h"
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -15,6 +20,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <stdexcept>
 
 using namespace fyzz::compute;
@@ -42,6 +48,12 @@ int main() {
                 physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
                 constexpr int group=physx::PxsHeapStats::eBROADPHASE;
                 physx::PxgCudaBufferN<27> singles(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> created(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> removed(heap,group);
+                physx::PxgTypedCudaBuffer<physx::PxU32> updated(heap,group);
+                created.allocateElements(8u,PX_FL);
+                removed.allocateElements(8u,PX_FL);
+                updated.allocateElements(8u,PX_FL);
                 physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group),ranks(heap,group);
                 physx::PxgCudaBufferN<3> projections(heap,group),totalEnd(heap,group);
                 physx::PxgCudaBufferN<3> blockTotalEnd(heap,group),incremental(heap,group),blockIncremental(heap,group);
@@ -67,7 +79,7 @@ int main() {
                 descriptorDevice.allocateElements(1u,PX_FL);
 
                 SourceSapBroadphaseDescriptorBuffers buffers{
-                    singles[0],singles[1],singles[2],singles[3],singles[4],
+                    created,removed,updated,singles[3],singles[4],
                     singles[5],singles[6],singles[7],singles[8],
                     singles[9],singles[10],singles[11],singles[12],singles[13],singles[14],
                     sap,newSap,ranks,projections,boxHandles,totalEnd,blockTotalEnd,
@@ -92,8 +104,8 @@ int main() {
                 physx::PxgBroadPhaseDesc desc{};
                 std::memset(&desc,0xaa,sizeof(desc));
                 prepare_sap_broadphase_descriptor_native(desc,buffers,in);
-                expect(desc.updateData_createdHandles,singles[0]);
-                expect(desc.updateData_removedHandles,singles[1]);
+                expect(desc.updateData_createdHandles,created);
+                expect(desc.updateData_removedHandles,removed);
                 expect(desc.oldIntegerBounds,singles[3]);
                 expect(desc.newIntegerBounds,singles[4]);
                 expect(desc.updateData_fpBounds,singles[5]);
@@ -155,7 +167,7 @@ int main() {
                 for(const auto count:desc.totalIncrementalComparisons)
                     if(count)throw std::runtime_error("Original descriptor zero initialization lost");
 #ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
-                expect(desc.updateData_updatedHandles,singles[2]);
+                expect(desc.updateData_updatedHandles,updated);
                 if(desc.numUpdatedHandles!=5u)
                     throw std::runtime_error("Standalone SAP descriptor did not retain updated count");
 #endif
