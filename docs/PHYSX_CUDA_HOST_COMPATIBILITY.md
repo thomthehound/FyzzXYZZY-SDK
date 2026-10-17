@@ -1209,9 +1209,13 @@ arithmetic and reject overflow of the source `PxU32` slot count before
 allocating anything.
 
 Native Vulkan and D3D12 host integration tests check exact requested
-sizes, source report/block scratch that does **not** grow, selective
-buffer growth for a 2-to-5 box workload, unchanged pointer identities
-on an idle frame, 32-bit region-slot overflow rejection, and clean
-original PhysX allocator teardown. This is a host-path correctness step:
+sizes, original doubling-versus-required-capacity growth for a 2-to-5
+box workload, source report/block scratch that does **not** grow, unchanged
+pointer identities on no-growth frames, 32-bit region-slot overflow rejection,
+and clean original PhysX allocator teardown. Non-copying
+`PxgCudaBuffer::allocate` releases the old block before requesting the
+new block: when growth is necessary, **the same raw GPU address may be
+reused**. Only the source copy-preserving grow path requires retaining
+the old block until the queued device-to-device copy finishes. This is a host-path correctness step:
 real `PxgCudaBroadPhaseSap` member binding, descriptors, kernel dispatch
 and `PxScene` integration remain to be built.
