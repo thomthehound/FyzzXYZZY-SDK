@@ -19,6 +19,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  architecture-review:
+    name: SDK architecture review contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate architecture review and checker tests
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_architecture_review.py'
+          python3 scripts/check_architecture_review.py
+
   linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
