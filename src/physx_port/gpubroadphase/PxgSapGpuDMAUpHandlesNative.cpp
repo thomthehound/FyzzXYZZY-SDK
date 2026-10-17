@@ -19,9 +19,12 @@ namespace {
 // source Bp::BroadPhaseUpdateData is a borrowed view and can be reused.
 void check_handle_inputs(const physx::Bp::BroadPhaseUpdateData& update) {
     if ((update.getNumCreatedHandles() && !update.getCreatedHandles()) ||
-        (update.getNumRemovedHandles() && !update.getRemovedHandles()) ||
-        (update.getNumUpdatedHandles() && !update.getUpdatedHandles()))
+        (update.getNumRemovedHandles() && !update.getRemovedHandles()))
         throw std::invalid_argument("PhysX gpuDMAUp missing nonempty handle input");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+    if (update.getNumUpdatedHandles() && !update.getUpdatedHandles())
+        throw std::invalid_argument("PhysX gpuDMAUp missing nonempty updated-handle input");
+#endif
 }
 }
 
@@ -31,7 +34,9 @@ SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
     check_handle_inputs(update);
     const auto created = update.getNumCreatedHandles();
     const auto removed = update.getNumRemovedHandles();
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     const auto updated = update.getNumUpdatedHandles();
+#endif
     const auto capacity = update.getCapacity();
     const auto previous = members.num_boxes;
 
@@ -51,11 +56,17 @@ SourceSapGpuDMAUpCounts prepare_gpu_dma_up_counts_native(
 
     members.created_size = created;
     members.removed_size = removed;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     members.updated_size = updated;
+#endif
     members.boxes_capacity = capacity;
     members.num_boxes = static_cast<physx::PxU32>(live);
     return {previous, members.num_boxes, capacity,
-            created, removed, updated, unpadded, padded};
+            created, removed,
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+            updated,
+#endif
+            unpadded, padded};
 }
 
 void allocate_gpu_dma_up_handles_native(
@@ -65,7 +76,9 @@ void allocate_gpu_dma_up_handles_native(
     // This takes place AFTER history growth and BEFORE updateDescriptor.
     buffers.created.allocate(std::uint64_t(counts.created) * sizeof(physx::PxU32), PX_FL);
     buffers.removed.allocate(std::uint64_t(counts.removed) * sizeof(physx::PxU32), PX_FL);
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
     buffers.updated.allocate(std::uint64_t(counts.updated) * sizeof(physx::PxU32), PX_FL);
+#endif
 }
 
 void queue_gpu_dma_up_handles_native(
@@ -76,13 +89,18 @@ void queue_gpu_dma_up_handles_native(
     check_handle_inputs(update);
     if (counts.created != update.getNumCreatedHandles() ||
         counts.removed != update.getNumRemovedHandles() ||
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
         counts.updated != update.getNumUpdatedHandles() ||
+#endif
         counts.capacity != update.getCapacity())
         throw std::invalid_argument("PhysX gpuDMAUp source handle counts changed after preparation");
     if (buffers.created.getSize() < std::uint64_t(counts.created)*sizeof(physx::PxU32) ||
-        buffers.removed.getSize() < std::uint64_t(counts.removed)*sizeof(physx::PxU32) ||
-        buffers.updated.getSize() < std::uint64_t(counts.updated)*sizeof(physx::PxU32))
+        buffers.removed.getSize() < std::uint64_t(counts.removed)*sizeof(physx::PxU32))
         throw std::logic_error("PhysX gpuDMAUp handle buffers were not allocated");
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+    if (buffers.updated.getSize() < std::uint64_t(counts.updated)*sizeof(physx::PxU32))
+        throw std::logic_error("PhysX gpuDMAUp updated-handle buffer was not allocated");
+#endif
 
     // Original source executes these adjacent HtoD calls after building the
     // descriptors. The stream snapshots the borrowed inputs before return.
@@ -91,8 +109,10 @@ void queue_gpu_dma_up_handles_native(
          std::size_t(counts.created)*sizeof(physx::PxU32)},
         {buffers.removed.getDevicePtr(), update.getRemovedHandles(),
          std::size_t(counts.removed)*sizeof(physx::PxU32)},
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
         {buffers.updated.getDevicePtr(), update.getUpdatedHandles(),
          std::size_t(counts.updated)*sizeof(physx::PxU32)}
+#endif
     };
     stream.queue_uploads(uploads);
 }
