@@ -7,6 +7,13 @@ project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 include(CTest)
 include(FetchContent)
 
+# PhysX is a transitional CPU oracle and source-port test dependency, not a
+# prerequisite for the native SDK core or standalone GPU compute runtimes.
+# OFF must never fetch or compile the reference PhysX repository.
+option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
+  "Build the transitional PhysX CPU reference and source-port conformance fixtures" ON)
+
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
 set(PX_GENERATE_GPU_PROJECTS OFF CACHE BOOL "Disable upstream CUDA" FORCE)
 set(PX_GENERATE_GPU_PROJECTS_ONLY OFF CACHE BOOL "" FORCE)
@@ -44,6 +51,7 @@ FetchContent_MakeAvailable(fyzzxyzzy_physx)
 if(NOT TARGET physx_lib)
   message(FATAL_ERROR "Expected PhysX 5.11 CMake interface target 'physx_lib'")
 endif()
+endif() # FYZZXYZZY_ENABLE_PHYSX_SOURCE
 
 # Require C++23 for every FyzzXYZZY-owned native target, including tests and
 # the Godot adapter. Upstream PhysX is configured above with its own source
@@ -76,7 +84,7 @@ endif()
 # PhysX static consumers must not import symbols from PhysX DLLs on Windows.
 # The upstream static build defines this internally but does not export it
 # through the physx_lib interface target.
-if(PX_GENERATE_STATIC_LIBRARIES)
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE AND PX_GENERATE_STATIC_LIBRARIES)
   target_compile_definitions(physx_lib INTERFACE PX_PHYSX_STATIC_LIB)
 endif()
 
@@ -85,6 +93,7 @@ if(BUILD_TESTING)
   add_test(NAME fyzzxyzzy_cpp23_contract COMMAND fyzzxyzzy_cpp23_contract)
 endif()
 
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 add_library(fyzzxyzzy_reference_physx_cpu STATIC src/reference/physx_cpu_world.cpp)
 add_library(FyzzXYZZY::ReferencePhysXCpu ALIAS fyzzxyzzy_reference_physx_cpu)
 target_compile_features(fyzzxyzzy_reference_physx_cpu PUBLIC cxx_std_23)
@@ -92,6 +101,7 @@ target_include_directories(fyzzxyzzy_reference_physx_cpu PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(fyzzxyzzy_reference_physx_cpu PUBLIC physx_lib)
 set_target_properties(fyzzxyzzy_reference_physx_cpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 
 add_library(fyzzxyzzy_core STATIC src/world.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
@@ -99,7 +109,11 @@ target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(fyzzxyzzy_core PRIVATE fyzzxyzzy_reference_physx_cpu)
+target_compile_definitions(fyzzxyzzy_core PRIVATE
+  FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  target_link_libraries(fyzzxyzzy_core PRIVATE fyzzxyzzy_reference_physx_cpu)
+endif()
 set_target_properties(fyzzxyzzy_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
@@ -108,10 +122,19 @@ else()
   target_compile_options(fyzzxyzzy_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
+endif()
+
+# A reference-free build tests native core admission without loading or
+# linking a PhysX CPU runtime. The native engine is not declared complete.
+if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  add_executable(fyzzxyzzy_native_boundary_smoke tests/native_boundary_smoke.cpp)
+  target_link_libraries(fyzzxyzzy_native_boundary_smoke PRIVATE FyzzXYZZY::Core)
+  add_test(NAME fyzzxyzzy_native_boundary_smoke
+    COMMAND fyzzxyzzy_native_boundary_smoke)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into
@@ -135,6 +158,7 @@ if(BUILD_TESTING)
     COMMAND fyzzxyzzy_physx_cuda_address_test)
 endif()
 
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # Original PhysX GPU buddy heap source, owned by this independent engine.
 # This is a source port with an injected generic virtual root callback and
 # abort sink; it is NOT a second allocation algorithm or an external patch.
@@ -162,6 +186,7 @@ target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include"
   "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src")
 target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
+endif() # source-port PhysX heap and SAP host fixtures
 
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
@@ -176,6 +201,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_link_libraries(fyzzxyzzy_compute PRIVATE Vulkan::Vulkan)
   set_target_properties(fyzzxyzzy_compute PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+  if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
@@ -1548,6 +1574,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
         COMMAND fyzzxyzzy_vulkan_world_smoke "${FYZZXYZZY_FLOOR_SHADER}")
     endif()
   endif()
+  endif() # source-port GPU stages and source-based conformance tests
+  if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    add_executable(fyzzxyzzy_vulkan_memory_smoke tests/vulkan_memory_smoke.cpp)
+    target_link_libraries(fyzzxyzzy_vulkan_memory_smoke PRIVATE FyzzXYZZY::Compute)
+    add_test(NAME fyzzxyzzy_vulkan_memory_smoke
+      COMMAND fyzzxyzzy_vulkan_memory_smoke)
+  endif()
 endif()
 
 # Native D3D12 execution of PhysX's AABB stage, using the exact same
@@ -1571,6 +1604,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
   endif()
 
+  if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
     src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/cuda_aabb_launch_lowering.cpp
@@ -2874,11 +2908,17 @@ if(FYZZXYZZY_BUILD_D3D12)
 
 
   endif()
+  endif() # source-port GPU stages and source-based conformance tests
 endif()
 
 # Godot is a first SDK consumer, never a dependency of FyzzXYZZY::Core.
 option(FYZZXYZZY_BUILD_GODOT "Build the optional Godot 4.7 GDExtension consumer" OFF)
 if(FYZZXYZZY_BUILD_GODOT)
+  if(NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    message(FATAL_ERROR
+      "Godot physics acceptance still requires the transitional PhysX CPU reference; "
+      "native FyzzXYZZY scene is not yet implemented")
+  endif()
   set(GODOTCPP_API_VERSION "4.7" CACHE STRING "Target Godot extension API version" FORCE)
   # Use godot-cpp's complete supported API bindings until an upstream-compatible
   # trimmed profile can cover its internal runtime dependencies.
@@ -2911,6 +2951,7 @@ endif()
 
 # Produce a complete, offline-configurable CPU SDK source distribution.
 # PhysX source is included in the archive; optional godot-cpp bindings are not.
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 add_custom_target(fyzzxyzzy_source_bundle
   COMMAND "${CMAKE_COMMAND}"
     "-DFYZZXYZZY_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -2920,3 +2961,4 @@ add_custom_target(fyzzxyzzy_source_bundle
   BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/fyzzxyzzy-source.tar.gz"
   VERBATIM
 )
+endif() # PhysX reference-inclusive source bundle

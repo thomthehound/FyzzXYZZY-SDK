@@ -10,8 +10,10 @@
 
 namespace fyzz {
 
+#if FYZZXYZZY_ENABLE_PHYSX_SOURCE
 // Implemented in the separately compiled reference/PhysX CPU target.
 std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend();
+#endif
 
 namespace {
 void validate_half_extents(Vec3 half_extents) {
@@ -32,7 +34,13 @@ void validate_position(Vec3 position) {
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     switch (options.execution) {
     case ExecutionMode::ReferencePhysXCpu:
+#if FYZZXYZZY_ENABLE_PHYSX_SOURCE
         return create_reference_physx_cpu_backend();
+#else
+        throw std::logic_error(
+            "Reference PhysX CPU backend was disabled at SDK build time; "
+            "the native CPU solver is not yet integrated");
+#endif
     case ExecutionMode::NativePortableGpu:
         throw std::logic_error(
             "Native FyzzXYZZY GPU scene is not yet implemented; "
