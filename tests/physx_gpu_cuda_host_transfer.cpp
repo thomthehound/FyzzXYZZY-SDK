@@ -9,6 +9,7 @@
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
+#include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -661,6 +662,155 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_original_sap_history_growth_native(Context& context) {
+    using fyzz::physx_gpu::SourcePhysxHeapRoots;
+    using fyzz::physx_gpu::SourcePhysxDeviceRootCallback;
+    using fyzz::physx_gpu::SourceSapDmaNative;
+    using fyzz::physx_gpu::SourceSapHistoryAxisBuffers;
+    using fyzz::physx_gpu::prepare_gpu_dma_up_counts_native;
+    using fyzz::physx_gpu::grow_sap_old_bounds_native;
+    using fyzz::physx_gpu::grow_sap_history_axis_prefix_native;
+
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots roots(context, addresses);
+    SourcePhysxDeviceRootCallback callback(roots, &stream);
+    bool aborted=false;
+    const auto abort=[](void* user) noexcept {
+        *static_cast<bool*>(user)=true;
+    };
+    physx::Bp::BpFilter filter(false,false);
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        constexpr int group=physx::PxsHeapStats::eBROADPHASE;
+        physx::PxgCudaBuffer oldBounds(heap,group);
+        physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group);
+        physx::PxgCudaBufferN<3> projections(heap,group),ranks(heap,group);
+        physx::PxgCudaBufferN<3> tempKeys(heap,group),tempRanks(heap,group);
+
+        physx::PxU32 numBoxes=0,capacity=0,createdSize=0,removedSize=0;
+#ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
+        physx::PxU32 updatedSize=0;
+        fyzz::physx_gpu::SourceSapGpuDMAUpCountMembers members{
+            numBoxes,capacity,createdSize,removedSize,updatedSize};
+#else
+        fyzz::physx_gpu::SourceSapGpuDMAUpCountMembers members{
+            numBoxes,capacity,createdSize,removedSize};
+#endif
+        auto axis=[&](physx::PxU32 i) -> SourceSapHistoryAxisBuffers {
+            return {sap[i],newSap[i],projections[i],
+                    ranks[i],tempKeys[i],tempRanks[i]};
+        };
+        auto upload=[&](const physx::PxgCudaBuffer& owner,
+                        const void* data,std::size_t bytes) {
+            stream.queue_uploads({{owner.getDevicePtr(),data,bytes}});
+        };
+        auto check=[&](const physx::PxgCudaBuffer& owner,
+                       const void* expected,std::size_t bytes,
+                       const char* error) {
+            if(owner.getSize()<bytes)
+                throw std::runtime_error("PhysX SAP native history capacity too small");
+            const auto r=addresses.resolve(owner.getDevicePtr(),bytes);
+            std::vector<std::uint8_t> actual(bytes);
+            context.download(r.buffer,r.offset,actual.data(),bytes);
+            if(std::memcmp(actual.data(),expected,bytes))
+                throw std::runtime_error(error);
+        };
+
+        // Initial frame: 2 boxes, four already padded projections. Pattern
+        // writes are submitted on the SAME original source stream as the
+        // later DtoD growth, without first waiting for the GPU.
+        const std::array<physx::PxU32,2> firstCreated{1u,3u};
+        const physx::Bp::BroadPhaseUpdateData first(
+            firstCreated.data(),2u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,2u,filter,true,true);
+        const auto a=prepare_gpu_dma_up_counts_native(first,members);
+        if(a.capacity!=2u||a.padded_projections!=4u)
+            throw std::runtime_error("Original SAP initial source sizing changed");
+        grow_sap_old_bounds_native(a,oldBounds,stream);
+        for(physx::PxU32 i=0;i<3u;++i)
+            grow_sap_history_axis_prefix_native(a,axis(i),stream);
+
+        std::array<std::uint8_t,48u> boundsPattern{};
+        std::array<std::array<std::uint8_t,16u>,3u> sapPattern{},projectionPattern{};
+        for(std::size_t k=0;k<boundsPattern.size();++k)
+            boundsPattern[k]=static_cast<std::uint8_t>((k*7u+51u)%251u);
+        upload(oldBounds,boundsPattern.data(),boundsPattern.size());
+        for(physx::PxU32 i=0;i<3u;++i) {
+            for(std::size_t k=0;k<16u;++k) {
+                sapPattern[i][k]=static_cast<std::uint8_t>((k*13u+i*11u+5u)%251u);
+                projectionPattern[i][k]=static_cast<std::uint8_t>((k*17u+i*19u+7u)%251u);
+            }
+            upload(sap[i],sapPattern[i].data(),sapPattern[i].size());
+            upload(projections[i],projectionPattern[i].data(),projectionPattern[i].size());
+        }
+        const auto priorOld=oldBounds.getDevicePtr();
+        const auto priorSap=sap[1].getDevicePtr();
+        const auto priorProjection=projections[2].getDevicePtr();
+        const auto sourceBounds=boundsPattern;
+        const auto sourceSap=sapPattern;
+        const auto sourceProjection=projectionPattern;
+
+        // Second frame grows to 6 slots and 12 padded projections. DtoD
+        // must copy original old raw allocation bytes, including any
+        // preceding HtoD data still queued on the same source GPU stream.
+        const std::array<physx::PxU32,3> moreCreated{0u,2u,4u};
+        const physx::Bp::BroadPhaseUpdateData second(
+            moreCreated.data(),3u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,6u,filter,true,true);
+        const auto b=prepare_gpu_dma_up_counts_native(second,members);
+        if(b.previous_boxes!=2u || b.current_boxes!=5u ||
+           b.projections!=10u || b.padded_projections!=12u)
+            throw std::runtime_error("Source SAP growth sizes lost pre-removal history");
+        grow_sap_old_bounds_native(b,oldBounds,stream);
+        for(physx::PxU32 i=0;i<3u;++i)
+            grow_sap_history_axis_prefix_native(b,axis(i),stream);
+        // The copied contents are snapshot at the source queue enqueue,
+        // not when the host input is later reused.
+        boundsPattern.fill(0xaa);
+        for(auto& v:sapPattern)v.fill(0xbb);
+        for(auto& v:projectionPattern)v.fill(0xcc);
+        stream.wait_at_fetch();
+        if(oldBounds.getDevicePtr()==priorOld ||
+           sap[1].getDevicePtr()==priorSap ||
+           projections[2].getDevicePtr()==priorProjection)
+            throw std::runtime_error("Original PhysX SAP history did not grow");
+        check(oldBounds,sourceBounds.data(),sourceBounds.size(),
+              "Original old integer AABB contents lost across GPU DtoD growth");
+        for(physx::PxU32 i=0;i<3u;++i){
+            check(sap[i],sourceSap[i].data(),sourceSap[i].size(),
+                  "Source SAP per-axis 1D history lost during growth");
+            check(projections[i],sourceProjection[i].data(),sourceProjection[i].size(),
+                  "Source SAP per-axis projection history lost during growth");
+            if(newSap[i].getSize()<6u*8u ||
+               ranks[i].getSize()<12u*sizeof(int) ||
+               tempKeys[i].getSize()<12u*sizeof(int) ||
+               tempRanks[i].getSize()<12u*sizeof(int))
+                throw std::runtime_error("Original scratch/swap buffer sizing changed");
+        }
+
+        // No growth on an unchanged capacity: stable raw device pointers
+        // and the original source's retained history remain unchanged.
+        const physx::Bp::BroadPhaseUpdateData third(
+            nullptr,0u,nullptr,0u,nullptr,0u,
+            nullptr,nullptr,nullptr,6u,filter,false,false);
+        const auto c=prepare_gpu_dma_up_counts_native(third,members);
+        const auto keepOld=oldBounds.getDevicePtr();
+        const auto keepProj=projections[0].getDevicePtr();
+        grow_sap_old_bounds_native(c,oldBounds,stream);
+        for(physx::PxU32 i=0;i<3u;++i)
+            grow_sap_history_axis_prefix_native(c,axis(i),stream);
+        if(oldBounds.getDevicePtr()!=keepOld ||
+           projections[0].getDevicePtr()!=keepProj ||
+           !stream.commands().empty())
+            throw std::runtime_error("Source SAP history was reallocated on a no-growth frame");
+        check(oldBounds,sourceBounds.data(),sourceBounds.size(),
+              "No-growth source SAP frame destroyed persistent history");
+    }
+    if(aborted||roots.live_roots()||addresses.live_allocations())
+        throw std::runtime_error("Source SAP native history growth leaked PhysX GPU roots");
 }
 
 void exercise_original_gpu_dma_up_handles_native(Context& context) {
@@ -1473,6 +1623,7 @@ int main() {
         exercise_original_native_physx_cuda_buffer(context);
         exercise_original_prebroadphase_native(context);
         exercise_original_gpu_dma_up_handles_native(context);
+        exercise_original_sap_history_growth_native(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
         exercise_source_mapped_pair_reports(context,false);
