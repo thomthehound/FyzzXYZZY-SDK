@@ -197,3 +197,40 @@ jobs:
           if (-not ($output -match 'FyzzXYZZY Godot acceptance PASS')) {
             throw "Godot editor acceptance runtime marker missing"
           }
+
+  native-no-physx-linux:
+    name: Independent SDK / Vulkan without PhysX
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan-dev mesa-vulkan-drivers
+      - name: Configure without external source or network
+        run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Build and test native core and compute
+        shell: bash
+        run: |
+          cmake --build build-native --parallel 4
+          ctest --test-dir build-native --output-on-failure
+          test ! -d build-native/_deps/fyzzxyzzy_physx-src
+          test -f build-native/libfyzzxyzzy_core.a
+          test -f build-native/libfyzzxyzzy_compute.a
+
+  native-no-physx-windows:
+    name: Independent SDK / D3D12 without PhysX
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure without external source or network
+        shell: pwsh
+        run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+      - name: Build and test native core and compute
+        shell: pwsh
+        run: |
+          cmake --build build-native --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-native -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
