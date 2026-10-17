@@ -57,18 +57,24 @@ int main() {
                 removed.allocateElements(8u,PX_FL);
                 updated.allocateElements(8u,PX_FL);
                 physx::PxgCudaBufferN<3> sap(heap,group),newSap(heap,group),ranks(heap,group);
-                physx::PxgCudaBufferN<3> projections(heap,group),totalEnd(heap,group);
-                physx::PxgCudaBufferN<3> blockTotalEnd(heap,group),incremental(heap,group),blockIncremental(heap,group);
+                physx::PxgCudaBufferN<3> projections(heap,group);
+                // Source members are N<6>, not N<3>; only axes 0..2 are used.
+                physx::PxgCudaBufferN<6> totalEnd(heap,group),blockTotalEnd(heap,group);
+                physx::PxgCudaBufferN<3> incremental(heap,group),blockIncremental(heap,group);
                 physx::PxgCudaBufferN<6> boxHandles(heap,group),endHist(heap,group),blockEndHist(heap,group);
                 physx::PxgCudaBufferN<6> startHist(heap,group),blockStartHist(heap,group),endHandles(heap,group),startHandles(heap,group);
                 physx::PxgCudaBufferN<2> aggBlocks(heap,group),actorBlocks(heap,group);
                 physx::PxgCudaBufferN<6> managerBuffers(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxgBroadPhaseDesc> descriptorDevice(heap,group);
                 for(physx::PxU32 i=0;i<27;++i) singles[i].allocate(32u,PX_FL);
-                const std::array<physx::PxgCudaBufferN<3>*,8> axis3{
-                    &sap,&newSap,&ranks,&projections,&totalEnd,&blockTotalEnd,&incremental,&blockIncremental};
+                const std::array<physx::PxgCudaBufferN<3>*,6> axis3{
+                    &sap,&newSap,&ranks,&projections,&incremental,&blockIncremental};
                 for(auto* a:axis3)
                     for(physx::PxU32 i=0;i<3;++i) (*a)[i].allocate(32u,PX_FL);
+                for(physx::PxU32 i=0;i<3;++i) {
+                    totalEnd[i].allocate(32u,PX_FL);
+                    blockTotalEnd[i].allocate(32u,PX_FL);
+                }
                 const std::array<physx::PxgCudaBufferN<6>*,7> axis6{
                     &boxHandles,&endHist,&blockEndHist,&startHist,&blockStartHist,&endHandles,&startHandles};
                 for(auto* a:axis6)
