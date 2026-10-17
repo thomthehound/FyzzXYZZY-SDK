@@ -12,6 +12,7 @@
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
+#include "PxgRadixSortKernelIndices.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -714,7 +715,7 @@ void exercise_original_sap_radix_descriptors_native(Context& context) {
             ranks[i].allocate(16u,PX_FL);
             tempKeys[i].allocate(16u,PX_FL);
             tempHandles[i].allocate(16u,PX_FL);
-            radixCounts[i].allocate(32u*16u*sizeof(physx::PxU32),PX_FL);
+            radixCounts[i].allocate(physx::PxgRadixSortKernelGridDim::RADIX_SORT * 16u * sizeof(physx::PxU32),PX_FL);
         }
         for(physx::PxU32 i=0;i<6u;++i)
             boxHandles[i].allocate(16u,PX_FL);
