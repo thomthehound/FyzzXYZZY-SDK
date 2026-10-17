@@ -108,9 +108,17 @@ struct PhysXCpuWorld final : WorldBackend {
         }
         descriptor.cpuDispatcher = dispatcher;
         descriptor.filterShader = physx::PxDefaultSimulationFilterShader;
+        // The CPU execution mode is explicit. Do not ever request eGPU
+        // here: pinned ScScene.cpp converts eGPU to CPU eABP when the
+        // CUDA GPU factory is unavailable, making the request look valid.
+        descriptor.broadPhaseType = physx::PxBroadPhaseType::ePABP;
         scene = runtime->physics->createScene(descriptor);
         if (!scene) {
             throw std::runtime_error("Failed to create PhysX scene");
+        }
+        if (scene->getBroadPhaseType() != descriptor.broadPhaseType) {
+            throw std::runtime_error(
+                "PhysX scene did not admit the requested CPU broadphase");
         }
 
         material = runtime->physics->createMaterial(0.5f, 0.5f, 0.2f);
@@ -201,7 +209,26 @@ struct PhysXCpuWorld final : WorldBackend {
     }
 };
 
-World::World() : World(std::make_unique<PhysXCpuWorld>()) {}
+// The production scene factory is the ONLY selection point, not a
+// test-local substitute for PhysX's scene/AABB-manager ownership.
+// Portable GPU admission must be implemented by the actual source
+// Sc::Scene/factory/task path before it may return a World.
+std::unique_ptr<WorldBackend> create_physx_scene_backend(WorldOptions options) {
+    switch (options.broadphase) {
+    case BroadphaseMode::PhysXCpu:
+        return std::make_unique<PhysXCpuWorld>();
+    case BroadphaseMode::PhysXPortableGpu:
+        throw std::logic_error(
+            "Portable PhysX GPU broadphase is not scene-integrated: "
+            "Sc::Scene would silently fall back to CPU ABP; "
+            "source SAP/AABB manager GPU factory admission remains pending");
+    }
+    throw std::invalid_argument("Unknown PhysX broadphase mode");
+}
+
+World::World() : World(WorldOptions{}) {}
+World::World(WorldOptions options)
+    : World(create_physx_scene_backend(options)) {}
 
 World::World(std::unique_ptr<WorldBackend> backend) : impl_(std::move(backend)) {
     if (!impl_) {
