@@ -451,6 +451,68 @@ int main() {
                     throw std::runtime_error(
                         "Rejected source SAP frame mutated counters or queued GPU copies");
 
+                // Boundary of upstream totalNbProjectionRegions (PxU32):
+                // 33,554,431 live+created boxes -> 67,108,862
+                // projections -> 4,294,967,168 region slots (fits);
+                // adding one more box would require 4,294,967,296 slots.
+                // Neither case needs a multi-gigabyte GPU allocation:
+                // this is a pure source count/region preflight test.
+                constexpr physx::PxU32 maxSafeBoxes=33'554'431u;
+                physx::PxU32 hugeBoxes=maxSafeBoxes;
+                physx::PxU32 hugeCapacity=911u;
+                physx::PxU32 hugeCreated=921u,hugeRemoved=931u,hugeUpdated=941u;
+                SourceSapGpuDMAUpCountMembers hugeMembers{
+                    hugeBoxes,hugeCapacity,hugeCreated,hugeRemoved,hugeUpdated};
+                const std::array<physx::PxU32,1u> oneNewHandle{17u};
+                const physx::Bp::BroadPhaseUpdateData overRegionLimit(
+                    oneNewHandle.data(),1u,nullptr,0u,nullptr,0u,
+                    nullptr,nullptr,nullptr,maxSafeBoxes+1u,
+                    filter,true,true);
+                SourceSapDmaUpFrameMembers overflowFrame{
+                    hugeMembers,borrowed.handles,borrowed.old_integer_bounds,
+                    borrowed.axes,borrowed.remainder,borrowed.post_axis,
+                    borrowed.new_integer_bounds,borrowed.broadphase_buffers,
+                    borrowed.descriptor_inputs,borrowed.radix_buffers,
+                    borrowed.descriptor_gpu_buffers,borrowed.broadphase_descriptor,
+                    borrowed.radix_descriptors,borrowed.radix_wor_descriptors
+                };
+                const auto unchangedHistorySize=projections[0].getSize();
+                const auto unchangedOldBoundsSize=singles[3].getSize();
+                const auto unchangedDescriptor=desc;
+                bool rejectedOversizedRegion=false;
+                try {
+                    (void)gpu_dma_up_sap_frame_native(
+                        overRegionLimit,overflowFrame,stream);
+                } catch(const std::overflow_error&) {
+                    rejectedOversizedRegion=true;
+                }
+                if(!rejectedOversizedRegion || hugeBoxes!=maxSafeBoxes ||
+                   hugeCapacity!=911u || hugeCreated!=921u ||
+                   hugeRemoved!=931u || hugeUpdated!=941u ||
+                   projections[0].getSize()!=unchangedHistorySize ||
+                   singles[3].getSize()!=unchangedOldBoundsSize ||
+                   std::memcmp(&desc,&unchangedDescriptor,sizeof(desc))!=0 ||
+                   !stream.commands().empty())
+                    throw std::runtime_error(
+                        "Region overflow committed SAP counters or queued partial GPU history");
+                const physx::Bp::BroadPhaseUpdateData atRegionLimit(
+                    nullptr,0u,nullptr,0u,nullptr,0u,
+                    nullptr,nullptr,nullptr,maxSafeBoxes,
+                    filter,false,false);
+                const auto acceptedBoundary=prepare_gpu_dma_up_counts_native(
+                    atRegionLimit,hugeMembers);
+                if(acceptedBoundary.current_boxes!=maxSafeBoxes ||
+                   acceptedBoundary.projections!=67'108'862u ||
+                   checked_sap_region_slots_native(acceptedBoundary.projections)
+                        !=4'294'967'168ull ||
+                   hugeCapacity!=maxSafeBoxes ||
+                   hugeCreated || hugeRemoved || hugeUpdated)
+                    throw std::runtime_error(
+                        "SAP region-slot preflight rejected its valid PxU32 boundary");
+                if(!stream.commands().empty())
+                    throw std::runtime_error(
+                        "Valid source count preflight incorrectly enqueued GPU work");
+
                 const auto nextCounts=gpu_dma_up_sap_frame_native(
                     nextUpdate,borrowed,stream);
                 if(nextCounts.previous_boxes!=3u ||
