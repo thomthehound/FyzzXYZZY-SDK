@@ -3,7 +3,7 @@
 
 # SDK-wide architecture contract
 
-**Applies to every production subsystem and supported backend:** CPU/PhysX,
+**Applies to every production subsystem and supported backend:** native CPU, reference PhysX,
 portable GPU, Vulkan, D3D12, allocators, scheduling, kernel translations,
 Godot adapter, future engine consumers, and packaging. Source-code tests
 are required to validate invariants, but they do not define the production
@@ -12,16 +12,19 @@ a new controller simply to make another increment independently testable.
 
 ## 1. One authoritative owner and state representation
 
-- The original PhysX scene and task graph are authoritative for simulation
-  and collision state. GPU broadphase, narrowphase, solver, articulations
-  and buffers participate in those existing lifecycles.
+- FyzzXYZZY's native scene and task graph are the production authorities for
+  simulation and collision state. PhysX source defines the port's behavioral
+  and algorithmic reference, not its runtime ownership. GPU broadphase,
+  narrowphase, solver, articulations and buffers participate in FyzzXYZZY's
+  single native scene lifetime.
 - A component must have one clearly identified allocation owner, one
   authoritative state representation, and an explicit lifetime/retirement
   contract. Borrowed views must not quietly become shadow ownership.
 - Portable GPU code may lower CUDA mechanisms (addresses, kernel arguments,
-  buffers, descriptors, stream/event/synchronization) but must not insert
-  a second simulation tick, a duplicate scene scheduler, or alternate
-  collision/solver algorithms without an explicit source-grounded decision.
+  buffers, descriptors, stream/event/synchronization). Port the source scene
+  dependency graph into the one FyzzXYZZY scheduler; do not let reference
+  PhysX, a kernel fixture, or a second owner drive production frames.
+  Algorithm departures require source-grounded justification and tests.
 - Keep original source classes and method boundaries where they correspond
   to actual ownership and responsibilities. Helpers are welcome for a
   cohesive private operation; **do not accumulate a new abstraction for
