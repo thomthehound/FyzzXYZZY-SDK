@@ -51,18 +51,20 @@ in [GPU_PORT_PROGRAM.md](GPU_PORT_PROGRAM.md).
 
 ## 3. Source-faithful production integration
 
-For each change identify the concrete production caller and where it
-connects to its original source owner. A dedicated fixture may validate
-an operation in isolation, but **passing that fixture does not mean a
-live PhysX scene is using it**. Keep the CPU baseline; do not turn
-experimental `world_vulkan` or `*_arena` demonstrations into a
-replacement production PhysX pipeline.
+For each change identify its native FyzzXYZZY production caller, authoritative
+state owner, and the corresponding original PhysX source operation. A dedicated
+fixture may validate an operation in isolation, but **passing that fixture
+does not mean a native FyzzXYZZY scene is executing it**. Keep the reference
+PhysX CPU baseline independent; experimental `world_vulkan` and `*_arena`
+demonstrations are not substitutes for integrated production physics.
 
 Track exact implementation gates and known absent connections. In particular,
 [GPU broadphase G3](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101)
-is **not complete** until the source-derived GPU SAP executes from a real
-`PxScene` and publishes correct found/lost pair state into the scene task
-graph over multiple frames.
+is **not complete** until a FyzzXYZZY-owned native scene and task graph
+execute source-derived GPU SAP on supported backends and publish correct
+multi-frame found/lost pair state to native narrowphase and CPU dynamics.
+A modified `PxScene`, a reference PhysX scheduler, or an isolated GPU
+fixture cannot satisfy this gate.
 
 ## 4. Consolidation and deletion
 

@@ -475,7 +475,7 @@ not a requirement of the new native report stage.
 **Still outside scope:** actual `PxgCudaBroadPhaseSap` call-site rewiring,
 PhysX buddy-heap allocation/retirement integration and native CUDA-mapped
 host report interoperability. Those remain prerequisites to shipping a
-real native-backed `PxScene` GPU broadphase.
+real GPU broadphase in a FyzzXYZZY-owned native scene.
 
 ## Source GPU report production connected to native fetch
 
@@ -1359,7 +1359,7 @@ PhysX GPU buddy heap, native DMA stream, real
   unallocated GPU destination before enqueuing partial transfers.
 
 This is a **GPU-host pathway conformance test**, not yet execution of the
-source SAP GPU task graph from a real `PxScene`. Completing that owner
+source SAP GPU task graph from a FyzzXYZZY-owned native scene. Completing that owner
 binding, actual AABB-manager getter provenance, report-mapping lifecycle
 and shader dispatch dependencies remains necessary.
 

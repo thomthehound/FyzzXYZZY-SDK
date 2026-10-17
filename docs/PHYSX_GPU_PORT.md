@@ -768,8 +768,10 @@ The upstream source makes the ordering precise:
   continuation and removes its initial task reference. The existing PhysX
   task manager dispatches those tasks and releases their continuations.
 
-The source-faithful first CPU/GPU boundary is a **blocking fetch on the
-actual PhysX post-broadphase path**, not a new GPU callback scheduler.
+The upstream source's first CPU/GPU publication boundary is a **blocking
+fetch within its post-broadphase task path**. FyzzXYZZY must reproduce
+the dependency and publication semantics in its own scene/task graph,
+without adding a competing GPU callback scheduler.
 `src/physx_gpu/broadphase_completion.{h,cpp}` now provides a minimal
 `BroadPhaseCompletionGate`: it associates one compute submission with
 one frame, waits before caller-provided fetch/resize, installs the
@@ -790,8 +792,9 @@ Vulkan/D3D12 submissions**, but is **not yet wired into
 providing the original continuation-setup operation, reading the descriptor/pair streams,
 checking overflow/abort flags, updating report storage, and swapping state.
 It does not make the existing SDK GPU-broadphase-capable or add a worker
-thread. Next integration attaches this boundary to actual PhysX broadphase
-factory/scene objects as the relevant kernel family becomes runnable.
+thread. Native integration must attach the translated publication and
+continuation behavior to the FyzzXYZZY-owned SAP/AABB manager and scene,
+not to a modified reference PhysX broadphase factory.
 
 ## Vulkan and D3D12: concurrent portability gates
 

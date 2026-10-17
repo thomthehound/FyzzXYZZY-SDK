@@ -219,8 +219,9 @@ Requirements for the internal compute substrate, independent of Vulkan/D3D12:
 - Multi-queue and CPU task completion semantics when demanded by PhysX.
   A single queue may initially *serialize* an identified subgraph, but must
   not silently erase required task edges, publication or CPU concurrency.
-- GPU failures and abort propagation into PhysX scene continuation cleanup;
-  task references must be released on every success/failure/early-out.
+- GPU failures and abort propagation into FyzzXYZZY's native scene task
+  completion/cleanup; no task reference or frame may be stranded after
+  success, failure or early-out.
 - Low allocation churn: transient command/descriptors, cached pipelines
   and rings/pools rather than one device submission per kernel.
 - CPU trace/diagnostics showing source task, buffer version, submission,
@@ -255,8 +256,8 @@ state machine or a backend-specific body ownership model.
 | --- | --- | --- |
 | G0 - baseline | Source/scene map; build modes; CPU test oracle; trace/profiling format | Source-grounded PhysX call/dependency map, CPU regression fixtures, reproducible builds |
 | G1 - two execution backends | Native Vulkan and D3D12 compute, same AABB shader and identical reference fixtures | SPIR-V and DXIL compilation, dispatch, copy, resource barriers, readback, fence and failure tests; native Windows D3D12 execution |
-| G2 - addressing and tasks | Portable device descriptor schema, allocation/lifetime policy and GPU completion bridge into PhysX continuations | Real pointer-rich descriptor traversal on both backends; task continuation exactly once; resize, alias, abort, sequencing cases |
-| G3 - coherent GPU broadphase | Source-derived SAP/sort/region/aggregate/pair pipeline entered from a real PhysX scene | Found/lost-pair parity, frame-to-frame state, forced update, aggregation, overflow, scene publication, CPU dynamics with GPU BP |
+| G2 - addressing and tasks | Portable device descriptor schema, allocation/lifetime policy and GPU completion bridge into the native FyzzXYZZY task graph | Real pointer-rich descriptor traversal on both backends; native completion exactly once; resize, alias, abort and sequencing cases |
+| G3 - coherent GPU broadphase | Native FyzzXYZZY scene owns the source-derived SAP/sort/region/aggregate/pair pipeline and schedules it without a reference PhysX scene | Native-scene found/lost-pair parity, frame-to-frame state, forced update, aggregation, overflow, publication into native narrowphase and CPU dynamics with GPU BP on Vulkan and D3D12; explicit no-PhysX-host proof |
 | G4 - body/shape pipeline | Portable simulation-controller body/shape updates, contact stream ownership and GPU narrowphase foundation | Original GPU/CPU fallback matrix, contact/patch output, touch/CCD/trigger interaction and island input |
 | G5 - rigid solver | Source-derived PGS/TGS constraint preparation, partitioning, rigid solver and integration | Stable bodies, contacts, joints, restitution/friction, sleep/wake, callback/report semantics, multi-frame regression |
 | G6 - articulation | GPU articulation streams, data prep, solve/feedback consistent with PhysX | Chains/loops where supported; joints/tendons; edge cases and CPU fallbacks clearly classified |
@@ -264,8 +265,8 @@ state machine or a backend-specific body ownership model.
 | G8 - production | Direct GPU API policy, interop, tuning, hardware matrices, packaging and engine consumers | Honest public support matrix, profiling, robust recovery and repeatable release acceptance |
 
 **Implementation priority:** G0/G1/G2 *before* adding lots of CUDA kernels.
-G3 is the first scene-integrated PhysX GPU milestone. G4/G5 are the main
-rigid-body product milestone. G6/G7 are significant projects in themselves;
+G3 is the first scene-integrated **native FyzzXYZZY** GPU milestone. G4/G5
+are the main rigid-body product milestone. G6/G7 are significant projects in themselves;
 do not imply full PhysX 5.11 GPU parity merely because G5 works. Gates can
 overlap where dependencies allow, but no acceptance gate is waived.
 
@@ -332,10 +333,11 @@ portable execution and software correctness without that burden:
 
 **Hardware checkpoints are coherent subsystem events, not PR events:**
 
-1. **First AMD profiling session:** GPU broadphase entered through an
-   actual PhysX scene with CPU dynamics, spanning multiple frames, persistent
-   SAP state, pair publication, realistic creation/removal traffic, and
-   representative batching. Exercise native AMD Vulkan and D3D12 where
+1. **First AMD profiling session:** GPU broadphase entered through a
+   FyzzXYZZY-owned native scene and task graph with native CPU dynamics,
+   spanning multiple frames, persistent SAP state, pair publication, realistic
+   creation/removal traffic, and representative batching. The native scene must
+   not allocate or drive a reference PhysX `PxScene`. Exercise native AMD Vulkan and D3D12 where
    practical. This is the first point when end-to-end timing can meaningfully
    guide memory and dispatch choices.
 2. **Second major session:** native GPU narrowphase and a meaningful

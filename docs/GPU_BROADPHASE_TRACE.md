@@ -469,8 +469,9 @@ source-contract tests, not proof of a live portable GPU PxScene.**
 `PxgAABBManager` as host owners, translate their used `mStream` DMA,
 memset, kernel-launch, buffer-grow/swap, event/wait and abort semantics to the
 native compute backend; bind native kernels at their existing source launch
-sites, and keep the original `Sc::Scene` task continuations. Do not build
-a second scene loop or promise live GPU `PxScene` before the original full
+sites, and port the original `Sc::Scene` continuation dependencies into
+FyzzXYZZY's single native task graph. Do not introduce a competing scene
+loop or claim native G3 until the complete
 producer/report chain and multi-frame state have been validated.
 
 ## 3. Buffer, ownership, and publication worksheet
@@ -515,10 +516,12 @@ invariant rather than reproducing pointer arithmetic unnecessarily.
    changes, actor–aggregate and aggregate–aggregate pairs, duplicate handling.
 6. **Capacity and failure:** saturate found/lost pairs and verify warning,
    counters and omission policy; forced update; aborted submission or device
-   loss cannot strand PhysX task references or publish half-complete frames.
-7. **Scene-facing fixture:** `PxSceneDesc` configured for GPU broadphase and
-   CPU dynamics; actual `simulate` / `fetchResults`; pair notifications
-   feeding the original narrowphase. **No second simulation loop.**
+   loss cannot strand native task continuations or publish half-complete frames.
+7. **Native scene acceptance:** FyzzXYZZY's own scene selects GPU broadphase
+   and native CPU dynamics; its real simulation/fetch lifecycle publishes
+   found/lost pairs into native narrowphase across frames. The reference
+   PhysX `PxScene` may run independently as an oracle, but never hosts
+   the candidate GPU work. **Exactly one native simulation scheduler.**
 
 Until these tests pass, call the stage a **port-in-progress**, not a working
 portable GPU broadphase.
@@ -532,7 +535,7 @@ portable GPU broadphase.
 - Make the CPU/GPU-updated-bounds split explicit at the exact
   `PxgSimulationController::preIntegrateAndUpdateBound` boundary.
 - Map every `CUstream` and `CUevent` edge for broadphase and aggregate work,
-  including `gpuDMABack` and the resulting PhysX continuation release.
+  including `gpuDMABack` and the corresponding native completion/publication edge.
 - Validate abort-mode and result-capacity handling before generalizing
   allocator or callback semantics.
 - Reconcile original CUDA support flags and CPU fallback behavior with
