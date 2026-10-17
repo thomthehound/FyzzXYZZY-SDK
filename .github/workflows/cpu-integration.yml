@@ -51,7 +51,7 @@ jobs:
           ctest --test-dir build -R '^fyzzxyzzy_sap_(overlap_(work|prefix)|newbounds_(pairs|sequence))$' --output-on-failure
           ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource$' --output-on-failure
       - name: Build
-        run: cmake --build build --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_sap_broadphase_descriptor_native fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+        run: cmake --build build --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_sap_broadphase_descriptor_native fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -66,7 +66,7 @@ jobs:
           test -f FyzzXYZZY-SDK/vendor/PhysX/physx/CMakeLists.txt
           cmake -S FyzzXYZZY-SDK -B offline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
           grep -F "vendor/PhysX" offline-build/CMakeCache.txt
-          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
+          cmake --build offline-build --target fyzzxyzzy_cpp23_contract fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test --parallel 4
           ctest --test-dir offline-build --output-on-failure
           # Production/distribution configurations must also reject toolchains
           # lacking C++23 std::expected when BUILD_TESTING=OFF.
@@ -154,7 +154,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
-        run: cmake --build build --config release --target fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot --parallel 4
+        run: cmake --build build --config release --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot --parallel 4
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
       - name: Godot 4.7.2 headless acceptance
