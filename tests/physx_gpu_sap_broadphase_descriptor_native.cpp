@@ -416,6 +416,41 @@ int main() {
                     {projections,ranks,tempKeys,tempHandles,radixCounts,boxHandles},
                     recordBuffers,desc,normal.data(),wor.data()
                 };
+                // A missing original constructor-owned GPU descriptor must
+                // reject the ENTIRE frame before counters or GPU commands
+                // change. Retrying valid storage then applies changes once.
+                SourceSapDmaUpFrameMembers unallocatedFrame{
+                    borrowed.counts,borrowed.handles,borrowed.old_integer_bounds,
+                    borrowed.axes,borrowed.remainder,borrowed.post_axis,
+                    borrowed.new_integer_bounds,borrowed.broadphase_buffers,
+                    borrowed.descriptor_inputs,borrowed.radix_buffers,
+                    {descriptorDevice,normalGpu,missingRecord},
+                    borrowed.broadphase_descriptor,
+                    borrowed.radix_descriptors,borrowed.radix_wor_descriptors
+                };
+                const auto untouchedLive=liveBoxes;
+                const auto untouchedCapacity=boxesCapacity;
+                const auto untouchedProjectionSize=projections[0].getSize();
+                const auto untouchedCreatedCount=createdCount;
+                const auto untouchedRemovedCount=removedCount;
+                const auto untouchedUpdatedCount=updatedCount;
+                bool rejectedUnallocatedFrame=false;
+                try {
+                    (void)gpu_dma_up_sap_frame_native(
+                        nextUpdate,unallocatedFrame,stream);
+                } catch(const std::logic_error&) {
+                    rejectedUnallocatedFrame=true;
+                }
+                if(!rejectedUnallocatedFrame ||
+                   liveBoxes!=untouchedLive || boxesCapacity!=untouchedCapacity ||
+                   createdCount!=untouchedCreatedCount ||
+                   removedCount!=untouchedRemovedCount ||
+                   updatedCount!=untouchedUpdatedCount ||
+                   projections[0].getSize()!=untouchedProjectionSize ||
+                   !stream.commands().empty())
+                    throw std::runtime_error(
+                        "Rejected source SAP frame mutated counters or queued GPU copies");
+
                 const auto nextCounts=gpu_dma_up_sap_frame_native(
                     nextUpdate,borrowed,stream);
                 if(nextCounts.previous_boxes!=3u ||
