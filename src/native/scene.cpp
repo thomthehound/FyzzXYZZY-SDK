@@ -239,7 +239,7 @@ void Scene::update_contacts() {
                     separated = true;
                     break;
                 }
-                if (signed_gaps[k] > signed_gaps[axis])
+                if (k == 0u || signed_gaps[k] > signed_gaps[axis])
                     axis = k;
             }
             if (separated)
