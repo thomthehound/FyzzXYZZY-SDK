@@ -28,6 +28,15 @@ public:
 
 int main() {
     try {
+        // PxDefaultCpuDispatcherCreate requires an initialized process
+        // PhysX Foundation. This is a source-descriptor test, not a
+        // replacement scene, but it must obey the real PhysX lifetime.
+        physx::PxDefaultAllocator allocator;
+        physx::PxDefaultErrorCallback errors;
+        auto* foundation = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
+        if (!foundation)
+            throw std::runtime_error("Cannot initialize PhysX Foundation");
+        try {
         physx::PxSceneDesc desc{physx::PxTolerancesScale()};
         desc.filterShader=physx::PxDefaultSimulationFilterShader;
         auto* dispatcher=physx::PxDefaultCpuDispatcherCreate(1);
@@ -57,6 +66,11 @@ int main() {
                 throw std::runtime_error("Removing portable GPU factory did not restore CPU source descriptor");
         }catch(...){dispatcher->release();throw;}
         dispatcher->release();
+        } catch (...) {
+            foundation->release();
+            throw;
+        }
+        foundation->release();
         std::cout<<"PhysX source scene portable GPU factory admission contract PASS\n";
     }catch(const std::exception& e){
         std::cerr<<"PhysX source scene portable GPU admission FAILED: "<<e.what()<<"\n";
