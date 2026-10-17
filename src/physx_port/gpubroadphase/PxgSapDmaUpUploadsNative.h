@@ -10,12 +10,12 @@
 #include "PxgBroadPhaseDesc.h"
 #include "PxgRadixSortDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
-#include "physx_gpu/source_sap_dma_native.h"
 
 #include <vector>
 
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
+struct SourceSapUpload;
 
 // Existing PxgCudaBroadPhaseSap descriptor buffers, originally allocated
 // in its constructor. The caller retains both their owning GPU memory
