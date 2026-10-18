@@ -30,7 +30,14 @@ CLASSIFICATIONS = {
 
 def production_physics_changed(files: list[dict]) -> bool:
     """Source-fidelity declarations fail closed for native production physics."""
-    roots = ("src/native/", "src/physx_port/", "src/physx_gpu/")
+    roots = (
+        "src/native/",
+        "src/physx_port/",
+        "src/physx_gpu/",
+        "src/kernels/",
+        "src/floor_contact.cpp",
+        "src/world_vulkan.cpp",
+    )
     return any(
         any(item.get(key, "").startswith(roots)
             for key in ("filename", "previous_filename"))

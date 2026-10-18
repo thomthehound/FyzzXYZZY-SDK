@@ -57,6 +57,12 @@ class ArchitectureReviewTest(unittest.TestCase):
             {"filename":"docs/new.md", "previous_filename":"src/native/scene.cpp"}]))
         self.assertFalse(production_physics_changed([
             {"filename":"src/world.cpp"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/kernels/physx_aabb.hlsl"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/floor_contact.cpp"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/world_vulkan.cpp"}]))
 
     def test_unfilled_template_is_not_evidence(self):
         body = "\n\n".join(

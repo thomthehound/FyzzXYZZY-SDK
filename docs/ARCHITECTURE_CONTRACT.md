@@ -126,8 +126,11 @@ sections, also instantiated by `.github/pull_request_template.md`:
    or why an additional representation is indispensable
 5. **Source fidelity and deviations:** one explicit fidelity classification;
    PhysX source method correspondence, departures and equivalence evidence.
-   Native physics code cannot claim `not-applicable` or
-   `non-production-only` when it changes the production scene/solver.
+   Native physics code—including translated kernels, historical
+   contact and GPU-demo paths—cannot claim `not-applicable` or
+   `non-production-only` when it changes production algorithms. Independent
+   backend mechanism lowerings still require explicit correspondence and
+   justification, even when PhysX source arithmetic is untouched.
 
 The lightweight `SDK architecture contract` workflow checks that a
 non-draft code PR supplies substantive sections and reruns on PR-body
