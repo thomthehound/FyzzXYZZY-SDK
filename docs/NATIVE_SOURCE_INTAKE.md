@@ -205,8 +205,8 @@ required handoffs, not an invented globally sequential PhysX frame.
 ### Backend admission cases that must not be conflated
 
 `ScPipeline.cpp` does not branch solely on the CPU/GPU **solver**.
-The predicate `isUsingGpuDynamicsOrBp()` controls both the
-broadphase task route and the `advanceStep` /`updateDynamics`
+The predicate [`Sc::Scene::isUsingGpuDynamicsOrBp()`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/include/ScScene.h#L593-L596) is defined in the original header as `mUseGpuBp || mUseGpuDynamics`; it controls both the
+broadphase task route and the `advanceStep` / `updateDynamics`
 continuation topology:
 
 | Scene configuration | `mUseGpuBp` | `mUseGpuDynamics` | `isUsingGpuDynamicsOrBp()` | Scene chain |
