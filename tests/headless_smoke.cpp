@@ -119,6 +119,85 @@ int main() {
                 throw std::runtime_error(
                     "Native quaternion/angular damping diverged from PhysX source");
 
+            // Do not let a single-axis quaternion test conceal incorrect
+            // Hamilton-product order, sign or angular-component handling.
+            // Both worlds stay in free flight: angular contact solver parity
+            // is deliberately NOT claimed.
+            fyzz::World native_multiaxis(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_multiaxis(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto nm = native_multiaxis.add_dynamic_box(
+                {0.4f,0.6f,0.8f},{0,20,0},1);
+            const auto rm = reference_multiaxis.add_dynamic_box(
+                {0.4f,0.6f,0.8f},{0,20,0},1);
+            native_multiaxis.set_body_angular_velocity(nm,{1.4f,-2.3f,0.8f});
+            reference_multiaxis.set_body_angular_velocity(rm,{1.4f,-2.3f,0.8f});
+            for (int frame=0;frame<90;++frame) {
+                native_multiaxis.step(1.0f/120.0f);
+                reference_multiaxis.step(1.0f/120.0f);
+            }
+            const auto multi_n = native_multiaxis.body_state(nm);
+            const auto multi_r = reference_multiaxis.body_state(rm);
+            const auto quat_finite = [](fyzz::Quat q) {
+                return std::isfinite(q.x) && std::isfinite(q.y) &&
+                       std::isfinite(q.z) && std::isfinite(q.w);
+            };
+            const auto vec_finite = [](fyzz::Vec3 v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) &&
+                       std::isfinite(v.z);
+            };
+            const float multi_dot =
+                multi_n.orientation.x*multi_r.orientation.x +
+                multi_n.orientation.y*multi_r.orientation.y +
+                multi_n.orientation.z*multi_r.orientation.z +
+                multi_n.orientation.w*multi_r.orientation.w;
+            if (!quat_finite(multi_n.orientation) ||
+                !quat_finite(multi_r.orientation) ||
+                !vec_finite(multi_n.angular_velocity) ||
+                !vec_finite(multi_r.angular_velocity) ||
+                !std::isfinite(multi_dot) ||
+                std::abs(multi_dot) < 0.999f ||
+                std::abs(multi_n.angular_velocity.x -
+                         multi_r.angular_velocity.x) > 0.03f ||
+                std::abs(multi_n.angular_velocity.y -
+                         multi_r.angular_velocity.y) > 0.03f ||
+                std::abs(multi_n.angular_velocity.z -
+                         multi_r.angular_velocity.z) > 0.03f)
+                throw std::runtime_error(
+                    "Native arbitrary-axis free rotation diverged from PhysX");
+
+            // Source ScBodyCore.cpp defaults dynamic maxAngularVelocitySq
+            // to 10000f; DyBodyCoreIntegrator.h clamps after angular
+            // damping in PxReal, before quaternion integration.
+            fyzz::World native_limited(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_limited(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto nl = native_limited.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,10,0},1);
+            const auto rl = reference_limited.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,10,0},1);
+            native_limited.set_body_angular_velocity(nl,{250,0,0});
+            reference_limited.set_body_angular_velocity(rl,{250,0,0});
+            native_limited.step(1.0f/120.0f);
+            reference_limited.step(1.0f/120.0f);
+            const auto lim_n = native_limited.body_state(nl);
+            const auto lim_r = reference_limited.body_state(rl);
+            if (!vec_finite(lim_n.angular_velocity) ||
+                !vec_finite(lim_r.angular_velocity) ||
+                !quat_finite(lim_n.orientation) ||
+                !quat_finite(lim_r.orientation) ||
+                std::abs(lim_n.angular_velocity.x - 100.0f) > 0.05f ||
+                std::abs(lim_n.angular_velocity.x -
+                         lim_r.angular_velocity.x) > 0.05f ||
+                std::abs(lim_n.orientation.x -
+                         lim_r.orientation.x) > 0.02f ||
+                std::abs(lim_n.orientation.w -
+                         lim_r.orientation.w) > 0.02f)
+                throw std::runtime_error(
+                    "Native source angular speed clamp diverged from PhysX");
+
             // The SDK floor's public orientation is identity in BOTH
             // providers, even though PxCreatePlane rotates its local +X
             // plane internally. This internal correction must still remain
