@@ -140,7 +140,20 @@ Important verified source edges:
    a final writeback pass. Friction activation depends on source
    iteration policy; per-contact force thresholds/writeback and
    no-contact integration must not disappear in translation.
-10. **`postSolver` is a required state-lifetime barrier**: it merges
+10. **Island generation has a third pass tied to lost-contact cleanup,
+    sleeping and publication**; the `updateDynamics`-installed
+    lost-contact continuation chain eventually executes
+    `destroyManagers`, which calls
+    `mSimpleIslandManager->thirdPassIslandGen`. That source method
+    forks *speculative* and *accurate* third-pass tasks and joins them
+    through its post-third-pass continuation. `processLostContacts3`
+    removes deferred overlaps and frees AABB manager buffers before
+    releasing `mPostThirdPassIslandGenTask`; its
+    `postThirdPassIslandGen` callback puts objects/interactions to
+    sleep and processes persistent contact events. These dependencies
+    must complete before the consuming publication boundary, **not**
+    at `secondPassIslandGenPart2`.
+11. **`postSolver` is a required state-lifetime barrier**: it merges
     dynamics results, releases solver constraint memory and swaps
     friction streams. When `isUsingGpuDynamicsOrBp()` is true,
     `updateSimulationController` first invokes simulation-controller
@@ -174,9 +187,10 @@ data readiness, single ownership and completion dependencies.
 | `postNarrowPhase` | `fetchUpdateContactManager` makes contact-manager outputs ready; old constraints can be released | `islandGen`, not the dynamics solver | GPU may sort contacts here |
 | `islandGen` | `mDynamicsContext->processPatches`, then `processNarrowPhaseTouchEvents(&mUpdateDynamics)` **enqueues** new-touch tasks | `InteractionNewTouchTask` signals **`mUpdateDynamics`** when finished; it may overlap scene-level `solver` setup | Split-island-gen paths affect graph; no invented touch-to-solver barrier |
 | `Sc::Scene::solver` / `beforeSolver` | Updates per-body forces and threshold buffers, swaps narrowphase streams after second pass | Downstream **`Sc::Scene::updateDynamics`**, not `DynamicsContext::update` from within `solver` | GPU update-bodies task intervenes |
-| `Sc::Scene::updateDynamics` | Executes after new-touch tasks signal its continuation; acquires constraint memory, adds lost-contact task references, calls `mDynamicsContext->update` | `updateDynamicsPostPartitioning` and dynamics solver task continuations; eventually `postSolver` | Predicate false: immediate post-partition call; predicate true: deferred stage even for GPU-BP/CPU-dynamics |
+| `Sc::Scene::updateDynamics` | Executes after new-touch tasks signal its continuation; acquires constraint memory, adds **three-stage lost-contact task chain** references, calls `mDynamicsContext->update` | `updateDynamicsPostPartitioning`, dynamics solver work, lost-contact/third-island-pass processing and eventually `postSolver` | Predicate false: immediate post-partition call; predicate true: deferred stage even for GPU-BP/CPU-dynamics |
 | `Dy::DynamicsContext::update` and `updatePostKinematic` (CPU) | Owns solver pools, accurate active island lists, constraint descriptors, per-island task creation and partitioning | Source `DySolverControl` PGS iterations, integration, postprocessing, threshold/force reports | GPU dynamics context has a different implementation; do not infer full GPU behavior from CPU `DyDynamics.cpp` |
 | `updateDynamicsPostPartitioning` | Calls dynamics-context post-partitioning hook, clears destroyed partition edges and releases staged lost-contact references | `updateSimulationController` if `isUsingGpuDynamicsOrBp()`, else CPU-only post-solver continuation | CPU-dynamics **alone** does not imply the inline path; GPU-BP/CPU-dynamics still uses the deferred scene chain |
+| `processLostContacts` / `processLostContacts2` / `destroyManagers` | Lost touch reports and manager retirement; `destroyManagers` invokes `SimpleIslandManager::thirdPassIslandGen` with speculative/accurate continuations | `processLostContacts3` retires overlap/AABB buffers and releases `mPostThirdPassIslandGenTask`; `postThirdPassIslandGen` puts objects/interactions to sleep and emits persistent events | Can overlap other source work; must join the `mPostSolver` dependency, not retire immediately after second island pass |
 | `postSolver` / `afterIntegration` / `finalizationPhase` | Merges results, frees constraint blocks, swaps friction streams, completes body-state publication, events and cleanup | Result fetch and next-frame scene mutation | When GPU-dynamics-or-BP is selected, updateSimulationController runs ahead of postSolver; do not infer GPU rigid-body solve was selected |
 
 ### Verified source anchors and still-open closure
@@ -190,7 +204,8 @@ license to assume every transitive dependency was already ported:
 - [`ScPipeline.cpp::postNarrowPhase` / `islandGen`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L1525-L1560) and [`processNarrowPhaseTouchEvents`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L1610-L1672) — patch processing and new-touch tasks, explicitly chained to `mUpdateDynamics`, **not `mSolver`**.
 - `DyDynamics.cpp::DynamicsContext::update` and `updatePostKinematic` — inspected their original implementations for world-body reset, pool lifetime, accurate-island batching, and solver-task creation. Extract their exact source ranges and transitive type dependencies before porting; no approximate line anchor is asserted here.
 - [`DySolverControl.cpp::solveV_Blocks`](https://github.com/thomthehound/PhysX/blob/main/physx/source/lowleveldynamics/src/DySolverControl.cpp#L160-L313) — position/velocity, conclude, writeback and no-contact branches.
-- [`PxsSimpleIslandManager.cpp::firstPassIslandGen`, `secondPassIslandGenPart1/Part2`](https://github.com/thomthehound/PhysX/blob/main/physx/source/lowlevel/software/src/PxsSimpleIslandManager.cpp#L257-L310) — speculative versus accurate state, lost-edge removal and deferred cleanup.
+- [`PxsSimpleIslandManager.cpp::firstPassIslandGen`, `secondPassIslandGenPart1/Part2` and `thirdPassIslandGen`](https://github.com/thomthehound/PhysX/blob/main/physx/source/lowlevel/software/src/PxsSimpleIslandManager.cpp#L257-L330) — speculative versus accurate state, lost-edge removal and third-pass deactivation work.
+- [`ScPipeline.cpp::destroyManagers`, `processLostContacts3` and `postThirdPassIslandGen`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L2368-L2490) — third-pass producer, the AABB-buffer retirement/release, and eventual sleep/persistent-contact publication.
 - [`NpSceneFetchResults.cpp::fetchResults` / `fetchResultsStart` / `fetchResultsFinish`](https://github.com/thomthehound/PhysX/blob/main/physx/source/physx/src/NpSceneFetchResults.cpp#L484-L670) — completion readiness and public contact-event publication.
 - [`PxgAABBManager.cpp::updateBPFirstPass` / `updateBPSecondPass`](https://github.com/thomthehound/PhysX/blob/main/physx/source/gpubroadphase/src/PxgAABBManager.cpp#L485-L828) and [`PxgCudaBroadPhaseSap.cpp::gpuDMAUp` / `update` / `fetchBroadPhaseResults`](https://github.com/thomthehound/PhysX/blob/main/physx/source/gpubroadphase/src/PxgCudaBroadPhaseSap.cpp#L242-L1260) — separate GPU SAP host lifecycle. This document does not certify that N2 is wired.
 
@@ -201,6 +216,53 @@ scheduler, extract actual continuation edges, producer-completion
 requirements, and buffer retirement from the original task construction
 sites into an executable DAG check. The table above describes the
 required handoffs, not an invented globally sequential PhysX frame.
+
+### Lost-contact retirement and third-pass island convergence
+
+This is **not** an optional postscript to a two-pass island build.
+The original source explicitly connects lost-contact cleanup, active
+island state and solver completion, permitting overlap where the task
+continuations allow it:
+
+1. `Sc::Scene::updateDynamics` establishes
+   `mProcessLostContactsTask` →
+   `mProcessLostContactsTask2` →
+   `mProcessLostContactsTask3` continuations, with the latter
+   connected to `mPostSolver`. `updateDynamicsPostPartitioning`
+   releases their staged references when the prerequisites are set.
+2. `processLostContacts` identifies destroyed overlaps and schedules
+   lost-touch work. `processLostContacts2` clears old island-edge
+   connection data while sequencing lost-touch reports, interaction
+   unregistration and `mDestroyManagersTask`.
+3. `destroyManagers` configures
+   `mPostThirdPassIslandGenTask` to join the lost-contact
+   continuation chain and starts
+   `SimpleIslandManager::thirdPassIslandGen`, which clears
+   accurate graph deactivations, schedules speculative and accurate
+   third-pass tasks, and joins at `mPostThirdPassTask`.
+4. `processLostContacts3` calls `onOverlapRemoved` for destroyed
+   shape/trigger overlaps, frees AABB buffers, and only then
+   releases `mPostThirdPassIslandGenTask`.
+5. `postThirdPassIslandGen` calls `putObjectsToSleep`,
+   conditionally deactivates speculative-island interactions
+   (unless sleeping is disabled), and processes persistent
+   contact events. The **join into `mPostSolver`** must respect
+   the third pass and lost-contact cleanup. The exact source
+   dependencies may overlap numerical solve work—do **not**
+   represent the third pass as an unconditional serial step
+   executed after solver arithmetic.
+6. In `afterIntegration`, PhysX consults the accurate
+   island manager's `getNodesToDeactivate` and can restore the
+   previous pose and zero velocities of bodies the solver
+   integrated concurrently but the island logic deactivated.
+   This reconciliation is relevant to correct next-frame state
+   and must not be discarded in a native implementation.
+
+Acceptance regression for this connection: multi-frame dynamic
+bodies crossing sleep/wake thresholds, contact loss and
+destroyed-manager retirement must preserve active state, event
+ordering, and stable next-frame island membership versus PhysX CPU.
+This is a **test requirement**, not presently implemented parity.
 
 ### Backend admission cases that must not be conflated
 
@@ -244,13 +306,20 @@ prove GPU solver work or identical staging cost.
 - **Narrowphase streams:** swapped by `Sc::Scene::solver` after the
   second pass completes; a source solver task must not read a stream
   before its producer has completed or after it has been retired.
-- **Island passes:** preserve distinct speculative and accurate island
-  graphs from `PxsSimpleIslandManager`. Its first pass handles
-  speculative wake/new/lost edges; second pass part 1 handles accurate
-  wake/new edges, while part 2 removes destroyed edges and lost
-  connections and retires destroyed node handles. The source explicitly
-  splits parts for permitted overlap with GPU patch work, so don't
-  serialize everything solely because a text ledger shows one line.
+- **All THREE island passes:** preserve separate speculative and accurate
+  graphs from `PxsSimpleIslandManager`. First pass handles speculative
+  wake/new/lost edges; second pass part 1 handles accurate wake/new
+  edges, while part 2 removes destroyed edges and lost connections
+  and retires node handles. **Neither is the final sleep/deactivation
+  publication step.** The third pass forks speculative and accurate
+  deactivation work under a join task; the
+  `destroyManagers`/`processLostContacts3`/
+  `postThirdPassIslandGen` sequence controls contact retirement,
+  AABB buffer release and sleep/event publication. Solver/island
+  parallelism means `afterIntegration` may have to reconcile solver
+  results for bodies marked deactivated by island generation.
+  Do not serialize every pass unnecessarily or publish before the
+  third-pass completion dependency.
 - **World and solver bodies:** zero the source world solver body, preserve
   the kinematic/dynamic remap and accurate island-node ordering, and
   feed contact constraints with real per-body inertia/Jacobian state.
@@ -281,10 +350,10 @@ prove GPU solver work or identical staging cost.
 
 | Concern | Evidence presently established | Work still required |
 | --- | --- | --- |
-| `ScPipeline` task boundaries | Verified `solver` versus `updateDynamics`, `islandGen` patch ownership, new-touch task continuation to `mUpdateDynamics`, GPU-dynamics-or-broadphase predicate, and `postSolver` cleanup | Full task refcount/dependency DAG, compile-time branch, hybrid controller internals and CCD paths |
+| `ScPipeline` task boundaries | Verified `solver` versus `updateDynamics`, `islandGen` patch ownership, new-touch task continuation to `mUpdateDynamics`, GPU-dynamics-or-broadphase predicate, three-pass island/lost-contact task joins and `postSolver` cleanup | Full task refcount/dependency DAG, compile-time branch, hybrid controller internals and CCD paths |
 | `DyDynamics` CPU integration | Verified CPU `update`, source solver-body pools, `updatePostKinematic` island batching, PGS task creation | Input/output ABI extraction, exact partition and writeback semantics, contact/constraint layout inventory |
 | PhysX GPU dynamics | Verified distinct `ScPipeline` GPU continuations and controller handoff | **Not yet independently mapped** GPU-specific `DynamicsContext` implementation, CUDA launch/memory graph and any CPU fallbacks |
-| Island manager and public fetch | Inspected original speculative/accurate island passes and `NpScene::fetchResults` completion/callback split | Full edge/retirement graph and native API publication semantics still need closure |
+| Island manager and public fetch | Inspected original speculative/accurate first, split second, and **third deactivation pass**, its lost-contact/AABB retirement joins, and `NpScene::fetchResults` completion/callback split | Full edge/refcount graph, corner-case sleep policy and native API publication semantics still need closure |
 | GPU SAP host lifecycle | Located original `PxgAABBManager` first/second pass and `PxgCudaBroadPhaseSap` DMA/update/fetch methods | Source-stage and buffer-history closure still belongs to N2, not assumed complete by this N1 audit |
 | Source geometry and contact correlation | Identified `GuContact*`, `PxsNphaseImplementationContext` and `DyContactPrep` source families | Exact correlation/anchor data structure, cache transitions and geometry edge-case acceptance |
 | Native acceptance | Existing source-free scene and oracle smoke tests support an openly bounded subset | Complete rotational PGS, source schedule, GPU SAP and N1/N2 full parity **not admitted** |
