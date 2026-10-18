@@ -66,11 +66,19 @@ Important verified source edges:
    narrowphase at the prescribed dependency point; `postBroadPhase`
    feeds narrowphase and manager report publication. Filtering,
    interaction/manager creation and island insertions depend on reports.
-4. `advanceStep` chains second-pass narrowphase to post-narrowphase,
-   island generation, solver, dynamics and post-solver. GPU execution
-   specifically adds update-bodies, partitioning and simulation-controller
-   continuation edges. Retain independent GPU workload completion signals;
-   no CPU polling loop or per-kernel wait.
+4. `advanceStep` installs **different explicit continuation chains**.
+   The CPU chain passes through second-pass narrowphase,
+   `postNarrowPhase`, `islandGen`, the **scene-level** `solver` task,
+   `updateDynamics`, `postSolver`, `afterIntegration` and
+   `finalizationPhase`. The GPU branch additionally chains
+   `updateBodies` before `updateDynamics`, then
+   `updateDynamicsPostPartitioning` and
+   `updateSimulationController` after it, before `postSolver`.
+   Some island-gen tasks differ under
+   `USE_SPLIT_SECOND_PASS_ISLAND_GEN`; preserve that source branch
+   rather than assuming a single fixed list. GPU completion must
+   satisfy the corresponding continuation, without per-kernel polling
+   or forcing unrelated device-wide idle.
 5. `postNarrowPhase` synchronizes actual contact-manager outputs
    (`fetchUpdateContactManager`), sorts GPU contacts where required and
    releases prior constraints. It does **not** process patches.
@@ -79,18 +87,55 @@ Important verified source edges:
    `processNarrowPhaseTouchEvents` to update contact/island graph
    state before the solver consumes it. This ordering is a source
    dependency, not an interchangeable stage label.
-6. `solver` delegates to `beforeSolver` and the dynamics context, swaps
-   narrowphase streams only at the source-defined boundary. In
-   `DyDynamics.cpp`, constraint setup/partitioning produces the batch
-   descriptors consumed by `DySolverControl.cpp`.
-7. `solveV_Blocks` distinguishes position iterations, velocity iterations,
-   conclude and final writeback; it saves motion velocities for integration
-   and applies the source's friction iteration policy. The zero-constraint
-   branch still integrates bodies.
-8. `afterIntegration` and `finalizationPhase` reconcile activation,
-   bounds, CCD/callback state and publication. The native scene must not
-   publish an intermediate predicted pose as final source-equivalent
-   post-solver state.
+6. **`Sc::Scene::solver` is not `Dy::DynamicsContext::update`.**
+   `Sc::Scene::solver` calls `beforeSolver(continuation)` to prepare
+   body forces/threshold state, and swaps narrowphase streams once
+   narrowphase is complete. It **does not invoke**
+   `mDynamicsContext->update`. The distinct, downstream
+   `Sc::Scene::updateDynamics` task acquires constraint memory,
+   arranges the lost-contact task continuations, and calls
+   `mDynamicsContext->update(...)` with the narrowphase output,
+   gravity, timestep, patch count and changed-handle map.
+7. **Partitioning is a distinct continuation handoff.**
+   For CPU, `updateDynamics` passes `mPostSolver` to the dynamics
+   context and then calls `updateDynamicsPostPartitioning`
+   **immediately in the same thread**. For the GPU admission,
+   `updateDynamics` supplies `mUpdateSimulationController` and
+   `mUpdateDynamicsPostPartitioning` continuations, allowing the
+   source's distinct post-partition task. In both cases
+   `updateDynamicsPostPartitioning` calls
+   `mDynamicsContext->updatePostPartitioning`, clears destroyed
+   partition edges and releases the chained lost-contact task
+   references. Do not silently collapse these edges to the earlier
+   scene-level `solver` stage.
+8. **The underlying CPU `Dy::DynamicsContext::update` queues real
+   solver work, not merely a callback.** Its `updateShared` gate
+   precedes solver-body pool and descriptor allocation. It zeroes the
+   world solver body, obtains accurate active island nodes,
+   reserves/resizes solver-body and constraint descriptor pools, and
+   starts a continuation task. `updatePostKinematic` enumerates
+   active islands, groups work by source solver-batch limits, creates
+   solver task chains and schedules force-threshold reporting.
+   Per-island setup builds source contact/constraint descriptors,
+   partitions batches, performs `solveV_Blocks` (or the parallel
+   variant), then integrates bodies; zero-constraint cases still
+   integrate. This is the relevant **DynamicsContext execution**
+   boundary, not `Sc::Scene::solver`.
+9. **`DySolverControl.cpp::solveV_Blocks`** distinguishes position
+   iterations, concludes constraints on the last position pass,
+   saves motion velocities, then performs velocity iterations with
+   a final writeback pass. Friction activation depends on source
+   iteration policy; per-contact force thresholds/writeback and
+   no-contact integration must not disappear in translation.
+10. **`postSolver` is a required state-lifetime barrier**: it merges
+    dynamics results, releases solver constraint memory and swaps
+    friction streams; on the GPU branch,
+    `updateSimulationController` first transfers simulation data
+    back and updates body cores. `afterIntegration` then reconciles
+    wake/sleep, bounds and contact-force events; finalization
+    handles callbacks, contact visualization, task-pool release and
+    report timestamps. The native scene must not publish a
+    predicted pose as final source-equivalent post-solver state.
 
 **Explicit existing departure:** `src/native/scene.cpp::step` currently
 predicts poses, rebuilds an X-only SAP, publishes face-only contacts, and
@@ -98,6 +143,70 @@ runs a single normal constraint for an entire manifold after position
 prediction. This does not implement the above graph or source rigid-body
 solver. It remains an admitted **limited transitional execution mode**,
 not a certified PhysX CPU replacement.
+
+## Stage handoff ledger: do not confuse task labels with solver ownership
+
+These entries are **observed source call sites**, not a proposed
+reimplementation of PhysX's `PxBaseTask` machinery. The native
+continuation system can be different only if it preserves the same
+data readiness, single ownership and completion dependencies.
+
+| Producer (source method) | Handoff and data lifetime | Consumer / permitted next step | CPU / GPU difference |
+| --- | --- | --- | --- |
+| `Sc::Scene::simulate` / `stepSetupCollide` | Stores `mDt`, configures dynamics `setDt`, queues collision continuation | `collideStep` and later `advanceStep`; no two independent scene clocks | Both paths |
+| `preRigidBodyNarrowPhase` / `rigidBodyNarrowPhase` | Dirty shape/contact-distance state and contact-manager work; broadphase/narrowphase dependency refs | AABB first pass, update, post-broadphase/filter/register and narrowphase completion | GPU additionally transfers shapes; first/second pass and pre-integration task edges differ |
+| `postBroadPhaseContinuation` / `postBroadPhaseStage2` | Changed-handle bitmap reset, overlap filtering and interaction/contact-manager allocation; island insertion and lost-overlap cleanup | Source contact-manager update / second-pass narrowphase | Registration and island insertion can run as separate tasks |
+| `postNarrowPhase` | `fetchUpdateContactManager` makes contact-manager outputs ready; old constraints can be released | `islandGen`, not the dynamics solver | GPU may sort contacts here |
+| `islandGen` | `mDynamicsContext->processPatches` **then** `processNarrowPhaseTouchEvents`; patch/touch data and island adjacency | Accurate active island state for `solver`, later `updateDynamics` | Split-island-gen compile-time paths affect edges |
+| `Sc::Scene::solver` / `beforeSolver` | Updates per-body forces and threshold buffers, swaps narrowphase streams after second pass | Downstream **`Sc::Scene::updateDynamics`**, not `DynamicsContext::update` from within `solver` | GPU update-bodies task intervenes |
+| `Sc::Scene::updateDynamics` | Acquires constraint memory, adds lost-contact task references, calls `mDynamicsContext->update` with actual narrowphase and island inputs | `updateDynamicsPostPartitioning` and solver task continuations; eventually `postSolver` | CPU calls post-partitioning immediately, GPU schedules distinct post-partition/update-simulation-controller edges |
+| `Dy::DynamicsContext::update` and `updatePostKinematic` (CPU) | Owns solver pools, accurate active island lists, constraint descriptors, per-island task creation and partitioning | Source `DySolverControl` PGS iterations, integration, postprocessing, threshold/force reports | GPU dynamics context has a different implementation; do not infer full GPU behavior from CPU `DyDynamics.cpp` |
+| `updateDynamicsPostPartitioning` | Calls dynamics-context post-partitioning hook, clears destroyed partition edges and releases staged lost-contact references | `updateSimulationController` on GPU, or source CPU post-solver continuation | The call is source-visible even when CPU dynamics executes post-partition work inline |
+| `postSolver` / `afterIntegration` / `finalizationPhase` | Merges results, frees constraint blocks, swaps friction streams, completes body-state publication, events and cleanup | Result fetch and next-frame scene mutation | GPU first performs DMA-back and body-core update |
+
+### Readiness and retirement invariants
+
+- **Contact patch freshness:** after `postNarrowPhase` has
+  synchronized narrowphase manager outputs, `islandGen` consumes
+  *lost/found patch managers and output counts* in
+  `DynamicsContext::processPatches` before touch-event processing.
+  A task named "patch prep" in another subsystem cannot shift this edge.
+- **Task ownership:** the scene-level `solver` task is a *setup boundary*,
+  not the numerical PGS execution. `updateDynamics` is the source
+  `DynamicsContext::update` caller. Its continuation chain owns
+  solver work and the output dependency to post-solver.
+- **Constraint allocation:** acquire the solver constraint-memory arena
+  before `DynamicsContext::update`; retire only in `postSolver` after
+  the continuation is done. Friction stream swap likewise belongs to
+  post-solver, not to arbitrary manifold creation.
+- **Narrowphase streams:** swapped by `Sc::Scene::solver` after the
+  second pass completes; a source solver task must not read a stream
+  before its producer has completed or after it has been retired.
+- **World and solver bodies:** zero the source world solver body, preserve
+  the kinematic/dynamic remap and accurate island-node ordering, and
+  feed contact constraints with real per-body inertia/Jacobian state.
+  Neither a global manifold array nor the public actor ID is a
+  substitute for a `PxSolverConstraintDesc` mapping.
+- **CPU/GPU split:** on a CPU run, `updateDynamicsPostPartitioning`
+  executes immediately on the caller; on a GPU run, different
+  continuations connect post-partitioning and simulation-controller
+  body-core publication. Never insert blocking GPU waits to simulate
+  an incorrect flat CPU chain.
+- **Failure/retirement:** a solver task failure must not make a
+  partially updated actor state appear published; contact-manager,
+  constraint, friction, and result buffers retain their owners until
+  all consumers complete. This is an **SDK error-policy requirement**,
+  not a claim that PhysX itself uses exceptions here.
+
+### Verification status
+
+| Concern | Evidence presently established | Work still required |
+| --- | --- | --- |
+| `ScPipeline` task boundaries | Verified `solver` versus `updateDynamics`, `islandGen` patch ownership, CPU/GPU continuations and `postSolver` cleanup in actual source | Full task refcount/dependency DAG, including compile-time branch and CCD paths |
+| `DyDynamics` CPU integration | Verified CPU `update`, source solver-body pools, `updatePostKinematic` island batching, PGS task creation | Input/output ABI extraction, exact partition and writeback semantics, contact/constraint layout inventory |
+| PhysX GPU dynamics | Verified distinct `ScPipeline` GPU continuations and controller handoff | **Not yet independently mapped** GPU-specific `DynamicsContext` implementation, CUDA launch/memory graph and any CPU fallbacks |
+| Source geometry and contact correlation | Identified `GuContact*`, `PxsNphaseImplementationContext` and `DyContactPrep` source families | Exact correlation/anchor data structure, cache transitions and geometry edge-case acceptance |
+| Native acceptance | Existing source-free scene and oracle smoke tests support an openly bounded subset | Complete rotational PGS, source schedule, GPU SAP and N1/N2 full parity **not admitted** |
 
 ## Native ownership and data contracts
 
