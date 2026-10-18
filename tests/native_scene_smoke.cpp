@@ -308,6 +308,45 @@ int main() {
                "High-speed dynamic pair lost its contact");
     }
     {
+        // Regression for a second float overflow: relative velocity and
+        // impulse remain finite in double, but unequal inverse masses
+        // previously overflowed one body's float velocity on writeback.
+        // Mirror the PhysX dynamic-body maxLinearVelocitySq=1e32 default.
+        Scene unequal_mass;
+        const auto light = unequal_mass.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1.0e-6f);
+        const auto heavy = unequal_mass.add_dynamic_box(
+            {1,1,1}, {1.5f,5,0}, 1.0e6f);
+        const float max_v = std::numeric_limits<float>::max();
+        unequal_mass.set_velocity(light, {max_v,0,0});
+        unequal_mass.set_velocity(heavy, {-max_v,0,0});
+        unequal_mass.step(std::numeric_limits<float>::min());
+        const auto vlight = unequal_mass.body_state(light).velocity;
+        const auto vheavy = unequal_mass.body_state(heavy).velocity;
+        expect(std::isfinite(vlight.x) && std::isfinite(vlight.y) &&
+               std::isfinite(vlight.z) && std::isfinite(vheavy.x) &&
+               std::isfinite(vheavy.y) && std::isfinite(vheavy.z),
+               "Unequal-mass contact published infinite or NaN velocity");
+        expect(std::abs(vlight.x) < 2.0e16f &&
+               std::abs(vheavy.x) < 2.0e16f &&
+               unequal_mass.contacts().size() == 1,
+               "Source dynamic linear-speed limit was not enforced");
+    }
+    {
+        // A free body uses the same source default velocity clamp, so
+        // safety is independent of whether contacts are generated.
+        Scene unopposed;
+        const auto b = unopposed.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
+        unopposed.step(std::numeric_limits<float>::min());
+        const auto vel = unopposed.body_state(b).velocity;
+        expect(std::isfinite(vel.x) && std::isfinite(vel.y) &&
+               std::isfinite(vel.z) &&
+               std::hypot(vel.x,vel.y,vel.z) <= 1.01e16f,
+               "Native integration ignored PhysX's linear-speed limit");
+    }
+    {
         // Velocity authoring has no full-manifold invalidation scan:
         // an isolated edit changes only the selected actor's velocity.
         Scene authoring;

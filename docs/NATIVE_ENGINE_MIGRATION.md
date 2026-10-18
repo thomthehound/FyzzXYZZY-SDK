@@ -162,10 +162,18 @@ contact correlation/lifetime, and the original scene task ordering.
 
 The bounded CPU translational solver remains an **intermediate, non-parity
 implementation**, not accepted general PhysX. The surviving PR changes
-are provider-neutral linear velocity authoring and mathematically
-equivalent wide scalar relative-velocity arithmetic that avoids overflow
-before computing a normal contact impulse. Velocity authoring updates
-one actor without scanning all active contact manifolds.
+include provider-neutral linear velocity authoring, wide scalar
+relative-velocity arithmetic, and restoration of the original PhysX
+dynamic-body unconstrained-velocity limit. As in
+`ScBodyCore.cpp`, the default dynamic `maxLinearVelocitySq` is
+`1e32f`; as in `DyBodyCoreIntegrator.h`, gravity integration precedes
+this linear speed clamp. We calculate the squared magnitude in double
+precision to avoid intermediate overflow for finite float inputs.
+The constraint solver also checks all prospective wide velocity results
+before narrowing and committing either body, failing closed instead of
+publishing infinities. Velocity authoring updates one actor without
+scanning all active contact manifolds. Full source solver parity remains
+unproven; this only restores one identifiable source velocity invariant.
 
 The project-wide source-fidelity contract and PR gate now prohibit
 calling a simplified behavioral resemblance a completed source port.
