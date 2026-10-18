@@ -15,6 +15,15 @@ struct Vec3 {
     float z;
 };
 
+// PhysX PxQuat order (x, y, z, w). Source-owned body state uses an
+// identity rotation by default; no external PhysX type leaks into SDK API.
+struct Quat {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
 // Reference PhysX CPU execution is transitional and isolated from the native
 // FyzzXYZZY engine. Native execution must never silently select the reference.
 enum class ExecutionMode : std::uint8_t {
@@ -32,6 +41,8 @@ using BodyId = std::uint32_t;
 struct BodyState {
     Vec3 position;
     Vec3 velocity;
+    Quat orientation{};
+    Vec3 angular_velocity{};
 };
 
 // SDK simulation backend. Each World owns exactly one implementation.
@@ -55,6 +66,9 @@ public:
     virtual void set_body_velocity(BodyId, Vec3) {
         throw std::logic_error("This backend cannot set linear velocity");
     }
+    virtual void set_body_angular_velocity(BodyId, Vec3) {
+        throw std::logic_error("This backend cannot set angular velocity");
+    }
 };
 
 class World final {
@@ -77,6 +91,7 @@ public:
     void set_body_position(BodyId id, Vec3 position);
     void remove_body(BodyId id);
     void set_body_velocity(BodyId id, Vec3 velocity);
+    void set_body_angular_velocity(BodyId id, Vec3 velocity);
 
 private:
     std::unique_ptr<WorldBackend> impl_;

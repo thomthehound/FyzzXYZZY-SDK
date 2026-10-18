@@ -32,6 +32,49 @@ std::uint32_t encode_max(float v) {
 bool finite(Vec3 v) {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
+bool finite(Quat q) {
+    return std::isfinite(q.x) && std::isfinite(q.y) &&
+           std::isfinite(q.z) && std::isfinite(q.w);
+}
+Quat multiply(Quat a, Quat b) {
+    // Source PxQuat::operator*: (x,y,z,w) Hamilton product.
+    return {
+        a.w*b.x + b.w*a.x + a.y*b.z - a.z*b.y,
+        a.w*b.y + b.w*a.y + a.z*b.x - a.x*b.z,
+        a.w*b.z + b.w*a.z + a.x*b.y - a.y*b.x,
+        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
+    };
+}
+Quat integrate_quaternion(Quat pose, Vec3 angular, float dt) {
+    // Direct translation of DyBodyCoreIntegrator.h::integrateCore's
+    // closed-form post-solver quaternion step for zero solver angular
+    // delta. General rotational contacts remain UNPORTED.
+    float w = angular.x*angular.x + angular.y*angular.y +
+              angular.z*angular.z;
+    if (w != 0.0f) {
+        w = std::sqrt(w);
+        constexpr float max_w = 1.0e7f;
+        if (w > max_w) {
+            const float scale = max_w / w;
+            angular = {angular.x*scale,angular.y*scale,angular.z*scale};
+            w = max_w;
+        }
+        const float v = dt * w * 0.5f;
+        const float s = std::sin(v) / w;
+        const float cosine = std::cos(v);
+        const Quat dq = multiply({
+            angular.x*s,angular.y*s,angular.z*s,0.0f},pose);
+        const Quat next{
+            dq.x + pose.x*cosine, dq.y + pose.y*cosine,
+            dq.z + pose.z*cosine, dq.w + pose.w*cosine};
+        const float len = std::sqrt(next.x*next.x + next.y*next.y +
+                                    next.z*next.z + next.w*next.w);
+        if (!(len > 0.0f) || !std::isfinite(len))
+            throw std::overflow_error("Native orientation normalization failed");
+        pose = {next.x/len,next.y/len,next.z/len,next.w/len};
+    }
+    return pose;
+}
 void validate_box(Vec3 h, Vec3 p) {
     if (!finite(h) || !finite(p) ||
         h.x <= 0.0f || h.y <= 0.0f || h.z <= 0.0f)
@@ -117,13 +160,22 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     // This base solver has no inter-frame constraint cache to invalidate.
     // No contact scan or broadphase rebuild is needed for velocity edits.
 }
+void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
+    if (!finite(velocity))
+        throw std::invalid_argument("Native angular velocity must be finite");
+    auto& actor = require(id);
+    if (actor.kind != Kind::DynamicBox)
+        throw std::logic_error("Static actors have no angular velocity");
+    actor.angular_velocity = velocity;
+}
 void Scene::remove(BodyId id) {
     require(id).alive = false;
     dirty_ = true;
 }
 BodyState Scene::body_state(BodyId id) const {
     const auto& actor = require(id);
-    return {actor.position, actor.velocity};
+    return {actor.position, actor.velocity,
+            actor.orientation, actor.angular_velocity};
 }
 void Scene::update_bounds() {
     // Current reference SDK uses PhysX's ordinary 0.02m shape contact offset.
@@ -447,31 +499,66 @@ void Scene::solve_constraints() {
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
+
+    // Strict temporary admission for the draft source-body integration:
+    // until original Gu rotated-box geometry and Dy angular contact
+    // constraints are live, spinning boxes cannot safely share a scene
+    // with another collider. Reject rather than silently simulate
+    // physically impossible contacts through identity-oriented AABBs.
+    unsigned live_colliders = 0;
+    bool has_spin = false;
+    for (const auto& actor : actors_) {
+        if (!actor.alive) continue;
+        ++live_colliders;
+        if (actor.kind == Kind::DynamicBox &&
+            (actor.angular_velocity.x != 0.0f ||
+             actor.angular_velocity.y != 0.0f ||
+             actor.angular_velocity.z != 0.0f))
+            has_spin = true;
+    }
+    if (has_spin && live_colliders > 1)
+        throw std::logic_error(
+            "Angular contact/narrowphase is not yet source-ported; "
+            "rotation is currently admitted for isolated bodies only");
+
+    // Source: ScBodyCore.cpp::BodyCore dynamic defaults, and
+    // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
+    // gravity, linear/angular damping, then PxReal speed clamps.
     constexpr float gravity = -9.81f;
-    // PhysX source: ScBodyCore.cpp dynamic maxLinearVelocitySq=1e32f.
-    // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity uses
-    // PxReal (float) magnitudeSquared, then sqrt(maxSq / magnitudeSq).
-    // A finite velocity may square to +inf in float, yielding scale=0.
-    // Widening the dot product would change PhysX's observable behavior.
+    constexpr float linear_damping = 0.0f;
+    constexpr float angular_damping = 0.05f;
     constexpr float max_linear_velocity_squared = 1.0e32f;
+    constexpr float max_angular_velocity_squared = 1.0e4f;
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
         float vx = actor.velocity.x;
         float vy = actor.velocity.y + gravity * seconds;
         float vz = actor.velocity.z;
-        if (!std::isfinite(vy))
-            throw std::overflow_error("Native CPU unconstrained velocity overflow");
-        const float speed_squared = vx * vx + vy * vy + vz * vz;
+        const float lin_mult = std::max(
+            1.0f - linear_damping*seconds,0.0f);
+        vx *= lin_mult; vy *= lin_mult; vz *= lin_mult;
+        Vec3 angular = actor.angular_velocity;
+        const float ang_mult = std::max(
+            1.0f - angular_damping*seconds,0.0f);
+        angular.x *= ang_mult;
+        angular.y *= ang_mult;
+        angular.z *= ang_mult;
+        const float speed_squared = vx*vx + vy*vy + vz*vz;
         if (speed_squared > max_linear_velocity_squared) {
             const float factor =
                 std::sqrt(max_linear_velocity_squared / speed_squared);
-            vx *= factor;
-            vy *= factor;
-            vz *= factor;
+            vx *= factor; vy *= factor; vz *= factor;
+        }
+        const float ang_speed_squared = angular.x*angular.x +
+            angular.y*angular.y + angular.z*angular.z;
+        if (ang_speed_squared > max_angular_velocity_squared) {
+            const float factor =
+                std::sqrt(max_angular_velocity_squared / ang_speed_squared);
+            angular.x *= factor;
+            angular.y *= factor;
+            angular.z *= factor;
         }
         const Vec3 velocity{vx, vy, vz};
-        // Pose integration remains the scene's acknowledged scheduling
-        // specialization, while the speed clamp follows PhysX PxReal.
         const Vec3 p{
             static_cast<float>(static_cast<double>(actor.position.x) +
                                static_cast<double>(vx) * seconds),
@@ -479,17 +566,28 @@ void Scene::step(float seconds) {
                                static_cast<double>(vy) * seconds),
             static_cast<float>(static_cast<double>(actor.position.z) +
                                static_cast<double>(vz) * seconds)};
-        if (!finite(velocity) || !finite(p))
+        if (!finite(velocity) || !finite(angular) || !finite(p))
             throw std::overflow_error("Native CPU velocity or position overflow");
         actor.velocity = velocity;
+        actor.angular_velocity = angular;
         actor.position = p;
         dirty_ = true;
     }
-    // One owned frame progression; no second task graph, host PxScene,
-    // per-contact heap allocation or GPU synchronization.
+    // The legacy source-limited translational contact path remains until
+    // the integrated original Gu/Dy pipeline replaces it. This draft is
+    // NOT an accepted PhysX PGS port or an N1 completion.
     advance_collision();
     prepare_constraints(seconds);
     solve_constraints();
+    // Source: DyBodyCoreIntegrator.h::integrateCore angular quaternion
+    // integration occurs after solver motion-velocity publication.
+    for (auto& actor : actors_) {
+        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        actor.orientation = integrate_quaternion(
+            actor.orientation, actor.angular_velocity, seconds);
+        if (!finite(actor.orientation))
+            throw std::overflow_error("Native CPU orientation overflow");
+    }
 }
 
 void Scene::advance_collision(bool force_update) {
@@ -534,6 +632,9 @@ public:
     void remove_body(BodyId id) override { scene_.remove(id); }
     void set_body_velocity(BodyId id, Vec3 velocity) override {
         scene_.set_velocity(id, velocity);
+    }
+    void set_body_angular_velocity(BodyId id, Vec3 velocity) override {
+        scene_.set_angular_velocity(id, velocity);
     }
 private:
     native::Scene scene_;

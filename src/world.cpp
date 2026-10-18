@@ -111,5 +111,9 @@ void World::set_body_velocity(BodyId id, Vec3 velocity) {
     validate_position(velocity); // same finite 3-vector validation
     impl_->set_body_velocity(id, velocity);
 }
+void World::set_body_angular_velocity(BodyId id, Vec3 velocity) {
+    validate_position(velocity);
+    impl_->set_body_angular_velocity(id, velocity);
+}
 
 } // namespace fyzz

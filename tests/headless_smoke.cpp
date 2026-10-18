@@ -86,6 +86,39 @@ int main() {
             if (!reference_static_rejected)
                 throw std::runtime_error("Reference static velocity edit was admitted");
 
+
+            // Independent reference comparison: unconstrained angular
+            // velocity damping, source quaternion orientation and pose.
+            // Full contact/angular solver parity is not claimed here.
+            fyzz::World native_rotation(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_rotation(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto nrot = native_rotation.add_dynamic_box(
+                {0.25f,0.5f,0.75f},{0,10,0},1);
+            const auto rrot = reference_rotation.add_dynamic_box(
+                {0.25f,0.5f,0.75f},{0,10,0},1);
+            native_rotation.set_body_angular_velocity(nrot,{0,2,0});
+            reference_rotation.set_body_angular_velocity(rrot,{0,2,0});
+            for(int frame=0;frame<120;++frame){
+                native_rotation.step(1.0f/120.0f);
+                reference_rotation.step(1.0f/120.0f);
+            }
+            const auto nr = native_rotation.body_state(nrot);
+            const auto rr = reference_rotation.body_state(rrot);
+            const float orientation_dot =
+                nr.orientation.x*rr.orientation.x +
+                nr.orientation.y*rr.orientation.y +
+                nr.orientation.z*rr.orientation.z +
+                nr.orientation.w*rr.orientation.w;
+            if (!std::isfinite(orientation_dot) ||
+                std::abs(orientation_dot)<0.995f ||
+                !std::isfinite(nr.angular_velocity.y) ||
+                !std::isfinite(rr.angular_velocity.y) ||
+                std::abs(nr.angular_velocity.y - rr.angular_velocity.y)>0.025f)
+                throw std::runtime_error(
+                    "Native quaternion/angular damping diverged from PhysX source");
+
             // PxCreatePlane creates a rotated local +X plane. Relocating
             // its position must preserve this quaternion: replacing it
             // with an identity rotation changes a floor into a wall.

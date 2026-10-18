@@ -48,6 +48,7 @@ public:
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void set_position(BodyId id, Vec3 position);
     void set_velocity(BodyId id, Vec3 velocity);
+    void set_angular_velocity(BodyId id, Vec3 velocity);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 
@@ -78,6 +79,8 @@ private:
         Vec3 half_extents{};
         Vec3 position{};
         Vec3 velocity{};
+        Quat orientation{};
+        Vec3 angular_velocity{};
         float density = 0.0f;
         float inverse_mass = 0.0f;  // immutable cached derived body property
         std::array<std::uint32_t, 6> encoded_bounds{};

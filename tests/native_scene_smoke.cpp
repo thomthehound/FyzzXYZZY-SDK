@@ -225,6 +225,45 @@ int main() {
     }
 
 
+
+    {
+        // Direct production-path translation of the original PhysX
+        // DyBodyCoreIntegrator closed-form quaternion step, limited to
+        // an isolated free body until angular contact constraints and
+        // rotated Gu narrowphase are actually ported.
+        Scene angular;
+        const auto body = angular.add_dynamic_box(
+            {0.25f,0.5f,0.75f},{0,10,0},1);
+        angular.set_angular_velocity(body,{0,2,0});
+        for (int i=0; i<120; ++i) angular.step(1.0f/120.0f);
+        const auto state = angular.body_state(body);
+        const float quat_norm = std::sqrt(
+            state.orientation.x*state.orientation.x +
+            state.orientation.y*state.orientation.y +
+            state.orientation.z*state.orientation.z +
+            state.orientation.w*state.orientation.w);
+        expect(std::isfinite(quat_norm) &&
+               std::abs(quat_norm-1.0f)<1.0e-4f &&
+               std::abs(state.orientation.y)>0.5f &&
+               state.angular_velocity.y>1.8f &&
+               state.angular_velocity.y<2.0f,
+               "Source quaternion integration/damping did not advance");
+        bool invalid=false;
+        try {angular.set_angular_velocity(body,{0,INFINITY,0});}
+        catch(const std::invalid_argument&) {invalid=true;}
+        expect(invalid,"Nonfinite native angular velocity was admitted");
+        auto floor=angular.add_static_floor(0);
+        bool static_rejected=false;
+        try {angular.set_angular_velocity(floor,{0,1,0});}
+        catch(const std::logic_error&) {static_rejected=true;}
+        expect(static_rejected,"Static actor accepted angular velocity");
+        bool unported_rejected=false;
+        try {angular.step(1.0f/120.0f);}
+        catch(const std::logic_error&) {unported_rejected=true;}
+        expect(unported_rejected,
+               "Rotated contacts silently ran in provisional AABB/PGS");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;

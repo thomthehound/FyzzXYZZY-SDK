@@ -19,6 +19,9 @@ physx::PxVec3 to_physx(Vec3 value) {
 Vec3 from_physx(const physx::PxVec3& value) {
     return {value.x, value.y, value.z};
 }
+Quat from_physx(const physx::PxQuat& value) {
+    return {value.x, value.y, value.z, value.w};
+}
 
 // PhysX Foundation and Physics are process-level services, not individual
 // World resources. Hold them as long as any CPU World needs them.
@@ -192,15 +195,27 @@ struct PhysXCpuWorld final : WorldBackend {
         dynamic->setLinearVelocity(to_physx(velocity));
     }
 
+    void set_body_angular_velocity(BodyId id, Vec3 velocity) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* dynamic = actors[id]->is<physx::PxRigidDynamic>();
+        if (!dynamic)
+            throw std::logic_error("Static actors have no angular velocity");
+        dynamic->setAngularVelocity(to_physx(velocity));
+    }
+
     BodyState body_state(BodyId id) const override {
         if (id >= actors.size() || !actors[id]) {
             throw std::out_of_range("Unknown FyzzXYZZY body ID");
         }
         const auto* actor = actors[id];
-        const physx::PxVec3 position = actor->getGlobalPose().p;
+        const auto pose = actor->getGlobalPose();
         const auto* dynamic = actor->is<physx::PxRigidDynamic>();
-        return {from_physx(position),
+        return {from_physx(pose.p),
                 dynamic ? from_physx(dynamic->getLinearVelocity())
+                        : Vec3{0.0f, 0.0f, 0.0f},
+                from_physx(pose.q),
+                dynamic ? from_physx(dynamic->getAngularVelocity())
                         : Vec3{0.0f, 0.0f, 0.0f}};
     }
 
