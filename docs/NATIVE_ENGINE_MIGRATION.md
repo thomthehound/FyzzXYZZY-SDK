@@ -31,6 +31,13 @@ The original PhysX scheduler and GPU host pipeline **must be ported**, not ignor
 
 **Pass:** fork source restored; isolated reference backend and explicit native selection compiled on Linux/Windows; no production factory ABI depends on the modified PhysX fork. Also require a reference-free CMake build of `FyzzXYZZY::Core` and native Vulkan/D3D12 compute without fetching PhysX. This is a packaging/ownership proof, **not** proof of a native CPU physics implementation.
 
+The end-to-end source intake, ownership and task/dataflow map for the
+next integrated CPU PGS port is maintained in
+[NATIVE_SOURCE_INTAKE.md](NATIVE_SOURCE_INTAKE.md). It covers actual
+ScPipeline, DyDynamics, DyContactPrep, island/constraint partition,
+DySolverControl, writeback and reference-parity dependencies. No standalone
+numerical helper or pre-contact pose workaround may satisfy that gate.
+
 ## Gate N1 — authoritative native scene and source task graph
 
 Implement the source-derived `NpScene`/`Sc::Scene` equivalent *within this repository*, with one native scene lifetime, actor/shape handles, bounds, contact streams and observable simulation state. Migrate or import the required CPU collision, narrowphase, solver and integration components from the available PhysX sources under SDK control. Keep the reference adapter as an independent oracle while native CPU execution is built.
