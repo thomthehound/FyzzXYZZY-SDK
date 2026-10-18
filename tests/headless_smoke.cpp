@@ -119,13 +119,44 @@ int main() {
                 throw std::runtime_error(
                     "Native quaternion/angular damping diverged from PhysX source");
 
-            // PxCreatePlane creates a rotated local +X plane. Relocating
-            // its position must preserve this quaternion: replacing it
-            // with an identity rotation changes a floor into a wall.
+            // The SDK floor's public orientation is identity in BOTH
+            // providers, even though PxCreatePlane rotates its local +X
+            // plane internally. This internal correction must still remain
+            // in the actual PhysX transform when the floor is relocated.
             fyzz::World raised_floor(fyzz::WorldOptions{
                 fyzz::ExecutionMode::ReferencePhysXCpu});
+            fyzz::World native_raised_floor(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
             const auto raised_floor_id = raised_floor.add_static_floor(0.0f);
+            const auto native_floor_id = native_raised_floor.add_static_floor(0.0f);
+            const auto same_logical_pose = [](fyzz::BodyState a, fyzz::BodyState b) {
+                const auto identity = [](fyzz::Quat q) {
+                    return q.x == 0 && q.y == 0 && q.z == 0 && q.w == 1;
+                };
+                return identity(a.orientation) &&
+                       identity(b.orientation) &&
+                       a.position.x == b.position.x &&
+                       a.position.y == b.position.y &&
+                       a.position.z == b.position.z;
+            };
+            if (!same_logical_pose(raised_floor.body_state(raised_floor_id),
+                                   native_raised_floor.body_state(native_floor_id)))
+                throw std::runtime_error(
+                    "Reference floor exposed its private PhysX +X alignment");
             raised_floor.set_body_position(raised_floor_id, {0,0.75f,0});
+            native_raised_floor.set_body_position(native_floor_id, {0,0.75f,0});
+            if (!same_logical_pose(raised_floor.body_state(raised_floor_id),
+                                   native_raised_floor.body_state(native_floor_id)))
+                throw std::runtime_error(
+                    "Reference floor logical orientation changed on relocation");
+            const auto static_reference = raised_floor.add_static_box(
+                {1,1,1}, {10,2,0});
+            const auto static_native = native_raised_floor.add_static_box(
+                {1,1,1}, {10,2,0});
+            if (!same_logical_pose(raised_floor.body_state(static_reference),
+                                   native_raised_floor.body_state(static_native)))
+                throw std::runtime_error(
+                    "Non-plane static actor rotation was misclassified");
             const auto dropped_on_raised_floor = raised_floor.add_dynamic_box(
                 {0.25f,0.25f,0.25f}, {0,2.5f,0}, 1.0f);
             for (int frame = 0; frame < 300; ++frame)

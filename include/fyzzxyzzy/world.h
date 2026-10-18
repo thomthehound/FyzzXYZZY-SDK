@@ -41,6 +41,9 @@ using BodyId = std::uint32_t;
 struct BodyState {
     Vec3 position;
     Vec3 velocity;
+    // Logical actor orientation, independent of provider-specific shape
+    // alignment. For add_static_floor the +Y-normal floor starts at
+    // identity even though reference PhysX rotates its internal +X plane.
     Quat orientation{};
     Vec3 angular_velocity{};
 };

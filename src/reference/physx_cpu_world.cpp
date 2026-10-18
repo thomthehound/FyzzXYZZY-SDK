@@ -211,10 +211,25 @@ struct PhysXCpuWorld final : WorldBackend {
         const auto* actor = actors[id];
         const auto pose = actor->getGlobalPose();
         const auto* dynamic = actor->is<physx::PxRigidDynamic>();
+        // PxCreatePlane orients PhysX's local +X-normal plane to the SDK
+        // floor's logical +Y normal. That private geometry conversion is
+        // not a user-authored floor rotation. Preserve it internally for
+        // collisions and pose translation, but never expose it as the
+        // provider-neutral BodyState orientation.
+        //
+        // Inspect the existing PhysX shape rather than maintaining an
+        // extra actor-ID/shape-kind mirror alongside "actors".
+        Quat logical_orientation = from_physx(pose.q);
+        if (!dynamic && actor->getNbShapes() == 1) {
+            physx::PxShape* shape = nullptr;
+            if (actor->getShapes(&shape, 1) == 1 &&
+                shape->getGeometryType() == physx::PxGeometryType::ePLANE)
+                logical_orientation = {}; // SDK's horizontal +Y floor
+        }
         return {from_physx(pose.p),
                 dynamic ? from_physx(dynamic->getLinearVelocity())
                         : Vec3{0.0f, 0.0f, 0.0f},
-                from_physx(pose.q),
+                logical_orientation,
                 dynamic ? from_physx(dynamic->getAngularVelocity())
                         : Vec3{0.0f, 0.0f, 0.0f}};
     }
