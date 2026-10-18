@@ -6,6 +6,7 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -74,6 +75,16 @@ int main() {
             catch (const std::out_of_range&) { reference_retired = true; }
             if (!reference_retired)
                 throw std::runtime_error("Reference actor removal failed");
+            const auto launched_reference = explicit_cpu.add_dynamic_box(
+                {0.2f,0.2f,0.2f}, {0,5,0}, 1.0f);
+            explicit_cpu.set_body_velocity(launched_reference, {2,0,0});
+            if (explicit_cpu.body_state(launched_reference).velocity.x != 2)
+                throw std::runtime_error("Reference dynamic velocity edit failed");
+            bool reference_static_rejected = false;
+            try { explicit_cpu.set_body_velocity(0, {1,0,0}); }
+            catch (const std::logic_error&) { reference_static_rejected = true; }
+            if (!reference_static_rejected)
+                throw std::runtime_error("Reference static velocity edit was admitted");
 
             // PxCreatePlane creates a rotated local +X plane. Relocating
             // its position must preserve this quaternion: replacing it
@@ -116,11 +127,49 @@ int main() {
             const auto ns = native_compare.body_state(native_box);
             const auto rs = reference_compare.body_state(ref_box);
             if (!std::isfinite(ns.position.y) ||
+                !std::isfinite(rs.position.y) ||
+                !std::isfinite(ns.velocity.y) ||
+                !std::isfinite(rs.velocity.y) ||
                 std::abs(ns.position.y - rs.position.y) > 0.09f ||
                 std::abs(ns.velocity.y) > 0.6f ||
                 std::abs(rs.velocity.y) > 0.6f) {
                 throw std::runtime_error(
                     "Native CPU gravity/contact diverged from reference PhysX");
+            }
+
+            // Source parity for the float speed-squared overflow branch:
+            // a FLT_MAX linear velocity must become zero, not 1e16.
+            fyzz::World native_speed(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_speed(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto native_fast = native_speed.add_dynamic_box(
+                {0.5f,0.5f,0.5f}, {0,5,0}, 1);
+            const auto reference_fast = reference_speed.add_dynamic_box(
+                {0.5f,0.5f,0.5f}, {0,5,0}, 1);
+            const float extreme_velocity = std::numeric_limits<float>::max();
+            native_speed.set_body_velocity(native_fast, {extreme_velocity,0,0});
+            reference_speed.set_body_velocity(reference_fast, {extreme_velocity,0,0});
+            native_speed.step(1.0f / 60.0f);
+            reference_speed.step(1.0f / 60.0f);
+            const auto nv = native_speed.body_state(native_fast);
+            const auto rv = reference_speed.body_state(reference_fast);
+            const auto finite = [](fyzz::Vec3 v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) &&
+                       std::isfinite(v.z);
+            };
+            if (!finite(nv.position) || !finite(rv.position) ||
+                !finite(nv.velocity) || !finite(rv.velocity) ||
+                std::abs(nv.position.x - rv.position.x) > 0.001f ||
+                std::abs(nv.position.y - rv.position.y) > 0.01f ||
+                std::abs(nv.position.z - rv.position.z) > 0.001f ||
+                std::abs(nv.velocity.x - rv.velocity.x) > 0.001f ||
+                std::abs(nv.velocity.y - rv.velocity.y) > 0.01f ||
+                std::abs(nv.velocity.z - rv.velocity.z) > 0.001f ||
+                std::abs(nv.velocity.x) > 0.001f ||
+                std::abs(rv.velocity.x) > 0.001f) {
+                throw std::runtime_error(
+                    "Native max-velocity clamp diverged from reference PhysX");
             }
 
             fyzz::World world;

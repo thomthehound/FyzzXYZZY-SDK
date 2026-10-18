@@ -47,6 +47,7 @@ public:
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void set_position(BodyId id, Vec3 position);
+    void set_velocity(BodyId id, Vec3 velocity);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 

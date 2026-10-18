@@ -107,6 +107,16 @@ void Scene::set_position(BodyId id, Vec3 position) {
     actor.position = position;
     dirty_ = true;
 }
+void Scene::set_velocity(BodyId id, Vec3 velocity) {
+    if (!finite(velocity))
+        throw std::invalid_argument("Native scene velocity must be finite");
+    auto& actor = require(id);
+    if (actor.kind != Kind::DynamicBox)
+        throw std::logic_error("Static actors have no linear velocity");
+    actor.velocity = velocity;
+    // This base solver has no inter-frame constraint cache to invalidate.
+    // No contact scan or broadphase rebuild is needed for velocity edits.
+}
 void Scene::remove(BodyId id) {
     require(id).alive = false;
     dirty_ = true;
@@ -351,6 +361,9 @@ void Scene::prepare_constraints(float seconds) {
         const Actor& a = actors_[manifold.pair.a];
         const Actor& b = actors_[manifold.pair.b];
         const Vec3 n = manifold.points[0].normal;
+        // PhysX::DyContactPrep consumes the already clamped unconstrained
+        // linear velocities. The source default speed limit keeps both
+        // magnitudes <= 1e16; float differences cannot overflow here.
         const float relative_velocity =
             (a.velocity.x - b.velocity.x) * n.x +
             (a.velocity.y - b.velocity.y) * n.y +
@@ -398,36 +411,77 @@ void Scene::solve_constraints() {
                  normal_velocity) / response;
             const double next = std::max(0.0, candidate);
             const double impulse = next - manifold.normal_impulse;
-            manifold.normal_impulse = next;
             const double da = impulse * a.inverse_mass;
             const double db = impulse * b.inverse_mass;
-            a.velocity.x = static_cast<float>(a.velocity.x + n.x * da);
-            a.velocity.y = static_cast<float>(a.velocity.y + n.y * da);
-            a.velocity.z = static_cast<float>(a.velocity.z + n.z * da);
-            b.velocity.x = static_cast<float>(b.velocity.x - n.x * db);
-            b.velocity.y = static_cast<float>(b.velocity.y - n.y * db);
-            b.velocity.z = static_cast<float>(b.velocity.z - n.z * db);
+            // An admissible pair can have a finite wide impulse but an
+            // unrepresentable float velocity update. Validate all six
+            // prospective components BEFORE committing either actor,
+            // instead of publishing infinities or NaNs. Keep this in the
+            // existing solver, with no extra buffer or per-pair allocation.
+            const std::array<double, 6> after{
+                static_cast<double>(a.velocity.x) + n.x * da,
+                static_cast<double>(a.velocity.y) + n.y * da,
+                static_cast<double>(a.velocity.z) + n.z * da,
+                static_cast<double>(b.velocity.x) - n.x * db,
+                static_cast<double>(b.velocity.y) - n.y * db,
+                static_cast<double>(b.velocity.z) - n.z * db};
+            constexpr double max_float =
+                static_cast<double>(std::numeric_limits<float>::max());
+            for (double v : after) {
+                if (!std::isfinite(v) || std::abs(v) > max_float)
+                    throw std::overflow_error(
+                        "Native CPU contact impulse exceeds float velocity range");
+            }
+            // Validate the complete contact result before committing
+            // solver impulse state or either actor velocity.
+            manifold.normal_impulse = next;
+            a.velocity = {static_cast<float>(after[0]),
+                          static_cast<float>(after[1]),
+                          static_cast<float>(after[2])};
+            b.velocity = {static_cast<float>(after[3]),
+                          static_cast<float>(after[4]),
+                          static_cast<float>(after[5])};
         }
     }
 }
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
-    constexpr double gravity = -9.81;
+    constexpr float gravity = -9.81f;
+    // PhysX source: ScBodyCore.cpp dynamic maxLinearVelocitySq=1e32f.
+    // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity uses
+    // PxReal (float) magnitudeSquared, then sqrt(maxSq / magnitudeSq).
+    // A finite velocity may square to +inf in float, yielding scale=0.
+    // Widening the dot product would change PhysX's observable behavior.
+    constexpr float max_linear_velocity_squared = 1.0e32f;
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
-        const double vy = static_cast<double>(actor.velocity.y) + gravity * seconds;
+        float vx = actor.velocity.x;
+        float vy = actor.velocity.y + gravity * seconds;
+        float vz = actor.velocity.z;
+        if (!std::isfinite(vy))
+            throw std::overflow_error("Native CPU unconstrained velocity overflow");
+        const float speed_squared = vx * vx + vy * vy + vz * vz;
+        if (speed_squared > max_linear_velocity_squared) {
+            const float factor =
+                std::sqrt(max_linear_velocity_squared / speed_squared);
+            vx *= factor;
+            vy *= factor;
+            vz *= factor;
+        }
+        const Vec3 velocity{vx, vy, vz};
+        // Pose integration remains the scene's acknowledged scheduling
+        // specialization, while the speed clamp follows PhysX PxReal.
         const Vec3 p{
             static_cast<float>(static_cast<double>(actor.position.x) +
-                               actor.velocity.x * static_cast<double>(seconds)),
+                               static_cast<double>(vx) * seconds),
             static_cast<float>(static_cast<double>(actor.position.y) +
-                               vy * static_cast<double>(seconds)),
+                               static_cast<double>(vy) * seconds),
             static_cast<float>(static_cast<double>(actor.position.z) +
-                               actor.velocity.z * static_cast<double>(seconds))};
-        if (!finite(p) || !std::isfinite(vy) ||
-            !std::isfinite(static_cast<float>(vy)))
+                               static_cast<double>(vz) * seconds)};
+        if (!finite(velocity) || !finite(p))
             throw std::overflow_error("Native CPU velocity or position overflow");
-        actor.velocity.y = static_cast<float>(vy);
+        actor.velocity = velocity;
         actor.position = p;
         dirty_ = true;
     }
@@ -478,6 +532,9 @@ public:
         scene_.set_position(id, p);
     }
     void remove_body(BodyId id) override { scene_.remove(id); }
+    void set_body_velocity(BodyId id, Vec3 velocity) override {
+        scene_.set_velocity(id, velocity);
+    }
 private:
     native::Scene scene_;
 };

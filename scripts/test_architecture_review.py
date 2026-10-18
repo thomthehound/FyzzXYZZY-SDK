@@ -3,7 +3,10 @@
 """Covers the review gate's nontrivial PR-body parsing and empty templates."""
 import unittest
 
-from check_architecture_review import SECTIONS, documentation_only, complete_documentation_only, validate
+from check_architecture_review import (
+    SECTIONS, documentation_only, complete_documentation_only,
+    complete_changed_file_listing, production_physics_changed, validate,
+)
 
 
 class ArchitectureReviewTest(unittest.TestCase):
@@ -13,14 +16,60 @@ class ArchitectureReviewTest(unittest.TestCase):
             f"native Linux and Windows tests verify this particular contract."
             for name in SECTIONS
         )
-        self.assertEqual([], validate(body))
+        body += ("\nFidelity classification: semantics-preserving-lowering"
+                 "\nPhysX source: DySolverConstraints.cpp::solveContact"
+                 "\nDepartures: only widen scalar relative velocity arithmetic"
+                 "\nParity evidence: native_scene_smoke tests symmetric extreme velocities")
+        self.assertEqual([], validate(body, [{"filename": "src/native/scene.cpp"}]))
+
+    def test_source_fidelity_rejects_provisional_native_solver(self):
+        body = "\n\n".join(
+            f"## {name}\nA fully described and reviewed source behavior change."
+            for name in SECTIONS
+        )
+        body += (
+            "\nFidelity classification: non-production-only"
+            "\nPhysX source: DySolverConstraints.cpp::solveContact"
+            "\nDepartures: temporary replacement without matching constraints"
+            "\nParity evidence: independent native integration test"
+        )
+        errors = validate(body, [{"filename": "src/native/scene.cpp"}])
+        self.assertTrue(any("Production physics requires" in e for e in errors))
+        self.assertEqual([], validate(body, [{"filename": "tests/native_scene_smoke.cpp"}]))
+
+    def test_source_fidelity_rejects_missing_proof_and_classification(self):
+        body = "\n\n".join(
+            f"## {name}\nA fully described and reviewed source behavior change."
+            for name in SECTIONS
+        )
+        self.assertTrue(any("Fidelity classification" in e
+                            for e in validate(body)))
+        body += ("\nFidelity classification: source-translation"
+                 "\nPhysX source: generic"
+                 "\nDepartures: none"
+                 "\nParity evidence: test")
+        errors = validate(body, [{"filename": "src/native/scene.cpp"}])
+        self.assertTrue(any("PhysX source" in e for e in errors))
+        self.assertTrue(any("Parity evidence" in e for e in errors))
+
+    def test_production_detection_checks_renamed_paths(self):
+        self.assertTrue(production_physics_changed([
+            {"filename":"docs/new.md", "previous_filename":"src/native/scene.cpp"}]))
+        self.assertFalse(production_physics_changed([
+            {"filename":"src/world.cpp"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/kernels/physx_aabb.hlsl"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/floor_contact.cpp"}]))
+        self.assertTrue(production_physics_changed([
+            {"filename":"src/world_vulkan.cpp"}]))
 
     def test_unfilled_template_is_not_evidence(self):
         body = "\n\n".join(
             f"## {name}\n<!-- Placeholder words that are not evidence of any kind -->"
             for name in SECTIONS
         )
-        self.assertEqual(len(SECTIONS), len(validate(body)))
+        self.assertGreaterEqual(len(validate(body)), len(SECTIONS))
 
     def test_missing_or_too_short_section_blocks_merge(self):
         body = "\n\n".join(
@@ -28,8 +77,7 @@ class ArchitectureReviewTest(unittest.TestCase):
             for name in SECTIONS[:-1]
         )
         body += f"\n\n## {SECTIONS[-1]}\nNone."
-        self.assertEqual(1, len(validate(body)))
-        self.assertIn(SECTIONS[-1], validate(body)[0])
+        self.assertTrue(any(SECTIONS[-1] in e for e in validate(body)))
 
     def test_docs_only_gets_explicit_green_status(self):
         self.assertTrue(documentation_only([
@@ -47,6 +95,13 @@ class ArchitectureReviewTest(unittest.TestCase):
         self.assertFalse(complete_documentation_only(docs, None))
         self.assertFalse(complete_documentation_only(docs, True))
         self.assertTrue(complete_documentation_only(docs, 3000))
+
+    def test_partial_file_listing_rejects_source_scope_classification(self):
+        changed = [{"filename": "docs/only.md"}]
+        self.assertFalse(complete_changed_file_listing(changed, 2))
+        self.assertFalse(complete_changed_file_listing(changed, None))
+        self.assertFalse(complete_changed_file_listing(changed, True))
+        self.assertTrue(complete_changed_file_listing(changed, 1))
 
     def test_partial_page_mismatch_rejects_docs_exemption(self):
         docs = [{"filename": "docs/a.md"}, {"filename": "README.md"}]
@@ -69,7 +124,7 @@ class ArchitectureReviewTest(unittest.TestCase):
             f"### {name}\nA meaningful but incorrectly nested source review paragraph."
             for name in SECTIONS
         )
-        self.assertEqual(len(SECTIONS), len(validate(body)))
+        self.assertGreaterEqual(len(validate(body)), len(SECTIONS))
 
 
 if __name__ == "__main__":

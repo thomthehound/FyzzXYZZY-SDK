@@ -107,5 +107,9 @@ void World::set_body_position(BodyId id, Vec3 position) {
 void World::remove_body(BodyId id) {
     impl_->remove_body(id);
 }
+void World::set_body_velocity(BodyId id, Vec3 velocity) {
+    validate_position(velocity); // same finite 3-vector validation
+    impl_->set_body_velocity(id, velocity);
+}
 
 } // namespace fyzz

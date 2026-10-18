@@ -150,6 +150,44 @@ scenes, published contact events and public SDK actor state. These are
 integration/regression tests for the admitted subset, not acceptance of
 N1's full CPU solver.
 
+## N1 source-fidelity course correction
+
+PR #111 intentionally **withdraws** its proposed Coulomb friction disk,
+cross-frame impulse caching and cache invalidation scans. Those mechanisms
+were plausible physics, but not translations of the actual PhysX friction
+patch and anchor solver. Green CI for a sliding-box demo is not proof of
+source equivalence. Reintroduce these capabilities only through a
+source-mapped port of `DyContactPrep.cpp`, `DySolverConstraints.cpp`,
+contact correlation/lifetime, and the original scene task ordering.
+
+The bounded CPU translational solver remains an **intermediate, non-parity
+implementation**, not accepted general PhysX. The surviving PR changes
+include provider-neutral linear velocity authoring, a source-aligned
+float normal-relative-velocity calculation, and restoration of the original PhysX
+dynamic-body unconstrained-velocity limit. As in
+`ScBodyCore.cpp`, the default dynamic `maxLinearVelocitySq` is
+`1e32f`; as in `DyBodyCoreIntegrator.h`, gravity integration precedes
+this linear speed clamp. PhysX calculates squared speed in **float**:
+finite extreme inputs may overflow the squared magnitude to infinity,
+and the resulting source scale becomes zero. The widened-double clamp
+previously introduced in PR #111 would instead normalize those velocities
+to 1e16, so it was **not semantically equivalent**. The native clamp
+now preserves this specific source float behavior and has independent
+PhysX CPU parity coverage. This does not endorse float overflow generally.
+The exact PhysX speed clamp bounds the linear velocity inputs before
+contact preparation, eliminating the need for the earlier non-source
+double relative-velocity subtraction; its removal avoids an unjustified
+numeric divergence. The constraint solver still checks all prospective
+wide velocity results before narrowing and committing either body,
+failing closed instead of publishing infinities. Velocity authoring
+updates one actor without
+scanning all active contact manifolds. Full source solver parity remains
+unproven; this only restores one identifiable source velocity invariant.
+
+The project-wide source-fidelity contract and PR gate now prohibit
+calling a simplified behavioral resemblance a completed source port.
+Full source friction and rigid-body dynamics remain open N1 work.
+
 ## Gate N2 — native source-derived SAP and AABB owner
 
 Consolidate `PxgCudaBroadPhaseSap` and `PxgAABBManager` source behavior into two cohesive native owner implementations. Own one persistent buffer/history representation; remove borrowed frame-member scaffolding when its tests have migrated. Drive the original first-pass/second-pass/update/fetch order, including state-changed/forced/idle logic, AABB and aggregate preparation, three-axis projection/region/rank/sort work, pair/report kernels, capacity and abort checks, old/new bounds swap and the seven fetch-history swaps.

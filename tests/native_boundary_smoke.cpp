@@ -33,8 +33,10 @@ int main() {
     native_cpu.set_body_position(native_id, {0,3,0});
     if (native_cpu.body_state(native_id).position.y != 3)
         throw std::runtime_error("Native-only actor relocation failed");
+    native_cpu.set_body_velocity(native_id, {2,0,0});
     native_cpu.step(1.0f / 60.0f);
-    if (native_cpu.body_state(native_id).position.y >= 3.0f)
+    if (native_cpu.body_state(native_id).position.x <= 0.0f ||
+        native_cpu.body_state(native_id).position.y >= 3.0f)
         throw std::runtime_error("Native-only CPU did not integrate gravity");
     native_cpu.remove_body(native_id);
     bool retired = false;

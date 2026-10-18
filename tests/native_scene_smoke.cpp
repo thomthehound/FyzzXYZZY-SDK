@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -284,6 +285,96 @@ int main() {
                "Finite tiny-mass collision was silently discarded");
     }
 
+    {
+        // Two individually finite extreme inputs must pass through the
+        // exact PhysX unconstrained-velocity clamp before contact prep.
+        // Preserve finite impulse state without a custom wide dot product.
+        Scene extreme;
+        const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
+        const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);
+        extreme.set_velocity(a, {2.0e38f,0,0});
+        extreme.set_velocity(b, {-2.0e38f,0,0});
+        // Smallest normal float: portable even with flush-to-zero.
+        extreme.step(std::numeric_limits<float>::min());
+        const auto va = extreme.body_state(a).velocity;
+        const auto vb = extreme.body_state(b).velocity;
+        expect(std::isfinite(va.x) && std::isfinite(va.y) &&
+               std::isfinite(va.z) && std::isfinite(vb.x) &&
+               std::isfinite(vb.y) && std::isfinite(vb.z) &&
+               va.x < 0.0f && vb.x > 0.0f &&
+               std::abs(va.x) < 1.0e38f && std::abs(vb.x) < 1.0e38f,
+               "Finite high-speed contact overflowed or corrupted velocities");
+        expect(extreme.contacts().size() == 1,
+               "High-speed dynamic pair lost its contact");
+    }
+    {
+        // Regression for a second float overflow: relative velocity and
+        // impulse remain finite in double, but unequal inverse masses
+        // previously overflowed one body's float velocity on writeback.
+        // Mirror the PhysX dynamic-body maxLinearVelocitySq=1e32 default.
+        Scene unequal_mass;
+        const auto light = unequal_mass.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1.0e-6f);
+        const auto heavy = unequal_mass.add_dynamic_box(
+            {1,1,1}, {1.5f,5,0}, 1.0e6f);
+        const float max_v = std::numeric_limits<float>::max();
+        unequal_mass.set_velocity(light, {max_v,0,0});
+        unequal_mass.set_velocity(heavy, {-max_v,0,0});
+        unequal_mass.step(std::numeric_limits<float>::min());
+        const auto vlight = unequal_mass.body_state(light).velocity;
+        const auto vheavy = unequal_mass.body_state(heavy).velocity;
+        expect(std::isfinite(vlight.x) && std::isfinite(vlight.y) &&
+               std::isfinite(vlight.z) && std::isfinite(vheavy.x) &&
+               std::isfinite(vheavy.y) && std::isfinite(vheavy.z),
+               "Unequal-mass contact published infinite or NaN velocity");
+        expect(std::abs(vlight.x) < 2.0e16f &&
+               std::abs(vheavy.x) < 2.0e16f &&
+               unequal_mass.contacts().size() == 1,
+               "Source dynamic linear-speed limit was not enforced");
+    }
+    {
+        // A free body uses the same source default velocity clamp, so
+        // safety is independent of whether contacts are generated.
+        Scene unopposed;
+        const auto b = unopposed.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
+        unopposed.step(std::numeric_limits<float>::min());
+        const auto vel = unopposed.body_state(b).velocity;
+        // PhysX's PxReal squared speed overflows to infinity here.
+        // Consequently sqrt(1e32f / inf) is zero, not 1e16 normalization.
+        expect(vel.x == 0.0f && vel.y == 0.0f && vel.z == 0.0f,
+               "Native high-speed clamp diverged from PhysX float arithmetic");
+        Scene finite_limit;
+        const auto limited = finite_limit.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        finite_limit.set_velocity(limited, {2.0e16f,0,0});
+        finite_limit.step(1.0f / 120.0f);
+        const auto moderate = finite_limit.body_state(limited).velocity;
+        expect(std::isfinite(moderate.x) &&
+               std::abs(moderate.x - 1.0e16f) < 1.0e10f,
+               "Finite squared velocity failed PhysX source clamp");
+    }
+    {
+        // Velocity authoring has no full-manifold invalidation scan:
+        // an isolated edit changes only the selected actor's velocity.
+        Scene authoring;
+        const auto static_id = authoring.add_static_floor(0);
+        const auto dynamic_id = authoring.add_dynamic_box(
+            {0.25f,0.25f,0.25f}, {0,1,0}, 1);
+        authoring.set_velocity(dynamic_id, {2,0,3});
+        expect(authoring.body_state(dynamic_id).velocity.x == 2,
+               "Native dynamic-body velocity setter failed");
+        bool rejected = false;
+        try { authoring.set_velocity(static_id, {1,0,0}); }
+        catch (const std::logic_error&) { rejected = true; }
+        expect(rejected, "Native static body accepted linear velocity");
+        bool invalid = false;
+        try { authoring.set_velocity(dynamic_id, {INFINITY,0,0}); }
+        catch (const std::invalid_argument&) { invalid = true; }
+        expect(invalid, "Native scene accepted nonfinite velocity");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
@@ -292,8 +383,10 @@ int main() {
     native_world.set_body_position(owned, {0,3,0});
     expect(native_world.body_state(owned).position.y == 3,
            "World did not relocate its native actor");
+    native_world.set_body_velocity(owned, {1,0,0});
     native_world.step(1.0f/60.0f);
-    expect(native_world.body_state(owned).position.y < 3.0f,
+    expect(native_world.body_state(owned).position.x > 0.0f &&
+           native_world.body_state(owned).position.y < 3.0f,
            "Native World step did not advance gravity and actor state");
     native_world.remove_body(owned);
     bool retired = false;
