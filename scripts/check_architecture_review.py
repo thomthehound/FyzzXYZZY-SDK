@@ -55,6 +55,13 @@ def documentation_only(files: list[dict]) -> bool:
     )
 
 
+def complete_changed_file_listing(files: list[dict], changed_files: object) -> bool:
+    """Require the entire PR file list before classifying source fidelity."""
+    return (isinstance(changed_files, int) and
+            not isinstance(changed_files, bool) and
+            len(files) == changed_files)
+
+
 def complete_documentation_only(files: list[dict], changed_files: object) -> bool:
     """Never exempt a possibly truncated GitHub REST file listing.
 
@@ -62,9 +69,7 @@ def complete_documentation_only(files: list[dict], changed_files: object) -> boo
     payload reflects the full PR, so a mismatch fails closed into the
     ordinary substantive architecture review.
     """
-    return (isinstance(changed_files, int) and
-            not isinstance(changed_files, bool) and
-            len(files) == changed_files and documentation_only(files))
+    return complete_changed_file_listing(files, changed_files) and documentation_only(files)
 
 
 def github_pr_files(repository: str, number: int, token: str) -> list[dict]:
@@ -158,9 +163,10 @@ def main() -> int:
         print(f"Architecture review: docs-only classification unavailable ({exc}); "
               "requiring normal substantive review.")
     errors = validate(pr.get("body") or "", files)
-    if files is None:
-        errors.append("Source fidelity: cannot verify changed production paths "
-                      "because PR file list was unavailable")
+    if files is None or not complete_changed_file_listing(
+            files, pr.get("changed_files")):
+        errors.append("Source fidelity: incomplete or unavailable PR file list; "
+                      "cannot verify all changed production paths")
     if errors:
         for item in errors:
             print(f"::error::{item}")

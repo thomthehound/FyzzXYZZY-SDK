@@ -162,8 +162,8 @@ contact correlation/lifetime, and the original scene task ordering.
 
 The bounded CPU translational solver remains an **intermediate, non-parity
 implementation**, not accepted general PhysX. The surviving PR changes
-include provider-neutral linear velocity authoring, wide scalar
-relative-velocity arithmetic, and restoration of the original PhysX
+include provider-neutral linear velocity authoring, a source-aligned
+float normal-relative-velocity calculation, and restoration of the original PhysX
 dynamic-body unconstrained-velocity limit. As in
 `ScBodyCore.cpp`, the default dynamic `maxLinearVelocitySq` is
 `1e32f`; as in `DyBodyCoreIntegrator.h`, gravity integration precedes
@@ -174,9 +174,13 @@ previously introduced in PR #111 would instead normalize those velocities
 to 1e16, so it was **not semantically equivalent**. The native clamp
 now preserves this specific source float behavior and has independent
 PhysX CPU parity coverage. This does not endorse float overflow generally.
-The constraint solver also checks all prospective wide velocity results
-before narrowing and committing either body, failing closed instead of
-publishing infinities. Velocity authoring updates one actor without
+The exact PhysX speed clamp bounds the linear velocity inputs before
+contact preparation, eliminating the need for the earlier non-source
+double relative-velocity subtraction; its removal avoids an unjustified
+numeric divergence. The constraint solver still checks all prospective
+wide velocity results before narrowing and committing either body,
+failing closed instead of publishing infinities. Velocity authoring
+updates one actor without
 scanning all active contact manifolds. Full source solver parity remains
 unproven; this only restores one identifiable source velocity invariant.
 

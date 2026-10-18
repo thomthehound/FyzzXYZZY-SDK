@@ -286,9 +286,9 @@ int main() {
     }
 
     {
-        // Two individually finite velocities can overflow their float
-        // difference. The contact Jacobian must stay finite and produce
-        // bounded published state without undefined zero*infinity terms.
+        // Two individually finite extreme inputs must pass through the
+        // exact PhysX unconstrained-velocity clamp before contact prep.
+        // Preserve finite impulse state without a custom wide dot product.
         Scene extreme;
         const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
         const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);

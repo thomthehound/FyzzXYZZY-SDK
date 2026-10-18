@@ -5,7 +5,7 @@ import unittest
 
 from check_architecture_review import (
     SECTIONS, documentation_only, complete_documentation_only,
-    production_physics_changed, validate,
+    complete_changed_file_listing, production_physics_changed, validate,
 )
 
 
@@ -95,6 +95,13 @@ class ArchitectureReviewTest(unittest.TestCase):
         self.assertFalse(complete_documentation_only(docs, None))
         self.assertFalse(complete_documentation_only(docs, True))
         self.assertTrue(complete_documentation_only(docs, 3000))
+
+    def test_partial_file_listing_rejects_source_scope_classification(self):
+        changed = [{"filename": "docs/only.md"}]
+        self.assertFalse(complete_changed_file_listing(changed, 2))
+        self.assertFalse(complete_changed_file_listing(changed, None))
+        self.assertFalse(complete_changed_file_listing(changed, True))
+        self.assertTrue(complete_changed_file_listing(changed, 1))
 
     def test_partial_page_mismatch_rejects_docs_exemption(self):
         docs = [{"filename": "docs/a.md"}, {"filename": "README.md"}]

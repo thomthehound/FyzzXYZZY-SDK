@@ -127,6 +127,9 @@ int main() {
             const auto ns = native_compare.body_state(native_box);
             const auto rs = reference_compare.body_state(ref_box);
             if (!std::isfinite(ns.position.y) ||
+                !std::isfinite(rs.position.y) ||
+                !std::isfinite(ns.velocity.y) ||
+                !std::isfinite(rs.velocity.y) ||
                 std::abs(ns.position.y - rs.position.y) > 0.09f ||
                 std::abs(ns.velocity.y) > 0.6f ||
                 std::abs(rs.velocity.y) > 0.6f) {
@@ -151,10 +154,18 @@ int main() {
             reference_speed.step(1.0f / 60.0f);
             const auto nv = native_speed.body_state(native_fast);
             const auto rv = reference_speed.body_state(reference_fast);
-            if (!std::isfinite(nv.position.x) ||
-                !std::isfinite(rv.position.x) ||
+            const auto finite = [](fyzz::Vec3 v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) &&
+                       std::isfinite(v.z);
+            };
+            if (!finite(nv.position) || !finite(rv.position) ||
+                !finite(nv.velocity) || !finite(rv.velocity) ||
                 std::abs(nv.position.x - rv.position.x) > 0.001f ||
+                std::abs(nv.position.y - rv.position.y) > 0.01f ||
+                std::abs(nv.position.z - rv.position.z) > 0.001f ||
                 std::abs(nv.velocity.x - rv.velocity.x) > 0.001f ||
+                std::abs(nv.velocity.y - rv.velocity.y) > 0.01f ||
+                std::abs(nv.velocity.z - rv.velocity.z) > 0.001f ||
                 std::abs(nv.velocity.x) > 0.001f ||
                 std::abs(rv.velocity.x) > 0.001f) {
                 throw std::runtime_error(

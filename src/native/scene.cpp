@@ -40,14 +40,6 @@ void validate_box(Vec3 h, Vec3 p) {
 Pair ordered_pair(BodyId a, BodyId b) {
     return {std::min(a, b), std::max(a, b)};
 }
-// Compute relative velocity in double BEFORE subtraction. Two finite
-// components may have an unrepresentable difference in float, and that
-// difference must not poison a contact Jacobian or its impulse.
-double normal_relative_velocity(Vec3 a, Vec3 b, Vec3 n) {
-    return (static_cast<double>(a.x) - b.x) * n.x +
-           (static_cast<double>(a.y) - b.y) * n.y +
-           (static_cast<double>(a.z) - b.z) * n.z;
-}
 } // namespace
 
 BodyId Scene::add(Actor actor) {
@@ -369,8 +361,13 @@ void Scene::prepare_constraints(float seconds) {
         const Actor& a = actors_[manifold.pair.a];
         const Actor& b = actors_[manifold.pair.b];
         const Vec3 n = manifold.points[0].normal;
-        const double relative_velocity =
-            normal_relative_velocity(a.velocity, b.velocity, n);
+        // PhysX::DyContactPrep consumes the already clamped unconstrained
+        // linear velocities. The source default speed limit keeps both
+        // magnitudes <= 1e16; float differences cannot overflow here.
+        const float relative_velocity =
+            (a.velocity.x - b.velocity.x) * n.x +
+            (a.velocity.y - b.velocity.y) * n.y +
+            (a.velocity.z - b.velocity.z) * n.z;
         float separation = manifold.points[0].separation;
         for (unsigned k = 1; k < manifold.count; ++k)
             separation = std::min(separation, manifold.points[k].separation);
@@ -381,9 +378,8 @@ void Scene::prepare_constraints(float seconds) {
             : std::min(max_depenetration_speed,
                        -positional_bias * separation / seconds);
         if (separation <= 0.0f && relative_velocity < -bounce_threshold)
-            manifold.velocity_target = static_cast<float>(std::max(
-                static_cast<double>(manifold.velocity_target),
-                -restitution * relative_velocity));
+            manifold.velocity_target = std::max(
+                manifold.velocity_target, -restitution * relative_velocity);
         manifold.normal_impulse = 0.0f;
     }
 }
@@ -406,8 +402,10 @@ void Scene::solve_constraints() {
                 static_cast<double>(a.inverse_mass) + b.inverse_mass;
             if (response <= 0.0) continue;
             const Vec3 n = manifold.points[0].normal;
-            const double normal_velocity =
-                normal_relative_velocity(a.velocity, b.velocity, n);
+            const float normal_velocity =
+                (a.velocity.x - b.velocity.x) * n.x +
+                (a.velocity.y - b.velocity.y) * n.y +
+                (a.velocity.z - b.velocity.z) * n.z;
             const double candidate = manifold.normal_impulse +
                 (static_cast<double>(manifold.velocity_target) -
                  normal_velocity) / response;
