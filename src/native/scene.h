@@ -95,6 +95,9 @@ private:
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
     void reject_unsupported_rotated_contacts() const;
+    // Precondition: reject_unsupported_rotated_contacts() already passed
+    // for this collision advancement. Reuse it for the step and public paths.
+    void advance_collision_validated(bool force_update);
     void update_bounds();
     void update_pairs();
     void publish_pairs();

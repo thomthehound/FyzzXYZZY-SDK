@@ -223,7 +223,7 @@ struct PhysXCpuWorld final : WorldBackend {
         if (!dynamic && actor->getNbShapes() == 1) {
             physx::PxShape* shape = nullptr;
             if (actor->getShapes(&shape, 1) == 1 &&
-                shape->getGeometryType() == physx::PxGeometryType::ePLANE)
+                shape->getGeometry().getType() == physx::PxGeometryType::ePLANE)
                 logical_orientation = {}; // SDK's horizontal +Y floor
         }
         return {from_physx(pose.p),
