@@ -71,9 +71,14 @@ Important verified source edges:
    specifically adds update-bodies, partitioning and simulation-controller
    continuation edges. Retain independent GPU workload completion signals;
    no CPU polling loop or per-kernel wait.
-5. `postNarrowPhase` synchronizes actual contact manager outputs and
-   processes patches; `islandGen` prepares real touch events and
-   contact/constraint graph state before the solver consumes it.
+5. `postNarrowPhase` synchronizes actual contact-manager outputs
+   (`fetchUpdateContactManager`), sorts GPU contacts where required and
+   releases prior constraints. It does **not** process patches.
+   `islandGen` invokes `DynamicsContext::processPatches` using
+   narrowphase lost/found patch managers and output counts, then runs
+   `processNarrowPhaseTouchEvents` to update contact/island graph
+   state before the solver consumes it. This ordering is a source
+   dependency, not an interchangeable stage label.
 6. `solver` delegates to `beforeSolver` and the dynamics context, swaps
    narrowphase streams only at the source-defined boundary. In
    `DyDynamics.cpp`, constraint setup/partitioning produces the batch
