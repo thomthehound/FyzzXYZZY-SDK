@@ -92,6 +92,7 @@ private:
     BodyId add(Actor actor);
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
+    void reject_unsupported_rotated_contacts() const;
     void update_bounds();
     void update_pairs();
     void publish_pairs();

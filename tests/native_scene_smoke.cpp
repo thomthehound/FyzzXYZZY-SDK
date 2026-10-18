@@ -262,6 +262,17 @@ int main() {
         catch(const std::logic_error&) {unported_rejected=true;}
         expect(unported_rejected,
                "Rotated contacts silently ran in provisional AABB/PGS");
+        angular.set_angular_velocity(body,{0,0,0});
+        unported_rejected=false;
+        try {angular.step(1.0f/120.0f);}
+        catch(const std::logic_error&) {unported_rejected=true;}
+        expect(unported_rejected,
+               "Stopped spin incorrectly reset rotated-box collision admission");
+        unported_rejected=false;
+        try {angular.advance_collision(true);}
+        catch(const std::logic_error&) {unported_rejected=true;}
+        expect(unported_rejected,
+               "Direct collision API bypassed non-identity pose rejection");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.

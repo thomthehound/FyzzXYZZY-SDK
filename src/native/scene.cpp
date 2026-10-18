@@ -496,30 +496,35 @@ void Scene::solve_constraints() {
         }
     }
 }
+void Scene::reject_unsupported_rotated_contacts() const {
+    // Translation-only Gu narrowphase/bounds and scalar Dy PGS cannot
+    // honestly simulate a non-identity pose in a multi-collider scene.
+    // A rotation persists when angular velocity is subsequently set to
+    // zero, so checking spin alone would silently admit false contacts.
+    unsigned live_colliders = 0;
+    bool needs_rotated_contacts = false;
+    for (const auto& actor : actors_) {
+        if (!actor.alive) continue;
+        ++live_colliders;
+        if (actor.kind != Kind::DynamicBox) continue;
+        const Quat q = actor.orientation;
+        if (actor.angular_velocity.x != 0.0f ||
+            actor.angular_velocity.y != 0.0f ||
+            actor.angular_velocity.z != 0.0f ||
+            q.x != 0.0f || q.y != 0.0f ||
+            q.z != 0.0f || q.w != 1.0f)
+            needs_rotated_contacts = true;
+    }
+    if (needs_rotated_contacts && live_colliders > 1)
+        throw std::logic_error(
+            "Rotated contact/narrowphase not source-ported: "
+            "multi-collider rotation is unsupported");
+}
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
 
-    // Strict temporary admission for the draft source-body integration:
-    // until original Gu rotated-box geometry and Dy angular contact
-    // constraints are live, spinning boxes cannot safely share a scene
-    // with another collider. Reject rather than silently simulate
-    // physically impossible contacts through identity-oriented AABBs.
-    unsigned live_colliders = 0;
-    bool has_spin = false;
-    for (const auto& actor : actors_) {
-        if (!actor.alive) continue;
-        ++live_colliders;
-        if (actor.kind == Kind::DynamicBox &&
-            (actor.angular_velocity.x != 0.0f ||
-             actor.angular_velocity.y != 0.0f ||
-             actor.angular_velocity.z != 0.0f))
-            has_spin = true;
-    }
-    if (has_spin && live_colliders > 1)
-        throw std::logic_error(
-            "Angular contact/narrowphase is not yet source-ported; "
-            "rotation is currently admitted for isolated bodies only");
+    reject_unsupported_rotated_contacts();
 
     // Source: ScBodyCore.cpp::BodyCore dynamic defaults, and
     // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
@@ -591,6 +596,9 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
+    // The direct collision API must not bypass the same source-fidelity
+    // admission guard used by World::step.
+    reject_unsupported_rotated_contacts();
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
