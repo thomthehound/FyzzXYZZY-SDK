@@ -341,10 +341,19 @@ int main() {
         unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
         unopposed.step(std::numeric_limits<float>::min());
         const auto vel = unopposed.body_state(b).velocity;
-        expect(std::isfinite(vel.x) && std::isfinite(vel.y) &&
-               std::isfinite(vel.z) &&
-               std::hypot(vel.x,vel.y,vel.z) <= 1.01e16f,
-               "Native integration ignored PhysX's linear-speed limit");
+        // PhysX's PxReal squared speed overflows to infinity here.
+        // Consequently sqrt(1e32f / inf) is zero, not 1e16 normalization.
+        expect(vel.x == 0.0f && vel.y == 0.0f && vel.z == 0.0f,
+               "Native high-speed clamp diverged from PhysX float arithmetic");
+        Scene finite_limit;
+        const auto limited = finite_limit.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        finite_limit.set_velocity(limited, {2.0e16f,0,0});
+        finite_limit.step(1.0f / 120.0f);
+        const auto moderate = finite_limit.body_state(limited).velocity;
+        expect(std::isfinite(moderate.x) &&
+               std::abs(moderate.x - 1.0e16f) < 1.0e10f,
+               "Finite squared velocity failed PhysX source clamp");
     }
     {
         // Velocity authoring has no full-manifold invalidation scan:

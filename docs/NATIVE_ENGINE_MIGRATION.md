@@ -167,8 +167,13 @@ relative-velocity arithmetic, and restoration of the original PhysX
 dynamic-body unconstrained-velocity limit. As in
 `ScBodyCore.cpp`, the default dynamic `maxLinearVelocitySq` is
 `1e32f`; as in `DyBodyCoreIntegrator.h`, gravity integration precedes
-this linear speed clamp. We calculate the squared magnitude in double
-precision to avoid intermediate overflow for finite float inputs.
+this linear speed clamp. PhysX calculates squared speed in **float**:
+finite extreme inputs may overflow the squared magnitude to infinity,
+and the resulting source scale becomes zero. The widened-double clamp
+previously introduced in PR #111 would instead normalize those velocities
+to 1e16, so it was **not semantically equivalent**. The native clamp
+now preserves this specific source float behavior and has independent
+PhysX CPU parity coverage. This does not endorse float overflow generally.
 The constraint solver also checks all prospective wide velocity results
 before narrowing and committing either body, failing closed instead of
 publishing infinities. Velocity authoring updates one actor without

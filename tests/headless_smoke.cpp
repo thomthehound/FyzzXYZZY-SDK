@@ -6,6 +6,7 @@
 #include <cmath>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -131,6 +132,33 @@ int main() {
                 std::abs(rs.velocity.y) > 0.6f) {
                 throw std::runtime_error(
                     "Native CPU gravity/contact diverged from reference PhysX");
+            }
+
+            // Source parity for the float speed-squared overflow branch:
+            // a FLT_MAX linear velocity must become zero, not 1e16.
+            fyzz::World native_speed(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World reference_speed(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto native_fast = native_speed.add_dynamic_box(
+                {0.5f,0.5f,0.5f}, {0,5,0}, 1);
+            const auto reference_fast = reference_speed.add_dynamic_box(
+                {0.5f,0.5f,0.5f}, {0,5,0}, 1);
+            const float extreme_velocity = std::numeric_limits<float>::max();
+            native_speed.set_body_velocity(native_fast, {extreme_velocity,0,0});
+            reference_speed.set_body_velocity(reference_fast, {extreme_velocity,0,0});
+            native_speed.step(1.0f / 60.0f);
+            reference_speed.step(1.0f / 60.0f);
+            const auto nv = native_speed.body_state(native_fast);
+            const auto rv = reference_speed.body_state(reference_fast);
+            if (!std::isfinite(nv.position.x) ||
+                !std::isfinite(rv.position.x) ||
+                std::abs(nv.position.x - rv.position.x) > 0.001f ||
+                std::abs(nv.velocity.x - rv.velocity.x) > 0.001f ||
+                std::abs(nv.velocity.x) > 0.001f ||
+                std::abs(rv.velocity.x) > 0.001f) {
+                throw std::runtime_error(
+                    "Native max-velocity clamp diverged from reference PhysX");
             }
 
             fyzz::World world;

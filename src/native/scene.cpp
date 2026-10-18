@@ -447,37 +447,38 @@ void Scene::solve_constraints() {
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
-    constexpr double gravity = -9.81;
-    // PhysX source: ScBodyCore.cpp dynamic default maxLinearVelocitySq
-    // is 1e32f; DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity
-    // applies gravity/damping then clamps unconstrained linear speed.
-    // The present scene has zero linear damping, just like PhysX dynamic
-    // bodies by default. Widen the norm calculation so finite float inputs
-    // cannot overflow their squared length before the source clamp.
-    constexpr double max_linear_velocity_squared = 1.0e32;
+    constexpr float gravity = -9.81f;
+    // PhysX source: ScBodyCore.cpp dynamic maxLinearVelocitySq=1e32f.
+    // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity uses
+    // PxReal (float) magnitudeSquared, then sqrt(maxSq / magnitudeSq).
+    // A finite velocity may square to +inf in float, yielding scale=0.
+    // Widening the dot product would change PhysX's observable behavior.
+    constexpr float max_linear_velocity_squared = 1.0e32f;
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
-        double vx = actor.velocity.x;
-        double vy = static_cast<double>(actor.velocity.y) + gravity * seconds;
-        double vz = actor.velocity.z;
-        const double speed_squared = vx * vx + vy * vy + vz * vz;
+        float vx = actor.velocity.x;
+        float vy = actor.velocity.y + gravity * seconds;
+        float vz = actor.velocity.z;
+        if (!std::isfinite(vy))
+            throw std::overflow_error("Native CPU unconstrained velocity overflow");
+        const float speed_squared = vx * vx + vy * vy + vz * vz;
         if (speed_squared > max_linear_velocity_squared) {
-            const double factor =
+            const float factor =
                 std::sqrt(max_linear_velocity_squared / speed_squared);
             vx *= factor;
             vy *= factor;
             vz *= factor;
         }
-        const Vec3 velocity{
-            static_cast<float>(vx), static_cast<float>(vy),
-            static_cast<float>(vz)};
+        const Vec3 velocity{vx, vy, vz};
+        // Pose integration remains the scene's acknowledged scheduling
+        // specialization, while the speed clamp follows PhysX PxReal.
         const Vec3 p{
             static_cast<float>(static_cast<double>(actor.position.x) +
-                               vx * seconds),
+                               static_cast<double>(vx) * seconds),
             static_cast<float>(static_cast<double>(actor.position.y) +
-                               vy * seconds),
+                               static_cast<double>(vy) * seconds),
             static_cast<float>(static_cast<double>(actor.position.z) +
-                               vz * seconds)};
+                               static_cast<double>(vz) * seconds)};
         if (!finite(velocity) || !finite(p))
             throw std::overflow_error("Native CPU velocity or position overflow");
         actor.velocity = velocity;
