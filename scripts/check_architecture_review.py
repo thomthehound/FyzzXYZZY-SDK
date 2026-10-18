@@ -151,6 +151,9 @@ def main() -> int:
         print(f"Architecture review: docs-only classification unavailable ({exc}); "
               "requiring normal substantive review.")
     errors = validate(pr.get("body") or "", files)
+    if files is None:
+        errors.append("Source fidelity: cannot verify changed production paths "
+                      "because PR file list was unavailable")
     if errors:
         for item in errors:
             print(f"::error::{item}")

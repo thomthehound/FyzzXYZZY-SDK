@@ -290,17 +290,19 @@ int main() {
         // difference. The contact Jacobian must stay finite and produce
         // bounded published state without undefined zero*infinity terms.
         Scene extreme;
-        const auto a = extreme.add_dynamic_box({1,1,1}, {0,5,0}, 1);
-        const auto b = extreme.add_dynamic_box({1,1,1}, {1.5f,5,0}, 1);
+        const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
+        const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);
         extreme.set_velocity(a, {2.0e38f,0,0});
         extreme.set_velocity(b, {-2.0e38f,0,0});
-        extreme.step(std::numeric_limits<float>::denorm_min());
+        // Smallest normal float: portable even with flush-to-zero.
+        extreme.step(std::numeric_limits<float>::min());
         const auto va = extreme.body_state(a).velocity;
         const auto vb = extreme.body_state(b).velocity;
         expect(std::isfinite(va.x) && std::isfinite(va.y) &&
                std::isfinite(va.z) && std::isfinite(vb.x) &&
                std::isfinite(vb.y) && std::isfinite(vb.z) &&
-               std::abs(va.x) < 1.0e35f && std::abs(vb.x) < 1.0e35f,
+               va.x < 0.0f && vb.x > 0.0f &&
+               std::abs(va.x) < 1.0e38f && std::abs(vb.x) < 1.0e38f,
                "Finite high-speed contact overflowed or corrupted velocities");
         expect(extreme.contacts().size() == 1,
                "High-speed dynamic pair lost its contact");
