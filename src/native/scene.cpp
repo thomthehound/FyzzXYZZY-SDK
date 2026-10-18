@@ -411,7 +411,6 @@ void Scene::solve_constraints() {
                  normal_velocity) / response;
             const double next = std::max(0.0, candidate);
             const double impulse = next - manifold.normal_impulse;
-            manifold.normal_impulse = next;
             const double da = impulse * a.inverse_mass;
             const double db = impulse * b.inverse_mass;
             // An admissible pair can have a finite wide impulse but an
@@ -433,6 +432,9 @@ void Scene::solve_constraints() {
                     throw std::overflow_error(
                         "Native CPU contact impulse exceeds float velocity range");
             }
+            // Validate the complete contact result before committing
+            // solver impulse state or either actor velocity.
+            manifold.normal_impulse = next;
             a.velocity = {static_cast<float>(after[0]),
                           static_cast<float>(after[1]),
                           static_cast<float>(after[2])};
