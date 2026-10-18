@@ -66,6 +66,37 @@ multi-frame found/lost pair state to native narrowphase and CPU dynamics.
 A modified `PxScene`, a reference PhysX scheduler, or an isolated GPU
 fixture cannot satisfy this gate.
 
+### Source fidelity is a release criterion, not just an intent
+
+For every physics algorithm, shader, and orchestration change:
+
+- Identify the **specific upstream source methods**, input/output invariants,
+  state lifetime, ordering, numerical assumptions and output semantics.
+  Similar mathematical vocabulary (SAP, SAT, PGS, Coulomb friction) is not
+  sufficient evidence of an equivalent PhysX implementation.
+- Classify the change as **source-translation** or
+  **semantics-preserving-lowering**; demonstrate the correspondence with
+  source-level mapping and parity tests. A lower-cost implementation is
+  acceptable when it preserves the relevant invariants, edge cases and
+  observable outputs; measurements are needed for performance claims.
+- A prototype, toy substitute, missing angular term, collapsed manifold,
+  fabricated contact, invented scheduling edge or simplified friction
+  equation **must not silently become production physics**. If essential
+  source behavior is missing, mark the operation unsupported or isolate it
+  behind an explicit non-production experiment; keep the acceptance gate
+  open. Never advance a fidelity gate merely because a fixture passes.
+- Review differences in memory/ownership *and* actual algorithmic
+  behavior: contact generation, Jacobians, effective mass, friction
+  correlation, restitution, warm-start invalidation, island partitioning,
+  substep clocks, task dependencies and publication. Classify N/A with a
+  concrete reason rather than substituting a plausible approximation.
+- Tests must include adversarial numeric limits, many-body behavior,
+  cross-frame lifecycle and independent PhysX comparisons when relevant.
+  No test alone proves complete source parity; review the source mapping.
+- For an intentional departure, document why it is equivalent, how it
+  reduces cost, what it changes, and which executable conformance checks
+  would detect a regression. Anything unproven stays non-production.
+
 ## 4. Consolidation and deletion
 
 - Reuse existing mechanisms rather than adding overlapping representations.
@@ -82,7 +113,7 @@ fixture cannot satisfy this gate.
 
 ## 5. Enforced review contract
 
-Pull requests with production/test code changes must supply four review
+Pull requests with production/test code changes must supply five review
 sections, also instantiated by `.github/pull_request_template.md`:
 
 1. **Owner and source contract:** production entry point, authoritative
@@ -93,6 +124,10 @@ sections, also instantiated by `.github/pull_request_template.md`:
    explicit difference between unit, subsystem, and live-scene evidence
 4. **Redundancy and retirement:** what was reused, consolidated or retired,
    or why an additional representation is indispensable
+5. **Source fidelity and deviations:** one explicit fidelity classification;
+   PhysX source method correspondence, departures and equivalence evidence.
+   Native physics code cannot claim `not-applicable` or
+   `non-production-only` when it changes the production scene/solver.
 
 The lightweight `SDK architecture contract` workflow checks that a
 non-draft code PR supplies substantive sections and reruns on PR-body

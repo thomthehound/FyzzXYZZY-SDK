@@ -38,8 +38,7 @@ struct ContactManifold {
     // Per-frame scalar PGS contact constraint: one physical patch, not
     // duplicate per-vertex full-body impulses.
     float velocity_target = 0.0f;
-    double normal_impulse = 0.0; // wide scalar response for extreme mass ratios
-    std::array<double, 2> tangent_impulses{}; // persistent patch friction
+    double normal_impulse = 0.0;  // wide scalar response for extreme mass ratios
 };
 
 class Scene final {
@@ -54,12 +53,12 @@ public:
 
     // One scene-owned collision progression: update bounds -> SAP ->
     // overlap publication -> narrowphase -> contact publication.
-    // General rotational/constraint/solver/fetch parity is not yet admitted.
+    // Dynamics/constraints/solver/fetch are intentionally not admitted.
     // Returned spans remain valid until the next successful advance.
     void advance_collision(bool force_update = false);
     // Native CPU translation-constrained rigid bodies: single scene clock,
     // collision stream, unilateral normal constraint solver and publication.
-    // Angular DOFs, full friction-anchor correlation, joints and CCD remain unsupported.
+    // Angular DOFs/friction/joints/CCD remain unsupported.
     void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
@@ -94,7 +93,6 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
-    void invalidate_contact_cache(BodyId id);
     void prepare_constraints(float seconds);
     void solve_constraints();
 
@@ -114,7 +112,6 @@ private:
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
     std::uint64_t frame_index_ = 0;
-    float previous_step_seconds_ = 0.0f;
     bool dirty_ = true;
 };
 

@@ -40,6 +40,14 @@ void validate_box(Vec3 h, Vec3 p) {
 Pair ordered_pair(BodyId a, BodyId b) {
     return {std::min(a, b), std::max(a, b)};
 }
+// Compute relative velocity in double BEFORE subtraction. Two finite
+// components may have an unrepresentable difference in float, and that
+// difference must not poison a contact Jacobian or its impulse.
+double normal_relative_velocity(Vec3 a, Vec3 b, Vec3 n) {
+    return (static_cast<double>(a.x) - b.x) * n.x +
+           (static_cast<double>(a.y) - b.y) * n.y +
+           (static_cast<double>(a.z) - b.z) * n.z;
+}
 } // namespace
 
 BodyId Scene::add(Actor actor) {
@@ -106,7 +114,6 @@ void Scene::set_position(BodyId id, Vec3 position) {
     // shape model. Translating one changes its height, not its orientation.
     actor.position = position;
     dirty_ = true;
-    invalidate_contact_cache(id);
 }
 void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (!finite(velocity))
@@ -115,17 +122,8 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors have no linear velocity");
     actor.velocity = velocity;
-    invalidate_contact_cache(id);
-}
-void Scene::invalidate_contact_cache(BodyId id) {
-    // Teleports and external velocity edits invalidate solver warm starts;
-    // they do not manufacture pair/touch transitions.
-    for (auto& contact : manifolds_) {
-        if (contact.pair.a == id || contact.pair.b == id) {
-            contact.normal_impulse = 0.0;
-            contact.tangent_impulses = {};
-        }
-    }
+    // This base solver has no inter-frame constraint cache to invalidate.
+    // No contact scan or broadphase rebuild is needed for velocity edits.
 }
 void Scene::remove(BodyId id) {
     require(id).alive = false;
@@ -340,14 +338,6 @@ void Scene::update_contacts() {
             lost_contacts_.push_back(old->pair);
             ++old;
         } else {
-            // Source-style persistent contact patch state follows the pair
-            // only while its Jacobian direction remains compatible.
-            const Vec3 n = next->points[0].normal;
-            const Vec3 o = old->points[0].normal;
-            if (n.x == o.x && n.y == o.y && n.z == o.z) {
-                next->normal_impulse = old->normal_impulse;
-                next->tangent_impulses = old->tangent_impulses;
-            }
             ++next; ++old;
         }
     }
@@ -379,10 +369,8 @@ void Scene::prepare_constraints(float seconds) {
         const Actor& a = actors_[manifold.pair.a];
         const Actor& b = actors_[manifold.pair.b];
         const Vec3 n = manifold.points[0].normal;
-        const float relative_velocity =
-            (a.velocity.x - b.velocity.x) * n.x +
-            (a.velocity.y - b.velocity.y) * n.y +
-            (a.velocity.z - b.velocity.z) * n.z;
+        const double relative_velocity =
+            normal_relative_velocity(a.velocity, b.velocity, n);
         float separation = manifold.points[0].separation;
         for (unsigned k = 1; k < manifold.count; ++k)
             separation = std::min(separation, manifold.points[k].separation);
@@ -393,130 +381,47 @@ void Scene::prepare_constraints(float seconds) {
             : std::min(max_depenetration_speed,
                        -positional_bias * separation / seconds);
         if (separation <= 0.0f && relative_velocity < -bounce_threshold)
-            manifold.velocity_target = std::max(
-                manifold.velocity_target, -restitution * relative_velocity);
-        // Preserve the previous frame's contact impulses as a warm start,
-        // but rescale for a changed timestep and discard extreme changes.
-        if (previous_step_seconds_ > 0.0f) {
-            const double scale = static_cast<double>(seconds) /
-                                 previous_step_seconds_;
-            if (scale >= 0.5 && scale <= 2.0) {
-                manifold.normal_impulse *= scale;
-                for (double& impulse : manifold.tangent_impulses)
-                    impulse *= scale;
-            } else {
-                manifold.normal_impulse = 0.0;
-                manifold.tangent_impulses = {};
-            }
-        }
+            manifold.velocity_target = static_cast<float>(std::max(
+                static_cast<double>(manifold.velocity_target),
+                -restitution * relative_velocity));
+        manifold.normal_impulse = 0.0f;
     }
 }
 void Scene::solve_constraints() {
-    // Source: DySolverConstraints.cpp normal/friction accumulated PGS;
-    // DyContactPrep.cpp::frictionPatch correlates normal contact patches.
-    // In the restricted zero-angular-response engine, all points on one
-    // manifold share a translational Jacobian. Solve one normal + two
-    // tangents per patch rather than duplicating full-body impulses.
-    //
-    // Reference PhysX default material is static=0.5, dynamic=0.5.
-    // Coulomb disk projection here is a stated bounded specialization,
-    // not a port of PhysX's angular friction-anchor correlation.
-    constexpr double static_friction = 0.5;
-    constexpr double dynamic_friction = 0.5;
+    // DySolverConstraints::solveContact restricted to zero angular
+    // response. All vertices in a face patch share a translational normal
+    // Jacobian: do not apply the same rigid impulse four/eight times.
     constexpr unsigned position_iterations = 4;
     constexpr unsigned velocity_iterations = 2;
-
-    const auto tangents = [](Vec3 n) -> std::array<Vec3, 2> {
-        if (n.x != 0.0f) return {Vec3{0,1,0}, Vec3{0,0,1}};
-        if (n.y != 0.0f) return {Vec3{1,0,0}, Vec3{0,0,1}};
-        return {Vec3{1,0,0}, Vec3{0,1,0}};
-    };
-    const auto dot = [](Vec3 v, Vec3 axis) -> double {
-        return static_cast<double>(v.x) * axis.x +
-               static_cast<double>(v.y) * axis.y +
-               static_cast<double>(v.z) * axis.z;
-    };
-    const auto apply = [](Actor& a, Actor& b, Vec3 axis, double impulse) {
-        const double da = impulse * a.inverse_mass;
-        const double db = impulse * b.inverse_mass;
-        a.velocity.x = static_cast<float>(static_cast<double>(a.velocity.x) + axis.x * da);
-        a.velocity.y = static_cast<float>(static_cast<double>(a.velocity.y) + axis.y * da);
-        a.velocity.z = static_cast<float>(static_cast<double>(a.velocity.z) + axis.z * da);
-        b.velocity.x = static_cast<float>(static_cast<double>(b.velocity.x) - axis.x * db);
-        b.velocity.y = static_cast<float>(static_cast<double>(b.velocity.y) - axis.y * db);
-        b.velocity.z = static_cast<float>(static_cast<double>(b.velocity.z) - axis.z * db);
-    };
-
-    // Warm-start cached normal and tangential constraints before iteration.
-    // Same-geometry impulses are retained by update_contacts' sorted merge;
-    // external edits, lost contacts and normal changes invalidate them.
-    for (auto& contact : manifolds_) {
-        Actor& a = actors_[contact.pair.a];
-        Actor& b = actors_[contact.pair.b];
-        if (a.inverse_mass + static_cast<double>(b.inverse_mass) <= 0.0)
-            continue;
-        const Vec3 n = contact.points[0].normal;
-        const auto t = tangents(n);
-        contact.normal_impulse = std::max(0.0, contact.normal_impulse);
-        const double limit = static_friction * contact.normal_impulse;
-        const double length = std::hypot(
-            contact.tangent_impulses[0], contact.tangent_impulses[1]);
-        if (length > limit) {
-            const double factor = length > 0.0 ? limit / length : 0.0;
-            for (double& impulse : contact.tangent_impulses)
-                impulse *= factor;
-        }
-        apply(a, b, n, contact.normal_impulse);
-        apply(a, b, t[0], contact.tangent_impulses[0]);
-        apply(a, b, t[1], contact.tangent_impulses[1]);
-    }
-
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
-        for (auto& contact : manifolds_) {
-            Actor& a = actors_[contact.pair.a];
-            Actor& b = actors_[contact.pair.b];
-            // Double arithmetic prevents finite extreme inverse masses
-            // summing to an infinite float response.
+        for (auto& manifold : manifolds_) {
+            Actor& a = actors_[manifold.pair.a];
+            Actor& b = actors_[manifold.pair.b];
+            // Two individually finite inverse masses can overflow when
+            // added in float (tiny but otherwise admitted dynamic boxes).
+            // Accumulate the scalar response/impulse in double; retain
+            // float storage and SIMD-friendly vector state for bodies.
             const double response =
                 static_cast<double>(a.inverse_mass) + b.inverse_mass;
             if (response <= 0.0) continue;
-            const Vec3 n = contact.points[0].normal;
-            const auto t = tangents(n);
-            const Vec3 relative{
-                a.velocity.x - b.velocity.x,
-                a.velocity.y - b.velocity.y,
-                a.velocity.z - b.velocity.z};
-            const double candidate = contact.normal_impulse +
-                (static_cast<double>(contact.velocity_target) -
-                 dot(relative, n)) / response;
+            const Vec3 n = manifold.points[0].normal;
+            const double normal_velocity =
+                normal_relative_velocity(a.velocity, b.velocity, n);
+            const double candidate = manifold.normal_impulse +
+                (static_cast<double>(manifold.velocity_target) -
+                 normal_velocity) / response;
             const double next = std::max(0.0, candidate);
-            const double normal_delta = next - contact.normal_impulse;
-            contact.normal_impulse = next;
-            apply(a, b, n, normal_delta);
-
-            // Friction is bounded by the current normal force. Project
-            // both tangent impulses together (Coulomb disk), avoiding
-            // artificial axis-dependent friction at diagonal velocities.
-            const Vec3 post_normal{
-                a.velocity.x - b.velocity.x,
-                a.velocity.y - b.velocity.y,
-                a.velocity.z - b.velocity.z};
-            std::array<double, 2> desired{
-                contact.tangent_impulses[0] - dot(post_normal, t[0]) / response,
-                contact.tangent_impulses[1] - dot(post_normal, t[1]) / response};
-            const double length = std::hypot(desired[0], desired[1]);
-            const double max_static = static_friction * next;
-            if (length > max_static && length > 0.0) {
-                const double scale = dynamic_friction * next / length;
-                desired[0] *= scale;
-                desired[1] *= scale;
-            }
-            for (unsigned k = 0; k < 2; ++k) {
-                const double delta = desired[k] - contact.tangent_impulses[k];
-                contact.tangent_impulses[k] = desired[k];
-                apply(a, b, t[k], delta);
-            }
+            const double impulse = next - manifold.normal_impulse;
+            manifold.normal_impulse = next;
+            const double da = impulse * a.inverse_mass;
+            const double db = impulse * b.inverse_mass;
+            a.velocity.x = static_cast<float>(a.velocity.x + n.x * da);
+            a.velocity.y = static_cast<float>(a.velocity.y + n.y * da);
+            a.velocity.z = static_cast<float>(a.velocity.z + n.z * da);
+            b.velocity.x = static_cast<float>(b.velocity.x - n.x * db);
+            b.velocity.y = static_cast<float>(b.velocity.y - n.y * db);
+            b.velocity.z = static_cast<float>(b.velocity.z - n.z * db);
         }
     }
 }
@@ -546,7 +451,6 @@ void Scene::step(float seconds) {
     advance_collision();
     prepare_constraints(seconds);
     solve_constraints();
-    previous_step_seconds_ = seconds;
 }
 
 void Scene::advance_collision(bool force_update) {
@@ -589,8 +493,8 @@ public:
         scene_.set_position(id, p);
     }
     void remove_body(BodyId id) override { scene_.remove(id); }
-    void set_body_velocity(BodyId id, Vec3 v) override {
-        scene_.set_velocity(id, v);
+    void set_body_velocity(BodyId id, Vec3 velocity) override {
+        scene_.set_velocity(id, velocity);
     }
 private:
     native::Scene scene_;

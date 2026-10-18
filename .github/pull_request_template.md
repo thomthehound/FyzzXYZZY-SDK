@@ -13,3 +13,17 @@
 ## Redundancy and retirement
 
 <!-- Name overlapping implementations/state and what this change reuses, removes or migrates. If none, explain how this was checked. -->
+
+## Source fidelity and deviations
+
+<!-- Use exactly one: source-translation, semantics-preserving-lowering, non-production-only, not-applicable.
+For native scene/solver/contact/broadphase production changes, only the first two are admissible.
+Identify the original PhysX method and file; state every semantic/scheduling/numerical deviation
+and the specific parity evidence. Do not pass a provisional solver as source-equivalent. -->
+Fidelity classification:
+
+PhysX source:
+
+Departures:
+
+Parity evidence:

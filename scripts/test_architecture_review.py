@@ -3,7 +3,10 @@
 """Covers the review gate's nontrivial PR-body parsing and empty templates."""
 import unittest
 
-from check_architecture_review import SECTIONS, documentation_only, complete_documentation_only, validate
+from check_architecture_review import (
+    SECTIONS, documentation_only, complete_documentation_only,
+    production_physics_changed, validate,
+)
 
 
 class ArchitectureReviewTest(unittest.TestCase):
@@ -13,7 +16,47 @@ class ArchitectureReviewTest(unittest.TestCase):
             f"native Linux and Windows tests verify this particular contract."
             for name in SECTIONS
         )
-        self.assertEqual([], validate(body))
+        body += ("\nFidelity classification: semantics-preserving-lowering"
+                 "\nPhysX source: DySolverConstraints.cpp::solveContact"
+                 "\nDepartures: only widen scalar relative velocity arithmetic"
+                 "\nParity evidence: native_scene_smoke tests symmetric extreme velocities")
+        self.assertEqual([], validate(body, [{"filename": "src/native/scene.cpp"}]))
+
+    def test_source_fidelity_rejects_provisional_native_solver(self):
+        body = "\n\n".join(
+            f"## {name}\nA fully described and reviewed source behavior change."
+            for name in SECTIONS
+        )
+        body += (
+            "\nFidelity classification: non-production-only"
+            "\nPhysX source: DySolverConstraints.cpp::solveContact"
+            "\nDepartures: temporary replacement without matching constraints"
+            "\nParity evidence: independent native integration test"
+        )
+        errors = validate(body, [{"filename": "src/native/scene.cpp"}])
+        self.assertTrue(any("Production physics requires" in e for e in errors))
+        self.assertEqual([], validate(body, [{"filename": "tests/native_scene_smoke.cpp"}]))
+
+    def test_source_fidelity_rejects_missing_proof_and_classification(self):
+        body = "\n\n".join(
+            f"## {name}\nA fully described and reviewed source behavior change."
+            for name in SECTIONS
+        )
+        self.assertTrue(any("Fidelity classification" in e
+                            for e in validate(body)))
+        body += ("\nFidelity classification: source-translation"
+                 "\nPhysX source: generic"
+                 "\nDepartures: none"
+                 "\nParity evidence: test")
+        errors = validate(body, [{"filename": "src/native/scene.cpp"}])
+        self.assertTrue(any("PhysX source" in e for e in errors))
+        self.assertTrue(any("Parity evidence" in e for e in errors))
+
+    def test_production_detection_checks_renamed_paths(self):
+        self.assertTrue(production_physics_changed([
+            {"filename":"docs/new.md", "previous_filename":"src/native/scene.cpp"}]))
+        self.assertFalse(production_physics_changed([
+            {"filename":"src/world.cpp"}]))
 
     def test_unfilled_template_is_not_evidence(self):
         body = "\n\n".join(

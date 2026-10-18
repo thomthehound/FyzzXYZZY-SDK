@@ -127,10 +127,10 @@ per-manifold solver state and reusable buffers.
 horizontal infinite planes, gravity, dynamic/static and dynamic/dynamic
 normal contacts. The API has no quaternion/rotational DOFs; these bodies
 are intentionally translation-constrained. A default 0.2 contact
-restitution, provisional 0.02m per-shape contact offset and a restricted
-linear normal/tangent contact response are *provisional*, not a claim
-of exact PhysX friction-anchor or rotational-contact tuning. Normal and tangential impulses cannot supply torque or
-angular momentum; the friction cone is a translational specialization. True source BoxBox edge/corner contacts,
+restitution, provisional 0.02m per-shape contact offset and simple
+normal-only frictionless patch response are *provisional*, not a claim of
+exact PhysX tuning. Normal impulses cannot supply torque, angular
+momentum or Coulomb friction. True source BoxBox edge/corner contacts,
 full manifold correlation/cache, islands, constraints, CCD, broadphase
 incremental optimization, GPU SAP, callbacks, full task continuations and
 rigid-body parity remain **not implemented**. No general-purpose physics
@@ -150,38 +150,26 @@ scenes, published contact events and public SDK actor state. These are
 integration/regression tests for the admitted subset, not acceptance of
 N1's full CPU solver.
 
-## N1 native contact constraint persistence and friction
+## N1 source-fidelity course correction
 
-The same native scene now retains **solver impulse history within the
-per-pair contact manifold**. Its sorted old/new contact merge transfers
-the normal and two tangential impulses only when the pair and contact
-normal remain compatible. New/lost contacts, teleports, explicit velocity
-edits, and large timestep changes invalidate stale warm starts. The
-stored normal response is accumulated in wide scalar precision to avoid
-overflow for very small masses, while the actor state retains its native
-float layout.
+PR #111 intentionally **withdraws** its proposed Coulomb friction disk,
+cross-frame impulse caching and cache invalidation scans. Those mechanisms
+were plausible physics, but not translations of the actual PhysX friction
+patch and anchor solver. Green CI for a sliding-box demo is not proof of
+source equivalence. Reintroduce these capabilities only through a
+source-mapped port of `DyContactPrep.cpp`, `DySolverConstraints.cpp`,
+contact correlation/lifetime, and the original scene task ordering.
 
-The restricted translational solver applies cached impulses once,
-then solves unilateral normal and two coupled tangential impulses under
-a Coulomb friction disk in its existing PGS iterations. Static/dynamic
-coefficients are currently both 0.5, matching the SDK's reference
-PhysX material creation, but **this is not PhysX's full multi-anchor
-friction correlation or angular rigid-body friction algorithm**.
-Normal/fractional impulse state lives inside the scene's existing
-manifold arrays; no per-contact allocation, second scheduler, buffer
-owner or independent physics world is introduced.
+The bounded CPU translational solver remains an **intermediate, non-parity
+implementation**, not accepted general PhysX. The surviving PR changes
+are provider-neutral linear velocity authoring and mathematically
+equivalent wide scalar relative-velocity arithmetic that avoids overflow
+before computing a normal contact impulse. Velocity authoring updates
+one actor without scanning all active contact manifolds.
 
-Public \`World::set_body_velocity\` supports dynamic actors in both
-native and reference CPU modes, with finite-value checks, static-body
-rejection and lifetime validation. This supports meaningful behavioral
-tests of diagonal sliding, finite contact impulses across frames, stale
-cache invalidation and reference/native actor controls.
-
-Remaining N1 acceptance gaps include full source rotational dynamics,
-source-exact contact patch correlation/friction, persistent islands,
-task continuations, source-accurate wide geometry/contact support,
-callbacks and Godot native-mode acceptance. This incremental supported
-subset is not evidence of full PhysX or GPU simulation parity.
+The project-wide source-fidelity contract and PR gate now prohibit
+calling a simplified behavioral resemblance a completed source port.
+Full source friction and rigid-body dynamics remain open N1 work.
 
 ## Gate N2 — native source-derived SAP and AABB owner
 

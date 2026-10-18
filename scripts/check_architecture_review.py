@@ -18,7 +18,24 @@ SECTIONS = (
     "Runtime cost and scheduling",
     "Integration evidence",
     "Redundancy and retirement",
+    "Source fidelity and deviations",
 )
+
+CLASSIFICATIONS = {
+    "source-translation",
+    "semantics-preserving-lowering",
+    "non-production-only",
+    "not-applicable",
+}
+
+def production_physics_changed(files: list[dict]) -> bool:
+    """Source-fidelity declarations fail closed for native production physics."""
+    roots = ("src/native/", "src/physx_port/", "src/physx_gpu/")
+    return any(
+        any(item.get(key, "").startswith(roots)
+            for key in ("filename", "previous_filename"))
+        for item in files
+    )
 
 def documentation_only(files: list[dict]) -> bool:
     """An all-docs PR still produces a green status on a protected branch."""
@@ -67,7 +84,7 @@ def github_pr_files(repository: str, number: int, token: str) -> list[dict]:
     raise ValueError("Pull request file list exceeds policy pagination range")
 
 
-def validate(body: str) -> list[str]:
+def validate(body: str, files: list[dict] | None = None) -> list[str]:
     errors: list[str] = []
     matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body))
     sections = {}
@@ -81,6 +98,27 @@ def validate(body: str) -> list[str]:
         value = re.sub(r"<!--.*?-->", "", value, flags=re.DOTALL).strip()
         if len(value) < 28:
             errors.append(f"Missing substantive '## {name}' section")
+    fidelity = re.sub(r"<!--.*?-->", "",
+                      sections.get("Source fidelity and deviations", ""),
+                      flags=re.DOTALL)
+    found = re.findall(r"(?mi)^Fidelity classification:\s*([\w-]+)\s*$",
+                       fidelity)
+    if len(found) != 1 or found[0] not in CLASSIFICATIONS:
+        errors.append("Source fidelity: declare one valid 'Fidelity classification:'")
+    else:
+        classification = found[0]
+        if files is not None and production_physics_changed(files) and (
+                classification not in {"source-translation",
+                                       "semantics-preserving-lowering"}):
+            errors.append(
+                "Production physics requires source-translation or "
+                "semantics-preserving-lowering, never a provisional substitute")
+        if classification in {"source-translation", "semantics-preserving-lowering"}:
+            for field in ("PhysX source", "Departures", "Parity evidence"):
+                match = re.search(rf"(?mi)^{re.escape(field)}:\s*(.+)$",
+                                  fidelity)
+                if not match or len(match.group(1).strip()) < 12:
+                    errors.append(f"Source fidelity: substantive '{field}:' required")
     return errors
 
 def main() -> int:
@@ -99,6 +137,7 @@ def main() -> int:
     # Documentation-only changes should not need GPU lifetime analysis, but
     # the required workflow MUST still report an explicit successful check.
     # API errors fail closed into normal body validation, never silent bypass.
+    files: list[dict] | None = None
     try:
         token = os.getenv("GITHUB_TOKEN", "")
         repo = os.getenv("GITHUB_REPOSITORY", "")
@@ -111,7 +150,7 @@ def main() -> int:
     except (OSError, ValueError, TimeoutError) as exc:
         print(f"Architecture review: docs-only classification unavailable ({exc}); "
               "requiring normal substantive review.")
-    errors = validate(pr.get("body") or "")
+    errors = validate(pr.get("body") or "", files)
     if errors:
         for item in errors:
             print(f"::error::{item}")
