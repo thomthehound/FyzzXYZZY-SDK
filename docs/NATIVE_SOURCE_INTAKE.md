@@ -32,7 +32,10 @@ by the source-derived GPU/AABB integration in
 | --- | --- | --- |
 | `simulationcontroller/src/ScPipeline.cpp` | `Sc::Scene::simulate`, `collideStep`, `broadPhaseFirstPass`, `broadPhaseSecondPass`, `preIntegrate`, `updateBroadPhase`, `postBroadPhase`, `advanceStep`, `secondPassNarrowPhase`, `postNarrowPhase`, `islandGen`, `solver`, `beforeSolver`, `updateDynamics`, `postSolver`, `afterIntegration`, `finalizationPhase` and task continuations | **One** scene-owned dependency graph, initially synchronously executed only where source dependencies allow; CPU and GPU admissions branch using source-equivalent ordering |
 | `simulationcontroller/src/ScScene.cpp`, `simulationcontroller/include/ScScene.h` | Owns or connects shape/actor simulation state, low-level context, island manager, AABB manager, dynamics context, simulation controller and scene lifecycle | Absorb the required state and lifetime contracts into the existing native scene; don't construct or secretly drive another `Sc::Scene` |
+| `physx/src/NpSceneFetchResults.cpp` | Public `NpScene::fetchResults`, `fetchResultsStart`, `fetchResultsFinish`, result-completion wait, API stage checks and contact callbacks | Separate simulation completion from public publication; the event/callback result boundary must not be confused with `Sc::Scene::finalizationPhase` |
+| `lowlevel/software/src/PxsSimpleIslandManager.cpp`, `PxsIslandSim.cpp` | Speculative/accurate island graphs, node/edge lifecycle, first/second/third island passes, connectivity and sleep/wake | Own one island graph/lifetime contract in native scene, with source pass dependencies; a global contact manifold traversal is not a replacement |
 | `lowlevelaabb/src/BpBroadPhaseSap.cpp`, `lowlevelaabb/src/BpAABBManager.cpp` | Source CPU AABB owner and incremental SAP; overlaps and filtering inputs | Retain source pair semantics and broadphase manager ownership; existing rebuild-only X-sweep is temporary scaffolding |
+| `gpubroadphase/src/PxgAABBManager.cpp`, `PxgCudaBroadPhaseSap.cpp` | GPU first/second AABB pass, aggregate handling, DMA-up/down, SAP compute and report fetch | Separate N2 source intake: preserve GPU-specific lifetime/descriptor/history semantics; do not substitute CPU SAP or assume GPU dynamics owns GPU broadphase |
 | `lowlevel/software/src/PxsNphaseImplementationContext.cpp`, `lowlevel/software/src/PxsContactManager.cpp` | Narrowphase contact manager state, caches, contact streams, touch transitions, manager outputs | Native per-contact-manager records, correlated outputs, contact cache lifetime and publication; no conflation of candidate pairs with physical touch |
 | `geomutils/src/contact/GuContactPlaneBox.cpp`, `GuContactBoxBox.cpp` | Geometry-specific source collision/contact generation | Port full admitted geometry behavior and rotations, including edge/corner contacts and contact selection, not only axis-aligned faces |
 | `lowleveldynamics/src/DyBodyCoreIntegrator.h`, `DySolverBody.h` | Constrained/unconstrained velocities, mass/inertia, solver-body data and pose integration | Preserve float `PxReal` behavior, damping, speed limits, rotations, angular velocity, inertia, locks and final state writeback |
@@ -164,6 +167,29 @@ data readiness, single ownership and completion dependencies.
 | `updateDynamicsPostPartitioning` | Calls dynamics-context post-partitioning hook, clears destroyed partition edges and releases staged lost-contact references | `updateSimulationController` on GPU, or source CPU post-solver continuation | The call is source-visible even when CPU dynamics executes post-partition work inline |
 | `postSolver` / `afterIntegration` / `finalizationPhase` | Merges results, frees constraint blocks, swaps friction streams, completes body-state publication, events and cleanup | Result fetch and next-frame scene mutation | GPU first performs DMA-back and body-core update |
 
+### Verified source anchors and still-open closure
+
+The following are directly checkable locations in the maintained PhysX
+source used for this audit. Line anchors are navigational aids, not
+license to assume every transitive dependency was already ported:
+
+- [`ScPipeline.cpp::solver` and `beforeSolver`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L1763-L1945) — scene-level solver setup and stream swap, **not** the `DynamicsContext::update` call.
+- [`ScPipeline.cpp::updateDynamics` / `updateDynamicsPostPartitioning`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L2049-L2140) — actual dynamics-context entry, CPU/GPU continuations and lost-contact task ownership.
+- [`ScPipeline.cpp::postNarrowPhase` / `islandGen`](https://github.com/thomthehound/PhysX/blob/main/physx/source/simulationcontroller/src/ScPipeline.cpp#L1525-L1560) — contact-manager sync **before** patch processing in island generation.
+- `DyDynamics.cpp::DynamicsContext::update` and `updatePostKinematic` — inspected their original implementations for world-body reset, pool lifetime, accurate-island batching, and solver-task creation. Extract their exact source ranges and transitive type dependencies before porting; no approximate line anchor is asserted here.
+- [`DySolverControl.cpp::solveV_Blocks`](https://github.com/thomthehound/PhysX/blob/main/physx/source/lowleveldynamics/src/DySolverControl.cpp#L160-L313) — position/velocity, conclude, writeback and no-contact branches.
+- [`PxsSimpleIslandManager.cpp::firstPassIslandGen`, `secondPassIslandGenPart1/Part2`](https://github.com/thomthehound/PhysX/blob/main/physx/source/lowlevel/software/src/PxsSimpleIslandManager.cpp#L257-L310) — speculative versus accurate state, lost-edge removal and deferred cleanup.
+- [`NpSceneFetchResults.cpp::fetchResults` / `fetchResultsStart` / `fetchResultsFinish`](https://github.com/thomthehound/PhysX/blob/main/physx/source/physx/src/NpSceneFetchResults.cpp#L484-L670) — completion readiness and public contact-event publication.
+- [`PxgAABBManager.cpp::updateBPFirstPass` / `updateBPSecondPass`](https://github.com/thomthehound/PhysX/blob/main/physx/source/gpubroadphase/src/PxgAABBManager.cpp#L485-L828) and [`PxgCudaBroadPhaseSap.cpp::gpuDMAUp` / `update` / `fetchBroadPhaseResults`](https://github.com/thomthehound/PhysX/blob/main/physx/source/gpubroadphase/src/PxgCudaBroadPhaseSap.cpp#L242-L1260) — separate GPU SAP host lifecycle. This document does not certify that N2 is wired.
+
+**Important qualification:** PhysX may process work concurrently where
+continuation dependencies permit. An ordered list of task names is not
+a proof that each waits on every prior task. Before writing the native
+scheduler, extract actual continuation edges, producer-completion
+requirements, and buffer retirement from the original task construction
+sites into an executable DAG check. The table above describes the
+required handoffs, not an invented globally sequential PhysX frame.
+
 ### Readiness and retirement invariants
 
 - **Contact patch freshness:** after `postNarrowPhase` has
@@ -182,6 +208,13 @@ data readiness, single ownership and completion dependencies.
 - **Narrowphase streams:** swapped by `Sc::Scene::solver` after the
   second pass completes; a source solver task must not read a stream
   before its producer has completed or after it has been retired.
+- **Island passes:** preserve distinct speculative and accurate island
+  graphs from `PxsSimpleIslandManager`. Its first pass handles
+  speculative wake/new/lost edges; second pass part 1 handles accurate
+  wake/new edges, while part 2 removes destroyed edges and lost
+  connections and retires destroyed node handles. The source explicitly
+  splits parts for permitted overlap with GPU patch work, so don't
+  serialize everything solely because a text ledger shows one line.
 - **World and solver bodies:** zero the source world solver body, preserve
   the kinematic/dynamic remap and accurate island-node ordering, and
   feed contact constraints with real per-body inertia/Jacobian state.
@@ -192,6 +225,13 @@ data readiness, single ownership and completion dependencies.
   continuations connect post-partitioning and simulation-controller
   body-core publication. Never insert blocking GPU waits to simulate
   an incorrect flat CPU chain.
+- **Fetch/publication boundary:** `Sc::Scene::finalizationPhase` is
+  **not** the complete public `NpScene::fetchResults` contract.
+  `NpSceneFetchResults.cpp` requires the correct simulation stage,
+  observes the physics completion event, handles error checks and
+  contact callbacks, and separates pre/post-callback result work.
+  A native scene must expose a truthful completion/publication edge
+  and must not call user observers on half-published solver state.
 - **Failure/retirement:** a solver task failure must not make a
   partially updated actor state appear published; contact-manager,
   constraint, friction, and result buffers retain their owners until
@@ -205,6 +245,8 @@ data readiness, single ownership and completion dependencies.
 | `ScPipeline` task boundaries | Verified `solver` versus `updateDynamics`, `islandGen` patch ownership, CPU/GPU continuations and `postSolver` cleanup in actual source | Full task refcount/dependency DAG, including compile-time branch and CCD paths |
 | `DyDynamics` CPU integration | Verified CPU `update`, source solver-body pools, `updatePostKinematic` island batching, PGS task creation | Input/output ABI extraction, exact partition and writeback semantics, contact/constraint layout inventory |
 | PhysX GPU dynamics | Verified distinct `ScPipeline` GPU continuations and controller handoff | **Not yet independently mapped** GPU-specific `DynamicsContext` implementation, CUDA launch/memory graph and any CPU fallbacks |
+| Island manager and public fetch | Inspected original speculative/accurate island passes and `NpScene::fetchResults` completion/callback split | Full edge/retirement graph and native API publication semantics still need closure |
+| GPU SAP host lifecycle | Located original `PxgAABBManager` first/second pass and `PxgCudaBroadPhaseSap` DMA/update/fetch methods | Source-stage and buffer-history closure still belongs to N2, not assumed complete by this N1 audit |
 | Source geometry and contact correlation | Identified `GuContact*`, `PxsNphaseImplementationContext` and `DyContactPrep` source families | Exact correlation/anchor data structure, cache transitions and geometry edge-case acceptance |
 | Native acceptance | Existing source-free scene and oracle smoke tests support an openly bounded subset | Complete rotational PGS, source schedule, GPU SAP and N1/N2 full parity **not admitted** |
 
