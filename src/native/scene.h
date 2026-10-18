@@ -57,9 +57,11 @@ public:
     // Dynamics/constraints/solver/fetch are intentionally not admitted.
     // Returned spans remain valid until the next successful advance.
     void advance_collision(bool force_update = false);
-    // Native CPU translation-constrained rigid bodies: single scene clock,
-    // collision stream, unilateral normal constraint solver and publication.
-    // Angular DOFs/friction/joints/CCD remain unsupported.
+    // Native CPU source-derived free-body angular motion plus the existing
+    // provisional translation-only contact path, within one scene clock.
+    // Rotated multi-collider narrowphase, angular contact Jacobians,
+    // friction, joints and CCD remain unsupported and are rejected.
+    // N1 general rigid-body source solver parity is NOT yet admitted.
     void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
