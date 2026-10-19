@@ -673,7 +673,8 @@ void Scene::solve_constraints() {
 void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
     // solved motion velocity after the iteration/conclude/writeback sequence.
-    // Angular solver deltas remain zero until original Dy contact rows land.
+    // This publication is shared by the eventual source normal/friction rows;
+    // provisional scalar contact constraints leave angularState at zero.
     for (BodyId id : solver_active_ids_) {
         auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
@@ -683,9 +684,22 @@ void Scene::publish_solver_bodies() {
             row.data.linear_velocity.x+d.x,
             row.data.linear_velocity.y+d.y,
             row.data.linear_velocity.z+d.z};
-        if (!finite(linear))
+        // DyBodyCoreIntegrator::integrateCore publishes angular solver
+        // state through the *world* square-root inverse inertia tensor,
+        // rather than treating PxSolverBody::angularState as angular velocity.
+        const Vec3& angular_state = row.solver.angular_state;
+        const auto& i = row.data.sqrt_inverse_inertia;
+        const Vec3 angular{
+            row.data.angular_velocity.x + i[0].x*angular_state.x +
+                i[1].x*angular_state.y + i[2].x*angular_state.z,
+            row.data.angular_velocity.y + i[0].y*angular_state.x +
+                i[1].y*angular_state.y + i[2].y*angular_state.z,
+            row.data.angular_velocity.z + i[0].z*angular_state.x +
+                i[1].z*angular_state.y + i[2].z*angular_state.z};
+        if (!finite(linear) || !finite(angular))
             throw std::overflow_error("Native solver publication is not finite");
         actor.velocity = linear;
+        actor.angular_velocity = angular;
     }
 }
 void Scene::reject_unsupported_rotated_contacts() const {
