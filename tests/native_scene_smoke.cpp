@@ -452,6 +452,19 @@ int run_native_scene_smoke() {
             stacked.step(1.0f / 120.0f);
         const auto lo = stacked.body_state(lower);
         const auto hi = stacked.body_state(upper);
+        if (!(std::isfinite(lo.position.y) &&
+               std::isfinite(hi.position.y) &&
+               lo.position.y > 0.37f && lo.position.y < 0.65f &&
+               hi.position.y > 1.25f && hi.position.y < 1.70f &&
+               std::abs(lo.velocity.y) < 0.8f &&
+               std::abs(hi.velocity.y) < 0.8f))
+            std::fprintf(stderr,
+                "stack lo(y=%g vy=%g spin=%g,%g,%g) hi(y=%g vy=%g spin=%g,%g,%g) contacts=%zu\n",
+                lo.position.y,lo.velocity.y,lo.angular_velocity.x,
+                lo.angular_velocity.y,lo.angular_velocity.z,
+                hi.position.y,hi.velocity.y,hi.angular_velocity.x,
+                hi.angular_velocity.y,hi.angular_velocity.z,
+                stacked.contacts().size());
         expect(std::isfinite(lo.position.y) &&
                std::isfinite(hi.position.y) &&
                lo.position.y > 0.37f && lo.position.y < 0.65f &&
