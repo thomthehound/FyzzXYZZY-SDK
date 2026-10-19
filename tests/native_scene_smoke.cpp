@@ -102,6 +102,13 @@ int main() {
         expect(std::abs(above.points[0].separation - 0.02f) < 0.0001f &&
                above.points[0].normal.y == -1.0f,
                "Plane contact separation or normal incorrect");
+        // GuContactPlaneBox enumerates +x,-y,+z before the other
+        // three near-plane corners. Preserve source contact ordering
+        // because contact force buffers are indexed per point.
+        expect(std::abs(above.points[0].position.x - 1.0f) < 0.0001f &&
+               std::abs(above.points[0].position.y - 0.02f) < 0.0001f &&
+               std::abs(above.points[0].position.z - 1.0f) < 0.0001f,
+               "GuContactPlaneBox source corner order or position diverged");
         contact_scene.advance_collision(true);
         expect(contact_scene.found_contacts().empty() &&
                contact_scene.lost_contacts().empty(),
