@@ -328,11 +328,11 @@ int main() {
                oblique.found_contacts().empty() &&
                oblique.lost_contacts().empty(),
                "Gu box-box collision axis cache was not retained");
-        bool solver_rejected=false;
-        try {oblique.step(1.0f/120.0f);}
-        catch(const std::logic_error&) {solver_rejected=true;}
-        expect(solver_rejected,
-               "Rotated contacts reached the provisional scalar solver");
+        // Per-point angular contact constraints must now admit the
+        // oblique geometry without the retired translation-only guard.
+        oblique.step(1.0f/120.0f);
+        expect(std::isfinite(oblique.body_state(moving).angular_velocity.z),
+               "Rotated Dy normal-contact solver produced invalid angular motion");
     }
     // A pitched box has more than an AABB corner representation. The
     // source plane contact stream must carry its real rotated vertices.
@@ -642,22 +642,25 @@ int main() {
         expect(rejected,"Static floor accepted angular impulse");
     }
     {
-        // A pending source impulse is motion that will be applied in
-        // this frame, even if the existing angular velocity is zero.
-        // Unsupported rotated contact must fail BEFORE updating state.
+        // Queued angular impulses are consumed at the next scene step
+        // even when static contacts are present. Normal contact rows
+        // must now accept the resulting rotated body without replaying
+        // the pending torque on later frames.
         Scene rotating_contact;
         const auto id = rotating_contact.add_dynamic_box(
             {0.5f,1.0f,2.0f},{0,2,0},1);
         rotating_contact.add_static_floor(0);
         rotating_contact.apply_torque_impulse(id,{1,0,0});
         const auto before = rotating_contact.body_state(id);
-        bool rejected=false;
-        try { rotating_contact.step(1.0f/120.0f); }
-        catch (const std::logic_error&) { rejected=true; }
+        rotating_contact.step(1.0f/120.0f);
         const auto after = rotating_contact.body_state(id);
-        expect(rejected && before.position.y == after.position.y &&
-               before.angular_velocity.x == after.angular_velocity.x,
-               "Queued angular impulse bypassed rotated-contact preflight");
+        expect(after.position.y < before.position.y &&
+               after.angular_velocity.x > before.angular_velocity.x &&
+               std::isfinite(after.angular_velocity.x),
+               "Queued angular impulse was not consumed in active scene");
+        rotating_contact.step(1.0f/120.0f);
+        expect(std::isfinite(rotating_contact.body_state(id).angular_velocity.x),
+               "Angular motion failed to continue without replaying torque");
     }
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
