@@ -275,11 +275,74 @@ int main() {
         catch(const std::logic_error&) {unported_rejected=true;}
         expect(unported_rejected,
                "Stopped spin incorrectly reset rotated-box collision admission");
-        unported_rejected=false;
-        try {angular.advance_collision(true);}
-        catch(const std::logic_error&) {unported_rejected=true;}
-        expect(unported_rejected,
-               "Direct collision API bypassed non-identity pose rejection");
+        // Collision-only Gu narrowphase is now rotated-capable; it does
+        // not invoke the unsupported provisional angular PGS solver.
+        angular.advance_collision(true);
+        expect(has(angular.pairs(),body,floor) &&
+               angular.contacts().empty(),
+               "Rotated distant floor candidate must not invent a contact");
+    }
+
+    // Original Gu box-box SAT/contact path must accept an oblique
+    // body directly in the owning scene, not only the free-flight path.
+    {
+        Scene oblique;
+        auto moving=oblique.add_dynamic_box({0.5f,0.5f,0.5f},
+                                             {0,5,0},1.0f);
+        oblique.set_angular_velocity(moving,{0,0,2.0f});
+        oblique.step(0.4f);
+        oblique.set_angular_velocity(moving,{0,0,0});
+        oblique.set_position(moving,{1.35f,0,0});
+        auto fixed=oblique.add_static_box({1,1,1},{0,0,0});
+        oblique.advance_collision();
+        expect(has(oblique.found_pairs(),moving,fixed) &&
+               has(oblique.found_contacts(),moving,fixed) &&
+               oblique.contacts().size()==1 &&
+               oblique.contacts()[0].count>0 &&
+               oblique.contacts()[0].collision_axis>0,
+               "Rotated Gu box contact generation or pair axis missing");
+        for(const auto& pt:oblique.contacts()[0].points) {
+            const float length=std::sqrt(pt.normal.x*pt.normal.x+
+                 pt.normal.y*pt.normal.y+pt.normal.z*pt.normal.z);
+            expect(std::isfinite(pt.separation) && std::abs(length-1.0f)<0.002f,
+                   "Rotated box contact normal/separation invalid");
+        }
+        const auto axis=oblique.contacts()[0].collision_axis;
+        oblique.advance_collision(true);
+        expect(oblique.contacts().size()==1 &&
+               oblique.contacts()[0].collision_axis==axis &&
+               oblique.found_contacts().empty() &&
+               oblique.lost_contacts().empty(),
+               "Gu box-box collision axis cache was not retained");
+        bool solver_rejected=false;
+        try {oblique.step(1.0f/120.0f);}
+        catch(const std::logic_error&) {solver_rejected=true;}
+        expect(solver_rejected,
+               "Rotated contacts reached the provisional scalar solver");
+    }
+    // A pitched box has more than an AABB corner representation. The
+    // source plane contact stream must carry its real rotated vertices.
+    {
+        Scene pitched;
+        const auto moving=pitched.add_dynamic_box(
+            {0.4f,0.7f,0.3f},{0,5,0},1);
+        pitched.set_angular_velocity(moving,{0,0,2.0f});
+        pitched.step(0.4f);
+        pitched.set_angular_velocity(moving,{0,0,0});
+        pitched.set_position(moving,{0,0.7f,0});
+        const auto floor=pitched.add_static_floor(0);
+        pitched.advance_collision();
+        expect(has(pitched.found_pairs(),moving,floor) &&
+               pitched.contacts().size()==1 &&
+               pitched.contacts()[0].count>0,
+               "Rotated plane-box source contact stream absent");
+        bool displaced=false;
+        for(const auto& pt:pitched.contacts()[0].points) {
+            if(std::abs(pt.position.x)>0.41f) displaced=true;
+            expect(pt.normal.y==1.0f && std::isfinite(pt.separation),
+                   "Rotated plane-box normal or separation invalid");
+        }
+        expect(displaced,"Rotated plane-box points remained AABB corners");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
