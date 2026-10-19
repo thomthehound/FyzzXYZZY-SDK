@@ -155,12 +155,22 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
     // body extension then scales both mass and inertia by density.
     // Keep the source's float products, rather than replacing
     // inertial properties with a made-up size-independent response.
+    // Preserve the source's evaluation sequence: PxMassProperties
+    // first builds a unit-density box tensor from squared extents and
+    // (unit mass * 1) / 3, then scales each tensor component by density.
+    // Scaling the common factor by density *before* multiplying the
+    // diagonal can change float underflow/overflow and rounding.
     const float unit_mass = (h.x * h.y * h.z) * 8.0f;
-    const float tensor_scale = (unit_mass * (1.0f/3.0f)) * density;
+    const Vec3 extent_squared{h.x*h.x, h.y*h.y, h.z*h.z};
+    const float unit_scale = (unit_mass * 1.0f) / 3.0f;
+    const Vec3 unit_inertia{
+        (extent_squared.y + extent_squared.z) * unit_scale,
+        (extent_squared.x + extent_squared.z) * unit_scale,
+        (extent_squared.x + extent_squared.y) * unit_scale};
     const Vec3 inertia{
-        tensor_scale * (h.y*h.y + h.z*h.z),
-        tensor_scale * (h.x*h.x + h.z*h.z),
-        tensor_scale * (h.x*h.x + h.y*h.y)};
+        unit_inertia.x * density,
+        unit_inertia.y * density,
+        unit_inertia.z * density};
     // The translational admission boundary is the representability of
     // inverse mass above, not of the inertia tensor. Valid boxes can have
     // finite inverse mass while their source PxReal inertia underflows,
