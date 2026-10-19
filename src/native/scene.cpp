@@ -587,32 +587,38 @@ void Scene::partition_constraints() {
     ordered_constraints_.clear();
     partition_ends_.clear();
     partition_cursors_.clear();
-    std::size_t remaining = 0;
-    for (const auto& manifold : manifolds_) {
-        if (actors_[manifold.pair.a].kind == Kind::DynamicBox &&
-            actors_[manifold.pair.b].kind == Kind::DynamicBox)
-            ++remaining;
+    // DyConstraintPartition.cpp::classifyConstraintDesc queues only the
+    // unassigned dynamic descriptors for each overflow wave; compact the
+    // same reusable descriptor buffer in place to avoid an O(waves*all
+    // manifolds) rescan for high-degree constraint graphs.
+    pending_dynamic_constraints_.clear();
+    for (std::size_t i=0;i<manifolds_.size();++i) {
+        const Pair pair=manifolds_[i].pair;
+        if (actors_[pair.a].kind == Kind::DynamicBox &&
+            actors_[pair.b].kind == Kind::DynamicBox)
+            pending_dynamic_constraints_.push_back(i);
     }
 
-    for (std::size_t wave = 0; remaining != 0; wave += partition_bits) {
-        // Same 32-partition rollover as source overflow classification,
-        // including >32 conflicting contacts on a single dynamic actor.
+    for (std::size_t wave=0;!pending_dynamic_constraints_.empty();
+         wave+=partition_bits) {
+        // Source 32-partition rollover; reset only the transient progress
+        // fields on already-prepared dynamic solver bodies.
         for (BodyId id : solver_active_ids_)
-            solver_rows_[id].solver.partition_mask = 0;
-        const std::size_t starting_count = remaining;
-        for (std::size_t i=0; i<manifolds_.size(); ++i) {
-            if (constraint_partitions_[i] != unassigned) continue;
+            solver_rows_[id].solver.partition_mask=0;
+        std::size_t overflow_count=0;
+        for (std::size_t k=0;k<pending_dynamic_constraints_.size();++k) {
+            const std::size_t i=pending_dynamic_constraints_[k];
             const Pair pair=manifolds_[i].pair;
-            if (actors_[pair.a].kind != Kind::DynamicBox ||
-                actors_[pair.b].kind != Kind::DynamicBox)
-                continue;
             auto& a=solver_rows_[pair.a].solver;
             auto& b=solver_rows_[pair.b].solver;
             const std::uint32_t available=~(a.partition_mask |
                                              b.partition_mask);
-            if (!available) continue;
+            if (!available) {
+                pending_dynamic_constraints_[overflow_count++]=i;
+                continue;
+            }
             const unsigned bit=std::countr_zero(available);
-            const std::uint32_t mask=std::uint32_t{1} << bit;
+            const std::uint32_t mask=std::uint32_t{1}<<bit;
             a.partition_mask |= mask;
             b.partition_mask |= mask;
             const std::size_t partition=wave+bit;
@@ -621,13 +627,13 @@ void Scene::partition_constraints() {
             b.max_dynamic_partition=std::max(
                 b.max_dynamic_partition,partition+1);
             constraint_partitions_[i]=partition;
-            --remaining;
         }
-        if (remaining == starting_count)
+        if (overflow_count==pending_dynamic_constraints_.size())
             throw std::logic_error(
                 "Native source constraint partition made no progress");
-        if (remaining && wave > std::numeric_limits<std::size_t>::max()
-                                -partition_bits)
+        pending_dynamic_constraints_.resize(overflow_count);
+        if (overflow_count &&
+            wave>std::numeric_limits<std::size_t>::max()-partition_bits)
             throw std::overflow_error(
                 "Native source constraint partition index overflow");
     }
