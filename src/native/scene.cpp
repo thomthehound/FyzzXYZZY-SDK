@@ -765,38 +765,9 @@ void Scene::publish_solver_bodies() {
         actor.angular_velocity = angular;
     }
 }
-void Scene::reject_unsupported_rotated_contacts() const {
-    // Rotated Gu narrowphase and per-point angular normal constraints
-    // are source-derived, but original friction patches, full PGS and
-    // island execution are not yet integrated.
-    // A rotation persists when angular velocity is subsequently set to
-    // zero, so checking spin alone would silently admit false contacts.
-    unsigned live_colliders = 0;
-    bool needs_rotated_contacts = false;
-    for (const auto& actor : actors_) {
-        if (!actor.alive) continue;
-        ++live_colliders;
-        if (actor.kind != Kind::DynamicBox) continue;
-        const Quat q = actor.orientation;
-        if (actor.angular_velocity.x != 0.0f ||
-            actor.angular_velocity.y != 0.0f ||
-            actor.angular_velocity.z != 0.0f ||
-            actor.pending_angular_velocity_delta.x != 0.0f ||
-            actor.pending_angular_velocity_delta.y != 0.0f ||
-            actor.pending_angular_velocity_delta.z != 0.0f ||
-            q.x != 0.0f || q.y != 0.0f ||
-            q.z != 0.0f || q.w != 1.0f)
-            needs_rotated_contacts = true;
-    }
-    if (needs_rotated_contacts && live_colliders > 1)
-        throw std::logic_error(
-            "Rotated multi-collider dynamics require the source angular PGS solver");
-}
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
-
-    reject_unsupported_rotated_contacts();
 
     // Source: ScBodyCore.cpp::BodyCore dynamic defaults, and
     // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
@@ -861,9 +832,9 @@ void Scene::step(float seconds) {
     // The native path now uses source per-point rigid-body normal
     // constraints; friction patch correlation, islands and complete
     // ScPipeline ordering remain N1 requirements. This is NOT completion.
-    // The scene was admitted before the step. Only the provisional
-    // dynamics solver requires this guard; collision alone supports rotated
-    // geometry. No duplicate scan is needed.
+    // Per-contact angular normal Jacobians now accept rotated bodies;
+    // friction, full island scheduling and material lifecycle are still
+    // an explicit N1 acceptance boundary.
     advance_collision_internal(false);
     prepare_solver_bodies();
     prepare_constraints(seconds);
