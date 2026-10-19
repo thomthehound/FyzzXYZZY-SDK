@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: source-derived Gu contact geometry, Dy per-point normal constraints and default-scheduled friction anchors active in the native scene. Heterogeneous material correlation, full island/PGS task execution, reports and N1 acceptance remain open.**
+**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Heterogeneous material correlation, island task execution, reports and full N1 acceptance remain open.**
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -181,9 +181,11 @@ Important verified source edges:
 
 The active PGS preparation now uses the original CPU `DyCpuGpuBiasCoefficient::rigidContact = 0.8f` for both normal penetration correction and friction relaxation. Cached friction normals live in both actors' local frames and survive correlated contact motion; source `DyContactPrepShared::pointsAreClose` uses **absolute** projected anchor separation to retire patches on either excessive compression or positive separation. These numerical and lifetime boundaries are covered by the current draft review, without declaring full source parity.
 
+The native solver also imports the **rigid-body** ownership/ordering slice of `DyConstraintPartition::partitionContactConstraints`: actor-owned 32-bit dynamic constraint masks, 32-partition overflow waves, per-body static contacts after dynamic constraints, stable counting-prefix ordering of authoritative contact managers and reusable scene-owned arrays. Both normal and friction rows execute in that order within each original PGS pass. A 35-edge dynamic contact star tests partition rollover; twelve unrelated boxes contacting the shared zero-mass static floor verify there is no false partition conflict. This path is serial; it does **not** claim the source island manager, per-island task graph, parallel batch execution, rigid-body static SIMD specialization or articulation partitioning.
+
 The existing scene now also applies a source-derived subset of `DyFrictionCorrelation`: same-normal/material grouping, correlated cached body-local patches, at most two anchors chosen from the source contact geometry, two tangent constraints per anchor, and `DySolverConstraints` patch friction solving under the original iteration policy. This path restores the 600-frame stacked-body regression with the default one velocity pass; it does not add an extra pass or weaken its tolerance.
 
-This is **not** full source solver admission: heterogeneous material combine modes and per-contact target velocities, exact `DyCorrelationBuffer` patch-list ordering and persistence in all cases, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/partition and task graph, and contact-manager friction/force writeback remain unported. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
+This is **not** full source solver admission: heterogeneous material combine modes and per-contact target velocities, exact `DyCorrelationBuffer` patch-list ordering and persistence in all cases, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and contact-manager friction/force writeback remain unported. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
