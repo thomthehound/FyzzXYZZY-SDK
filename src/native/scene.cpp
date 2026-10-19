@@ -508,10 +508,9 @@ void Scene::update_contacts() {
 // Angular terms are constrained to zero in the present nonrotating-box API;
 // this is not a general PhysX rigid-body solver, TGS or articulation port.
 //
-// Predict positions first, then generate contacts at published positions.
-// This explicit scheduling departure avoids a second broadphase rebuild
-// solely to display final contacts; full ScPipeline continuation parity
-// remains a separate N1 acceptance requirement.
+// Source position-iteration motion is snapshotted before the unbiased
+// velocity passes; DyBodyCoreIntegrator advances poses with that snapshot.
+// Full ScPipeline continuation/partition parity remains an N1 requirement.
 void Scene::prepare_solver_bodies() {
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
     // Retain capacity across frames. Prepare each contact participant once;
@@ -730,6 +729,16 @@ void Scene::solve_constraints() {
                 row.applied_force = next_impulse;
             }
         }
+        if (iter + 1 == position_iterations) {
+            // DySolverControl.cpp::saveMotionVelocities occurs immediately
+            // after the last biased/conclude position iteration, BEFORE
+            // unbiased velocity iterations alter the solver deltas.
+            for (BodyId id : solver_active_ids_) {
+                auto& row = solver_rows_[id];
+                row.motion_linear_delta = row.solver.linear_velocity_delta;
+                row.motion_angular_state = row.solver.angular_state;
+            }
+        }
     }
 }
 void Scene::publish_solver_bodies() {
@@ -814,19 +823,15 @@ void Scene::step(float seconds) {
             angular.z *= factor;
         }
         const Vec3 velocity{vx, vy, vz};
-        const Vec3 p{
-            static_cast<float>(static_cast<double>(actor.position.x) +
-                               static_cast<double>(vx) * seconds),
-            static_cast<float>(static_cast<double>(actor.position.y) +
-                               static_cast<double>(vy) * seconds),
-            static_cast<float>(static_cast<double>(actor.position.z) +
-                               static_cast<double>(vz) * seconds)};
-        if (!finite(velocity) || !finite(angular) || !finite(p))
-            throw std::overflow_error("Native CPU velocity or position overflow");
+        if (!finite(velocity) || !finite(angular))
+            throw std::overflow_error("Native CPU unconstrained velocity overflow");
         actor.velocity = velocity;
         actor.angular_velocity = angular;
         actor.pending_angular_velocity_delta = {};
-        actor.position = p;
+        // Source ScPipeline/DySolverControl: do not predict and publish
+        // the position before Gu contacts and the biased PGS passes.
+        // Its integration requires the saved position-solver motion
+        // velocity, not the final unbiased next-frame velocity.
         dirty_ = true;
     }
     // The native path now uses source per-point rigid-body normal
@@ -840,20 +845,52 @@ void Scene::step(float seconds) {
     prepare_constraints(seconds);
     solve_constraints();
     publish_solver_bodies();
-    // Source: DyBodyCoreIntegrator.h::integrateCore angular quaternion
-    // integration occurs after solver motion-velocity publication.
-    for (auto& actor : actors_) {
+    // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
+    // iteration motion velocities to move/rotate bodies. The velocity
+    // iterations above publish their different, unbiased final velocities
+    // for subsequent frames; they do not undo this frame's correction.
+    for (std::size_t id=0; id<actors_.size(); ++id) {
+        auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
-        const Quat prior = actor.orientation;
-        actor.orientation = integrate_quaternion(
-            actor.orientation, actor.angular_velocity, seconds);
-        if (!finite(actor.orientation))
+        Vec3 motion_linear = actor.velocity;
+        Vec3 motion_angular = actor.angular_velocity;
+        // Scene clock increments in advance_collision_internal; only
+        // this frame's actual contact participants own motion snapshots.
+        const bool solved_contact = id < solver_rows_.size() &&
+            solver_rows_[id].prepared_frame == frame_index_;
+        if (solved_contact) {
+            const auto& row = solver_rows_[id];
+            const Vec3& delta = row.motion_linear_delta;
+            motion_linear = {
+                row.data.linear_velocity.x + delta.x,
+                row.data.linear_velocity.y + delta.y,
+                row.data.linear_velocity.z + delta.z};
+            const auto& i = row.data.sqrt_inverse_inertia;
+            const Vec3& angular_delta = row.motion_angular_state;
+            motion_angular = {
+                row.data.angular_velocity.x + i[0].x*angular_delta.x +
+                    i[1].x*angular_delta.y + i[2].x*angular_delta.z,
+                row.data.angular_velocity.y + i[0].y*angular_delta.x +
+                    i[1].y*angular_delta.y + i[2].y*angular_delta.z,
+                row.data.angular_velocity.z + i[0].z*angular_delta.x +
+                    i[1].z*angular_delta.y + i[2].z*angular_delta.z};
+        }
+        const Vec3 p{
+            static_cast<float>(static_cast<double>(actor.position.x) +
+                               static_cast<double>(motion_linear.x)*seconds),
+            static_cast<float>(static_cast<double>(actor.position.y) +
+                               static_cast<double>(motion_linear.y)*seconds),
+            static_cast<float>(static_cast<double>(actor.position.z) +
+                               static_cast<double>(motion_linear.z)*seconds)};
+        if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
+            throw std::overflow_error("Native position-iteration motion overflow");
+        const Quat q = integrate_quaternion(
+            actor.orientation, motion_angular, seconds);
+        if (!finite(q))
             throw std::overflow_error("Native CPU orientation overflow");
-        if (actor.orientation.x != prior.x ||
-            actor.orientation.y != prior.y ||
-            actor.orientation.z != prior.z ||
-            actor.orientation.w != prior.w)
-            dirty_ = true;
+        actor.position = p;
+        actor.orientation = q;
+        dirty_ = true;
     }
 }
 
