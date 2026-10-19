@@ -410,6 +410,27 @@ int run_native_scene_smoke() {
                "Shared world solver body failed multi-static contact");
     }
 
+    // DyFrictionCorrelation retains the floor anchors while contact
+    // moves, and the two source tangent constraints must dissipate
+    // sliding motion with the reference material (0.5/0.5 friction).
+    // A normal-only solver preserves almost all horizontal velocity.
+    {
+        Scene sliding;
+        sliding.add_static_floor(0);
+        const auto box=sliding.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        sliding.set_velocity(box,{2.0f,0,0});
+        for (unsigned frame=0;frame<180;++frame)
+            sliding.step(1.0f/120.0f);
+        const auto state=sliding.body_state(box);
+        expect(std::isfinite(state.velocity.x) &&
+               std::abs(state.velocity.x)<0.9f &&
+               std::isfinite(state.position.y) &&
+               state.position.y>0.34f && state.position.y<0.68f &&
+               sliding.contacts().size()==1,
+               "Correlated PhysX friction anchors did not resist floor sliding");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
