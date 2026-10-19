@@ -419,6 +419,15 @@ int run_native_scene_smoke() {
         for (int frame = 0; frame < 360; ++frame)
             falling_scene.step(1.0f / 120.0f);
         const auto state = falling_scene.body_state(falling);
+        if (!(std::isfinite(state.position.y) &&
+              std::abs(state.position.y - 0.25f) < 0.06f &&
+              std::abs(state.velocity.y) < 0.6f))
+            std::fprintf(stderr,
+                "floor y=%g vy=%g spin=(%g,%g,%g) quat=(%g,%g,%g,%g) contacts=%zu\n",
+                state.position.y,state.velocity.y,
+                state.angular_velocity.x,state.angular_velocity.y,state.angular_velocity.z,
+                state.orientation.x,state.orientation.y,state.orientation.z,state.orientation.w,
+                falling_scene.contacts().size());
         expect(std::isfinite(state.position.y) &&
                std::abs(state.position.y - 0.25f) < 0.06f &&
                std::abs(state.velocity.y) < 0.6f,
