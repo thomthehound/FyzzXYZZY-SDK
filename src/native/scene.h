@@ -120,6 +120,25 @@ private:
         Vec3 pending_angular_velocity_delta{};
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
+    // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
+    // PxSolverDefs.h::PxSolverBody/PxSolverBodyData. These are
+    // transient source solver state owned by this scene, not a second world.
+    struct SolverBody {
+        Vec3 linear_velocity_delta{};
+        Vec3 angular_state{};
+    };
+    struct SolverBodyData {
+        Vec3 linear_velocity{};
+        Vec3 angular_velocity{};
+        float inverse_mass = 0.0f;
+        std::array<Vec3, 3> sqrt_inverse_inertia{};
+        Vec3 position{};
+        Quat orientation{};
+    };
+    struct SolverBodyRow {
+        SolverBody solver{};
+        SolverBodyData data{};
+    };
     struct Endpoint {
         std::uint32_t min_x = 0;
         BodyId id = 0;
@@ -135,10 +154,15 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
+    void prepare_solver_bodies();
     void prepare_constraints(float seconds);
     void solve_constraints();
+    void publish_solver_bodies();
 
     std::vector<Actor> actors_;
+    // Capacity persists across frames; matching actor indices avoid a shadow
+    // body-ID registry. Only solver deltas are published back to actors.
+    std::vector<SolverBodyRow> solver_rows_;
     std::vector<Endpoint> endpoints_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
