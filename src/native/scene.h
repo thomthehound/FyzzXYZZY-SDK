@@ -57,6 +57,12 @@ std::uint8_t source_box_box_contacts(
 
 class Scene final {
 public:
+    Scene() = default;
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+    Scene(Scene&&) = default;
+    Scene& operator=(Scene&&) = default;
+
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
