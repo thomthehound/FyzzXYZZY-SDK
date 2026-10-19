@@ -92,6 +92,11 @@ struct PxContactBuffer {
         return true;
     }
 };
+enum {
+    AXIS_A0, AXIS_A1, AXIS_A2,
+    AXIS_B0, AXIS_B1, AXIS_B2
+};
+
 struct VertexInfo {
     PxVec3 pos;
     bool penetrate;
@@ -384,7 +389,11 @@ static PxI32 generateContacts(//PxVec3 ctcPts[], PxReal depths[],
 //	for(i=0; i<NbContacts; i++)
 	for(PxU32 i=0; i<contactBuffer.count; i++)
 //		ctcPts[i] = transform0.transform(ctcPts[i]);	// local to world
-		contactBuffer.contacts[i].position = transform0.transform(contactBuffer.contacts[i].position);	// local to world
+		{
+        const auto& p = contactBuffer.contacts[i].position;
+        const PxVec3 world = transform0.transform({p.x,p.y,p.z});
+        contactBuffer.contacts[i].position = {world.x,world.y,world.z};
+    }	// local to world
 
 	//PX_ASSERT(NbContacts);	//if this did not make contacts then something went wrong in theory, but even the old code without distances had this flaw!
 //	return NbContacts;
