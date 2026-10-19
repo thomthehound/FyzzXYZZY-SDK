@@ -597,13 +597,98 @@ void Scene::prepare_constraints(float seconds) {
                     c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
     };
     solver_contact_points_.clear();
+    solver_friction_rows_.clear();
+    next_friction_patches_.clear();
+    // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
+    constexpr float same_normal = 0.999f;
+    constexpr float friction_offset_threshold = 0.04f;
+    constexpr float correlation_distance = 0.025f;
+    const auto local_point = [](const Actor& actor, Vec3 world) {
+        const Quat& q = actor.orientation;
+        return rotate(Quat{-q.x,-q.y,-q.z,q.w},
+            {world.x-actor.position.x,
+             world.y-actor.position.y,
+             world.z-actor.position.z});
+    };
+    const auto world_point = [](const Actor& actor, Vec3 local) {
+        Vec3 r = rotate(actor.orientation,local);
+        return Vec3{r.x+actor.position.x,
+                    r.y+actor.position.y,
+                    r.z+actor.position.z};
+    };
+    const auto squared_length = [](Vec3 v) {
+        return v.x*v.x + v.y*v.y + v.z*v.z;
+    };
     for (auto& manifold : manifolds_) {
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
         const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.b].data : world_solver_row_.data;
         manifold.solver_offset = solver_contact_points_.size();
+        manifold.friction_patch_offset = next_friction_patches_.size();
+        manifold.friction_patch_count = 0;
+        const Actor& actor0 = actors_[manifold.pair.a];
+        const Actor& actor1 = actors_[manifold.pair.b];
         for (const ContactPoint& contact : manifold.points) {
+            // DyFrictionCorrelation::createContactPatches/correlatePatches:
+            // all currently admitted contacts use the same material, so
+            // identical-normal contiguous groups correlate into one
+            // friction patch. Source cap remains 32 per contact manager.
+            std::size_t patch_id = next_friction_patches_.size();
+            for (std::size_t j=manifold.friction_patch_offset;
+                 j<next_friction_patches_.size(); ++j) {
+                if (dot(next_friction_patches_[j].normal,
+                        contact.normal) >= same_normal) {
+                    patch_id = j;
+                    break;
+                }
+            }
+            if (patch_id == next_friction_patches_.size()) {
+                if (manifold.friction_patch_count == 32)
+                    throw std::overflow_error(
+                        "Native source friction correlation exceeds 32 patches");
+                FrictionPatch patch{};
+                patch.pair = manifold.pair;
+                patch.normal = contact.normal;
+                patch.bounds_min = patch.bounds_max = contact.position;
+                patch.contact_ids.fill(0xffff);
+                // Source getFrictionPatches keeps unbroken local anchors
+                // only if their normal and separation still correlate.
+                for (const auto& old : friction_patches_) {
+                    if (!(old.pair == manifold.pair) || old.broken ||
+                        dot(old.normal,patch.normal) < same_normal)
+                        continue;
+                    bool separated = false;
+                    for (std::size_t k=0;k<old.anchor_count;++k) {
+                        const Vec3 p0=world_point(actor0,old.body0_anchors[k]);
+                        const Vec3 p1=world_point(actor1,old.body1_anchors[k]);
+                        const Vec3 between{sub(p0,p1)};
+                        if (std::abs(dot(between,patch.normal)) >=
+                            correlation_distance) {
+                            separated=true;
+                            break;
+                        }
+                    }
+                    if (!separated) {
+                        patch.body0_anchors = old.body0_anchors;
+                        patch.body1_anchors = old.body1_anchors;
+                        patch.anchor_count = old.anchor_count;
+                        break;
+                    }
+                }
+                next_friction_patches_.push_back(patch);
+                ++manifold.friction_patch_count;
+            }
+            auto& patch = next_friction_patches_[patch_id];
+            ++patch.contact_count;
+            patch.bounds_min = {
+                std::min(patch.bounds_min.x,contact.position.x),
+                std::min(patch.bounds_min.y,contact.position.y),
+                std::min(patch.bounds_min.z,contact.position.z)};
+            patch.bounds_max = {
+                std::max(patch.bounds_max.x,contact.position.x),
+                std::max(patch.bounds_max.y,contact.position.y),
+                std::max(patch.bounds_max.z,contact.position.z)};
             const Vec3 normal = contact.normal;
             const Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
             const Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
@@ -640,6 +725,7 @@ void Scene::prepare_constraints(float seconds) {
             row.normal = normal;
             row.ra_x_n_sqrt_inertia = ra;
             row.rb_x_n_sqrt_inertia = rb;
+            row.friction_patch = patch_id;
             row.velocity_multiplier = vel_multiplier;
             row.biased_error = target*vel_multiplier-scaled_bias;
             row.unbiased_error = target*vel_multiplier -
@@ -650,7 +736,119 @@ void Scene::prepare_constraints(float seconds) {
                 throw std::overflow_error("Native Dy contact preparation overflow");
             solver_contact_points_.push_back(row);
         }
+        // DyFrictionCorrelation::growPatches: retain up to two anchors
+        // spread across each friction patch's contact bounds; the anchors
+        // persist in the body-local frames, not as world-space contacts.
+        for (std::size_t patch_id=manifold.friction_patch_offset;
+             patch_id<next_friction_patches_.size(); ++patch_id) {
+            auto& patch = next_friction_patches_[patch_id];
+            const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
+            const float diagonal_sq=squared_length(extent);
+            if (patch.anchor_count == 2) {
+                const Vec3 diff=sub(patch.body0_anchors[0],
+                                    patch.body0_anchors[1]);
+                if (squared_length(diff)*4.0f < diagonal_sq)
+                    patch.anchor_count = 0;
+            }
+            std::array<Vec3,2> anchors{};
+            std::uint8_t count = patch.anchor_count;
+            if (count == 1)
+                anchors[0]=world_point(actor0,patch.body0_anchors[0]);
+            float point_dist_sq=0.0f;
+            for (std::size_t j=0;j<manifold.count;++j) {
+                const std::size_t idx=manifold.solver_offset+j;
+                if (solver_contact_points_[idx].friction_patch != patch_id)
+                    continue;
+                const auto& point=manifold.points[j];
+                if (point.separation >= friction_offset_threshold)
+                    continue;
+                const Vec3 w=point.position;
+                if (count == 0) {
+                    patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                    anchors[0]=w;
+                    ++count;
+                } else if (count == 1) {
+                    const float d=squared_length(sub(w,anchors[0]));
+                    if (d>1.0e-8f) {
+                        patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                        anchors[1]=w;
+                        point_dist_sq=d;
+                        ++count;
+                    }
+                } else {
+                    const float d0=squared_length(sub(w,anchors[0]));
+                    const float d1=squared_length(sub(w,anchors[1]));
+                    if (d0>d1 && d0>point_dist_sq) {
+                        patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                        anchors[1]=w;
+                        point_dist_sq=d0;
+                    } else if (d1>=d0 && d1>point_dist_sq) {
+                        patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                        anchors[0]=w;
+                        point_dist_sq=d1;
+                    }
+                }
+            }
+            for (std::size_t k=patch.anchor_count;k<count;++k) {
+                patch.body0_anchors[k]=local_point(actor0,anchors[k]);
+                patch.body1_anchors[k]=local_point(actor1,anchors[k]);
+            }
+            patch.anchor_count=count;
+            patch.row_offset=solver_friction_rows_.size();
+            if (count==0) continue;
+            // DyContactPrep.cpp constructs tangents from relative linear
+            // velocity, with the same 0.7071 normal-axis fallback and
+            // 1e-4 squared-tangent threshold as the source.
+            const Vec3 n=patch.normal;
+            const Vec3 rel=sub(a.linear_velocity,b.linear_velocity);
+            Vec3 t0=sub(rel,{n.x*dot(rel,n),
+                              n.y*dot(rel,n),n.z*dot(rel,n)});
+            if (squared_length(t0)<=0.0001f) {
+                t0=std::abs(n.x)<0.70710678f
+                    ? Vec3{0.0f,-n.z,n.y}
+                    : Vec3{-n.y,n.x,0.0f};
+            }
+            const float inv_l=1.0f/std::sqrt(squared_length(t0));
+            t0={t0.x*inv_l,t0.y*inv_l,t0.z*inv_l};
+            const Vec3 t1=cross(n,t0);
+            for (std::size_t k=0;k<count;++k) {
+                const Vec3 ra=rotate(actor0.orientation,patch.body0_anchors[k]);
+                const Vec3 rb=rotate(actor1.orientation,patch.body1_anchors[k]);
+                const Vec3 error=sub(
+                    {ra.x+actor0.position.x,ra.y+actor0.position.y,
+                     ra.z+actor0.position.z},
+                    {rb.x+actor1.position.x,rb.y+actor1.position.y,
+                     rb.z+actor1.position.z});
+                for (const Vec3 tangent : {t0,t1}) {
+                    const Vec3 ax0=cross(ra,tangent);
+                    const Vec3 ax1=cross(rb,tangent);
+                    const Vec3 j0=transform(a,ax0);
+                    const Vec3 j1=transform(b,ax1);
+                    const double response=static_cast<double>(a.inverse_mass)
+                        +b.inverse_mass+dot(j0,j0)+dot(j1,j1);
+                    SolverContactFriction fr{};
+                    fr.tangent=tangent;
+                    fr.ra_x_t_sqrt_inertia=j0;
+                    fr.rb_x_t_sqrt_inertia=j1;
+                    fr.velocity_multiplier=response>0.0
+                        ? bias_coefficient/response : 0.0;
+                    fr.bias=dot(tangent,error)*inv_dt;
+                    fr.target_velocity=-(dot(tangent,rel)
+                        +dot(ax0,a.angular_velocity)
+                        -dot(ax1,b.angular_velocity));
+                    if (!std::isfinite(fr.velocity_multiplier) ||
+                        !std::isfinite(fr.bias) ||
+                        !std::isfinite(fr.target_velocity))
+                        throw std::overflow_error(
+                            "Native source friction row preparation overflow");
+                    solver_friction_rows_.push_back(fr);
+                }
+            }
+        }
     }
+    // Swap only after the new rows and patch anchors are fully prepared.
+    // Old shape-local anchors remain available throughout correlation.
+    friction_patches_.swap(next_friction_patches_);
 }
 void Scene::solve_constraints() {
     // DySolverConstraintsShared.h::solveDynamicContacts /
