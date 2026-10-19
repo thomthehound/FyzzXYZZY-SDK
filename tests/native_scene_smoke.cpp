@@ -268,19 +268,12 @@ int main() {
         try {angular.set_angular_velocity(floor,{0,1,0});}
         catch(const std::logic_error&) {static_rejected=true;}
         expect(static_rejected,"Static actor accepted angular velocity");
-        bool unported_rejected=false;
-        try {angular.step(1.0f/120.0f);}
-        catch(const std::logic_error&) {unported_rejected=true;}
-        expect(unported_rejected,
-               "Rotated contacts silently ran in provisional scalar PGS");
+        // The source normal-contact rows include rotational Jacobians,
+        // so a rotated actor may advance alongside static geometry.
+        angular.step(1.0f/120.0f);
         angular.set_angular_velocity(body,{0,0,0});
-        unported_rejected=false;
-        try {angular.step(1.0f/120.0f);}
-        catch(const std::logic_error&) {unported_rejected=true;}
-        expect(unported_rejected,
-               "Stopped spin incorrectly bypassed angular solver admission");
-        // Collision-only Gu narrowphase is now rotated-capable; it does
-        // not invoke the unsupported provisional angular PGS solver.
+        angular.step(1.0f/120.0f);
+        // Collision-only Gu narrowphase remains independently usable.
         angular.advance_collision(true);
         expect(has(angular.pairs(),body,floor) &&
                angular.contacts().empty(),
