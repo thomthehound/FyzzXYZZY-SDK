@@ -504,6 +504,7 @@ void Scene::prepare_solver_bodies() {
     // This is the sole scene-owned transient solver state.
     solver_rows_.resize(actors_.size());
     solver_active_ids_.clear();
+    world_solver_row_ = {};
     for (const auto& manifold : manifolds_) {
         const BodyId ids[2]{manifold.pair.a, manifold.pair.b};
         for (BodyId id : ids) {
@@ -511,16 +512,15 @@ void Scene::prepare_solver_bodies() {
             if (row.prepared_frame == frame_index_) continue;
             row = {};
             row.prepared_frame = frame_index_;
-            solver_active_ids_.push_back(id);
             const Actor& actor = actors_[id];
+            if (actor.kind != Kind::DynamicBox) continue;
+            solver_active_ids_.push_back(id);
             row.data.position = actor.position;
             row.data.orientation = actor.orientation;
             row.data.linear_velocity = actor.velocity;
             row.data.angular_velocity = actor.angular_velocity;
             row.data.inverse_mass = actor.inverse_mass;
-            if (actor.kind != Kind::DynamicBox ||
-                !actor.angular_inertia_available)
-                continue;
+            if (!actor.angular_inertia_available) continue;
 
             // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
             // The source computes a symmetric world-space R*diag(sqrt(invI))*R^T;
@@ -603,8 +603,10 @@ void Scene::solve_constraints() {
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
         for (auto& manifold : manifolds_) {
-            auto& a = solver_rows_[manifold.pair.a];
-            auto& b = solver_rows_[manifold.pair.b];
+            auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
+                ? solver_rows_[manifold.pair.a] : world_solver_row_;
+            auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
+                ? solver_rows_[manifold.pair.b] : world_solver_row_;
             const double response =
                 static_cast<double>(a.data.inverse_mass) +
                 b.data.inverse_mass;
