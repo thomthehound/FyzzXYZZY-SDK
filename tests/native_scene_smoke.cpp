@@ -462,8 +462,9 @@ int run_native_scene_smoke() {
     }
 
     {
-        // Finite per-body inverse masses can add to an infinite float
-        // response. The scalar double solver must still resolve an overlap.
+        // Finite per-body inverse masses can sum beyond float response.
+        // The source position-iteration motion must separate the overlap;
+        // unbiased velocity iterations can return zero final velocities.
         Scene very_light;
         const auto left = very_light.add_dynamic_box(
             {1,1,1},{0,5,0},5.0e-40f);
@@ -484,9 +485,11 @@ int run_native_scene_smoke() {
         const auto rv = very_light.body_state(right);
         expect(std::isfinite(lv.velocity.x) &&
                std::isfinite(rv.velocity.x) &&
-               lv.velocity.x < -0.1f && rv.velocity.x > 0.1f &&
+               std::isfinite(lv.position.x) &&
+               std::isfinite(rv.position.x) &&
+               lv.position.x < 0.0f && rv.position.x > 1.5f &&
                very_light.contacts().size() == 1,
-               "Finite tiny-mass collision was silently discarded");
+               "Finite tiny-mass position correction was silently discarded");
     }
 
     {
