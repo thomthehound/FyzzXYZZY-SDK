@@ -576,120 +576,168 @@ void Scene::prepare_solver_bodies() {
 }
 
 void Scene::prepare_constraints(float seconds) {
-    constexpr float positional_bias = 0.2f;
-    constexpr float max_depenetration_speed = 3.0f;
-    constexpr float bounce_threshold = 2.0f;
+    // DyContactPrepShared.h::constructContactConstraint, rigid-body
+    // noncompliant branch. Every Gu contact is a distinct constraint row.
+    // Contact/friction patch correlation is not yet integrated; this
+    // stream retains the original contact ordering and no shadow solver.
+    constexpr float bias_coefficient = 0.2f;
+    constexpr float max_penetration_bias = -3.0f;
     constexpr float restitution = 0.2f;
+    constexpr float bounce_threshold = -2.0f;
+    const float inv_dt = 1.0f / seconds;
+    const auto dot = [](Vec3 u, Vec3 v) {
+        return u.x*v.x + u.y*v.y + u.z*v.z;
+    };
+    const auto sub = [](Vec3 u, Vec3 v) {
+        return Vec3{u.x-v.x,u.y-v.y,u.z-v.z};
+    };
+    const auto transform = [](const SolverBodyData& d, Vec3 v) {
+        const auto& c = d.sqrt_inverse_inertia;
+        return Vec3{c[0].x*v.x+c[1].x*v.y+c[2].x*v.z,
+                    c[0].y*v.x+c[1].y*v.y+c[2].y*v.z,
+                    c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
+    };
+    solver_contact_points_.clear();
     for (auto& manifold : manifolds_) {
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
         const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.b].data : world_solver_row_.data;
-        const Vec3 n = manifold.points[0].normal;
-        // DyContactPrep.cpp consumes pre-solver body velocities, not the
-        // mutable PxSolverBody deltas. The source default speed clamp
-        // keeps the admitted linear velocity magnitudes <= 1e16.
-        const float relative_velocity =
-            (a.linear_velocity.x - b.linear_velocity.x) * n.x +
-            (a.linear_velocity.y - b.linear_velocity.y) * n.y +
-            (a.linear_velocity.z - b.linear_velocity.z) * n.z;
-        float separation = manifold.points[0].separation;
-        for (unsigned k = 1; k < manifold.count; ++k)
-            separation = std::min(separation, manifold.points[k].separation);
-        // Positive-separation (speculative) constraints never pull bodies
-        // together; negative separation requests bounded correction.
-        manifold.velocity_target = separation >= 0.0f
-            ? -separation / seconds
-            : std::min(max_depenetration_speed,
-                       -positional_bias * separation / seconds);
-        if (separation <= 0.0f && relative_velocity < -bounce_threshold)
-            manifold.velocity_target = std::max(
-                manifold.velocity_target, -restitution * relative_velocity);
-        manifold.normal_impulse = 0.0f;
+        manifold.solver_offset = solver_contact_points_.size();
+        for (const ContactPoint& contact : manifold.points) {
+            const Vec3 normal = contact.normal;
+            const Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
+            const Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
+            const Vec3 ra = transform(a,ra_x_n);
+            const Vec3 rb = transform(b,rb_x_n);
+            const float linear_vrel = dot(normal,sub(a.linear_velocity,b.linear_velocity));
+            const float angular_vrel =
+                dot(ra_x_n,a.angular_velocity)-dot(rb_x_n,b.angular_velocity);
+            const float vrel = linear_vrel+angular_vrel;
+            const double response = static_cast<double>(a.inverse_mass) +
+                static_cast<double>(b.inverse_mass) +
+                static_cast<double>(dot(ra,ra)) + dot(rb,rb);
+            const double vel_multiplier = response > 0.0
+                ? 1.0 / response : 0.0;
+            const float penetration = contact.separation;
+            const float penetration_inv_dt = penetration*inv_dt;
+            const bool separated = penetration >= 0.0f;
+            const bool closing = -vrel > penetration_inv_dt;
+            const bool bouncing = restitution > 0.0f &&
+                bounce_threshold > vrel && closing;
+            const float target_velocity = bouncing
+                ? -vrel*restitution : 0.0f;
+            // Source noncompliant (restitution >= 0) branch. Negative
+            // penetration is bias-limited, positive speculative separation
+            // retains full separation speed; restitution clears positive
+            // velocity-phase bias before conclude.
+            const float penetration_inv_dt_scaled = separated
+                ? penetration_inv_dt
+                : penetration*(inv_dt*bias_coefficient);
+            const double scaled_bias = vel_multiplier *
+                std::max(max_penetration_bias,penetration_inv_dt_scaled);
+            const double target = target_velocity-vrel;
+            SolverContactPoint row{};
+            row.normal = normal;
+            row.ra_x_n_sqrt_inertia = ra;
+            row.rb_x_n_sqrt_inertia = rb;
+            row.velocity_multiplier = vel_multiplier;
+            row.biased_error = static_cast<float>(
+                target*vel_multiplier-scaled_bias);
+            row.unbiased_error = static_cast<float>(
+                target*vel_multiplier -
+                (bouncing ? 0.0 : std::max(scaled_bias,0.0)));
+            if (!std::isfinite(row.biased_error) ||
+                !std::isfinite(row.unbiased_error) ||
+                !std::isfinite(row.velocity_multiplier))
+                throw std::overflow_error("Native Dy contact preparation overflow");
+            solver_contact_points_.push_back(row);
+        }
     }
 }
 void Scene::solve_constraints() {
-    // Transitional single-normal solver. The source pre-solver velocity is
-    // immutable across iterations; update only solver-body deltas, then
-    // publish them once. This removes direct actor mutation from PGS, but
-    // does NOT yet implement the original per-contact Dy constraints.
+    // DySolverConstraintsShared.h::solveDynamicContacts /
+    // solveStaticContacts, with the original 4 position + 2 velocity
+    // passes and concludeContact biased->unbiased transition.
+    // Wide intermediates remain for the independently admitted extreme
+    // translational mass range (not claimed to be reference PhysX parity).
     constexpr unsigned position_iterations = 4;
     constexpr unsigned velocity_iterations = 2;
     constexpr double max_float =
         static_cast<double>(std::numeric_limits<float>::max());
+    const auto dot = [](Vec3 u, Vec3 v) {
+        return u.x*v.x + u.y*v.y + u.z*v.z;
+    };
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
-        for (auto& manifold : manifolds_) {
+        for (const auto& manifold : manifolds_) {
             auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.a] : world_solver_row_;
             auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.b] : world_solver_row_;
-            const double response =
-                static_cast<double>(a.data.inverse_mass) +
-                b.data.inverse_mass;
-            if (response <= 0.0) continue;
-            const Vec3 n = manifold.points[0].normal;
-            const Vec3 va{
-                a.data.linear_velocity.x + a.solver.linear_velocity_delta.x,
-                a.data.linear_velocity.y + a.solver.linear_velocity_delta.y,
-                a.data.linear_velocity.z + a.solver.linear_velocity_delta.z};
-            const Vec3 vb{
-                b.data.linear_velocity.x + b.solver.linear_velocity_delta.x,
-                b.data.linear_velocity.y + b.solver.linear_velocity_delta.y,
-                b.data.linear_velocity.z + b.solver.linear_velocity_delta.z};
-            const float normal_velocity =
-                (va.x - vb.x)*n.x + (va.y - vb.y)*n.y +
-                (va.z - vb.z)*n.z;
-            const double candidate = manifold.normal_impulse +
-                (static_cast<double>(manifold.velocity_target) -
-                 normal_velocity) / response;
-            const double next = std::max(0.0, candidate);
-            const double impulse = next - manifold.normal_impulse;
-            const double da = impulse * a.data.inverse_mass;
-            const double db = impulse * b.data.inverse_mass;
-            const std::array<double,6> after{
-                static_cast<double>(va.x) + n.x*da,
-                static_cast<double>(va.y) + n.y*da,
-                static_cast<double>(va.z) + n.z*da,
-                static_cast<double>(vb.x) - n.x*db,
-                static_cast<double>(vb.y) - n.y*db,
-                static_cast<double>(vb.z) - n.z*db};
-            // DySolverConstraintsShared::solveDynamicContacts updates
-            // PxSolverBody's *deltas*, never reconstructing them by
-            // subtracting rounded absolute velocities. Keep the wide
-            // overflow preflight for the previously admitted extreme-mass
-            // translation case, then commit all six delta components.
-            const std::array<double,6> next_delta{
-                static_cast<double>(a.solver.linear_velocity_delta.x) + n.x*da,
-                static_cast<double>(a.solver.linear_velocity_delta.y) + n.y*da,
-                static_cast<double>(a.solver.linear_velocity_delta.z) + n.z*da,
-                static_cast<double>(b.solver.linear_velocity_delta.x) - n.x*db,
-                static_cast<double>(b.solver.linear_velocity_delta.y) - n.y*db,
-                static_cast<double>(b.solver.linear_velocity_delta.z) - n.z*db};
-            std::array<float,6> deltas{};
-            for (unsigned k = 0; k < after.size(); ++k) {
-                if (!std::isfinite(after[k]) || std::abs(after[k]) > max_float)
-                    throw std::overflow_error(
-                        "Native CPU contact impulse exceeds float velocity range");
-                if (!std::isfinite(next_delta[k]) ||
-                    std::abs(next_delta[k]) > max_float)
-                    throw std::overflow_error(
-                        "Native solver velocity delta exceeds PhysX float range");
-                deltas[k] = static_cast<float>(next_delta[k]);
+            for (std::size_t i=0; i<manifold.count; ++i) {
+                auto& row = solver_contact_points_[manifold.solver_offset+i];
+                const Vec3 n = row.normal;
+                const Vec3 va{
+                    a.solver.linear_velocity_delta.x,
+                    a.solver.linear_velocity_delta.y,
+                    a.solver.linear_velocity_delta.z};
+                const Vec3 vb{
+                    b.solver.linear_velocity_delta.x,
+                    b.solver.linear_velocity_delta.y,
+                    b.solver.linear_velocity_delta.z};
+                // PxSolverBody holds only velocity deltas; pre-solver
+                // velocity is already included in row.biased_error.
+                const float normal_velocity = dot(n,va)-dot(n,vb) +
+                    dot(a.solver.angular_state,row.ra_x_n_sqrt_inertia) -
+                    dot(b.solver.angular_state,row.rb_x_n_sqrt_inertia);
+                const double error = iter < position_iterations
+                    ? row.biased_error : row.unbiased_error;
+                const double delta_candidate = std::max(
+                    -static_cast<double>(normal_velocity) *
+                        row.velocity_multiplier + error,
+                    -row.applied_force);
+                const double next_impulse = std::max(0.0,
+                    row.applied_force + delta_candidate);
+                const double delta = next_impulse-row.applied_force;
+                const double da = delta*a.data.inverse_mass;
+                const double db = delta*b.data.inverse_mass;
+                const std::array<double,12> results{
+                    static_cast<double>(va.x)+n.x*da,
+                    static_cast<double>(va.y)+n.y*da,
+                    static_cast<double>(va.z)+n.z*da,
+                    static_cast<double>(vb.x)-n.x*db,
+                    static_cast<double>(vb.y)-n.y*db,
+                    static_cast<double>(vb.z)-n.z*db,
+                    static_cast<double>(a.solver.angular_state.x)+row.ra_x_n_sqrt_inertia.x*delta,
+                    static_cast<double>(a.solver.angular_state.y)+row.ra_x_n_sqrt_inertia.y*delta,
+                    static_cast<double>(a.solver.angular_state.z)+row.ra_x_n_sqrt_inertia.z*delta,
+                    static_cast<double>(b.solver.angular_state.x)-row.rb_x_n_sqrt_inertia.x*delta,
+                    static_cast<double>(b.solver.angular_state.y)-row.rb_x_n_sqrt_inertia.y*delta,
+                    static_cast<double>(b.solver.angular_state.z)-row.rb_x_n_sqrt_inertia.z*delta};
+                std::array<float,12> commit{};
+                for (std::size_t k=0;k<results.size();++k) {
+                    if (!std::isfinite(results[k]) ||
+                        std::abs(results[k]) > max_float)
+                        throw std::overflow_error(
+                            "Native Dy contact velocity delta exceeds float range");
+                    commit[k] = static_cast<float>(results[k]);
+                }
+                a.solver.linear_velocity_delta = {commit[0],commit[1],commit[2]};
+                b.solver.linear_velocity_delta = {commit[3],commit[4],commit[5]};
+                a.solver.angular_state = {commit[6],commit[7],commit[8]};
+                b.solver.angular_state = {commit[9],commit[10],commit[11]};
+                row.applied_force = next_impulse;
             }
-            manifold.normal_impulse = next;
-            a.solver.linear_velocity_delta = {
-                deltas[0],deltas[1],deltas[2]};
-            b.solver.linear_velocity_delta = {
-                deltas[3],deltas[4],deltas[5]};
         }
     }
 }
 void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
     // solved motion velocity after the iteration/conclude/writeback sequence.
-    // This publication is shared by the eventual source normal/friction rows;
-    // provisional scalar contact constraints leave angularState at zero.
+    // The source's rigid-body normal-contact rows now update both linear
+    // and angular velocity state. Friction/correlation/writeback parity
+    // remains a separate N1 acceptance requirement.
     for (BodyId id : solver_active_ids_) {
         auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
@@ -718,8 +766,9 @@ void Scene::publish_solver_bodies() {
     }
 }
 void Scene::reject_unsupported_rotated_contacts() const {
-    // Rotated Gu narrowphase is now source-ported, but the provisional
-    // scalar Dy PGS cannot solve angular contact Jacobians.
+    // Rotated Gu narrowphase and per-point angular normal constraints
+    // are source-derived, but original friction patches, full PGS and
+    // island execution are not yet integrated.
     // A rotation persists when angular velocity is subsequently set to
     // zero, so checking spin alone would silently admit false contacts.
     unsigned live_colliders = 0;
@@ -809,9 +858,9 @@ void Scene::step(float seconds) {
         actor.position = p;
         dirty_ = true;
     }
-    // The legacy source-limited translational contact path remains until
-    // the integrated original Gu/Dy pipeline replaces it. This draft is
-    // NOT an accepted PhysX PGS port or an N1 completion.
+    // The native path now uses source per-point rigid-body normal
+    // constraints; friction patch correlation, islands and complete
+    // ScPipeline ordering remain N1 requirements. This is NOT completion.
     // The scene was admitted before the step. Only the provisional
     // dynamics solver requires this guard; collision alone supports rotated
     // geometry. No duplicate scan is needed.
