@@ -242,6 +242,36 @@ int main() {
                 std::abs(ni.angular_velocity.z-ri.angular_velocity.z)>0.01f)
                 throw std::runtime_error(
                     "Native source box inertia/torque impulse diverged from PhysX");
+            // Exercise the *world-space* inertia transform after the
+            // first torque has already rotated the nonuniform body.
+            // This distinguishes R*diag(invI)*R^T from incorrectly using
+            // its original body-local inverse inertia as a world tensor.
+            const fyzz::Vec3 later_impulse{-0.5f,0.8f,1.2f};
+            native_inertial.apply_body_torque_impulse(n_i,later_impulse);
+            physx_inertial.apply_body_torque_impulse(r_i,later_impulse);
+            for(unsigned frame=0;frame<60;++frame) {
+                native_inertial.step(1.0f/120.0f);
+                physx_inertial.step(1.0f/120.0f);
+            }
+            const auto after_n=native_inertial.body_state(n_i);
+            const auto after_r=physx_inertial.body_state(r_i);
+            const float after_dot=
+                after_n.orientation.x*after_r.orientation.x +
+                after_n.orientation.y*after_r.orientation.y +
+                after_n.orientation.z*after_r.orientation.z +
+                after_n.orientation.w*after_r.orientation.w;
+            if (!valid_vec(after_n.angular_velocity) ||
+                !valid_vec(after_r.angular_velocity) ||
+                !valid_quat(after_n.orientation) ||
+                !valid_quat(after_r.orientation) ||
+                !std::isfinite(after_dot) ||
+                std::abs(after_dot)<0.997f ||
+                std::abs(after_n.angular_velocity.x-after_r.angular_velocity.x)>0.015f ||
+                std::abs(after_n.angular_velocity.y-after_r.angular_velocity.y)>0.015f ||
+                std::abs(after_n.angular_velocity.z-after_r.angular_velocity.z)>0.015f)
+                throw std::runtime_error(
+                    "Rotated world inverse-inertia torque response diverged from PhysX");
+
             // The SDK floor's public orientation is identity in BOTH
             // providers, even though PxCreatePlane rotates its local +X
             // plane internally. This internal correction must still remain
