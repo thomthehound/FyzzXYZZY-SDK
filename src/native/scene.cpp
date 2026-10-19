@@ -68,7 +68,7 @@ Quat multiply(Quat a, Quat b) {
 Quat integrate_quaternion(Quat pose, Vec3 angular, float dt) {
     // Direct translation of DyBodyCoreIntegrator.h::integrateCore's
     // closed-form post-solver quaternion step for zero solver angular
-    // delta. General rotational contacts remain UNPORTED.
+    // delta. Rotational contact response remains unavailable to the provisional PGS.
     float w = angular.x*angular.x + angular.y*angular.y +
               angular.z*angular.z;
     if (w != 0.0f) {
@@ -613,8 +613,7 @@ void Scene::reject_unsupported_rotated_contacts() const {
     }
     if (needs_rotated_contacts && live_colliders > 1)
         throw std::logic_error(
-            "Rotated contact/narrowphase not source-ported: "
-            "multi-collider rotation is unsupported");
+            "Rotated multi-collider dynamics require the source angular PGS solver");
 }
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
