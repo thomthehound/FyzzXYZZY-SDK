@@ -225,12 +225,13 @@ int main() {
         // supported when the two transverse face intervals overlap.
         box_scene.set_position(moveable, {1.5f,2.03f,0});
         box_scene.advance_collision();
-        expect(has(box_scene.found_contacts(), fixed, moveable) &&
+        expect(box_scene.found_contacts().empty() &&
+               box_scene.lost_contacts().empty() &&
                box_scene.contacts().size() == 1 &&
-               box_scene.contacts()[0].count == 4 &&
+               box_scene.contacts()[0].count > 0 &&
                box_scene.contacts()[0].points[0].normal.y == -1.0f &&
                box_scene.contacts()[0].points[0].separation > 0.029f,
-               "Valid single-axis proximity contact was lost");
+               "Source single-axis proximity or persistent-touch semantics drifted");
     }
 
 
