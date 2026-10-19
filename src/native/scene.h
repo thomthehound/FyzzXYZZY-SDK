@@ -152,8 +152,11 @@ private:
         Vec3 ra_x_n_sqrt_inertia{};
         Vec3 rb_x_n_sqrt_inertia{};
         double velocity_multiplier = 0.0;
-        float biased_error = 0.0f;
-        float unbiased_error = 0.0f;
+        // Extended only for SDK-admitted inverse masses below the range
+        // of a representable PhysX float impulse. No float narrowing
+        // between constraint preparation and the actual impulse update.
+        double biased_error = 0.0;
+        double unbiased_error = 0.0;
         double applied_force = 0.0;
     };
     struct Endpoint {
