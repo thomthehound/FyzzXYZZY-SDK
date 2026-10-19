@@ -641,11 +641,9 @@ void Scene::prepare_constraints(float seconds) {
             row.ra_x_n_sqrt_inertia = ra;
             row.rb_x_n_sqrt_inertia = rb;
             row.velocity_multiplier = vel_multiplier;
-            row.biased_error = static_cast<float>(
-                target*vel_multiplier-scaled_bias);
-            row.unbiased_error = static_cast<float>(
-                target*vel_multiplier -
-                (bouncing ? 0.0 : std::max(scaled_bias,0.0)));
+            row.biased_error = target*vel_multiplier-scaled_bias;
+            row.unbiased_error = target*vel_multiplier -
+                (bouncing ? 0.0 : std::max(scaled_bias,0.0));
             if (!std::isfinite(row.biased_error) ||
                 !std::isfinite(row.unbiased_error) ||
                 !std::isfinite(row.velocity_multiplier))
@@ -656,12 +654,14 @@ void Scene::prepare_constraints(float seconds) {
 }
 void Scene::solve_constraints() {
     // DySolverConstraintsShared.h::solveDynamicContacts /
-    // solveStaticContacts, with the original 4 position + 2 velocity
-    // passes and concludeContact biased->unbiased transition.
-    // Wide intermediates remain for the independently admitted extreme
-    // translational mass range (not claimed to be reference PhysX parity).
+    // solveStaticContacts, with the PhysX default of four position
+    // iterations and one final velocity/writeback iteration. The final
+    // writeback is itself a solve pass, not a second velocity sweep.
+    // Wide prepared errors and impulses remain for the independently
+    // admitted extreme translational mass range. Ordinary source PhysX
+    // PxReal row precision is a separate strict-parity acceptance gate.
     constexpr unsigned position_iterations = 4;
-    constexpr unsigned velocity_iterations = 2;
+    constexpr unsigned velocity_iterations = 1;
     constexpr double max_float =
         static_cast<double>(std::numeric_limits<float>::max());
     const auto dot = [](Vec3 u, Vec3 v) {
