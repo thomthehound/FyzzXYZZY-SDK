@@ -637,21 +637,28 @@ void Scene::solve_constraints() {
                 static_cast<double>(vb.x) - n.x*db,
                 static_cast<double>(vb.y) - n.y*db,
                 static_cast<double>(vb.z) - n.z*db};
+            // DySolverConstraintsShared::solveDynamicContacts updates
+            // PxSolverBody's *deltas*, never reconstructing them by
+            // subtracting rounded absolute velocities. Keep the wide
+            // overflow preflight for the previously admitted extreme-mass
+            // translation case, then commit all six delta components.
+            const std::array<double,6> next_delta{
+                static_cast<double>(a.solver.linear_velocity_delta.x) + n.x*da,
+                static_cast<double>(a.solver.linear_velocity_delta.y) + n.y*da,
+                static_cast<double>(a.solver.linear_velocity_delta.z) + n.z*da,
+                static_cast<double>(b.solver.linear_velocity_delta.x) - n.x*db,
+                static_cast<double>(b.solver.linear_velocity_delta.y) - n.y*db,
+                static_cast<double>(b.solver.linear_velocity_delta.z) - n.z*db};
             std::array<float,6> deltas{};
             for (unsigned k = 0; k < after.size(); ++k) {
                 if (!std::isfinite(after[k]) || std::abs(after[k]) > max_float)
                     throw std::overflow_error(
                         "Native CPU contact impulse exceeds float velocity range");
-                const Vec3 original = k < 3 ? a.data.linear_velocity
-                                            : b.data.linear_velocity;
-                const float baseline = k%3 == 0 ? original.x :
-                                       k%3 == 1 ? original.y : original.z;
-                const double delta = static_cast<double>(
-                    static_cast<float>(after[k])) - baseline;
-                if (!std::isfinite(delta) || std::abs(delta) > max_float)
+                if (!std::isfinite(next_delta[k]) ||
+                    std::abs(next_delta[k]) > max_float)
                     throw std::overflow_error(
                         "Native solver velocity delta exceeds PhysX float range");
-                deltas[k] = static_cast<float>(delta);
+                deltas[k] = static_cast<float>(next_delta[k]);
             }
             manifold.normal_impulse = next;
             a.solver.linear_velocity_delta = {
