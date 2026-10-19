@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 void expect(bool value, const char* why) {
@@ -466,6 +467,44 @@ int main() {
                lv.velocity.x < -0.1f && rv.velocity.x > 0.1f &&
                very_light.contacts().size() == 1,
                "Finite tiny-mass collision was silently discarded");
+    }
+
+    {
+        // Inverse mass can remain representable when a source PxReal box
+        // inertia component underflows, overflows or has an
+        // unrepresentable inverse. Those are translation-only bodies,
+        // not grounds for rejecting the existing mass admission.
+        const std::array<std::pair<fyzz::Vec3, float>, 4> cases{{
+            {{1.0e-13f,1.0e-13f,1.0e-13f},1.0f},
+            {{1.0e-13f,1.0e-13f,1.0f},1.0f},
+            {{1.0f,1.0f,1.0f},5.0e-40f},
+            {{1.0e13f,1.0e13f,1.0e13f},1.0e-39f}
+        }};
+        for (const auto& [half_extents,density] : cases) {
+            Scene body;
+            const auto id = body.add_dynamic_box(
+                half_extents,{0,5,0},density);
+            bool rejected = false;
+            try { body.set_angular_velocity(id,{1,0,0}); }
+            catch(const std::logic_error&) { rejected = true; }
+            expect(rejected,
+                   "Unrepresentable box inertia incorrectly admitted spin");
+            rejected = false;
+            try { body.apply_torque_impulse(id,{1,0,0}); }
+            catch(const std::logic_error&) { rejected = true; }
+            expect(rejected,
+                   "Unrepresentable box inertia incorrectly admitted torque");
+            body.set_velocity(id,{1,0,0});
+            body.step(1.0f/120.0f);
+            const auto state=body.body_state(id);
+            expect(std::isfinite(state.position.x) &&
+                   std::isfinite(state.position.y) &&
+                   std::isfinite(state.velocity.x) &&
+                   std::isfinite(state.velocity.y) &&
+                   state.position.x>0.0f && state.velocity.x>0.0f &&
+                   state.orientation.w==1.0f,
+                   "Valid translational body rejected or corrupted by inertia");
+        }
     }
 
     {
