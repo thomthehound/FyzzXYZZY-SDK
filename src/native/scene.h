@@ -164,6 +164,9 @@ private:
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
     std::vector<SolverBodyRow> solver_rows_;
+    // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
+    // solver body shared by all static collision participants.
+    SolverBodyRow world_solver_row_{};
     // Prepared contact bodies for the current frame; avoids re-preparing
     // free-flight actors before the original island owner is integrated.
     std::vector<BodyId> solver_active_ids_;
