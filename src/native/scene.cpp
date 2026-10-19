@@ -161,17 +161,22 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
         tensor_scale * (h.y*h.y + h.z*h.z),
         tensor_scale * (h.x*h.x + h.z*h.z),
         tensor_scale * (h.x*h.x + h.y*h.y)};
-    if (!finite(inertia) || inertia.x <= 0.0f ||
-        inertia.y <= 0.0f || inertia.z <= 0.0f)
-        throw std::invalid_argument("Native box has nonrepresentable PhysX inertia");
-    const Vec3 inverse_inertia{
-        1.0f/inertia.x, 1.0f/inertia.y, 1.0f/inertia.z};
-    a.angular_inertia_available =
-        finite(inverse_inertia) &&
-        inverse_inertia.x > 0.0f && inverse_inertia.y > 0.0f &&
-        inverse_inertia.z > 0.0f;
-    if (a.angular_inertia_available)
-        a.inverse_inertia_local = inverse_inertia;
+    // The translational admission boundary is the representability of
+    // inverse mass above, not of the inertia tensor. Valid boxes can have
+    // finite inverse mass while their source PxReal inertia underflows,
+    // overflows, or yields an unrepresentable inverse inertia. Retain
+    // translation-only actors without inventing an angular tensor.
+    if (finite(inertia) && inertia.x > 0.0f &&
+        inertia.y > 0.0f && inertia.z > 0.0f) {
+        const Vec3 inverse_inertia{
+            1.0f/inertia.x, 1.0f/inertia.y, 1.0f/inertia.z};
+        a.angular_inertia_available =
+            finite(inverse_inertia) &&
+            inverse_inertia.x > 0.0f && inverse_inertia.y > 0.0f &&
+            inverse_inertia.z > 0.0f;
+        if (a.angular_inertia_available)
+            a.inverse_inertia_local = inverse_inertia;
+    }
     // Keep the pre-existing tiny-mass TRANSLATION stress case admitted.
     // It is not an angular-body admission and must not silently run
     // with zero/infinite substitute inertia in the actual source solver.
