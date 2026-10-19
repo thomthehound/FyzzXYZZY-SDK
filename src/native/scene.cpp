@@ -499,14 +499,20 @@ void Scene::update_contacts() {
 // remains a separate N1 acceptance requirement.
 void Scene::prepare_solver_bodies() {
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
-    // Reserve once across frames; align the transient row with its actor ID.
-    // This is the sole scene-owned solver-body state, not a second body owner.
+    // Retain capacity across frames. Prepare each contact participant once;
+    // free-flight actors stay on the existing source body integrator.
+    // This is the sole scene-owned transient solver state.
     solver_rows_.resize(actors_.size());
-    for (std::size_t i = 0; i < actors_.size(); ++i) {
-        auto& row = solver_rows_[i];
+    solver_active_ids_.clear();
+    for (const auto& manifold : manifolds_) {
+        const BodyId ids[2]{manifold.pair.a, manifold.pair.b};
+        for (BodyId id : ids) {
+        auto& row = solver_rows_[id];
+        if (row.prepared_frame == frame_index_) continue;
         row = {};
-        const Actor& actor = actors_[i];
-        if (!actor.alive) continue;
+        row.prepared_frame = frame_index_;
+        solver_active_ids_.push_back(id);
+        const Actor& actor = actors_[id];
         row.data.position = actor.position;
         row.data.orientation = actor.orientation;
         row.data.linear_velocity = actor.velocity;
@@ -550,6 +556,7 @@ void Scene::prepare_solver_bodies() {
                          local.z*rz.y*rz.z;
         row.data.sqrt_inverse_inertia = {
             Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
+        }
     }
 }
 
@@ -656,10 +663,10 @@ void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
     // solved motion velocity after the iteration/conclude/writeback sequence.
     // Angular solver deltas remain zero until original Dy contact rows land.
-    for (std::size_t i = 0; i < actors_.size(); ++i) {
-        auto& actor = actors_[i];
+    for (BodyId id : solver_active_ids_) {
+        auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
-        const auto& row = solver_rows_[i];
+        const auto& row = solver_rows_[id];
         const Vec3& d = row.solver.linear_velocity_delta;
         const Vec3 linear{
             row.data.linear_velocity.x+d.x,
