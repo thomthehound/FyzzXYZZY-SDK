@@ -138,6 +138,7 @@ private:
     struct SolverBodyRow {
         SolverBody solver{};
         SolverBodyData data{};
+        std::uint64_t prepared_frame = 0;
     };
     struct Endpoint {
         std::uint32_t min_x = 0;
@@ -163,6 +164,9 @@ private:
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
     std::vector<SolverBodyRow> solver_rows_;
+    // Prepared contact bodies for the current frame; avoids re-preparing
+    // free-flight actors before the original island owner is integrated.
+    std::vector<BodyId> solver_active_ids_;
     std::vector<Endpoint> endpoints_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
