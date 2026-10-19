@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -18,7 +19,7 @@ bool has(std::span<const fyzz::native::Pair> p, fyzz::BodyId a, fyzz::BodyId b) 
     return std::find(p.begin(), p.end(), match) != p.end();
 }
 }
-int main() {
+int run_native_scene_smoke() {
     using fyzz::native::Scene;
     Scene scene, independent;
     auto wall = scene.add_static_box({1,1,1}, {0,0,0});
@@ -681,4 +682,13 @@ int main() {
     catch (const std::out_of_range&) { retired = true; }
     expect(retired, "World did not retire the native actor");
     return 0;
+}
+
+int main() {
+    try {
+        return run_native_scene_smoke();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "native scene smoke: %s\n", e.what());
+        return 1;
+    }
 }
