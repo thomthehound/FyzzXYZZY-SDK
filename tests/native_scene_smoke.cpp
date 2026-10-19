@@ -349,6 +349,35 @@ int main() {
         expect(displaced,"Rotated plane-box contacts remained axis-aligned");
     }
 
+    // The scene-owned source solver-body pool prepares only true contact
+    // participants. An unrelated free-flight body must keep its original
+    // unconstrained motion through repeated solver rounds and retirement.
+    {
+        Scene sparse;
+        const auto floor = sparse.add_static_floor(0.0f);
+        const auto contact = sparse.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto free = sparse.add_dynamic_box(
+            {0.25f,0.25f,0.25f},{8,12,0},1.0f);
+        sparse.set_velocity(free,{3.0f,0.0f,0.0f});
+        for (unsigned i=0;i<100;++i)
+            sparse.step(1.0f/120.0f);
+        const auto body = sparse.body_state(free);
+        expect(std::abs(body.velocity.x-3.0f)<0.0001f &&
+               std::abs(body.position.x-10.5f)<0.001f,
+               "Contact solver body state modified unrelated free flight");
+        for (const auto& manifold : sparse.contacts())
+            expect(manifold.pair.a!=free && manifold.pair.b!=free,
+                   "Distant free-flight body admitted to source contact solve");
+        sparse.remove(contact);
+        sparse.step(1.0f/120.0f);
+        expect(std::abs(sparse.body_state(free).velocity.x-3.0f)<0.0001f &&
+               sparse.contacts().empty() &&
+               sparse.frame_index()==101,
+               "Retiring a contact participant leaked stale solver-body state");
+        (void)floor;
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
