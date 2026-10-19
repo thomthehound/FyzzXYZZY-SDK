@@ -497,6 +497,62 @@ void Scene::update_contacts() {
 // This explicit scheduling departure avoids a second broadphase rebuild
 // solely to display final contacts; full ScPipeline continuation parity
 // remains a separate N1 acceptance requirement.
+void Scene::prepare_solver_bodies() {
+    // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
+    // Reserve once across frames; align the transient row with its actor ID.
+    // This is the sole scene-owned solver-body state, not a second body owner.
+    solver_rows_.resize(actors_.size());
+    for (std::size_t i = 0; i < actors_.size(); ++i) {
+        auto& row = solver_rows_[i];
+        row = {};
+        const Actor& actor = actors_[i];
+        if (!actor.alive) continue;
+        row.data.position = actor.position;
+        row.data.orientation = actor.orientation;
+        row.data.linear_velocity = actor.velocity;
+        row.data.angular_velocity = actor.angular_velocity;
+        row.data.inverse_mass = actor.inverse_mass;
+        if (actor.kind != Kind::DynamicBox ||
+            !actor.angular_inertia_available)
+            continue;
+
+        // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
+        // The source computes a symmetric world-space R*diag(sqrt(invI))*R^T;
+        // retain its six unique terms rather than reconstructing a tensor
+        // independently for every contact row.
+        const Vec3 local{
+            std::sqrt(actor.inverse_inertia_local.x),
+            std::sqrt(actor.inverse_inertia_local.y),
+            std::sqrt(actor.inverse_inertia_local.z)};
+        const Quat q = actor.orientation;
+        if (q.x == 0.0f && q.y == 0.0f &&
+            q.z == 0.0f && q.w == 1.0f) {
+            row.data.sqrt_inverse_inertia = {
+                Vec3{local.x, 0.0f, 0.0f},
+                Vec3{0.0f, local.y, 0.0f},
+                Vec3{0.0f, 0.0f, local.z}};
+            continue;
+        }
+        const Vec3 rx = rotate(q, {1.0f, 0.0f, 0.0f});
+        const Vec3 ry = rotate(q, {0.0f, 1.0f, 0.0f});
+        const Vec3 rz = rotate(q, {0.0f, 0.0f, 1.0f});
+        const float xx = local.x*rx.x*rx.x + local.y*ry.x*ry.x +
+                         local.z*rz.x*rz.x;
+        const float yy = local.x*rx.y*rx.y + local.y*ry.y*ry.y +
+                         local.z*rz.y*rz.y;
+        const float zz = local.x*rx.z*rx.z + local.y*ry.z*ry.z +
+                         local.z*rz.z*rz.z;
+        const float xy = local.x*rx.x*rx.y + local.y*ry.x*ry.y +
+                         local.z*rz.x*rz.y;
+        const float xz = local.x*rx.x*rx.z + local.y*ry.x*ry.z +
+                         local.z*rz.x*rz.z;
+        const float yz = local.x*rx.y*rx.z + local.y*ry.y*ry.z +
+                         local.z*rz.y*rz.z;
+        row.data.sqrt_inverse_inertia = {
+            Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
+    }
+}
+
 void Scene::prepare_constraints(float seconds) {
     constexpr float positional_bias = 0.2f;
     constexpr float max_depenetration_speed = 3.0f;
@@ -529,64 +585,89 @@ void Scene::prepare_constraints(float seconds) {
     }
 }
 void Scene::solve_constraints() {
-    // DySolverConstraints::solveContact restricted to zero angular
-    // response. All vertices in a face patch share a translational normal
-    // Jacobian: do not apply the same rigid impulse four/eight times.
+    // Transitional single-normal solver. The source pre-solver velocity is
+    // immutable across iterations; update only solver-body deltas, then
+    // publish them once. This removes direct actor mutation from PGS, but
+    // does NOT yet implement the original per-contact Dy constraints.
     constexpr unsigned position_iterations = 4;
     constexpr unsigned velocity_iterations = 2;
+    constexpr double max_float =
+        static_cast<double>(std::numeric_limits<float>::max());
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
         for (auto& manifold : manifolds_) {
-            Actor& a = actors_[manifold.pair.a];
-            Actor& b = actors_[manifold.pair.b];
-            // Two individually finite inverse masses can overflow when
-            // added in float (tiny but otherwise admitted dynamic boxes).
-            // Accumulate the scalar response/impulse in double; retain
-            // float storage and SIMD-friendly vector state for bodies.
+            auto& a = solver_rows_[manifold.pair.a];
+            auto& b = solver_rows_[manifold.pair.b];
             const double response =
-                static_cast<double>(a.inverse_mass) + b.inverse_mass;
+                static_cast<double>(a.data.inverse_mass) +
+                b.data.inverse_mass;
             if (response <= 0.0) continue;
             const Vec3 n = manifold.points[0].normal;
+            const Vec3 va{
+                a.data.linear_velocity.x + a.solver.linear_velocity_delta.x,
+                a.data.linear_velocity.y + a.solver.linear_velocity_delta.y,
+                a.data.linear_velocity.z + a.solver.linear_velocity_delta.z};
+            const Vec3 vb{
+                b.data.linear_velocity.x + b.solver.linear_velocity_delta.x,
+                b.data.linear_velocity.y + b.solver.linear_velocity_delta.y,
+                b.data.linear_velocity.z + b.solver.linear_velocity_delta.z};
             const float normal_velocity =
-                (a.velocity.x - b.velocity.x) * n.x +
-                (a.velocity.y - b.velocity.y) * n.y +
-                (a.velocity.z - b.velocity.z) * n.z;
+                (va.x - vb.x)*n.x + (va.y - vb.y)*n.y +
+                (va.z - vb.z)*n.z;
             const double candidate = manifold.normal_impulse +
                 (static_cast<double>(manifold.velocity_target) -
                  normal_velocity) / response;
             const double next = std::max(0.0, candidate);
             const double impulse = next - manifold.normal_impulse;
-            const double da = impulse * a.inverse_mass;
-            const double db = impulse * b.inverse_mass;
-            // An admissible pair can have a finite wide impulse but an
-            // unrepresentable float velocity update. Validate all six
-            // prospective components BEFORE committing either actor,
-            // instead of publishing infinities or NaNs. Keep this in the
-            // existing solver, with no extra buffer or per-pair allocation.
-            const std::array<double, 6> after{
-                static_cast<double>(a.velocity.x) + n.x * da,
-                static_cast<double>(a.velocity.y) + n.y * da,
-                static_cast<double>(a.velocity.z) + n.z * da,
-                static_cast<double>(b.velocity.x) - n.x * db,
-                static_cast<double>(b.velocity.y) - n.y * db,
-                static_cast<double>(b.velocity.z) - n.z * db};
-            constexpr double max_float =
-                static_cast<double>(std::numeric_limits<float>::max());
-            for (double v : after) {
-                if (!std::isfinite(v) || std::abs(v) > max_float)
+            const double da = impulse * a.data.inverse_mass;
+            const double db = impulse * b.data.inverse_mass;
+            const std::array<double,6> after{
+                static_cast<double>(va.x) + n.x*da,
+                static_cast<double>(va.y) + n.y*da,
+                static_cast<double>(va.z) + n.z*da,
+                static_cast<double>(vb.x) - n.x*db,
+                static_cast<double>(vb.y) - n.y*db,
+                static_cast<double>(vb.z) - n.z*db};
+            std::array<float,6> deltas{};
+            for (unsigned k = 0; k < after.size(); ++k) {
+                if (!std::isfinite(after[k]) || std::abs(after[k]) > max_float)
                     throw std::overflow_error(
                         "Native CPU contact impulse exceeds float velocity range");
+                const Vec3 original = k < 3 ? a.data.linear_velocity
+                                            : b.data.linear_velocity;
+                const float baseline = k%3 == 0 ? original.x :
+                                       k%3 == 1 ? original.y : original.z;
+                const double delta = static_cast<double>(
+                    static_cast<float>(after[k])) - baseline;
+                if (!std::isfinite(delta) || std::abs(delta) > max_float)
+                    throw std::overflow_error(
+                        "Native solver velocity delta exceeds PhysX float range");
+                deltas[k] = static_cast<float>(delta);
             }
-            // Validate the complete contact result before committing
-            // solver impulse state or either actor velocity.
             manifold.normal_impulse = next;
-            a.velocity = {static_cast<float>(after[0]),
-                          static_cast<float>(after[1]),
-                          static_cast<float>(after[2])};
-            b.velocity = {static_cast<float>(after[3]),
-                          static_cast<float>(after[4]),
-                          static_cast<float>(after[5])};
+            a.solver.linear_velocity_delta = {
+                deltas[0],deltas[1],deltas[2]};
+            b.solver.linear_velocity_delta = {
+                deltas[3],deltas[4],deltas[5]};
         }
+    }
+}
+void Scene::publish_solver_bodies() {
+    // The source retains pre-solver velocity independently and publishes
+    // solved motion velocity after the iteration/conclude/writeback sequence.
+    // Angular solver deltas remain zero until original Dy contact rows land.
+    for (std::size_t i = 0; i < actors_.size(); ++i) {
+        auto& actor = actors_[i];
+        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        const auto& row = solver_rows_[i];
+        const Vec3& d = row.solver.linear_velocity_delta;
+        const Vec3 linear{
+            row.data.linear_velocity.x+d.x,
+            row.data.linear_velocity.y+d.y,
+            row.data.linear_velocity.z+d.z};
+        if (!finite(linear))
+            throw std::overflow_error("Native solver publication is not finite");
+        actor.velocity = linear;
     }
 }
 void Scene::reject_unsupported_rotated_contacts() const {
@@ -688,8 +769,10 @@ void Scene::step(float seconds) {
     // dynamics solver requires this guard; collision alone supports rotated
     // geometry. No duplicate scan is needed.
     advance_collision_internal(false);
+    prepare_solver_bodies();
     prepare_constraints(seconds);
     solve_constraints();
+    publish_solver_bodies();
     // Source: DyBodyCoreIntegrator.h::integrateCore angular quaternion
     // integration occurs after solver motion-velocity publication.
     for (auto& actor : actors_) {
