@@ -178,11 +178,13 @@ Important verified source edges:
     predicted pose as final source-equivalent post-solver state.
 
 **Explicit existing departure:** `src/native/scene.cpp::step` currently
-predicts poses, rebuilds an X-only SAP, publishes face-only contacts, and
-runs a single normal constraint for an entire manifold after position
-prediction. This does not implement the above graph or source rigid-body
-solver. It remains an admitted **limited transitional execution mode**,
-not a certified PhysX CPU replacement.
+predicts poses, rebuilds an X-only SAP, and solves a single translational
+normal constraint per manifold after position prediction. Collision-only
+queries now use source-derived rotated `GuContactPlaneBox` and original
+`GuContactBoxBox` contact generation, backed by scene-owned contact streams;
+these do not replace `DyContactPrep` per-point angular Jacobians, friction
+correlation, PGS execution or the source task graph. This remains a limited
+transitional dynamics execution mode, not an accepted PhysX CPU replacement.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
