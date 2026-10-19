@@ -354,11 +354,22 @@ void Scene::update_contacts() {
     // Once N1 imports per-shape state, this is computed per candidate.
     constexpr float contact_distance = 0.04f;
     next_manifolds_.clear();
+    next_contact_points_.clear();
+    std::size_t old_cursor = 0;
     for (const Pair pair : previous_pairs_) {
+        // The sorted source contact-manager stream retains its collision
+        // axis across successive physical-touch frames.
+        while (old_cursor < manifolds_.size() &&
+               manifolds_[old_cursor].pair < pair)
+            ++old_cursor;
         const Actor& a = actors_[pair.a];
         const Actor& b = actors_[pair.b];
         ContactManifold manifold{};
         manifold.pair = pair;
+        manifold.contact_offset = next_contact_points_.size();
+        if (old_cursor < manifolds_.size() &&
+            manifolds_[old_cursor].pair == pair)
+            manifold.collision_axis = manifolds_[old_cursor].collision_axis;
 
         if (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane) {
             // Direct source order/geometry from
@@ -418,76 +429,22 @@ void Scene::update_contacts() {
                     box.position.x + sx*x.x + sy*y.x + sz*z.x,
                     box.position.y + sx*x.y + sy*y.y + sz*z.y,
                     box.position.z + sx*x.z + sy*y.z + sz*z.z};
-                manifold.points[manifold.count++] = {
-                    point, normal, depths[corner] + contact_distance};
+                next_contact_points_.push_back({
+                    point, normal, depths[corner] + contact_distance});
+                ++manifold.count;
             }
         } else {
-            // GuContactBoxBox.cpp Class I/II SAT restricted to the shapes
-            // this native scene actually represents (unrotated boxes).
-            // With identity orientations the three unique face axes are
-            // sufficient; cross-product axes vanish. Clip the incident face
-            // rectangle to the reference box's corresponding face extents.
-            const std::array<float, 3> center_a{
-                a.position.x, a.position.y, a.position.z};
-            const std::array<float, 3> center_b{
-                b.position.x, b.position.y, b.position.z};
-            const std::array<float, 3> half_a{
-                a.half_extents.x, a.half_extents.y, a.half_extents.z};
-            const std::array<float, 3> half_b{
-                b.half_extents.x, b.half_extents.y, b.half_extents.z};
-            std::array<float, 3> signed_gaps{};
-            bool separated = false;
-            unsigned axis = 0;
-            for (unsigned k = 0; k < 3; ++k) {
-                signed_gaps[k] = std::abs(center_b[k] - center_a[k]) -
-                                 (half_a[k] + half_b[k]);
-                if (signed_gaps[k] > contact_distance) {
-                    separated = true;
-                    break;
-                }
-                if (k == 0u || signed_gaps[k] > signed_gaps[axis])
-                    axis = k;
-            }
-            if (separated)
-                continue;
-            const float sign = center_b[axis] >= center_a[axis]
-                ? -1.0f : 1.0f;
-            std::array<float, 3> face = center_b;
-            face[axis] += sign * half_b[axis];
-            const unsigned u = (axis + 1) % 3;
-            const unsigned v = (axis + 2) % 3;
-            const float low_u = std::max(
-                center_a[u] - half_a[u], center_b[u] - half_b[u]);
-            const float high_u = std::min(
-                center_a[u] + half_a[u], center_b[u] + half_b[u]);
-            const float low_v = std::max(
-                center_a[v] - half_a[v], center_b[v] - half_b[v]);
-            const float high_v = std::min(
-                center_a[v] + half_a[v], center_b[v] + half_b[v]);
-            // A face manifold requires overlapping transverse intervals.
-            // A diagonal edge/corner gap is NOT a face contact even when
-            // the gaps are individually inside the contact distance.
-            // Reserve these cases for source-derived edge/corner generation;
-            // do not manufacture an intersection at a gap midpoint.
-            if (low_u > high_u || low_v > high_v)
-                continue;
-            const float span_u[2] = {low_u, high_u};
-            const float span_v[2] = {low_v, high_v};
-            const unsigned count_u = low_u == high_u ? 1u : 2u;
-            const unsigned count_v = low_v == high_v ? 1u : 2u;
-            std::array<float, 3> normal{0.0f, 0.0f, 0.0f};
-            normal[axis] = sign; // from shape b to a
-            for (unsigned iv = 0; iv < count_v; ++iv) {
-                for (unsigned iu = 0; iu < count_u; ++iu) {
-                    auto point = face;
-                    point[u] = span_u[iu];
-                    point[v] = span_v[iv];
-                    manifold.points[manifold.count++] = {
-                        Vec3{point[0], point[1], point[2]},
-                        Vec3{normal[0], normal[1], normal[2]},
-                        signed_gaps[axis]};
-                }
-            }
+            // Original GuContactBoxBox SAT, face/edge candidate generation,
+            // six-axis separation cache, and source contact ordering.
+            // Its contact buffer owns up to the original 255 contacts.
+            next_contact_points_.resize(manifold.contact_offset + 255);
+            manifold.count = source_box_box_contacts(
+                a.half_extents, a.position, a.orientation,
+                b.half_extents, b.position, b.orientation,
+                manifold.collision_axis,
+                std::span<ContactPoint>(
+                    next_contact_points_.data() + manifold.contact_offset, 255));
+            next_contact_points_.resize(manifold.contact_offset + manifold.count);
         }
         if (manifold.count > 0)
             next_manifolds_.push_back(manifold);
@@ -519,7 +476,14 @@ void Scene::update_contacts() {
         found_contacts_.push_back(next->pair);
     for (; old != manifolds_.end(); ++old)
         lost_contacts_.push_back(old->pair);
+    // Assign all pointers only after the arena has stopped growing.
+    // Both old and new contact arenas swap together with their manifolds.
+    for (auto& manifold : next_manifolds_)
+        manifold.points = std::span<const ContactPoint>(
+            next_contact_points_.data() + manifold.contact_offset,
+            manifold.count);
     manifolds_.swap(next_manifolds_);
+    contact_points_.swap(next_contact_points_);
 }
 // Source correspondence:
 //   DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
