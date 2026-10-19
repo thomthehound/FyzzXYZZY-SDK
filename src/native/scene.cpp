@@ -375,21 +375,28 @@ void Scene::update_contacts() {
             const Vec3 normal = a.kind == Kind::StaticPlane
                 ? Vec3{0.0f, -1.0f, 0.0f}
                 : Vec3{0.0f, 1.0f, 0.0f};
-            const Vec3 basis_x = rotate(box.orientation, {1.0f,0.0f,0.0f});
-            const Vec3 basis_y = rotate(box.orientation, {0.0f,1.0f,0.0f});
-            const Vec3 basis_z = rotate(box.orientation, {0.0f,0.0f,1.0f});
-            const Vec3 x{
-                basis_x.x * box.half_extents.x,
-                basis_x.y * box.half_extents.x,
-                basis_x.z * box.half_extents.x};
-            const Vec3 y{
-                basis_y.x * box.half_extents.y,
-                basis_y.y * box.half_extents.y,
-                basis_y.z * box.half_extents.y};
-            const Vec3 z{
-                basis_z.x * box.half_extents.z,
-                basis_z.y * box.half_extents.z,
-                basis_z.z * box.half_extents.z};
+            // Identity boxes dominate the admitted floor-contact path.
+            // Preserve the source-derived rotated basis only when needed;
+            // this avoids three quaternion rotations per plane/box pair.
+            Vec3 x{box.half_extents.x, 0.0f, 0.0f};
+            Vec3 y{0.0f, box.half_extents.y, 0.0f};
+            Vec3 z{0.0f, 0.0f, box.half_extents.z};
+            const Quat q = box.orientation;
+            if (q.x != 0.0f || q.y != 0.0f ||
+                q.z != 0.0f || q.w != 1.0f) {
+                const Vec3 basis_x = rotate(q, {1.0f,0.0f,0.0f});
+                const Vec3 basis_y = rotate(q, {0.0f,1.0f,0.0f});
+                const Vec3 basis_z = rotate(q, {0.0f,0.0f,1.0f});
+                x = {basis_x.x * box.half_extents.x,
+                     basis_x.y * box.half_extents.x,
+                     basis_x.z * box.half_extents.x};
+                y = {basis_y.x * box.half_extents.y,
+                     basis_y.y * box.half_extents.y,
+                     basis_y.z * box.half_extents.y};
+                z = {basis_z.x * box.half_extents.z,
+                     basis_z.y * box.half_extents.z,
+                     basis_z.z * box.half_extents.z};
+            }
             const float limit = contact_distance -
                 (box.position.y - plane.position.y);
             const float depths[8]{
