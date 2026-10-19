@@ -431,6 +431,38 @@ int run_native_scene_smoke() {
                "Correlated PhysX friction anchors did not resist floor sliding");
     }
 
+    // DyCpuGpuBiasCoefficient PGS rigidContact=0.8 is shared by
+    // penetration bias and friction-row relaxation. A shallow symmetric
+    // overlap must receive source-scale positional correction, rather
+    // than the earlier unrelated 0.2 normal-bias approximation.
+    {
+        Scene correction;
+        correction.add_static_floor(0.0f);
+        const auto body=correction.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.48f,0},1.0f);
+        correction.step(1.0f/120.0f);
+        const auto state=correction.body_state(body);
+        expect(std::isfinite(state.position.y) &&
+               state.position.y>0.488f &&
+               state.position.y<0.55f,
+               "Source 0.8 PGS rigid-contact penetration bias was not applied");
+    }
+    // When the Coulomb limit is not reached, source friction relaxation
+    // removes tangential slip more strongly than the old 0.2 multiplier.
+    // Use a low sliding speed so the limit does not dominate this check.
+    {
+        Scene relaxation;
+        relaxation.add_static_floor(0.0f);
+        const auto body=relaxation.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        relaxation.set_velocity(body,{0.02f,0,0});
+        relaxation.step(1.0f/120.0f);
+        const auto state=relaxation.body_state(body);
+        expect(std::isfinite(state.velocity.x) &&
+               std::abs(state.velocity.x)<0.012f,
+               "Source friction relaxation left excessive low-speed slip");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
