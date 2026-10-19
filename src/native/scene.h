@@ -148,6 +148,8 @@ private:
     // Spans are assigned after fill, when growth can no longer invalidate them.
     std::vector<ContactPoint> contact_points_;
     std::vector<ContactPoint> next_contact_points_;
+    // PxContactBuffer::MAX_CONTACTS, reused for all box-box candidates.
+    std::array<ContactPoint, 255> box_contact_scratch_{};
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
     std::uint64_t frame_index_ = 0;
