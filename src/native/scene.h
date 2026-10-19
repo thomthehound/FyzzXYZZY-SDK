@@ -5,6 +5,7 @@
 #include "fyzzxyzzy/world.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -33,13 +34,26 @@ struct ContactPoint {
 };
 struct ContactManifold {
     Pair pair{};
-    std::array<ContactPoint, 8> points{};
+    // Source contact streams use a scene-owned contiguous arena, not an
+    // eight-vertex limit or an allocating vector for each manager.
+    std::span<const ContactPoint> points{};
+    std::size_t contact_offset = 0;
     std::uint8_t count = 0;
+    // GuContactBoxBox collision-axis cache (mPairData), retained by pair.
+    std::uint8_t collision_axis = 0;
     // Per-frame scalar PGS contact constraint: one physical patch, not
     // duplicate per-vertex full-body impulses.
     float velocity_target = 0.0f;
     double normal_impulse = 0.0;  // wide scalar response for extreme mass ratios
 };
+
+// Source translation: GuContactBoxBox's SAT and contact generation on
+// caller-owned contact storage, preserving per-pair axis coherence.
+std::uint8_t source_box_box_contacts(
+    Vec3 half0, Vec3 position0, Quat rotation0,
+    Vec3 half1, Vec3 position1, Quat rotation1,
+    std::uint8_t& previous_axis,
+    std::span<ContactPoint> output);
 
 class Scene final {
 public:
@@ -130,6 +144,10 @@ private:
     // Reuse both vectors' allocations across frames, swap only at publish.
     std::vector<ContactManifold> manifolds_;
     std::vector<ContactManifold> next_manifolds_;
+    // Double-buffer the source contact-point stream with manifold ownership.
+    // Spans are assigned after fill, when growth can no longer invalidate them.
+    std::vector<ContactPoint> contact_points_;
+    std::vector<ContactPoint> next_contact_points_;
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
     std::uint64_t frame_index_ = 0;
