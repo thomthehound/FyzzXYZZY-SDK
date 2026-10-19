@@ -239,8 +239,8 @@ int main() {
     {
         // Direct production-path translation of the original PhysX
         // DyBodyCoreIntegrator closed-form quaternion step, limited to
-        // an isolated free body until angular contact constraints and
-        // rotated Gu narrowphase are actually ported.
+        // an isolated free body until source angular contact constraints
+        // and the original PGS execution are integrated.
         Scene angular;
         const auto body = angular.add_dynamic_box(
             {0.25f,0.5f,0.75f},{0,10,0},1);
@@ -271,13 +271,13 @@ int main() {
         try {angular.step(1.0f/120.0f);}
         catch(const std::logic_error&) {unported_rejected=true;}
         expect(unported_rejected,
-               "Rotated contacts silently ran in provisional AABB/PGS");
+               "Rotated contacts silently ran in provisional scalar PGS");
         angular.set_angular_velocity(body,{0,0,0});
         unported_rejected=false;
         try {angular.step(1.0f/120.0f);}
         catch(const std::logic_error&) {unported_rejected=true;}
         expect(unported_rejected,
-               "Stopped spin incorrectly reset rotated-box collision admission");
+               "Stopped spin incorrectly bypassed angular solver admission");
         // Collision-only Gu narrowphase is now rotated-capable; it does
         // not invoke the unsupported provisional angular PGS solver.
         angular.advance_collision(true);
