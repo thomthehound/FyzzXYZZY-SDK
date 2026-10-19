@@ -687,7 +687,7 @@ void Scene::prepare_constraints(float seconds) {
                         local_normal(actor0,old_normal_1_world);
                     const Vec3 old_normal_0_world =
                         rotate(actor0.orientation,old.body0_normal);
-                    if (old.broken ||
+                    if (old.broken || !old.anchor_count ||
                         dot(old.body0_normal,old_normal_1_in_0) <=
                             same_normal ||
                         dot(old_normal_0_world,patch.normal) <
@@ -709,6 +709,12 @@ void Scene::prepare_constraints(float seconds) {
                         }
                     }
                     if (!separated) {
+                        // Preserve the original local normal with its
+                        // anchors. Replacing it with this frame's contact
+                        // normal would forgive incremental drift and
+                        // eventually extend a cache past source admission.
+                        patch.body0_normal = old.body0_normal;
+                        patch.body1_normal = old.body1_normal;
                         patch.body0_anchors = old.body0_anchors;
                         patch.body1_anchors = old.body1_anchors;
                         patch.anchor_count = old.anchor_count;
