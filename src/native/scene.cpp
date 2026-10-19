@@ -36,6 +36,26 @@ bool finite(Quat q) {
     return std::isfinite(q.x) && std::isfinite(q.y) &&
            std::isfinite(q.z) && std::isfinite(q.w);
 }
+// Equivalent to the original PxQuat::rotate and rotateInv using an
+// orthonormal body pose; inertia is transformed into world space by
+// R * diag(inverseInertia) * R^T, as in Cm::transformInertiaTensor.
+Vec3 cross(Vec3 a, Vec3 b) {
+    return {a.y*b.z - a.z*b.y,
+            a.z*b.x - a.x*b.z,
+            a.x*b.y - a.y*b.x};
+}
+Vec3 rotate(Quat q, Vec3 v) {
+    const Vec3 u{q.x,q.y,q.z};
+    const Vec3 c = cross(u,v);
+    const Vec3 t{c.x*2.0f,c.y*2.0f,c.z*2.0f};
+    const Vec3 d = cross(u,t);
+    return {v.x + q.w*t.x + d.x,
+            v.y + q.w*t.y + d.y,
+            v.z + q.w*t.z + d.z};
+}
+Vec3 rotate_inverse(Quat q, Vec3 v) {
+    return rotate({-q.x,-q.y,-q.z,q.w},v);
+}
 Quat multiply(Quat a, Quat b) {
     // Source PxQuat::operator*: (x,y,z,w) Hamilton product.
     return {
@@ -129,6 +149,28 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
         static_cast<float>(inverse) == 0.0f)
         throw std::invalid_argument("Native dynamic-box mass outside supported range");
     a.inverse_mass = static_cast<float>(inverse);
+    // Original PhysX PxMassProperties(PxBoxGeometry) computes a
+    // density-one mass of 8*hx*hy*hz and a principal-axis inertia
+    // Ixx = mass*(hy^2+hz^2)/3 (and cyclic permutations). The rigid
+    // body extension then scales both mass and inertia by density.
+    // Keep the source's float products, rather than replacing
+    // inertial properties with a made-up size-independent response.
+    const float unit_mass = (h.x * h.y * h.z) * 8.0f;
+    const float tensor_scale = (unit_mass * (1.0f/3.0f)) * density;
+    const Vec3 inertia{
+        tensor_scale * (h.y*h.y + h.z*h.z),
+        tensor_scale * (h.x*h.x + h.z*h.z),
+        tensor_scale * (h.x*h.x + h.y*h.y)};
+    if (!finite(inertia) || inertia.x <= 0.0f ||
+        inertia.y <= 0.0f || inertia.z <= 0.0f)
+        throw std::invalid_argument("Native box has nonrepresentable PhysX inertia");
+    const Vec3 inverse_inertia{
+        1.0f/inertia.x, 1.0f/inertia.y, 1.0f/inertia.z};
+    if (!finite(inverse_inertia) ||
+        inverse_inertia.x <= 0.0f || inverse_inertia.y <= 0.0f ||
+        inverse_inertia.z <= 0.0f)
+        throw std::invalid_argument("Native box inverse inertia outside float range");
+    a.inverse_inertia_local = inverse_inertia;
     return add(a);
 }
 Scene::Actor& Scene::require(BodyId id) {
@@ -167,6 +209,30 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors have no angular velocity");
     actor.angular_velocity = velocity;
+}
+void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
+    if (!finite(impulse))
+        throw std::invalid_argument("Native torque impulse must be finite");
+    auto& actor = require(id);
+    if (actor.kind != Kind::DynamicBox)
+        throw std::logic_error("Static actors cannot receive torque impulses");
+
+    // NpRigidBodyTemplate::setSpatialForce(eIMPULSE):
+    // world angular delta = global inverse inertia tensor * torque.
+    // The equivalent local principal-axes transform avoids an extra
+    // matrix allocation: R * diag(invI) * R^T * worldImpulse.
+    const Vec3 local = rotate_inverse(actor.orientation, impulse);
+    const Vec3 delta = rotate(actor.orientation, {
+        local.x * actor.inverse_inertia_local.x,
+        local.y * actor.inverse_inertia_local.y,
+        local.z * actor.inverse_inertia_local.z});
+    const Vec3 pending = {
+        actor.pending_angular_velocity_delta.x + delta.x,
+        actor.pending_angular_velocity_delta.y + delta.y,
+        actor.pending_angular_velocity_delta.z + delta.z};
+    if (!finite(delta) || !finite(pending))
+        throw std::overflow_error("Native world-space torque impulse overflow");
+    actor.pending_angular_velocity_delta = pending;
 }
 void Scene::remove(BodyId id) {
     require(id).alive = false;
@@ -542,7 +608,14 @@ void Scene::step(float seconds) {
         const float lin_mult = std::max(
             1.0f - linear_damping*seconds,0.0f);
         vx *= lin_mult; vy *= lin_mult; vz *= lin_mult;
-        Vec3 angular = actor.angular_velocity;
+        // Per-step angular velocity modification is accumulated on the
+        // actor and consumed exactly once, as in ScBodySim::VelocityMod.
+        Vec3 angular{
+            actor.angular_velocity.x + actor.pending_angular_velocity_delta.x,
+            actor.angular_velocity.y + actor.pending_angular_velocity_delta.y,
+            actor.angular_velocity.z + actor.pending_angular_velocity_delta.z};
+        if (!finite(angular))
+            throw std::overflow_error("Native angular impulse accumulation overflow");
         const float ang_mult = std::max(
             1.0f - angular_damping*seconds,0.0f);
         angular.x *= ang_mult;
@@ -575,6 +648,7 @@ void Scene::step(float seconds) {
             throw std::overflow_error("Native CPU velocity or position overflow");
         actor.velocity = velocity;
         actor.angular_velocity = angular;
+        actor.pending_angular_velocity_delta = {};
         actor.position = p;
         dirty_ = true;
     }
@@ -649,6 +723,9 @@ public:
     }
     void set_body_angular_velocity(BodyId id, Vec3 velocity) override {
         scene_.set_angular_velocity(id, velocity);
+    }
+    void apply_body_torque_impulse(BodyId id, Vec3 impulse) override {
+        scene_.apply_torque_impulse(id, impulse);
     }
 private:
     native::Scene scene_;

@@ -72,6 +72,9 @@ public:
     virtual void set_body_angular_velocity(BodyId, Vec3) {
         throw std::logic_error("This backend cannot set angular velocity");
     }
+    virtual void apply_body_torque_impulse(BodyId, Vec3) {
+        throw std::logic_error("This backend cannot apply a torque impulse");
+    }
 };
 
 class World final {
@@ -95,6 +98,9 @@ public:
     void remove_body(BodyId id);
     void set_body_velocity(BodyId id, Vec3 velocity);
     void set_body_angular_velocity(BodyId id, Vec3 velocity);
+    // Impulse is angular momentum in world coordinates (N*m*s).
+    // Matches PxRigidDynamic::addTorque(..., PxForceMode::eIMPULSE).
+    void apply_body_torque_impulse(BodyId id, Vec3 impulse);
 
 private:
     std::unique_ptr<WorldBackend> impl_;

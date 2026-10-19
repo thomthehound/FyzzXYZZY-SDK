@@ -49,6 +49,7 @@ public:
     void set_position(BodyId id, Vec3 position);
     void set_velocity(BodyId id, Vec3 velocity);
     void set_angular_velocity(BodyId id, Vec3 velocity);
+    void apply_torque_impulse(BodyId id, Vec3 impulse);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 
@@ -85,6 +86,12 @@ private:
         Vec3 angular_velocity{};
         float density = 0.0f;
         float inverse_mass = 0.0f;  // immutable cached derived body property
+        // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
+        // about its mass center, in actor-local principal axes.
+        Vec3 inverse_inertia_local{};
+        // PhysX ScBodySim::VelocityMod's per-step angular delta; consumed
+        // by the existing scene clock, not a second force owner.
+        Vec3 pending_angular_velocity_delta{};
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
     struct Endpoint {

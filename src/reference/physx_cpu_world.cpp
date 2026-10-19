@@ -204,6 +204,15 @@ struct PhysXCpuWorld final : WorldBackend {
         dynamic->setAngularVelocity(to_physx(velocity));
     }
 
+    void apply_body_torque_impulse(BodyId id, Vec3 impulse) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* dynamic = actors[id]->is<physx::PxRigidDynamic>();
+        if (!dynamic)
+            throw std::logic_error("Static actors cannot receive torque impulses");
+        dynamic->addTorque(to_physx(impulse), physx::PxForceMode::eIMPULSE);
+    }
+
     BodyState body_state(BodyId id) const override {
         if (id >= actors.size() || !actors[id]) {
             throw std::out_of_range("Unknown FyzzXYZZY body ID");

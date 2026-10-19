@@ -198,6 +198,50 @@ int main() {
                 throw std::runtime_error(
                     "Native source angular speed clamp diverged from PhysX");
 
+            // Source rigid-body mass/inertia + spatial impulse pipeline:
+            // density-scaled nonuniform box, source PxRigidDynamic addTorque
+            // eIMPULSE and source-driven pose/damping on the *actual*
+            // native scene. This exercises the inertial data, not just
+            // an isolated mass-properties calculation.
+            fyzz::World native_inertial(fyzz::WorldOptions{
+                fyzz::ExecutionMode::NativeCpu});
+            fyzz::World physx_inertial(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
+            const auto n_i = native_inertial.add_dynamic_box(
+                {0.5f,1.0f,2.0f},{0,15,0},2.0f);
+            const auto r_i = physx_inertial.add_dynamic_box(
+                {0.5f,1.0f,2.0f},{0,15,0},2.0f);
+            const fyzz::Vec3 impulse{1.0f,2.0f,-0.75f};
+            native_inertial.apply_body_torque_impulse(n_i,impulse);
+            physx_inertial.apply_body_torque_impulse(r_i,impulse);
+            for (unsigned frame=0;frame<72;++frame) {
+                native_inertial.step(1.0f/120.0f);
+                physx_inertial.step(1.0f/120.0f);
+            }
+            const auto ni=native_inertial.body_state(n_i);
+            const auto ri=physx_inertial.body_state(r_i);
+            const auto valid_vec=[](fyzz::Vec3 v) {
+                return std::isfinite(v.x) && std::isfinite(v.y) &&
+                       std::isfinite(v.z);
+            };
+            const auto valid_quat=[](fyzz::Quat q) {
+                return std::isfinite(q.x) && std::isfinite(q.y) &&
+                       std::isfinite(q.z) && std::isfinite(q.w);
+            };
+            const float inertia_orientation_dot=
+                ni.orientation.x*ri.orientation.x +
+                ni.orientation.y*ri.orientation.y +
+                ni.orientation.z*ri.orientation.z +
+                ni.orientation.w*ri.orientation.w;
+            if (!valid_vec(ni.angular_velocity) || !valid_vec(ri.angular_velocity) ||
+                !valid_quat(ni.orientation) || !valid_quat(ri.orientation) ||
+                !std::isfinite(inertia_orientation_dot) ||
+                std::abs(inertia_orientation_dot)<0.998f ||
+                std::abs(ni.angular_velocity.x-ri.angular_velocity.x)>0.01f ||
+                std::abs(ni.angular_velocity.y-ri.angular_velocity.y)>0.01f ||
+                std::abs(ni.angular_velocity.z-ri.angular_velocity.z)>0.01f)
+                throw std::runtime_error(
+                    "Native source box inertia/torque impulse diverged from PhysX");
             // The SDK floor's public orientation is identity in BOTH
             // providers, even though PxCreatePlane rotates its local +X
             // plane internally. This internal correction must still remain

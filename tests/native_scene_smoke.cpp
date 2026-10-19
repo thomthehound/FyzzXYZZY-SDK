@@ -425,6 +425,40 @@ int main() {
         expect(invalid, "Native scene accepted nonfinite velocity");
     }
 
+    {
+        // Source inertia is directional and density-scaled. The same
+        // world torque impulse must produce different angular velocity
+        // for a rectangular body on its distinct principal axes.
+        Scene torque;
+        const auto id = torque.add_dynamic_box(
+            {0.5f,1.0f,2.0f}, {0,10,0}, 2.0f);
+        torque.apply_torque_impulse(id, {1,1,1});
+        torque.step(1.0f/120.0f);
+        const auto w = torque.body_state(id).angular_velocity;
+        // 8*0.5*1*2*2 = 16 kg; inertia = mass/3*(hy^2+hz^2...).
+        const float angular_damp = 1.0f-0.05f/120.0f;
+        const float ix=16.0f*(1.0f+4.0f)/3.0f;
+        const float iy=16.0f*(0.25f+4.0f)/3.0f;
+        const float iz=16.0f*(0.25f+1.0f)/3.0f;
+        expect(std::abs(w.x-angular_damp/ix)<0.0001f &&
+               std::abs(w.y-angular_damp/iy)<0.0001f &&
+               std::abs(w.z-angular_damp/iz)<0.0001f &&
+               w.x < w.y && w.y < w.z,
+               "Native box impulse failed source mass/inertia axes");
+        torque.step(1.0f/120.0f);
+        const auto twice=torque.body_state(id).angular_velocity;
+        expect(twice.z < w.z,
+               "Per-step angular impulse was replayed on the next frame");
+        bool invalid=false;
+        try {torque.apply_torque_impulse(id,{INFINITY,0,0});}
+        catch(const std::invalid_argument&) {invalid=true;}
+        expect(invalid,"Native torque accepted nonfinite input");
+        const auto floor_id=torque.add_static_floor(0);
+        bool rejected=false;
+        try {torque.apply_torque_impulse(floor_id,{1,0,0});}
+        catch(const std::logic_error&) {rejected=true;}
+        expect(rejected,"Static floor accepted angular impulse");
+    }
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
