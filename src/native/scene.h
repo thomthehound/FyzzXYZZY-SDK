@@ -74,15 +74,13 @@ public:
 
     // One scene-owned collision progression: update bounds -> SAP ->
     // overlap publication -> source Gu narrowphase -> contact publication.
-    // Collision-only queries support rotated box geometry; provisional
-    // dynamics/constraints/solver/fetch are not admitted in this entry.
+    // Collision-only queries return Gu geometry independent of a solver step.
     // Returned spans remain valid until the next successful advance.
     void advance_collision(bool force_update = false);
-    // Native CPU source-derived free-body angular motion plus the existing
-    // provisional translation-only contact path, within one scene clock.
-    // Rotated multicollider dynamics, angular contact Jacobians,
-    // friction, joints and CCD remain unsupported by provisional PGS.
-    // N1 general rigid-body source solver parity is NOT yet admitted.
+    // Native CPU scene owns free-body angular motion and source-derived
+    // per-point normal/angular Dy contact rows in its original clock.
+    // Friction correlation, joints, CCD and complete island/PGS scheduling
+    // are not integrated; N1 general rigid-body parity is NOT yet accepted.
     void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
@@ -159,9 +157,7 @@ private:
     BodyId add(Actor actor);
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
-    void reject_unsupported_rotated_contacts() const;
-    // Shared collision-only progression; only stepping requires the
-    // provisional solver's angular-contact admission check.
+    // Shared Gu collision progression, independent of Dy solver execution.
     void advance_collision_internal(bool force_update);
     void update_bounds();
     void update_pairs();
