@@ -579,10 +579,11 @@ void Scene::prepare_constraints(float seconds) {
     // noncompliant branch. Every Gu contact is a distinct constraint row.
     // Contact/friction patch correlation is not yet integrated; this
     // stream retains the original contact ordering and no shadow solver.
-    constexpr float bias_coefficient = 0.2f;
-    // DyContactPrep's friction velocity multiplier uses the rigid-contact
-    // relaxation coefficient, not the penetration Baumgarte scale.
-    constexpr float friction_relaxation = 0.8f;
+    // DyCpuGpuBiasCoefficient.h::BiasCoefficientCollection::set(false,
+    // false, ...): rigidContact = 0.8f for the CPU PGS solver. The same
+    // source coefficient is used by DyContactPrep for penetration bias
+    // and for friction-row impulse relaxation (not a 0.2 substitute).
+    constexpr float rigid_contact_bias = 0.8f;
     constexpr float max_penetration_bias = -3.0f;
     constexpr float restitution = 0.2f;
     constexpr float bounce_threshold = -2.0f;
@@ -762,7 +763,7 @@ void Scene::prepare_constraints(float seconds) {
             // velocity-phase bias before conclude.
             const float penetration_inv_dt_scaled = separated
                 ? penetration_inv_dt
-                : penetration*(inv_dt*bias_coefficient);
+                : penetration*(inv_dt*rigid_contact_bias);
             const double scaled_bias = vel_multiplier *
                 std::max(max_penetration_bias,penetration_inv_dt_scaled);
             const double target = target_velocity-vrel;
@@ -876,7 +877,7 @@ void Scene::prepare_constraints(float seconds) {
                     fr.ra_x_t_sqrt_inertia=j0;
                     fr.rb_x_t_sqrt_inertia=j1;
                     fr.velocity_multiplier=response>0.0
-                        ? friction_relaxation/response : 0.0;
+                        ? rigid_contact_bias/response : 0.0;
                     fr.bias=dot(tangent,error)*inv_dt;
                     fr.target_velocity=-(dot(tangent,rel)
                         +dot(ax0,a.angular_velocity)
