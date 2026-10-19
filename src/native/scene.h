@@ -125,6 +125,14 @@ private:
     struct SolverBody {
         Vec3 linear_velocity_delta{};
         Vec3 angular_state{};
+        // DyConstraintPartition.cpp reuses PxSolverBody::solverProgress
+        // (partition bit mask), maxSolverNormalProgress (last dynamic
+        // partition + 1), and maxSolverFrictionProgress (static edges).
+        // These are transient per-frame scheduler fields on this SAME
+        // source solver body; static world rows are never partition owners.
+        std::uint32_t partition_mask = 0;
+        std::size_t max_dynamic_partition = 0;
+        std::size_t static_constraint_count = 0;
     };
     struct SolverBodyData {
         Vec3 linear_velocity{};
@@ -204,6 +212,7 @@ private:
     void publish_pairs();
     void update_contacts();
     void prepare_solver_bodies();
+    void partition_constraints();
     void prepare_constraints(float seconds);
     void solve_constraints();
     void publish_solver_bodies();
@@ -215,6 +224,14 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // DyConstraintPartition::partitionContactConstraints writes ordered
+    // contact-manager descriptors grouped by body-conflict-free partition.
+    // Indices reference authoritative manifolds, not copied constraints.
+    // Source counts/prefix offsets and scratch remain allocation-reused.
+    std::vector<std::size_t> constraint_partitions_;
+    std::vector<std::size_t> ordered_constraints_;
+    std::vector<std::size_t> partition_ends_;
+    std::vector<std::size_t> partition_cursors_;
     // Correlation and friction constraint streams retain capacity across
     // frames, while patches carry actor-local anchors across contact frames.
     std::vector<FrictionPatch> friction_patches_;
