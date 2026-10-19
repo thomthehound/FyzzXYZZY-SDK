@@ -263,10 +263,30 @@ void Scene::update_bounds() {
         auto& actor = actors_[index];
         if (!actor.alive || actor.kind == Kind::StaticPlane) continue;
         const Vec3 p = actor.position, h = actor.half_extents;
+        // Source: GuBounds.cpp::computeBounds(eBOX), basisExtentV.
+        // The world AABB of a rotated box is the sum of absolute
+        // world-space basis columns weighted by the half extents,
+        // plus its shape contact offset. The identity fast path
+        // avoids three quaternion rotations for common unrotated boxes.
+        Vec3 extent = h;
+        const Quat q = actor.orientation;
+        if (q.x != 0.0f || q.y != 0.0f ||
+            q.z != 0.0f || q.w != 1.0f) {
+            const Vec3 x = rotate(q, {1.0f,0.0f,0.0f});
+            const Vec3 y = rotate(q, {0.0f,1.0f,0.0f});
+            const Vec3 z = rotate(q, {0.0f,0.0f,1.0f});
+            extent = {
+                std::abs(x.x)*h.x + std::abs(y.x)*h.y + std::abs(z.x)*h.z,
+                std::abs(x.y)*h.x + std::abs(y.y)*h.y + std::abs(z.y)*h.z,
+                std::abs(x.z)*h.x + std::abs(y.z)*h.y + std::abs(z.z)*h.z
+            };
+        }
+        extent.x += contact_offset;
+        extent.y += contact_offset;
+        extent.z += contact_offset;
         const std::array<float, 6> e{
-            p.x-h.x-contact_offset, p.y-h.y-contact_offset,
-            p.z-h.z-contact_offset, p.x+h.x+contact_offset,
-            p.y+h.y+contact_offset, p.z+h.z+contact_offset};
+            p.x-extent.x, p.y-extent.y, p.z-extent.z,
+            p.x+extent.x, p.y+extent.y, p.z+extent.z};
         for (float v : e)
             if (!std::isfinite(v))
                 throw std::overflow_error("Native scene AABB is not finite");
