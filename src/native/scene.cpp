@@ -852,7 +852,8 @@ void Scene::prepare_constraints(float seconds) {
 }
 void Scene::solve_constraints() {
     // DySolverConstraintsShared.h::solveDynamicContacts /
-    // solveStaticContacts, with the PhysX default of four position
+    // solveStaticContacts and DySolverConstraints.cpp friction patch solve,
+    // with the PhysX default of four position
     // iterations and one final velocity/writeback iteration. The final
     // writeback is itself a solve pass, not a second velocity sweep.
     // Wide prepared errors and impulses remain for the independently
@@ -925,6 +926,90 @@ void Scene::solve_constraints() {
                 a.solver.angular_state = {commit[6],commit[7],commit[8]};
                 b.solver.angular_state = {commit[9],commit[10],commit[11]};
                 row.applied_force = next_impulse;
+            }
+            // DySolverConstraints.cpp::solveContact/solveContact_BStatic:
+            // each correlated friction patch uses the sum of its normal
+            // impulses to clamp two tangent axes per retained anchor.
+            // DySolverControl skips friction on the first of four
+            // position iterations; later position and final velocity
+            // writeback passes all solve these same patch constraints.
+            if (iter != 0) {
+                for (std::size_t p=manifold.friction_patch_offset;
+                     p<manifold.friction_patch_offset+
+                       manifold.friction_patch_count; ++p) {
+                    auto& patch=friction_patches_[p];
+                    if (!patch.anchor_count) continue;
+                    double normal_impulse=0.0;
+                    for (std::size_t j=0;j<manifold.count;++j) {
+                        const auto& row=solver_contact_points_[
+                            manifold.solver_offset+j];
+                        if (row.friction_patch==p)
+                            normal_impulse+=row.applied_force;
+                    }
+                    const double coefficient=patch.anchor_count==2
+                        ? 0.5 : 1.0;
+                    const double max_static=0.5*coefficient*normal_impulse;
+                    const double max_dynamic=0.5*coefficient*normal_impulse;
+                    for (std::size_t k=patch.row_offset;
+                         k<patch.row_offset+patch.anchor_count*2; ++k) {
+                        auto& fr=solver_friction_rows_[k];
+                        const Vec3 n=fr.tangent;
+                        const Vec3 va=a.solver.linear_velocity_delta;
+                        const Vec3 vb=b.solver.linear_velocity_delta;
+                        const float tangent_delta=
+                            dot(n,va)-dot(n,vb)+
+                            dot(a.solver.angular_state,fr.ra_x_t_sqrt_inertia)-
+                            dot(b.solver.angular_state,fr.rb_x_t_sqrt_inertia);
+                        // concludeContact zeroes friction bias on the
+                        // final position pass, before motion-velocity
+                        // publication and the final velocity iteration.
+                        const double bias=iter < position_iterations
+                            ? fr.bias : 0.0;
+                        const double candidate=fr.applied_force+
+                            (fr.target_velocity-bias-tangent_delta)*
+                                fr.velocity_multiplier;
+                        const bool clamped=std::abs(candidate)>max_static;
+                        const double next=clamped
+                            ? std::clamp(candidate,-max_dynamic,max_dynamic)
+                            : candidate;
+                        const double delta=next-fr.applied_force;
+                        const double da=delta*a.data.inverse_mass;
+                        const double db=delta*b.data.inverse_mass;
+                        const auto& j0=fr.ra_x_t_sqrt_inertia;
+                        const auto& j1=fr.rb_x_t_sqrt_inertia;
+                        const std::array<double,12> results{
+                            static_cast<double>(va.x)+n.x*da,
+                            static_cast<double>(va.y)+n.y*da,
+                            static_cast<double>(va.z)+n.z*da,
+                            static_cast<double>(vb.x)-n.x*db,
+                            static_cast<double>(vb.y)-n.y*db,
+                            static_cast<double>(vb.z)-n.z*db,
+                            static_cast<double>(a.solver.angular_state.x)+j0.x*delta,
+                            static_cast<double>(a.solver.angular_state.y)+j0.y*delta,
+                            static_cast<double>(a.solver.angular_state.z)+j0.z*delta,
+                            static_cast<double>(b.solver.angular_state.x)-j1.x*delta,
+                            static_cast<double>(b.solver.angular_state.y)-j1.y*delta,
+                            static_cast<double>(b.solver.angular_state.z)-j1.z*delta};
+                        std::array<float,12> commit{};
+                        for (std::size_t v=0;v<results.size();++v) {
+                            if (!std::isfinite(results[v]) ||
+                                std::abs(results[v]) > max_float)
+                                throw std::overflow_error(
+                                    "Native Dy friction velocity delta exceeds float range");
+                            commit[v]=static_cast<float>(results[v]);
+                        }
+                        a.solver.linear_velocity_delta={
+                            commit[0],commit[1],commit[2]};
+                        b.solver.linear_velocity_delta={
+                            commit[3],commit[4],commit[5]};
+                        a.solver.angular_state={
+                            commit[6],commit[7],commit[8]};
+                        b.solver.angular_state={
+                            commit[9],commit[10],commit[11]};
+                        fr.applied_force=next;
+                        if (clamped) patch.broken=true;
+                    }
+                }
             }
         }
         if (iter + 1 == position_iterations) {
