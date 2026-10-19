@@ -588,6 +588,9 @@ void Scene::reject_unsupported_rotated_contacts() const {
         if (actor.angular_velocity.x != 0.0f ||
             actor.angular_velocity.y != 0.0f ||
             actor.angular_velocity.z != 0.0f ||
+            actor.pending_angular_velocity_delta.x != 0.0f ||
+            actor.pending_angular_velocity_delta.y != 0.0f ||
+            actor.pending_angular_velocity_delta.z != 0.0f ||
             q.x != 0.0f || q.y != 0.0f ||
             q.z != 0.0f || q.w != 1.0f)
             needs_rotated_contacts = true;

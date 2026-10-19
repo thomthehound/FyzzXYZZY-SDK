@@ -469,6 +469,24 @@ int main() {
         catch(const std::logic_error&) {rejected=true;}
         expect(rejected,"Static floor accepted angular impulse");
     }
+    {
+        // A pending source impulse is motion that will be applied in
+        // this frame, even if the existing angular velocity is zero.
+        // Unsupported rotated contact must fail BEFORE updating state.
+        Scene rotating_contact;
+        const auto id = rotating_contact.add_dynamic_box(
+            {0.5f,1.0f,2.0f},{0,2,0},1);
+        rotating_contact.add_static_floor(0);
+        rotating_contact.apply_torque_impulse(id,{1,0,0});
+        const auto before = rotating_contact.body_state(id);
+        bool rejected=false;
+        try { rotating_contact.step(1.0f/120.0f); }
+        catch (const std::logic_error&) { rejected=true; }
+        const auto after = rotating_contact.body_state(id);
+        expect(rejected && before.position.y == after.position.y &&
+               before.angular_velocity.x == after.angular_velocity.x,
+               "Queued angular impulse bypassed rotated-contact preflight");
+    }
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
