@@ -437,14 +437,13 @@ void Scene::update_contacts() {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
-            next_contact_points_.resize(manifold.contact_offset + 255);
             manifold.count = source_box_box_contacts(
                 a.half_extents, a.position, a.orientation,
                 b.half_extents, b.position, b.orientation,
-                manifold.collision_axis,
-                std::span<ContactPoint>(
-                    next_contact_points_.data() + manifold.contact_offset, 255));
-            next_contact_points_.resize(manifold.contact_offset + manifold.count);
+                manifold.collision_axis, box_contact_scratch_);
+            next_contact_points_.insert(next_contact_points_.end(),
+                box_contact_scratch_.begin(),
+                box_contact_scratch_.begin() + manifold.count);
         }
         if (manifold.count > 0)
             next_manifolds_.push_back(manifold);
