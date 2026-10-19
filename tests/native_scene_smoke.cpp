@@ -553,6 +553,32 @@ int run_native_scene_smoke() {
                "High-speed dynamic pair lost its contact");
     }
     {
+        // Source Dy contact preparation can require an impulse above the
+        // representable PxReal range for an SDK-admitted, extremely heavy
+        // translational body. Narrowing its biased/unbiased error to float
+        // must not reject the actor or lose a finite solver velocity delta.
+        Scene heavy;
+        heavy.add_static_box({1,1,1},{0,5,0});
+        const auto body = heavy.add_dynamic_box(
+            {1,1,1},{1.5f,5,0},std::numeric_limits<float>::max());
+        heavy.set_velocity(body,{-1,0,0});
+        heavy.step(1.0f/120.0f);
+        const auto state = heavy.body_state(body);
+        expect(std::isfinite(state.position.x) &&
+               std::isfinite(state.velocity.x) &&
+               std::isfinite(state.velocity.y) &&
+               state.position.x > 1.5f &&
+               state.velocity.x > -1.0f &&
+               heavy.contacts().size() == 1,
+               "Valid heavy translation-only contact was lost to float impulse narrowing");
+        bool angular_rejected = false;
+        try { heavy.apply_torque_impulse(body,{1,0,0}); }
+        catch(const std::logic_error&) { angular_rejected = true; }
+        expect(angular_rejected,
+               "Heavy body with nonrepresentable angular inertia accepted torque");
+    }
+
+    {
         // Regression for a second float overflow: relative velocity and
         // impulse remain finite in double, but unequal inverse masses
         // previously overflowed one body's float velocity on writeback.
