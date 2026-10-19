@@ -167,7 +167,11 @@ private:
     // two source tangential constraint axes per anchor.
     struct FrictionPatch {
         Pair pair{};
+        // Source DyFrictionPatch stores both previous-frame normals in
+        // body-local coordinates; the active row normal remains world-space.
         Vec3 normal{};
+        Vec3 body0_normal{};
+        Vec3 body1_normal{};
         std::array<Vec3,2> body0_anchors{};
         std::array<Vec3,2> body1_anchors{};
         std::array<std::uint16_t,2> contact_ids{};
