@@ -287,6 +287,23 @@ int main() {
                "Rotated distant floor candidate must not invent a contact");
     }
 
+    // Per-point Dy rigid-body normals must exert angular response at an
+    // offset contact; the retired one-impulse-per-manifold solver could
+    // not produce contact torque at any rigid-body geometry.
+    {
+        Scene angular_contact;
+        angular_contact.add_static_box({1,1,1},{0,0,0});
+        const auto body=angular_contact.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.3f,1.25f,0},1.0f);
+        angular_contact.set_velocity(body,{-2,0,0});
+        angular_contact.step(1.0f/120.0f);
+        const auto result=angular_contact.body_state(body);
+        expect(!angular_contact.contacts().empty() &&
+               std::isfinite(result.angular_velocity.z) &&
+               std::abs(result.angular_velocity.z)>1.0e-5f,
+               "Per-point source contact angular Jacobian produced no torque");
+    }
+
     // Original Gu box-box SAT/contact path must accept an oblique
     // body directly in the owning scene, not only the free-flight path.
     {
