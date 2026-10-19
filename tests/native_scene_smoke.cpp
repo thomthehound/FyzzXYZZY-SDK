@@ -195,29 +195,31 @@ int main() {
         expect(has(box_scene.found_contacts(), fixed, moveable),
                "Box re-entry did not recreate narrowphase touch");
 
-        // Per-axis AABBs still overlap inside the pair contact offset,
-        // but diagonal gaps have no intersecting incident/reference faces.
-        // This face-only implementation must not invent a midpoint contact.
+        // The original GuContactBoxBox face expansion retains near-corner
+        // contacts inside per-axis contactDistance, even for diagonal gaps.
+        // Preserve its generated point stream instead of the retired
+        // face-only implementation's rejection of those candidates.
         box_scene.set_position(moveable, {2.03f,2.03f,0});
         box_scene.advance_collision();
         expect(has(box_scene.pairs(), fixed, moveable) &&
-               box_scene.contacts().empty() &&
-               has(box_scene.lost_contacts(), fixed, moveable) &&
-               box_scene.lost_pairs().empty(),
-               "Diagonal gap fabricated a face manifold");
+               box_scene.contacts().size()==1 &&
+               box_scene.contacts()[0].count>0 &&
+               box_scene.lost_contacts().empty(),
+               "Source near-corner contact generation was not retained");
+        const auto old_count=box_scene.contacts()[0].count;
         box_scene.advance_collision(true);
-        expect(box_scene.contacts().empty() &&
+        expect(box_scene.contacts().size()==1 &&
+               box_scene.contacts()[0].count==old_count &&
                box_scene.found_contacts().empty() &&
                box_scene.lost_contacts().empty(),
-               "Forced diagonal-gap update published spurious touch");
-        // The true edge distance here is within the offset, but accurate
-        // edge contacts are not yet ported: reject rather than fabricate.
+               "Forced near-corner update changed source touch history");
         box_scene.set_position(moveable, {2.01f,2.01f,0});
         box_scene.advance_collision();
         expect(has(box_scene.pairs(), fixed, moveable) &&
-               box_scene.contacts().empty() &&
+               box_scene.contacts().size()==1 &&
+               box_scene.contacts()[0].count>0 &&
                box_scene.found_contacts().empty(),
-               "Unimplemented edge contact was misreported as a face");
+               "Original Gu near-edge contact generation was lost");
 
         // A single-axis near contact with positive separation is still
         // supported when the two transverse face intervals overlap.
