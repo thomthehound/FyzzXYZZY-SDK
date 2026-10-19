@@ -590,8 +590,8 @@ void Scene::solve_constraints() {
     }
 }
 void Scene::reject_unsupported_rotated_contacts() const {
-    // Translation-only Gu narrowphase/bounds and scalar Dy PGS cannot
-    // honestly simulate a non-identity pose in a multi-collider scene.
+    // Rotated Gu narrowphase is now source-ported, but the provisional
+    // scalar Dy PGS cannot solve angular contact Jacobians.
     // A rotation persists when angular velocity is subsequently set to
     // zero, so checking spin alone would silently admit false contacts.
     unsigned live_colliders = 0;
@@ -685,10 +685,10 @@ void Scene::step(float seconds) {
     // The legacy source-limited translational contact path remains until
     // the integrated original Gu/Dy pipeline replaces it. This draft is
     // NOT an accepted PhysX PGS port or an N1 completion.
-    // The scene was validated at the start of this step. The linear and
-    // unconstrained angular velocity updates above do not change actor
-    // lifetimes or orientation, so a second all-actor guard is redundant.
-    advance_collision_validated(false);
+    // The scene was admitted before the step. Only the provisional
+    // dynamics solver requires this guard; collision alone supports rotated
+    // geometry. No duplicate scan is needed.
+    advance_collision_internal(false);
     prepare_constraints(seconds);
     solve_constraints();
     // Source: DyBodyCoreIntegrator.h::integrateCore angular quaternion
@@ -703,12 +703,11 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
-    // The externally callable collision entry must validate. World::step
-    // has already checked this invariant, so it calls the internal path.
-    reject_unsupported_rotated_contacts();
-    advance_collision_validated(force_update);
+    // Original Gu narrowphase now admits rotated collision-only scenes.
+    // Simulation still guards unsupported angular solver constraints.
+    advance_collision_internal(force_update);
 }
-void Scene::advance_collision_validated(bool force_update) {
+void Scene::advance_collision_internal(bool force_update) {
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
