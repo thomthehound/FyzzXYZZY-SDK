@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: architecture and source audit; no solver implementation or N1 acceptance in this document.**
+**Status: architecture and source audit with live source-derived Gu geometry and per-contact Dy rigid-body normal constraints. Friction correlation, full island/PGS execution and N1 acceptance remain open.**
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -177,14 +177,9 @@ Important verified source edges:
     report timestamps. The native scene must not publish a
     predicted pose as final source-equivalent post-solver state.
 
-**Explicit existing departure:** `src/native/scene.cpp::step` currently
-predicts poses, rebuilds an X-only SAP, and solves a single translational
-normal constraint per manifold after position prediction. Collision-only
-queries now use source-derived rotated `GuContactPlaneBox` and original
-`GuContactBoxBox` contact generation, backed by scene-owned contact streams;
-these do not replace `DyContactPrep` per-point angular Jacobians, friction
-correlation, PGS execution or the source task graph. This remains a limited
-transitional dynamics execution mode, not an accepted PhysX CPU replacement.
+**Current integrated CPU slice and remaining departure:** `src/native/scene.cpp::step` now runs the scene-owned Gu collision stage at the starting pose, source-derived `DyContactPrepShared` per-point rigid-body normal Jacobian/effective-mass/bias preparation, and `DySolverConstraintsShared` normal impulse passes. Following `DySolverControl`, it snapshots motion deltas after biased position iterations and separately executes unbiased velocity iterations; `DyBodyCoreIntegrator` uses saved position-phase motion to advance poses and final velocity-phase deltas to update next-frame body velocity. This retires the predicted-pose/one-normal-per-manifold solver and its angular guard.
+
+This is **not** full source solver admission: `DyCorrelationBuffer` contact/friction patch matching, materials/strong-friction anchors, packed solver constraint ABI, exact float/SIMD semantics, source island/partition and task graph, and full contact-manager writeback remain unported. The native path remains a transitional normal-contact subset rather than an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
