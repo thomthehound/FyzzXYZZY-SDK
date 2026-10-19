@@ -44,6 +44,8 @@ struct ContactManifold {
     // Transient source Dy contact constraints are held in the scene's
     // contiguous row arena, indexed by this manager's offset and count.
     std::size_t solver_offset = 0;
+    std::size_t friction_patch_offset = 0;
+    std::uint8_t friction_patch_count = 0;
 };
 
 // Source translation: GuContactBoxBox's SAT and contact generation on
@@ -158,6 +160,31 @@ private:
         double biased_error = 0.0;
         double unbiased_error = 0.0;
         double applied_force = 0.0;
+        std::size_t friction_patch = 0;
+    };
+    // DyFrictionPatch.h, DyCorrelationBuffer.h and DySolverContact.h:
+    // persistent shape-local anchors, manager-correlated patches, and the
+    // two source tangential constraint axes per anchor.
+    struct FrictionPatch {
+        Pair pair{};
+        Vec3 normal{};
+        std::array<Vec3,2> body0_anchors{};
+        std::array<Vec3,2> body1_anchors{};
+        std::array<std::uint16_t,2> contact_ids{};
+        Vec3 bounds_min{}, bounds_max{};
+        std::size_t row_offset = 0;
+        std::uint16_t contact_count = 0;
+        std::uint8_t anchor_count = 0;
+        bool broken = false;
+    };
+    struct SolverContactFriction {
+        Vec3 tangent{};
+        Vec3 ra_x_t_sqrt_inertia{};
+        Vec3 rb_x_t_sqrt_inertia{};
+        double velocity_multiplier = 0.0;
+        double bias = 0.0;
+        double target_velocity = 0.0;
+        double applied_force = 0.0;
     };
     struct Endpoint {
         std::uint32_t min_x = 0;
@@ -184,6 +211,11 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // Correlation and friction constraint streams retain capacity across
+    // frames, while patches carry actor-local anchors across contact frames.
+    std::vector<FrictionPatch> friction_patches_;
+    std::vector<FrictionPatch> next_friction_patches_;
+    std::vector<SolverContactFriction> solver_friction_rows_;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.
     SolverBodyRow world_solver_row_{};
