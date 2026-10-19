@@ -41,10 +41,9 @@ struct ContactManifold {
     std::uint8_t count = 0;
     // GuContactBoxBox collision-axis cache (mPairData), retained by pair.
     std::uint8_t collision_axis = 0;
-    // Per-frame scalar PGS contact constraint: one physical patch, not
-    // duplicate per-vertex full-body impulses.
-    float velocity_target = 0.0f;
-    double normal_impulse = 0.0;  // wide scalar response for extreme mass ratios
+    // Transient source Dy contact constraints are held in the scene's
+    // contiguous row arena, indexed by this manager's offset and count.
+    std::size_t solver_offset = 0;
 };
 
 // Source translation: GuContactBoxBox's SAT and contact generation on
@@ -140,6 +139,19 @@ private:
         SolverBodyData data{};
         std::uint64_t prepared_frame = 0;
     };
+    // Source: DySolverContact.h::SolverContactPoint and
+    // DySolverConstraintsShared.h::solveDynamicContacts. Each generated
+    // contact owns its individual effective mass, angular Jacobians,
+    // bias and impulse; no manifold-level normal impulse approximation.
+    struct SolverContactPoint {
+        Vec3 normal{};
+        Vec3 ra_x_n_sqrt_inertia{};
+        Vec3 rb_x_n_sqrt_inertia{};
+        double velocity_multiplier = 0.0;
+        float biased_error = 0.0f;
+        float unbiased_error = 0.0f;
+        double applied_force = 0.0;
+    };
     struct Endpoint {
         std::uint32_t min_x = 0;
         BodyId id = 0;
@@ -164,6 +176,9 @@ private:
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
     std::vector<SolverBodyRow> solver_rows_;
+    // Reusable flat Dy normal-constraint stream; patch ownership and all
+    // point offsets remain with this scene, not with allocating manifolds.
+    std::vector<SolverContactPoint> solver_contact_points_;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.
     SolverBodyRow world_solver_row_{};
