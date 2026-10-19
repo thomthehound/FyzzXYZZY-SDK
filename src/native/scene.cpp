@@ -508,12 +508,12 @@ void Scene::prepare_solver_bodies() {
     for (const auto& manifold : manifolds_) {
         const BodyId ids[2]{manifold.pair.a, manifold.pair.b};
         for (BodyId id : ids) {
+            const Actor& actor = actors_[id];
+            if (actor.kind != Kind::DynamicBox) continue;
             auto& row = solver_rows_[id];
             if (row.prepared_frame == frame_index_) continue;
             row = {};
             row.prepared_frame = frame_index_;
-            const Actor& actor = actors_[id];
-            if (actor.kind != Kind::DynamicBox) continue;
             solver_active_ids_.push_back(id);
             row.data.position = actor.position;
             row.data.orientation = actor.orientation;
