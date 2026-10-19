@@ -485,6 +485,8 @@ int run_native_scene_smoke() {
         expect(crowded.contacts().size()==35,
                "Dense source contact-manager star did not create 35 dynamic edges");
         crowded.step(1.0f/120.0f);
+        expect(crowded.solver_partition_count()==35,
+               "Source 32-bit partition rollover collapsed conflicting dynamic contacts");
         const auto center_state = crowded.body_state(center);
         expect(std::isfinite(center_state.position.x) &&
                std::isfinite(center_state.velocity.x) &&
@@ -499,8 +501,24 @@ int run_native_scene_smoke() {
         // A new frame must recompute partition masks without retaining
         // previous wave assignments or introducing another body owner.
         crowded.step(1.0f/120.0f);
-        expect(std::isfinite(crowded.body_state(center).position.x),
+        expect(crowded.solver_partition_count()==35 &&
+               std::isfinite(crowded.body_state(center).position.x),
                "Source constraint partition did not reset on next frame");
+    }
+
+    // The source zero-mass world solver body does not create a dynamic
+    // conflict between distinct static-floor contacts; all may share
+    // partition zero, even though they reference one world solver row.
+    {
+        Scene detached;
+        detached.add_static_floor(0.0f);
+        for (unsigned i=0;i<12;++i)
+            detached.add_dynamic_box({0.25f,0.25f,0.25f},
+                                     {float(i)*2.0f,0.25f,0},1.0f);
+        detached.step(1.0f/120.0f);
+        expect(detached.contacts().size()==12 &&
+               detached.solver_partition_count()==1,
+               "Static world solver row incorrectly serialized unrelated contacts");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
