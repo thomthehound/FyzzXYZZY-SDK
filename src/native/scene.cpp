@@ -574,6 +574,110 @@ void Scene::prepare_solver_bodies() {
     }
 }
 
+void Scene::partition_constraints() {
+    // DyConstraintPartition.cpp::partitionContactConstraints, rigid-body
+    // classification, and the source's static-contact reservation rule.
+    // Contact managers are indivisible descriptors; their per-point normal
+    // and friction rows execute together in the original owner. This
+    // serial dispatch does not invent parallel task execution or islands.
+    //
+    // The source assigns conflict-free dynamic/dynamic constraints from
+    // successive 32-bit partition masks; overflow starts a new wave.
+    // A dynamic/static contact is then placed after that dynamic body's
+    // last dynamic/dynamic partition, one static edge per partition.
+    constexpr std::size_t partition_bits = 32;
+    constexpr std::size_t unassigned = SIZE_MAX;
+    constraint_partitions_.assign(manifolds_.size(), unassigned);
+    ordered_constraints_.clear();
+    partition_ends_.clear();
+    partition_cursors_.clear();
+    std::size_t remaining = 0;
+    for (const auto& manifold : manifolds_) {
+        if (actors_[manifold.pair.a].kind == Kind::DynamicBox &&
+            actors_[manifold.pair.b].kind == Kind::DynamicBox)
+            ++remaining;
+    }
+
+    for (std::size_t wave = 0; remaining != 0; wave += partition_bits) {
+        // Same 32-partition rollover as source overflow classification,
+        // including >32 conflicting contacts on a single dynamic actor.
+        for (BodyId id : solver_active_ids_)
+            solver_rows_[id].solver.partition_mask = 0;
+        const std::size_t starting_count = remaining;
+        for (std::size_t i=0; i<manifolds_.size(); ++i) {
+            if (constraint_partitions_[i] != unassigned) continue;
+            const Pair pair=manifolds_[i].pair;
+            if (actors_[pair.a].kind != Kind::DynamicBox ||
+                actors_[pair.b].kind != Kind::DynamicBox)
+                continue;
+            auto& a=solver_rows_[pair.a].solver;
+            auto& b=solver_rows_[pair.b].solver;
+            const std::uint32_t available=~(a.partition_mask |
+                                             b.partition_mask);
+            if (!available) continue;
+            const unsigned bit=std::countr_zero(available);
+            const std::uint32_t mask=std::uint32_t{1} << bit;
+            a.partition_mask |= mask;
+            b.partition_mask |= mask;
+            const std::size_t partition=wave+bit;
+            a.max_dynamic_partition=std::max(
+                a.max_dynamic_partition,partition+1);
+            b.max_dynamic_partition=std::max(
+                b.max_dynamic_partition,partition+1);
+            constraint_partitions_[i]=partition;
+            --remaining;
+        }
+        if (remaining == starting_count)
+            throw std::logic_error(
+                "Native source constraint partition made no progress");
+        if (remaining && wave > std::numeric_limits<std::size_t>::max()
+                                -partition_bits)
+            throw std::overflow_error(
+                "Native source constraint partition index overflow");
+    }
+
+    for (std::size_t i=0;i<manifolds_.size();++i) {
+        if (constraint_partitions_[i]!=unassigned) continue;
+        const Pair pair=manifolds_[i].pair;
+        const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
+        const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+        // Source static/static contact managers are not solver edges.
+        if (!dynamic_a && !dynamic_b) continue;
+        auto& active=solver_rows_[dynamic_a ? pair.a : pair.b].solver;
+        const std::size_t partition=active.max_dynamic_partition+
+                                      active.static_constraint_count++;
+        if (partition<active.max_dynamic_partition)
+            throw std::overflow_error(
+                "Native source static constraint partition overflow");
+        constraint_partitions_[i]=partition;
+    }
+
+    // The source accumulates counts into ordered descriptor offsets, then
+    // stable-writes each descriptor by partition. This preserves the
+    // input contact-manager order *within* each non-conflicting batch.
+    std::size_t count=0;
+    for (std::size_t p : constraint_partitions_) {
+        if (p==unassigned) continue;
+        if (p>=partition_ends_.size()) partition_ends_.resize(p+1,0);
+        ++partition_ends_[p];
+        ++count;
+    }
+    std::size_t cumulative=0;
+    for (auto& end : partition_ends_) {
+        cumulative+=end;
+        end=cumulative;
+    }
+    partition_cursors_.resize(partition_ends_.size());
+    for (std::size_t p=0;p<partition_cursors_.size();++p)
+        partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
+    ordered_constraints_.resize(count);
+    for (std::size_t i=0;i<constraint_partitions_.size();++i) {
+        const std::size_t partition=constraint_partitions_[i];
+        if (partition!=unassigned)
+            ordered_constraints_[partition_cursors_[partition]++]=i;
+    }
+}
+
 void Scene::prepare_constraints(float seconds) {
     // DyContactPrepShared.h::constructContactConstraint, rigid-body
     // noncompliant branch. Every Gu contact is a distinct constraint row.
@@ -914,7 +1018,11 @@ void Scene::solve_constraints() {
     };
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
-        for (const auto& manifold : manifolds_) {
+        // DyConstraintPartition's ordered descriptors, rather than
+        // raw broadphase pair order, govern every position/velocity pass.
+        // All contacts within a descriptor retain original Gu ordering.
+        for (const std::size_t index : ordered_constraints_) {
+            const auto& manifold = manifolds_[index];
             auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.a] : world_solver_row_;
             auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
@@ -1171,6 +1279,7 @@ void Scene::step(float seconds) {
     // an explicit N1 acceptance boundary.
     advance_collision_internal(false);
     prepare_solver_bodies();
+    partition_constraints();
     prepare_constraints(seconds);
     solve_constraints();
     publish_solver_bodies();
