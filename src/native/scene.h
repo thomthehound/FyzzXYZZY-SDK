@@ -135,6 +135,12 @@ private:
     struct SolverBodyRow {
         SolverBody solver{};
         SolverBodyData data{};
+        // DySolverControl::saveMotionVelocities saves the solver deltas
+        // after position iterations, before conclude/velocity iterations.
+        // DyBodyCoreIntegrator uses this snapshot to advance the pose,
+        // while the final solver deltas write back next-frame velocity.
+        Vec3 motion_linear_delta{};
+        Vec3 motion_angular_state{};
         std::uint64_t prepared_frame = 0;
     };
     // Source: DySolverContact.h::SolverContactPoint and
