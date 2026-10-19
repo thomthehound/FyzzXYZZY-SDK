@@ -93,6 +93,12 @@ public:
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
+    // Read-only solver instrumentation for source constraint partitioning.
+    // Counts last-step nonempty conflict-free partition batches; the
+    // shared static world row is not a dynamic partition participant.
+    std::size_t solver_partition_count() const noexcept {
+        return partition_ends_.size();
+    }
 
 private:
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
