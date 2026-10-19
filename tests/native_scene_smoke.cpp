@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 void expect(bool value, const char* why) {
@@ -461,6 +462,45 @@ int run_native_scene_smoke() {
         expect(std::isfinite(state.velocity.x) &&
                std::abs(state.velocity.x)<0.012f,
                "Source friction relaxation left excessive low-speed slip");
+    }
+
+    // DyConstraintPartition's rigid-body 32-bit partition mask must
+    // roll into a second wave when one dynamic body has >32 independent
+    // dynamic/dynamic contacts. None of the leaf bodies touch each other;
+    // the center is the one genuine per-partition conflict.
+    {
+        Scene crowded;
+        const auto center = crowded.add_dynamic_box(
+            {2.0f,2.0f,2.0f},{0,5,0},1.0f);
+        std::vector<fyzz::BodyId> leaves;
+        leaves.reserve(35);
+        for (unsigned y=0;y<5;++y) {
+            for (unsigned z=0;z<7;++z) {
+                leaves.push_back(crowded.add_dynamic_box(
+                    {0.1f,0.1f,0.1f},
+                    {2.08f,3.6f+0.7f*y,-1.5f+0.5f*z},1.0f));
+            }
+        }
+        crowded.advance_collision();
+        expect(crowded.contacts().size()==35,
+               "Dense source contact-manager star did not create 35 dynamic edges");
+        crowded.step(1.0f/120.0f);
+        const auto center_state = crowded.body_state(center);
+        expect(std::isfinite(center_state.position.x) &&
+               std::isfinite(center_state.velocity.x) &&
+               crowded.contacts().size()==35,
+               "Source 32-partition overflow did not execute all contact managers");
+        for (auto leaf:leaves) {
+            const auto state=crowded.body_state(leaf);
+            expect(std::isfinite(state.position.x) &&
+                   std::isfinite(state.velocity.x),
+                   "Source partition wave produced invalid dynamic leaf state");
+        }
+        // A new frame must recompute partition masks without retaining
+        // previous wave assignments or introducing another body owner.
+        crowded.step(1.0f/120.0f);
+        expect(std::isfinite(crowded.body_state(center).position.x),
+               "Source constraint partition did not reset on next frame");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
