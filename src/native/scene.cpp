@@ -619,7 +619,13 @@ void Scene::prepare_constraints(float seconds) {
     const auto squared_length = [](Vec3 v) {
         return v.x*v.x + v.y*v.y + v.z*v.z;
     };
+    std::size_t old_patch_cursor=0;
     for (auto& manifold : manifolds_) {
+        // Patches follow sorted contact managers. One monotonic cursor
+        // prevents a full previous-frame scan for every contact manager.
+        while (old_patch_cursor<friction_patches_.size() &&
+               friction_patches_[old_patch_cursor].pair < manifold.pair)
+            ++old_patch_cursor;
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
         const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
@@ -654,8 +660,12 @@ void Scene::prepare_constraints(float seconds) {
                 patch.contact_ids.fill(0xffff);
                 // Source getFrictionPatches keeps unbroken local anchors
                 // only if their normal and separation still correlate.
-                for (const auto& old : friction_patches_) {
-                    if (!(old.pair == manifold.pair) || old.broken ||
+                for (std::size_t previous=old_patch_cursor;
+                     previous<friction_patches_.size() &&
+                     friction_patches_[previous].pair == manifold.pair;
+                     ++previous) {
+                    const auto& old=friction_patches_[previous];
+                    if (old.broken ||
                         dot(old.normal,patch.normal) < same_normal)
                         continue;
                     bool separated = false;
