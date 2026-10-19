@@ -499,18 +499,14 @@ void Scene::update_contacts() {
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
 }
-// Source correspondence:
-//   DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
-//     unconstrained linear velocity += gravity * dt
-//   DyContactPrep.cpp: normal contact response from inverse masses,
-//     separation and target velocity
-//   DySolverConstraints.cpp::solveContact: unilateral accumulated PGS impulse
-// Angular terms are constrained to zero in the present nonrotating-box API;
-// this is not a general PhysX rigid-body solver, TGS or articulation port.
-//
-// Source position-iteration motion is snapshotted before the unbiased
-// velocity passes; DyBodyCoreIntegrator advances poses with that snapshot.
-// Full ScPipeline continuation/partition parity remains an N1 requirement.
+// Active native CPU stages remain within the one Scene owner:
+//   DyBodyCoreIntegrator: unconstrained velocity/force preparation
+//   DyConstraintPartition: ordered rigid-body contact manager batches
+//   DyContactPrep: point-normal and correlated friction-anchor constraints
+//   DySolverConstraints/DySolverControl: four position + one velocity pass
+//   DyBodyCoreIntegrator: pose integration from saved position-phase motion
+// This does not claim the complete PhysX island/task graph, rigid joints,
+// contact writeback, CCD, or exact SIMD/packed constraint parity.
 void Scene::prepare_solver_bodies() {
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
     // Retain capacity across frames. Prepare each contact participant once;
@@ -1271,12 +1267,10 @@ void Scene::step(float seconds) {
         // velocity, not the final unbiased next-frame velocity.
         dirty_ = true;
     }
-    // The native path now uses source per-point rigid-body normal
-    // constraints; friction patch correlation, islands and complete
-    // ScPipeline ordering remain N1 requirements. This is NOT completion.
-    // Per-contact angular normal Jacobians now accept rotated bodies;
-    // friction, full island scheduling and material lifecycle are still
-    // an explicit N1 acceptance boundary.
+    // Source-derived per-point normals and correlated friction rows
+    // share the original actor/contact owner and ordered contact batches.
+    // The island task graph, packed constraint writeback, heterogeneous
+    // material combinations and CCD remain explicit N1 admission gates.
     advance_collision_internal(false);
     prepare_solver_bodies();
     partition_constraints();
