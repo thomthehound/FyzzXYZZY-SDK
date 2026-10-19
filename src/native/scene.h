@@ -235,6 +235,9 @@ private:
     // Indices reference authoritative manifolds, not copied constraints.
     // Source counts/prefix offsets and scratch remain allocation-reused.
     std::vector<std::size_t> constraint_partitions_;
+    // Source overflow descriptor array, compacted in place each 32-bit
+    // partition wave; previously assigned managers are never rescanned.
+    std::vector<std::size_t> pending_dynamic_constraints_;
     std::vector<std::size_t> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
