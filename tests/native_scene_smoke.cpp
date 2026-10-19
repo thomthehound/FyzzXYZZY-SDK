@@ -341,11 +341,12 @@ int main() {
                "Rotated plane-box source contact stream absent");
         bool displaced=false;
         for(const auto& pt:pitched.contacts()[0].points) {
-            if(std::abs(pt.position.x)>0.41f) displaced=true;
+            if(std::abs(std::abs(pt.position.x)-0.4f)>0.05f)
+                displaced=true;
             expect(pt.normal.y==1.0f && std::isfinite(pt.separation),
                    "Rotated plane-box normal or separation invalid");
         }
-        expect(displaced,"Rotated plane-box points remained AABB corners");
+        expect(displaced,"Rotated plane-box contacts remained axis-aligned");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
