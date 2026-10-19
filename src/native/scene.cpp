@@ -341,32 +341,58 @@ void Scene::update_contacts() {
         manifold.pair = pair;
 
         if (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane) {
-            // Adapted from GuContactPlaneBox.cpp::contactPlaneBox:
-            // test the eight box vertices against the plane and preserve
-            // signed separation; a far broadphase candidate has no contact.
+            // Direct source order/geometry from
+            // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
+            // logical normal is +Y, corresponding to PhysX plane-local
+            // +X. This computes boxToPlane.m.column[k].x times each
+            // half-extent, constructs the eight source depth tests, and
+            // publishes world-space rotated vertices. Do not replace
+            // this with identity-only AABB corners.
             const Actor& plane = a.kind == Kind::StaticPlane ? a : b;
             const Actor& box = a.kind == Kind::StaticPlane ? b : a;
             if (box.kind != Kind::DynamicBox)
                 continue;
-            // The canonical pair is ordered by body ID, not by geometry.
-            // Source contact normals always point from shape1 (b) to
-            // shape0 (a), regardless of which actor was created first.
             const Vec3 normal = a.kind == Kind::StaticPlane
                 ? Vec3{0.0f, -1.0f, 0.0f}
                 : Vec3{0.0f, 1.0f, 0.0f};
+            const Vec3 basis_x = rotate(box.orientation, {1.0f,0.0f,0.0f});
+            const Vec3 basis_y = rotate(box.orientation, {0.0f,1.0f,0.0f});
+            const Vec3 basis_z = rotate(box.orientation, {0.0f,0.0f,1.0f});
+            const Vec3 x{
+                basis_x.x * box.half_extents.x,
+                basis_x.y * box.half_extents.x,
+                basis_x.z * box.half_extents.x};
+            const Vec3 y{
+                basis_y.x * box.half_extents.y,
+                basis_y.y * box.half_extents.y,
+                basis_y.z * box.half_extents.y};
+            const Vec3 z{
+                basis_z.x * box.half_extents.z,
+                basis_z.y * box.half_extents.z,
+                basis_z.z * box.half_extents.z};
+            const float limit = contact_distance -
+                (box.position.y - plane.position.y);
+            const float depths[8]{
+                x.y + y.y + z.y - limit,
+                x.y + y.y - z.y - limit,
+                x.y - y.y + z.y - limit,
+                x.y - y.y - z.y - limit,
+               -x.y + y.y + z.y - limit,
+               -x.y + y.y - z.y - limit,
+               -x.y - y.y + z.y - limit,
+               -x.y - y.y - z.y - limit
+            };
             for (unsigned corner = 0; corner < 8; ++corner) {
-                const float sx = (corner & 1u) ? 1.0f : -1.0f;
-                const float sy = (corner & 2u) ? 1.0f : -1.0f;
-                const float sz = (corner & 4u) ? 1.0f : -1.0f;
+                if (depths[corner] >= 0.0f) continue;
+                const float sx = (corner & 4u) ? -1.0f : 1.0f;
+                const float sy = (corner & 2u) ? -1.0f : 1.0f;
+                const float sz = (corner & 1u) ? -1.0f : 1.0f;
                 const Vec3 point{
-                    box.position.x + sx * box.half_extents.x,
-                    box.position.y + sy * box.half_extents.y,
-                    box.position.z + sz * box.half_extents.z};
-                const float separation = point.y - plane.position.y;
-                if (separation < contact_distance) {
-                    manifold.points[manifold.count++] =
-                        {point, normal, separation};
-                }
+                    box.position.x + sx*x.x + sy*y.x + sz*z.x,
+                    box.position.y + sx*x.y + sy*y.y + sz*z.y,
+                    box.position.z + sx*x.z + sy*y.z + sz*z.z};
+                manifold.points[manifold.count++] = {
+                    point, normal, depths[corner] + contact_distance};
             }
         } else {
             // GuContactBoxBox.cpp Class I/II SAT restricted to the shapes
