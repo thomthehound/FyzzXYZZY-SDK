@@ -166,11 +166,15 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
         throw std::invalid_argument("Native box has nonrepresentable PhysX inertia");
     const Vec3 inverse_inertia{
         1.0f/inertia.x, 1.0f/inertia.y, 1.0f/inertia.z};
-    if (!finite(inverse_inertia) ||
-        inverse_inertia.x <= 0.0f || inverse_inertia.y <= 0.0f ||
-        inverse_inertia.z <= 0.0f)
-        throw std::invalid_argument("Native box inverse inertia outside float range");
-    a.inverse_inertia_local = inverse_inertia;
+    a.angular_inertia_available =
+        finite(inverse_inertia) &&
+        inverse_inertia.x > 0.0f && inverse_inertia.y > 0.0f &&
+        inverse_inertia.z > 0.0f;
+    if (a.angular_inertia_available)
+        a.inverse_inertia_local = inverse_inertia;
+    // Keep the pre-existing tiny-mass TRANSLATION stress case admitted.
+    // It is not an angular-body admission and must not silently run
+    // with zero/infinite substitute inertia in the actual source solver.
     return add(a);
 }
 Scene::Actor& Scene::require(BodyId id) {
@@ -208,6 +212,10 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     auto& actor = require(id);
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors have no angular velocity");
+    if (!actor.angular_inertia_available &&
+        (velocity.x != 0.0f || velocity.y != 0.0f || velocity.z != 0.0f))
+        throw std::logic_error(
+            "Angular inertia is not representable in PhysX float body state");
     actor.angular_velocity = velocity;
 }
 void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
@@ -216,6 +224,9 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     auto& actor = require(id);
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors cannot receive torque impulses");
+    if (!actor.angular_inertia_available)
+        throw std::logic_error(
+            "Angular impulse requires representable PhysX inverse inertia");
 
     // NpRigidBodyTemplate::setSpatialForce(eIMPULSE):
     // world angular delta = global inverse inertia tensor * torque.

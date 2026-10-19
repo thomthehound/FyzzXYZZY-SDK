@@ -325,6 +325,16 @@ int main() {
             {1,1,1},{0,5,0},5.0e-40f);
         const auto right = very_light.add_dynamic_box(
             {1,1,1},{1.5f,5,0},5.0e-40f);
+        bool rejected_angular = false;
+        try { very_light.apply_torque_impulse(left, {1,0,0}); }
+        catch (const std::logic_error&) { rejected_angular = true; }
+        expect(rejected_angular,
+               "Unrepresentable angular inertia silently used a substitute");
+        rejected_angular = false;
+        try { very_light.set_angular_velocity(left, {1,0,0}); }
+        catch (const std::logic_error&) { rejected_angular = true; }
+        expect(rejected_angular,
+               "Tiny-mass body admitted an unrepresentable angular state");
         very_light.step(1.0f / 120.0f);
         const auto lv = very_light.body_state(left);
         const auto rv = very_light.body_state(right);

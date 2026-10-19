@@ -89,6 +89,11 @@ private:
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.
         Vec3 inverse_inertia_local{};
+        // A finite extremely small mass can be admitted by the legacy
+        // translational solver even when PxReal angular inverse inertia
+        // cannot be represented. Do not invent an angular tensor: reject
+        // angular operations on those bodies until full source admission.
+        bool angular_inertia_available = false;
         // PhysX ScBodySim::VelocityMod's per-step angular delta; consumed
         // by the existing scene clock, not a second force owner.
         Vec3 pending_angular_velocity_delta{};
