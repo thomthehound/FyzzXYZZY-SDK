@@ -378,6 +378,26 @@ int main() {
         (void)floor;
     }
 
+    // Two static contact managers must reference the same zero-mass world
+    // solver body, without duplicating or accumulating static velocity.
+    {
+        Scene supports;
+        const auto left = supports.add_static_box(
+            {0.5f,0.5f,1.0f},{-0.5f,-0.5f,0});
+        const auto right = supports.add_static_box(
+            {0.5f,0.5f,1.0f},{0.5f,-0.5f,0});
+        const auto load = supports.add_dynamic_box(
+            {0.75f,0.5f,0.75f},{0,0.5f,0},1.0f);
+        supports.set_velocity(load,{0,-1.0f,0});
+        supports.step(1.0f/120.0f);
+        const auto v = supports.body_state(load).velocity;
+        expect(supports.contacts().size()==2 &&
+               std::isfinite(v.y) && v.y>-1.1f &&
+               supports.body_state(left).velocity.y==0.0f &&
+               supports.body_state(right).velocity.y==0.0f,
+               "Shared world solver body failed multi-static contact");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
