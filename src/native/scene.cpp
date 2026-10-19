@@ -695,10 +695,16 @@ void Scene::step(float seconds) {
     // integration occurs after solver motion-velocity publication.
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        const Quat prior = actor.orientation;
         actor.orientation = integrate_quaternion(
             actor.orientation, actor.angular_velocity, seconds);
         if (!finite(actor.orientation))
             throw std::overflow_error("Native CPU orientation overflow");
+        if (actor.orientation.x != prior.x ||
+            actor.orientation.y != prior.y ||
+            actor.orientation.z != prior.z ||
+            actor.orientation.w != prior.w)
+            dirty_ = true;
     }
 }
 
