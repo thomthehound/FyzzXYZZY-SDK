@@ -566,16 +566,18 @@ void Scene::prepare_constraints(float seconds) {
     constexpr float bounce_threshold = 2.0f;
     constexpr float restitution = 0.2f;
     for (auto& manifold : manifolds_) {
-        const Actor& a = actors_[manifold.pair.a];
-        const Actor& b = actors_[manifold.pair.b];
+        const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
+            ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
+        const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
+            ? solver_rows_[manifold.pair.b].data : world_solver_row_.data;
         const Vec3 n = manifold.points[0].normal;
-        // PhysX::DyContactPrep consumes the already clamped unconstrained
-        // linear velocities. The source default speed limit keeps both
-        // magnitudes <= 1e16; float differences cannot overflow here.
+        // DyContactPrep.cpp consumes pre-solver body velocities, not the
+        // mutable PxSolverBody deltas. The source default speed clamp
+        // keeps the admitted linear velocity magnitudes <= 1e16.
         const float relative_velocity =
-            (a.velocity.x - b.velocity.x) * n.x +
-            (a.velocity.y - b.velocity.y) * n.y +
-            (a.velocity.z - b.velocity.z) * n.z;
+            (a.linear_velocity.x - b.linear_velocity.x) * n.x +
+            (a.linear_velocity.y - b.linear_velocity.y) * n.y +
+            (a.linear_velocity.z - b.linear_velocity.z) * n.z;
         float separation = manifold.points[0].separation;
         for (unsigned k = 1; k < manifold.count; ++k)
             separation = std::min(separation, manifold.points[k].separation);
