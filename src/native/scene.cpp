@@ -507,55 +507,55 @@ void Scene::prepare_solver_bodies() {
     for (const auto& manifold : manifolds_) {
         const BodyId ids[2]{manifold.pair.a, manifold.pair.b};
         for (BodyId id : ids) {
-        auto& row = solver_rows_[id];
-        if (row.prepared_frame == frame_index_) continue;
-        row = {};
-        row.prepared_frame = frame_index_;
-        solver_active_ids_.push_back(id);
-        const Actor& actor = actors_[id];
-        row.data.position = actor.position;
-        row.data.orientation = actor.orientation;
-        row.data.linear_velocity = actor.velocity;
-        row.data.angular_velocity = actor.angular_velocity;
-        row.data.inverse_mass = actor.inverse_mass;
-        if (actor.kind != Kind::DynamicBox ||
-            !actor.angular_inertia_available)
-            continue;
+            auto& row = solver_rows_[id];
+            if (row.prepared_frame == frame_index_) continue;
+            row = {};
+            row.prepared_frame = frame_index_;
+            solver_active_ids_.push_back(id);
+            const Actor& actor = actors_[id];
+            row.data.position = actor.position;
+            row.data.orientation = actor.orientation;
+            row.data.linear_velocity = actor.velocity;
+            row.data.angular_velocity = actor.angular_velocity;
+            row.data.inverse_mass = actor.inverse_mass;
+            if (actor.kind != Kind::DynamicBox ||
+                !actor.angular_inertia_available)
+                continue;
 
-        // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
-        // The source computes a symmetric world-space R*diag(sqrt(invI))*R^T;
-        // retain its six unique terms rather than reconstructing a tensor
-        // independently for every contact row.
-        const Vec3 local{
-            std::sqrt(actor.inverse_inertia_local.x),
-            std::sqrt(actor.inverse_inertia_local.y),
-            std::sqrt(actor.inverse_inertia_local.z)};
-        const Quat q = actor.orientation;
-        if (q.x == 0.0f && q.y == 0.0f &&
-            q.z == 0.0f && q.w == 1.0f) {
+            // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
+            // The source computes a symmetric world-space R*diag(sqrt(invI))*R^T;
+            // retain its six unique terms rather than reconstructing a tensor
+            // independently for every contact row.
+            const Vec3 local{
+                std::sqrt(actor.inverse_inertia_local.x),
+                std::sqrt(actor.inverse_inertia_local.y),
+                std::sqrt(actor.inverse_inertia_local.z)};
+            const Quat q = actor.orientation;
+            if (q.x == 0.0f && q.y == 0.0f &&
+                q.z == 0.0f && q.w == 1.0f) {
+                row.data.sqrt_inverse_inertia = {
+                    Vec3{local.x, 0.0f, 0.0f},
+                    Vec3{0.0f, local.y, 0.0f},
+                    Vec3{0.0f, 0.0f, local.z}};
+                continue;
+            }
+            const Vec3 rx = rotate(q, {1.0f, 0.0f, 0.0f});
+            const Vec3 ry = rotate(q, {0.0f, 1.0f, 0.0f});
+            const Vec3 rz = rotate(q, {0.0f, 0.0f, 1.0f});
+            const float xx = local.x*rx.x*rx.x + local.y*ry.x*ry.x +
+                             local.z*rz.x*rz.x;
+            const float yy = local.x*rx.y*rx.y + local.y*ry.y*ry.y +
+                             local.z*rz.y*rz.y;
+            const float zz = local.x*rx.z*rx.z + local.y*ry.z*ry.z +
+                             local.z*rz.z*rz.z;
+            const float xy = local.x*rx.x*rx.y + local.y*ry.x*ry.y +
+                             local.z*rz.x*rz.y;
+            const float xz = local.x*rx.x*rx.z + local.y*ry.x*ry.z +
+                             local.z*rz.x*rz.z;
+            const float yz = local.x*rx.y*rx.z + local.y*ry.y*ry.z +
+                             local.z*rz.y*rz.z;
             row.data.sqrt_inverse_inertia = {
-                Vec3{local.x, 0.0f, 0.0f},
-                Vec3{0.0f, local.y, 0.0f},
-                Vec3{0.0f, 0.0f, local.z}};
-            continue;
-        }
-        const Vec3 rx = rotate(q, {1.0f, 0.0f, 0.0f});
-        const Vec3 ry = rotate(q, {0.0f, 1.0f, 0.0f});
-        const Vec3 rz = rotate(q, {0.0f, 0.0f, 1.0f});
-        const float xx = local.x*rx.x*rx.x + local.y*ry.x*ry.x +
-                         local.z*rz.x*rz.x;
-        const float yy = local.x*rx.y*rx.y + local.y*ry.y*ry.y +
-                         local.z*rz.y*rz.y;
-        const float zz = local.x*rx.z*rx.z + local.y*ry.z*ry.z +
-                         local.z*rz.z*rz.z;
-        const float xy = local.x*rx.x*rx.y + local.y*ry.x*ry.y +
-                         local.z*rz.x*rz.y;
-        const float xz = local.x*rx.x*rx.z + local.y*ry.x*ry.z +
-                         local.z*rz.x*rz.z;
-        const float yz = local.x*rx.y*rx.z + local.y*ry.y*ry.z +
-                         local.z*rz.y*rz.z;
-        row.data.sqrt_inverse_inertia = {
-            Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
+                Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
         }
     }
 }
