@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: architecture and source audit with live source-derived Gu geometry and per-contact Dy rigid-body normal constraints. Friction correlation, full island/PGS execution and N1 acceptance remain open.**
+**Status: source-derived Gu contact geometry, Dy per-point normal constraints and default-scheduled friction anchors active in the native scene. Heterogeneous material correlation, full island/PGS task execution, reports and N1 acceptance remain open.**
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -179,7 +179,9 @@ Important verified source edges:
 
 **Current integrated CPU slice and remaining departure:** `src/native/scene.cpp::step` now runs the scene-owned Gu collision stage at the starting pose, source-derived `DyContactPrepShared` per-point rigid-body normal Jacobian/effective-mass/bias preparation, and `DySolverConstraintsShared` normal impulse passes. Following `DySolverControl`, it snapshots motion deltas after biased position iterations and separately executes unbiased velocity iterations; `DyBodyCoreIntegrator` uses saved position-phase motion to advance poses and final velocity-phase deltas to update next-frame body velocity. This retires the predicted-pose/one-normal-per-manifold solver and its angular guard.
 
-This is **not** full source solver admission: `DyCorrelationBuffer` contact/friction patch matching, materials/strong-friction anchors, packed solver constraint ABI, exact float/SIMD semantics, source island/partition and task graph, and full contact-manager writeback remain unported. The native path remains a transitional normal-contact subset rather than an accepted PhysX CPU replacement or N1 completion.
+The existing scene now also applies a source-derived subset of `DyFrictionCorrelation`: same-normal/material grouping, correlated cached body-local patches, at most two anchors chosen from the source contact geometry, two tangent constraints per anchor, and `DySolverConstraints` patch friction solving under the original iteration policy. This path restores the 600-frame stacked-body regression with the default one velocity pass; it does not add an extra pass or weaken its tolerance.
+
+This is **not** full source solver admission: heterogeneous material combine modes and per-contact target velocities, exact `DyCorrelationBuffer` patch-list ordering and persistence in all cases, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/partition and task graph, and contact-manager friction/force writeback remain unported. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
