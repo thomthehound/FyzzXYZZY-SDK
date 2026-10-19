@@ -580,6 +580,9 @@ void Scene::prepare_constraints(float seconds) {
     // Contact/friction patch correlation is not yet integrated; this
     // stream retains the original contact ordering and no shadow solver.
     constexpr float bias_coefficient = 0.2f;
+    // DyContactPrep's friction velocity multiplier uses the rigid-contact
+    // relaxation coefficient, not the penetration Baumgarte scale.
+    constexpr float friction_relaxation = 0.8f;
     constexpr float max_penetration_bias = -3.0f;
     constexpr float restitution = 0.2f;
     constexpr float bounce_threshold = -2.0f;
@@ -609,6 +612,10 @@ void Scene::prepare_constraints(float seconds) {
             {world.x-actor.position.x,
              world.y-actor.position.y,
              world.z-actor.position.z});
+    };
+    const auto local_normal = [](const Actor& actor, Vec3 world_normal) {
+        const Quat& q = actor.orientation;
+        return rotate(Quat{-q.x,-q.y,-q.z,q.w}, world_normal);
     };
     const auto world_point = [](const Actor& actor, Vec3 local) {
         Vec3 r = rotate(actor.orientation,local);
@@ -656,6 +663,11 @@ void Scene::prepare_constraints(float seconds) {
                 FrictionPatch patch{};
                 patch.pair = manifold.pair;
                 patch.normal = contact.normal;
+                // DyFrictionCorrelation::initFrictionPatch saves the normal
+                // in both actor frames. These local normals are only reused
+                // when the bodies still agree on the contact orientation.
+                patch.body0_normal = local_normal(actor0,contact.normal);
+                patch.body1_normal = local_normal(actor1,contact.normal);
                 patch.bounds_min = patch.bounds_max = contact.position;
                 patch.contact_ids.fill(0xffff);
                 // Source getFrictionPatches keeps unbroken local anchors
@@ -665,15 +677,32 @@ void Scene::prepare_constraints(float seconds) {
                      friction_patches_[previous].pair == manifold.pair;
                      ++previous) {
                     const auto& old=friction_patches_[previous];
+                    // DyContactPrepShared::getFrictionPatches:
+                    // validate the cached normal under the *current*
+                    // relative actor orientation, then correlate it with
+                    // the current generated world's contact normal.
+                    const Vec3 old_normal_1_world =
+                        rotate(actor1.orientation,old.body1_normal);
+                    const Vec3 old_normal_1_in_0 =
+                        local_normal(actor0,old_normal_1_world);
+                    const Vec3 old_normal_0_world =
+                        rotate(actor0.orientation,old.body0_normal);
                     if (old.broken ||
-                        dot(old.normal,patch.normal) < same_normal)
+                        dot(old.body0_normal,old_normal_1_in_0) <=
+                            same_normal ||
+                        dot(old_normal_0_world,patch.normal) <
+                            same_normal)
                         continue;
                     bool separated = false;
                     for (std::size_t k=0;k<old.anchor_count;++k) {
-                        const Vec3 p0=world_point(actor0,old.body0_anchors[k]);
-                        const Vec3 p1=world_point(actor1,old.body1_anchors[k]);
-                        const Vec3 between{sub(p0,p1)};
-                        if (std::abs(dot(between,patch.normal)) >=
+                        // DyContactPrepShared::pointsAreClose tests the
+                        // absolute normal separation in body-0 local space.
+                        // Deep penetration ALSO invalidates the anchor,
+                        // contrary to the recent proposed signed shortcut.
+                        const Vec3 p1_in0=local_point(actor0,
+                            world_point(actor1,old.body1_anchors[k]));
+                        const Vec3 between=sub(old.body0_anchors[k],p1_in0);
+                        if (std::abs(dot(between,old.body0_normal)) >=
                             correlation_distance) {
                             separated=true;
                             break;
@@ -841,7 +870,7 @@ void Scene::prepare_constraints(float seconds) {
                     fr.ra_x_t_sqrt_inertia=j0;
                     fr.rb_x_t_sqrt_inertia=j1;
                     fr.velocity_multiplier=response>0.0
-                        ? bias_coefficient/response : 0.0;
+                        ? friction_relaxation/response : 0.0;
                     fr.bias=dot(tangent,error)*inv_dt;
                     fr.target_velocity=-(dot(tangent,rel)
                         +dot(ax0,a.angular_velocity)
