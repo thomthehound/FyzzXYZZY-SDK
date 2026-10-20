@@ -772,10 +772,13 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     ++island_topology_revision_;
 }
 void Scene::third_pass_island_gen() {
-    // Single-threaded continuation join for this all-awake rigid subset.
-    // PhysX executes speculative/accurate lost-edge repairs on two tasks
-    // that join before postThirdPassIslandGen. No sleep/deactivation or
-    // persistent IslandSim handle lifecycle is claimed here.
+    // Both original IslandSim::processLostEdges third-pass tasks depend
+    // on lost-contact management and join into postThirdPassIslandGen,
+    // potentially overlapping the numerical solver. This synchronous
+    // source-subset execution is scheduled once those collision products
+    // are ready, *not* as a mandatory post-solver serial stage.
+    // Persistent edge handles, sleep/deactivation and their continuations
+    // remain N1 admission work.
     update_island_connectivity(true);
 }
 // Active native CPU stages remain within the one Scene owner:
@@ -1790,7 +1793,6 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
                             scene.accurate_island_offsets_.end());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
-    pre_third_pass_count=scene.pre_third_pass_island_count_;
     topology_revision=scene.island_topology_revision_;
     full_rebuild_count=scene.island_full_rebuild_count_;
     frame_index=scene.frame_index_;
@@ -1852,7 +1854,6 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_island_offsets_.swap(accurate_offsets);
     scene.speculative_island_count_=speculative_count;
     scene.accurate_island_count_=accurate_count;
-    scene.pre_third_pass_island_count_=pre_third_pass_count;
     scene.island_topology_revision_=topology_revision;
     scene.island_full_rebuild_count_=full_rebuild_count;
     scene.frame_index_=frame_index;
@@ -1930,7 +1931,12 @@ void Scene::step(float seconds) {
     // The complete island task graph, packed constraint ABI, heterogeneous
     // material/contact callbacks and CCD remain explicit N1 admission gates.
     advance_collision_internal(false);
-    pre_third_pass_island_count_=accurate_island_count_;
+    // The source third-pass island tasks may overlap the numerical solve.
+    // For this all-awake, single-threaded subset, the lost-contact
+    // producer is already complete, so this is a valid dependency-ready
+    // execution order; no ordering of third pass *after* solve is implied.
+    // Actual source task continuations and deactivation are still N1 gates.
+    third_pass_island_gen();
     prepare_solver_bodies();
     partition_constraints();
     prepare_constraints(seconds);
@@ -1989,10 +1995,8 @@ void Scene::step(float seconds) {
             dirty_ = true;
         }
     }
-    // ScPipeline::destroyManagers -> thirdPassIslandGen -> postThirdPass:
-    // the current Dy solve/integration must complete before splits caused
-    // by lost edges can alter the next accurate island-node sequence.
-    third_pass_island_gen();
+    // Solver and lost-edge producers have both completed before this
+    // successful step returns its published body and contact results.
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
