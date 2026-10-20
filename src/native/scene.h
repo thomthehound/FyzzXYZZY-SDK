@@ -364,6 +364,33 @@ private:
         double impulse=0.0;
         float threshold=0.0f;
     };
+    // Reused authoritative-state checkpoint for the strong step failure
+    // boundary. Transient solver rows/descriptors and scratch are rebuilt
+    // on retry; only observable state and persistent contact history are
+    // saved. This is a journal, not an independent scene or solver.
+    struct StepCheckpoint {
+        std::vector<Actor> actors;
+        std::vector<Pair> previous_pairs, found, lost;
+        std::vector<Pair> found_contacts, lost_contacts;
+        std::vector<ContactManifold> manifolds;
+        std::vector<ContactPoint> contact_points;
+        std::vector<FrictionPatch> friction_patches;
+        std::vector<double> normal_impulses;
+        std::vector<FrictionPatchWriteback> friction_impulses;
+        std::vector<ThresholdPair> threshold_previous;
+        std::vector<ForceThresholdReport> threshold_changes;
+        std::vector<std::size_t> partition_ends;
+        std::vector<BodyId> speculative_parent, accurate_parent;
+        std::vector<std::uint8_t> speculative_rank, accurate_rank;
+        std::vector<BodyId> accurate_nodes;
+        std::vector<std::size_t> accurate_offsets;
+        std::size_t speculative_count=0, accurate_count=0;
+        std::uint64_t topology_revision=0, frame_index=0;
+        bool topology_dirty=true, dirty=true;
+        void capture(const Scene& scene);
+        void rollback(Scene& scene) noexcept;
+    };
+    StepCheckpoint step_checkpoint_;
     std::vector<ThresholdPair> threshold_current_;
     std::vector<ThresholdPair> threshold_previous_;
     std::vector<ForceThresholdReport> threshold_changes_;
