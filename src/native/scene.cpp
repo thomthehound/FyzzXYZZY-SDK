@@ -1637,6 +1637,86 @@ void Scene::publish_solver_bodies() {
         actor.angular_velocity = angular;
     }
 }
+void Scene::StepCheckpoint::capture(const Scene& scene) {
+    // Reuse capacities across frames. The checkpoint contains only state
+    // that persists beyond a step or is exposed by Scene's read-only APIs.
+    // It intentionally excludes rebuilt solver constraints and scratch.
+    actors.assign(scene.actors_.begin(),scene.actors_.end());
+    previous_pairs.assign(scene.previous_pairs_.begin(),scene.previous_pairs_.end());
+    found.assign(scene.found_.begin(),scene.found_.end());
+    lost.assign(scene.lost_.begin(),scene.lost_.end());
+    found_contacts.assign(scene.found_contacts_.begin(),scene.found_contacts_.end());
+    lost_contacts.assign(scene.lost_contacts_.begin(),scene.lost_contacts_.end());
+    manifolds.assign(scene.manifolds_.begin(),scene.manifolds_.end());
+    contact_points.assign(scene.contact_points_.begin(),scene.contact_points_.end());
+    friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
+    normal_impulses.assign(scene.normal_impulse_writeback_.begin(),
+                           scene.normal_impulse_writeback_.end());
+    friction_impulses.assign(scene.friction_impulse_writeback_.begin(),
+                             scene.friction_impulse_writeback_.end());
+    threshold_previous.assign(scene.threshold_previous_.begin(),
+                              scene.threshold_previous_.end());
+    threshold_changes.assign(scene.threshold_changes_.begin(),
+                             scene.threshold_changes_.end());
+    partition_ends.assign(scene.partition_ends_.begin(),scene.partition_ends_.end());
+    speculative_parent.assign(scene.speculative_island_parent_.begin(),
+                              scene.speculative_island_parent_.end());
+    accurate_parent.assign(scene.accurate_island_parent_.begin(),
+                           scene.accurate_island_parent_.end());
+    speculative_rank.assign(scene.speculative_island_rank_.begin(),
+                            scene.speculative_island_rank_.end());
+    accurate_rank.assign(scene.accurate_island_rank_.begin(),
+                         scene.accurate_island_rank_.end());
+    accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
+                          scene.accurate_island_nodes_.end());
+    accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
+                            scene.accurate_island_offsets_.end());
+    speculative_count=scene.speculative_island_count_;
+    accurate_count=scene.accurate_island_count_;
+    topology_revision=scene.island_topology_revision_;
+    frame_index=scene.frame_index_;
+    topology_dirty=scene.island_topology_dirty_;
+    dirty=scene.dirty_;
+}
+
+void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
+    // Swaps cannot allocate or fail with the standard vector allocator.
+    // In particular, pending angular impulses and the authoritative
+    // previous-frame friction/threshold streams survive failed solves.
+    scene.actors_.swap(actors);
+    scene.previous_pairs_.swap(previous_pairs);
+    scene.found_.swap(found);
+    scene.lost_.swap(lost);
+    scene.found_contacts_.swap(found_contacts);
+    scene.lost_contacts_.swap(lost_contacts);
+    scene.manifolds_.swap(manifolds);
+    scene.contact_points_.swap(contact_points);
+    scene.friction_patches_.swap(friction_patches);
+    scene.normal_impulse_writeback_.swap(normal_impulses);
+    scene.friction_impulse_writeback_.swap(friction_impulses);
+    scene.threshold_previous_.swap(threshold_previous);
+    scene.threshold_changes_.swap(threshold_changes);
+    scene.partition_ends_.swap(partition_ends);
+    scene.speculative_island_parent_.swap(speculative_parent);
+    scene.accurate_island_parent_.swap(accurate_parent);
+    scene.speculative_island_rank_.swap(speculative_rank);
+    scene.accurate_island_rank_.swap(accurate_rank);
+    scene.accurate_island_nodes_.swap(accurate_nodes);
+    scene.accurate_island_offsets_.swap(accurate_offsets);
+    scene.speculative_island_count_=speculative_count;
+    scene.accurate_island_count_=accurate_count;
+    scene.island_topology_revision_=topology_revision;
+    scene.frame_index_=frame_index;
+    scene.island_topology_dirty_=topology_dirty;
+    scene.dirty_=dirty;
+    // ContactManifold carries a span into its owning contact-point arena.
+    // Snapshotting a manifold copies the span, not its backing storage.
+    // Rebind to the restored arena before any observer or retry can read it.
+    for (auto& m : scene.manifolds_)
+        m.points=std::span<const ContactPoint>(
+            scene.contact_points_.data()+m.contact_offset,m.count);
+}
+
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
@@ -1649,6 +1729,11 @@ void Scene::step(float seconds) {
     constexpr float angular_damping = 0.05f;
     constexpr float max_linear_velocity_squared = 1.0e32f;
     constexpr float max_angular_velocity_squared = 1.0e4f;
+    // A failed frame must not consume impulses or publish partial
+    // contacts, island nodes, body motion or result streams. Snapshot only
+    // authoritative state; all per-step Dy work buffers remain reusable.
+    step_checkpoint_.capture(*this);
+    try {
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
         float vx = actor.velocity.x;
@@ -1759,6 +1844,10 @@ void Scene::step(float seconds) {
             actor.orientation = q;
             dirty_ = true;
         }
+    }
+    } catch (...) {
+        step_checkpoint_.rollback(*this);
+        throw;
     }
 }
 
