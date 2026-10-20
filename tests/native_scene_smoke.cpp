@@ -1026,11 +1026,15 @@ int run_native_scene_smoke() {
                              total_tangential_impulse};
         };
         const auto minimum=friction_run(Mode::Minimum,false);
+        const auto average=friction_run(Mode::Average,false);
+        const auto multiply=friction_run(Mode::Multiply,false);
         const auto maximum=friction_run(Mode::Maximum,false);
         const auto disabled=friction_run(Mode::Maximum,true);
         expect(std::abs(minimum.first-0.2f)<0.002f &&
                minimum.second<1.0e-8 &&
-               maximum.second>0.001 &&
+               multiply.second<1.0e-8 &&
+               average.second>0.001 &&
+               maximum.second>average.second &&
                maximum.first<minimum.first-0.001f,
                "Source contact friction mode precedence was not applied");
         expect(std::abs(disabled.first-0.2f)<0.002f &&
@@ -1071,10 +1075,15 @@ int run_native_scene_smoke() {
             return bounce.body_state(box).velocity.y;
         };
         const float low=rebound(Mode::Minimum);
+        const float multiply=rebound(Mode::Multiply);
+        const float average=rebound(Mode::Average);
         const float high=rebound(Mode::Maximum);
         expect(std::isfinite(low) && std::isfinite(high) &&
-               high>low+1.0f,
-               "Source material restitution combine mode did not alter rebound");
+               std::isfinite(multiply) && std::isfinite(average) &&
+               std::abs(low-multiply)<0.02f &&
+               average>low+0.4f &&
+               high>average+0.4f,
+               "Source material restitution combine modes did not order rebound");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
