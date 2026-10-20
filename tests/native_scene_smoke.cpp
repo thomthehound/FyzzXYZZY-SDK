@@ -851,6 +851,37 @@ int run_native_scene_smoke() {
                "Loss of contact failed to retire exceeded-force pair");
     }
 
+    // DySolverConstraints::writeBackContact uses the MINIMUM of the
+    // two dynamic bodies' thresholds for a rigid-body contact manager.
+    // Raising the lower threshold beyond the solved pair force must
+    // produce LOST without retiring the underlying Gu contact.
+    {
+        using Change=fyzz::native::ForceThresholdChange;
+        Scene pair_threshold;
+        const auto first=pair_threshold.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const auto second=pair_threshold.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,5,0},1.0f);
+        pair_threshold.set_velocity(second,{-2,0,0});
+        pair_threshold.set_contact_report_threshold(first,1000.0f);
+        pair_threshold.set_contact_report_threshold(second,0.0f);
+        pair_threshold.step(1.0f/120.0f);
+        auto changes=pair_threshold.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].pair==fyzz::native::Pair{first,second} &&
+               changes[0].change==Change::Found &&
+               changes[0].threshold==0.0f,
+               "Dy threshold stream did not use minimum dynamic-body threshold");
+        pair_threshold.set_contact_report_threshold(second,1000.0f);
+        pair_threshold.step(1.0f/120.0f);
+        changes=pair_threshold.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Lost &&
+               changes[0].pair==fyzz::native::Pair{first,second} &&
+               changes[0].normal_impulse==0.0,
+               "Dy exceeded stream failed to retire when pair threshold rose");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
