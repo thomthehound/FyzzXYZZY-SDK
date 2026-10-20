@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -1173,9 +1174,28 @@ void Scene::solve_constraints() {
                         fr.applied_force=next;
                         broken_this_iteration |= clamped;
                     }
+                    if (iter < position_iterations)
+                        patch.diagnostic_position_clamp |= broken_this_iteration;
                     if (iter + 1 ==
-                        position_iterations + velocity_iterations)
+                        position_iterations + velocity_iterations) {
+                        if (patch.diagnostic_position_clamp &&
+                            !broken_this_iteration)
+                            std::fprintf(stderr,
+                                "FRICTION_RECOVER frame=%llu pair=%u,%u anchors=%u row=%zu pos=%g,%g,%g vel=%g,%g,%g force=%g\\n",
+                                static_cast<unsigned long long>(frame_index_),
+                                static_cast<unsigned>(patch.pair.a),
+                                static_cast<unsigned>(patch.pair.b),
+                                static_cast<unsigned>(patch.anchor_count),
+                                patch.row_offset,
+                                actors_[patch.pair.b].position.x,
+                                actors_[patch.pair.b].position.y,
+                                actors_[patch.pair.b].position.z,
+                                actors_[patch.pair.b].velocity.x,
+                                actors_[patch.pair.b].velocity.y,
+                                actors_[patch.pair.b].velocity.z,
+                                normal_impulse);
                         patch.broken=broken_this_iteration;
+                    }
                 }
             }
         }
