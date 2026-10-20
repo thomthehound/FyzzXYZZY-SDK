@@ -342,6 +342,10 @@ private:
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair pair);
     void retire_destroyed_contact_edges();
+    // IslandSim::addConnectionToGraph/removeConnectionInternal,
+    // two source edge instances per contact manager, per graph.
+    void link_contact_edge(EdgeIndex id, bool accurate) noexcept;
+    void unlink_contact_edge(EdgeIndex id, bool accurate) noexcept;
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // connectivity repair. Original overlapping continuation tasks and
@@ -360,11 +364,22 @@ private:
     std::vector<Actor> actors_;
     using EdgeIndex=std::uint32_t;
     static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
+    static constexpr std::size_t invalid_instance=
+        std::numeric_limits<std::size_t>::max();
+    struct EdgeInstance {
+        std::size_t next=invalid_instance;
+        std::size_t prev=invalid_instance;
+        bool linked=false;
+    };
     struct ContactEdge {
         Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
         bool live=false;            // allocated by addContactManager
         bool connected=false;       // source accurate mConnectedMap bit
         bool retiring=false;        // removeConnection, pending post-third-pass
+        // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
+        // speculative and accurate IslandSim graphs.
+        std::array<EdgeInstance,2> speculative{};
+        std::array<EdgeInstance,2> accurate{};
     };
     // Source HandleManager-style reusable slots. Active handles align
     // with the one authoritative sorted SAP pair stream; the slots own
@@ -372,6 +387,9 @@ private:
     std::vector<ContactEdge> contact_edges_;
     std::vector<EdgeIndex> active_edge_handles_, next_edge_handles_;
     std::vector<EdgeIndex> retired_edge_handles_, free_edge_handles_;
+    // Per-node intrusive adjacency heads for the two original IslandSim
+    // graphs. Static world endpoints never become dynamic island nodes.
+    std::vector<std::size_t> speculative_node_first_, accurate_node_first_;
     // The admitted all-awake rigid subset of PxsSimpleIslandManager's
     // speculative and accurate IslandSim connectivity. Pair and contact
     // streams remain the unique authoritative graph edges. These reusable
@@ -387,11 +405,9 @@ private:
     // not a duplicated actor or solver-body registry.
     std::vector<BodyId> accurate_island_nodes_;
     std::vector<std::size_t> accurate_island_offsets_;
-    // Reused route-search scratch for IslandSim::findRoute on lost
-    // dynamic edges. Only authoritative published pairs/contacts supply
-    // edges; this does not maintain a competing graph or actor registry.
-    std::vector<std::size_t> island_route_head_, island_route_next_;
-    std::vector<BodyId> island_route_other_, island_route_queue_;
+    // IslandSim::findRoute traversal reuses its search queue/visited
+    // marks, but now traverses the persistent EdgeInstance adjacency.
+    std::vector<BodyId> island_route_queue_;
     std::vector<std::uint32_t> island_route_seen_;
     std::size_t speculative_island_count_ = 0;
     std::size_t accurate_island_count_ = 0;
@@ -433,6 +449,7 @@ private:
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
         std::vector<ContactEdge> contact_edges;
+        std::vector<std::size_t> speculative_first, accurate_first;
         std::vector<EdgeIndex> active_handles;
         std::vector<EdgeIndex> retired_handles, free_handles;
           std::vector<FrictionPatch> friction_patches;
