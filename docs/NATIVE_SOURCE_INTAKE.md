@@ -528,20 +528,23 @@ only when a touch merges two previously separate components, costing
 O(dynamic nodes log dynamic nodes). On a lost dynamic edge, the native scene now uses the
 `IslandSim::processLostEdges` / `findRoute` connectivity invariant:
 if the removed edge's endpoints are still connected in the surviving
-published graph, their component has not split. The exact published
-speculative and accurate edges are searched separately using
-capacity-reused transient adjacency, without changing their ownership.
-Redundant lost edges therefore preserve both island components and
-solver-node order. A proved disconnection, or dynamic node retirement,
-still rebuilds both graphs from surviving edges, costing
+published graph, their component has not split. The scene now retains the original `IslandSim::mEdgeInstances`
+per-endpoint intrusive adjacency form directly in each persistent
+contact-manager `EdgeIndex` slot: two endpoint links, per speculative
+and accurate graph, with per-node first-edge heads. SAP overlap
+creation/removal links or unlinks speculative instances; Gu touch
+found/lost does the same independently for accurate instances.
+Lost-edge route checks traverse this persistent state, using only
+visited marks and a reusable queue; no temporary adjacency graph or
+edge-list reconstruction is needed for each loss. Redundant lost
+edges preserve connected components and solver-node order. A proved
+disconnection or dynamic-node retirement still reconstructs union/find
+components from surviving source edge slots, costing
 O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
-A route search costs O(dynamic nodes + relevant surviving edges)
-in scratch initialization/traversal, without the component sorting
-cost, and is triggered **only on dynamic losses**. This is a graph
-invariant-preserving lowering, not a claim to have translated the
-original persistent `EdgeInstance`, dirty-node `findRoute`,
-`mFastRoute`/hop-count repair, dirty-work budget, stable island
-handles, or sleep/activation processing. Those remain N1 requirements.
+The route traversal remains O(visited dynamic nodes + traversed edge
+instances), with O(dynamic nodes) initialization of visited marks.
+The original fast-route/hop-count dirty repairs, work budgets, stable
+island handles and sleep/activation are **not yet ported**.
 The full-rebuild instrumentation differentiates redundant edge
 removal from a true split; allocations are retained between frames.
 
@@ -602,16 +605,23 @@ indices may subsequently be reused on later overlaps. A failed
 handle ordering and retirement queue alongside actor/contact history.
 The native smoke tests exercise touch loss/reentry, overlap replacement,
 no premature same-frame reuse, subsequent handle reuse, and rejected
-step retry identity.
+step retry identity. An additional graph regression retires a link in
+a dynamic cycle, reuses the same handle for a different contact, then
+tests redundant lost-edge routing and a real split against the
+relinked adjacency. The same source edge slots, not a second graph
+owner, supply both graphs and their traversal.
 
-**Remaining source and performance differences:** this bounded slot
-owner does not yet carry original `EdgeInstance` dirty adjacency,
-hop/fast routes, stable island handles or source activation state; the
-union/find and transient route lowering still need replacement as N1
-progresses. The step-failure checkpoint currently copies O(allocated
-edge handles + active pairs) each frame, reusing allocations. This
-bandwidth cost is tracked for elimination via source-owned staged
-mutation/rollback at the completed task publication boundary.
+**Remaining source and performance differences:** persistent
+`EdgeInstance` next/previous links and per-node first-edge indices
+are now represented and maintained by the existing scene's contact
+manager handles. The source's dirty-node route witnesses, hop/fast
+routes, stable island handles and activation/sleep state remain
+unported; the union/find component lowering still needs retirement
+or deeper integration as N1 progresses. Failure rollback currently
+copies O(allocated edge slots + allocated island nodes) metadata per
+active step, including both source adjacency head arrays. Track and
+eliminate this bandwidth with source-owned staged state/publication,
+without sacrificing the existing failure-atomicity contract.
 `ScPipeline`'s asynchronous `destroyManagers`/lost-contact
 continuations, speculative/accurate deactivation, and
 `afterIntegration` reconciliation also remain unported. A correct
