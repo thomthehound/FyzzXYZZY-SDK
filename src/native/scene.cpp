@@ -1187,6 +1187,11 @@ void Scene::write_back_contacts() {
     // source force buffer is represented by SolverContactPoint::applied_force
     // and the output retains SDK-wide impulses for admitted extreme masses.
     normal_impulse_writeback_.resize(contact_points_.size());
+    // DyContactPrep::updateFrictionAnchorCountAndPosition pairs each
+    // friction patch with its output's anchorPositions/anchorImpulses.
+    // Preserve the Gu manager's patch offsets even when solver partitions
+    // execute in a different order from the contact-manager stream.
+    friction_impulse_writeback_.resize(friction_patches_.size());
     for (const auto& manifold : manifolds_) {
         if (manifold.contact_offset > contact_points_.size() ||
             manifold.count > contact_points_.size()-manifold.contact_offset ||
@@ -1201,6 +1206,54 @@ void Scene::write_back_contacts() {
                 throw std::overflow_error(
                     "Native Dy contact writeback has invalid normal impulse");
             normal_impulse_writeback_[manifold.contact_offset+i]=impulse;
+        }
+        if (manifold.friction_patch_offset>friction_patches_.size() ||
+            manifold.friction_patch_count>
+                friction_patches_.size()-manifold.friction_patch_offset)
+            throw std::logic_error(
+                "Native Dy friction writeback exceeds correlated patches");
+        for (std::size_t p=manifold.friction_patch_offset;
+             p<manifold.friction_patch_offset+
+                 manifold.friction_patch_count; ++p) {
+            const auto& source=friction_patches_[p];
+            if (!(source.pair==manifold.pair) || source.anchor_count>2 ||
+                source.row_offset>solver_friction_rows_.size() ||
+                source.anchor_count*2>
+                    solver_friction_rows_.size()-source.row_offset)
+                throw std::logic_error(
+                    "Native Dy friction writeback patch ownership invalid");
+            FrictionPatchWriteback& result=friction_impulse_writeback_[p];
+            result={};
+            result.pair=source.pair;
+            result.anchor_count=source.anchor_count;
+            result.broken=source.broken;
+            const auto& actor=actors_[source.pair.a];
+            for (std::size_t k=0;k<source.anchor_count;++k) {
+                const Vec3 local=source.body0_anchors[k];
+                const Vec3 rotated=rotate(actor.orientation,local);
+                result.anchor_positions[k]={
+                    actor.position.x+rotated.x,
+                    actor.position.y+rotated.y,
+                    actor.position.z+rotated.z};
+                // DyContactPrep.cpp::writeBackContactFriction reconstructs
+                // world impulse by summing both tangent vectors scaled
+                // by each source SolverContactFriction::appliedForce.
+                const auto& x=solver_friction_rows_[source.row_offset+2*k];
+                const auto& y=solver_friction_rows_[source.row_offset+2*k+1];
+                result.anchor_impulses[k]={
+                    static_cast<double>(x.tangent.x)*x.applied_force+
+                        static_cast<double>(y.tangent.x)*y.applied_force,
+                    static_cast<double>(x.tangent.y)*x.applied_force+
+                        static_cast<double>(y.tangent.y)*y.applied_force,
+                    static_cast<double>(x.tangent.z)*x.applied_force+
+                        static_cast<double>(y.tangent.z)*y.applied_force};
+                const auto& v=result.anchor_impulses[k];
+                if (!finite(result.anchor_positions[k]) ||
+                    !std::isfinite(v.x) || !std::isfinite(v.y) ||
+                    !std::isfinite(v.z))
+                    throw std::overflow_error(
+                        "Native Dy friction impulse writeback is not finite");
+            }
         }
     }
 }
@@ -1366,6 +1419,7 @@ void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
     // solved force-buffer values against an unsolved contact stream.
     normal_impulse_writeback_.clear();
+    friction_impulse_writeback_.clear();
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
