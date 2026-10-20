@@ -82,6 +82,73 @@ int run_native_scene_smoke() {
     expect(scene.frame_index() == 8, "scene frame counter drift");
 
 
+    // PxsSimpleIslandManager's two distinct IslandSim graphs, for the
+    // currently admitted all-awake rigid-body subset. Broadphase
+    // candidates build speculative connectivity, while only resolved
+    // touching dynamic pairs join accurate solver islands. The static
+    // world is never a dynamic connectivity bridge.
+    {
+        Scene connected;
+        const auto a=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,5.0f,0.0f},1.0f);
+        const auto b=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,5.0f,0.0f},1.0f);
+        const auto c=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.7f,5.0f,0.0f},1.0f);
+        const auto isolated=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10.0f,5.0f,0.0f},1.0f);
+        connected.advance_collision();
+        expect(connected.contacts().size()==2 &&
+               connected.speculative_island_count()==2 &&
+               connected.accurate_island_count()==2,
+               "Source first/second island graphs failed to merge the touching chain");
+        const auto revision=connected.island_topology_revision();
+        connected.advance_collision(true);
+        expect(connected.island_topology_revision()==revision,
+               "Unchanged island connectivity rebuilt expensive graph state");
+        // Removing the center's two dynamic contact edges must split the
+        // component into three independent accurate islands, and the
+        // still-alive isolated node contributes its own singleton.
+        connected.set_position(b,{5.0f,5.0f,0.0f});
+        connected.advance_collision();
+        expect(connected.speculative_island_count()==4 &&
+               connected.accurate_island_count()==4 &&
+               connected.island_topology_revision()==revision+1,
+               "Lost source contact edges did not split both island graphs");
+        connected.set_position(b,{0.85f,5.0f,0.0f});
+        connected.advance_collision();
+        expect(connected.speculative_island_count()==2 &&
+               connected.accurate_island_count()==2,
+               "Restored source contact edges did not rejoin accurate islands");
+        connected.remove(b);
+        connected.advance_collision();
+        expect(connected.speculative_island_count()==3 &&
+               connected.accurate_island_count()==3,
+               "Destroyed source island node remained active in the graph");
+        connected.step(1.0f/120.0f);
+        expect(std::isfinite(connected.body_state(a).position.y) &&
+               std::isfinite(connected.body_state(c).position.y) &&
+               std::isfinite(connected.body_state(isolated).position.y) &&
+               connected.body_state(isolated).position.y<5.0f,
+               "Native island-node admission omitted free-flight integration");
+
+        Scene static_world;
+        static_world.add_static_floor(0.0f);
+        static_world.add_dynamic_box({0.5f,0.5f,0.5f},
+                                     {0.0f,0.5f,0.0f},1.0f);
+        static_world.add_dynamic_box({0.5f,0.5f,0.5f},
+                                     {4.0f,0.5f,0.0f},1.0f);
+        static_world.advance_collision();
+        expect(static_world.contacts().size()==2 &&
+               static_world.speculative_island_count()==2 &&
+               static_world.accurate_island_count()==2,
+               "Shared static world incorrectly merged independent dynamic islands");
+        static_world.step(1.0f/120.0f);
+        expect(static_world.accurate_island_count()==2 &&
+               static_world.solver_partition_count()==1,
+               "Static world island split changed conflict-free solver partitioning");
+    }
+
     // The same scene must distinguish SAP candidate overlaps from actual
     // shape contacts, and preserve touch found/lost across quiet frames.
     {
