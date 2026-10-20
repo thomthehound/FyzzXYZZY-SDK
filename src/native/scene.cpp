@@ -1180,6 +1180,30 @@ void Scene::solve_constraints() {
         }
     }
 }
+void Scene::write_back_contacts() {
+    // DySolverConstraints.cpp::writeBackContact copies final forceBuffer
+    // impulses after the last velocity/writeback solve. Gu contact order,
+    // not the reordered Dy partition list, owns output offsets. Here the
+    // source force buffer is represented by SolverContactPoint::applied_force
+    // and the output retains SDK-wide impulses for admitted extreme masses.
+    normal_impulse_writeback_.resize(contact_points_.size());
+    for (const auto& manifold : manifolds_) {
+        if (manifold.contact_offset > contact_points_.size() ||
+            manifold.count > contact_points_.size()-manifold.contact_offset ||
+            manifold.solver_offset > solver_contact_points_.size() ||
+            manifold.count > solver_contact_points_.size()-manifold.solver_offset)
+            throw std::logic_error(
+                "Native Dy contact writeback offset exceeds source streams");
+        for (std::size_t i=0;i<manifold.count;++i) {
+            const double impulse=solver_contact_points_[
+                manifold.solver_offset+i].applied_force;
+            if (!std::isfinite(impulse) || impulse < 0.0)
+                throw std::overflow_error(
+                    "Native Dy contact writeback has invalid normal impulse");
+            normal_impulse_writeback_[manifold.contact_offset+i]=impulse;
+        }
+    }
+}
 void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
     // solved motion velocity after the iteration/conclude/writeback sequence.
@@ -1282,6 +1306,7 @@ void Scene::step(float seconds) {
     partition_constraints();
     prepare_constraints(seconds);
     solve_constraints();
+    write_back_contacts();
     publish_solver_bodies();
     // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
     // iteration motion velocities to move/rotate bodies. The velocity
@@ -1333,11 +1358,14 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
-    // Original Gu narrowphase now admits rotated collision-only scenes.
-    // Simulation still guards unsupported angular solver constraints.
+    // Geometry-only Gu narrowphase admits rotated scenes independently
+    // of any Dy execution or previous step's impulse writeback.
     advance_collision_internal(force_update);
 }
 void Scene::advance_collision_internal(bool force_update) {
+    // This also serves geometry-only queries. Never publish last frame's
+    // solved force-buffer values against an unsolved contact stream.
+    normal_impulse_writeback_.clear();
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
