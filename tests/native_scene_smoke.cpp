@@ -613,6 +613,54 @@ int run_native_scene_smoke() {
                "Lost contact retained previous normal force writeback");
     }
 
+    // Genuine DyConstraintPartition permutation:
+    // Gu order is (A,B), (A,C), (D,E), while two conflicting A edges
+    // occupy partitions 0,1 and independent D/E falls back to 0.
+    // Dy execution is therefore (A,B), (D,E), (A,C). Detect any
+    // writeback accidentally appended in solver order by checking each
+    // unique leaf's momentum against its original Gu manager offset.
+    {
+        Scene reordered;
+        const auto a=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
+                                               {0,5,0},1.0f);
+        const auto b=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
+                                               {0.80f,5,0},1.0f);
+        const auto c=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
+                                               {-0.78f,5,0},2.0f);
+        const auto d=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
+                                               {4,5,0},3.0f);
+        const auto e=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
+                                               {4.92f,5,0},4.0f);
+        reordered.step(1.0f/120.0f);
+        const auto contacts=reordered.contacts();
+        const auto impulses=reordered.solved_normal_impulses();
+        expect(contacts.size()==3 &&
+               reordered.solver_partition_count()==2 &&
+               contacts[0].pair==fyzz::native::Pair{a,b} &&
+               contacts[1].pair==fyzz::native::Pair{a,c} &&
+               contacts[2].pair==fyzz::native::Pair{d,e},
+               "Native permutation regression did not construct [0,1,0] partitions");
+        auto sum_for=[&](std::size_t m) {
+            double sum=0;
+            const auto& manager=contacts[m];
+            expect(manager.contact_offset+manager.count<=impulses.size(),
+                   "Reordered Dy force buffer does not match Gu offsets");
+            for(std::size_t k=0;k<manager.count;++k)
+                sum+=impulses[manager.contact_offset+k];
+            return sum;
+        };
+        const double ib=sum_for(0),ic=sum_for(1),ie=sum_for(2);
+        const double vb=std::abs(reordered.body_state(b).velocity.x);
+        const double vc=std::abs(reordered.body_state(c).velocity.x);
+        const double ve=std::abs(reordered.body_state(e).velocity.x);
+        expect(ib>0 && ic>0 && ie>0 &&
+               std::abs(ib-vb)<0.003 &&
+               std::abs(ic-2.0*vc)<0.003 &&
+               std::abs(ie-4.0*ve)<0.003 &&
+               std::abs(ic-ie)>0.003,
+               "Dy writeback followed partition order instead of Gu contact order");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
