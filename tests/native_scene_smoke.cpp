@@ -965,6 +965,40 @@ int run_native_scene_smoke() {
                "Failed step consumed an impulse or contaminated retry");
     }
 
+    // Late integration failures also must not expose earlier body updates.
+    // The second body's near-FLT_MAX origin plus the finite final motion
+    // yields an unrepresentable position after the first body integrated.
+    {
+        Scene rollback_pose;
+        const auto first=rollback_pose.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        const auto second=rollback_pose.add_dynamic_box(
+            {0.5f,0.5f,0.5f},
+            {std::numeric_limits<float>::max(),10,0},1.0f);
+        rollback_pose.set_velocity(second,{1.0e18f,0,0});
+        const auto before_a=rollback_pose.body_state(first);
+        const auto before_b=rollback_pose.body_state(second);
+        const auto frame=rollback_pose.frame_index();
+        bool threw=false;
+        try {rollback_pose.step(1.0e17f);}
+        catch(const std::overflow_error&) {threw=true;}
+        const auto after_a=rollback_pose.body_state(first);
+        const auto after_b=rollback_pose.body_state(second);
+        expect(threw &&
+               before_a.position.x==after_a.position.x &&
+               before_a.position.y==after_a.position.y &&
+               before_a.velocity.y==after_a.velocity.y &&
+               before_b.position.x==after_b.position.x &&
+               before_b.velocity.x==after_b.velocity.x &&
+               rollback_pose.frame_index()==frame,
+               "Late pose integration error published earlier body changes");
+        rollback_pose.set_velocity(second,{0,0,0});
+        rollback_pose.step(1.0f/120.0f);
+        expect(rollback_pose.frame_index()==frame+1 &&
+               rollback_pose.body_state(first).position.y<10,
+               "Failed integration prevented subsequent valid simulation");
+    }
+
     // Authored pose edits invalidate the affected Dy friction cache.
     // A tangent-only teleport leaves old anchor separation projected
     // along the normal at zero, so Dy pointsAreClose alone cannot reject
