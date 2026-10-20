@@ -424,6 +424,9 @@ private:
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
     std::vector<BodyId> speculative_dirty_nodes_, accurate_dirty_nodes_;
+    // IslandSim::mDirtyMap lowers to reusable per-graph membership bits.
+    // Reset only touched nodes after a pass or a failed publication.
+    std::vector<std::uint8_t> speculative_dirty_map_, accurate_dirty_map_;
     std::vector<BodyId> speculative_fast_route_, accurate_fast_route_;
     std::vector<std::uint32_t> speculative_hops_, accurate_hops_;
     std::vector<std::uint64_t> speculative_hint_stamps_, accurate_hint_stamps_;
