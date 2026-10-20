@@ -1194,6 +1194,7 @@ void Scene::solve_constraints() {
                                 actors_[patch.pair.b].velocity.y,
                                 actors_[patch.pair.b].velocity.z,
                                 normal_impulse);
+                            throw std::runtime_error("Transient position-only friction clamp identified");
                         patch.broken=broken_this_iteration;
                     }
                 }
