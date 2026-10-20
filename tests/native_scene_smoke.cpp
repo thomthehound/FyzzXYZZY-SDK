@@ -661,6 +661,66 @@ int run_native_scene_smoke() {
                "Dy writeback followed partition order instead of Gu contact order");
     }
 
+    // DyContactPrep.cpp::writeBackContactFriction reconstructs each
+    // retained anchor impulse as tangent0*lambda0 + tangent1*lambda1.
+    // Compare the aggregate world X impulse with each independent body's
+    // tangential velocity change, and verify per-manager patch offsets.
+    {
+        Scene friction_report;
+        friction_report.add_static_floor(0.0f);
+        const auto left=friction_report.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-5.0f,0.5f,0.0f},1.0f);
+        const auto right=friction_report.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5.0f,0.5f,0.0f},2.0f);
+        friction_report.set_velocity(left,{0.015f,0,0});
+        friction_report.set_velocity(right,{-0.025f,0,0});
+        friction_report.step(1.0f/120.0f);
+        const auto contacts=friction_report.contacts();
+        const auto patches=friction_report.solved_friction_patches();
+        expect(contacts.size()==2 && patches.size()==2 &&
+               contacts[0].friction_patch_offset==0 &&
+               contacts[1].friction_patch_offset==1 &&
+               contacts[0].friction_patch_count==1 &&
+               contacts[1].friction_patch_count==1,
+               "Source friction writeback did not retain Gu patch order");
+        const auto left_after=friction_report.body_state(left);
+        const auto right_after=friction_report.body_state(right);
+        for (std::size_t m=0;m<2;++m) {
+            const auto& patch=patches[m];
+            expect(patch.pair==contacts[m].pair &&
+                   patch.anchor_count>0 && patch.anchor_count<=2,
+                   "Source friction writeback lost per-patch anchors");
+            double total_x=0.0;
+            for(std::size_t k=0;k<patch.anchor_count;++k) {
+                const auto& impulse=patch.anchor_impulses[k];
+                const auto& position=patch.anchor_positions[k];
+                expect(std::isfinite(impulse.x) &&
+                       std::isfinite(impulse.y) &&
+                       std::isfinite(impulse.z) &&
+                       std::isfinite(position.x) &&
+                       std::isfinite(position.y) &&
+                       std::abs(impulse.y)<0.001,
+                       "Source friction two-axis impulse was not finite/tangential");
+                total_x+=impulse.x;
+            }
+            const double velocity_before=m==0 ? 0.015 : -0.025;
+            const double velocity_after=m==0
+                ? left_after.velocity.x : right_after.velocity.x;
+            const double mass=m==0 ? 1.0 : 2.0;
+            expect(std::abs(total_x+
+                            mass*(velocity_after-velocity_before))<0.002 &&
+                   (m==0 ? total_x>0.0 : total_x<0.0),
+                   "Source friction anchor writeback disagrees with body impulse");
+        }
+        friction_report.advance_collision(true);
+        expect(friction_report.solved_normal_impulses().empty() &&
+               friction_report.solved_friction_patches().empty(),
+               "Geometry-only collision advance left stale friction impulses");
+        friction_report.step(1.0f/120.0f);
+        expect(friction_report.solved_friction_patches().size()==2,
+               "Source friction writeback did not republish after collision query");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
