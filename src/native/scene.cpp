@@ -973,6 +973,14 @@ void Scene::prepare_constraints(float seconds) {
         for (std::size_t patch_id=manifold.friction_patch_offset;
              patch_id<next_friction_patches_.size(); ++patch_id) {
             auto& patch = next_friction_patches_[patch_id];
+            // PxsCombineMaterials::eDISABLE_FRICTION produces zero
+            // tangent constraints. Do not grow anchors or compute
+            // local-to-world error/Jacobians for disabled patches.
+            if (patch.disable_friction) {
+                patch.anchor_count=0;
+                patch.row_offset=solver_friction_rows_.size();
+                continue;
+            }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
             const float diagonal_sq=squared_length(extent);
             if (patch.anchor_count == 2) {
@@ -1026,10 +1034,6 @@ void Scene::prepare_constraints(float seconds) {
             }
             patch.anchor_count=count;
             patch.row_offset=solver_friction_rows_.size();
-            if (patch.disable_friction) {
-                patch.anchor_count=0;
-                continue;
-            }
             if (count==0) continue;
             // DyContactPrep.cpp constructs tangents from relative linear
             // velocity, with the same 0.7071 normal-axis fallback and
