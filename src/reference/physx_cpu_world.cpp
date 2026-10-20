@@ -186,6 +186,32 @@ struct PhysXCpuWorld final : WorldBackend {
         actors[id] = nullptr;
     }
 
+    void set_body_material(BodyId id, Material source) override {
+        if (id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        physx::PxShape* shape=nullptr;
+        if (actors[id]->getShapes(&shape,1)!=1 || !shape)
+            throw std::logic_error("Reference rigid actor lacks single material shape");
+        // One source PxMaterial is authored on the EXISTING PhysX shape.
+        // Shape::setMaterials retains its reference. Release the caller's
+        // temporary reference after binding: no second material registry.
+        physx::PxMaterial* authored=runtime->physics->createMaterial(
+            source.static_friction,source.dynamic_friction,
+            source.restitution);
+        if (!authored)
+            throw std::runtime_error("PhysX material creation failed");
+        authored->setFrictionCombineMode(
+            static_cast<physx::PxCombineMode::Enum>(source.friction_combine));
+        authored->setRestitutionCombineMode(
+            static_cast<physx::PxCombineMode::Enum>(source.restitution_combine));
+        authored->setFlag(physx::PxMaterialFlag::eDISABLE_FRICTION,
+                          source.disable_friction);
+        authored->setFlag(physx::PxMaterialFlag::eDISABLE_STRONG_FRICTION,
+                          source.disable_strong_friction);
+        shape->setMaterials(&authored,1);
+        authored->release();
+    }
+
     void set_body_velocity(BodyId id, Vec3 velocity) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
