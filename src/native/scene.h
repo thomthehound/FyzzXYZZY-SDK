@@ -450,7 +450,8 @@ private:
         std::uint64_t full_rebuild_count=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         bool topology_dirty=true, dirty=true;
-        void capture(Scene& scene);
+        bool includes_solver_state=true;
+        void capture(Scene& scene, bool capture_solver_state=true);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
