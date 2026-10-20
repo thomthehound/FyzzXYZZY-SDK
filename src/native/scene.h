@@ -369,7 +369,15 @@ private:
     // on retry; only observable state and persistent contact history are
     // saved. This is a journal, not an independent scene or solver.
     struct StepCheckpoint {
-        std::vector<Actor> actors;
+        struct Motion {
+            BodyId id=0;
+            Vec3 position{}, velocity{}, angular_velocity{};
+            Quat orientation{};
+            Vec3 pending_angular_velocity_delta{};
+        };
+        // Only dynamic motion is mutated by a step. Static geometry,
+        // material ownership and immutable mass properties stay in actors_.
+        std::vector<Motion> motions;
         std::vector<Pair> found, lost;
         std::vector<Pair> found_contacts, lost_contacts;
          std::vector<FrictionPatch> friction_patches;
@@ -386,7 +394,7 @@ private:
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         bool topology_dirty=true, dirty=true;
-        void capture(const Scene& scene);
+        void capture(Scene& scene);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
