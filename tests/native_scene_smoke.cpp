@@ -138,6 +138,32 @@ int run_native_scene_smoke() {
                connected.body_state(isolated).position.y<5.0f,
                "Native island-node admission omitted free-flight integration");
 
+        // ScPipeline runs the accurate island's current solver admission
+        // before thirdPassIslandGen repairs a genuinely lost route.
+        // A removed center contact leaves the already admitted island
+        // intact for this solve; after the completion join, its three
+        // independent live bodies must be separate for the next frame.
+        Scene phased;
+        phased.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const auto middle=phased.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,5,0},1.0f);
+        phased.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.7f,5,0},1.0f);
+        phased.advance_collision();
+        expect(phased.accurate_island_count()==1,
+               "Third-pass fixture must begin with one accurate island");
+        phased.set_position(middle,{5.0f,5,0});
+        phased.step(1.0f/120.0f);
+        expect(phased.pre_third_pass_island_count()==1 &&
+               phased.accurate_island_count()==3 &&
+               phased.largest_accurate_island_size()==1,
+               "Third-pass lost-edge split occurred before PGS completion");
+        phased.step(1.0f/120.0f);
+        expect(phased.pre_third_pass_island_count()==3 &&
+               phased.accurate_island_count()==3,
+               "Next-frame solver admission reused retired island membership");
+
         // IslandSim::findRoute: deleting a non-bridge edge must not
         // split a three-node cycle. After that, deleting the surviving
         // two-edge route really must split the dynamic components.
