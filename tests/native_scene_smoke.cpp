@@ -378,7 +378,10 @@ int run_native_scene_smoke() {
                "Recycled edge unlink corrupted an alternate island route");
         relink.set_position(bb,{5,15,0});
         relink.advance_collision();
-        expect(relink.accurate_island_count()==2 &&
+        // Removing B strands both A and B as singleton islands,
+        // while the overlapping C-D pair remains a third island.
+        expect(relink.speculative_island_count()==3 &&
+               relink.accurate_island_count()==3 &&
                relink.largest_accurate_island_size()==2 &&
                relink.island_full_rebuild_count()==before_recycle+1,
                "Recycled intrusive graph failed to split on lost bridge");
