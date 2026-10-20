@@ -1853,8 +1853,6 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
                          scene.contact_edges_.end());
     active_handles.assign(scene.active_edge_handles_.begin(),
                           scene.active_edge_handles_.end());
-    next_handles.assign(scene.next_edge_handles_.begin(),
-                        scene.next_edge_handles_.end());
     retired_handles.assign(scene.retired_edge_handles_.begin(),
                            scene.retired_edge_handles_.end());
     free_handles.assign(scene.free_edge_handles_.begin(),
@@ -1909,7 +1907,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // collision/solver publication; no retired handle escapes a failed step.
     scene.contact_edges_.swap(contact_edges);
     scene.active_edge_handles_.swap(active_handles);
-    scene.next_edge_handles_.swap(next_handles);
+    // This merge buffer is scratch, cleared before every publication.
+    scene.next_edge_handles_.clear();
     scene.retired_edge_handles_.swap(retired_handles);
     scene.free_edge_handles_.swap(free_handles);
     // Swaps cannot allocate or fail with the standard vector allocator.
