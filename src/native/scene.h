@@ -204,6 +204,12 @@ public:
     std::uint64_t island_full_rebuild_count() const noexcept {
         return island_full_rebuild_count_;
     }
+    std::size_t island_dirty_route_check_count() const noexcept {
+        return island_dirty_route_checks_;
+    }
+    std::size_t island_fast_route_hit_count() const noexcept {
+        return island_fast_route_hits_;
+    }
     // Number of edited source edge instances saved for step rollback,
     // distinct from the number of historical contact-manager handles.
     std::size_t edge_rollback_journal_size() const noexcept {
@@ -412,8 +418,17 @@ private:
     std::vector<std::size_t> accurate_island_offsets_;
     // IslandSim::findRoute traversal reuses its search queue/visited
     // marks, but now traverses the persistent EdgeInstance adjacency.
-    std::vector<BodyId> island_route_queue_;
+    std::vector<BodyId> island_route_queue_, island_route_predecessor_;
     std::vector<std::uint32_t> island_route_seen_;
+    // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
+    // admitted all-awake rigid-node graph. Fast routes are advisory and
+    // validated against current intrusive adjacency on every use.
+    std::vector<BodyId> speculative_dirty_nodes_, accurate_dirty_nodes_;
+    std::vector<BodyId> speculative_fast_route_, accurate_fast_route_;
+    std::vector<std::uint32_t> speculative_hops_, accurate_hops_;
+    std::vector<std::uint64_t> speculative_hint_stamps_, accurate_hint_stamps_;
+    std::uint64_t speculative_hint_epoch_=1, accurate_hint_epoch_=1;
+    std::size_t island_dirty_route_checks_=0, island_fast_route_hits_=0;
     std::size_t speculative_island_count_ = 0;
     std::size_t accurate_island_count_ = 0;
     std::uint64_t island_topology_revision_ = 0;
