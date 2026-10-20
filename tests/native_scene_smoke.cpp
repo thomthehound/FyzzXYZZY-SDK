@@ -132,6 +132,43 @@ int run_native_scene_smoke() {
                connected.body_state(isolated).position.y<5.0f,
                "Native island-node admission omitted free-flight integration");
 
+        // Two nearly parallel diagonal thin boxes may overlap in their
+        // rotated SAP AABBs without touching in Gu SAT. This discriminates
+        // the speculative source graph from the accurate touch graph;
+        // replacing both with Gu manager connectivity fails here.
+        Scene candidate_only;
+        const auto rod_a=candidate_only.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,20,0},1.0f);
+        const auto rod_b=candidate_only.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,25,0},1.0f);
+        candidate_only.set_velocity(rod_a,{0,9.81f,0});
+        candidate_only.set_velocity(rod_b,{0,9.81f,0});
+        candidate_only.set_angular_velocity(rod_a,{0,0,0.83f});
+        candidate_only.set_angular_velocity(rod_b,{0,0,0.83f});
+        candidate_only.step(1.0f);
+        candidate_only.set_angular_velocity(rod_a,{0,0,0});
+        candidate_only.set_angular_velocity(rod_b,{0,0,0});
+        candidate_only.set_position(rod_a,{0,20,0});
+        candidate_only.set_position(rod_b,{0,22,0});
+        candidate_only.advance_collision();
+        expect(has(candidate_only.pairs(),rod_a,rod_b) &&
+               candidate_only.contacts().empty() &&
+               candidate_only.speculative_island_count()==1 &&
+               candidate_only.accurate_island_count()==2,
+               "Speculative island graph was conflated with accurate Gu touch");
+        candidate_only.set_position(rod_b,{0,20.1f,0});
+        candidate_only.advance_collision();
+        expect(candidate_only.contacts().size()==1 &&
+               candidate_only.speculative_island_count()==1 &&
+               candidate_only.accurate_island_count()==1,
+               "Accurate island failed to connect a formerly speculative pair");
+        candidate_only.set_position(rod_b,{0,22,0});
+        candidate_only.advance_collision();
+        expect(candidate_only.contacts().empty() &&
+               candidate_only.speculative_island_count()==1 &&
+               candidate_only.accurate_island_count()==2,
+               "Accurate island did not split while speculative edge persisted");
+
         Scene static_world;
         static_world.add_static_floor(0.0f);
         const auto ground_box=static_world.add_dynamic_box(
