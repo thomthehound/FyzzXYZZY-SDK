@@ -32,6 +32,21 @@ struct ContactPoint {
     Vec3 normal{};
     float separation = 0.0f;
 };
+// DyContactPrep.cpp::updateFrictionAnchorCountAndPosition and
+// writeBackContactFriction: solver anchor impulses are vectors in world
+// space, one per retained friction anchor. The native representation uses
+// double components only to preserve the SDK's separately admitted
+// extreme inverse-mass range; original PhysX reports PxVec3.
+struct FrictionImpulse {
+    double x=0.0, y=0.0, z=0.0;
+};
+struct FrictionPatchWriteback {
+    Pair pair{};
+    std::uint8_t anchor_count=0;
+    std::array<Vec3,2> anchor_positions{};
+    std::array<FrictionImpulse,2> anchor_impulses{};
+    bool broken=false;
+};
 struct ContactManifold {
     Pair pair{};
     // Source contact streams use a scene-owned contiguous arena, not an
@@ -99,6 +114,13 @@ public:
     // not available until its source descriptor/report owners are ported.
     std::span<const double> solved_normal_impulses() const noexcept {
         return normal_impulse_writeback_;
+    }
+    // DyContactPrep/DySolverConstraints friction writeback mirrors current
+    // manifold friction_patch_offset/count and carries the two source
+    // tangent-row impulses per retained anchor. As with normal writeback,
+    // values are invalidated by collision-only advancement.
+    std::span<const FrictionPatchWriteback> solved_friction_patches() const noexcept {
+        return friction_impulse_writeback_;
     }
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
@@ -246,6 +268,7 @@ private:
     // Capacity persists, while output is explicitly invalidated on a
     // collision-only advancement.
     std::vector<double> normal_impulse_writeback_;
+    std::vector<FrictionPatchWriteback> friction_impulse_writeback_;
     // DyConstraintPartition::partitionContactConstraints writes ordered
     // contact-manager descriptors grouped by body-conflict-free partition.
     // Indices reference authoritative manifolds, not copied constraints.
