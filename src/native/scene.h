@@ -433,7 +433,7 @@ private:
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
         std::vector<ContactEdge> contact_edges;
-        std::vector<EdgeIndex> active_handles, next_handles;
+        std::vector<EdgeIndex> active_handles;
         std::vector<EdgeIndex> retired_handles, free_handles;
           std::vector<FrictionPatch> friction_patches;
         std::vector<double> normal_impulses;
