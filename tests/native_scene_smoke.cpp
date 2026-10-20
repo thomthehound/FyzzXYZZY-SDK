@@ -367,6 +367,7 @@ int run_native_scene_smoke() {
     // participants. An unrelated free-flight body must keep its original
     // unconstrained motion through repeated solver rounds and retirement.
     {
+        std::fprintf(stderr,"STAGE sparse\\n");
         Scene sparse;
         const auto floor = sparse.add_static_floor(0.0f);
         const auto contact = sparse.add_dynamic_box(
@@ -451,6 +452,7 @@ int run_native_scene_smoke() {
     // sliding motion with the reference material (0.5/0.5 friction).
     // A normal-only solver preserves almost all horizontal velocity.
     {
+        std::fprintf(stderr,"STAGE sliding\\n");
         Scene sliding;
         sliding.add_static_floor(0);
         const auto box=sliding.add_dynamic_box(
@@ -812,6 +814,7 @@ int run_native_scene_smoke() {
 
     // End-to-end native CPU execution, without a reference PxScene.
     {
+        std::fprintf(stderr,"STAGE falling_scene\\n");
         Scene falling_scene;
         falling_scene.add_static_floor(0);
         const auto falling = falling_scene.add_dynamic_box(
@@ -868,6 +871,7 @@ int run_native_scene_smoke() {
     }
 
     {
+        std::fprintf(stderr,"STAGE stacked\\n");
         Scene stacked;
         stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
         const auto lower = stacked.add_dynamic_box(
