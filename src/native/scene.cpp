@@ -2114,12 +2114,19 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
-    // Geometry-only publication has the same strong failure boundary as
-    // a complete native step. AABB overflow or an allocation failure
-    // must not invalidate previously returned Gu/result spans or mutate
-    // the source contact-edge handle pool. This is a separate public
-    // entry point; step() calls advance_collision_internal directly, so
-    // no nested checkpoint or redundant snapshot is introduced.
+    // No geometry, topology or handle lifecycle changes can throw on
+    // a quiet collision publication. Preserve the original constant-
+    // work path instead of copying persistent edge/island state.
+    // A successful quiet advance still retires last frame's transient
+    // event/solver reports and advances the publication clock.
+    if (!dirty_ && !force_update && !island_topology_dirty_ &&
+        retired_edge_handles_.empty()) {
+        advance_collision_internal(false);
+        return;
+    }
+    // Geometry changes, forced refreshes and pending graph retirement
+    // retain the full failure-atomic publication boundary. step() calls
+    // advance_collision_internal directly, without nested snapshots.
     step_checkpoint_.capture(*this,false);
     try {
         advance_collision_internal(force_update);
