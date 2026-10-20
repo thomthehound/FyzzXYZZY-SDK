@@ -1176,9 +1176,13 @@ void Scene::solve_constraints() {
                     }
                     if (iter + 1 ==
                         position_iterations + velocity_iterations) {
-                        if (!broken_this_iteration) {
-                            // Temporary discovery of a recovery under real
-                            // accumulated position-phase clamping.
+                        if (!broken_this_iteration &&
+                            frame_index_==86 && patch.pair.a==0 &&
+                            patch.pair.b==1 &&
+                            std::abs(actors_[patch.pair.b].position.x-
+                                     0.0104674f)<0.001f &&
+                            std::abs(actors_[patch.pair.b].position.y-
+                                     0.500735f)<0.001f) {
                             std::fprintf(stderr,
                                 "SOURCE_RECOVER frame=%llu pair=%u,%u position=%g,%g,%g vel=%g,%g,%g\\n",
                                 static_cast<unsigned long long>(frame_index_),
@@ -1190,6 +1194,7 @@ void Scene::solve_constraints() {
                                 actors_[patch.pair.b].velocity.x,
                                 actors_[patch.pair.b].velocity.y,
                                 actors_[patch.pair.b].velocity.z);
+                            throw std::runtime_error("Identified specific frame-86 friction recovery");
                         }
                         patch.broken=broken_this_iteration;
                     }
