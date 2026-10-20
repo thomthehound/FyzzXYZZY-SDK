@@ -378,9 +378,7 @@ private:
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
-        std::vector<Pair> found, lost;
-        std::vector<Pair> found_contacts, lost_contacts;
-         std::vector<FrictionPatch> friction_patches;
+          std::vector<FrictionPatch> friction_patches;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
         std::vector<ThresholdPair> threshold_previous;
@@ -433,6 +431,7 @@ private:
     std::uint64_t contact_epoch_=0;
     std::vector<Pair> found_;
     std::vector<Pair> lost_;
+    std::vector<Pair> next_found_, next_lost_;
 
     // Source contact streams (GuContactPlaneBox/GuContactBoxBox) are owned
     // here, not by a second narrowphase scene or external reference PxScene.
@@ -447,6 +446,7 @@ private:
     std::array<ContactPoint, 255> box_contact_scratch_{};
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
+    std::vector<Pair> next_found_contacts_, next_lost_contacts_;
     std::uint64_t frame_index_ = 0;
     bool dirty_ = true;
 };
