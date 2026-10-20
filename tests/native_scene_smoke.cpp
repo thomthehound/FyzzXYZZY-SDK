@@ -82,6 +82,57 @@ int run_native_scene_smoke() {
     expect(scene.frame_index() == 8, "scene frame counter drift");
 
 
+    // SimpleIslandManager::addContactManager obtains an EdgeIndex once
+    // per SAP candidate; setEdgeDisconnected does not retire it on Gu
+    // touch loss. removeConnection defers release until the joined
+    // post-third-pass retirement, including overlapping found/lost pairs.
+    {
+        Scene handles;
+        const auto floor=handles.add_static_floor(0.0f);
+        const auto first=handles.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const Pair first_pair{floor,first};
+        handles.advance_collision();
+        const auto first_edge=handles.contact_edge_index(first_pair);
+        const auto invalid=std::numeric_limits<std::uint32_t>::max();
+        expect(first_edge!=invalid &&
+               handles.contact_edge_connected(first_pair) &&
+               handles.active_contact_edge_count()==1,
+               "PhysX contact manager did not acquire a persistent edge");
+        handles.set_position(first,{0,8,0});
+        handles.advance_collision();
+        expect(handles.contact_edge_index(first_pair)==first_edge &&
+               !handles.contact_edge_connected(first_pair) &&
+               handles.active_contact_edge_count()==1,
+               "Physical touch loss discarded the speculative EdgeIndex");
+        handles.set_position(first,{0,0.5f,0});
+        handles.advance_collision();
+        expect(handles.contact_edge_index(first_pair)==first_edge &&
+               handles.contact_edge_connected(first_pair),
+               "Touch reentry allocated a different contact-manager edge");
+        // Retiring one overlap and discovering another in the same
+        // publication cannot reuse the old source handle prematurely.
+        handles.remove(first);
+        const auto second=handles.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,0.5f,0},1.0f);
+        handles.advance_collision();
+        const Pair second_pair{floor,second};
+        const auto second_edge=handles.contact_edge_index(second_pair);
+        expect(second_edge!=invalid && second_edge!=first_edge &&
+               handles.contact_edge_index(first_pair)==invalid &&
+               handles.active_contact_edge_count()==1,
+               "Removed contact edge was reused before third-pass retirement");
+        handles.remove(second);
+        const auto third=handles.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{6,0.5f,0},1.0f);
+        handles.advance_collision();
+        const Pair third_pair{floor,third};
+        expect(handles.contact_edge_index(third_pair)==first_edge &&
+               handles.contact_edge_connected(third_pair) &&
+               handles.active_contact_edge_count()==1,
+               "Retired contact edge handle was not returned to source pool");
+    }
+
     // PxsSimpleIslandManager's two distinct IslandSim graphs, for the
     // currently admitted all-awake rigid-body subset. Broadphase
     // candidates build speculative connectivity, while only resolved
