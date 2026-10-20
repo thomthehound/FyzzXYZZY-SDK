@@ -668,12 +668,9 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             island_route_head_[from]=island_route_other_.size()-1;
         }
     };
-    if(accurate) {
-        for(const auto& manifold:manifolds_)
-            add_edge(manifold.pair);
-    } else {
-        for(Pair p:previous_pairs_)
-            add_edge(p);
+    for(EdgeIndex id:active_edge_handles_) {
+        const ContactEdge& edge=contact_edges_[id];
+        if(!accurate || edge.connected)add_edge(edge.pair);
     }
     island_route_seen_.assign(actors_.size(),0);
     std::uint32_t stamp=0;
@@ -793,14 +790,16 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // First pass: speculative SAP candidates. Second pass: physically
         // connected Gu contact managers. The streams are already ordered
         // and published by their sole owning scene.
-        for(Pair pair:previous_pairs_)
+        for(EdgeIndex id:active_edge_handles_) {
+            const ContactEdge& edge=contact_edges_[id];
             if(join(speculative_island_parent_,
-                    speculative_island_rank_,pair))
+                    speculative_island_rank_,edge.pair))
                 --speculative_island_count_;
-        for(const auto& manifold:manifolds_)
-            if(join(accurate_island_parent_,
-                    accurate_island_rank_,manifold.pair))
+            if(edge.connected &&
+               join(accurate_island_parent_,
+                    accurate_island_rank_,edge.pair))
                 --accurate_island_count_;
+        }
     } else {
         // Source first/second pass insertion can merge islands without
         // touching unrelated nodes. Deletions and deactivation still
@@ -1841,6 +1840,19 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     motions.clear();
+    // Source contact-edge slots and free/retirement queues are part of
+    // authoritative scene state; a failed frame must not consume a
+    // handle or change the identity of a previously published manager.
+    contact_edges.assign(scene.contact_edges_.begin(),
+                         scene.contact_edges_.end());
+    active_handles.assign(scene.active_edge_handles_.begin(),
+                          scene.active_edge_handles_.end());
+    next_handles.assign(scene.next_edge_handles_.begin(),
+                        scene.next_edge_handles_.end());
+    retired_handles.assign(scene.retired_edge_handles_.begin(),
+                           scene.retired_edge_handles_.end());
+    free_handles.assign(scene.free_edge_handles_.begin(),
+                        scene.free_edge_handles_.end());
     for(std::size_t id=0;id<scene.actors_.size();++id) {
         const auto& a=scene.actors_[id];
         if(!a.alive || a.kind!=Kind::DynamicBox)continue;
@@ -1887,6 +1899,13 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
+    // PhysX edge handles and their lifetime queues restore before
+    // collision/solver publication; no retired handle escapes a failed step.
+    scene.contact_edges_.swap(contact_edges);
+    scene.active_edge_handles_.swap(active_handles);
+    scene.next_edge_handles_.swap(next_handles);
+    scene.retired_edge_handles_.swap(retired_handles);
+    scene.free_edge_handles_.swap(free_handles);
     // Swaps cannot allocate or fail with the standard vector allocator.
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
