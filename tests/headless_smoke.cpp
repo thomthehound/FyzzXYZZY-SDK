@@ -413,50 +413,86 @@ int main() {
                 }
             }
 
-            // Source island/PGS contact transition against an independent
-            // PxScene: start with two disjoint dynamic nodes, then author
-            // one new physical touch so the native accurate island merges
-            // incrementally. The PhysX CPU scene runs its own actual
-            // island/contact-manager pipeline, not the native graph.
-            {
+            // Independent PxScene dynamic island reentry. Reversing
+            // creation order reverses the contact normal's BodyId order
+            // without changing the physical left/right roles. A closing
+            // relative normal speed exercises actual velocity-iteration
+            // impulses rather than just penetration-bias pose correction.
+            for(const bool reverse_creation : {false,true}) {
                 fyzz::World native_islands(fyzz::WorldOptions{
                     fyzz::ExecutionMode::NativeCpu});
                 fyzz::World source_islands(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpu});
-                const auto n0=native_islands.add_dynamic_box(
-                    {0.5f,0.5f,0.5f},{0,5,0},1.0f);
-                const auto r0=source_islands.add_dynamic_box(
-                    {0.5f,0.5f,0.5f},{0,5,0},1.0f);
-                const auto n1=native_islands.add_dynamic_box(
-                    {0.5f,0.5f,0.5f},{4,5,0},1.0f);
-                const auto r1=source_islands.add_dynamic_box(
-                    {0.5f,0.5f,0.5f},{4,5,0},1.0f);
+                fyzz::BodyId n_left=0,n_right=0,r_left=0,r_right=0;
+                const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                if(reverse_creation) {
+                    n_right=native_islands.add_dynamic_box(
+                        half,{4,5,0},1.0f);
+                    r_right=source_islands.add_dynamic_box(
+                        half,{4,5,0},1.0f);
+                    n_left=native_islands.add_dynamic_box(
+                        half,{0,5,0},1.0f);
+                    r_left=source_islands.add_dynamic_box(
+                        half,{0,5,0},1.0f);
+                } else {
+                    n_left=native_islands.add_dynamic_box(
+                        half,{0,5,0},1.0f);
+                    r_left=source_islands.add_dynamic_box(
+                        half,{0,5,0},1.0f);
+                    n_right=native_islands.add_dynamic_box(
+                        half,{4,5,0},1.0f);
+                    r_right=source_islands.add_dynamic_box(
+                        half,{4,5,0},1.0f);
+                }
+                fyzz::Material no_friction{};
+                no_friction.disable_friction=true;
+                no_friction.restitution=0.0f;
+                for (const auto id : {n_left,n_right})
+                    native_islands.set_body_material(id,no_friction);
+                for (const auto id : {r_left,r_right})
+                    source_islands.set_body_material(id,no_friction);
                 constexpr float h=1.0f/120.0f;
                 native_islands.step(h);
                 source_islands.step(h);
-                const auto target=fyzz::Vec3{0.9f,
-                    native_islands.body_state(n1).position.y,0};
-                const auto reference_target=fyzz::Vec3{0.9f,
-                    source_islands.body_state(r1).position.y,0};
-                native_islands.set_body_position(n1,target);
-                source_islands.set_body_position(r1,reference_target);
+                native_islands.set_body_position(n_right,{0.98f,
+                    native_islands.body_state(n_right).position.y,0});
+                source_islands.set_body_position(r_right,{0.98f,
+                    source_islands.body_state(r_right).position.y,0});
+                const auto nl_before=native_islands.body_state(n_left);
+                const auto nr_before=native_islands.body_state(n_right);
+                const auto rl_before=source_islands.body_state(r_left);
+                const auto rr_before=source_islands.body_state(r_right);
+                native_islands.set_body_velocity(n_left,
+                    {0.8f,nl_before.velocity.y,0});
+                native_islands.set_body_velocity(n_right,
+                    {-0.8f,nr_before.velocity.y,0});
+                source_islands.set_body_velocity(r_left,
+                    {0.8f,rl_before.velocity.y,0});
+                source_islands.set_body_velocity(r_right,
+                    {-0.8f,rr_before.velocity.y,0});
                 for(int frame=0;frame<4;++frame) {
                     native_islands.step(h);
                     source_islands.step(h);
+                    if(frame==0 &&
+                       std::abs(source_islands.body_state(r_left).
+                           velocity.x-0.8f)<0.35f)
+                        throw std::runtime_error(
+                            "PhysX CPU island oracle did not exercise collision impulse");
                     for(const auto [n,r] :
-                        {std::pair{n0,r0},std::pair{n1,r1}}) {
+                        {std::pair{n_left,r_left},
+                         std::pair{n_right,r_right}}) {
                         const auto a=native_islands.body_state(n);
                         const auto b=source_islands.body_state(r);
                         if (!vec_finite(a.position) ||
                             !vec_finite(a.velocity) ||
                             !vec_finite(b.position) ||
                             !vec_finite(b.velocity) ||
-                            std::abs(a.position.x-b.position.x)>0.035f ||
-                            std::abs(a.position.y-b.position.y)>0.035f ||
-                            std::abs(a.velocity.x-b.velocity.x)>0.25f ||
-                            std::abs(a.velocity.y-b.velocity.y)>0.25f)
+                            std::abs(a.position.x-b.position.x)>0.025f ||
+                            std::abs(a.position.y-b.position.y)>0.025f ||
+                            std::abs(a.velocity.x-b.velocity.x)>0.12f ||
+                            std::abs(a.velocity.y-b.velocity.y)>0.12f)
                             throw std::runtime_error(
-                                "Native dynamic island contact transition diverged from PhysX CPU");
+                                "Native dynamic island collision diverged from PhysX CPU");
                     }
                 }
             }
