@@ -530,6 +530,67 @@ int run_native_scene_smoke() {
                "Static world solver row incorrectly serialized unrelated contacts");
     }
 
+    // DySolverConstraints.cpp::writeBackContact must preserve Gu contact
+    // offsets even when DyConstraintPartition changes constraint order.
+    // Two disjoint floor contacts with different masses independently
+    // verify final per-point normal impulse sums against velocity change.
+    {
+        constexpr float dt=1.0f/120.0f;
+        Scene reported;
+        reported.add_static_floor(0.0f);
+        const auto light=reported.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
+        const auto heavy=reported.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3.0f,0.5f,0.0f},2.0f);
+        reported.advance_collision(true);
+        expect(reported.contacts().size()==2 &&
+               reported.solved_normal_impulses().empty(),
+               "Collision-only Gu query exposed stale Dy force writeback");
+        reported.step(dt);
+        const auto manifolds=reported.contacts();
+        const auto impulses=reported.solved_normal_impulses();
+        expect(manifolds.size()==2 && impulses.size()==8,
+               "Dy writeback did not preserve the flat Gu contact layout");
+        double sums[2]{};
+        for (std::size_t m=0;m<manifolds.size();++m) {
+            const auto& manifold=manifolds[m];
+            expect(manifold.count==4 &&
+                   manifold.contact_offset+manifold.count<=impulses.size(),
+                   "Dy contact output does not match original Gu offsets");
+            for (std::size_t i=0;i<manifold.count;++i) {
+                const double impulse=impulses[manifold.contact_offset+i];
+                expect(std::isfinite(impulse) && impulse>=0.0,
+                       "Dy reported an invalid final contact normal impulse");
+                sums[m]+=impulse;
+            }
+        }
+        const auto l=reported.body_state(light);
+        const auto h=reported.body_state(heavy);
+        // For unit-half boxes, mass is density (volume = 1).
+        // Source solver normal impulse equals mass times vertical
+        // velocity delta from pre-solver gravity, not a force in newtons.
+        const double expected_light=l.velocity.y+9.81*dt;
+        const double expected_heavy=2.0*(h.velocity.y+9.81*dt);
+        expect(sums[0]>0.02 && sums[1]>sums[0]*1.5 &&
+               std::abs(sums[0]-expected_light)<0.001 &&
+               std::abs(sums[1]-expected_heavy)<0.001,
+               "Source contact writeback does not reconcile solved body velocity");
+        reported.advance_collision(true);
+        expect(reported.solved_normal_impulses().empty(),
+               "Geometry-only advance retained obsolete solver force results");
+        reported.step(dt);
+        expect(reported.solved_normal_impulses().size()==
+                   reported.contacts()[0].count+
+                   reported.contacts()[1].count,
+               "Following Dy step did not republish fresh contact impulses");
+        reported.set_position(light,{0.0f,5.0f,0.0f});
+        reported.set_position(heavy,{3.0f,5.0f,0.0f});
+        reported.advance_collision(true);
+        expect(reported.contacts().empty() &&
+               reported.solved_normal_impulses().empty(),
+               "Lost contact retained previous normal force writeback");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
