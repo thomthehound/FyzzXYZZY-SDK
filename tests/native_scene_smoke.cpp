@@ -946,25 +946,6 @@ int run_native_scene_smoke() {
         combined.remove(both[1]);
         combined.step(dt);
         changes=combined.force_threshold_changes();
-        if (!(changes.size()==1 &&
-              changes[0].key==
-                  fyzz::native::ForceThresholdKey{both[2],0,true} &&
-              changes[0].change==Change::Lost &&
-              changes[0].normal_impulse==0.0)) {
-            std::fprintf(stderr,
-                "world-threshold post-removal: events=%zu contacts=%zu pairs=%zu active=%u, before=%g total=%g\n",
-                changes.size(),combined.contacts().size(),
-                combined.pairs().size(),static_cast<unsigned>(both[2]),
-                threshold,total);
-            for(const auto& change:changes)
-                std::fprintf(stderr,
-                    "world-threshold event: key=%u,%u static=%d kind=%u impulse=%g\n",
-                    static_cast<unsigned>(change.key.actor0),
-                    static_cast<unsigned>(change.key.actor1),
-                    int(change.key.static_world),
-                    static_cast<unsigned>(change.change),
-                    change.normal_impulse);
-        }
         expect(changes.size()==1 &&
                changes[0].key==
                    fyzz::native::ForceThresholdKey{both[2],0,true} &&
