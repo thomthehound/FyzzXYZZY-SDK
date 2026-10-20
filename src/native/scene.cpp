@@ -440,36 +440,38 @@ void Scene::retire_destroyed_contact_edges() {
     retired_edge_handles_.clear();
 }
 void Scene::publish_pairs() {
+    // Source SAP's sorted prior/new overlap streams drive one linear
+    // merge. Edges and found/lost events are published together; do not
+    // perform binary searches per pair or construct a second graph map.
     next_found_.clear();
     next_lost_.clear();
-    std::set_difference(pending_pairs_.begin(), pending_pairs_.end(),
-                        previous_pairs_.begin(), previous_pairs_.end(),
-                        std::back_inserter(next_found_));
-    std::set_difference(previous_pairs_.begin(), previous_pairs_.end(),
-                        pending_pairs_.begin(), pending_pairs_.end(),
-                        std::back_inserter(next_lost_));
-    // Keep source EdgeIndex identity for every continuing overlap.
-    // New edges are allocated before retiring lost ones, so no handle
-    // can be reused before source post-third-pass completion.
     next_edge_handles_.clear();
-    for(Pair pair:pending_pairs_) {
-        const auto old=std::lower_bound(previous_pairs_.begin(),
-                                        previous_pairs_.end(),pair);
-        if(old!=previous_pairs_.end() && *old==pair)
-            next_edge_handles_.push_back(active_edge_handles_[
-                static_cast<std::size_t>(old-previous_pairs_.begin())]);
-        else
+    next_edge_handles_.reserve(pending_pairs_.size());
+    std::size_t old_index=0,new_index=0;
+    while(old_index<previous_pairs_.size() ||
+          new_index<pending_pairs_.size()) {
+        if(new_index==pending_pairs_.size() ||
+           (old_index<previous_pairs_.size() &&
+            previous_pairs_[old_index]<pending_pairs_[new_index])) {
+            const EdgeIndex id=active_edge_handles_[old_index];
+            contact_edges_[id].retiring=true;
+            contact_edges_[id].connected=false;
+            retired_edge_handles_.push_back(id);
+            next_lost_.push_back(previous_pairs_[old_index++]);
+        } else if(old_index==previous_pairs_.size() ||
+                  pending_pairs_[new_index]<previous_pairs_[old_index]) {
+            const Pair pair=pending_pairs_[new_index++];
             next_edge_handles_.push_back(allocate_contact_edge(pair));
+            next_found_.push_back(pair);
+        } else {
+            next_edge_handles_.push_back(active_edge_handles_[old_index]);
+            ++old_index;
+            ++new_index;
+        }
     }
-    for(Pair pair:next_lost_) {
-        const auto old=std::lower_bound(previous_pairs_.begin(),
-                                        previous_pairs_.end(),pair);
-        const auto id=active_edge_handles_[
-            static_cast<std::size_t>(old-previous_pairs_.begin())];
-        contact_edges_[id].retiring=true;
-        contact_edges_[id].connected=false;
-        retired_edge_handles_.push_back(id);
-    }
+    // Contact managers removed above remain allocated until the
+    // post-third-pass join. Even an overlap discovered in this same
+    // publication cannot recycle its retired handle prematurely.
     found_.swap(next_found_);
     lost_.swap(next_lost_);
     previous_pairs_.swap(pending_pairs_);
