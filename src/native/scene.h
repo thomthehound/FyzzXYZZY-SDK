@@ -344,8 +344,8 @@ private:
     void retire_destroyed_contact_edges();
     // IslandSim::addConnectionToGraph/removeConnectionInternal,
     // two source edge instances per contact manager, per graph.
-    void link_contact_edge(EdgeIndex id, bool accurate) noexcept;
-    void unlink_contact_edge(EdgeIndex id, bool accurate) noexcept;
+    void link_contact_edge(std::uint32_t id, bool accurate) noexcept;
+    void unlink_contact_edge(std::uint32_t id, bool accurate) noexcept;
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // connectivity repair. Original overlapping continuation tasks and
