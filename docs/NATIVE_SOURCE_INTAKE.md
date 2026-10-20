@@ -439,6 +439,52 @@ The native runtime must remain buildable with
 are SDK-owned under preserved notices. The separately linked PhysX CPU
 reference retains its existing `PxScene` and serves only as an oracle.
 
+## Admitted awake-rigid island connectivity
+
+The native scene now consumes two distinct source contact-edge streams,
+without creating a second physics world or actor registry:
+
+| Source producer and type | Native owner and consumer | Admitted semantics |
+| --- | --- | --- |
+| `BpBroadPhaseSap` candidate pairs, `PxsSimpleIslandManager::firstPassIslandGen` and `IslandSim::processNewEdges` | `Scene::previous_pairs_` → scene-owned speculative union/find state | Dynamic/dynamic candidate connectivity, including non-touching rotated AABB candidates; static endpoints never merge rigid islands |
+| `GuContact*` physical touches, `Sc::Scene::setEdgesConnected`, `PxsSimpleIslandManager::secondPassIslandGenPart1` | `Scene::manifolds_` → scene-owned accurate union/find state | Only touching dynamic/dynamic contact edges connect accurate islands; candidate-only pairs do not |
+| `Dy::DynamicsContext::iterateIslandsNodes` and `preIntegrationParallel` | Contiguous accurate-island `BodyId` spans → the existing `SolverBodyRow` arena; same spans drive pose integration | Each live awake dynamic body is admitted once; only bodies with contacts allocate prepared solver rows; the original static-world solver row remains separate |
+| `IslandSim::processLostEdges`' connected-component result | On source dynamic pair/touch removal, update the same scene-owned graph state | Accurately split or rejoin components at the next published collision state; static-only contact changes do not rebuild dynamic connectivity |
+
+**Fidelity classification:** semantics-preserving connected-component lowering
+**only for the all-awake, rigid dynamic/static, contact-only subset**.
+Both source island graphs represent components of their respective
+undirected dynamic-body edge sets. The native lowering computes those
+components with reusable union/find storage on dynamic edge changes,
+rather than importing PhysX's incremental handles and dirty-route repair.
+Actor identity remains the original scene `BodyId`; no second actor,
+force, contact, or solver world owns results. The source's lifetime and
+per-frame interleaving behavior is **not** implied by matching component
+membership.
+
+**Cost:** unchanged dynamic connectivity has constant-time admission
+checks; topology changes rebuild connected components and order accurate
+island nodes, costing O(actors log actors + candidate edges + touching
+edges), with reusable allocations. Original PhysX incremental
+`PxsIslandSim` edge insertion/removal and budgeted dirty-node repair
+remain required to avoid this rebuild cost in large changing scenes.
+
+**Regression boundary:** dynamic three-node merge, split, rejoin and
+removal; isolated free-flight integration; multiple dynamic bodies
+touching one shared static world without an accidental merge; static-only
+contact changes without component reconstruction; and diagonal thin
+boxes whose speculative AABB graph is connected while their accurate
+Gu contact graph is disconnected. Tests run in the production
+`NativeCpu` scene, including source-free Vulkan and D3D12 builds.
+
+**Unported source responsibilities:** stable `PxNodeIndex` and edge
+handle generations, speculative/accurate activation flags, sleep/wake,
+first/second/third-pass task joins, delayed lost-edge retirement,
+`afterIntegration` deactivation reconciliation, source callback
+ownership, and complete per-island solve/fetch scheduling. The
+union/find lowering must be retired or extended when those source
+responsibilities are ported; **N1 is not complete**.
+
 ## Initial integrated acceptance boundary: real CPU PGS
 
 A PR may be large. It must connect a **whole source execution slice**
