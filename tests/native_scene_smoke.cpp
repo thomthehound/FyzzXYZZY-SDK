@@ -968,6 +968,27 @@ int run_native_scene_smoke() {
                changes[0].change==Change::Found &&
                std::abs(changes[0].normal_impulse-total)<0.001,
                "Both qualifying static supports generated duplicate reports");
+        const double prior_impulse=changes[0].normal_impulse;
+        // Changing the static shape partner must preserve the ONE world
+        // node identity. A per-shape key would incorrectly report Lost
+        // for one static pair even while the other support persists.
+        duplicates.remove(duplicate_ids[0]);
+        duplicates.step(dt);
+        changes=duplicates.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].key==
+                   fyzz::native::ForceThresholdKey{duplicate_ids[2],0,true} &&
+               changes[0].change==Change::Persists &&
+               changes[0].normal_impulse==prior_impulse,
+               "Changing static support changed source world-node identity");
+        duplicates.remove(duplicate_ids[1]);
+        duplicates.step(dt);
+        changes=duplicates.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Lost &&
+               changes[0].key==
+                   fyzz::native::ForceThresholdKey{duplicate_ids[2],0,true},
+               "Final static support removal omitted shared world-node Lost");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
