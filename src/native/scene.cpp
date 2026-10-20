@@ -401,6 +401,44 @@ void Scene::update_pairs() {
     pending_pairs_.erase(std::unique(pending_pairs_.begin(), pending_pairs_.end()),
                          pending_pairs_.end());
 }
+std::uint32_t Scene::contact_edge_index(Pair pair) const noexcept {
+    const auto it=std::lower_bound(previous_pairs_.begin(),
+                                   previous_pairs_.end(),pair);
+    if(it==previous_pairs_.end() || !(*it==pair))return invalid_edge;
+    return active_edge_handles_[static_cast<std::size_t>(
+        it-previous_pairs_.begin())];
+}
+bool Scene::contact_edge_connected(Pair pair) const noexcept {
+    const auto handle=contact_edge_index(pair);
+    return handle!=invalid_edge && contact_edges_[handle].connected;
+}
+std::uint32_t Scene::allocate_contact_edge(Pair pair) {
+    // SimpleIslandManager::addContactManager -> addEdge obtains the
+    // edge handle once; accurate touch may later toggle independently.
+    EdgeIndex id;
+    if(!free_edge_handles_.empty()) {
+        id=free_edge_handles_.back();
+        free_edge_handles_.pop_back();
+        contact_edges_[id]={pair,true,false,false};
+    } else {
+        if(contact_edges_.size()>=invalid_edge)
+            throw std::overflow_error("Native island edge handles exhausted");
+        id=static_cast<EdgeIndex>(contact_edges_.size());
+        contact_edges_.push_back({pair,true,false,false});
+    }
+    return id;
+}
+void Scene::retire_destroyed_contact_edges() {
+    // Source PostThirdPassTask frees mDestroyedEdges *after* speculative
+    // and accurate lost-edge passes have joined. A removed handle cannot
+    // be reused by an overlap born earlier in that same publication.
+    for(EdgeIndex id:retired_edge_handles_) {
+        auto& edge=contact_edges_[id];
+        edge={};
+        free_edge_handles_.push_back(id);
+    }
+    retired_edge_handles_.clear();
+}
 void Scene::publish_pairs() {
     next_found_.clear();
     next_lost_.clear();
@@ -410,9 +448,32 @@ void Scene::publish_pairs() {
     std::set_difference(previous_pairs_.begin(), previous_pairs_.end(),
                         pending_pairs_.begin(), pending_pairs_.end(),
                         std::back_inserter(next_lost_));
+    // Keep source EdgeIndex identity for every continuing overlap.
+    // New edges are allocated before retiring lost ones, so no handle
+    // can be reused before source post-third-pass completion.
+    next_edge_handles_.clear();
+    for(Pair pair:pending_pairs_) {
+        const auto old=std::lower_bound(previous_pairs_.begin(),
+                                        previous_pairs_.end(),pair);
+        if(old!=previous_pairs_.end() && *old==pair)
+            next_edge_handles_.push_back(active_edge_handles_[
+                static_cast<std::size_t>(old-previous_pairs_.begin())]);
+        else
+            next_edge_handles_.push_back(allocate_contact_edge(pair));
+    }
+    for(Pair pair:next_lost_) {
+        const auto old=std::lower_bound(previous_pairs_.begin(),
+                                        previous_pairs_.end(),pair);
+        const auto id=active_edge_handles_[
+            static_cast<std::size_t>(old-previous_pairs_.begin())];
+        contact_edges_[id].retiring=true;
+        contact_edges_[id].connected=false;
+        retired_edge_handles_.push_back(id);
+    }
     found_.swap(next_found_);
     lost_.swap(next_lost_);
     previous_pairs_.swap(pending_pairs_);
+    active_edge_handles_.swap(next_edge_handles_);
     ++pair_epoch_;
 }
 void Scene::update_contacts() {
@@ -548,6 +609,17 @@ void Scene::update_contacts() {
         manifold.points = std::span<const ContactPoint>(
             next_contact_points_.data() + manifold.contact_offset,
             manifold.count);
+    // Source SimpleIslandManager::setEdgeConnected/Disconnected acts on
+    // the persistent contact-manager handle. Physical touch loss must
+    // NOT destroy its speculative overlap edge or allocate a new handle.
+    for(Pair pair:next_found_contacts_) {
+        const auto id=contact_edge_index(pair);
+        if(id!=invalid_edge)contact_edges_[id].connected=true;
+    }
+    for(Pair pair:next_lost_contacts_) {
+        const auto id=contact_edge_index(pair);
+        if(id!=invalid_edge)contact_edges_[id].connected=false;
+    }
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
     found_contacts_.swap(next_found_contacts_);
@@ -780,6 +852,7 @@ void Scene::third_pass_island_gen() {
     // Persistent edge handles, sleep/deactivation and their continuations
     // remain N1 admission work.
     update_island_connectivity(true);
+    retire_destroyed_contact_edges();
 }
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
