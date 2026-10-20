@@ -195,6 +195,15 @@ public:
     std::uint64_t island_full_rebuild_count() const noexcept {
         return island_full_rebuild_count_;
     }
+    // Read the existing accurate-node batch boundaries without exposing
+    // transient solver arrays or allocating diagnostic copies.
+    std::size_t largest_accurate_island_size() const noexcept {
+        std::size_t largest=0;
+        for(std::size_t i=1;i<accurate_island_offsets_.size();++i)
+            largest=std::max(largest,
+                accurate_island_offsets_[i]-accurate_island_offsets_[i-1]);
+        return largest;
+    }
 
 private:
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
