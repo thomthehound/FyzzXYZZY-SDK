@@ -563,6 +563,76 @@ void Scene::update_contacts() {
 // unchanged candidate AND touch connectivity. Source sleeping, persistent
 // island handles and the three-pass lost-edge/deactivation lifecycle are
 // not represented by this lowering and are still N1 requirements.
+// IslandSim::processLostEdges calls findRoute on dirty endpoints before
+// splitting an island. For the admitted all-awake dynamic contact subset,
+// a lost edge can only split its component if its endpoints are no longer
+// connected in the *surviving* graph. Prove that property directly using
+// the existing published candidate/touch pairs. Source IslandSim's
+// persistent edge instances, fast routes, hop estimates and deferred
+// deactivation are not yet imported; this temporary adjacency is rebuilt
+// only when dynamic connections disappear, using scene-owned capacity.
+bool Scene::lost_island_edges_retain_routes(bool accurate) {
+    const auto& lost=accurate ? lost_contacts_ : lost_;
+    const auto dynamic_edge=[this](Pair pair) {
+        return actors_[pair.a].alive && actors_[pair.b].alive &&
+               actors_[pair.a].kind==Kind::DynamicBox &&
+               actors_[pair.b].kind==Kind::DynamicBox;
+    };
+    bool needs_route=false;
+    for(Pair p:lost)
+        if(dynamic_edge(p)) {needs_route=true;break;}
+    if(!needs_route)return true;
+
+    constexpr auto invalid=std::numeric_limits<std::size_t>::max();
+    island_route_head_.assign(actors_.size(),invalid);
+    island_route_next_.clear();
+    island_route_other_.clear();
+    const auto add_edge=[&](Pair p) {
+        if(!dynamic_edge(p))return;
+        for(const auto [from,to] :
+            {std::pair{p.a,p.b},std::pair{p.b,p.a}}) {
+            island_route_next_.push_back(island_route_head_[from]);
+            island_route_other_.push_back(to);
+            island_route_head_[from]=island_route_other_.size()-1;
+        }
+    };
+    if(accurate) {
+        for(const auto& manifold:manifolds_)
+            add_edge(manifold.pair);
+    } else {
+        for(Pair p:previous_pairs_)
+            add_edge(p);
+    }
+    island_route_seen_.assign(actors_.size(),0);
+    std::uint32_t stamp=0;
+    for(Pair p:lost) {
+        if(!dynamic_edge(p))continue;
+        if(++stamp==0) {
+            std::fill(island_route_seen_.begin(),
+                      island_route_seen_.end(),0);
+            stamp=1;
+        }
+        island_route_queue_.clear();
+        island_route_queue_.push_back(p.a);
+        island_route_seen_[p.a]=stamp;
+        bool connected=false;
+        for(std::size_t cursor=0;
+            cursor<island_route_queue_.size() && !connected;++cursor) {
+            const BodyId from=island_route_queue_[cursor];
+            for(std::size_t edge=island_route_head_[from];
+                edge!=invalid;edge=island_route_next_[edge]) {
+                const BodyId to=island_route_other_[edge];
+                if(to==p.b) {connected=true;break;}
+                if(island_route_seen_[to]==stamp)continue;
+                island_route_seen_[to]=stamp;
+                island_route_queue_.push_back(to);
+            }
+        }
+        if(!connected)return false;
+    }
+    return true;
+}
+
 void Scene::update_island_connectivity() {
     // PxsSimpleIslandManager::firstPassIslandGen and
     // secondPassIslandGenPart1 insert newly discovered edges through
@@ -579,10 +649,13 @@ void Scene::update_island_connectivity() {
     bool rebuild=island_topology_dirty_;
     bool added_speculative=false;
     bool added_accurate=false;
-    for (Pair pair:lost_)
-        if (dynamic_edge(pair)) {rebuild=true;break;}
-    for (Pair pair:lost_contacts_)
-        if (dynamic_edge(pair)) {rebuild=true;break;}
+    // As in IslandSim::processLostEdges/findRoute, an edge removal is
+    // harmless to component membership when the surviving graph still
+    // connects its endpoints. Rebuild only on a witnessed split; source
+    // full incremental edge/route state remains a later N1 integration.
+    if(!rebuild)
+        rebuild=!lost_island_edges_retain_routes(false) ||
+                 !lost_island_edges_retain_routes(true);
     if (!rebuild) {
         for (Pair pair:found_)
             if (dynamic_edge(pair)) {added_speculative=true;break;}
