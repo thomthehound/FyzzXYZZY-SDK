@@ -1841,7 +1841,7 @@ void Scene::publish_solver_bodies() {
         actor.angular_velocity = angular;
     }
 }
-void Scene::StepCheckpoint::capture(Scene& scene) {
+void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Reuse capacities across frames. The checkpoint contains only state
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
@@ -1857,17 +1857,24 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
                            scene.retired_edge_handles_.end());
     free_handles.assign(scene.free_edge_handles_.begin(),
                         scene.free_edge_handles_.end());
-    for(std::size_t id=0;id<scene.actors_.size();++id) {
-        const auto& a=scene.actors_[id];
-        if(!a.alive || a.kind!=Kind::DynamicBox)continue;
-        motions.push_back({static_cast<BodyId>(id),
-            a.position,a.velocity,a.angular_velocity,a.orientation,
-            a.pending_angular_velocity_delta});
+    // Collision-only advancement does not modify body motion, retained
+    // friction patches, threshold history, or solver partition ends.
+    // Avoid snapshotting any of these on editor/geometry-only queries.
+    if(capture_solver_state) {
+        for(std::size_t id=0;id<scene.actors_.size();++id) {
+            const auto& a=scene.actors_[id];
+            if(!a.alive || a.kind!=Kind::DynamicBox)continue;
+            motions.push_back({static_cast<BodyId>(id),
+                a.position,a.velocity,a.angular_velocity,a.orientation,
+                a.pending_angular_velocity_delta});
+        }
+        friction_patches.assign(scene.friction_patches_.begin(),
+                                scene.friction_patches_.end());
+        threshold_previous.assign(scene.threshold_previous_.begin(),
+                                  scene.threshold_previous_.end());
+        partition_ends.assign(scene.partition_ends_.begin(),
+                              scene.partition_ends_.end());
     }
-    friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
-     threshold_previous.assign(scene.threshold_previous_.begin(),
-                              scene.threshold_previous_.end());
-     partition_ends.assign(scene.partition_ends_.begin(),scene.partition_ends_.end());
     speculative_parent.assign(scene.speculative_island_parent_.begin(),
                               scene.speculative_island_parent_.end());
     accurate_parent.assign(scene.accurate_island_parent_.begin(),
@@ -1889,6 +1896,7 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
     contact_epoch=scene.contact_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
+    includes_solver_state=capture_solver_state;
     // The prior published buffers are moved into the checkpoint only
     // after all potentially throwing copies have completed. Successful
     // solves write directly into the reusable alternate allocations.
@@ -1914,13 +1922,15 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // Swaps cannot allocate or fail with the standard vector allocator.
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
-    for(const Motion& motion:motions) {
-        auto& a=scene.actors_[motion.id];
-        a.position=motion.position;
-        a.velocity=motion.velocity;
-        a.angular_velocity=motion.angular_velocity;
-        a.orientation=motion.orientation;
-        a.pending_angular_velocity_delta=motion.pending_angular_velocity_delta;
+    if(includes_solver_state) {
+        for(const Motion& motion:motions) {
+            auto& a=scene.actors_[motion.id];
+            a.position=motion.position;
+            a.velocity=motion.velocity;
+            a.angular_velocity=motion.angular_velocity;
+            a.orientation=motion.orientation;
+            a.pending_angular_velocity_delta=motion.pending_angular_velocity_delta;
+        }
     }
     // Swap back the exact original arena allocations. This preserves the
     // lifetime of contact spans returned before the unsuccessful step.
@@ -1937,12 +1947,15 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.lost_contacts_.swap(scene.next_lost_contacts_);
     }
     scene.contact_epoch_=contact_epoch;
-    scene.friction_patches_.swap(friction_patches);
+    if(includes_solver_state)
+        scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
-    scene.threshold_previous_.swap(threshold_previous);
+    if(includes_solver_state)
+        scene.threshold_previous_.swap(threshold_previous);
     scene.threshold_changes_.swap(threshold_changes);
-    scene.partition_ends_.swap(partition_ends);
+    if(includes_solver_state)
+        scene.partition_ends_.swap(partition_ends);
     scene.speculative_island_parent_.swap(speculative_parent);
     scene.accurate_island_parent_.swap(accurate_parent);
     scene.speculative_island_rank_.swap(speculative_rank);
@@ -2107,7 +2120,7 @@ void Scene::advance_collision(bool force_update) {
     // the source contact-edge handle pool. This is a separate public
     // entry point; step() calls advance_collision_internal directly, so
     // no nested checkpoint or redundant snapshot is introduced.
-    step_checkpoint_.capture(*this);
+    step_checkpoint_.capture(*this,false);
     try {
         advance_collision_internal(force_update);
         third_pass_island_gen();
