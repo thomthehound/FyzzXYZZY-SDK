@@ -208,6 +208,18 @@ void Scene::set_position(BodyId id, Vec3 position) {
     auto& actor = require(id);
     // Infinite planes have a fixed world +Y normal in the current native
     // shape model. Translating one changes its height, not its orientation.
+    if (actor.position.x==position.x &&
+        actor.position.y==position.y &&
+        actor.position.z==position.z)
+        return;
+    // Explicit pose authoring is a discontinuity, unlike integration.
+    // DyFrictionCorrelation's retained local anchors must not bridge a
+    // teleport, even when projected separation along the contact normal
+    // remains zero. Retire only the affected manager patches; this rare
+    // edit-time scan avoids additional hot-path checks or cache registries.
+    std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
+        return patch.pair.a==id || patch.pair.b==id;
+    });
     actor.position = position;
     dirty_ = true;
 }
