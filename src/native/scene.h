@@ -330,7 +330,11 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
-    void update_island_connectivity();
+    void update_island_connectivity(bool repair_lost_edges);
+    // Synchronous lowering of the source third-pass island continuation.
+    // Only lost-edge component repair is admitted here; deactivation and
+    // sleeping await source-owned node/edge lifecycle integration.
+    void third_pass_island_gen();
     bool lost_island_edges_retain_routes(bool accurate);
     void prepare_solver_bodies();
     void partition_constraints();
