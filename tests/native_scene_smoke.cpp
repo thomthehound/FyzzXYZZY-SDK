@@ -991,6 +991,92 @@ int run_native_scene_smoke() {
                "Final static support removal omitted shared world-node Lost");
     }
 
+    // PxsMaterialCombiner.h: a material belongs to each authored native
+    // shape, not to a global/parallel material registry. The source uses
+    // the higher-precedence combine mode: MAX beats MIN/AVERAGE. A disabled
+    // friction flag on EITHER side wins and suppresses all tangent rows.
+    {
+        using fyzz::native::Material;
+        using Mode=fyzz::native::MaterialCombineMode;
+        auto friction_run=[](Mode mode, bool disable) {
+            Scene sample;
+            const auto ground=sample.add_static_floor(0.0f);
+            const auto box=sample.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+            Material floor_material{};
+            floor_material.static_friction=0.0f;
+            floor_material.dynamic_friction=0.0f;
+            floor_material.friction_combine=Mode::Minimum;
+            Material box_material{};
+            box_material.static_friction=1.0f;
+            box_material.dynamic_friction=1.0f;
+            box_material.friction_combine=mode;
+            box_material.disable_friction=disable;
+            sample.set_material(ground,floor_material);
+            sample.set_material(box,box_material);
+            sample.set_velocity(box,{0.2f,0,0});
+            sample.step(1.0f/120.0f);
+            double total_tangential_impulse=0.0;
+            for(const auto& patch:sample.solved_friction_patches()) {
+                for(std::size_t i=0;i<patch.anchor_count;++i)
+                    total_tangential_impulse+=
+                        std::abs(patch.anchor_impulses[i].x);
+            }
+            return std::pair{sample.body_state(box).velocity.x,
+                             total_tangential_impulse};
+        };
+        const auto minimum=friction_run(Mode::Minimum,false);
+        const auto maximum=friction_run(Mode::Maximum,false);
+        const auto disabled=friction_run(Mode::Maximum,true);
+        expect(std::abs(minimum.first-0.2f)<0.002f &&
+               minimum.second<1.0e-8 &&
+               maximum.second>0.001 &&
+               maximum.first<minimum.first-0.001f,
+               "Source contact friction mode precedence was not applied");
+        expect(std::abs(disabled.first-0.2f)<0.002f &&
+               disabled.second==0.0,
+               "PxsMaterial flag eDISABLE_FRICTION did not suppress tangent rows");
+        Scene invalid;
+        const auto box=invalid.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,2,0},1.0f);
+        Material compliant{};
+        compliant.restitution=-0.1f;
+        bool refused=false;
+        try {invalid.set_material(box,compliant);}
+        catch(const std::invalid_argument&) {refused=true;}
+        expect(refused,
+               "Unimplemented source compliant-spring material was silently admitted");
+    }
+    // PxsCombineMaterials' restitution mode uses the higher-precedence
+    // mode independently of the friction mode. Keep both rigid inputs
+    // nonnegative: compliant springs are a separate Dy solver branch.
+    {
+        using fyzz::native::Material;
+        using Mode=fyzz::native::MaterialCombineMode;
+        auto rebound=[](Mode mode) {
+            Scene bounce;
+            const auto ground=bounce.add_static_floor(0.0f);
+            const auto box=bounce.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            Material floor_material{};
+            floor_material.restitution=0.0f;
+            floor_material.restitution_combine=Mode::Minimum;
+            Material box_material{};
+            box_material.restitution=1.0f;
+            box_material.restitution_combine=mode;
+            bounce.set_material(ground,floor_material);
+            bounce.set_material(box,box_material);
+            bounce.set_velocity(box,{0,-4,0});
+            bounce.step(1.0f/120.0f);
+            return bounce.body_state(box).velocity.y;
+        };
+        const float low=rebound(Mode::Minimum);
+        const float high=rebound(Mode::Maximum);
+        expect(std::isfinite(low) && std::isfinite(high) &&
+               high>low+1.0f,
+               "Source material restitution combine mode did not alter rebound");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
