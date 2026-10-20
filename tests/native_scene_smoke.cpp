@@ -1057,11 +1057,11 @@ int run_native_scene_smoke() {
     {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
-        auto rebound=[](Mode mode) {
+        auto rebound=[](Mode mode, float initial_height=0.49f) {
             Scene bounce;
             const auto ground=bounce.add_static_floor(0.0f);
             const auto box=bounce.add_dynamic_box(
-                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                {0.5f,0.5f,0.5f},{0,initial_height,0},1.0f);
             Material floor_material{};
             floor_material.restitution=0.0f;
             floor_material.restitution_combine=Mode::Average;
@@ -1072,18 +1072,28 @@ int run_native_scene_smoke() {
             bounce.set_material(box,box_material);
             bounce.set_velocity(box,{0,-4,0});
             bounce.step(1.0f/120.0f);
-            return bounce.body_state(box).velocity.y;
+            const auto state=bounce.body_state(box);
+            return std::pair{state.velocity.y,state.position.y};
         };
-        const float low=rebound(Mode::Minimum);
-        const float multiply=rebound(Mode::Multiply);
-        const float average=rebound(Mode::Average);
-        const float high=rebound(Mode::Maximum);
-        expect(std::isfinite(low) && std::isfinite(high) &&
-               std::isfinite(multiply) && std::isfinite(average) &&
-               std::abs(low-multiply)<0.02f &&
-               average>low+0.4f &&
-               high>average+0.4f,
+        const auto low=rebound(Mode::Minimum);
+        const auto multiply=rebound(Mode::Multiply);
+        const auto average=rebound(Mode::Average);
+        const auto high=rebound(Mode::Maximum);
+        const auto touching=rebound(Mode::Maximum,0.5f);
+        expect(std::isfinite(low.first) && std::isfinite(high.first) &&
+               std::isfinite(multiply.first) && std::isfinite(average.first) &&
+               std::abs(low.first-multiply.first)<0.02f &&
+               average.first>low.first+0.4f &&
+               high.first>average.first+0.4f,
                "Source material restitution combine modes did not order rebound");
+        // DyContactPrepShared clears scaledBias for a qualifying bounce
+        // BEFORE the position-solver motion snapshot is captured. A
+        // slightly penetrating body must not acquire an additional upward
+        // motion correction compared with the otherwise identical touching
+        // contact. Final unbiased velocity alone cannot detect this bug.
+        expect(std::isfinite(high.second) && std::isfinite(touching.second) &&
+               std::abs((high.second-touching.second)+0.01f)<0.002f,
+               "Restitution contact retained penetration bias during position solve");
     }
 
     // Material authoring must flow through the real public World
