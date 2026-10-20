@@ -354,7 +354,6 @@ int run_native_scene_smoke() {
                "Intrusive adjacency fixture did not establish a three-edge cycle");
         relink.set_position(relink_c,{1.3f,15,0});
         relink.advance_collision();
-        const auto before_recycle=relink.island_full_rebuild_count();
         expect(relink.contact_edge_index(ac)==
                    std::numeric_limits<std::uint32_t>::max() &&
                relink.accurate_island_count()==1,
@@ -367,6 +366,9 @@ int run_native_scene_smoke() {
                relink.accurate_island_count()==1 &&
                relink.largest_accurate_island_size()==4,
                "Recycled edge handle failed to link its new island endpoints");
+        // Adding a dynamic node necessarily rebuilds the admitted island
+        // roster; compare only the subsequent redundant edge retirement.
+        const auto before_recycle=relink.island_full_rebuild_count();
         relink.set_position(dd,{1.3f,15,0});
         relink.advance_collision();
         expect(relink.contact_edge_index(ad)==
