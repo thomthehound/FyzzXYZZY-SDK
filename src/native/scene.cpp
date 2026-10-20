@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <cstdio>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -1175,29 +1174,8 @@ void Scene::solve_constraints() {
                         broken_this_iteration |= clamped;
                     }
                     if (iter + 1 ==
-                        position_iterations + velocity_iterations) {
-                        if (!broken_this_iteration &&
-                            frame_index_==86 && patch.pair.a==0 &&
-                            patch.pair.b==1 &&
-                            std::abs(actors_[patch.pair.b].position.x-
-                                     0.0104674f)<0.001f &&
-                            std::abs(actors_[patch.pair.b].position.y-
-                                     0.500735f)<0.001f) {
-                            std::fprintf(stderr,
-                                "SOURCE_RECOVER frame=%llu pair=%u,%u position=%g,%g,%g vel=%g,%g,%g\\n",
-                                static_cast<unsigned long long>(frame_index_),
-                                static_cast<unsigned>(patch.pair.a),
-                                static_cast<unsigned>(patch.pair.b),
-                                actors_[patch.pair.b].position.x,
-                                actors_[patch.pair.b].position.y,
-                                actors_[patch.pair.b].position.z,
-                                actors_[patch.pair.b].velocity.x,
-                                actors_[patch.pair.b].velocity.y,
-                                actors_[patch.pair.b].velocity.z);
-                            throw std::runtime_error("Identified specific frame-86 friction recovery");
-                        }
+                        position_iterations + velocity_iterations)
                         patch.broken=broken_this_iteration;
-                    }
                 }
             }
         }
