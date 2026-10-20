@@ -754,8 +754,8 @@ void Scene::update_contacts() {
 // a lost edge can only split its component if its endpoints are no longer
 // connected in the *surviving* graph. Traverse the persistent source
 // EdgeInstance adjacency owned by the corresponding contact-manager
-// handles. Fast-route/hop estimates, stable island identities and source
-// deactivation are still outstanding.
+// handles. Root-directed fast-route and hop hints are cached in the
+// all-awake subset; stable island identities and deactivation remain open.
 // IslandSim::findRoute traverses per-node mFirstEdgeIndex and the
 // paired EdgeInstance indices, rather than rebuilding an adjacency
 // graph every time a contact disappears. The persistent source slot
