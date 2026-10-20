@@ -949,8 +949,13 @@ void Scene::prepare_constraints(float seconds) {
             const float penetration_inv_dt_scaled = separated
                 ? penetration_inv_dt
                 : penetration*(inv_dt*rigid_contact_bias);
-            const double scaled_bias = vel_multiplier *
-                std::max(max_penetration_bias,penetration_inv_dt_scaled);
+            // DyContactPrepShared::constructContactConstraint clears
+            // scaledBias on a qualifying restitution bounce. The current
+            // rigid subset does not admit CCD, so its CCD separation gate
+            // does not exclude these contacts.
+            const double scaled_bias = bouncing ? 0.0 :
+                vel_multiplier *
+                    std::max(max_penetration_bias,penetration_inv_dt_scaled);
             const double target = target_velocity-vrel;
             SolverContactPoint row{};
             row.normal = normal;
