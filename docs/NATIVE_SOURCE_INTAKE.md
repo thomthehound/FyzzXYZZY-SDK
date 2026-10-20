@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Heterogeneous material correlation, island task execution, reports and full N1 acceptance remain open.**
+**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Compliant/multi-shape material correlation, island task execution, reports and full N1 acceptance remain open.**
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -178,6 +178,8 @@ Important verified source edges:
     predicted pose as final source-equivalent post-solver state.
 
 **Current integrated CPU slice and remaining departure:** `src/native/scene.cpp::step` now runs the scene-owned Gu collision stage at the starting pose, source-derived `DyContactPrepShared` per-point rigid-body normal Jacobian/effective-mass/bias preparation, and `DySolverConstraintsShared` normal impulse passes. Following `DySolverControl`, it snapshots motion deltas after biased position iterations and separately executes unbiased velocity iterations; `DyBodyCoreIntegrator` uses saved position-phase motion to advance poses and final velocity-phase deltas to update next-frame body velocity. This retires the predicted-pose/one-normal-per-manifold solver and its angular guard.
+
+The active native contact path now also translates the **noncompliant rigid-material** portion of `PxsMaterialCore.h`, `PxsMaterialCombiner.h`, and `DyContactPrep.cpp`: each currently supported authored shape owns one noncompliant material, with static/dynamic friction, restitution, the source's higher-precedence friction/restitution combine mode (`AVERAGE`, `MIN`, `MULTIPLY`, `MAX`) and friction/strong-friction disable flags. Combined restitution drives per-point normal bounce, while combined static/dynamic friction drives source friction-anchor limits and patch cache admission. The source's `staticFriction >= dynamicFriction` promotion and disable-friction row omission are preserved; default material behavior is unchanged. The SDK-owned `Scene::set_material` is the sole mutation path; it adds no extra material-table authority. Native regressions validate the combined coefficients by actual normal/friction body response. Materials with negative restitution (compliant spring/acceleration), damping combinations, multi-material geometry, per-point material assignments and source packed/SIMD constraints are **not** admitted by this subset.
 
 The active PGS preparation now uses the original CPU `DyCpuGpuBiasCoefficient::rigidContact = 0.8f` for both normal penetration correction and friction relaxation. Cached friction normals live in both actors' local frames and survive correlated contact motion; source `DyContactPrepShared::pointsAreClose` uses **absolute** projected anchor separation to retire patches on either excessive compression or positive separation. These numerical and lifetime boundaries are covered by the current draft review, without declaring full source parity.
 
