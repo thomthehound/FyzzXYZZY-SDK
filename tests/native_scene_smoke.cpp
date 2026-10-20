@@ -343,16 +343,16 @@ int run_native_scene_smoke() {
             {0.5f,0.5f,0.5f},{0,15,0},1.0f);
         const auto bb=relink.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.4f,15,0},1.0f);
-        const auto cc=relink.add_dynamic_box(
+        const auto relink_c=relink.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.8f,15,0},1.0f);
         relink.advance_collision();
-        const fyzz::native::Pair ac{aa,cc};
+        const fyzz::native::Pair ac{aa,relink_c};
         const auto recycled=relink.contact_edge_index(ac);
         expect(relink.pairs().size()==3 &&
                relink.contacts().size()==3 &&
                recycled!=std::numeric_limits<std::uint32_t>::max(),
                "Intrusive adjacency fixture did not establish a three-edge cycle");
-        relink.set_position(cc,{1.3f,15,0});
+        relink.set_position(relink_c,{1.3f,15,0});
         relink.advance_collision();
         const auto before_recycle=relink.island_full_rebuild_count();
         expect(relink.contact_edge_index(ac)==
