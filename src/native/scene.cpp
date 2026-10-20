@@ -1896,26 +1896,51 @@ void Scene::publish_solver_bodies() {
         actor.angular_velocity = angular;
     }
 }
-void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
-    // Reuse capacities across frames. The checkpoint contains only state
-    // that persists beyond a step or is exposed by Scene's read-only APIs.
-    // It intentionally excludes rebuilt solver constraints and scratch.
-    motions.clear();
-    // Source contact-edge slots and free/retirement queues are part of
-    // authoritative scene state; a failed frame must not consume a
-    // handle or change the identity of a previously published manager.
-    contact_edges.assign(scene.contact_edges_.begin(),
-                         scene.contact_edges_.end());
-    speculative_first.assign(scene.speculative_node_first_.begin(),
-                             scene.speculative_node_first_.end());
-    accurate_first.assign(scene.accurate_node_first_.begin(),
-                          scene.accurate_node_first_.end());
+void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
+    // Entries are recorded immediately before mutation. Multiple writes
+    // to the same slot are permitted; reverse replay restores its original
+    // contents without a search, a dirty bitmap or per-frame clearing of
+    // a high-watermark array. Newly allocated slots are simply discarded.
+    if(id<initial_edges)
+        edge_undo.push_back({id,scene.contact_edges_[id]});
+}
+void Scene::StepCheckpoint::save_head(
+    const Scene& scene, BodyId node, bool accurate) {
+    const auto& heads=accurate ? scene.accurate_node_first_ :
+                                scene.speculative_node_first_;
+    const auto old_size=accurate ? initial_accurate_heads :
+                                   initial_speculative_heads;
+    if(node<old_size)
+        head_undo.push_back({node,accurate,heads[node]});
+}
+void Scene::StepCheckpoint::save_handle_lists(const Scene& scene) {
+    if(handles_saved)return;
+    // Existing source handle arrays are copied only when overlap
+    // membership or deferred retirement actually changes. Gu-only
+    // accurate touch edits need only the small per-edge undo journal.
     active_handles.assign(scene.active_edge_handles_.begin(),
                           scene.active_edge_handles_.end());
     retired_handles.assign(scene.retired_edge_handles_.begin(),
                            scene.retired_edge_handles_.end());
     free_handles.assign(scene.free_edge_handles_.begin(),
                         scene.free_edge_handles_.end());
+    handles_saved=true;
+}
+void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
+    // Reuse capacities across frames. The checkpoint contains only state
+    // that persists beyond a step or is exposed by Scene's read-only APIs.
+    // It intentionally excludes rebuilt solver constraints and scratch.
+    motions.clear();
+    // Source EdgeInstance writes are journaled only when the contact
+    // manager graph actually changes. Snapshotting the slot watermark
+    // would duplicate every historical intrusive edge four times on
+    // every PGS step even when all connections remain unchanged.
+    edge_undo.clear();
+    head_undo.clear();
+    initial_edges=scene.contact_edges_.size();
+    initial_speculative_heads=scene.speculative_node_first_.size();
+    initial_accurate_heads=scene.accurate_node_first_.size();
+    handles_saved=false;
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
@@ -1970,16 +1995,29 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
-    // PhysX edge handles and their lifetime queues restore before
-    // collision/solver publication; no retired handle escapes a failed step.
-    scene.contact_edges_.swap(contact_edges);
-    scene.speculative_node_first_.swap(speculative_first);
-    scene.accurate_node_first_.swap(accurate_first);
-    scene.active_edge_handles_.swap(active_handles);
+    // Rewind source edge instances and node heads in reverse mutation
+    // order, without allocation. Only touched pre-existing records were
+    // copied, so unchanged history never incurs a full watermark copy.
+    for(auto it=edge_undo.rbegin();it!=edge_undo.rend();++it)
+        scene.contact_edges_[it->id]=it->previous;
+    while(scene.contact_edges_.size()>initial_edges)
+        scene.contact_edges_.pop_back();
+    for(auto it=head_undo.rbegin();it!=head_undo.rend();++it) {
+        auto& heads=it->accurate ? scene.accurate_node_first_ :
+                                  scene.speculative_node_first_;
+        heads[it->node]=it->previous;
+    }
+    while(scene.speculative_node_first_.size()>initial_speculative_heads)
+        scene.speculative_node_first_.pop_back();
+    while(scene.accurate_node_first_.size()>initial_accurate_heads)
+        scene.accurate_node_first_.pop_back();
+    if(handles_saved) {
+        scene.active_edge_handles_.swap(active_handles);
+        scene.retired_edge_handles_.swap(retired_handles);
+        scene.free_edge_handles_.swap(free_handles);
+    }
     // This merge buffer is scratch, cleared before every publication.
     scene.next_edge_handles_.clear();
-    scene.retired_edge_handles_.swap(retired_handles);
-    scene.free_edge_handles_.swap(free_handles);
     // Swaps cannot allocate or fail with the standard vector allocator.
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
