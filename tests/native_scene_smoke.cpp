@@ -282,6 +282,26 @@ int run_native_scene_smoke() {
                cycle.largest_accurate_island_size()==3 &&
                cycle.island_full_rebuild_count()==cycle_rebuilds,
                "Source lost-edge route was discarded despite an alternate path");
+        // A-C is the only removed chord: A is the island root, so C is
+        // the only non-root dirty endpoint. Restoring this redundant
+        // chord must preserve C's cached route through B, yielding one
+        // unambiguous fast hit in each graph when A-C disappears again.
+        const auto cycle_fast_hits=cycle.island_fast_route_hit_count();
+        cycle.set_position(cc,{0.8f,8,0});
+        cycle.advance_collision();
+        expect(cycle.pairs().size()==3 &&
+               cycle.contacts().size()==3 &&
+               cycle.island_full_rebuild_count()==cycle_rebuilds,
+               "Redundant cycle chord insertion rebuilt the island");
+        cycle.set_position(cc,{1.3f,8,0});
+        cycle.advance_collision();
+        expect(cycle.lost_pairs().size()==1 &&
+               cycle.lost_contacts().size()==1 &&
+               cycle.accurate_island_count()==1 &&
+               cycle.speculative_island_count()==1 &&
+               cycle.island_fast_route_hit_count()==cycle_fast_hits+2 &&
+               cycle.island_full_rebuild_count()==cycle_rebuilds,
+               "Redundant cycle chord invalidated its alternate fast route");
         // A-C is no longer connected. Removing B's remaining two
         // contacts must trigger actual split repair, not the route skip.
         cycle.set_position(cb,{5,8,0});
