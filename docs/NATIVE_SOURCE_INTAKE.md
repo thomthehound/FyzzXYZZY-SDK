@@ -549,10 +549,32 @@ edges preserve connected components and solver-node order. A proved
 disconnection or dynamic-node retirement still reconstructs union/find
 components from surviving source edge slots, costing
 O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
-The route traversal remains O(visited dynamic nodes + traversed edge
-instances), with O(dynamic nodes) initialization of visited marks.
-The original fast-route/hop-count dirty repairs, work budgets, stable
-island handles and sleep/activation are **not yet ported**.
+The admitted all-awake rigid subset now also follows the source
+`IslandSim::removeConnectionFromGraph` → `mDirtyMap` →
+`tryFastPath`/`findRoute` sequence: unlinking a dynamic/dynamic
+instance queues its rigid endpoints as dirty and clears any direct
+`mFastRoute` hint through the removed edge. Third-pass repair walks
+those dirty nodes toward their current island root. An advisory
+`mFastRoute`/hop-count cache is reused only when **every cached link**
+still exists in that graph and hop estimates decrease toward that
+root. Otherwise, a graph traversal through the persistent
+`EdgeInstance` adjacency finds a surviving root route and refreshes
+its path estimates. If root connectivity is lost, the existing
+rebuild fallback reconstructs correct all-awake components.
+
+The cache is generation-invalidated in constant time when union/find
+roots change or a frame fails, avoiding source-hint copies in every
+rollback checkpoint. Only dirty dynamic/dynamic edges trigger this
+work; static touch loss does not split the admitted awake dynamic
+components. A successful traversal is O(visited nodes + edge
+instances), a valid fast-root witness follows only its hop path;
+visited flags are initialized on a dirty-route pass, not per
+unchanged frame. Source `IslandSim::findRoute` additionally uses a
+priority queue of hop estimates, previously visited island witnesses,
+permanent island handle/link ownership, and an optional bounded
+dirty-node budget. Those algorithms and sleep/activation semantics
+are **not yet fully ported**; neither is claimed by this bounded
+root-route lowering.
 The full-rebuild instrumentation differentiates redundant edge
 removal from a true split; allocations are retained between frames.
 
@@ -622,10 +644,12 @@ owner, supply both graphs and their traversal.
 **Remaining source and performance differences:** persistent
 `EdgeInstance` next/previous links and per-node first-edge indices
 are now represented and maintained by the existing scene's contact
-manager handles. The source's dirty-node route witnesses, hop/fast
-routes, stable island handles and activation/sleep state remain
-unported; the union/find component lowering still needs retirement
-or deeper integration as N1 progresses. Failure rollback now journals **only the modified** source edge slots
+manager handles. Source dirty-node endpoint marking and validated fast-root/hop-route
+hints are now active for all-awake rigid links, with speculative and
+accurate state kept separate. The source's priority-guided dirty-route
+work queue, stable island handles, multi-frame dirty-work budgets
+and activation/sleep state remain unported; the union/find component
+lowering still needs retirement or deeper integration as N1 progresses. Failure rollback now journals **only the modified** source edge slots
 and intrusive node-head links, including splices into neighboring edge
 instances. It does not traverse or copy old EdgeIndex allocations at
 the start of successful steps. At most O(changed edge writes + changed
