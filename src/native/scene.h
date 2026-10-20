@@ -170,6 +170,14 @@ public:
     std::span<const ForceThresholdReport> force_threshold_changes() const noexcept {
         return threshold_changes_;
     }
+    // PxsSimpleIslandManager's persistent contact-manager edge identity.
+    // One source edge survives physical touch loss while SAP overlap lives.
+    // The invalid sentinel is returned once the overlap is retired.
+    std::uint32_t contact_edge_index(Pair pair) const noexcept;
+    bool contact_edge_connected(Pair pair) const noexcept;
+    std::size_t active_contact_edge_count() const noexcept {
+        return active_edge_handles_.size();
+    }
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
@@ -330,6 +338,10 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
+    // Original contact-manager addEdge/setEdgeConnected/removeConnection
+    // lifecycle, within the existing single scene-owned island pipeline.
+    std::uint32_t allocate_contact_edge(Pair pair);
+    void retire_destroyed_contact_edges();
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // connectivity repair. Original overlapping continuation tasks and
@@ -346,6 +358,20 @@ private:
     void publish_solver_bodies();
 
     std::vector<Actor> actors_;
+    using EdgeIndex=std::uint32_t;
+    static constexpr EdgeIndex invalid_edge=std::numeric_limits<EdgeIndex>::max();
+    struct ContactEdge {
+        Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
+        bool live=false;            // allocated by addContactManager
+        bool connected=false;       // source accurate mConnectedMap bit
+        bool retiring=false;        // removeConnection, pending post-third-pass
+    };
+    // Source HandleManager-style reusable slots. Active handles align
+    // with the one authoritative sorted SAP pair stream; the slots own
+    // lifecycle and accurate touch state, not another collision graph.
+    std::vector<ContactEdge> contact_edges_;
+    std::vector<EdgeIndex> active_edge_handles_, next_edge_handles_;
+    std::vector<EdgeIndex> retired_edge_handles_, free_edge_handles_;
     // The admitted all-awake rigid subset of PxsSimpleIslandManager's
     // speculative and accurate IslandSim connectivity. Pair and contact
     // streams remain the unique authoritative graph edges. These reusable
@@ -406,6 +432,9 @@ private:
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
+        std::vector<ContactEdge> contact_edges;
+        std::vector<EdgeIndex> active_handles, next_handles;
+        std::vector<EdgeIndex> retired_handles, free_handles;
           std::vector<FrictionPatch> friction_patches;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
