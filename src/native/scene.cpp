@@ -748,53 +748,113 @@ void Scene::update_contacts() {
 // paired EdgeInstance indices, rather than rebuilding an adjacency
 // graph every time a contact disappears. The persistent source slot
 // lists here are already updated when the SAP/Gu edge state publishes.
+// IslandSim::processLostEdges processes nodes dirtied by removed graph
+// links. Its findRoute first tries mFastRoute to the island root and
+// otherwise traverses surviving mFirstEdgeIndex adjacency, rebuilding
+// hop/route estimates. The all-awake rigid subset has no sleeping or
+// deferred dirty-work budget; a failed root route proves a real split.
 bool Scene::lost_island_edges_retain_routes(bool accurate) {
-    const auto& lost=accurate?lost_contacts_:lost_;
-    const auto dynamic_edge=[this](Pair pair) {
-        return actors_[pair.a].alive && actors_[pair.b].alive &&
-               actors_[pair.a].kind==Kind::DynamicBox &&
-               actors_[pair.b].kind==Kind::DynamicBox;
-    };
-    bool needs_route=false;
-    for(Pair p:lost)
-        if(dynamic_edge(p)) {needs_route=true;break;}
-    if(!needs_route)return true;
-
+    const auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
+    if(dirty.empty())return true;
     const auto& first=accurate?accurate_node_first_:speculative_node_first_;
+    const auto& parents=accurate?accurate_island_parent_:speculative_island_parent_;
+    auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
+    auto& hops=accurate?accurate_hops_:speculative_hops_;
+    auto& stamps=accurate?accurate_hint_stamps_:speculative_hint_stamps_;
+    const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
+    const BodyId invalid=std::numeric_limits<BodyId>::max();
+    fast.resize(actors_.size(),invalid);
+    hops.resize(actors_.size(),std::numeric_limits<std::uint32_t>::max());
+    stamps.resize(actors_.size(),0);
     island_route_seen_.assign(actors_.size(),0);
-    std::uint32_t stamp=0;
-    for(Pair p:lost) {
-        if(!dynamic_edge(p))continue;
-        if(++stamp==0) {
-            std::fill(island_route_seen_.begin(),
-                      island_route_seen_.end(),0);
-            stamp=1;
+    island_route_predecessor_.resize(actors_.size(),invalid);
+
+    const auto connected=[&](BodyId from,BodyId target) {
+        for(std::size_t i=first[from];i!=invalid_instance;) {
+            const ContactEdge& edge=contact_edges_[i/2];
+            const auto& link=(accurate?edge.accurate:edge.speculative)[i&1];
+            const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+            i=link.next;
+            if(to==target)return true;
+        }
+        return false;
+    };
+    const auto root_for=[&](BodyId node) {
+        while(parents[node]!=node)node=parents[node];
+        return node;
+    };
+    std::uint32_t visit_stamp=0;
+    for(BodyId node:dirty) {
+        if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox)
+            continue;
+        ++island_dirty_route_checks_;
+        const BodyId root=root_for(node);
+        if(root==node)continue;
+
+        // Source tryFastPath: only accept a cached path when every
+        // individual link is still present and hop estimates decrease.
+        // Never trust the cache merely because two nodes retain the
+        // same pre-split island identifier.
+        BodyId probe=node;
+        bool fast_found=false;
+        for(std::size_t depth=0;depth<actors_.size();++depth) {
+            if(probe==root) {fast_found=true;break;}
+            if(stamps[probe]!=epoch)break;
+            const BodyId next=fast[probe];
+            if(next==invalid || next>=actors_.size() ||
+               !actors_[next].alive || stamps[next]!=epoch ||
+               hops[next]>=hops[probe] || !connected(probe,next))
+                break;
+            probe=next;
+        }
+        if(fast_found) {
+            ++island_fast_route_hits_;
+            continue;
+        }
+
+        // IslandSim::findRoute fallback, limited to the admitted awake
+        // rigid graph. A successful route provides new mFastRoute and
+        // mHopCounts estimates toward this component's existing root.
+        if(++visit_stamp==0) {
+            std::fill(island_route_seen_.begin(),island_route_seen_.end(),0);
+            visit_stamp=1;
         }
         island_route_queue_.clear();
-        island_route_queue_.push_back(p.a);
-        island_route_seen_[p.a]=stamp;
-        bool connected=false;
+        island_route_queue_.push_back(node);
+        island_route_seen_[node]=visit_stamp;
+        island_route_predecessor_[node]=invalid;
+        bool found=false;
         for(std::size_t cursor=0;
-            cursor<island_route_queue_.size() && !connected;++cursor) {
+            cursor<island_route_queue_.size() && !found;++cursor) {
             const BodyId from=island_route_queue_[cursor];
-            for(std::size_t index=first[from];index!=invalid_instance;) {
-                const ContactEdge& edge=contact_edges_[index/2];
+            for(std::size_t i=first[from];i!=invalid_instance;) {
+                const ContactEdge& edge=contact_edges_[i/2];
                 const auto& link=(accurate?edge.accurate:
-                                  edge.speculative)[index&1];
-                // Neighbor of this endpoint is the opposite half of
-                // the same source mEdgeNodeIndices[2*EdgeIndex].
-                const BodyId to=(index&1)?edge.pair.a:edge.pair.b;
-                index=link.next;
+                                  edge.speculative)[i&1];
+                const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+                i=link.next;
                 if(!actors_[to].alive ||
-                   actors_[to].kind!=Kind::DynamicBox)
+                   actors_[to].kind!=Kind::DynamicBox ||
+                   island_route_seen_[to]==visit_stamp)
                     continue;
-                if(to==p.b) {connected=true;break;}
-                if(island_route_seen_[to]==stamp)continue;
-                island_route_seen_[to]=stamp;
+                island_route_seen_[to]=visit_stamp;
+                island_route_predecessor_[to]=from;
+                if(to==root) {found=true;break;}
                 island_route_queue_.push_back(to);
             }
         }
-        if(!connected)return false;
+        if(!found)return false;
+
+        fast[root]=invalid;
+        hops[root]=0;
+        stamps[root]=epoch;
+        for(BodyId current=root;current!=node;) {
+            const BodyId predecessor=island_route_predecessor_[current];
+            fast[predecessor]=current;
+            hops[predecessor]=hops[current]+1;
+            stamps[predecessor]=epoch;
+            current=predecessor;
+        }
     }
     return true;
 }
@@ -936,6 +996,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!accurate_island_nodes_.empty())
             accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     }
+    // Union/find root ownership changes invalidate source root-directed
+    // route hints in O(1). They are rebuilt lazily when a dirty node
+    // needs findRoute; no per-frame metadata copy or full cache clear.
+    if(rebuild || added_speculative)++speculative_hint_epoch_;
+    if(rebuild || added_accurate)++accurate_hint_epoch_;
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
