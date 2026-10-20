@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -1172,7 +1173,25 @@ void Scene::solve_constraints() {
                             commit[9],commit[10],commit[11]};
                         fr.applied_force=next;
                         broken_this_iteration |= clamped;
-                        if (clamped) patch.broken=true;
+                    }
+                    if (iter + 1 ==
+                        position_iterations + velocity_iterations) {
+                        if (!broken_this_iteration) {
+                            // Temporary discovery of a recovery under real
+                            // accumulated position-phase clamping.
+                            std::fprintf(stderr,
+                                "SOURCE_RECOVER frame=%llu pair=%u,%u position=%g,%g,%g vel=%g,%g,%g\\n",
+                                static_cast<unsigned long long>(frame_index_),
+                                static_cast<unsigned>(patch.pair.a),
+                                static_cast<unsigned>(patch.pair.b),
+                                actors_[patch.pair.b].position.x,
+                                actors_[patch.pair.b].position.y,
+                                actors_[patch.pair.b].position.z,
+                                actors_[patch.pair.b].velocity.x,
+                                actors_[patch.pair.b].velocity.y,
+                                actors_[patch.pair.b].velocity.z);
+                        }
+                        patch.broken=broken_this_iteration;
                     }
                 }
             }
