@@ -476,11 +476,16 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
         // IslandSim::removeConnectionFromGraph marks both live rigid
         // endpoints dirty and clears a fast route that used the removed
         // edge. Record the pending route work before changing adjacency.
-        if(actors_[node].alive && actors_[node].kind==Kind::DynamicBox) {
+        const BodyId other=side==0?edge.pair.b:edge.pair.a;
+        // Static contacts cannot split an all-awake dynamic island.
+        // PhysX still tracks static touch counts for sleeping; that
+        // lifecycle is outside this admitted contact-only subset.
+        if(actors_[node].alive && actors_[other].alive &&
+           actors_[node].kind==Kind::DynamicBox &&
+           actors_[other].kind==Kind::DynamicBox) {
             auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
             dirty.push_back(node);
             auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
-            const BodyId other=side==0?edge.pair.b:edge.pair.a;
             if(node<fast.size() && fast[node]==other)
                 fast[node]=std::numeric_limits<BodyId>::max();
         }
