@@ -1790,6 +1790,7 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
                             scene.accurate_island_offsets_.end());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
+    pre_third_pass_count=scene.pre_third_pass_island_count_;
     topology_revision=scene.island_topology_revision_;
     full_rebuild_count=scene.island_full_rebuild_count_;
     frame_index=scene.frame_index_;
@@ -1851,6 +1852,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_island_offsets_.swap(accurate_offsets);
     scene.speculative_island_count_=speculative_count;
     scene.accurate_island_count_=accurate_count;
+    scene.pre_third_pass_island_count_=pre_third_pass_count;
     scene.island_topology_revision_=topology_revision;
     scene.island_full_rebuild_count_=full_rebuild_count;
     scene.frame_index_=frame_index;
@@ -1928,6 +1930,7 @@ void Scene::step(float seconds) {
     // The complete island task graph, packed constraint ABI, heterogeneous
     // material/contact callbacks and CCD remain explicit N1 admission gates.
     advance_collision_internal(false);
+    pre_third_pass_island_count_=accurate_island_count_;
     prepare_solver_bodies();
     partition_constraints();
     prepare_constraints(seconds);
