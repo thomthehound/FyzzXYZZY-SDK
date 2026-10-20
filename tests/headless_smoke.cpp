@@ -413,6 +413,54 @@ int main() {
                 }
             }
 
+            // Source island/PGS contact transition against an independent
+            // PxScene: start with two disjoint dynamic nodes, then author
+            // one new physical touch so the native accurate island merges
+            // incrementally. The PhysX CPU scene runs its own actual
+            // island/contact-manager pipeline, not the native graph.
+            {
+                fyzz::World native_islands(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_islands(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                const auto n0=native_islands.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+                const auto r0=source_islands.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+                const auto n1=native_islands.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{4,5,0},1.0f);
+                const auto r1=source_islands.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{4,5,0},1.0f);
+                constexpr float h=1.0f/120.0f;
+                native_islands.step(h);
+                source_islands.step(h);
+                const auto target=fyzz::Vec3{0.9f,
+                    native_islands.body_state(n1).position.y,0};
+                const auto reference_target=fyzz::Vec3{0.9f,
+                    source_islands.body_state(r1).position.y,0};
+                native_islands.set_body_position(n1,target);
+                source_islands.set_body_position(r1,reference_target);
+                for(int frame=0;frame<4;++frame) {
+                    native_islands.step(h);
+                    source_islands.step(h);
+                    for(const auto [n,r] :
+                        {std::pair{n0,r0},std::pair{n1,r1}}) {
+                        const auto a=native_islands.body_state(n);
+                        const auto b=source_islands.body_state(r);
+                        if (!vec_finite(a.position) ||
+                            !vec_finite(a.velocity) ||
+                            !vec_finite(b.position) ||
+                            !vec_finite(b.velocity) ||
+                            std::abs(a.position.x-b.position.x)>0.035f ||
+                            std::abs(a.position.y-b.position.y)>0.035f ||
+                            std::abs(a.velocity.x-b.velocity.x)>0.25f ||
+                            std::abs(a.velocity.y-b.velocity.y)>0.25f)
+                            throw std::runtime_error(
+                                "Native dynamic island contact transition diverged from PhysX CPU");
+                    }
+                }
+            }
+
             // Source parity for the float speed-squared overflow branch:
             // a FLT_MAX linear velocity must become zero, not 1e16.
             fyzz::World native_speed(fyzz::WorldOptions{
