@@ -204,6 +204,11 @@ public:
     std::uint64_t island_full_rebuild_count() const noexcept {
         return island_full_rebuild_count_;
     }
+    // Number of edited source edge instances saved for step rollback,
+    // distinct from the number of historical contact-manager handles.
+    std::size_t edge_rollback_journal_size() const noexcept {
+        return step_checkpoint_.edge_undo.size();
+    }
     // Read the existing accurate-node batch boundaries without exposing
     // transient solver arrays or allocating diagnostic copies.
     std::size_t largest_accurate_island_size() const noexcept {
@@ -344,8 +349,8 @@ private:
     void retire_destroyed_contact_edges();
     // IslandSim::addConnectionToGraph/removeConnectionInternal,
     // two source edge instances per contact manager, per graph.
-    void link_contact_edge(std::uint32_t id, bool accurate) noexcept;
-    void unlink_contact_edge(std::uint32_t id, bool accurate) noexcept;
+    void link_contact_edge(std::uint32_t id, bool accurate);
+    void unlink_contact_edge(std::uint32_t id, bool accurate);
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // connectivity repair. Original overlapping continuation tasks and
@@ -448,10 +453,23 @@ private:
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
-        std::vector<ContactEdge> contact_edges;
-        std::vector<std::size_t> speculative_first, accurate_first;
+        // Sparse undo records for intrusive source EdgeInstances and
+        // per-node list heads. Replayed in reverse order on failure;
+        // unchanged or historically allocated slots incur no copies.
+        struct EdgeUndo { EdgeIndex id; ContactEdge previous; };
+        struct HeadUndo {
+            BodyId node;
+            bool accurate;
+            std::size_t previous;
+        };
+        std::vector<EdgeUndo> edge_undo;
+        std::vector<HeadUndo> head_undo;
+        std::size_t initial_edges=0;
+        std::size_t initial_speculative_heads=0;
+        std::size_t initial_accurate_heads=0;
         std::vector<EdgeIndex> active_handles;
         std::vector<EdgeIndex> retired_handles, free_handles;
+        bool handles_saved=false;
           std::vector<FrictionPatch> friction_patches;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
@@ -469,6 +487,9 @@ private:
         bool topology_dirty=true, dirty=true;
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
+        void save_edge(const Scene& scene, EdgeIndex id);
+        void save_head(const Scene& scene, BodyId node, bool accurate);
+        void save_handle_lists(const Scene& scene);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
