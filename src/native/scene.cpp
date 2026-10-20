@@ -618,6 +618,7 @@ void Scene::update_island_connectivity() {
 
     bool order_changed=rebuild;
     if (rebuild) {
+        ++island_full_rebuild_count_;
         const BodyId invalid=std::numeric_limits<BodyId>::max();
         const std::size_t count=actors_.size();
         speculative_island_parent_.resize(count);
@@ -1707,6 +1708,7 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
+    full_rebuild_count=scene.island_full_rebuild_count_;
     frame_index=scene.frame_index_;
     pair_epoch=scene.pair_epoch_;
     contact_epoch=scene.contact_epoch_;
@@ -1767,6 +1769,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.speculative_island_count_=speculative_count;
     scene.accurate_island_count_=accurate_count;
     scene.island_topology_revision_=topology_revision;
+    scene.island_full_rebuild_count_=full_rebuild_count;
     scene.frame_index_=frame_index;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
