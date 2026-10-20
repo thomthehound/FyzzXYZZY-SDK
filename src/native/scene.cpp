@@ -260,6 +260,22 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
         throw std::overflow_error("Native world-space torque impulse overflow");
     actor.pending_angular_velocity_delta = pending;
 }
+void Scene::set_material(BodyId id, Material material) {
+    // PxMaterial / PxsMaterialData admission for ordinary rigid contacts.
+    // The source compliant branch uses negative restitution and damping;
+    // refuse those inputs until its spring constraint rows are integrated.
+    if (!std::isfinite(material.static_friction) ||
+        !std::isfinite(material.dynamic_friction) ||
+        !std::isfinite(material.restitution) ||
+        material.static_friction<0.0f ||
+        material.dynamic_friction<0.0f ||
+        material.restitution<0.0f || material.restitution>1.0f ||
+        static_cast<unsigned>(material.friction_combine)>3 ||
+        static_cast<unsigned>(material.restitution_combine)>3)
+        throw std::invalid_argument(
+            "Native noncompliant material coefficients/modes invalid");
+    require(id).material=material;
+}
 void Scene::set_contact_report_threshold(BodyId id, float force) {
     // ScBodyCore::contactReportThreshold and
     // DySolverConstraints::writeBackContact's finite threshold gate.
@@ -705,8 +721,23 @@ void Scene::prepare_constraints(float seconds) {
     // and for friction-row impulse relaxation (not a 0.2 substitute).
     constexpr float rigid_contact_bias = 0.8f;
     constexpr float max_penetration_bias = -3.0f;
-    constexpr float restitution = 0.2f;
     constexpr float bounce_threshold = -2.0f;
+    // PxsMaterialCombiner.h::PxsCombineMaterials: the source takes the
+    // higher precedence combine mode (Average, Min, Multiply, Max) of
+    // both shapes and promotes static friction to at least dynamic.
+    // All currently admitted materials are noncompliant (restitution >=0).
+    const auto combine=[](float a,float b,MaterialCombineMode mode) {
+        switch(mode) {
+        case MaterialCombineMode::Average: return 0.5f*(a+b);
+        case MaterialCombineMode::Minimum: return std::min(a,b);
+        case MaterialCombineMode::Multiply: return a*b;
+        case MaterialCombineMode::Maximum: return std::max(a,b);
+        }
+        throw std::logic_error("Unrecognized source material combine mode");
+    };
+    const auto higher=[](MaterialCombineMode a,MaterialCombineMode b) {
+        return static_cast<unsigned>(a)>static_cast<unsigned>(b)?a:b;
+    };
     const float inv_dt = 1.0f / seconds;
     const auto dot = [](Vec3 u, Vec3 v) {
         return u.x*v.x + u.y*v.y + u.z*v.z;
@@ -763,6 +794,28 @@ void Scene::prepare_constraints(float seconds) {
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[manifold.pair.a];
         const Actor& actor1 = actors_[manifold.pair.b];
+        const Material& m0=actor0.material;
+        const Material& m1=actor1.material;
+        const auto friction_mode=higher(m0.friction_combine,
+                                        m1.friction_combine);
+        const auto restitution_mode=higher(m0.restitution_combine,
+                                           m1.restitution_combine);
+        const float restitution=combine(m0.restitution,m1.restitution,
+                                        restitution_mode);
+        const bool disable_friction=m0.disable_friction || m1.disable_friction;
+        const bool disable_strong_friction=disable_friction ||
+            m0.disable_strong_friction || m1.disable_strong_friction;
+        const float dynamic_friction=disable_friction ? 0.0f :
+            std::max(0.0f,combine(m0.dynamic_friction,m1.dynamic_friction,
+                                  friction_mode));
+        const float static_friction=disable_friction ? 0.0f :
+            std::max(dynamic_friction,
+                     combine(m0.static_friction,m1.static_friction,
+                             friction_mode));
+        if (!std::isfinite(restitution) ||
+            !std::isfinite(static_friction) ||
+            !std::isfinite(dynamic_friction))
+            throw std::overflow_error("Native Pxs material combination overflow");
         for (const ContactPoint& contact : manifold.points) {
             // DyFrictionCorrelation::createContactPatches/correlatePatches:
             // all currently admitted contacts use the same material, so
@@ -784,6 +837,11 @@ void Scene::prepare_constraints(float seconds) {
                 FrictionPatch patch{};
                 patch.pair = manifold.pair;
                 patch.normal = contact.normal;
+                patch.static_friction=static_friction;
+                patch.dynamic_friction=dynamic_friction;
+                patch.restitution=restitution;
+                patch.disable_friction=disable_friction;
+                patch.disable_strong_friction=disable_strong_friction;
                 // DyFrictionCorrelation::initFrictionPatch saves the normal
                 // in both actor frames. These local normals are only reused
                 // when the bodies still agree on the contact orientation.
@@ -808,7 +866,14 @@ void Scene::prepare_constraints(float seconds) {
                         local_normal(actor0,old_normal_1_world);
                     const Vec3 old_normal_0_world =
                         rotate(actor0.orientation,old.body0_normal);
-                    if (old.broken || !old.anchor_count ||
+                    // DyFrictionCorrelation groups by combined material
+                    // and only reuses cached anchors when strong friction
+                    // is enabled and those properties remain identical.
+                    if (disable_strong_friction || old.disable_strong_friction ||
+                        old.static_friction!=static_friction ||
+                        old.dynamic_friction!=dynamic_friction ||
+                        old.restitution!=restitution ||
+                        old.broken || !old.anchor_count ||
                         dot(old.body0_normal,old_normal_1_in_0) <=
                             same_normal ||
                         dot(old_normal_0_world,patch.normal) <
@@ -961,6 +1026,10 @@ void Scene::prepare_constraints(float seconds) {
             }
             patch.anchor_count=count;
             patch.row_offset=solver_friction_rows_.size();
+            if (patch.disable_friction) {
+                patch.anchor_count=0;
+                continue;
+            }
             if (count==0) continue;
             // DyContactPrep.cpp constructs tangents from relative linear
             // velocity, with the same 0.7071 normal-axis fallback and
@@ -1118,8 +1187,10 @@ void Scene::solve_constraints() {
                     }
                     const double coefficient=patch.anchor_count==2
                         ? 0.5 : 1.0;
-                    const double max_static=0.5*coefficient*normal_impulse;
-                    const double max_dynamic=0.5*coefficient*normal_impulse;
+                    const double max_static=
+                        patch.static_friction*coefficient*normal_impulse;
+                    const double max_dynamic=
+                        patch.dynamic_friction*coefficient*normal_impulse;
                     // DySolverConstraints.cpp::solveContact and
                     // solveContact_BStatic create a fresh local 'broken'
                     // value on EVERY solve call. Only the final
