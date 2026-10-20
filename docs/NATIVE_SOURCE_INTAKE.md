@@ -504,18 +504,30 @@ dynamic/dynamic SAP candidate merges the speculative graph in
 amortized near-constant union/find time; a new physical touch merges
 the accurate graph in the same way. Accurate-node ordering is rebuilt
 only when a touch merges two previously separate components, costing
-O(dynamic nodes log dynamic nodes). A lost dynamic edge or dynamic
-node retirement still rebuilds both graphs from surviving source-owned
-candidate/touch streams, costing O(dynamic nodes log dynamic nodes +
-candidate edges + touching edges). Source `IslandSim::processLostEdges`
-uses incremental dirty-node route repair and an optional work budget;
-that algorithm, stable island handles and sleeping/activation semantics
-are **not yet ported**. The internal full-rebuild counter is validated
-across additions, disconnected removals and static-only changes;
-all component and solver-body allocations remain reusable.
+O(dynamic nodes log dynamic nodes). On a lost dynamic edge, the native scene now uses the
+`IslandSim::processLostEdges` / `findRoute` connectivity invariant:
+if the removed edge's endpoints are still connected in the surviving
+published graph, their component has not split. The exact published
+speculative and accurate edges are searched separately using
+capacity-reused transient adjacency, without changing their ownership.
+Redundant lost edges therefore preserve both island components and
+solver-node order. A proved disconnection, or dynamic node retirement,
+still rebuilds both graphs from surviving edges, costing
+O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
+A route search costs O(dynamic nodes + relevant surviving edges)
+in scratch initialization/traversal, without the component sorting
+cost, and is triggered **only on dynamic losses**. This is a graph
+invariant-preserving lowering, not a claim to have translated the
+original persistent `EdgeInstance`, dirty-node `findRoute`,
+`mFastRoute`/hop-count repair, dirty-work budget, stable island
+handles, or sleep/activation processing. Those remain N1 requirements.
+The full-rebuild instrumentation differentiates redundant edge
+removal from a true split; allocations are retained between frames.
 
 **Regression boundary:** dynamic three-node merge, split,
-incremental rejoin and removal; isolated free-flight integration;
+incremental rejoin and removal; redundant edge deletion in a
+three-node cycle without rebuild, followed by true bridge-edge
+deletion forcing a split; isolated free-flight integration;
 multiple dynamic bodies touching one shared static world without an
 accidental merge; static-only changes without component reconstruction;
 and diagonal thin boxes whose speculative AABB graph is connected while
