@@ -138,6 +138,52 @@ int run_native_scene_smoke() {
                connected.body_state(isolated).position.y<5.0f,
                "Native island-node admission omitted free-flight integration");
 
+        // IslandSim::findRoute: deleting a non-bridge edge must not
+        // split a three-node cycle. After that, deleting the surviving
+        // two-edge route really must split the dynamic components.
+        // Both speculative SAP and accurate Gu graphs must agree on
+        // the independently published resulting connectivity.
+        Scene cycle;
+        const auto ca=cycle.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto cb=cycle.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.4f,8,0},1.0f);
+        const auto cc=cycle.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        cycle.advance_collision();
+        expect(cycle.pairs().size()==3 &&
+               cycle.contacts().size()==3 &&
+               cycle.speculative_island_count()==1 &&
+               cycle.accurate_island_count()==1,
+               "Lost-edge route fixture did not begin as a connected cycle");
+        const auto cycle_rebuilds=cycle.island_full_rebuild_count();
+        cycle.set_position(cc,{1.3f,8,0});
+        cycle.advance_collision();
+        expect(cycle.pairs().size()==2 &&
+               cycle.contacts().size()==2 &&
+               cycle.speculative_island_count()==1 &&
+               cycle.accurate_island_count()==1 &&
+               cycle.largest_accurate_island_size()==3 &&
+               cycle.island_full_rebuild_count()==cycle_rebuilds,
+               "Source lost-edge route was discarded despite an alternate path");
+        // A-C is no longer connected. Removing B's remaining two
+        // contacts must trigger actual split repair, not the route skip.
+        cycle.set_position(cb,{5,8,0});
+        cycle.advance_collision();
+        expect(cycle.pairs().empty() && cycle.contacts().empty() &&
+               cycle.speculative_island_count()==3 &&
+               cycle.accurate_island_count()==3 &&
+               cycle.largest_accurate_island_size()==1 &&
+               cycle.island_full_rebuild_count()==cycle_rebuilds+1,
+               "Source island split lost its final surviving route");
+        cycle.set_position(cb,{0.4f,8,0});
+        cycle.advance_collision();
+        expect(cycle.speculative_island_count()==1 &&
+               cycle.accurate_island_count()==1 &&
+               cycle.largest_accurate_island_size()==3 &&
+               cycle.island_full_rebuild_count()==cycle_rebuilds+1,
+               "Source lost-edge repair did not admit incremental rejoin");
+
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
