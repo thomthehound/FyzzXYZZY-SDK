@@ -498,20 +498,32 @@ force, contact, or solver world owns results. The source's lifetime and
 per-frame interleaving behavior is **not** implied by matching component
 membership.
 
-**Cost:** unchanged dynamic connectivity has constant-time admission
-checks; topology changes rebuild connected components and order accurate
-island nodes, costing O(actors log actors + candidate edges + touching
-edges), with reusable allocations. Original PhysX incremental
-`PxsIslandSim` edge insertion/removal and budgeted dirty-node repair
-remain required to avoid this rebuild cost in large changing scenes.
+**Cost:** unchanged dynamic connectivity and static-only topology
+changes incur no component reconstruction. A newly found
+dynamic/dynamic SAP candidate merges the speculative graph in
+amortized near-constant union/find time; a new physical touch merges
+the accurate graph in the same way. Accurate-node ordering is rebuilt
+only when a touch merges two previously separate components, costing
+O(dynamic nodes log dynamic nodes). A lost dynamic edge or dynamic
+node retirement still rebuilds both graphs from surviving source-owned
+candidate/touch streams, costing O(dynamic nodes log dynamic nodes +
+candidate edges + touching edges). Source `IslandSim::processLostEdges`
+uses incremental dirty-node route repair and an optional work budget;
+that algorithm, stable island handles and sleeping/activation semantics
+are **not yet ported**. The internal full-rebuild counter is validated
+across additions, disconnected removals and static-only changes;
+all component and solver-body allocations remain reusable.
 
-**Regression boundary:** dynamic three-node merge, split, rejoin and
-removal; isolated free-flight integration; multiple dynamic bodies
-touching one shared static world without an accidental merge; static-only
-contact changes without component reconstruction; and diagonal thin
-boxes whose speculative AABB graph is connected while their accurate
-Gu contact graph is disconnected. Tests run in the production
-`NativeCpu` scene, including source-free Vulkan and D3D12 builds.
+**Regression boundary:** dynamic three-node merge, split,
+incremental rejoin and removal; isolated free-flight integration;
+multiple dynamic bodies touching one shared static world without an
+accidental merge; static-only changes without component reconstruction;
+and diagonal thin boxes whose speculative AABB graph is connected while
+their accurate Gu contact graph is disconnected. The tests distinguish
+an incremental speculative insertion, incremental accurate touch
+insertion and a complete lost-edge rebuild through scene-owned
+instrumentation. They execute through the production `NativeCpu`
+path in source-free Vulkan and D3D12 builds.
 
 **Unported source responsibilities:** stable `PxNodeIndex` and edge
 handle generations, speculative/accurate activation flags, sleep/wake,
