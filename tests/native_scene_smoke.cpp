@@ -996,8 +996,8 @@ int run_native_scene_smoke() {
     // the higher-precedence combine mode: MAX beats MIN/AVERAGE. A disabled
     // friction flag on EITHER side wins and suppresses all tangent rows.
     {
-        using fyzz::native::Material;
-        using Mode=fyzz::native::MaterialCombineMode;
+        using fyzz::Material;
+        using Mode=fyzz::MaterialCombineMode;
         auto friction_run=[](Mode mode, bool disable) {
             Scene sample;
             const auto ground=sample.add_static_floor(0.0f);
@@ -1055,8 +1055,8 @@ int run_native_scene_smoke() {
     // mode independently of the friction mode. Keep both rigid inputs
     // nonnegative: compliant springs are a separate Dy solver branch.
     {
-        using fyzz::native::Material;
-        using Mode=fyzz::native::MaterialCombineMode;
+        using fyzz::Material;
+        using Mode=fyzz::MaterialCombineMode;
         auto rebound=[](Mode mode) {
             Scene bounce;
             const auto ground=bounce.add_static_floor(0.0f);
