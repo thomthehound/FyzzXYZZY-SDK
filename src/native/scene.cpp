@@ -709,8 +709,12 @@ void Scene::update_contacts() {
 // persistent edge instances, fast routes, hop estimates and deferred
 // deactivation are not yet imported; this temporary adjacency is rebuilt
 // only when dynamic connections disappear, using scene-owned capacity.
+// IslandSim::findRoute traverses per-node mFirstEdgeIndex and the
+// paired EdgeInstance indices, rather than rebuilding an adjacency
+// graph every time a contact disappears. The persistent source slot
+// lists here are already updated when the SAP/Gu edge state publishes.
 bool Scene::lost_island_edges_retain_routes(bool accurate) {
-    const auto& lost=accurate ? lost_contacts_ : lost_;
+    const auto& lost=accurate?lost_contacts_:lost_;
     const auto dynamic_edge=[this](Pair pair) {
         return actors_[pair.a].alive && actors_[pair.b].alive &&
                actors_[pair.a].kind==Kind::DynamicBox &&
@@ -721,23 +725,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         if(dynamic_edge(p)) {needs_route=true;break;}
     if(!needs_route)return true;
 
-    constexpr auto invalid=std::numeric_limits<std::size_t>::max();
-    island_route_head_.assign(actors_.size(),invalid);
-    island_route_next_.clear();
-    island_route_other_.clear();
-    const auto add_edge=[&](Pair p) {
-        if(!dynamic_edge(p))return;
-        for(const auto [from,to] :
-            {std::pair{p.a,p.b},std::pair{p.b,p.a}}) {
-            island_route_next_.push_back(island_route_head_[from]);
-            island_route_other_.push_back(to);
-            island_route_head_[from]=island_route_other_.size()-1;
-        }
-    };
-    for(EdgeIndex id:active_edge_handles_) {
-        const ContactEdge& edge=contact_edges_[id];
-        if(!accurate || edge.connected)add_edge(edge.pair);
-    }
+    const auto& first=accurate?accurate_node_first_:speculative_node_first_;
     island_route_seen_.assign(actors_.size(),0);
     std::uint32_t stamp=0;
     for(Pair p:lost) {
@@ -754,9 +742,17 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         for(std::size_t cursor=0;
             cursor<island_route_queue_.size() && !connected;++cursor) {
             const BodyId from=island_route_queue_[cursor];
-            for(std::size_t edge=island_route_head_[from];
-                edge!=invalid;edge=island_route_next_[edge]) {
-                const BodyId to=island_route_other_[edge];
+            for(std::size_t index=first[from];index!=invalid_instance;) {
+                const ContactEdge& edge=contact_edges_[index/2];
+                const auto& link=(accurate?edge.accurate:
+                                  edge.speculative)[index&1];
+                // Neighbor of this endpoint is the opposite half of
+                // the same source mEdgeNodeIndices[2*EdgeIndex].
+                const BodyId to=(index&1)?edge.pair.a:edge.pair.b;
+                index=link.next;
+                if(!actors_[to].alive ||
+                   actors_[to].kind!=Kind::DynamicBox)
+                    continue;
                 if(to==p.b) {connected=true;break;}
                 if(island_route_seen_[to]==stamp)continue;
                 island_route_seen_[to]=stamp;
