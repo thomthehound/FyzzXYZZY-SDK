@@ -721,6 +721,60 @@ int run_native_scene_smoke() {
                "Source friction writeback did not republish after collision query");
     }
 
+    // DySolverConstraints.cpp::solveContact(_BStatic) resets its
+    // per-call friction break condition and only stores it during the
+    // final velocity/writeback solve. With equal default static/dynamic
+    // coefficients (0.5), a row that actually clamps on the FINAL pass
+    // ends at the exact per-anchor Coulomb limit. Thus a broken patch
+    // must have at least one reported anchor at that limit; saturation
+    // during an earlier position iteration cannot justify "broken".
+    // Exercise persistent anchors through a range of slip magnitudes so
+    // false historical breaks also poison the next frame's cache.
+    {
+        bool observed_break=false, observed_unbroken=false;
+        for (const float sliding_speed :
+             {0.0f,0.01f,0.04f,0.08f,0.2f,0.6f,2.0f,4.0f}) {
+            Scene final_pass;
+            final_pass.add_static_floor(0.0f);
+            const auto box=final_pass.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            final_pass.set_velocity(box,{sliding_speed,0,0});
+            for (unsigned frame=0;frame<32;++frame) {
+                final_pass.step(1.0f/120.0f);
+                if (final_pass.contacts().size()!=1 ||
+                    final_pass.solved_friction_patches().size()!=1)
+                    continue;
+                const auto& patch=final_pass.solved_friction_patches()[0];
+                if (!patch.anchor_count) continue;
+                double normal_sum=0;
+                for(const double impulse: final_pass.solved_normal_impulses())
+                    normal_sum+=impulse;
+                if (normal_sum<=1.0e-6) continue;
+                const double anchor_limit=0.5*normal_sum/
+                    static_cast<double>(patch.anchor_count);
+                double largest_anchor_impulse=0;
+                for(std::size_t k=0;k<patch.anchor_count;++k) {
+                    const auto& f=patch.anchor_impulses[k];
+                    const double magnitude=std::sqrt(
+                        f.x*f.x+f.y*f.y+f.z*f.z);
+                    expect(std::isfinite(magnitude),
+                           "Friction writeback produced nonfinite anchor impulse");
+                    largest_anchor_impulse=std::max(
+                        largest_anchor_impulse,magnitude);
+                }
+                if (patch.broken) {
+                    observed_break=true;
+                    expect(largest_anchor_impulse>=anchor_limit*0.995,
+                           "Position-pass friction clamp leaked into final writeback");
+                } else {
+                    observed_unbroken=true;
+                }
+            }
+        }
+        expect(observed_break && observed_unbroken,
+               "Friction final-writeback test did not exercise both break outcomes");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
