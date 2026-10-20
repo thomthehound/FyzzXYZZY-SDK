@@ -722,6 +722,59 @@ int run_native_scene_smoke() {
                "Source friction writeback did not republish after collision query");
     }
 
+    // Authored pose edits invalidate the affected Dy friction cache.
+    // A tangent-only teleport leaves old anchor separation projected
+    // along the normal at zero, so Dy pointsAreClose alone cannot reject
+    // it. Compare the next actual solve against an uncached Scene seeded
+    // with the same physical state, for both collision participants.
+    {
+        constexpr float dt=1.0f/120.0f;
+        for (const bool relocate_floor : {false,true}) {
+            Scene cached;
+            const auto floor=cached.add_static_floor(0.0f);
+            const auto box=cached.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+            cached.step(dt);
+            cached.step(dt);
+            const auto patches=cached.solved_friction_patches();
+            expect(patches.size()==1 &&
+                   patches[0].anchor_count>0 && !patches[0].broken,
+                   "Teleport test did not establish reusable friction anchors");
+            const auto before=cached.body_state(box);
+            expect(std::abs(before.orientation.x)<1.0e-5f &&
+                   std::abs(before.orientation.z)<1.0e-5f,
+                   "Teleport baseline has unexpected angular motion");
+            const fyzz::Vec3 shifted_body{
+                before.position.x+(relocate_floor?0.0f:0.6f),
+                before.position.y,before.position.z};
+            if (relocate_floor)
+                cached.set_position(floor,{0.6f,0.0f,0.0f});
+            else
+                cached.set_position(box,shifted_body);
+
+            Scene fresh;
+            const auto new_floor=fresh.add_static_floor(0.0f);
+            const auto new_box=fresh.add_dynamic_box(
+                {0.5f,0.5f,0.5f},shifted_body,1.0f);
+            if (relocate_floor)
+                fresh.set_position(new_floor,{0.6f,0.0f,0.0f});
+            fresh.set_velocity(new_box,before.velocity);
+            fresh.set_angular_velocity(new_box,before.angular_velocity);
+
+            cached.step(dt);
+            fresh.step(dt);
+            const auto a=cached.body_state(box);
+            const auto b=fresh.body_state(new_box);
+            expect(std::abs(a.velocity.x-b.velocity.x)<2.0e-4f &&
+                   std::abs(a.velocity.y-b.velocity.y)<2.0e-4f &&
+                   std::abs(a.velocity.z-b.velocity.z)<2.0e-4f &&
+                   std::abs(a.angular_velocity.x-b.angular_velocity.x)<2.0e-4f &&
+                   std::abs(a.angular_velocity.y-b.angular_velocity.y)<2.0e-4f &&
+                   std::abs(a.angular_velocity.z-b.angular_velocity.z)<2.0e-4f,
+                   "Explicit tangent teleport reused invalid friction anchors");
+        }
+    }
+
     // DySolverConstraints.cpp::solveContact(_BStatic) resets its
     // per-call friction break condition and only stores it during the
     // final velocity/writeback solve. With equal default static/dynamic
