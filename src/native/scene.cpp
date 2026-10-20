@@ -1317,13 +1317,11 @@ void Scene::update_threshold_stream(float seconds) {
             continue;
         threshold_current_.push_back({pair,sum,threshold});
     }
-    // DyThresholdTable hashes these canonical node pairs. Sorting and
-    // merging is equivalent for the native one-shape-per-actor subset;
-    // avoid allocating a separate hash/pair owner just for reports.
-    std::sort(threshold_current_.begin(),threshold_current_.end(),
-        [](const ThresholdPair& a, const ThresholdPair& b) {
-            return a.pair<b.pair;
-        });
+    // DyThresholdTable hashes source island-node pairs. Our original Gu
+    // contact managers are already sorted by canonical BodyId Pair, so
+    // preserve their order and coalesce adjacent entries in place. Avoid
+    // an unnecessary per-frame sort or an auxiliary hash-table owner.
+    // Island-node and multiple-shape support require source expansion.
     std::size_t write=0;
     for (const auto& row:threshold_current_) {
         if (write && threshold_current_[write-1].pair==row.pair) {
