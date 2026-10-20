@@ -879,6 +879,10 @@ int run_native_scene_smoke() {
         const auto prior_manifolds=failed.contacts();
         const auto* const manifold_memory=prior_manifolds.data();
         const auto* const pair_memory=failed.pairs().data();
+        const auto* const found_memory=failed.found_pairs().data();
+        const auto* const touch_memory=failed.found_contacts().data();
+        const auto* const force_memory=failed.solved_normal_impulses().data();
+        const auto* const threshold_memory=failed.force_threshold_changes().data();
         expect(prior_manifolds.size()==1 &&
                prior_manifolds[0].count==4,
                "Step failure fixture has no authoritative prior contacts");
@@ -922,6 +926,10 @@ int run_native_scene_smoke() {
                    current.data()==manifold_memory &&
                    current[0].points.data()==point_memory &&
                    failed.pairs().data()==pair_memory &&
+                   failed.found_pairs().data()==found_memory &&
+                   failed.found_contacts().data()==touch_memory &&
+                   failed.solved_normal_impulses().data()==force_memory &&
+                   failed.force_threshold_changes().data()==threshold_memory &&
                    current[0].pair==original_pair &&
                    current[0].count==4 &&
                    same_vec(current[0].points[0].position,
