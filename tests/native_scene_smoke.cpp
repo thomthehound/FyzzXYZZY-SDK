@@ -765,13 +765,23 @@ int run_native_scene_smoke() {
             fresh.step(dt);
             const auto a=cached.body_state(box);
             const auto b=fresh.body_state(new_box);
-            expect(std::abs(a.velocity.x-b.velocity.x)<2.0e-4f &&
-                   std::abs(a.velocity.y-b.velocity.y)<2.0e-4f &&
-                   std::abs(a.velocity.z-b.velocity.z)<2.0e-4f &&
-                   std::abs(a.angular_velocity.x-b.angular_velocity.x)<2.0e-4f &&
-                   std::abs(a.angular_velocity.y-b.angular_velocity.y)<2.0e-4f &&
-                   std::abs(a.angular_velocity.z-b.angular_velocity.z)<2.0e-4f,
-                   "Explicit tangent teleport reused invalid friction anchors");
+            const bool matches=
+                std::abs(a.velocity.x-b.velocity.x)<2.0e-4f &&
+                std::abs(a.velocity.y-b.velocity.y)<2.0e-4f &&
+                std::abs(a.velocity.z-b.velocity.z)<2.0e-4f &&
+                std::abs(a.angular_velocity.x-b.angular_velocity.x)<2.0e-4f &&
+                std::abs(a.angular_velocity.y-b.angular_velocity.y)<2.0e-4f &&
+                std::abs(a.angular_velocity.z-b.angular_velocity.z)<2.0e-4f;
+            if (!matches)
+                std::fprintf(stderr,
+                    "teleport move_floor=%d old velocity=(%.8g %.8g %.8g) new velocity=(%.8g %.8g %.8g) old omega=(%.8g %.8g %.8g) new omega=(%.8g %.8g %.8g) pose=(%.8g %.8g %.8g)\\n",
+                    relocate_floor,
+                    a.velocity.x,a.velocity.y,a.velocity.z,
+                    b.velocity.x,b.velocity.y,b.velocity.z,
+                    a.angular_velocity.x,a.angular_velocity.y,a.angular_velocity.z,
+                    b.angular_velocity.x,b.angular_velocity.y,b.angular_velocity.z,
+                    before.position.x,before.position.y,before.position.z);
+            expect(matches, "Explicit tangent teleport reused invalid friction anchors");
         }
     }
 
