@@ -1678,6 +1678,9 @@ public:
     void apply_body_torque_impulse(BodyId id, Vec3 impulse) override {
         scene_.apply_torque_impulse(id, impulse);
     }
+    void set_body_material(BodyId id, Material material) override {
+        scene_.set_material(id,material);
+    }
 private:
     native::Scene scene_;
 };
