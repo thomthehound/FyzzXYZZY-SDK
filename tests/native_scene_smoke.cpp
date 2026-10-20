@@ -1112,6 +1112,27 @@ int run_native_scene_smoke() {
                "Public World accepted unsupported compliant-source material");
     }
 
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    // The reference adapter must bind a real PxMaterial to its existing
+    // PxShape, preserving the very same public World authoring contract.
+    {
+        fyzz::World world{
+            fyzz::WorldOptions{fyzz::ExecutionMode::ReferencePhysXCpu}};
+        const auto ground=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        fyzz::Material frictionless{};
+        frictionless.static_friction=0.0f;
+        frictionless.dynamic_friction=0.0f;
+        world.set_body_material(ground,frictionless);
+        world.set_body_material(box,frictionless);
+        world.set_body_velocity(box,{0.3f,0,0});
+        world.step(1.0f/120.0f);
+        expect(std::abs(world.body_state(box).velocity.x-0.3f)<0.005f,
+               "World reference adapter failed to author PhysX shape material");
+    }
+#endif
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
