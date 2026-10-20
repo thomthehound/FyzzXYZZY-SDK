@@ -780,8 +780,8 @@ int run_native_scene_smoke() {
     // PxsForceThresholdTask: a per-body threshold uses normal IMPULSE,
     // compared strictly against force*dt, and retains the preceding
     // exceeded-force stream across unsolved collision-only queries.
-    // This native one-shape-per-actor subset uses its canonical Pair as
-    // the persistent shape-interaction identity (not island node IDs).
+    // Static contacts share the source world node, while dynamic/dynamic
+    // contacts retain their canonical BodyId pair identity.
     {
         using Change=fyzz::native::ForceThresholdChange;
         constexpr float dt=1.0f/120.0f;
@@ -808,7 +808,7 @@ int run_native_scene_smoke() {
         thresholds.step(dt);
         auto changes=thresholds.force_threshold_changes();
         expect(changes.size()==1 &&
-               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].key==fyzz::native::ForceThresholdKey{monitored,0,true} &&
                changes[0].change==Change::Found &&
                changes[0].normal_impulse>5.0*dt &&
                changes[0].normal_impulse<5.0 &&
@@ -822,7 +822,7 @@ int run_native_scene_smoke() {
         changes=thresholds.force_threshold_changes();
         expect(changes.size()==1 &&
                changes[0].change==Change::Persists &&
-               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].key==fyzz::native::ForceThresholdKey{monitored,0,true} &&
                changes[0].normal_impulse==first_impulse,
                "Source threshold persistence lost across collision-only query");
         thresholds.set_contact_report_threshold(monitored,
@@ -831,7 +831,7 @@ int run_native_scene_smoke() {
         changes=thresholds.force_threshold_changes();
         expect(changes.size()==1 &&
                changes[0].change==Change::Lost &&
-               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].key==fyzz::native::ForceThresholdKey{monitored,0,true} &&
                changes[0].normal_impulse==0.0,
                "Disabling source threshold omitted lost-force report");
         thresholds.step(dt);
@@ -868,7 +868,7 @@ int run_native_scene_smoke() {
         pair_threshold.step(1.0f/120.0f);
         auto changes=pair_threshold.force_threshold_changes();
         expect(changes.size()==1 &&
-               changes[0].pair==fyzz::native::Pair{first,second} &&
+               changes[0].key==fyzz::native::ForceThresholdKey{first,second,false} &&
                changes[0].change==Change::Found &&
                changes[0].threshold==0.0f,
                "Dy threshold stream did not use minimum dynamic-body threshold");
@@ -877,9 +877,101 @@ int run_native_scene_smoke() {
         changes=pair_threshold.force_threshold_changes();
         expect(changes.size()==1 &&
                changes[0].change==Change::Lost &&
-               changes[0].pair==fyzz::native::Pair{first,second} &&
+               changes[0].key==fyzz::native::ForceThresholdKey{first,second,false} &&
                changes[0].normal_impulse==0.0,
                "Dy exceeded stream failed to retire when pair threshold rose");
+    }
+
+    // PhysX PxRigidDynamic::getContactReportThreshold and
+    // DyThresholdTable group all static contacts through the ONE static
+    // world solver node. In this fixture neither support alone exceeds
+    // a threshold strictly between the larger support impulse and their
+    // SUM; aggregation by individual Gu shape Pair incorrectly emits
+    // no Found event (or duplicates if each is above the threshold).
+    {
+        using Change=fyzz::native::ForceThresholdChange;
+        constexpr float dt=1.0f/120.0f;
+        auto populate=[](Scene& scene) {
+            const auto left=scene.add_static_box(
+                {0.5f,0.5f,1.0f},{-0.5f,-0.5f,0});
+            const auto right=scene.add_static_box(
+                {0.5f,0.5f,1.0f},{0.5f,-0.5f,0});
+            const auto load=scene.add_dynamic_box(
+                {0.75f,0.5f,0.75f},{0,0.5f,0},1.0f);
+            scene.set_velocity(load,{0,-1.0f,0});
+            return std::array<fyzz::BodyId,3>{left,right,load};
+        };
+        Scene baseline;
+        const auto ids=populate(baseline);
+        baseline.step(dt);
+        const auto managers=baseline.contacts();
+        const auto impulses=baseline.solved_normal_impulses();
+        expect(managers.size()==2 &&
+               managers[0].pair==fyzz::native::Pair{ids[0],ids[2]} &&
+               managers[1].pair==fyzz::native::Pair{ids[1],ids[2]},
+               "Static-world threshold fixture failed to create two supports");
+        std::array<double,2> sums{};
+        for (std::size_t j=0;j<2;++j) {
+            const auto& manager=managers[j];
+            expect(manager.contact_offset+manager.count<=impulses.size(),
+                   "Static support impulse offsets were invalid");
+            for (std::size_t k=0;k<manager.count;++k)
+                sums[j]+=impulses[manager.contact_offset+k];
+        }
+        const double total=sums[0]+sums[1];
+        const double largest=std::max(sums[0],sums[1]);
+        expect(sums[0]>0.0 && sums[1]>0.0 &&
+               total>largest+0.005,
+               "Both static supports must contribute normal impulse");
+        const float threshold=static_cast<float>(
+            (total+largest)/(2.0*dt));
+        expect(largest < static_cast<double>(threshold)*dt &&
+               static_cast<double>(threshold)*dt < total,
+               "Threshold fixture did not separate individual and summed force");
+        Scene combined;
+        const auto both=populate(combined);
+        combined.set_contact_report_threshold(both[2],threshold);
+        combined.step(dt);
+        auto changes=combined.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].key==
+                   fyzz::native::ForceThresholdKey{both[2],0,true} &&
+               changes[0].change==Change::Found &&
+               std::abs(changes[0].normal_impulse-total)<0.001,
+               "Static world contacts were not summed before threshold comparison");
+        combined.step(dt);
+        changes=combined.force_threshold_changes();
+        expect(changes.size()<=1,
+               "Distinct static contacts emitted duplicate threshold events");
+        // The shape-partner identity must not survive in the stream:
+        // removing both supports causes exactly one Lost event, followed
+        // by no further exceeded-world threshold reports.
+        combined.remove(both[0]);
+        combined.remove(both[1]);
+        combined.step(dt);
+        changes=combined.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].key==
+                   fyzz::native::ForceThresholdKey{both[2],0,true} &&
+               changes[0].change==Change::Lost &&
+               changes[0].normal_impulse==0.0,
+               "Shared static-world exceeded pair was not retired once");
+        combined.step(dt);
+        expect(combined.force_threshold_changes().empty(),
+               "Lost static-world threshold repeated after retirement");
+        // With zero threshold, both separately qualifying static
+        // contacts must still generate ONE aggregated Found report.
+        Scene duplicates;
+        const auto duplicate_ids=populate(duplicates);
+        duplicates.set_contact_report_threshold(duplicate_ids[2],0.0f);
+        duplicates.step(dt);
+        changes=duplicates.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].key==
+                   fyzz::native::ForceThresholdKey{duplicate_ids[2],0,true} &&
+               changes[0].change==Change::Found &&
+               std::abs(changes[0].normal_impulse-total)<0.001,
+               "Both qualifying static supports generated duplicate reports");
     }
 
     // End-to-end native CPU execution, without a reference PxScene.
