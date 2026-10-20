@@ -179,37 +179,64 @@ int run_native_scene_smoke() {
                candidate_only.island_full_rebuild_count()==candidate_rebuilds+1,
                "Accurate island removal did not repair separated components");
 
-        // The incremental accurate-island merge must reach real PGS body
-        // admission and produce the same force/pose as the equivalent
-        // topology present at the beginning of the first solve.
+        // Three coupled dynamic bodies generate two competing contact
+        // managers, not a single order-insensitive pair. Check both the
+        // contiguous Dy island-node batch and the finite-iteration PGS
+        // impulses against a scene which began with the same topology.
         Scene joined, initially_joined;
         const auto j0=joined.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1.0f);
         const auto j1=joined.add_dynamic_box(
             {0.5f,0.5f,0.5f},{4,5,0},1.0f);
+        const auto j2=joined.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8,5,0},1.0f);
         const auto b0=initially_joined.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1.0f);
         const auto b1=initially_joined.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.8f,5,0},1.0f);
+        const auto b2=initially_joined.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.6f,5,0},1.0f);
         joined.advance_collision();
+        expect(joined.accurate_island_count()==3 &&
+               joined.largest_accurate_island_size()==1,
+               "Disjoint source nodes were not initially isolated");
         const auto before_join=joined.island_full_rebuild_count();
         joined.set_position(j1,{0.8f,5,0});
+        joined.set_position(j2,{1.6f,5,0});
         joined.step(1.0f/120.0f);
         initially_joined.step(1.0f/120.0f);
         expect(joined.accurate_island_count()==1 &&
+               joined.largest_accurate_island_size()==3 &&
                joined.island_full_rebuild_count()==before_join &&
+               joined.contacts().size()==2 &&
+               joined.solver_partition_count()>=2 &&
                joined.solved_normal_impulses().size()==
                     initially_joined.solved_normal_impulses().size(),
-               "Incrementally merged island did not reach the same PGS solve");
+               "Incremental merge did not form a coupled accurate PGS island");
+        // Both managers must contribute positive forces. Merely solving
+        // the first contact would leave the outer body unconstrained.
+        for (const auto& manager:joined.contacts()) {
+            double impulse=0.0;
+            for (std::size_t i=0;i<manager.count;++i)
+                impulse+=joined.solved_normal_impulses()[
+                    manager.contact_offset+i];
+            expect(impulse>0.0,
+                   "Coupled incremental island omitted a source contact solve");
+        }
+        const auto p=joined.solved_normal_impulses();
+        const auto q=initially_joined.solved_normal_impulses();
+        for(std::size_t i=0;i<p.size();++i)
+            expect(std::abs(p[i]-q[i])<0.0001,
+                   "Incremental island changed coupled PGS force ordering");
         for (const auto [incremental,initial] :
-             {std::pair{j0,b0},std::pair{j1,b1}}) {
+             {std::pair{j0,b0},std::pair{j1,b1},std::pair{j2,b2}}) {
             const auto lhs=joined.body_state(incremental);
             const auto rhs=initially_joined.body_state(initial);
             expect(std::abs(lhs.velocity.x-rhs.velocity.x)<0.0001f &&
                    std::abs(lhs.velocity.y-rhs.velocity.y)<0.0001f &&
                    std::abs(lhs.position.x-rhs.position.x)<0.0001f &&
                    std::abs(lhs.position.y-rhs.position.y)<0.0001f,
-                   "Incremental accurate-island merge changed source PGS motion");
+                   "Incremental accurate-island merge changed coupled PGS motion");
         }
 
         Scene static_world;
