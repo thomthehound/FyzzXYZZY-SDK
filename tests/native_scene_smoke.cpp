@@ -1076,6 +1076,47 @@ int run_native_scene_smoke() {
                "Source friction writeback did not republish after collision query");
     }
 
+    // A failed *geometry-only* advance must preserve the exact backing
+    // allocations of the previously published Gu pair/contact and
+    // solved force streams. A finite static box can overflow its AABB
+    // during source broadphase preparation without any solver step.
+    {
+        Scene geometry;
+        const auto floor=geometry.add_static_floor(0.0f);
+        const auto box=geometry.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        geometry.step(1.0f/120.0f);
+        const auto existing=fyzz::native::Pair{floor,box};
+        const auto old_edge=geometry.contact_edge_index(existing);
+        const auto* const old_pairs=geometry.pairs().data();
+        const auto* const old_contacts=geometry.contacts().data();
+        const auto* const old_points=geometry.contacts()[0].points.data();
+        const auto* const old_forces=geometry.solved_normal_impulses().data();
+        const auto old_frame=geometry.frame_index();
+        const auto old_impulse=geometry.solved_normal_impulses()[0];
+        const auto giant=geometry.add_static_box(
+            {std::numeric_limits<float>::max()*0.5f,1,1},
+            {std::numeric_limits<float>::max()*0.75f,0,0});
+        bool rejected=false;
+        try {geometry.advance_collision();}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               geometry.frame_index()==old_frame &&
+               geometry.pairs().data()==old_pairs &&
+               geometry.contacts().data()==old_contacts &&
+               geometry.contacts()[0].points.data()==old_points &&
+               geometry.solved_normal_impulses().data()==old_forces &&
+               geometry.solved_normal_impulses()[0]==old_impulse &&
+               geometry.contact_edge_index(existing)==old_edge &&
+               geometry.contact_edge_connected(existing),
+               "Failed geometry publication invalidated previous source spans");
+        geometry.remove(giant);
+        geometry.advance_collision();
+        expect(geometry.contacts().size()==1 &&
+               geometry.contact_edge_index(existing)==old_edge,
+               "Rejected geometry advance prevented subsequent publication");
+    }
+
     // A failing Dy step must not publish its unconstrained velocities,
     // consume pending torque, advance topology/frame history, or replace
     // contact/force/threshold reports. Retrying with a valid material must
