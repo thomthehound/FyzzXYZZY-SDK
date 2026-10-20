@@ -418,6 +418,35 @@ prove GPU solver work or identical staging cost.
 | Source geometry and contact correlation | Identified `GuContact*`, `PxsNphaseImplementationContext` and `DyContactPrep` source families | Exact correlation/anchor data structure, cache transitions and geometry edge-case acceptance |
 | Native acceptance | Existing source-free scene and oracle smoke tests support an openly bounded subset | Complete rotational PGS, source schedule, GPU SAP and N1/N2 full parity **not admitted** |
 
+## Failed-step publication and performance ledger
+
+A native `Scene::step` is atomic with respect to its authoritative
+body state, pending angular impulses, collision/force/threshold reports,
+friction cache, island topology and frame counter. A failed attempt
+restores the preceding successful publication and permits an unchanged
+retry. The published Gu pair/contact arena is restored by reversing
+the original `std::vector::swap` handoff, preserving existing
+`std::span` storage across failure; transient Dy working arrays are
+recomputed rather than duplicated.
+
+The current CPU implementation uses a capacity-reusing checkpoint of
+actor records, friction patches, graph state, and result streams at the
+start of each step. This guarantees rollback without creating another
+physics world, but incurs **O(active scene state) copy bandwidth per
+frame**, even for successful steps. It is a performance remediation item,
+not the desired final source execution architecture. As the original
+`ScPipeline`/`Dy::DynamicsContext` continuation and result-publishing
+boundaries are integrated, replace eager authoring-state copies with
+staged writes and owned double-buffered publication. Do not add
+blocking waits or re-run the simulation to emulate failure atomicity.
+
+The native regression exercises multiply-combined finite materials that
+overflow during contact preparation, repeated failed attempts, preservation
+of previously published contact spans and force/threshold reports,
+one-shot torque impulse continuity on a retry, and a late pose-overflow
+after an earlier body has integrated. The test must fail if any of those
+stages leaks state from an unsuccessful step.
+
 ## Native ownership and data contracts
 
 The only production scene state owner remains `fyzz::native::Scene`.
