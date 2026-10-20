@@ -402,14 +402,16 @@ void Scene::update_pairs() {
                          pending_pairs_.end());
 }
 void Scene::publish_pairs() {
-    found_.clear();
-    lost_.clear();
+    next_found_.clear();
+    next_lost_.clear();
     std::set_difference(pending_pairs_.begin(), pending_pairs_.end(),
                         previous_pairs_.begin(), previous_pairs_.end(),
-                        std::back_inserter(found_));
+                        std::back_inserter(next_found_));
     std::set_difference(previous_pairs_.begin(), previous_pairs_.end(),
                         pending_pairs_.begin(), pending_pairs_.end(),
-                        std::back_inserter(lost_));
+                        std::back_inserter(next_lost_));
+    found_.swap(next_found_);
+    lost_.swap(next_lost_);
     previous_pairs_.swap(pending_pairs_);
     ++pair_epoch_;
 }
@@ -516,8 +518,8 @@ void Scene::update_contacts() {
 
     // BP pair found/lost and narrowphase touch found/lost are distinct
     // source events. Report changed touch pairs exactly once per frame.
-    found_contacts_.clear();
-    lost_contacts_.clear();
+    next_found_contacts_.clear();
+    next_lost_contacts_.clear();
     const auto pair_less = [](const ContactManifold& lhs,
                               const ContactManifold& rhs) {
         return lhs.pair < rhs.pair;
@@ -527,19 +529,19 @@ void Scene::update_contacts() {
     auto old = manifolds_.begin();
     while (next != next_manifolds_.end() && old != manifolds_.end()) {
         if (pair_less(*next, *old)) {
-            found_contacts_.push_back(next->pair);
+            next_found_contacts_.push_back(next->pair);
             ++next;
         } else if (pair_less(*old, *next)) {
-            lost_contacts_.push_back(old->pair);
+            next_lost_contacts_.push_back(old->pair);
             ++old;
         } else {
             ++next; ++old;
         }
     }
     for (; next != next_manifolds_.end(); ++next)
-        found_contacts_.push_back(next->pair);
+        next_found_contacts_.push_back(next->pair);
     for (; old != manifolds_.end(); ++old)
-        lost_contacts_.push_back(old->pair);
+        next_lost_contacts_.push_back(old->pair);
     // Assign all pointers only after the arena has stopped growing.
     // Both old and new contact arenas swap together with their manifolds.
     for (auto& manifold : next_manifolds_)
@@ -548,6 +550,8 @@ void Scene::update_contacts() {
             manifold.count);
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
+    found_contacts_.swap(next_found_contacts_);
+    lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
 }
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
@@ -1651,10 +1655,6 @@ void Scene::StepCheckpoint::capture(Scene& scene) {
             a.position,a.velocity,a.angular_velocity,a.orientation,
             a.pending_angular_velocity_delta});
     }
-    found.assign(scene.found_.begin(),scene.found_.end());
-    lost.assign(scene.lost_.begin(),scene.lost_.end());
-    found_contacts.assign(scene.found_contacts_.begin(),scene.found_contacts_.end());
-    lost_contacts.assign(scene.lost_contacts_.begin(),scene.lost_contacts_.end());
     friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
      threshold_previous.assign(scene.threshold_previous_.begin(),
                               scene.threshold_previous_.end());
@@ -1706,18 +1706,19 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     }
     // Swap back the exact original arena allocations. This preserves the
     // lifetime of contact spans returned before the unsuccessful step.
-    if(scene.pair_epoch_!=pair_epoch)
+    if(scene.pair_epoch_!=pair_epoch) {
         scene.previous_pairs_.swap(scene.pending_pairs_);
+        scene.found_.swap(scene.next_found_);
+        scene.lost_.swap(scene.next_lost_);
+    }
     scene.pair_epoch_=pair_epoch;
     if(scene.contact_epoch_!=contact_epoch) {
         scene.manifolds_.swap(scene.next_manifolds_);
         scene.contact_points_.swap(scene.next_contact_points_);
+        scene.found_contacts_.swap(scene.next_found_contacts_);
+        scene.lost_contacts_.swap(scene.next_lost_contacts_);
     }
     scene.contact_epoch_=contact_epoch;
-    scene.found_.swap(found);
-    scene.lost_.swap(lost);
-    scene.found_contacts_.swap(found_contacts);
-    scene.lost_contacts_.swap(lost_contacts);
     scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
