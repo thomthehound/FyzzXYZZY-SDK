@@ -386,6 +386,45 @@ int run_native_scene_smoke() {
                relink.island_full_rebuild_count()==before_recycle+1,
                "Recycled intrusive graph failed to split on lost bridge");
 
+        // IslandSim's dirty-map/root-route phase: one node loses two
+        // redundant edges in the same publication. Its first dirty
+        // traversal rebuilds the fast route to the root; the second
+        // can reuse that route without rewalking the full component.
+        // Removing its final edge must still cause a genuine split.
+        Scene dirty_routes;
+        dirty_routes.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,22,0},1.0f);
+        dirty_routes.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.2f,22,0},1.0f);
+        dirty_routes.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.4f,22,0},1.0f);
+        const auto route_tip=dirty_routes.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.6f,22,0},1.0f);
+        dirty_routes.advance_collision();
+        expect(dirty_routes.pairs().size()==6 &&
+               dirty_routes.contacts().size()==6 &&
+               dirty_routes.accurate_island_count()==1,
+               "Dirty-route fixture did not begin fully connected");
+        const auto before_rebuild=dirty_routes.island_full_rebuild_count();
+        const auto before_fast=dirty_routes.island_fast_route_hit_count();
+        const auto before_checks=dirty_routes.island_dirty_route_check_count();
+        dirty_routes.set_position(route_tip,{1.3f,22,0});
+        dirty_routes.advance_collision();
+        expect(dirty_routes.lost_pairs().size()==2 &&
+               dirty_routes.lost_contacts().size()==2 &&
+               dirty_routes.accurate_island_count()==1 &&
+               dirty_routes.speculative_island_count()==1 &&
+               dirty_routes.island_full_rebuild_count()==before_rebuild &&
+               dirty_routes.island_dirty_route_check_count()>before_checks &&
+               dirty_routes.island_fast_route_hit_count()>before_fast,
+               "Source dirty-node route reuse failed on redundant edge loss");
+        dirty_routes.set_position(route_tip,{3.0f,22,0});
+        dirty_routes.advance_collision();
+        expect(dirty_routes.accurate_island_count()==2 &&
+               dirty_routes.speculative_island_count()==2 &&
+               dirty_routes.island_full_rebuild_count()==before_rebuild+1,
+               "Dirty fast route falsely preserved a disconnected island");
+
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
