@@ -438,14 +438,29 @@ persistent friction history and island/threshold bookkeeping. Immutable
 shape geometry and actor materials are not cloned; there is no second
 simulation or solver.
 
-**Remaining copy cost:** dynamic motion and persistent friction/island
-state are still captured at O(dynamic bodies + retained contact state)
-per frame, including successful steps. This is a performance-remediation
-item, not the final source publication architecture. As the original
-`ScPipeline`/`Dy::DynamicsContext` continuation and fetch boundaries
-are integrated, lower the remaining actor/cache checkpoint into staged
-writes and source-owned publication. Do not add blocking waits or
-re-run the simulation to emulate failure atomicity.
+**Remaining copy cost:** successful simulation steps still
+checkpoint mutable motion, persistent friction history, island nodes
+and contact-edge slot/handle state at O(dynamic bodies + retained
+contact/edge state) per frame. The transient next-edge merge buffer is
+never checkpointed; it is cleared and reconstructed on retry.
+
+`Scene::advance_collision` now shares the strong failure boundary:
+an AABB overflow or an exception partway through contact/edge
+publication restores prior published Gu/contact/impulse spans,
+previous force reports, edge ownership and island state. Geometry-only
+queries deliberately omit dynamic-motion, friction-history,
+threshold-history and solver-partition copies because that operation
+does not mutate them. Only collision/island/edge state is staged.
+Tests verify preserved backing-storage identity following a
+deterministic nonfinite AABB, followed by successful retry.
+
+The remaining dynamic-scene/edge checkpoint copy cost is a
+performance-remediation item, not the final source publication
+architecture. As the original `ScPipeline`/`Dy::DynamicsContext`
+continuation and fetch boundaries are integrated, lower the
+remaining actor/cache checkpoint into staged writes and source-owned
+publication. Do not add blocking waits or re-run the simulation
+to emulate failure atomicity.
 
 The native regression exercises multiply-combined finite materials that
 overflow during contact preparation, repeated failed attempts, preservation
