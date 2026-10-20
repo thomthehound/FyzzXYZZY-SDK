@@ -1639,25 +1639,26 @@ void Scene::publish_solver_bodies() {
         actor.angular_velocity = angular;
     }
 }
-void Scene::StepCheckpoint::capture(const Scene& scene) {
+void Scene::StepCheckpoint::capture(Scene& scene) {
     // Reuse capacities across frames. The checkpoint contains only state
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
-    actors.assign(scene.actors_.begin(),scene.actors_.end());
+    motions.clear();
+    for(std::size_t id=0;id<scene.actors_.size();++id) {
+        const auto& a=scene.actors_[id];
+        if(!a.alive || a.kind!=Kind::DynamicBox)continue;
+        motions.push_back({static_cast<BodyId>(id),
+            a.position,a.velocity,a.angular_velocity,a.orientation,
+            a.pending_angular_velocity_delta});
+    }
     found.assign(scene.found_.begin(),scene.found_.end());
     lost.assign(scene.lost_.begin(),scene.lost_.end());
     found_contacts.assign(scene.found_contacts_.begin(),scene.found_contacts_.end());
     lost_contacts.assign(scene.lost_contacts_.begin(),scene.lost_contacts_.end());
     friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
-    normal_impulses.assign(scene.normal_impulse_writeback_.begin(),
-                           scene.normal_impulse_writeback_.end());
-    friction_impulses.assign(scene.friction_impulse_writeback_.begin(),
-                             scene.friction_impulse_writeback_.end());
-    threshold_previous.assign(scene.threshold_previous_.begin(),
+     threshold_previous.assign(scene.threshold_previous_.begin(),
                               scene.threshold_previous_.end());
-    threshold_changes.assign(scene.threshold_changes_.begin(),
-                             scene.threshold_changes_.end());
-    partition_ends.assign(scene.partition_ends_.begin(),scene.partition_ends_.end());
+     partition_ends.assign(scene.partition_ends_.begin(),scene.partition_ends_.end());
     speculative_parent.assign(scene.speculative_island_parent_.begin(),
                               scene.speculative_island_parent_.end());
     accurate_parent.assign(scene.accurate_island_parent_.begin(),
@@ -1678,13 +1679,31 @@ void Scene::StepCheckpoint::capture(const Scene& scene) {
     contact_epoch=scene.contact_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
+    // The prior published buffers are moved into the checkpoint only
+    // after all potentially throwing copies have completed. Successful
+    // solves write directly into the reusable alternate allocations.
+    // Rollback reverses these swaps without copying or invalidating
+    // previously published report spans.
+    normal_impulses.clear();
+    friction_impulses.clear();
+    threshold_changes.clear();
+    scene.normal_impulse_writeback_.swap(normal_impulses);
+    scene.friction_impulse_writeback_.swap(friction_impulses);
+    scene.threshold_changes_.swap(threshold_changes);
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // Swaps cannot allocate or fail with the standard vector allocator.
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
-    scene.actors_.swap(actors);
+    for(const Motion& motion:motions) {
+        auto& a=scene.actors_[motion.id];
+        a.position=motion.position;
+        a.velocity=motion.velocity;
+        a.angular_velocity=motion.angular_velocity;
+        a.orientation=motion.orientation;
+        a.pending_angular_velocity_delta=motion.pending_angular_velocity_delta;
+    }
     // Swap back the exact original arena allocations. This preserves the
     // lifetime of contact spans returned before the unsuccessful step.
     if(scene.pair_epoch_!=pair_epoch)
