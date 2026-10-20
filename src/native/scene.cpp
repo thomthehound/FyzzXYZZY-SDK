@@ -432,6 +432,10 @@ void Scene::retire_destroyed_contact_edges() {
     // Source PostThirdPassTask frees mDestroyedEdges *after* speculative
     // and accurate lost-edge passes have joined. A removed handle cannot
     // be reused by an overlap born earlier in that same publication.
+    // Reserve before changing any slots so allocation failure cannot
+    // leave a partially retired handle pool in collision-only queries.
+    free_edge_handles_.reserve(
+        free_edge_handles_.size()+retired_edge_handles_.size());
     for(EdgeIndex id:retired_edge_handles_) {
         auto& edge=contact_edges_[id];
         edge={};
