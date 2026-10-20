@@ -484,7 +484,14 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
            actors_[node].kind==Kind::DynamicBox &&
            actors_[other].kind==Kind::DynamicBox) {
             auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
-            dirty.push_back(node);
+            auto& dirty_map=accurate?accurate_dirty_map_:speculative_dirty_map_;
+            // IslandSim::mDirtyMap is a set: each endpoint enters the
+            // pending source worklist at most once per graph/pass.
+            dirty_map.resize(actors_.size(),0);
+            if(!dirty_map[node]) {
+                dirty.push_back(node);
+                dirty_map[node]=1;
+            }
             auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
             if(node<fast.size() && fast[node]==other)
                 fast[node]=std::numeric_limits<BodyId>::max();
@@ -878,8 +885,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                actors_[pair.b].kind==Kind::DynamicBox;
     };
     bool rebuild=island_topology_dirty_;
-    bool added_speculative=false;
-    bool added_accurate=false;
+    bool found_speculative=false;
+    bool found_accurate=false;
+    bool merged_speculative=false;
+    bool merged_accurate=false;
     // Source first/second passes admit new edges; third pass does the
     // dirty-route split repair. A lost contact must not prematurely split
     // the solver's active island before the current solve has completed.
@@ -892,10 +901,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         return;
     if (!rebuild) {
         for (Pair pair:found_)
-            if (dynamic_edge(pair)) {added_speculative=true;break;}
+            if (dynamic_edge(pair)) {found_speculative=true;break;}
         for (Pair pair:found_contacts_)
-            if (dynamic_edge(pair)) {added_accurate=true;break;}
-        if (!added_speculative && !added_accurate)
+            if (dynamic_edge(pair)) {found_accurate=true;break;}
+        if (!found_speculative && !found_accurate)
             return;
     }
 
@@ -969,12 +978,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // and third-pass sleeping have been imported.
         for(Pair pair:found_)
             if(join(speculative_island_parent_,
-                    speculative_island_rank_,pair))
+                    speculative_island_rank_,pair)) {
                 --speculative_island_count_;
+                merged_speculative=true;
+            }
         for(Pair pair:found_contacts_)
             if(join(accurate_island_parent_,
                     accurate_island_rank_,pair)) {
                 --accurate_island_count_;
+                merged_accurate=true;
                 order_changed=true;
             }
     }
@@ -1004,8 +1016,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // Union/find root ownership changes invalidate source root-directed
     // route hints in O(1). They are rebuilt lazily when a dirty node
     // needs findRoute; no per-frame metadata copy or full cache clear.
-    if(rebuild || added_speculative)++speculative_hint_epoch_;
-    if(rebuild || added_accurate)++accurate_hint_epoch_;
+    if(rebuild || merged_speculative)++speculative_hint_epoch_;
+    if(rebuild || merged_accurate)++accurate_hint_epoch_;
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
@@ -1021,6 +1033,10 @@ void Scene::third_pass_island_gen() {
     retire_destroyed_contact_edges();
     // The source dirty map is consumed by the third-pass repair. No
     // duplicate route work should spill into an unchanged next frame.
+    for(BodyId node:speculative_dirty_nodes_)
+        speculative_dirty_map_[node]=0;
+    for(BodyId node:accurate_dirty_nodes_)
+        accurate_dirty_map_[node]=0;
     speculative_dirty_nodes_.clear();
     accurate_dirty_nodes_.clear();
 }
@@ -2110,6 +2126,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // restore correctness without copying source cache arrays.
     ++scene.speculative_hint_epoch_;
     ++scene.accurate_hint_epoch_;
+    for(BodyId node:scene.speculative_dirty_nodes_)
+        scene.speculative_dirty_map_[node]=0;
+    for(BodyId node:scene.accurate_dirty_nodes_)
+        scene.accurate_dirty_map_[node]=0;
     scene.speculative_dirty_nodes_.clear();
     scene.accurate_dirty_nodes_.clear();
     // Rewind source edge instances and node heads in reverse mutation
