@@ -2101,10 +2101,20 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
-    // Geometry-only queries are synchronous completed publications: run
-    // the same post-collision island retirement barrier as a full step.
-    advance_collision_internal(force_update);
-    third_pass_island_gen();
+    // Geometry-only publication has the same strong failure boundary as
+    // a complete native step. AABB overflow or an allocation failure
+    // must not invalidate previously returned Gu/result spans or mutate
+    // the source contact-edge handle pool. This is a separate public
+    // entry point; step() calls advance_collision_internal directly, so
+    // no nested checkpoint or redundant snapshot is introduced.
+    step_checkpoint_.capture(*this);
+    try {
+        advance_collision_internal(force_update);
+        third_pass_island_gen();
+    } catch (...) {
+        step_checkpoint_.rollback(*this);
+        throw;
+    }
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
