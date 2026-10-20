@@ -331,6 +331,7 @@ private:
     void publish_pairs();
     void update_contacts();
     void update_island_connectivity();
+    bool lost_island_edges_retain_routes(bool accurate);
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
@@ -355,6 +356,12 @@ private:
     // not a duplicated actor or solver-body registry.
     std::vector<BodyId> accurate_island_nodes_;
     std::vector<std::size_t> accurate_island_offsets_;
+    // Reused route-search scratch for IslandSim::findRoute on lost
+    // dynamic edges. Only authoritative published pairs/contacts supply
+    // edges; this does not maintain a competing graph or actor registry.
+    std::vector<std::size_t> island_route_head_, island_route_next_;
+    std::vector<BodyId> island_route_other_, island_route_queue_;
+    std::vector<std::uint32_t> island_route_seen_;
     std::size_t speculative_island_count_ = 0;
     std::size_t accurate_island_count_ = 0;
     std::uint64_t island_topology_revision_ = 0;
