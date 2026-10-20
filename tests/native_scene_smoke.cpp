@@ -333,6 +333,54 @@ int run_native_scene_smoke() {
                redundant_losses.island_full_rebuild_count()==multi_rebuilds,
                "Multiple redundant edge losses incorrectly rebuilt an intact island");
 
+        // Source EdgeInstance adjacency must survive handle retirement
+        // and reuse without retaining stale next/prev endpoint links.
+        // Retire the A-C edge of a three-node cycle, recycle its handle
+        // for A-D, then delete A-D while B still provides another route.
+        // Finally remove B and verify real component split repair.
+        Scene relink;
+        const auto aa=relink.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,15,0},1.0f);
+        const auto bb=relink.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.4f,15,0},1.0f);
+        const auto cc=relink.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,15,0},1.0f);
+        relink.advance_collision();
+        const fyzz::native::Pair ac{aa,cc};
+        const auto recycled=relink.contact_edge_index(ac);
+        expect(relink.pairs().size()==3 &&
+               relink.contacts().size()==3 &&
+               recycled!=std::numeric_limits<std::uint32_t>::max(),
+               "Intrusive adjacency fixture did not establish a three-edge cycle");
+        relink.set_position(cc,{1.3f,15,0});
+        relink.advance_collision();
+        const auto before_recycle=relink.island_full_rebuild_count();
+        expect(relink.contact_edge_index(ac)==
+                   std::numeric_limits<std::uint32_t>::max() &&
+               relink.accurate_island_count()==1,
+               "Retired source graph edge leaked into surviving component");
+        const auto dd=relink.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,15,0},1.0f);
+        relink.advance_collision();
+        const fyzz::native::Pair ad{aa,dd};
+        expect(relink.contact_edge_index(ad)==recycled &&
+               relink.accurate_island_count()==1 &&
+               relink.largest_accurate_island_size()==4,
+               "Recycled edge handle failed to link its new island endpoints");
+        relink.set_position(dd,{1.3f,15,0});
+        relink.advance_collision();
+        expect(relink.contact_edge_index(ad)==
+                   std::numeric_limits<std::uint32_t>::max() &&
+               relink.accurate_island_count()==1 &&
+               relink.island_full_rebuild_count()==before_recycle,
+               "Recycled edge unlink corrupted an alternate island route");
+        relink.set_position(bb,{5,15,0});
+        relink.advance_collision();
+        expect(relink.accurate_island_count()==2 &&
+               relink.largest_accurate_island_size()==2 &&
+               relink.island_full_rebuild_count()==before_recycle+1,
+               "Recycled intrusive graph failed to split on lost bridge");
+
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
