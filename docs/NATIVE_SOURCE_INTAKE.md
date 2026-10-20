@@ -547,14 +547,23 @@ scheduled through the speculative and accurate third-pass tasks.
 `ScPipeline::destroyManagers` launches
 `thirdPassIslandGen` with a common post-third-pass continuation;
 `postThirdPassIslandGen` and `afterIntegration` coordinate
-sleep/deactivation and publication. The native scene currently
-reconciles its all-awake components at the collision publication
-boundary, **earlier than the source third-pass split**, and only
-proves connected-component membership at that boundary.
-The route witness is therefore not full source phase/handle parity.
-N1 acceptance must move actual edge retirement and dirty-route
-processing to the correct continuation dependency, without a
-parallel island scheduler or an invented sleep system.
+sleep/deactivation and publication. The native all-awake rigid subset now separates two synchronous
+stages inside the existing `Scene`: first/second-pass speculative
+and accurate **edge insertion** after published Gu results, followed by
+lost-edge route checking and component repair once lost-contact
+products are ready. In a synchronous frame, that third-pass-compatible
+repair can run **before** numerical PGS work; the source does not impose
+an unconditional "solve, then third pass" order. Geometry-only
+collision publication likewise completes both stages before returning.
+
+This bounded staging does not translate `ScPipeline`'s asynchronous
+`destroyManagers`/lost-contact task continuations, deferred edge
+handle destruction, speculative/accurate deactivation, or
+`afterIntegration` reconciliation. It preserves the completed
+published graph state for the admitted all-awake subset, **not** source
+task/handle identity. N1 acceptance still requires the actual task
+dependencies, persistent edge ownership and dirty-route lifetime,
+without a second island scheduler or invented sleep behavior.
 
 **Unported source responsibilities:** stable `PxNodeIndex` and edge
 handle generations, speculative/accurate activation flags, sleep/wake,
