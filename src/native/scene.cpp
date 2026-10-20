@@ -640,8 +640,9 @@ void Scene::update_island_connectivity() {
 //   DyContactPrep: point-normal and correlated friction-anchor constraints
 //   DySolverConstraints/DySolverControl: four position + one velocity pass
 //   DyBodyCoreIntegrator: pose integration from saved position-phase motion
-// This does not claim the complete PhysX island/task graph, rigid joints,
-// contact writeback, CCD, or exact SIMD/packed constraint parity.
+// The all-awake rigid island-node order is active here. Incremental island
+// retirement, sleep/wake, task joins, joints, CCD, and exact packed ABI
+// remain separate N1 requirements.
 void Scene::prepare_solver_bodies() {
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
     // Retain capacity across frames. Prepare each contact participant once;
@@ -650,64 +651,68 @@ void Scene::prepare_solver_bodies() {
     solver_rows_.resize(actors_.size());
     solver_active_ids_.clear();
     world_solver_row_ = {};
-    for (const auto& manifold : manifolds_) {
-        const BodyId ids[2]{manifold.pair.a, manifold.pair.b};
-        for (BodyId id : ids) {
-            const Actor& actor = actors_[id];
-            if (actor.kind != Kind::DynamicBox) continue;
-            auto& row = solver_rows_[id];
-            if (row.prepared_frame == frame_index_) continue;
-            row = {};
-            row.prepared_frame = frame_index_;
-            row.data.position = actor.position;
-            row.data.orientation = actor.orientation;
-            row.data.linear_velocity = actor.velocity;
-            row.data.angular_velocity = actor.angular_velocity;
-            row.data.inverse_mass = actor.inverse_mass;
-            if (!actor.angular_inertia_available) continue;
+    // Mark the actual contact participants using the one Gu manager stream.
+    // The source's accurate island node sequence then determines solver
+    // body admission, not the incidental encounter order of manifolds.
+    for (const auto& manifold:manifolds_) {
+        const BodyId ids[2]{manifold.pair.a,manifold.pair.b};
+        for(BodyId id:ids)
+            if(actors_[id].kind==Kind::DynamicBox)
+                solver_rows_[id].prepared_frame=frame_index_;
+    }
+    // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
+    // island nodes to preIntegrationParallel. Free-flight bodies retain the
+    // source no-constraint integration path without preparing unused rows.
+    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
+        ++island) {
+        for(std::size_t index=accurate_island_offsets_[island];
+            index<accurate_island_offsets_[island+1];++index) {
+            const BodyId id=accurate_island_nodes_[index];
+            auto& row=solver_rows_[id];
+            if(row.prepared_frame!=frame_index_)continue;
+            row={};
+            row.prepared_frame=frame_index_;
+            solver_active_ids_.push_back(id);
+            const Actor& actor=actors_[id];
+            row.data.position=actor.position;
+            row.data.orientation=actor.orientation;
+            row.data.linear_velocity=actor.velocity;
+            row.data.angular_velocity=actor.angular_velocity;
+            row.data.inverse_mass=actor.inverse_mass;
+            if(!actor.angular_inertia_available)continue;
 
             // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
-            // The source computes a symmetric world-space R*diag(sqrt(invI))*R^T;
-            // retain its six unique terms rather than reconstructing a tensor
-            // independently for every contact row.
+            // Reuse the six unique terms of the symmetric world tensor.
             const Vec3 local{
                 std::sqrt(actor.inverse_inertia_local.x),
                 std::sqrt(actor.inverse_inertia_local.y),
                 std::sqrt(actor.inverse_inertia_local.z)};
-            const Quat q = actor.orientation;
-            if (q.x == 0.0f && q.y == 0.0f &&
-                q.z == 0.0f && q.w == 1.0f) {
-                row.data.sqrt_inverse_inertia = {
-                    Vec3{local.x, 0.0f, 0.0f},
-                    Vec3{0.0f, local.y, 0.0f},
-                    Vec3{0.0f, 0.0f, local.z}};
+            const Quat q=actor.orientation;
+            if(q.x==0.0f && q.y==0.0f && q.z==0.0f && q.w==1.0f) {
+                row.data.sqrt_inverse_inertia={
+                    Vec3{local.x,0.0f,0.0f},Vec3{0.0f,local.y,0.0f},
+                    Vec3{0.0f,0.0f,local.z}};
                 continue;
             }
-            const Vec3 rx = rotate(q, {1.0f, 0.0f, 0.0f});
-            const Vec3 ry = rotate(q, {0.0f, 1.0f, 0.0f});
-            const Vec3 rz = rotate(q, {0.0f, 0.0f, 1.0f});
-            const float xx = local.x*rx.x*rx.x + local.y*ry.x*ry.x +
-                             local.z*rz.x*rz.x;
-            const float yy = local.x*rx.y*rx.y + local.y*ry.y*ry.y +
-                             local.z*rz.y*rz.y;
-            const float zz = local.x*rx.z*rx.z + local.y*ry.z*ry.z +
-                             local.z*rz.z*rz.z;
-            const float xy = local.x*rx.x*rx.y + local.y*ry.x*ry.y +
-                             local.z*rz.x*rz.y;
-            const float xz = local.x*rx.x*rx.z + local.y*ry.x*ry.z +
-                             local.z*rz.x*rz.z;
-            const float yz = local.x*rx.y*rx.z + local.y*ry.y*ry.z +
-                             local.z*rz.y*rz.z;
-            row.data.sqrt_inverse_inertia = {
-                Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
+            const Vec3 rx=rotate(q,{1.0f,0.0f,0.0f});
+            const Vec3 ry=rotate(q,{0.0f,1.0f,0.0f});
+            const Vec3 rz=rotate(q,{0.0f,0.0f,1.0f});
+            const float xx=local.x*rx.x*rx.x + local.y*ry.x*ry.x +
+                           local.z*rz.x*rz.x;
+            const float yy=local.x*rx.y*rx.y + local.y*ry.y*ry.y +
+                           local.z*rz.y*rz.y;
+            const float zz=local.x*rx.z*rx.z + local.y*ry.z*ry.z +
+                           local.z*rz.z*rz.z;
+            const float xy=local.x*rx.x*rx.y + local.y*ry.x*ry.y +
+                           local.z*rz.x*rz.y;
+            const float xz=local.x*rx.x*rx.z + local.y*ry.x*ry.z +
+                           local.z*rz.x*rz.z;
+            const float yz=local.x*rx.y*rx.z + local.y*ry.y*ry.z +
+                           local.z*rz.y*rz.z;
+            row.data.sqrt_inverse_inertia={
+                Vec3{xx,xy,xz},Vec3{xy,yy,yz},Vec3{xz,yz,zz}};
         }
     }
-    // Source accurate-island node order, rather than Gu manifold discovery
-    // order, owns the active solver-body sequence. Contact rows still hold
-    // the original body indices and no body data are duplicated.
-    for(BodyId id:accurate_island_nodes_)
-        if(solver_rows_[id].prepared_frame==frame_index_)
-            solver_active_ids_.push_back(id);
 }
 
 void Scene::partition_constraints() {
@@ -1687,8 +1692,12 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    for (const BodyId id : accurate_island_nodes_) {
-        auto& actor = actors_[id];
+    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
+        ++island) {
+        for(std::size_t index=accurate_island_offsets_[island];
+            index<accurate_island_offsets_[island+1];++index) {
+        const BodyId id=accurate_island_nodes_[index];
+        auto& actor=actors_[id];
         Vec3 motion_linear = actor.velocity;
         Vec3 motion_angular = actor.angular_velocity;
         // Scene clock increments in advance_collision_internal; only
@@ -1728,6 +1737,7 @@ void Scene::step(float seconds) {
         actor.position = p;
         actor.orientation = q;
         dirty_ = true;
+        }
     }
 }
 
