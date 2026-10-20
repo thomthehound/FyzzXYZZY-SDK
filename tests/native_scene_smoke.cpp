@@ -91,7 +91,7 @@ int run_native_scene_smoke() {
         const auto floor=handles.add_static_floor(0.0f);
         const auto first=handles.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        const Pair first_pair{floor,first};
+        const fyzz::native::Pair first_pair{floor,first};
         handles.advance_collision();
         const auto first_edge=handles.contact_edge_index(first_pair);
         const auto invalid=std::numeric_limits<std::uint32_t>::max();
@@ -116,7 +116,7 @@ int run_native_scene_smoke() {
         const auto second=handles.add_dynamic_box(
             {0.5f,0.5f,0.5f},{3,0.5f,0},1.0f);
         handles.advance_collision();
-        const Pair second_pair{floor,second};
+        const fyzz::native::Pair second_pair{floor,second};
         const auto second_edge=handles.contact_edge_index(second_pair);
         expect(second_edge!=invalid && second_edge!=first_edge &&
                handles.contact_edge_index(first_pair)==invalid &&
@@ -126,7 +126,7 @@ int run_native_scene_smoke() {
         const auto third=handles.add_dynamic_box(
             {0.5f,0.5f,0.5f},{6,0.5f,0},1.0f);
         handles.advance_collision();
-        const Pair third_pair{floor,third};
+        const fyzz::native::Pair third_pair{floor,third};
         expect(handles.contact_edge_index(third_pair)==first_edge &&
                handles.contact_edge_connected(third_pair) &&
                handles.active_contact_edge_count()==1,
