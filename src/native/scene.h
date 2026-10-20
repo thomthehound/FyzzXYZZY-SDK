@@ -420,6 +420,7 @@ private:
     // marks, but now traverses the persistent EdgeInstance adjacency.
     std::vector<BodyId> island_route_queue_, island_route_predecessor_;
     std::vector<std::uint32_t> island_route_seen_;
+    std::uint32_t island_route_visit_stamp_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
