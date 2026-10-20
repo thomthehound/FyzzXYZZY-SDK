@@ -112,6 +112,7 @@ BodyId Scene::add(Actor actor) {
     actor.alive = true;
     actors_.push_back(actor);
     dirty_ = true;
+    island_topology_dirty_ = true;
     return id;
 }
 BodyId Scene::add_static_box(Vec3 h, Vec3 p) {
@@ -305,6 +306,7 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
 void Scene::remove(BodyId id) {
     require(id).alive = false;
     dirty_ = true;
+    island_topology_dirty_ = true;
 }
 BodyState Scene::body_state(BodyId id) const {
     const auto& actor = require(id);
@@ -541,6 +543,97 @@ void Scene::update_contacts() {
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
 }
+// IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
+// speculative edges come from the scene's published SAP candidates,
+// whereas accurate edges come only from the resolved physical touches.
+// In the current all-awake rigid-only admission, IslandSim's connected
+// components may be maintained by a reusable union/find lowering rather
+// than its incremental wake/split queues. Topology rebuild is skipped for
+// unchanged candidate AND touch connectivity. Source sleeping, persistent
+// island handles and the three-pass lost-edge/deactivation lifecycle are
+// not represented by this lowering and are still N1 requirements.
+void Scene::update_island_connectivity() {
+    if (!island_topology_dirty_ &&
+        found_.empty() && lost_.empty() &&
+        found_contacts_.empty() && lost_contacts_.empty())
+        return;
+    const BodyId invalid = std::numeric_limits<BodyId>::max();
+    const std::size_t count=actors_.size();
+    speculative_island_parent_.resize(count);
+    accurate_island_parent_.resize(count);
+    speculative_island_rank_.resize(count);
+    accurate_island_rank_.resize(count);
+    for (std::size_t i=0;i<count;++i) {
+        const bool dynamic=actors_[i].alive &&
+            actors_[i].kind==Kind::DynamicBox;
+        const BodyId root=dynamic ? static_cast<BodyId>(i) : invalid;
+        speculative_island_parent_[i]=root;
+        accurate_island_parent_[i]=root;
+        speculative_island_rank_[i]=0;
+        accurate_island_rank_[i]=0;
+    }
+    const auto find_root=[](std::vector<BodyId>& parent,BodyId node) {
+        BodyId root=node;
+        while(parent[root]!=root) root=parent[root];
+        while(parent[node]!=node) {
+            const BodyId next=parent[node];
+            parent[node]=root;
+            node=next;
+        }
+        return root;
+    };
+    const auto join=[&](std::vector<BodyId>& parent,
+                        std::vector<std::uint8_t>& rank,Pair pair) {
+        // Static nodes never enter source dynamic islands. Even multiple
+        // static contacts with one dynamic body cannot merge two islands.
+        if (actors_[pair.a].kind!=Kind::DynamicBox ||
+            actors_[pair.b].kind!=Kind::DynamicBox)
+            return;
+        BodyId a=find_root(parent,pair.a);
+        BodyId b=find_root(parent,pair.b);
+        if(a==b) return;
+        if(rank[a]<rank[b]) std::swap(a,b);
+        parent[b]=a;
+        if(rank[a]==rank[b]) ++rank[a];
+    };
+    for (Pair pair:previous_pairs_)
+        join(speculative_island_parent_,speculative_island_rank_,pair);
+    for (const auto& manifold:manifolds_)
+        join(accurate_island_parent_,accurate_island_rank_,manifold.pair);
+    speculative_island_count_=0;
+    accurate_island_count_=0;
+    accurate_island_nodes_.clear();
+    for (std::size_t i=0;i<count;++i) {
+        if(!actors_[i].alive || actors_[i].kind!=Kind::DynamicBox)
+            continue;
+        const BodyId id=static_cast<BodyId>(i);
+        if(find_root(speculative_island_parent_,id)==id)
+            ++speculative_island_count_;
+        if(find_root(accurate_island_parent_,id)==id)
+            ++accurate_island_count_;
+        accurate_island_nodes_.push_back(id);
+    }
+    // DynamicsContext::iterateIslandsNodes enumerates each accurate
+    // active island's rigid nodes contiguously before solver preparation.
+    // Keep the identity of each existing actor; no shadow body registry.
+    std::sort(accurate_island_nodes_.begin(),accurate_island_nodes_.end(),
+        [&](BodyId a,BodyId b) {
+            const BodyId ra=accurate_island_parent_[a];
+            const BodyId rb=accurate_island_parent_[b];
+            return ra<rb || (ra==rb && a<b);
+        });
+    accurate_island_offsets_.clear();
+    accurate_island_offsets_.push_back(0);
+    for(std::size_t i=1;i<accurate_island_nodes_.size();++i) {
+        if(accurate_island_parent_[accurate_island_nodes_[i-1]]!=
+           accurate_island_parent_[accurate_island_nodes_[i]])
+            accurate_island_offsets_.push_back(i);
+    }
+    if(!accurate_island_nodes_.empty())
+        accurate_island_offsets_.push_back(accurate_island_nodes_.size());
+    island_topology_dirty_=false;
+    ++island_topology_revision_;
+}
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
 //   DyConstraintPartition: ordered rigid-body contact manager batches
@@ -566,7 +659,6 @@ void Scene::prepare_solver_bodies() {
             if (row.prepared_frame == frame_index_) continue;
             row = {};
             row.prepared_frame = frame_index_;
-            solver_active_ids_.push_back(id);
             row.data.position = actor.position;
             row.data.orientation = actor.orientation;
             row.data.linear_velocity = actor.velocity;
@@ -610,6 +702,12 @@ void Scene::prepare_solver_bodies() {
                 Vec3{xx,xy,xz}, Vec3{xy,yy,yz}, Vec3{xz,yz,zz}};
         }
     }
+    // Source accurate-island node order, rather than Gu manifold discovery
+    // order, owns the active solver-body sequence. Contact rows still hold
+    // the original body indices and no body data are duplicated.
+    for(BodyId id:accurate_island_nodes_)
+        if(solver_rows_[id].prepared_frame==frame_index_)
+            solver_active_ids_.push_back(id);
 }
 
 void Scene::partition_constraints() {
@@ -1589,9 +1687,8 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    for (std::size_t id=0; id<actors_.size(); ++id) {
+    for (const BodyId id : accurate_island_nodes_) {
         auto& actor = actors_[id];
-        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
         Vec3 motion_linear = actor.velocity;
         Vec3 motion_angular = actor.angular_velocity;
         // Scene clock increments in advance_collision_internal; only
@@ -1662,6 +1759,7 @@ void Scene::advance_collision_internal(bool force_update) {
         found_contacts_.clear();
         lost_contacts_.clear();
     }
+    update_island_connectivity();
     dirty_ = false;
     ++frame_index_;
 }
