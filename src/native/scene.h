@@ -190,6 +190,11 @@ public:
     std::uint64_t island_topology_revision() const noexcept {
         return island_topology_revision_;
     }
+    // Internal source-island instrumentation: unlike the topology
+    // revision, this advances only for complete component rebuilds.
+    std::uint64_t island_full_rebuild_count() const noexcept {
+        return island_full_rebuild_count_;
+    }
 
 private:
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
@@ -343,6 +348,7 @@ private:
     std::size_t speculative_island_count_ = 0;
     std::size_t accurate_island_count_ = 0;
     std::uint64_t island_topology_revision_ = 0;
+    std::uint64_t island_full_rebuild_count_ = 0;
     bool island_topology_dirty_ = true;
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
@@ -390,6 +396,7 @@ private:
         std::vector<std::size_t> accurate_offsets;
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
+        std::uint64_t full_rebuild_count=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         bool topology_dirty=true, dirty=true;
         void capture(Scene& scene);
