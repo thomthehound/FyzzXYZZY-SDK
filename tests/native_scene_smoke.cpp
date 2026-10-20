@@ -181,6 +181,17 @@ int run_native_scene_smoke() {
                static_world.accurate_island_count()==2,
                "Shared static world incorrectly merged independent dynamic islands");
         const auto static_rev=static_world.island_topology_revision();
+        const auto fixture=static_world.add_static_box(
+            {1.0f,1.0f,1.0f},{20.0f,20.0f,20.0f});
+        static_world.advance_collision();
+        expect(static_world.island_topology_revision()==static_rev &&
+               static_world.accurate_island_count()==2,
+               "Static actor creation rebuilt dynamic island graph");
+        static_world.remove(fixture);
+        static_world.advance_collision();
+        expect(static_world.island_topology_revision()==static_rev &&
+               static_world.accurate_island_count()==2,
+               "Static actor retirement rebuilt dynamic island graph");
         static_world.set_position(ground_box,{0,5,0});
         static_world.advance_collision();
         expect(static_world.contacts().size()==1 &&
