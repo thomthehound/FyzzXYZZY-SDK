@@ -1644,11 +1644,11 @@ void Scene::StepCheckpoint::capture(const Scene& scene) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     actors.assign(scene.actors_.begin(),scene.actors_.end());
-     found.assign(scene.found_.begin(),scene.found_.end());
+    found.assign(scene.found_.begin(),scene.found_.end());
     lost.assign(scene.lost_.begin(),scene.lost_.end());
     found_contacts.assign(scene.found_contacts_.begin(),scene.found_contacts_.end());
     lost_contacts.assign(scene.lost_contacts_.begin(),scene.lost_contacts_.end());
-     friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
+    friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
     normal_impulses.assign(scene.normal_impulse_writeback_.begin(),
                            scene.normal_impulse_writeback_.end());
     friction_impulses.assign(scene.friction_impulse_writeback_.begin(),
@@ -1699,7 +1699,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.lost_.swap(lost);
     scene.found_contacts_.swap(found_contacts);
     scene.lost_contacts_.swap(lost_contacts);
-     scene.friction_patches_.swap(friction_patches);
+    scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
     scene.threshold_previous_.swap(threshold_previous);
