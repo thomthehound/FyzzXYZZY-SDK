@@ -564,44 +564,37 @@ void Scene::update_contacts() {
 // island handles and the three-pass lost-edge/deactivation lifecycle are
 // not represented by this lowering and are still N1 requirements.
 void Scene::update_island_connectivity() {
-    // This subset has no sleeping nodes or source static-touch-count
-    // deactivation. Changes to dynamic/static edges therefore cannot
-    // change connected components: avoid rebuilding all dynamic nodes
-    // when a box merely lands on or leaves the shared static world.
-    bool changed=island_topology_dirty_;
+    // PxsSimpleIslandManager::firstPassIslandGen and
+    // secondPassIslandGenPart1 insert newly discovered edges through
+    // IslandSim::processNewEdges, merging existing islands rather than
+    // rebuilding their connectivity. The currently admitted all-awake
+    // dynamic/contact subset can make the same incremental merges in
+    // its scene-owned component arrays. Lost edges still require
+    // IslandSim::processLostEdges' path/dirty-node repair, so rebuild
+    // components from the surviving authoritative edges on removal.
     const auto dynamic_edge=[this](Pair pair) {
         return actors_[pair.a].kind==Kind::DynamicBox &&
                actors_[pair.b].kind==Kind::DynamicBox;
     };
-    if (!changed) {
-        for (const auto& edges :
-             {std::span<const Pair>(found_),std::span<const Pair>(lost_),
-              std::span<const Pair>(found_contacts_),
-              std::span<const Pair>(lost_contacts_)}) {
-            for (Pair pair:edges)
-                if (dynamic_edge(pair)) {changed=true;break;}
-            if(changed)break;
-        }
+    bool rebuild=island_topology_dirty_;
+    bool added_speculative=false;
+    bool added_accurate=false;
+    for (Pair pair:lost_)
+        if (dynamic_edge(pair)) {rebuild=true;break;}
+    for (Pair pair:lost_contacts_)
+        if (dynamic_edge(pair)) {rebuild=true;break;}
+    if (!rebuild) {
+        for (Pair pair:found_)
+            if (dynamic_edge(pair)) {added_speculative=true;break;}
+        for (Pair pair:found_contacts_)
+            if (dynamic_edge(pair)) {added_accurate=true;break;}
+        if (!added_speculative && !added_accurate)
+            return;
     }
-    if (!changed)return;
-    const BodyId invalid = std::numeric_limits<BodyId>::max();
-    const std::size_t count=actors_.size();
-    speculative_island_parent_.resize(count);
-    accurate_island_parent_.resize(count);
-    speculative_island_rank_.resize(count);
-    accurate_island_rank_.resize(count);
-    for (std::size_t i=0;i<count;++i) {
-        const bool dynamic=actors_[i].alive &&
-            actors_[i].kind==Kind::DynamicBox;
-        const BodyId root=dynamic ? static_cast<BodyId>(i) : invalid;
-        speculative_island_parent_[i]=root;
-        accurate_island_parent_[i]=root;
-        speculative_island_rank_[i]=0;
-        accurate_island_rank_[i]=0;
-    }
+
     const auto find_root=[](std::vector<BodyId>& parent,BodyId node) {
         BodyId root=node;
-        while(parent[root]!=root) root=parent[root];
+        while(parent[root]!=root)root=parent[root];
         while(parent[node]!=node) {
             const BodyId next=parent[node];
             parent[node]=root;
@@ -611,53 +604,93 @@ void Scene::update_island_connectivity() {
     };
     const auto join=[&](std::vector<BodyId>& parent,
                         std::vector<std::uint8_t>& rank,Pair pair) {
-        // Static nodes never enter source dynamic islands. Even multiple
-        // static contacts with one dynamic body cannot merge two islands.
-        if (actors_[pair.a].kind!=Kind::DynamicBox ||
-            actors_[pair.b].kind!=Kind::DynamicBox)
-            return;
+        // Neither static shape nor shared world solver body is an island
+        // node: static contacts do not connect independent rigid bodies.
+        if (!dynamic_edge(pair))return false;
         BodyId a=find_root(parent,pair.a);
         BodyId b=find_root(parent,pair.b);
-        if(a==b) return;
-        if(rank[a]<rank[b]) std::swap(a,b);
+        if(a==b)return false;
+        if(rank[a]<rank[b])std::swap(a,b);
         parent[b]=a;
-        if(rank[a]==rank[b]) ++rank[a];
+        if(rank[a]==rank[b])++rank[a];
+        return true;
     };
-    for (Pair pair:previous_pairs_)
-        join(speculative_island_parent_,speculative_island_rank_,pair);
-    for (const auto& manifold:manifolds_)
-        join(accurate_island_parent_,accurate_island_rank_,manifold.pair);
-    speculative_island_count_=0;
-    accurate_island_count_=0;
-    accurate_island_nodes_.clear();
-    for (std::size_t i=0;i<count;++i) {
-        if(!actors_[i].alive || actors_[i].kind!=Kind::DynamicBox)
-            continue;
-        const BodyId id=static_cast<BodyId>(i);
-        if(find_root(speculative_island_parent_,id)==id)
-            ++speculative_island_count_;
-        if(find_root(accurate_island_parent_,id)==id)
-            ++accurate_island_count_;
-        accurate_island_nodes_.push_back(id);
+
+    bool order_changed=rebuild;
+    if (rebuild) {
+        const BodyId invalid=std::numeric_limits<BodyId>::max();
+        const std::size_t count=actors_.size();
+        speculative_island_parent_.resize(count);
+        accurate_island_parent_.resize(count);
+        speculative_island_rank_.resize(count);
+        accurate_island_rank_.resize(count);
+        speculative_island_count_=0;
+        accurate_island_count_=0;
+        accurate_island_nodes_.clear();
+        for(std::size_t i=0;i<count;++i) {
+            const bool dynamic=actors_[i].alive &&
+                actors_[i].kind==Kind::DynamicBox;
+            const BodyId root=dynamic?static_cast<BodyId>(i):invalid;
+            speculative_island_parent_[i]=root;
+            accurate_island_parent_[i]=root;
+            speculative_island_rank_[i]=0;
+            accurate_island_rank_[i]=0;
+            if(dynamic) {
+                ++speculative_island_count_;
+                ++accurate_island_count_;
+                accurate_island_nodes_.push_back(root);
+            }
+        }
+        // First pass: speculative SAP candidates. Second pass: physically
+        // connected Gu contact managers. The streams are already ordered
+        // and published by their sole owning scene.
+        for(Pair pair:previous_pairs_)
+            if(join(speculative_island_parent_,
+                    speculative_island_rank_,pair))
+                --speculative_island_count_;
+        for(const auto& manifold:manifolds_)
+            if(join(accurate_island_parent_,
+                    accurate_island_rank_,manifold.pair))
+                --accurate_island_count_;
+    } else {
+        // Source first/second pass insertion can merge islands without
+        // touching unrelated nodes. Deletions and deactivation still
+        // follow the rebuild path above until source lost-edge repair
+        // and third-pass sleeping have been imported.
+        for(Pair pair:found_)
+            if(join(speculative_island_parent_,
+                    speculative_island_rank_,pair))
+                --speculative_island_count_;
+        for(Pair pair:found_contacts_)
+            if(join(accurate_island_parent_,
+                    accurate_island_rank_,pair)) {
+                --accurate_island_count_;
+                order_changed=true;
+            }
     }
-    // DynamicsContext::iterateIslandsNodes enumerates each accurate
-    // active island's rigid nodes contiguously before solver preparation.
-    // Keep the identity of each existing actor; no shadow body registry.
-    std::sort(accurate_island_nodes_.begin(),accurate_island_nodes_.end(),
-        [&](BodyId a,BodyId b) {
-            const BodyId ra=accurate_island_parent_[a];
-            const BodyId rb=accurate_island_parent_[b];
-            return ra<rb || (ra==rb && a<b);
-        });
-    accurate_island_offsets_.clear();
-    accurate_island_offsets_.push_back(0);
-    for(std::size_t i=1;i<accurate_island_nodes_.size();++i) {
-        if(accurate_island_parent_[accurate_island_nodes_[i-1]]!=
-           accurate_island_parent_[accurate_island_nodes_[i]])
-            accurate_island_offsets_.push_back(i);
+
+    if (order_changed) {
+        // Dy::DynamicsContext::iterateIslandsNodes needs contiguous nodes
+        // belonging to each accurate island. Only source accurate merges
+        // or complete lost-edge rebuilds can change this iteration order.
+        for(BodyId id:accurate_island_nodes_)
+            find_root(accurate_island_parent_,id);
+        std::sort(accurate_island_nodes_.begin(),
+                  accurate_island_nodes_.end(),
+            [&](BodyId a,BodyId b) {
+                const BodyId ra=accurate_island_parent_[a];
+                const BodyId rb=accurate_island_parent_[b];
+                return ra<rb || (ra==rb && a<b);
+            });
+        accurate_island_offsets_.clear();
+        accurate_island_offsets_.push_back(0);
+        for(std::size_t i=1;i<accurate_island_nodes_.size();++i)
+            if(accurate_island_parent_[accurate_island_nodes_[i-1]]!=
+               accurate_island_parent_[accurate_island_nodes_[i]])
+                accurate_island_offsets_.push_back(i);
+        if(!accurate_island_nodes_.empty())
+            accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     }
-    if(!accurate_island_nodes_.empty())
-        accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
