@@ -53,8 +53,27 @@ struct FrictionPatchWriteback {
 // identity is the canonical BodyId pair. The source's island node index
 // and Sc contact callback ownership are still future N1 integrations.
 enum class ForceThresholdChange : std::uint8_t { Found, Persists, Lost };
+// DyThresholdTable keys by island node indices, not by Gu shape pairs.
+// One dynamic body shares the same static-world node across ALL static
+// collision partners. For that case actor0 is the dynamic BodyId,
+// actor1 is unused and static_world is true. Dynamic/dynamic keys store
+// both canonical BodyIds with static_world false.
+struct ForceThresholdKey {
+    BodyId actor0=0;
+    BodyId actor1=0;
+    bool static_world=false;
+    friend bool operator==(const ForceThresholdKey&,
+                           const ForceThresholdKey&) = default;
+    friend bool operator<(const ForceThresholdKey& a,
+                          const ForceThresholdKey& b) {
+        if (a.actor0!=b.actor0) return a.actor0<b.actor0;
+        if (a.static_world!=b.static_world)
+            return a.static_world<b.static_world;
+        return a.actor1<b.actor1;
+    }
+};
 struct ForceThresholdReport {
-    Pair pair{};
+    ForceThresholdKey key{};
     double normal_impulse=0.0;
     float threshold=0.0f;
     ForceThresholdChange change=ForceThresholdChange::Found;
@@ -300,7 +319,7 @@ private:
     // exceeded-force streams and mapped change stream. Reused scene-owned
     // storage; BodyIds are stable within this scene's lifetime.
     struct ThresholdPair {
-        Pair pair{};
+        ForceThresholdKey key{};
         double impulse=0.0;
         float threshold=0.0f;
     };
