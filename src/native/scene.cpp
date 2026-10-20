@@ -553,10 +553,26 @@ void Scene::update_contacts() {
 // island handles and the three-pass lost-edge/deactivation lifecycle are
 // not represented by this lowering and are still N1 requirements.
 void Scene::update_island_connectivity() {
-    if (!island_topology_dirty_ &&
-        found_.empty() && lost_.empty() &&
-        found_contacts_.empty() && lost_contacts_.empty())
-        return;
+    // This subset has no sleeping nodes or source static-touch-count
+    // deactivation. Changes to dynamic/static edges therefore cannot
+    // change connected components: avoid rebuilding all dynamic nodes
+    // when a box merely lands on or leaves the shared static world.
+    bool changed=island_topology_dirty_;
+    const auto dynamic_edge=[this](Pair pair) {
+        return actors_[pair.a].kind==Kind::DynamicBox &&
+               actors_[pair.b].kind==Kind::DynamicBox;
+    };
+    if (!changed) {
+        for (const auto& edges :
+             {std::span<const Pair>(found_),std::span<const Pair>(lost_),
+              std::span<const Pair>(found_contacts_),
+              std::span<const Pair>(lost_contacts_)}) {
+            for (Pair pair:edges)
+                if (dynamic_edge(pair)) {changed=true;break;}
+            if(changed)break;
+        }
+    }
+    if (!changed)return;
     const BodyId invalid = std::numeric_limits<BodyId>::max();
     const std::size_t count=actors_.size();
     speculative_island_parent_.resize(count);
