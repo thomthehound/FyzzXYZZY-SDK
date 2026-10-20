@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -47,6 +48,17 @@ struct FrictionPatchWriteback {
     std::array<FrictionImpulse,2> anchor_impulses{};
     bool broken=false;
 };
+// DyThresholdTable / DyDynamics::PxsForceThresholdTask. One authored
+// shape per actor in the current native scene, so the shape interaction
+// identity is the canonical BodyId pair. The source's island node index
+// and Sc contact callback ownership are still future N1 integrations.
+enum class ForceThresholdChange : std::uint8_t { Found, Persists, Lost };
+struct ForceThresholdReport {
+    Pair pair{};
+    double normal_impulse=0.0;
+    float threshold=0.0f;
+    ForceThresholdChange change=ForceThresholdChange::Found;
+};
 struct ContactManifold {
     Pair pair{};
     // Source contact streams use a scene-owned contiguous arena, not an
@@ -86,6 +98,10 @@ public:
     void set_velocity(BodyId id, Vec3 velocity);
     void set_angular_velocity(BodyId id, Vec3 velocity);
     void apply_torque_impulse(BodyId id, Vec3 impulse);
+    // A finite contact-report threshold opts a dynamic body into the
+    // source's low-level force-threshold stream. Default PX_MAX_REAL
+    // disables it. Units are force; evaluation uses impulse > force*dt.
+    void set_contact_report_threshold(BodyId id, float force);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 
@@ -122,6 +138,13 @@ public:
     std::span<const FrictionPatchWriteback> solved_friction_patches() const noexcept {
         return friction_impulse_writeback_;
     }
+    // The current source Dy threshold-change stream after a solver step.
+    // Like contact-force writeback, geometry-only progression invalidates
+    // the exposed reports; previous-frame exceeded-pair history persists
+    // until the next actual solver step.
+    std::span<const ForceThresholdReport> force_threshold_changes() const noexcept {
+        return threshold_changes_;
+    }
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
@@ -144,6 +167,7 @@ private:
         Vec3 angular_velocity{};
         float density = 0.0f;
         float inverse_mass = 0.0f;  // immutable cached derived body property
+        float contact_report_threshold=std::numeric_limits<float>::max();
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.
         Vec3 inverse_inertia_local{};
@@ -254,6 +278,7 @@ private:
     void prepare_constraints(float seconds);
     void solve_constraints();
     void write_back_contacts();
+    void update_threshold_stream(float seconds);
     void publish_solver_bodies();
 
     std::vector<Actor> actors_;
@@ -269,6 +294,17 @@ private:
     // collision-only advancement.
     std::vector<double> normal_impulse_writeback_;
     std::vector<FrictionPatchWriteback> friction_impulse_writeback_;
+    // DyThresholdTable::build and PxsForceThresholdTask's previous/current
+    // exceeded-force streams and mapped change stream. Reused scene-owned
+    // storage; BodyIds are stable within this scene's lifetime.
+    struct ThresholdPair {
+        Pair pair{};
+        double impulse=0.0;
+        float threshold=0.0f;
+    };
+    std::vector<ThresholdPair> threshold_current_;
+    std::vector<ThresholdPair> threshold_previous_;
+    std::vector<ForceThresholdReport> threshold_changes_;
     // DyConstraintPartition::partitionContactConstraints writes ordered
     // contact-manager descriptors grouped by body-conflict-free partition.
     // Indices reference authoritative manifolds, not copied constraints.
