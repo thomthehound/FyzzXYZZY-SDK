@@ -112,8 +112,10 @@ public:
     void advance_collision(bool force_update = false);
     // Native CPU scene owns free-body angular motion and source-derived
     // per-point normal/angular Dy contact rows in its original clock.
-    // Friction correlation, joints, CCD and complete island/PGS scheduling
-    // are not integrated; N1 general rigid-body parity is NOT yet accepted.
+    // Per-point normal and friction anchors, contact partitions, final
+    // normal/friction writeback and low-level threshold streams are active.
+    // Joints, CCD, heterogeneous materials, shape-interaction callbacks
+    // and complete island/task execution remain N1 acceptance gates.
     void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
@@ -126,8 +128,8 @@ public:
     // indexes this flat scene-owned result. An advance_collision() call
     // invalidates writeback (geometry-only queries are not solver results).
     // Retain double for SDK-admitted extreme inverse-mass cases: ordinary
-    // PhysX uses a PxReal output buffer. Tangent/threshold writeback is
-    // not available until its source descriptor/report owners are ported.
+    // PhysX uses a PxReal output buffer. The corresponding friction-anchor
+    // and low-level threshold streams are exposed separately below.
     std::span<const double> solved_normal_impulses() const noexcept {
         return normal_impulse_writeback_;
     }
