@@ -386,11 +386,11 @@ int run_native_scene_smoke() {
                relink.island_full_rebuild_count()==before_recycle+1,
                "Recycled intrusive graph failed to split on lost bridge");
 
-        // IslandSim's dirty-map/root-route phase: one node loses two
-        // redundant edges in the same publication. Its first dirty
-        // traversal rebuilds the fast route to the root; the second
-        // can reuse that route without rewalking the full component.
-        // Removing its final edge must still cause a genuine split.
+        // Source mDirtyMap deduplicates endpoints of overlapping lost
+        // edges: A-tip and B-tip remove three distinct dynamic nodes
+        // in each graph, not four entries with a repeated tip.
+        // Re-adding redundant chords must retain the cached tip->C->root
+        // route for the next removal; only a real union changes the root.
         Scene dirty_routes;
         dirty_routes.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,22,0},1.0f);
@@ -415,9 +415,33 @@ int run_native_scene_smoke() {
                dirty_routes.accurate_island_count()==1 &&
                dirty_routes.speculative_island_count()==1 &&
                dirty_routes.island_full_rebuild_count()==before_rebuild &&
-               dirty_routes.island_dirty_route_check_count()>before_checks &&
-               dirty_routes.island_fast_route_hit_count()>before_fast,
-               "Source dirty-node route reuse failed on redundant edge loss");
+               dirty_routes.island_dirty_route_check_count()==before_checks+6 &&
+               dirty_routes.island_fast_route_hit_count()==before_fast,
+               "Source mDirtyMap repeated an endpoint during lost-edge repair");
+
+        // The chord reintroduction does not merge distinct roots, so
+        // root-directed fast-route hints remain valid. Removing those
+        // same redundant chords must now reuse the route discovered above.
+        dirty_routes.set_position(route_tip,{0.6f,22,0});
+        dirty_routes.advance_collision();
+        expect(dirty_routes.pairs().size()==6 &&
+               dirty_routes.contacts().size()==6 &&
+               dirty_routes.island_full_rebuild_count()==before_rebuild,
+               "Redundant chord readdition rebuilt an existing island");
+        const auto fast_before_retry=dirty_routes.island_fast_route_hit_count();
+        const auto checks_before_retry=dirty_routes.island_dirty_route_check_count();
+        dirty_routes.set_position(route_tip,{1.3f,22,0});
+        dirty_routes.advance_collision();
+        expect(dirty_routes.lost_pairs().size()==2 &&
+               dirty_routes.lost_contacts().size()==2 &&
+               dirty_routes.accurate_island_count()==1 &&
+               dirty_routes.speculative_island_count()==1 &&
+               dirty_routes.island_full_rebuild_count()==before_rebuild &&
+               dirty_routes.island_dirty_route_check_count()==checks_before_retry+6 &&
+               dirty_routes.island_fast_route_hit_count()>=fast_before_retry+2,
+               "Redundant chord readdition discarded valid source fast routes");
+
+        // Retiring the last surviving tip edge is a real split.
         dirty_routes.set_position(route_tip,{3.0f,22,0});
         dirty_routes.advance_collision();
         expect(dirty_routes.accurate_island_count()==2 &&
