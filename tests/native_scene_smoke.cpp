@@ -1086,6 +1086,32 @@ int run_native_scene_smoke() {
                "Source material restitution combine modes did not order rebound");
     }
 
+    // Material authoring must flow through the real public World
+    // NativeCpu backend, not just through native::Scene test fixtures.
+    {
+        fyzz::World world{
+            fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu}};
+        const auto ground=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        fyzz::Material surface{};
+        surface.static_friction=0.0f;
+        surface.dynamic_friction=0.0f;
+        surface.friction_combine=fyzz::MaterialCombineMode::Minimum;
+        world.set_body_material(ground,surface);
+        world.set_body_material(box,surface);
+        world.set_body_velocity(box,{0.3f,0,0});
+        world.step(1.0f/120.0f);
+        expect(std::abs(world.body_state(box).velocity.x-0.3f)<0.002f,
+               "Public World noncompliant material authoring missed native solver");
+        surface.restitution=-0.2f;
+        bool invalid=false;
+        try{world.set_body_material(box,surface);}
+        catch(const std::invalid_argument&){invalid=true;}
+        expect(invalid,
+               "Public World accepted unsupported compliant-source material");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
