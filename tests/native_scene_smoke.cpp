@@ -134,8 +134,8 @@ int run_native_scene_smoke() {
 
         Scene static_world;
         static_world.add_static_floor(0.0f);
-        static_world.add_dynamic_box({0.5f,0.5f,0.5f},
-                                     {0.0f,0.5f,0.0f},1.0f);
+        const auto ground_box=static_world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
         static_world.add_dynamic_box({0.5f,0.5f,0.5f},
                                      {4.0f,0.5f,0.0f},1.0f);
         static_world.advance_collision();
@@ -143,6 +143,17 @@ int run_native_scene_smoke() {
                static_world.speculative_island_count()==2 &&
                static_world.accurate_island_count()==2,
                "Shared static world incorrectly merged independent dynamic islands");
+        const auto static_rev=static_world.island_topology_revision();
+        static_world.set_position(ground_box,{0,5,0});
+        static_world.advance_collision();
+        expect(static_world.contacts().size()==1 &&
+               static_world.island_topology_revision()==static_rev,
+               "Static-only contact loss unnecessarily rebuilt dynamic islands");
+        static_world.set_position(ground_box,{0,0.5f,0});
+        static_world.advance_collision();
+        expect(static_world.contacts().size()==2 &&
+               static_world.island_topology_revision()==static_rev,
+               "Static-only contact reentry unnecessarily rebuilt dynamic islands");
         static_world.step(1.0f/120.0f);
         expect(static_world.accurate_island_count()==2 &&
                static_world.solver_partition_count()==1,
