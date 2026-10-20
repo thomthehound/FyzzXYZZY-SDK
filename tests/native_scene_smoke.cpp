@@ -877,9 +877,12 @@ int run_native_scene_smoke() {
             failed.solved_normal_impulses().begin(),
             failed.solved_normal_impulses().end());
         const auto prior_manifolds=failed.contacts();
+        const auto* const manifold_memory=prior_manifolds.data();
+        const auto* const pair_memory=failed.pairs().data();
         expect(prior_manifolds.size()==1 &&
                prior_manifolds[0].count==4,
                "Step failure fixture has no authoritative prior contacts");
+        const auto* const point_memory=prior_manifolds[0].points.data();
         const auto first_contact=prior_manifolds[0].points[0];
         const std::vector<fyzz::native::ForceThresholdReport> threshold(
             failed.force_threshold_changes().begin(),
@@ -916,6 +919,9 @@ int run_native_scene_smoke() {
                    "Rejected Dy step published partial body or scene state");
             const auto current=failed.contacts();
             expect(current.size()==1 &&
+                   current.data()==manifold_memory &&
+                   current[0].points.data()==point_memory &&
+                   failed.pairs().data()==pair_memory &&
                    current[0].pair==original_pair &&
                    current[0].count==4 &&
                    same_vec(current[0].points[0].position,
