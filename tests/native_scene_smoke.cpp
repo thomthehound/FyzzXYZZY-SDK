@@ -103,6 +103,9 @@ int run_native_scene_smoke() {
                connected.accurate_island_count()==2,
                "Source first/second island graphs failed to merge the touching chain");
         const auto revision=connected.island_topology_revision();
+        const auto initial_rebuilds=connected.island_full_rebuild_count();
+        expect(initial_rebuilds==1,
+               "First active island topology was not built once");
         connected.advance_collision(true);
         expect(connected.island_topology_revision()==revision,
                "Unchanged island connectivity rebuilt expensive graph state");
@@ -113,17 +116,20 @@ int run_native_scene_smoke() {
         connected.advance_collision();
         expect(connected.speculative_island_count()==4 &&
                connected.accurate_island_count()==4 &&
-               connected.island_topology_revision()==revision+1,
+               connected.island_topology_revision()==revision+1 &&
+               connected.island_full_rebuild_count()==initial_rebuilds+1,
                "Lost source contact edges did not split both island graphs");
         connected.set_position(b,{0.85f,5.0f,0.0f});
         connected.advance_collision();
         expect(connected.speculative_island_count()==2 &&
-               connected.accurate_island_count()==2,
-               "Restored source contact edges did not rejoin accurate islands");
+               connected.accurate_island_count()==2 &&
+               connected.island_full_rebuild_count()==initial_rebuilds+1,
+               "Restored source contact edges did not incrementally rejoin islands");
         connected.remove(b);
         connected.advance_collision();
         expect(connected.speculative_island_count()==3 &&
-               connected.accurate_island_count()==3,
+               connected.accurate_island_count()==3 &&
+               connected.island_full_rebuild_count()==initial_rebuilds+2,
                "Destroyed source island node remained active in the graph");
         connected.step(1.0f/120.0f);
         expect(std::isfinite(connected.body_state(a).position.y) &&
@@ -148,26 +154,30 @@ int run_native_scene_smoke() {
         candidate_only.step(1.0f);
         candidate_only.set_angular_velocity(rod_a,{0,0,0});
         candidate_only.set_angular_velocity(rod_b,{0,0,0});
+        const candidate_rebuilds=candidate_only.island_full_rebuild_count();
         candidate_only.set_position(rod_a,{0,20,0});
         candidate_only.set_position(rod_b,{0,22,0});
         candidate_only.advance_collision();
         expect(has(candidate_only.pairs(),rod_a,rod_b) &&
                candidate_only.contacts().empty() &&
                candidate_only.speculative_island_count()==1 &&
-               candidate_only.accurate_island_count()==2,
-               "Speculative island graph was conflated with accurate Gu touch");
+               candidate_only.accurate_island_count()==2 &&
+               candidate_only.island_full_rebuild_count()==candidate_rebuilds,
+               "Speculative island insertion rebuilt or conflated accurate topology");
         candidate_only.set_position(rod_b,{0,20.1f,0});
         candidate_only.advance_collision();
         expect(candidate_only.contacts().size()==1 &&
                candidate_only.speculative_island_count()==1 &&
-               candidate_only.accurate_island_count()==1,
-               "Accurate island failed to connect a formerly speculative pair");
+               candidate_only.accurate_island_count()==1 &&
+               candidate_only.island_full_rebuild_count()==candidate_rebuilds,
+               "Accurate island insertion rebuilt or missed a touching edge");
         candidate_only.set_position(rod_b,{0,22,0});
         candidate_only.advance_collision();
         expect(candidate_only.contacts().empty() &&
                candidate_only.speculative_island_count()==1 &&
-               candidate_only.accurate_island_count()==2,
-               "Accurate island did not split while speculative edge persisted");
+               candidate_only.accurate_island_count()==2 &&
+               candidate_only.island_full_rebuild_count()==candidate_rebuilds+1,
+               "Accurate island removal did not repair separated components");
 
         Scene static_world;
         static_world.add_static_floor(0.0f);
@@ -181,6 +191,7 @@ int run_native_scene_smoke() {
                static_world.accurate_island_count()==2,
                "Shared static world incorrectly merged independent dynamic islands");
         const auto static_rev=static_world.island_topology_revision();
+        const auto static_rebuilds=static_world.island_full_rebuild_count();
         const auto fixture=static_world.add_static_box(
             {1.0f,1.0f,1.0f},{20.0f,20.0f,20.0f});
         static_world.advance_collision();
@@ -200,7 +211,8 @@ int run_native_scene_smoke() {
         static_world.set_position(ground_box,{0,0.5f,0});
         static_world.advance_collision();
         expect(static_world.contacts().size()==2 &&
-               static_world.island_topology_revision()==static_rev,
+               static_world.island_topology_revision()==static_rev &&
+               static_world.island_full_rebuild_count()==static_rebuilds,
                "Static-only contact reentry unnecessarily rebuilt dynamic islands");
         static_world.step(1.0f/120.0f);
         expect(static_world.accurate_island_count()==2 &&
