@@ -1214,6 +1214,54 @@ int run_native_scene_smoke() {
                "Failed step consumed an impulse or changed edge identity");
     }
 
+    // A failed solver step can happen after SAP creates a new contact
+    // edge. Rollback must not consume a handle or leave its accurate
+    // connection bit in the scene. Retrying must produce the same edge
+    // identity as a scene that never attempted the unsuccessful step.
+    {
+        auto make=[](Scene& scene) {
+            const auto floor=scene.add_static_floor(0.0f);
+            const auto a=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            scene.step(1.0f/120.0f);
+            const auto b=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{4,0.49f,0},1.0f);
+            return std::tuple{floor,a,b};
+        };
+        Scene rollback_scene, reference_scene;
+        const auto [rf,ra,rb]=make(rollback_scene);
+        const auto [cf,ca,cb]=make(reference_scene);
+        const fyzz::native::Pair old_pair{rf,ra}, new_pair{rf,rb};
+        const auto old_handle=rollback_scene.contact_edge_index(old_pair);
+        const auto old_count=rollback_scene.active_contact_edge_count();
+        const auto invalid=std::numeric_limits<std::uint32_t>::max();
+        auto exploding=fyzz::Material{};
+        exploding.static_friction=1.0e30f;
+        exploding.dynamic_friction=1.0e30f;
+        exploding.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        for(const auto id:{rf,ra,rb})
+            rollback_scene.set_material(id,exploding);
+        bool rejected=false;
+        try {rollback_scene.step(1.0f/120.0f);}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               rollback_scene.active_contact_edge_count()==old_count &&
+               rollback_scene.contact_edge_index(old_pair)==old_handle &&
+               rollback_scene.contact_edge_index(new_pair)==invalid &&
+               rollback_scene.contact_edge_connected(old_pair),
+               "Failed contact preparation leaked a newly allocated EdgeIndex");
+        for(const auto id:{rf,ra,rb})
+            rollback_scene.set_material(id,fyzz::Material{});
+        rollback_scene.step(1.0f/120.0f);
+        reference_scene.step(1.0f/120.0f);
+        expect(rollback_scene.contact_edge_index(new_pair)==
+                   reference_scene.contact_edge_index({cf,cb}) &&
+               rollback_scene.contact_edge_connected(new_pair) &&
+               rollback_scene.contact_edge_index(old_pair)==
+                   reference_scene.contact_edge_index({cf,ca}),
+               "Rejected simulation changed subsequent contact-edge identity");
+    }
+
     // Late integration failures also must not expose earlier body updates.
     // The second body's near-FLT_MAX origin plus the finite final motion
     // yields an unrepresentable position after the first body integrated.
