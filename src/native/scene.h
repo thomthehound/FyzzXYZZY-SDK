@@ -188,6 +188,11 @@ public:
     std::size_t accurate_island_count() const noexcept {
         return accurate_island_count_;
     }
+    // Island membership admitted at Dy solver preparation, before the
+    // lost-edge repair completion barrier.
+    std::size_t pre_third_pass_island_count() const noexcept {
+        return pre_third_pass_island_count_;
+    }
     std::uint64_t island_topology_revision() const noexcept {
         return island_topology_revision_;
     }
@@ -368,6 +373,7 @@ private:
     std::vector<std::uint32_t> island_route_seen_;
     std::size_t speculative_island_count_ = 0;
     std::size_t accurate_island_count_ = 0;
+    std::size_t pre_third_pass_island_count_ = 0;
     std::uint64_t island_topology_revision_ = 0;
     std::uint64_t island_full_rebuild_count_ = 0;
     bool island_topology_dirty_ = true;
@@ -416,6 +422,7 @@ private:
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
         std::size_t speculative_count=0, accurate_count=0;
+        std::size_t pre_third_pass_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
