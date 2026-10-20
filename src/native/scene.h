@@ -90,6 +90,16 @@ public:
     std::span<const ContactManifold> contacts() const noexcept {
         return manifolds_;
     }
+    // DySolverConstraints.cpp::writeBackContact writes solved normal
+    // impulses in Gu contact order; each manifold's contact_offset/count
+    // indexes this flat scene-owned result. An advance_collision() call
+    // invalidates writeback (geometry-only queries are not solver results).
+    // Retain double for SDK-admitted extreme inverse-mass cases: ordinary
+    // PhysX uses a PxReal output buffer. Tangent/threshold writeback is
+    // not available until its source descriptor/report owners are ported.
+    std::span<const double> solved_normal_impulses() const noexcept {
+        return normal_impulse_writeback_;
+    }
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
@@ -221,6 +231,7 @@ private:
     void partition_constraints();
     void prepare_constraints(float seconds);
     void solve_constraints();
+    void write_back_contacts();
     void publish_solver_bodies();
 
     std::vector<Actor> actors_;
@@ -230,6 +241,11 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // DySolverConstraints.cpp::writeBackContact output is indexed by the
+    // same authoritative Gu contact offset, irrespective of Dy ordering.
+    // Capacity persists, while output is explicitly invalidated on a
+    // collision-only advancement.
+    std::vector<double> normal_impulse_writeback_;
     // DyConstraintPartition::partitionContactConstraints writes ordered
     // contact-manager descriptors grouped by body-conflict-free partition.
     // Indices reference authoritative manifolds, not copied constraints.
