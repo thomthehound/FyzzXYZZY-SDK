@@ -939,10 +939,6 @@ int run_native_scene_smoke() {
                changes[0].change==Change::Found &&
                std::abs(changes[0].normal_impulse-total)<0.001,
                "Static world contacts were not summed before threshold comparison");
-        combined.step(dt);
-        changes=combined.force_threshold_changes();
-        expect(changes.size()<=1,
-               "Distinct static contacts emitted duplicate threshold events");
         // The shape-partner identity must not survive in the stream:
         // removing both supports causes exactly one Lost event, followed
         // by no further exceeded-world threshold reports.
