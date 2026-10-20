@@ -178,6 +178,18 @@ public:
     std::size_t solver_partition_count() const noexcept {
         return partition_ends_.size();
     }
+    // IG::SimpleIslandManager's speculative (BP candidate) and accurate
+    // (physical touch) connectivity, limited to the admitted awake rigid
+    // bodies. Static world contacts do not merge dynamic islands.
+    std::size_t speculative_island_count() const noexcept {
+        return speculative_island_count_;
+    }
+    std::size_t accurate_island_count() const noexcept {
+        return accurate_island_count_;
+    }
+    std::uint64_t island_topology_revision() const noexcept {
+        return island_topology_revision_;
+    }
 
 private:
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
@@ -303,6 +315,7 @@ private:
     void update_pairs();
     void publish_pairs();
     void update_contacts();
+    void update_island_connectivity();
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
@@ -312,6 +325,25 @@ private:
     void publish_solver_bodies();
 
     std::vector<Actor> actors_;
+    // The admitted all-awake rigid subset of PxsSimpleIslandManager's
+    // speculative and accurate IslandSim connectivity. Pair and contact
+    // streams remain the unique authoritative graph edges. These reusable
+    // union/find work arrays are a topology-change lowering of the source
+    // graph's connected components; they do NOT implement source node
+    // activation, incremental lost-edge repair, or sleeping.
+    std::vector<BodyId> speculative_island_parent_;
+    std::vector<BodyId> accurate_island_parent_;
+    std::vector<std::uint8_t> speculative_island_rank_;
+    std::vector<std::uint8_t> accurate_island_rank_;
+    // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
+    // active-island node sequence. These are existing actor identifiers,
+    // not a duplicated actor or solver-body registry.
+    std::vector<BodyId> accurate_island_nodes_;
+    std::vector<std::size_t> accurate_island_offsets_;
+    std::size_t speculative_island_count_ = 0;
+    std::size_t accurate_island_count_ = 0;
+    std::uint64_t island_topology_revision_ = 0;
+    bool island_topology_dirty_ = true;
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
     std::vector<SolverBodyRow> solver_rows_;
