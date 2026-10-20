@@ -110,9 +110,12 @@ BodyId Scene::add(Actor actor) {
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
     actor.alive = true;
+    const bool dynamic_node=actor.kind==Kind::DynamicBox;
     actors_.push_back(actor);
     dirty_ = true;
-    island_topology_dirty_ = true;
+    // Static nodes belong to the shared world endpoint, not an island.
+    // Their insertion changes SAP/Gu edges but not dynamic connectivity.
+    island_topology_dirty_ |= dynamic_node;
     return id;
 }
 BodyId Scene::add_static_box(Vec3 h, Vec3 p) {
@@ -304,9 +307,11 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
     actor.contact_report_threshold=force;
 }
 void Scene::remove(BodyId id) {
-    require(id).alive = false;
+    auto& actor=require(id);
+    const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    actor.alive = false;
     dirty_ = true;
-    island_topology_dirty_ = true;
+    island_topology_dirty_ |= dynamic_node;
 }
 BodyState Scene::body_state(BodyId id) const {
     const auto& actor = require(id);
