@@ -429,16 +429,23 @@ the original `std::vector::swap` handoff, preserving existing
 `std::span` storage across failure; transient Dy working arrays are
 recomputed rather than duplicated.
 
-The current CPU implementation uses a capacity-reusing checkpoint of
-actor records, friction patches, graph state, and result streams at the
-start of each step. This guarantees rollback without creating another
-physics world, but incurs **O(active scene state) copy bandwidth per
-frame**, even for successful steps. It is a performance remediation item,
-not the desired final source execution architecture. As the original
-`ScPipeline`/`Dy::DynamicsContext` continuation and result-publishing
-boundaries are integrated, replace eager authoring-state copies with
-staged writes and owned double-buffered publication. Do not add
-blocking waits or re-run the simulation to emulate failure atomicity.
+The CPU publication boundary now stages published force, friction,
+threshold-change, Gu contact and broadphase-pair buffers through reusable
+or reversible swaps, rather than copying those result streams each frame.
+The capacity-reusing checkpoint saves only *mutable dynamic motion*
+(position, orientation, velocities and pending torque) together with
+persistent friction history and island/threshold bookkeeping. Immutable
+shape geometry and actor materials are not cloned; there is no second
+simulation or solver.
+
+**Remaining copy cost:** dynamic motion and persistent friction/island
+state are still captured at O(dynamic bodies + retained contact state)
+per frame, including successful steps. This is a performance-remediation
+item, not the final source publication architecture. As the original
+`ScPipeline`/`Dy::DynamicsContext` continuation and fetch boundaries
+are integrated, lower the remaining actor/cache checkpoint into staged
+writes and source-owned publication. Do not add blocking waits or
+re-run the simulation to emulate failure atomicity.
 
 The native regression exercises multiply-combined finite materials that
 overflow during contact preparation, repeated failed attempts, preservation
