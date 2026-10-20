@@ -36,6 +36,22 @@ struct WorldOptions {
     ExecutionMode execution = ExecutionMode::ReferencePhysXCpu;
 };
 
+// Provider-neutral noncompliant contact material, matching PhysX
+// PxsMaterialCombiner's rigid-material combine modes and friction flags.
+// Compliant springs and per-triangle material tables are future features.
+enum class MaterialCombineMode : std::uint8_t {
+    Average=0, Minimum=1, Multiply=2, Maximum=3
+};
+struct Material {
+    float static_friction=0.5f;
+    float dynamic_friction=0.5f;
+    float restitution=0.2f;
+    MaterialCombineMode friction_combine=MaterialCombineMode::Average;
+    MaterialCombineMode restitution_combine=MaterialCombineMode::Average;
+    bool disable_friction=false;
+    bool disable_strong_friction=false;
+};
+
 using BodyId = std::uint32_t;
 
 struct BodyState {
@@ -75,6 +91,9 @@ public:
     virtual void apply_body_torque_impulse(BodyId, Vec3) {
         throw std::logic_error("This backend cannot apply a torque impulse");
     }
+    virtual void set_body_material(BodyId, Material) {
+        throw std::logic_error("This backend cannot author rigid material");
+    }
 };
 
 class World final {
@@ -101,6 +120,7 @@ public:
     // Impulse is angular momentum in world coordinates (N*m*s).
     // Matches PxRigidDynamic::addTorque(..., PxForceMode::eIMPULSE).
     void apply_body_torque_impulse(BodyId id, Vec3 impulse);
+    void set_body_material(BodyId id, Material material);
 
 private:
     std::unique_ptr<WorldBackend> impl_;
