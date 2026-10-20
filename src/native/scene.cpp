@@ -1286,8 +1286,10 @@ void Scene::update_threshold_stream(float seconds) {
     // DySolverConstraints.cpp::writeBackContact emits a threshold element
     // only for a supported rigid-body manager with a nonzero final
     // normal impulse and an enabled reportThreshold on either body.
-    // The current native scene has precisely one shape per actor, so
-    // the sorted BodyId pair is also the shapeInteraction identity.
+    // DyThresholdTable groups all static contacts against a dynamic body
+    // using the SAME source world solver node. Do not key by the Gu
+    // contact pair: distinct static shapes must sum before comparison.
+    // A dynamic/dynamic contact retains its canonical body-pair key.
     //
     // DyThresholdTable::build aggregates impulses by rigid-body pair and
     // PxsForceThresholdTask::createForceChangeThresholdStream compares
@@ -1297,9 +1299,18 @@ void Scene::update_threshold_stream(float seconds) {
     threshold_changes_.clear();
     for (const auto& manifold:manifolds_) {
         const Pair pair=manifold.pair;
-        const float threshold=std::min(
-            actors_[pair.a].contact_report_threshold,
-            actors_[pair.b].contact_report_threshold);
+        const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
+        const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+        if (!dynamic_a && !dynamic_b)
+            continue;
+        const bool static_world=!(dynamic_a && dynamic_b);
+        const ForceThresholdKey key=static_world
+            ? ForceThresholdKey{dynamic_a ? pair.a : pair.b,0,true}
+            : ForceThresholdKey{pair.a,pair.b,false};
+        const float threshold=static_world
+            ? actors_[key.actor0].contact_report_threshold
+            : std::min(actors_[pair.a].contact_report_threshold,
+                       actors_[pair.b].contact_report_threshold);
         if (threshold==std::numeric_limits<float>::max())
             continue;
         if (manifold.contact_offset>normal_impulse_writeback_.size() ||
@@ -1315,16 +1326,20 @@ void Scene::update_threshold_stream(float seconds) {
                 "Native Dy threshold normal impulse accumulation overflow");
         if (sum==0.0)
             continue;
-        threshold_current_.push_back({pair,sum,threshold});
+        threshold_current_.push_back({key,sum,threshold});
     }
-    // DyThresholdTable hashes source island-node pairs. Our original Gu
-    // contact managers are already sorted by canonical BodyId Pair, so
-    // preserve their order and coalesce adjacent entries in place. Avoid
-    // an unnecessary per-frame sort or an auxiliary hash-table owner.
-    // Island-node and multiple-shape support require source expansion.
+    // Map Gu manager pairs onto the shared static-world identity BEFORE
+    // DyThresholdTable aggregation. The mapped sequence is no longer
+    // necessarily ordered (different static actors interleave), so sort
+    // only these active threshold candidates, in the reusable arena.
+    // Do not allocate a parallel hash table or reorder Gu contacts.
+    std::sort(threshold_current_.begin(),threshold_current_.end(),
+        [](const ThresholdPair& a, const ThresholdPair& b) {
+            return a.key<b.key;
+        });
     std::size_t write=0;
     for (const auto& row:threshold_current_) {
-        if (write && threshold_current_[write-1].pair==row.pair) {
+        if (write && threshold_current_[write-1].key==row.key) {
             threshold_current_[write-1].impulse+=row.impulse;
             threshold_current_[write-1].threshold=std::min(
                 threshold_current_[write-1].threshold,row.threshold);
@@ -1351,23 +1366,23 @@ void Scene::update_threshold_stream(float seconds) {
         const bool has_old=old_index<threshold_previous_.size();
         const bool has_new=new_index<threshold_current_.size();
         if (has_old &&
-            (!has_new || threshold_previous_[old_index].pair <
-                         threshold_current_[new_index].pair)) {
+            (!has_new || threshold_previous_[old_index].key <
+                         threshold_current_[new_index].key)) {
             const auto& old=threshold_previous_[old_index++];
             threshold_changes_.push_back({
-                old.pair,0.0,old.threshold,ForceThresholdChange::Lost});
+                old.key,0.0,old.threshold,ForceThresholdChange::Lost});
         } else if (has_new &&
-                   (!has_old || threshold_current_[new_index].pair <
-                                threshold_previous_[old_index].pair)) {
+                   (!has_old || threshold_current_[new_index].key <
+                                threshold_previous_[old_index].key)) {
             const auto& now=threshold_current_[new_index++];
             threshold_changes_.push_back({
-                now.pair,now.impulse,now.threshold,
+                now.key,now.impulse,now.threshold,
                 ForceThresholdChange::Found});
         } else {
             const auto& old=threshold_previous_[old_index++];
             ++new_index;
             threshold_changes_.push_back({
-                old.pair,old.impulse,old.threshold,
+                old.key,old.impulse,old.threshold,
                 ForceThresholdChange::Persists});
         }
     }
