@@ -1064,7 +1064,7 @@ int run_native_scene_smoke() {
                 {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
             Material floor_material{};
             floor_material.restitution=0.0f;
-            floor_material.restitution_combine=Mode::Minimum;
+            floor_material.restitution_combine=Mode::Average;
             Material box_material{};
             box_material.restitution=1.0f;
             box_material.restitution_combine=mode;
