@@ -1348,6 +1348,81 @@ int run_native_scene_smoke() {
                "Failed step consumed an impulse or changed edge identity");
     }
 
+    // The source EdgeInstance checkpoint is sparse. Stable contact
+    // managers must not copy the historical handle watermark on every
+    // simulation step merely to guarantee exception rollback.
+    {
+        Scene stable;
+        stable.add_static_floor(0.0f);
+        for(int i=0;i<16;++i)
+            stable.add_dynamic_box({0.5f,0.5f,0.5f},
+                {static_cast<float>(i)*3.0f,0.49f,0},1.0f);
+        stable.step(1.0f/120.0f);
+        expect(stable.active_contact_edge_count()==16,
+               "Sparse edge checkpoint fixture lacks persistent managers");
+        stable.step(1.0f/120.0f);
+        expect(stable.active_contact_edge_count()==16 &&
+               stable.edge_rollback_journal_size()==0,
+               "Unchanged source contact edges were copied during PGS");
+    }
+
+    // An exception *after* an existing accurate edge is disconnected
+    // must restore both endpoint list links and the connected bit. A
+    // second independent contact with invalid combined material forces
+    // the failure in contact preparation, after Gu island publication.
+    {
+        auto initialize=[](Scene& scene) {
+            const auto floor=scene.add_static_floor(0.0f);
+            const auto first=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            const auto second=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{3,0.49f,0},1.0f);
+            scene.step(1.0f/120.0f);
+            return std::tuple{floor,first,second};
+        };
+        Scene rejected, clean;
+        const auto [rf,ra,rb]=initialize(rejected);
+        const auto [cf,ca,cb]=initialize(clean);
+        const fyzz::native::Pair ra_pair{rf,ra}, rb_pair{rf,rb};
+        const auto id=rejected.contact_edge_index(ra_pair);
+        const auto* const old_contacts=rejected.contacts().data();
+        const auto* const old_points=rejected.contacts()[0].points.data();
+        const auto old_frame=rejected.frame_index();
+        rejected.set_position(ra,{0,8,0});
+        clean.set_position(ca,{0,8,0});
+        auto exploding=fyzz::Material{};
+        exploding.static_friction=1.0e30f;
+        exploding.dynamic_friction=1.0e30f;
+        exploding.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        rejected.set_material(rf,exploding);
+        rejected.set_material(rb,exploding);
+        bool threw=false;
+        try {rejected.step(1.0f/120.0f);}
+        catch(const std::overflow_error&) {threw=true;}
+        expect(threw &&
+               rejected.edge_rollback_journal_size()>0 &&
+               rejected.frame_index()==old_frame &&
+               rejected.contacts().data()==old_contacts &&
+               rejected.contacts()[0].points.data()==old_points &&
+               rejected.contact_edge_index(ra_pair)==id &&
+               rejected.contact_edge_connected(ra_pair) &&
+               rejected.contact_edge_connected(rb_pair),
+               "Failed PGS step did not restore intrusive contact links");
+        rejected.set_material(rf,fyzz::Material{});
+        rejected.set_material(rb,fyzz::Material{});
+        rejected.step(1.0f/120.0f);
+        clean.step(1.0f/120.0f);
+        expect(rejected.contact_edge_index(ra_pair)==id &&
+               !rejected.contact_edge_connected(ra_pair) &&
+               rejected.contact_edge_connected(rb_pair) &&
+               rejected.contact_edge_connected(ra_pair)==
+                   clean.contact_edge_connected({cf,ca}) &&
+               rejected.contact_edge_connected(rb_pair)==
+                   clean.contact_edge_connected({cf,cb}) &&
+               rejected.accurate_island_count()==clean.accurate_island_count(),
+               "Sparse intrusive rollback contaminated successful retry");
+    }
+
     // A failed solver step can happen after SAP creates a new contact
     // edge. Rollback must not consume a handle or leave its accurate
     // connection bit in the scene. Retrying must produce the same edge
