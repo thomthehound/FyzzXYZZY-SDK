@@ -778,7 +778,9 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     fast.resize(actors_.size(),invalid);
     hops.resize(actors_.size(),std::numeric_limits<std::uint32_t>::max());
     stamps.resize(actors_.size(),0);
-    island_route_seen_.assign(actors_.size(),0);
+    // Retain visited marks across publications; only grow on actor
+    // admission, rather than clearing O(all actors) on a lost-edge pass.
+    island_route_seen_.resize(actors_.size(),0);
     island_route_predecessor_.resize(actors_.size(),invalid);
 
     const auto connected=[&](BodyId from,BodyId target) {
@@ -795,7 +797,6 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         while(parents[node]!=node)node=parents[node];
         return node;
     };
-    std::uint32_t visit_stamp=0;
     for(BodyId node:dirty) {
         if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox)
             continue;
@@ -827,10 +828,11 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         // IslandSim::findRoute fallback, limited to the admitted awake
         // rigid graph. A successful route provides new mFastRoute and
         // mHopCounts estimates toward this component's existing root.
-        if(++visit_stamp==0) {
+        if(++island_route_visit_stamp_==0) {
             std::fill(island_route_seen_.begin(),island_route_seen_.end(),0);
-            visit_stamp=1;
+            island_route_visit_stamp_=1;
         }
+        const auto visit_stamp=island_route_visit_stamp_;
         island_route_queue_.clear();
         island_route_queue_.push_back(node);
         island_route_seen_[node]=visit_stamp;
