@@ -226,7 +226,6 @@ private:
         std::uint16_t contact_count = 0;
         std::uint8_t anchor_count = 0;
         bool broken = false;
-        bool diagnostic_position_clamp = false;
     };
     struct SolverContactFriction {
         Vec3 tangent{};
