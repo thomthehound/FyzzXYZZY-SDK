@@ -1172,8 +1172,10 @@ void Scene::solve_constraints() {
                             commit[9],commit[10],commit[11]};
                         fr.applied_force=next;
                         broken_this_iteration |= clamped;
-                        if (clamped) patch.broken=true;
                     }
+                    if (iter + 1 ==
+                        position_iterations + velocity_iterations)
+                        patch.broken=broken_this_iteration;
                 }
             }
         }
