@@ -800,15 +800,19 @@ int run_native_scene_smoke() {
         try { thresholds.set_contact_report_threshold(monitored,-1.0f); }
         catch(const std::invalid_argument&) {rejected=true;}
         expect(rejected,"Negative source contact threshold admitted");
-        thresholds.set_contact_report_threshold(monitored,0.0f);
+        // A 1 kg supported body produces about 0.082 N*s per frame.
+        // Threshold 5 N is exceeded only under PhysX's impulse > 5*dt
+        // rule, NOT the erroneous impulse > 5 comparison.
+        thresholds.set_contact_report_threshold(monitored,5.0f);
         thresholds.set_contact_report_threshold(unmonitored,30.0f);
         thresholds.step(dt);
         auto changes=thresholds.force_threshold_changes();
         expect(changes.size()==1 &&
                changes[0].pair==fyzz::native::Pair{ground,monitored} &&
                changes[0].change==Change::Found &&
-               changes[0].normal_impulse>0.01 &&
-               changes[0].threshold==0.0f,
+               changes[0].normal_impulse>5.0*dt &&
+               changes[0].normal_impulse<5.0 &&
+               changes[0].threshold==5.0f,
                "Source force-threshold found stream missing/incorrect");
         const double first_impulse=changes[0].normal_impulse;
         thresholds.advance_collision(true);
