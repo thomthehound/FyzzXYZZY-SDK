@@ -438,11 +438,19 @@ persistent friction history and island/threshold bookkeeping. Immutable
 shape geometry and actor materials are not cloned; there is no second
 simulation or solver.
 
-**Remaining copy cost:** successful simulation steps still
-checkpoint mutable motion, persistent friction history, island nodes
-and contact-edge slot/handle state at O(dynamic bodies + retained
-contact/edge state) per frame. The transient next-edge merge buffer is
-never checkpointed; it is cleared and reconstructed on retry.
+**Remaining copy cost:** successful simulation steps still checkpoint
+mutable dynamic-body motion, persistent friction history and the
+currently provisional island component arrays. Source intrusive
+`EdgeInstance` links and node-first heads are **no longer copied per
+frame**: an allocation-reusing write-ahead journal records only the
+edge slots and heads about to change. On exception, reverse replay
+restores original adjacency; newly allocated slots are truncated.
+The active/retired/free handle arrays are copied lazily, only when an
+overlap is added/removed or a handle is actually retired. Gu-only touch
+changes do not copy those arrays. The transient next-edge merge buffer
+is never checkpointed; it is cleared and reconstructed on retry.
+Journal recording can allocate and throw *before* mutation, while
+rollback and publication-buffer restoration cannot allocate.
 
 `Scene::advance_collision` now shares the strong failure boundary:
 an AABB overflow or an exception partway through contact/edge
@@ -617,11 +625,16 @@ are now represented and maintained by the existing scene's contact
 manager handles. The source's dirty-node route witnesses, hop/fast
 routes, stable island handles and activation/sleep state remain
 unported; the union/find component lowering still needs retirement
-or deeper integration as N1 progresses. Failure rollback currently
-copies O(allocated edge slots + allocated island nodes) metadata per
-active step, including both source adjacency head arrays. Track and
-eliminate this bandwidth with source-owned staged state/publication,
-without sacrificing the existing failure-atomicity contract.
+or deeper integration as N1 progresses. Failure rollback now journals **only the modified** source edge slots
+and intrusive node-head links, including splices into neighboring edge
+instances. It does not traverse or copy old EdgeIndex allocations at
+the start of successful steps. At most O(changed edge writes + changed
+node-head writes) adjacency copies occur in a frame; the existing
+union/find island-array checkpoint still copies O(allocated island
+nodes) state and remains an explicit performance-remediation item.
+Tests verify a stable multi-contact solve journals zero edge records,
+and an exception after removing an existing accurate edge restores
+both published contact storage and the original intrusive connectivity.
 `ScPipeline`'s asynchronous `destroyManagers`/lost-contact
 continuations, speculative/accurate deactivation, and
 `afterIntegration` reconciliation also remain unported. A correct
