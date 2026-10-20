@@ -704,11 +704,10 @@ void Scene::update_contacts() {
 // IslandSim::processLostEdges calls findRoute on dirty endpoints before
 // splitting an island. For the admitted all-awake dynamic contact subset,
 // a lost edge can only split its component if its endpoints are no longer
-// connected in the *surviving* graph. Prove that property directly using
-// the existing published candidate/touch pairs. Source IslandSim's
-// persistent edge instances, fast routes, hop estimates and deferred
-// deactivation are not yet imported; this temporary adjacency is rebuilt
-// only when dynamic connections disappear, using scene-owned capacity.
+// connected in the *surviving* graph. Traverse the persistent source
+// EdgeInstance adjacency owned by the corresponding contact-manager
+// handles. Fast-route/hop estimates, stable island identities and source
+// deactivation are still outstanding.
 // IslandSim::findRoute traverses per-node mFirstEdgeIndex and the
 // paired EdgeInstance indices, rather than rebuilding an adjacency
 // graph every time a contact disappears. The persistent source slot
