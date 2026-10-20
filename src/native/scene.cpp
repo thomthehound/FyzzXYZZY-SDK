@@ -473,6 +473,17 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
         const BodyId node=side==0?edge.pair.a:edge.pair.b;
         auto& link=(accurate?edge.accurate:edge.speculative)[side];
         if(!link.linked)continue;
+        // IslandSim::removeConnectionFromGraph marks both live rigid
+        // endpoints dirty and clears a fast route that used the removed
+        // edge. Record the pending route work before changing adjacency.
+        if(actors_[node].alive && actors_[node].kind==Kind::DynamicBox) {
+            auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
+            dirty.push_back(node);
+            auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
+            const BodyId other=side==0?edge.pair.b:edge.pair.a;
+            if(node<fast.size() && fast[node]==other)
+                fast[node]=std::numeric_limits<BodyId>::max();
+        }
         step_checkpoint_.save_edge(*this,id);
         if(link.prev==invalid_instance)
             step_checkpoint_.save_head(*this,node,accurate);
@@ -938,6 +949,10 @@ void Scene::third_pass_island_gen() {
     // remain N1 admission work.
     update_island_connectivity(true);
     retire_destroyed_contact_edges();
+    // The source dirty map is consumed by the third-pass repair. No
+    // duplicate route work should spill into an unchanged next frame.
+    speculative_dirty_nodes_.clear();
+    accurate_dirty_nodes_.clear();
 }
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
@@ -2020,6 +2035,13 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
+    // Route hints are opportunistic, not authoritative; invalidating
+    // their epochs and clearing pending dirty-node work is enough to
+    // restore correctness without copying source cache arrays.
+    ++scene.speculative_hint_epoch_;
+    ++scene.accurate_hint_epoch_;
+    scene.speculative_dirty_nodes_.clear();
+    scene.accurate_dirty_nodes_.clear();
     // Rewind source edge instances and node heads in reverse mutation
     // order, without allocation. Only touched pre-existing records were
     // copied, so unchanged history never incurs a full watermark copy.
