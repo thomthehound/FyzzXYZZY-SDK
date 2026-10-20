@@ -1106,6 +1106,14 @@ void Scene::solve_constraints() {
                         ? 0.5 : 1.0;
                     const double max_static=0.5*coefficient*normal_impulse;
                     const double max_dynamic=0.5*coefficient*normal_impulse;
+                    // DySolverConstraints.cpp::solveContact and
+                    // solveContact_BStatic create a fresh local 'broken'
+                    // value on EVERY solve call. Only the final
+                    // writeBackIteration publishes it to the friction
+                    // patch's cached broken byte. Position-pass
+                    // saturation must not invalidate an anchor that has
+                    // converged during the unbiased velocity pass.
+                    bool broken_this_iteration=false;
                     for (std::size_t k=patch.row_offset;
                          k<patch.row_offset+patch.anchor_count*2; ++k) {
                         auto& fr=solver_friction_rows_[k];
@@ -1163,8 +1171,11 @@ void Scene::solve_constraints() {
                         b.solver.angular_state={
                             commit[9],commit[10],commit[11]};
                         fr.applied_force=next;
-                        if (clamped) patch.broken=true;
+                        broken_this_iteration |= clamped;
                     }
+                    if (iter + 1 ==
+                        position_iterations + velocity_iterations)
+                        patch.broken=broken_this_iteration;
                 }
             }
         }
