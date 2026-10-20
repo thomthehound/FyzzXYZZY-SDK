@@ -418,6 +418,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     EdgeIndex id;
     if(!free_edge_handles_.empty()) {
         id=free_edge_handles_.back();
+        step_checkpoint_.save_edge(*this,id);
         free_edge_handles_.pop_back();
         contact_edges_[id]={pair,true,false,false};
     } else {
@@ -432,7 +433,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
 // removeConnectionInternal: two intrusive endpoint instances per
 // EdgeIndex. The speculative and accurate IslandSim graphs retain
 // separate lists, but share the authoritative contact-manager handle.
-void Scene::link_contact_edge(EdgeIndex id, bool accurate) noexcept {
+void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
     auto& edge=contact_edges_[id];
     auto& heads=accurate?accurate_node_first_:speculative_node_first_;
     auto instance_at=[&](std::size_t index)->EdgeInstance& {
@@ -446,15 +447,22 @@ void Scene::link_contact_edge(EdgeIndex id, bool accurate) noexcept {
         auto& link=(accurate?edge.accurate:edge.speculative)[side];
         if(link.linked)continue;
         const std::size_t index=static_cast<std::size_t>(id)*2+side;
+        const auto first=heads[node];
+        // Record all overwritten source objects *before* any mutation.
+        // Recording can allocate and throw; replay itself cannot.
+        step_checkpoint_.save_edge(*this,id);
+        if(first!=invalid_instance)
+            step_checkpoint_.save_edge(*this,static_cast<EdgeIndex>(first/2));
+        step_checkpoint_.save_head(*this,node,accurate);
         link.prev=invalid_instance;
-        link.next=heads[node];
+        link.next=first;
         link.linked=true;
-        if(link.next!=invalid_instance)
-            instance_at(link.next).prev=index;
+        if(first!=invalid_instance)
+            instance_at(first).prev=index;
         heads[node]=index;
     }
 }
-void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) noexcept {
+void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
     auto& edge=contact_edges_[id];
     auto& heads=accurate?accurate_node_first_:speculative_node_first_;
     auto instance_at=[&](std::size_t index)->EdgeInstance& {
@@ -465,6 +473,15 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) noexcept {
         const BodyId node=side==0?edge.pair.a:edge.pair.b;
         auto& link=(accurate?edge.accurate:edge.speculative)[side];
         if(!link.linked)continue;
+        step_checkpoint_.save_edge(*this,id);
+        if(link.prev==invalid_instance)
+            step_checkpoint_.save_head(*this,node,accurate);
+        else
+            step_checkpoint_.save_edge(*this,
+                static_cast<EdgeIndex>(link.prev/2));
+        if(link.next!=invalid_instance)
+            step_checkpoint_.save_edge(*this,
+                static_cast<EdgeIndex>(link.next/2));
         if(link.prev==invalid_instance)
             heads[node]=link.next;
         else
@@ -480,9 +497,12 @@ void Scene::retire_destroyed_contact_edges() {
     // be reused by an overlap born earlier in that same publication.
     // Reserve before changing any slots so allocation failure cannot
     // leave a partially retired handle pool in collision-only queries.
+    if(retired_edge_handles_.empty())return;
+    step_checkpoint_.save_handle_lists(*this);
     free_edge_handles_.reserve(
         free_edge_handles_.size()+retired_edge_handles_.size());
     for(EdgeIndex id:retired_edge_handles_) {
+        step_checkpoint_.save_edge(*this,id);
         auto& edge=contact_edges_[id];
         edge={};
         free_edge_handles_.push_back(id);
@@ -507,15 +527,18 @@ void Scene::publish_pairs() {
         if(new_index==pending_pairs_.size() ||
            (old_index<previous_pairs_.size() &&
             previous_pairs_[old_index]<pending_pairs_[new_index])) {
+            step_checkpoint_.save_handle_lists(*this);
             const EdgeIndex id=active_edge_handles_[old_index];
             unlink_contact_edge(id,true);
             unlink_contact_edge(id,false);
+            step_checkpoint_.save_edge(*this,id);
             contact_edges_[id].retiring=true;
             contact_edges_[id].connected=false;
             retired_edge_handles_.push_back(id);
             next_lost_.push_back(previous_pairs_[old_index++]);
         } else if(old_index==previous_pairs_.size() ||
                   pending_pairs_[new_index]<previous_pairs_[old_index]) {
+            step_checkpoint_.save_handle_lists(*this);
             const Pair pair=pending_pairs_[new_index++];
             const EdgeIndex id=allocate_contact_edge(pair);
             link_contact_edge(id,false);
@@ -676,6 +699,7 @@ void Scene::update_contacts() {
         const auto id=contact_edge_index(pair);
         if(id!=invalid_edge) {
             link_contact_edge(id,true);
+            step_checkpoint_.save_edge(*this,id);
             contact_edges_[id].connected=true;
         }
     }
@@ -683,6 +707,7 @@ void Scene::update_contacts() {
         const auto id=contact_edge_index(pair);
         if(id!=invalid_edge) {
             unlink_contact_edge(id,true);
+            step_checkpoint_.save_edge(*this,id);
             contact_edges_[id].connected=false;
         }
     }
