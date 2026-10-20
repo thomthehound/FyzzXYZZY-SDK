@@ -428,6 +428,52 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     }
     return id;
 }
+// PxsIslandSim.cpp::IslandSim::addConnectionToGraph and
+// removeConnectionInternal: two intrusive endpoint instances per
+// EdgeIndex. The speculative and accurate IslandSim graphs retain
+// separate lists, but share the authoritative contact-manager handle.
+void Scene::link_contact_edge(EdgeIndex id, bool accurate) noexcept {
+    auto& edge=contact_edges_[id];
+    auto& heads=accurate?accurate_node_first_:speculative_node_first_;
+    auto instance_at=[&](std::size_t index)->EdgeInstance& {
+        auto& owner=contact_edges_[index/2];
+        return (accurate?owner.accurate:owner.speculative)[index&1];
+    };
+    for(std::size_t side=0;side<2;++side) {
+        const BodyId node=side==0?edge.pair.a:edge.pair.b;
+        // The PhysX static world endpoint has no dynamic island node.
+        if(actors_[node].kind!=Kind::DynamicBox)continue;
+        auto& link=(accurate?edge.accurate:edge.speculative)[side];
+        if(link.linked)continue;
+        const std::size_t index=static_cast<std::size_t>(id)*2+side;
+        link.prev=invalid_instance;
+        link.next=heads[node];
+        link.linked=true;
+        if(link.next!=invalid_instance)
+            instance_at(link.next).prev=index;
+        heads[node]=index;
+    }
+}
+void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) noexcept {
+    auto& edge=contact_edges_[id];
+    auto& heads=accurate?accurate_node_first_:speculative_node_first_;
+    auto instance_at=[&](std::size_t index)->EdgeInstance& {
+        auto& owner=contact_edges_[index/2];
+        return (accurate?owner.accurate:owner.speculative)[index&1];
+    };
+    for(std::size_t side=0;side<2;++side) {
+        const BodyId node=side==0?edge.pair.a:edge.pair.b;
+        auto& link=(accurate?edge.accurate:edge.speculative)[side];
+        if(!link.linked)continue;
+        if(link.prev==invalid_instance)
+            heads[node]=link.next;
+        else
+            instance_at(link.prev).next=link.next;
+        if(link.next!=invalid_instance)
+            instance_at(link.next).prev=link.prev;
+        link={};
+    }
+}
 void Scene::retire_destroyed_contact_edges() {
     // Source PostThirdPassTask frees mDestroyedEdges *after* speculative
     // and accurate lost-edge passes have joined. A removed handle cannot
@@ -451,6 +497,10 @@ void Scene::publish_pairs() {
     next_lost_.clear();
     next_edge_handles_.clear();
     next_edge_handles_.reserve(pending_pairs_.size());
+    // Grow before linking any edge. List insertion/removal then has no
+    // allocation, including in the source edge-retirement continuation.
+    speculative_node_first_.resize(actors_.size(),invalid_instance);
+    accurate_node_first_.resize(actors_.size(),invalid_instance);
     std::size_t old_index=0,new_index=0;
     while(old_index<previous_pairs_.size() ||
           new_index<pending_pairs_.size()) {
@@ -458,6 +508,8 @@ void Scene::publish_pairs() {
            (old_index<previous_pairs_.size() &&
             previous_pairs_[old_index]<pending_pairs_[new_index])) {
             const EdgeIndex id=active_edge_handles_[old_index];
+            unlink_contact_edge(id,true);
+            unlink_contact_edge(id,false);
             contact_edges_[id].retiring=true;
             contact_edges_[id].connected=false;
             retired_edge_handles_.push_back(id);
@@ -465,7 +517,9 @@ void Scene::publish_pairs() {
         } else if(old_index==previous_pairs_.size() ||
                   pending_pairs_[new_index]<previous_pairs_[old_index]) {
             const Pair pair=pending_pairs_[new_index++];
-            next_edge_handles_.push_back(allocate_contact_edge(pair));
+            const EdgeIndex id=allocate_contact_edge(pair);
+            link_contact_edge(id,false);
+            next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
         } else {
             next_edge_handles_.push_back(active_edge_handles_[old_index]);
@@ -620,11 +674,17 @@ void Scene::update_contacts() {
     // NOT destroy its speculative overlap edge or allocate a new handle.
     for(Pair pair:next_found_contacts_) {
         const auto id=contact_edge_index(pair);
-        if(id!=invalid_edge)contact_edges_[id].connected=true;
+        if(id!=invalid_edge) {
+            link_contact_edge(id,true);
+            contact_edges_[id].connected=true;
+        }
     }
     for(Pair pair:next_lost_contacts_) {
         const auto id=contact_edge_index(pair);
-        if(id!=invalid_edge)contact_edges_[id].connected=false;
+        if(id!=invalid_edge) {
+            unlink_contact_edge(id,true);
+            contact_edges_[id].connected=false;
+        }
     }
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
@@ -1851,6 +1911,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // handle or change the identity of a previously published manager.
     contact_edges.assign(scene.contact_edges_.begin(),
                          scene.contact_edges_.end());
+    speculative_first.assign(scene.speculative_node_first_.begin(),
+                             scene.speculative_node_first_.end());
+    accurate_first.assign(scene.accurate_node_first_.begin(),
+                          scene.accurate_node_first_.end());
     active_handles.assign(scene.active_edge_handles_.begin(),
                           scene.active_edge_handles_.end());
     retired_handles.assign(scene.retired_edge_handles_.begin(),
@@ -1914,6 +1978,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // PhysX edge handles and their lifetime queues restore before
     // collision/solver publication; no retired handle escapes a failed step.
     scene.contact_edges_.swap(contact_edges);
+    scene.speculative_node_first_.swap(speculative_first);
+    scene.accurate_node_first_.swap(accurate_first);
     scene.active_edge_handles_.swap(active_handles);
     // This merge buffer is scratch, cleared before every publication.
     scene.next_edge_handles_.clear();
