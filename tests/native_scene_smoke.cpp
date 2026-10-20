@@ -1006,7 +1006,7 @@ int run_native_scene_smoke() {
             Material floor_material{};
             floor_material.static_friction=0.0f;
             floor_material.dynamic_friction=0.0f;
-            floor_material.friction_combine=Mode::Minimum;
+            floor_material.friction_combine=Mode::Average;
             Material box_material{};
             box_material.static_friction=1.0f;
             box_material.dynamic_friction=1.0f;
@@ -1030,19 +1030,6 @@ int run_native_scene_smoke() {
         const auto multiply=friction_run(Mode::Multiply,false);
         const auto maximum=friction_run(Mode::Maximum,false);
         const auto disabled=friction_run(Mode::Maximum,true);
-        if (!(std::abs(minimum.first-0.2f)<0.002f &&
-               minimum.second<1.0e-8 &&
-               multiply.second<1.0e-8 &&
-               average.second>0.001 &&
-               maximum.second>average.second &&
-               maximum.first<minimum.first-0.001f))
-            std::fprintf(stderr,
-                "material friction: min=(%g,%g) mul=(%g,%g) avg=(%g,%g) max=(%g,%g) disabled=(%g,%g)\n",
-                minimum.first,minimum.second,
-                multiply.first,multiply.second,
-                average.first,average.second,
-                maximum.first,maximum.second,
-                disabled.first,disabled.second);
         expect(std::abs(minimum.first-0.2f)<0.002f &&
                minimum.second<1.0e-8 &&
                multiply.second<1.0e-8 &&
