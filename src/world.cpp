@@ -119,5 +119,18 @@ void World::apply_body_torque_impulse(BodyId id, Vec3 impulse) {
     validate_position(impulse);
     impl_->apply_body_torque_impulse(id, impulse);
 }
+void World::set_body_material(BodyId id, Material material) {
+    if (!std::isfinite(material.static_friction) ||
+        !std::isfinite(material.dynamic_friction) ||
+        !std::isfinite(material.restitution) ||
+        material.static_friction<0.0f ||
+        material.dynamic_friction<0.0f ||
+        material.restitution<0.0f || material.restitution>1.0f ||
+        static_cast<unsigned>(material.friction_combine)>3 ||
+        static_cast<unsigned>(material.restitution_combine)>3)
+        throw std::invalid_argument(
+            "Noncompliant contact material coefficients/modes invalid");
+    impl_->set_body_material(id,material);
+}
 
 } // namespace fyzz
