@@ -633,7 +633,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     return true;
 }
 
-void Scene::update_island_connectivity() {
+void Scene::update_island_connectivity(bool repair_lost_edges) {
     // PxsSimpleIslandManager::firstPassIslandGen and
     // secondPassIslandGenPart1 insert newly discovered edges through
     // IslandSim::processNewEdges, merging existing islands rather than
@@ -649,13 +649,16 @@ void Scene::update_island_connectivity() {
     bool rebuild=island_topology_dirty_;
     bool added_speculative=false;
     bool added_accurate=false;
-    // As in IslandSim::processLostEdges/findRoute, an edge removal is
-    // harmless to component membership when the surviving graph still
-    // connects its endpoints. Rebuild only on a witnessed split; source
-    // full incremental edge/route state remains a later N1 integration.
-    if(!rebuild)
+    // Source first/second passes admit new edges; third pass does the
+    // dirty-route split repair. A lost contact must not prematurely split
+    // the solver's active island before the current solve has completed.
+    // Actor-node creation/retirement still uses the bounded full-rebuild
+    // path until its source lifecycle has been integrated.
+    if(!rebuild && repair_lost_edges)
         rebuild=!lost_island_edges_retain_routes(false) ||
                  !lost_island_edges_retain_routes(true);
+    if(!rebuild && repair_lost_edges)
+        return;
     if (!rebuild) {
         for (Pair pair:found_)
             if (dynamic_edge(pair)) {added_speculative=true;break;}
@@ -767,6 +770,13 @@ void Scene::update_island_connectivity() {
     }
     island_topology_dirty_=false;
     ++island_topology_revision_;
+}
+void Scene::third_pass_island_gen() {
+    // Single-threaded continuation join for this all-awake rigid subset.
+    // PhysX executes speculative/accurate lost-edge repairs on two tasks
+    // that join before postThirdPassIslandGen. No sleep/deactivation or
+    // persistent IslandSim handle lifecycle is claimed here.
+    update_island_connectivity(true);
 }
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
@@ -1976,6 +1986,10 @@ void Scene::step(float seconds) {
             dirty_ = true;
         }
     }
+    // ScPipeline::destroyManagers -> thirdPassIslandGen -> postThirdPass:
+    // the current Dy solve/integration must complete before splits caused
+    // by lost edges can alter the next accurate island-node sequence.
+    third_pass_island_gen();
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
@@ -1983,9 +1997,10 @@ void Scene::step(float seconds) {
 }
 
 void Scene::advance_collision(bool force_update) {
-    // Geometry-only Gu narrowphase admits rotated scenes independently
-    // of any Dy execution or previous step's impulse writeback.
+    // Geometry-only queries are synchronous completed publications: run
+    // the same post-collision island retirement barrier as a full step.
     advance_collision_internal(force_update);
+    third_pass_island_gen();
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
@@ -2010,7 +2025,9 @@ void Scene::advance_collision_internal(bool force_update) {
         found_contacts_.clear();
         lost_contacts_.clear();
     }
-    update_island_connectivity();
+    // Source first speculative and second accurate pass: edge insertion
+    // and active body admission, but no lost-edge island splitting yet.
+    update_island_connectivity(false);
     dirty_ = false;
     ++frame_index_;
 }
