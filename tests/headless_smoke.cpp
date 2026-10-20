@@ -354,6 +354,65 @@ int main() {
                     "Native CPU gravity/contact diverged from reference PhysX");
             }
 
+            // Independent source PGS oracle: the same authored material
+            // pair must select the same restitution mode in both real
+            // scenes, irrespective of actor creation order. This exercises
+            // the live normal-contact solve and the saved position-phase
+            // motion, not just standalone material-combiner arithmetic.
+            for (const bool dynamic_first : {false,true}) {
+                for (const auto combine_mode : {
+                         fyzz::MaterialCombineMode::Minimum,
+                         fyzz::MaterialCombineMode::Maximum}) {
+                    fyzz::World native_bounce(fyzz::WorldOptions{
+                        fyzz::ExecutionMode::NativeCpu});
+                    fyzz::World reference_bounce(fyzz::WorldOptions{
+                        fyzz::ExecutionMode::ReferencePhysXCpu});
+                    fyzz::BodyId n_floor=0,n_box=0,r_floor=0,r_box=0;
+                    if (dynamic_first) {
+                        n_box=native_bounce.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                        r_box=reference_bounce.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                        n_floor=native_bounce.add_static_floor(0.0f);
+                        r_floor=reference_bounce.add_static_floor(0.0f);
+                    } else {
+                        n_floor=native_bounce.add_static_floor(0.0f);
+                        r_floor=reference_bounce.add_static_floor(0.0f);
+                        n_box=native_bounce.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                        r_box=reference_bounce.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                    }
+                    fyzz::Material floor_mat{};
+                    floor_mat.restitution=0.0f;
+                    floor_mat.restitution_combine=
+                        fyzz::MaterialCombineMode::Average;
+                    floor_mat.disable_friction=true;
+                    fyzz::Material box_mat{};
+                    box_mat.restitution=1.0f;
+                    box_mat.restitution_combine=combine_mode;
+                    box_mat.disable_friction=true;
+                    native_bounce.set_body_material(n_floor,floor_mat);
+                    native_bounce.set_body_material(n_box,box_mat);
+                    reference_bounce.set_body_material(r_floor,floor_mat);
+                    reference_bounce.set_body_material(r_box,box_mat);
+                    native_bounce.set_body_velocity(n_box,{0,-4,0});
+                    reference_bounce.set_body_velocity(r_box,{0,-4,0});
+                    native_bounce.step(1.0f/120.0f);
+                    reference_bounce.step(1.0f/120.0f);
+                    const auto n=native_bounce.body_state(n_box);
+                    const auto p=reference_bounce.body_state(r_box);
+                    if (!std::isfinite(n.velocity.y) ||
+                        !std::isfinite(p.velocity.y) ||
+                        !std::isfinite(n.position.y) ||
+                        !std::isfinite(p.position.y) ||
+                        std::abs(n.velocity.y-p.velocity.y)>0.12f ||
+                        std::abs(n.position.y-p.position.y)>0.015f)
+                        throw std::runtime_error(
+                            "Native PGS material restitution diverged from PhysX CPU");
+                }
+            }
+
             // Source parity for the float speed-squared overflow branch:
             // a FLT_MAX linear velocity must become zero, not 1e16.
             fyzz::World native_speed(fyzz::WorldOptions{
