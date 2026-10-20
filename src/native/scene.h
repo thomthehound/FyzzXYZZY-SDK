@@ -370,11 +370,9 @@ private:
     // saved. This is a journal, not an independent scene or solver.
     struct StepCheckpoint {
         std::vector<Actor> actors;
-        std::vector<Pair> previous_pairs, found, lost;
+        std::vector<Pair> found, lost;
         std::vector<Pair> found_contacts, lost_contacts;
-        std::vector<ContactManifold> manifolds;
-        std::vector<ContactPoint> contact_points;
-        std::vector<FrictionPatch> friction_patches;
+         std::vector<FrictionPatch> friction_patches;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
         std::vector<ThresholdPair> threshold_previous;
@@ -386,6 +384,7 @@ private:
         std::vector<std::size_t> accurate_offsets;
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
+        std::uint64_t pair_epoch=0, contact_epoch=0;
         bool topology_dirty=true, dirty=true;
         void capture(const Scene& scene);
         void rollback(Scene& scene) noexcept;
@@ -420,6 +419,10 @@ private:
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
+    // Publish swaps are reversible without copying the source-owned
+    // contact/pair arenas. Rollback keeps externally held Gu spans valid.
+    std::uint64_t pair_epoch_=0;
+    std::uint64_t contact_epoch_=0;
     std::vector<Pair> found_;
     std::vector<Pair> lost_;
 
