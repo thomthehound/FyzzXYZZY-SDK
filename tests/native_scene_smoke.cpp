@@ -492,6 +492,28 @@ int run_native_scene_smoke() {
                std::isfinite(center_state.velocity.x) &&
                crowded.contacts().size()==35,
                "Source 32-partition overflow did not execute all contact managers");
+        // Dy writeback indexes the original Gu manifold stream even
+        // though the solver traverses reordered constraint partitions.
+        // All 35 manager reports must have a positive final impulse,
+        // including three managers assigned to the overflow wave.
+        const auto reported=crowded.solved_normal_impulses();
+        std::size_t expected_offset=0;
+        for (std::size_t i=0;i<crowded.contacts().size();++i) {
+            const auto& manager=crowded.contacts()[i];
+            expect(manager.contact_offset==expected_offset &&
+                   manager.contact_offset+manager.count<=reported.size(),
+                   "Partitioned Dy force writeback lost Gu contact offsets");
+            double normal_sum=0.0;
+            for (std::size_t k=0;k<manager.count;++k)
+                normal_sum+=reported[manager.contact_offset+k];
+            expect(std::isfinite(normal_sum) && normal_sum>0.0,
+                   i>=32
+                       ? "Overflow-wave manager has no solved contact force writeback"
+                       : "First-wave manager has no solved contact force writeback");
+            expected_offset+=manager.count;
+        }
+        expect(expected_offset==reported.size(),
+               "Dy force writeback omitted original Gu contact points");
         // Constructing 35 partitions is insufficient proof of execution:
         // these boxes start with no X velocity and gravity has no X
         // component. Every active center/leaf contact must therefore
