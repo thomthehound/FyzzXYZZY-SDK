@@ -48,6 +48,22 @@ struct FrictionPatchWriteback {
     std::array<FrictionImpulse,2> anchor_impulses{};
     bool broken=false;
 };
+// PxsMaterialCore.h / PxsMaterialCombiner.h, noncompliant rigid
+// contact material subset. One material is owned by each current shape;
+// no shadow material registry is introduced. Compliant springs have a
+// different solver branch and are not yet admitted.
+enum class MaterialCombineMode : std::uint8_t {
+    Average=0, Minimum=1, Multiply=2, Maximum=3
+};
+struct Material {
+    float static_friction=0.5f;
+    float dynamic_friction=0.5f;
+    float restitution=0.2f;
+    MaterialCombineMode friction_combine=MaterialCombineMode::Average;
+    MaterialCombineMode restitution_combine=MaterialCombineMode::Average;
+    bool disable_friction=false;
+    bool disable_strong_friction=false;
+};
 // DyThresholdTable / DyDynamics::PxsForceThresholdTask. One authored
 // shape per actor in the current native scene, so the shape interaction
 // identity is the canonical BodyId pair. The source's island node index
@@ -121,6 +137,9 @@ public:
     // source's low-level force-threshold stream. Default PX_MAX_REAL
     // disables it. Units are force; evaluation uses impulse > force*dt.
     void set_contact_report_threshold(BodyId id, float force);
+    // One noncompliant PxsMaterialData per currently admitted shape.
+    // A material change is consumed by next native contact preparation.
+    void set_material(BodyId id, Material material);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
 
@@ -189,6 +208,7 @@ private:
         float density = 0.0f;
         float inverse_mass = 0.0f;  // immutable cached derived body property
         float contact_report_threshold=std::numeric_limits<float>::max();
+        Material material{};
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.
         Vec3 inverse_inertia_local{};
@@ -261,6 +281,11 @@ private:
         // Source DyFrictionPatch stores both previous-frame normals in
         // body-local coordinates; the active row normal remains world-space.
         Vec3 normal{};
+        float static_friction=0.5f;
+        float dynamic_friction=0.5f;
+        float restitution=0.2f;
+        bool disable_friction=false;
+        bool disable_strong_friction=false;
         Vec3 body0_normal{};
         Vec3 body1_normal{};
         std::array<Vec3,2> body0_anchors{};
