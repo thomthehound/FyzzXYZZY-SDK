@@ -1699,8 +1699,8 @@ void Scene::step(float seconds) {
     }
     // Source-derived per-point normals and correlated friction rows
     // share the original actor/contact owner and ordered contact batches.
-    // The island task graph, packed constraint writeback, heterogeneous
-    // material combinations and CCD remain explicit N1 admission gates.
+    // The complete island task graph, packed constraint ABI, heterogeneous
+    // material/contact callbacks and CCD remain explicit N1 admission gates.
     advance_collision_internal(false);
     prepare_solver_bodies();
     partition_constraints();
@@ -1717,47 +1717,47 @@ void Scene::step(float seconds) {
         ++island) {
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
-        const BodyId id=accurate_island_nodes_[index];
-        auto& actor=actors_[id];
-        Vec3 motion_linear = actor.velocity;
-        Vec3 motion_angular = actor.angular_velocity;
-        // Scene clock increments in advance_collision_internal; only
-        // this frame's actual contact participants own motion snapshots.
-        const bool solved_contact = id < solver_rows_.size() &&
-            solver_rows_[id].prepared_frame == frame_index_;
-        if (solved_contact) {
-            const auto& row = solver_rows_[id];
-            const Vec3& delta = row.motion_linear_delta;
-            motion_linear = {
-                row.data.linear_velocity.x + delta.x,
-                row.data.linear_velocity.y + delta.y,
-                row.data.linear_velocity.z + delta.z};
-            const auto& i = row.data.sqrt_inverse_inertia;
-            const Vec3& angular_delta = row.motion_angular_state;
-            motion_angular = {
-                row.data.angular_velocity.x + i[0].x*angular_delta.x +
-                    i[1].x*angular_delta.y + i[2].x*angular_delta.z,
-                row.data.angular_velocity.y + i[0].y*angular_delta.x +
-                    i[1].y*angular_delta.y + i[2].y*angular_delta.z,
-                row.data.angular_velocity.z + i[0].z*angular_delta.x +
-                    i[1].z*angular_delta.y + i[2].z*angular_delta.z};
-        }
-        const Vec3 p{
-            static_cast<float>(static_cast<double>(actor.position.x) +
-                               static_cast<double>(motion_linear.x)*seconds),
-            static_cast<float>(static_cast<double>(actor.position.y) +
-                               static_cast<double>(motion_linear.y)*seconds),
-            static_cast<float>(static_cast<double>(actor.position.z) +
-                               static_cast<double>(motion_linear.z)*seconds)};
-        if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
-            throw std::overflow_error("Native position-iteration motion overflow");
-        const Quat q = integrate_quaternion(
-            actor.orientation, motion_angular, seconds);
-        if (!finite(q))
-            throw std::overflow_error("Native CPU orientation overflow");
-        actor.position = p;
-        actor.orientation = q;
-        dirty_ = true;
+            const BodyId id=accurate_island_nodes_[index];
+            auto& actor=actors_[id];
+            Vec3 motion_linear = actor.velocity;
+            Vec3 motion_angular = actor.angular_velocity;
+            // Scene clock increments in advance_collision_internal; only
+            // this frame's actual contact participants own motion snapshots.
+            const bool solved_contact = id < solver_rows_.size() &&
+                solver_rows_[id].prepared_frame == frame_index_;
+            if (solved_contact) {
+                const auto& row = solver_rows_[id];
+                const Vec3& delta = row.motion_linear_delta;
+                motion_linear = {
+                    row.data.linear_velocity.x + delta.x,
+                    row.data.linear_velocity.y + delta.y,
+                    row.data.linear_velocity.z + delta.z};
+                const auto& i = row.data.sqrt_inverse_inertia;
+                const Vec3& angular_delta = row.motion_angular_state;
+                motion_angular = {
+                    row.data.angular_velocity.x + i[0].x*angular_delta.x +
+                        i[1].x*angular_delta.y + i[2].x*angular_delta.z,
+                    row.data.angular_velocity.y + i[0].y*angular_delta.x +
+                        i[1].y*angular_delta.y + i[2].y*angular_delta.z,
+                    row.data.angular_velocity.z + i[0].z*angular_delta.x +
+                        i[1].z*angular_delta.y + i[2].z*angular_delta.z};
+            }
+            const Vec3 p{
+                static_cast<float>(static_cast<double>(actor.position.x) +
+                                   static_cast<double>(motion_linear.x)*seconds),
+                static_cast<float>(static_cast<double>(actor.position.y) +
+                                   static_cast<double>(motion_linear.y)*seconds),
+                static_cast<float>(static_cast<double>(actor.position.z) +
+                                   static_cast<double>(motion_linear.z)*seconds)};
+            if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
+                throw std::overflow_error("Native position-iteration motion overflow");
+            const Quat q = integrate_quaternion(
+                actor.orientation, motion_angular, seconds);
+            if (!finite(q))
+                throw std::overflow_error("Native CPU orientation overflow");
+            actor.position = p;
+            actor.orientation = q;
+            dirty_ = true;
         }
     }
 }
