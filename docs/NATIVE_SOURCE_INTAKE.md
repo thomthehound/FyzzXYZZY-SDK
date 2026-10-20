@@ -447,12 +447,18 @@ never checkpointed; it is cleared and reconstructed on retry.
 `Scene::advance_collision` now shares the strong failure boundary:
 an AABB overflow or an exception partway through contact/edge
 publication restores prior published Gu/contact/impulse spans,
-previous force reports, edge ownership and island state. Geometry-only
-queries deliberately omit dynamic-motion, friction-history,
-threshold-history and solver-partition copies because that operation
-does not mutate them. Only collision/island/edge state is staged.
-Tests verify preserved backing-storage identity following a
-deterministic nonfinite AABB, followed by successful retry.
+previous force reports, edge ownership and island state. Geometry-only queries deliberately omit dynamic-motion,
+friction-history, threshold-history and solver-partition copies
+because that operation does not mutate them. For an unchanged scene
+without a forced refresh, pending island repair or edge retirement,
+`advance_collision` takes the constant-work quiet publication path:
+it advances the frame clock and retires transient result/event streams
+without checkpointing edge slots, handles or island arrays. Dirty,
+forced and outstanding-retirement cases still use failure-atomic
+collision/island/edge staging. Regressions verify quiet publication
+does not change persistent contact/island state, and preserved
+backing-storage identity after a deterministic nonfinite AABB with
+successful retry.
 
 The remaining dynamic-scene/edge checkpoint copy cost is a
 performance-remediation item, not the final source publication
