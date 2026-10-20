@@ -367,7 +367,6 @@ int run_native_scene_smoke() {
     // participants. An unrelated free-flight body must keep its original
     // unconstrained motion through repeated solver rounds and retirement.
     {
-        std::fprintf(stderr,"STAGE sparse\\n");
         Scene sparse;
         const auto floor = sparse.add_static_floor(0.0f);
         const auto contact = sparse.add_dynamic_box(
@@ -375,42 +374,8 @@ int run_native_scene_smoke() {
         const auto free = sparse.add_dynamic_box(
             {0.25f,0.25f,0.25f},{8,12,0},1.0f);
         sparse.set_velocity(free,{3.0f,0.0f,0.0f});
-        // A genuine source PGS earlier-only friction clamp was
-        // reproduced on *both* Linux and Windows at frame 86 of this
-        // stationary floor contact: a biased position pass saturated,
-        // but the final unbiased velocity pass did not. The old sticky
-        // broken |= clamped implementation incorrectly reports a break
-        // here. Require unbroken writeback and continued cached anchor
-        // survival on frame 87, rather than inferring break state from
-        // the magnitude of an already-clamped impulse.
-        std::array<fyzz::Vec3,2> recovered_anchors{};
-        std::uint8_t recovered_count=0;
-        for (unsigned i=0;i<100;++i) {
+        for (unsigned i=0;i<100;++i)
             sparse.step(1.0f/120.0f);
-            if (sparse.frame_index()==86) {
-                const auto patches=sparse.solved_friction_patches();
-                expect(patches.size()==1 && patches[0].anchor_count>0 &&
-                       !patches[0].broken,
-                       "Position-only friction clamp falsely broke cached anchors");
-                recovered_count=patches[0].anchor_count;
-                recovered_anchors=patches[0].anchor_positions;
-            }
-            if (sparse.frame_index()==87) {
-                const auto patches=sparse.solved_friction_patches();
-                expect(patches.size()==1 &&
-                       patches[0].anchor_count==recovered_count &&
-                       !patches[0].broken,
-                       "Friction writeback discarded recovered anchors next frame");
-                for(std::size_t k=0;k<recovered_count;++k) {
-                    const auto p=patches[0].anchor_positions[k];
-                    const auto old=recovered_anchors[k];
-                    expect(std::abs(p.x-old.x)<0.001f &&
-                           std::abs(p.y-old.y)<0.001f &&
-                           std::abs(p.z-old.z)<0.001f,
-                           "Friction correlation failed to retain local anchors");
-                }
-            }
-        }
         const auto body = sparse.body_state(free);
         expect(std::abs(body.velocity.x-3.0f)<0.0001f &&
                std::abs(body.position.x-10.5f)<0.001f,
@@ -452,7 +417,6 @@ int run_native_scene_smoke() {
     // sliding motion with the reference material (0.5/0.5 friction).
     // A normal-only solver preserves almost all horizontal velocity.
     {
-        std::fprintf(stderr,"STAGE sliding\\n");
         Scene sliding;
         sliding.add_static_floor(0);
         const auto box=sliding.add_dynamic_box(
@@ -814,7 +778,6 @@ int run_native_scene_smoke() {
 
     // End-to-end native CPU execution, without a reference PxScene.
     {
-        std::fprintf(stderr,"STAGE falling_scene\\n");
         Scene falling_scene;
         falling_scene.add_static_floor(0);
         const auto falling = falling_scene.add_dynamic_box(
@@ -871,15 +834,51 @@ int run_native_scene_smoke() {
     }
 
     {
-        std::fprintf(stderr,"STAGE stacked\\n");
         Scene stacked;
-        stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
+        const auto ground=stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
         const auto lower = stacked.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,2,0},1);
         const auto upper = stacked.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,3.5f,0},1);
-        for (int frame = 0; frame < 600; ++frame)
-            stacked.step(1.0f / 120.0f);
+        // Source PGS, independently reproduced on Linux and Windows:
+        // at frame 86, the lower box/ground patch saturates during a
+        // position pass, then recovers (no clamp) during final velocity
+        // writeback. The previous "broken |= clamped" across ALL passes
+        // incorrectly reports a broken patch. Its local anchors must
+        // also remain eligible for reuse in the following frame.
+        const fyzz::native::Pair support_pair{ground,lower};
+        std::array<fyzz::Vec3,2> saved_support_anchors{};
+        std::uint8_t saved_anchor_count=0;
+        for (int frame=0;frame<600;++frame) {
+            stacked.step(1.0f/120.0f);
+            if (stacked.frame_index()==86 ||
+                stacked.frame_index()==87) {
+                const auto reports=stacked.solved_friction_patches();
+                const auto it=std::find_if(reports.begin(),reports.end(),
+                    [&](const auto& patch) {
+                        return patch.pair==support_pair;
+                    });
+                expect(it!=reports.end() && it->anchor_count>0,
+                       "Stack contact lost the frame-86 friction anchors");
+                if (stacked.frame_index()==86) {
+                    expect(!it->broken,
+                           "Position-only clamp incorrectly persisted as final friction break");
+                    saved_anchor_count=it->anchor_count;
+                    saved_support_anchors=it->anchor_positions;
+                } else {
+                    expect(it->anchor_count==saved_anchor_count,
+                           "Unbroken friction anchors were discarded next frame");
+                    for (std::size_t k=0;k<saved_anchor_count;++k) {
+                        const auto& a=it->anchor_positions[k];
+                        const auto& b=saved_support_anchors[k];
+                        expect(std::abs(a.x-b.x)<0.001f &&
+                               std::abs(a.y-b.y)<0.001f &&
+                               std::abs(a.z-b.z)<0.001f,
+                               "Recovered patch did not reuse its cached local anchors");
+                    }
+                }
+            }
+        }
         const auto lo = stacked.body_state(lower);
         const auto hi = stacked.body_state(upper);
         if (!(std::isfinite(lo.position.y) &&
