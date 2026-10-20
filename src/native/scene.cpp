@@ -260,6 +260,20 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
         throw std::overflow_error("Native world-space torque impulse overflow");
     actor.pending_angular_velocity_delta = pending;
 }
+void Scene::set_contact_report_threshold(BodyId id, float force) {
+    // ScBodyCore::contactReportThreshold and
+    // DySolverConstraints::writeBackContact's finite threshold gate.
+    // PX_MAX_REAL is the source disabled default; negative, NaN and
+    // infinity are not valid report-threshold values.
+    if (!std::isfinite(force) || force < 0.0f)
+        throw std::invalid_argument(
+            "Native contact report threshold must be nonnegative and finite");
+    auto& actor=require(id);
+    if (actor.kind!=Kind::DynamicBox)
+        throw std::logic_error(
+            "Source contact report threshold belongs to dynamic rigid bodies");
+    actor.contact_report_threshold=force;
+}
 void Scene::remove(BodyId id) {
     require(id).alive = false;
     dirty_ = true;
@@ -1268,6 +1282,99 @@ void Scene::write_back_contacts() {
         }
     }
 }
+void Scene::update_threshold_stream(float seconds) {
+    // DySolverConstraints.cpp::writeBackContact emits a threshold element
+    // only for a supported rigid-body manager with a nonzero final
+    // normal impulse and an enabled reportThreshold on either body.
+    // The current native scene has precisely one shape per actor, so
+    // the sorted BodyId pair is also the shapeInteraction identity.
+    //
+    // DyThresholdTable::build aggregates impulses by rigid-body pair and
+    // PxsForceThresholdTask::createForceChangeThresholdStream compares
+    // aggregate impulse against threshold*dt. Never divide impulse by
+    // dt and narrow to PxReal: this SDK also admits extreme mass cases.
+    threshold_current_.clear();
+    threshold_changes_.clear();
+    for (const auto& manifold:manifolds_) {
+        const Pair pair=manifold.pair;
+        const float threshold=std::min(
+            actors_[pair.a].contact_report_threshold,
+            actors_[pair.b].contact_report_threshold);
+        if (threshold==std::numeric_limits<float>::max())
+            continue;
+        if (manifold.contact_offset>normal_impulse_writeback_.size() ||
+            manifold.count>normal_impulse_writeback_.size()-
+                manifold.contact_offset)
+            throw std::logic_error(
+                "Native Dy threshold stream exceeds source force writeback");
+        double sum=0.0;
+        for (std::size_t i=0;i<manifold.count;++i)
+            sum+=normal_impulse_writeback_[manifold.contact_offset+i];
+        if (!std::isfinite(sum))
+            throw std::overflow_error(
+                "Native Dy threshold normal impulse accumulation overflow");
+        if (sum==0.0)
+            continue;
+        threshold_current_.push_back({pair,sum,threshold});
+    }
+    // DyThresholdTable hashes these canonical node pairs. Sorting and
+    // merging is equivalent for the native one-shape-per-actor subset;
+    // avoid allocating a separate hash/pair owner just for reports.
+    std::sort(threshold_current_.begin(),threshold_current_.end(),
+        [](const ThresholdPair& a, const ThresholdPair& b) {
+            return a.pair<b.pair;
+        });
+    std::size_t write=0;
+    for (const auto& row:threshold_current_) {
+        if (write && threshold_current_[write-1].pair==row.pair) {
+            threshold_current_[write-1].impulse+=row.impulse;
+            threshold_current_[write-1].threshold=std::min(
+                threshold_current_[write-1].threshold,row.threshold);
+        } else {
+            threshold_current_[write++]=row;
+        }
+    }
+    threshold_current_.resize(write);
+    // Source tests accumulated per-pair impulse *strictly greater*
+    // than reportThreshold * dt. This runs after final force writeback.
+    write=0;
+    for (const auto& row:threshold_current_) {
+        if (row.impulse>static_cast<double>(row.threshold)*seconds)
+            threshold_current_[write++]=row;
+    }
+    threshold_current_.resize(write);
+    // Previous/current exceeded-force stream merge. The source also
+    // includes persistent exceeded pairs in its force-change stream;
+    // LOST events have zero accumulated force, while PERSISTS uses the
+    // preceding element's force (as in PxsForceThresholdTask).
+    std::size_t old_index=0,new_index=0;
+    while (old_index<threshold_previous_.size() ||
+           new_index<threshold_current_.size()) {
+        const bool has_old=old_index<threshold_previous_.size();
+        const bool has_new=new_index<threshold_current_.size();
+        if (has_old &&
+            (!has_new || threshold_previous_[old_index].pair <
+                         threshold_current_[new_index].pair)) {
+            const auto& old=threshold_previous_[old_index++];
+            threshold_changes_.push_back({
+                old.pair,0.0,old.threshold,ForceThresholdChange::Lost});
+        } else if (has_new &&
+                   (!has_old || threshold_current_[new_index].pair <
+                                threshold_previous_[old_index].pair)) {
+            const auto& now=threshold_current_[new_index++];
+            threshold_changes_.push_back({
+                now.pair,now.impulse,now.threshold,
+                ForceThresholdChange::Found});
+        } else {
+            const auto& old=threshold_previous_[old_index++];
+            ++new_index;
+            threshold_changes_.push_back({
+                old.pair,old.impulse,old.threshold,
+                ForceThresholdChange::Persists});
+        }
+    }
+    threshold_previous_.swap(threshold_current_);
+}
 void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
     // solved motion velocity after the iteration/conclude/writeback sequence.
@@ -1371,6 +1478,7 @@ void Scene::step(float seconds) {
     prepare_constraints(seconds);
     solve_constraints();
     write_back_contacts();
+    update_threshold_stream(seconds);
     publish_solver_bodies();
     // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
     // iteration motion velocities to move/rotate bodies. The velocity
@@ -1431,6 +1539,9 @@ void Scene::advance_collision_internal(bool force_update) {
     // solved force-buffer values against an unsolved contact stream.
     normal_impulse_writeback_.clear();
     friction_impulse_writeback_.clear();
+    // This clears only the exposed reports; prior exceeded-force state
+    // must survive collision queries until the next simulation step.
+    threshold_changes_.clear();
     // ScPipeline.cpp CPU ordering:
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
