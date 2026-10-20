@@ -556,18 +556,51 @@ repair can run **before** numerical PGS work; the source does not impose
 an unconditional "solve, then third pass" order. Geometry-only
 collision publication likewise completes both stages before returning.
 
-This bounded staging does not translate `ScPipeline`'s asynchronous
-`destroyManagers`/lost-contact task continuations, deferred edge
-handle destruction, speculative/accurate deactivation, or
-`afterIntegration` reconciliation. It preserves the completed
-published graph state for the admitted all-awake subset, **not** source
-task/handle identity. N1 acceptance still requires the actual task
-dependencies, persistent edge ownership and dirty-route lifetime,
-without a second island scheduler or invented sleep behavior.
+**Persistent contact-manager EdgeIndex (admitted source subset):**
+`PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
+for each created SAP contact-manager overlap. `native::Scene` now owns
+the corresponding indexed edge slots and reusable handle pool alongside
+the original sorted pair stream; it does **not** allocate a separate
+collision graph or duplicate the physics actors. A single linear
+old/new SAP merge publishes found/lost events, carries forward
+identical handles for surviving pairs, and allocates handles only for
+new overlaps. Source `setEdgeConnected`/`setEdgeDisconnected`
+semantics are represented by an accurate-connection bit on that slot,
+updated from Gu found/lost touch events. Both speculative and accurate
+island connectivity now consume the same persistent edge slots.
+Loss of physical touch does **not** destroy its contact manager as long
+as the candidate overlap remains alive.
 
-**Unported source responsibilities:** stable `PxNodeIndex` and edge
-handle generations, speculative/accurate activation flags, sleep/wake,
-first/second/third-pass task joins, delayed lost-edge retirement,
+`removeConnection` queues removed-overlap handles for retirement.
+They remain unavailable for reuse until the source-corresponding
+third-pass join has completed graph repair; only then are they returned
+to the scene-owned free-handle pool. New overlaps created in the same
+publication cannot take a pending-retirement handle. Source handle
+indices may subsequently be reused on later overlaps. A failed
+`Scene::step` restores the slot pool, accurate connection bits, active
+handle ordering and retirement queue alongside actor/contact history.
+The native smoke tests exercise touch loss/reentry, overlap replacement,
+no premature same-frame reuse, subsequent handle reuse, and rejected
+step retry identity.
+
+**Remaining source and performance differences:** this bounded slot
+owner does not yet carry original `EdgeInstance` dirty adjacency,
+hop/fast routes, stable island handles or source activation state; the
+union/find and transient route lowering still need replacement as N1
+progresses. The step-failure checkpoint currently copies O(allocated
+edge handles + active pairs) each frame, reusing allocations. This
+bandwidth cost is tracked for elimination via source-owned staged
+mutation/rollback at the completed task publication boundary.
+`ScPipeline`'s asynchronous `destroyManagers`/lost-contact
+continuations, speculative/accurate deactivation, and
+`afterIntegration` reconciliation also remain unported. A correct
+published graph for the all-awake subset does **not** establish source
+task or island identity.
+
+**Unported source responsibilities:** persistent `PxNodeIndex`
+node lifecycle and destruction, original dirty `EdgeInstance` routes,
+speculative/accurate activation flags, sleep/wake, first/second/third-pass
+task joins, post-third-pass interaction retirement,
 `afterIntegration` deactivation reconciliation, source callback
 ownership, and complete per-island solve/fetch scheduling. The
 union/find lowering must be retired or extended when those source
