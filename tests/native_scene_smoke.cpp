@@ -492,11 +492,20 @@ int run_native_scene_smoke() {
                std::isfinite(center_state.velocity.x) &&
                crowded.contacts().size()==35,
                "Source 32-partition overflow did not execute all contact managers");
-        for (auto leaf:leaves) {
-            const auto state=crowded.body_state(leaf);
+        // Constructing 35 partitions is insufficient proof of execution:
+        // these boxes start with no X velocity and gravity has no X
+        // component. Every active center/leaf contact must therefore
+        // push its leaf outward along +X on the *first* solve. In
+        // particular leaves 32-34 are assigned to the second 32-bit
+        // overflow wave; dropping their ordered descriptors must fail.
+        for (std::size_t index=0;index<leaves.size();++index) {
+            const auto state=crowded.body_state(leaves[index]);
             expect(std::isfinite(state.position.x) &&
-                   std::isfinite(state.velocity.x),
-                   "Source partition wave produced invalid dynamic leaf state");
+                   std::isfinite(state.velocity.x) &&
+                   state.velocity.x>0.01f && state.position.x>2.08f,
+                   index>=32
+                       ? "Source second-wave contact produced no outward impulse"
+                       : "Source first-wave contact produced no outward impulse");
         }
         // A new frame must recompute partition masks without retaining
         // previous wave assignments or introducing another body owner.
