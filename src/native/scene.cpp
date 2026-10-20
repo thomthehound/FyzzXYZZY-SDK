@@ -1179,7 +1179,7 @@ void Scene::solve_constraints() {
                     if (iter + 1 ==
                         position_iterations + velocity_iterations) {
                         if (patch.diagnostic_position_clamp &&
-                            !broken_this_iteration)
+                            !broken_this_iteration) {
                             std::fprintf(stderr,
                                 "FRICTION_RECOVER frame=%llu pair=%u,%u anchors=%u row=%zu pos=%g,%g,%g vel=%g,%g,%g force=%g\\n",
                                 static_cast<unsigned long long>(frame_index_),
@@ -1195,6 +1195,7 @@ void Scene::solve_constraints() {
                                 actors_[patch.pair.b].velocity.z,
                                 normal_impulse);
                             throw std::runtime_error("Transient position-only friction clamp identified");
+                        }
                         patch.broken=broken_this_iteration;
                     }
                 }
