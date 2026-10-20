@@ -3,6 +3,7 @@
 #include "native/scene.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -373,8 +374,42 @@ int run_native_scene_smoke() {
         const auto free = sparse.add_dynamic_box(
             {0.25f,0.25f,0.25f},{8,12,0},1.0f);
         sparse.set_velocity(free,{3.0f,0.0f,0.0f});
-        for (unsigned i=0;i<100;++i)
+        // A genuine source PGS earlier-only friction clamp was
+        // reproduced on *both* Linux and Windows at frame 86 of this
+        // stationary floor contact: a biased position pass saturated,
+        // but the final unbiased velocity pass did not. The old sticky
+        // broken |= clamped implementation incorrectly reports a break
+        // here. Require unbroken writeback and continued cached anchor
+        // survival on frame 87, rather than inferring break state from
+        // the magnitude of an already-clamped impulse.
+        std::array<fyzz::Vec3,2> recovered_anchors{};
+        std::uint8_t recovered_count=0;
+        for (unsigned i=0;i<100;++i) {
             sparse.step(1.0f/120.0f);
+            if (sparse.frame_index()==86) {
+                const auto patches=sparse.solved_friction_patches();
+                expect(patches.size()==1 && patches[0].anchor_count>0 &&
+                       !patches[0].broken,
+                       "Position-only friction clamp falsely broke cached anchors");
+                recovered_count=patches[0].anchor_count;
+                recovered_anchors=patches[0].anchor_positions;
+            }
+            if (sparse.frame_index()==87) {
+                const auto patches=sparse.solved_friction_patches();
+                expect(patches.size()==1 &&
+                       patches[0].anchor_count==recovered_count &&
+                       !patches[0].broken,
+                       "Friction writeback discarded recovered anchors next frame");
+                for(std::size_t k=0;k<recovered_count;++k) {
+                    const auto p=patches[0].anchor_positions[k];
+                    const auto old=recovered_anchors[k];
+                    expect(std::abs(p.x-old.x)<0.001f &&
+                           std::abs(p.y-old.y)<0.001f &&
+                           std::abs(p.z-old.z)<0.001f,
+                           "Friction correlation failed to retain local anchors");
+                }
+            }
+        }
         const auto body = sparse.body_state(free);
         expect(std::abs(body.velocity.x-3.0f)<0.0001f &&
                std::abs(body.position.x-10.5f)<0.001f,
