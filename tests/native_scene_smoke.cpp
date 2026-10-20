@@ -154,7 +154,7 @@ int run_native_scene_smoke() {
         candidate_only.step(1.0f);
         candidate_only.set_angular_velocity(rod_a,{0,0,0});
         candidate_only.set_angular_velocity(rod_b,{0,0,0});
-        const candidate_rebuilds=candidate_only.island_full_rebuild_count();
+        const auto candidate_rebuilds=candidate_only.island_full_rebuild_count();
         candidate_only.set_position(rod_a,{0,20,0});
         candidate_only.set_position(rod_b,{0,22,0});
         candidate_only.advance_collision();
