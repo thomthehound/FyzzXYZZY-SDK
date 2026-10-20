@@ -184,6 +184,39 @@ int run_native_scene_smoke() {
                cycle.island_full_rebuild_count()==cycle_rebuilds+1,
                "Source lost-edge repair did not admit incremental rejoin");
 
+        // Multiple dynamic losses in one collision publication: each
+        // removed edge has a surviving replacement path in the final
+        // graph. The proof must not stop at the first still-connected
+        // pair, nor treat multiple redundant removals as a split.
+        Scene redundant_losses;
+        redundant_losses.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,12,0},1.0f);
+        redundant_losses.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.4f,12,0},1.0f);
+        const auto rc=redundant_losses.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,12,0},1.0f);
+        const auto rd=redundant_losses.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.2f,12,0},1.0f);
+        redundant_losses.advance_collision();
+        expect(redundant_losses.pairs().size()==5 &&
+               redundant_losses.contacts().size()==5 &&
+               redundant_losses.accurate_island_count()==1,
+               "Multi-edge source route fixture did not begin connected");
+        const auto multi_rebuilds=
+            redundant_losses.island_full_rebuild_count();
+        redundant_losses.set_position(rc,{1.2f,12,0});
+        redundant_losses.set_position(rd,{1.5f,12,0});
+        redundant_losses.advance_collision();
+        expect(redundant_losses.lost_pairs().size()==2 &&
+               redundant_losses.lost_contacts().size()==2 &&
+               redundant_losses.pairs().size()==3 &&
+               redundant_losses.contacts().size()==3 &&
+               redundant_losses.speculative_island_count()==1 &&
+               redundant_losses.accurate_island_count()==1 &&
+               redundant_losses.largest_accurate_island_size()==4 &&
+               redundant_losses.island_full_rebuild_count()==multi_rebuilds,
+               "Multiple redundant edge losses incorrectly rebuilt an intact island");
+
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
