@@ -776,6 +776,77 @@ int run_native_scene_smoke() {
                "Friction final-writeback test did not exercise both break outcomes");
     }
 
+    // DySolverConstraints::writeBackContact -> DyThresholdTable ->
+    // PxsForceThresholdTask: a per-body threshold uses normal IMPULSE,
+    // compared strictly against force*dt, and retains the preceding
+    // exceeded-force stream across unsolved collision-only queries.
+    // This native one-shape-per-actor subset uses its canonical Pair as
+    // the persistent shape-interaction identity (not island node IDs).
+    {
+        using Change=fyzz::native::ForceThresholdChange;
+        constexpr float dt=1.0f/120.0f;
+        Scene thresholds;
+        const auto ground=thresholds.add_static_floor(0);
+        const auto monitored=thresholds.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto unmonitored=thresholds.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,0.5f,0},1.0f);
+        bool rejected=false;
+        try { thresholds.set_contact_report_threshold(ground,1.0f); }
+        catch(const std::logic_error&) {rejected=true;}
+        expect(rejected,
+               "Static actor admitted dynamic source contact threshold");
+        rejected=false;
+        try { thresholds.set_contact_report_threshold(monitored,-1.0f); }
+        catch(const std::invalid_argument&) {rejected=true;}
+        expect(rejected,"Negative source contact threshold admitted");
+        thresholds.set_contact_report_threshold(monitored,0.0f);
+        thresholds.set_contact_report_threshold(unmonitored,30.0f);
+        thresholds.step(dt);
+        auto changes=thresholds.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].change==Change::Found &&
+               changes[0].normal_impulse>0.01 &&
+               changes[0].threshold==0.0f,
+               "Source force-threshold found stream missing/incorrect");
+        const double first_impulse=changes[0].normal_impulse;
+        thresholds.advance_collision(true);
+        expect(thresholds.force_threshold_changes().empty(),
+               "Unsolved Gu collision exposed stale threshold change stream");
+        thresholds.step(dt);
+        changes=thresholds.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Persists &&
+               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].normal_impulse==first_impulse,
+               "Source threshold persistence lost across collision-only query");
+        thresholds.set_contact_report_threshold(monitored,
+            std::numeric_limits<float>::max());
+        thresholds.step(dt);
+        changes=thresholds.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Lost &&
+               changes[0].pair==fyzz::native::Pair{ground,monitored} &&
+               changes[0].normal_impulse==0.0,
+               "Disabling source threshold omitted lost-force report");
+        thresholds.step(dt);
+        expect(thresholds.force_threshold_changes().empty(),
+               "Lost threshold was repeated after source state retirement");
+        thresholds.set_contact_report_threshold(monitored,0.0f);
+        thresholds.step(dt);
+        changes=thresholds.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Found,
+               "Re-enabling threshold did not generate a new found report");
+        thresholds.set_position(monitored,{0,5,0});
+        thresholds.step(dt);
+        changes=thresholds.force_threshold_changes();
+        expect(changes.size()==1 &&
+               changes[0].change==Change::Lost,
+               "Loss of contact failed to retire exceeded-force pair");
+    }
+
     // End-to-end native CPU execution, without a reference PxScene.
     {
         Scene falling_scene;
