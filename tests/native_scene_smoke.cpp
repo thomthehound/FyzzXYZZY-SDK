@@ -83,6 +83,45 @@ int run_native_scene_smoke() {
     expect(scene.frame_index() == 8, "scene frame counter drift");
 
 
+    // An unforced quiet geometry publication has no throwing work and
+    // must not checkpoint the complete edge/island state. It still
+    // advances the publication frame, clears transient previous-step
+    // results/events, and retains the original contact manager identity.
+    {
+        Scene quiet;
+        const auto floor=quiet.add_static_floor(0.0f);
+        const auto box=quiet.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        quiet.step(1.0f/120.0f);
+        const fyzz::native::Pair pair{floor,box};
+        const auto handle=quiet.contact_edge_index(pair);
+        const auto revision=quiet.island_topology_revision();
+        const auto rebuilds=quiet.island_full_rebuild_count();
+        const auto start=quiet.frame_index();
+        expect(!quiet.solved_normal_impulses().empty() &&
+               handle!=std::numeric_limits<std::uint32_t>::max(),
+               "Quiet collision fixture has no prior solved contact");
+        for(int i=0;i<4;++i) {
+            quiet.advance_collision();
+            expect(quiet.frame_index()==start+static_cast<std::uint64_t>(i+1) &&
+                   quiet.found_pairs().empty() && quiet.lost_pairs().empty() &&
+                   quiet.found_contacts().empty() && quiet.lost_contacts().empty() &&
+                   quiet.solved_normal_impulses().empty() &&
+                   quiet.solved_friction_patches().empty() &&
+                   quiet.force_threshold_changes().empty() &&
+                   quiet.contact_edge_index(pair)==handle &&
+                   quiet.contact_edge_connected(pair) &&
+                   quiet.island_topology_revision()==revision &&
+                   quiet.island_full_rebuild_count()==rebuilds,
+                   "Quiet collision publication changed contact or island state");
+        }
+        quiet.advance_collision(true);
+        expect(quiet.frame_index()==start+5 &&
+               quiet.contact_edge_index(pair)==handle &&
+               quiet.island_topology_revision()==revision,
+               "Forced collision refresh lost persistent contact edge identity");
+    }
+
     // SimpleIslandManager::addContactManager obtains an EdgeIndex once
     // per SAP candidate; setEdgeDisconnected does not retire it on Gu
     // touch loss. removeConnection defers release until the joined
