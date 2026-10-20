@@ -48,22 +48,6 @@ struct FrictionPatchWriteback {
     std::array<FrictionImpulse,2> anchor_impulses{};
     bool broken=false;
 };
-// PxsMaterialCore.h / PxsMaterialCombiner.h, noncompliant rigid
-// contact material subset. One material is owned by each current shape;
-// no shadow material registry is introduced. Compliant springs have a
-// different solver branch and are not yet admitted.
-enum class MaterialCombineMode : std::uint8_t {
-    Average=0, Minimum=1, Multiply=2, Maximum=3
-};
-struct Material {
-    float static_friction=0.5f;
-    float dynamic_friction=0.5f;
-    float restitution=0.2f;
-    MaterialCombineMode friction_combine=MaterialCombineMode::Average;
-    MaterialCombineMode restitution_combine=MaterialCombineMode::Average;
-    bool disable_friction=false;
-    bool disable_strong_friction=false;
-};
 // DyThresholdTable / DyDynamics::PxsForceThresholdTask. One authored
 // shape per actor in the current native scene, so the shape interaction
 // identity is the canonical BodyId pair. The source's island node index
