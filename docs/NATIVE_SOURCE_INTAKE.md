@@ -537,6 +537,25 @@ insertion and a complete lost-edge rebuild through scene-owned
 instrumentation. They execute through the production `NativeCpu`
 path in source-free Vulkan and D3D12 builds.
 
+**Original source phase boundary (still required):**
+`PxsSimpleIslandManager::firstPassIslandGen` processes speculative
+new/lost edges with `processLostEdges(..., false, false, ...)`; the
+accurate graph's `secondPassIslandGenPart2` also processes losses
+without deactivation. The source's split/dirty-route repair is gated
+by `allowDeactivation` inside `IslandSim::processLostEdges`, and is
+scheduled through the speculative and accurate third-pass tasks.
+`ScPipeline::destroyManagers` launches
+`thirdPassIslandGen` with a common post-third-pass continuation;
+`postThirdPassIslandGen` and `afterIntegration` coordinate
+sleep/deactivation and publication. The native scene currently
+reconciles its all-awake components at the collision publication
+boundary, **earlier than the source third-pass split**, and only
+proves connected-component membership at that boundary.
+The route witness is therefore not full source phase/handle parity.
+N1 acceptance must move actual edge retirement and dirty-route
+processing to the correct continuation dependency, without a
+parallel island scheduler or an invented sleep system.
+
 **Unported source responsibilities:** stable `PxNodeIndex` and edge
 handle generations, speculative/accurate activation flags, sleep/wake,
 first/second/third-pass task joins, delayed lost-edge retirement,
