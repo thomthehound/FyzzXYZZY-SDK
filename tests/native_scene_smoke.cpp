@@ -848,6 +848,123 @@ int run_native_scene_smoke() {
                "Source friction writeback did not republish after collision query");
     }
 
+    // A failing Dy step must not publish its unconstrained velocities,
+    // consume pending torque, advance topology/frame history, or replace
+    // contact/force/threshold reports. Retrying with a valid material must
+    // reproduce an identical scene which never attempted the failed step.
+    // Material coefficients are individually finite at authoring, while
+    // the source MULTIPLY combination can still overflow at contact prep.
+    {
+        constexpr float dt=1.0f/120.0f;
+        Scene failed, clean;
+        auto construct=[](Scene& scene) {
+            const auto floor=scene.add_static_floor(0.0f);
+            const auto box=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            scene.set_contact_report_threshold(box,0.1f);
+            scene.step(1.0f/120.0f);
+            scene.apply_torque_impulse(box,{0,0,0.1f});
+            return std::pair{floor,box};
+        };
+        const auto [bad_floor,bad_box]=construct(failed);
+        const auto [good_floor,good_box]=construct(clean);
+        const auto prior=failed.body_state(bad_box);
+        const auto frame=failed.frame_index();
+        const auto topology=failed.island_topology_revision();
+        const auto count=failed.accurate_island_count();
+        const auto partitions=failed.solver_partition_count();
+        const std::vector<double> forces(
+            failed.solved_normal_impulses().begin(),
+            failed.solved_normal_impulses().end());
+        const auto prior_manifolds=failed.contacts();
+        expect(prior_manifolds.size()==1 &&
+               prior_manifolds[0].count==4,
+               "Step failure fixture has no authoritative prior contacts");
+        const auto first_contact=prior_manifolds[0].points[0];
+        const std::vector<fyzz::native::ForceThresholdReport> threshold(
+            failed.force_threshold_changes().begin(),
+            failed.force_threshold_changes().end());
+        const auto original_pair=prior_manifolds[0].pair;
+        auto exploding=fyzz::Material{};
+        exploding.static_friction=1.0e30f;
+        exploding.dynamic_friction=1.0e30f;
+        exploding.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        failed.set_material(bad_floor,exploding);
+        failed.set_material(bad_box,exploding);
+        for (int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;
+            try {failed.step(dt);}
+            catch(const std::overflow_error&) {rejected=true;}
+            expect(rejected,
+                   "Combined material overflow did not fail source preparation");
+            const auto after=failed.body_state(bad_box);
+            const auto same_vec=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                return a.x==b.x && a.y==b.y && a.z==b.z;
+            };
+            const auto same_quat=[](fyzz::Quat a,fyzz::Quat b) {
+                return a.x==b.x && a.y==b.y &&
+                       a.z==b.z && a.w==b.w;
+            };
+            expect(same_vec(after.position,prior.position) &&
+                   same_vec(after.velocity,prior.velocity) &&
+                   same_quat(after.orientation,prior.orientation) &&
+                   same_vec(after.angular_velocity,prior.angular_velocity) &&
+                   failed.frame_index()==frame &&
+                   failed.island_topology_revision()==topology &&
+                   failed.accurate_island_count()==count &&
+                   failed.solver_partition_count()==partitions,
+                   "Rejected Dy step published partial body or scene state");
+            const auto current=failed.contacts();
+            expect(current.size()==1 &&
+                   current[0].pair==original_pair &&
+                   current[0].count==4 &&
+                   same_vec(current[0].points[0].position,
+                            first_contact.position) &&
+                   same_vec(current[0].points[0].normal,
+                            first_contact.normal) &&
+                   current[0].points[0].separation==first_contact.separation,
+                   "Rejected step invalidated previous authoritative Gu contacts");
+            const auto reported=failed.solved_normal_impulses();
+            expect(reported.size()==forces.size() &&
+                   std::equal(reported.begin(),reported.end(),forces.begin()),
+                   "Rejected step changed previous published force writeback");
+            const auto changes=failed.force_threshold_changes();
+            expect(changes.size()==threshold.size(),
+                   "Rejected step changed previous force-threshold events");
+            for(std::size_t i=0;i<changes.size();++i)
+                expect(changes[i].key==threshold[i].key &&
+                       changes[i].normal_impulse==threshold[i].normal_impulse &&
+                       changes[i].change==threshold[i].change,
+                       "Rejected step modified previous threshold payload");
+        }
+        const fyzz::Material ordinary{};
+        failed.set_material(bad_floor,ordinary);
+        failed.set_material(bad_box,ordinary);
+        clean.set_material(good_floor,ordinary);
+        clean.set_material(good_box,ordinary);
+        failed.step(dt);
+        clean.step(dt);
+        const auto a=failed.body_state(bad_box);
+        const auto b=clean.body_state(good_box);
+        const auto near=[](float x,float y) {
+            return std::abs(x-y)<2.0e-5f;
+        };
+        expect(near(a.position.x,b.position.x) &&
+               near(a.position.y,b.position.y) &&
+               near(a.position.z,b.position.z) &&
+               near(a.velocity.x,b.velocity.x) &&
+               near(a.velocity.y,b.velocity.y) &&
+               near(a.velocity.z,b.velocity.z) &&
+               near(a.orientation.x,b.orientation.x) &&
+               near(a.orientation.y,b.orientation.y) &&
+               near(a.orientation.z,b.orientation.z) &&
+               near(a.orientation.w,b.orientation.w) &&
+               near(a.angular_velocity.z,b.angular_velocity.z) &&
+               std::abs(a.angular_velocity.z)>1.0e-4f &&
+               failed.frame_index()==clean.frame_index(),
+               "Failed step consumed an impulse or contaminated retry");
+    }
+
     // Authored pose edits invalidate the affected Dy friction cache.
     // A tangent-only teleport leaves old anchor separation projected
     // along the normal at zero, so Dy pointsAreClose alone cannot reject
