@@ -1119,6 +1119,10 @@ int run_native_scene_smoke() {
             failed.force_threshold_changes().begin(),
             failed.force_threshold_changes().end());
         const auto original_pair=prior_manifolds[0].pair;
+        const auto original_edge=failed.contact_edge_index(original_pair);
+        expect(original_edge!=std::numeric_limits<std::uint32_t>::max() &&
+               failed.contact_edge_connected(original_pair),
+               "Step rollback fixture did not establish an accurate edge");
         auto exploding=fyzz::Material{};
         exploding.static_friction=1.0e30f;
         exploding.dynamic_friction=1.0e30f;
@@ -1146,8 +1150,11 @@ int run_native_scene_smoke() {
                    failed.frame_index()==frame &&
                    failed.island_topology_revision()==topology &&
                    failed.accurate_island_count()==count &&
-                   failed.solver_partition_count()==partitions,
-                   "Rejected Dy step published partial body or scene state");
+                   failed.solver_partition_count()==partitions &&
+                   failed.contact_edge_index(original_pair)==original_edge &&
+                   failed.contact_edge_connected(original_pair) &&
+                   failed.active_contact_edge_count()==1,
+                   "Rejected Dy step published partial body or edge state");
             const auto current=failed.contacts();
             expect(current.size()==1 &&
                    current.data()==manifold_memory &&
@@ -1202,8 +1209,9 @@ int run_native_scene_smoke() {
                near(a.orientation.w,b.orientation.w) &&
                near(a.angular_velocity.z,b.angular_velocity.z) &&
                std::abs(a.angular_velocity.z)>1.0e-4f &&
-               failed.frame_index()==clean.frame_index(),
-               "Failed step consumed an impulse or contaminated retry");
+               failed.frame_index()==clean.frame_index() &&
+               failed.contact_edge_index(original_pair)==original_edge,
+               "Failed step consumed an impulse or changed edge identity");
     }
 
     // Late integration failures also must not expose earlier body updates.
