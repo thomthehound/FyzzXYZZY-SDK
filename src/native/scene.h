@@ -405,8 +405,9 @@ private:
     // speculative and accurate IslandSim connectivity. Pair and contact
     // streams remain the unique authoritative graph edges. These reusable
     // union/find work arrays are a topology-change lowering of the source
-    // graph's connected components; they do NOT implement source node
-    // activation, incremental lost-edge repair, or sleeping.
+    // graph's connected components. Bounded lost-edge route repair is
+    // active; source node activation, stable island handles and sleeping
+    // are not yet implemented.
     std::vector<BodyId> speculative_island_parent_;
     std::vector<BodyId> accurate_island_parent_;
     std::vector<std::uint8_t> speculative_island_rank_;
