@@ -411,6 +411,7 @@ void Scene::publish_pairs() {
                         pending_pairs_.begin(), pending_pairs_.end(),
                         std::back_inserter(lost_));
     previous_pairs_.swap(pending_pairs_);
+    ++pair_epoch_;
 }
 void Scene::update_contacts() {
     // The source's default contact offsets are currently 0.02m per shape.
@@ -547,6 +548,7 @@ void Scene::update_contacts() {
             manifold.count);
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
+    ++contact_epoch_;
 }
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
 // speculative edges come from the scene's published SAP candidates,
@@ -1642,14 +1644,11 @@ void Scene::StepCheckpoint::capture(const Scene& scene) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     actors.assign(scene.actors_.begin(),scene.actors_.end());
-    previous_pairs.assign(scene.previous_pairs_.begin(),scene.previous_pairs_.end());
-    found.assign(scene.found_.begin(),scene.found_.end());
+     found.assign(scene.found_.begin(),scene.found_.end());
     lost.assign(scene.lost_.begin(),scene.lost_.end());
     found_contacts.assign(scene.found_contacts_.begin(),scene.found_contacts_.end());
     lost_contacts.assign(scene.lost_contacts_.begin(),scene.lost_contacts_.end());
-    manifolds.assign(scene.manifolds_.begin(),scene.manifolds_.end());
-    contact_points.assign(scene.contact_points_.begin(),scene.contact_points_.end());
-    friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
+     friction_patches.assign(scene.friction_patches_.begin(),scene.friction_patches_.end());
     normal_impulses.assign(scene.normal_impulse_writeback_.begin(),
                            scene.normal_impulse_writeback_.end());
     friction_impulses.assign(scene.friction_impulse_writeback_.begin(),
@@ -1675,6 +1674,8 @@ void Scene::StepCheckpoint::capture(const Scene& scene) {
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
     frame_index=scene.frame_index_;
+    pair_epoch=scene.pair_epoch_;
+    contact_epoch=scene.contact_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
 }
@@ -1684,14 +1685,21 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
     scene.actors_.swap(actors);
-    scene.previous_pairs_.swap(previous_pairs);
+    // Swap back the exact original arena allocations. This preserves the
+    // lifetime of contact spans returned before the unsuccessful step.
+    if(scene.pair_epoch_!=pair_epoch)
+        scene.previous_pairs_.swap(scene.pending_pairs_);
+    scene.pair_epoch_=pair_epoch;
+    if(scene.contact_epoch_!=contact_epoch) {
+        scene.manifolds_.swap(scene.next_manifolds_);
+        scene.contact_points_.swap(scene.next_contact_points_);
+    }
+    scene.contact_epoch_=contact_epoch;
     scene.found_.swap(found);
     scene.lost_.swap(lost);
     scene.found_contacts_.swap(found_contacts);
     scene.lost_contacts_.swap(lost_contacts);
-    scene.manifolds_.swap(manifolds);
-    scene.contact_points_.swap(contact_points);
-    scene.friction_patches_.swap(friction_patches);
+     scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
     scene.threshold_previous_.swap(threshold_previous);
@@ -1709,13 +1717,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.frame_index_=frame_index;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
-    // ContactManifold carries a span into its owning contact-point arena.
-    // Snapshotting a manifold copies the span, not its backing storage.
-    // Rebind to the restored arena before any observer or retry can read it.
-    for (auto& m : scene.manifolds_)
-        m.points=std::span<const ContactPoint>(
-            scene.contact_points_.data()+m.contact_offset,m.count);
-}
+ }
 
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
