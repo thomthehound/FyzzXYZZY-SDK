@@ -137,6 +137,9 @@ public:
     bool body_ready_for_sleep(BodyId id) const {
         return require(id).ready_for_sleep;
     }
+    bool body_is_sleeping(BodyId id) const {
+        return require(id).sleeping;
+    }
 
     // One scene-owned collision progression: update bounds -> SAP ->
     // overlap publication -> source Gu narrowphase -> contact publication.
@@ -290,6 +293,7 @@ private:
         float wake_counter=0.4f;
         Vec3 sleep_linear_acc{}, sleep_angular_acc{};
         bool ready_for_sleep=false;
+        bool sleeping=false;
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
@@ -533,6 +537,7 @@ private:
             float wake_counter=0.4f;
             Vec3 sleep_linear_acc{}, sleep_angular_acc{};
             bool ready_for_sleep=false;
+            bool sleeping=false;
         };
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
