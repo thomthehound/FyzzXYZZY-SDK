@@ -30,6 +30,9 @@ enum class ExecutionMode : std::uint8_t {
     ReferencePhysXCpu,
     NativeCpu,
     NativePortableGpu,
+    // Independent PhysX PGS reference with the source legacy Gu contact
+    // generator selected explicitly, rather than default PCM.
+    ReferencePhysXCpuLegacyGu,
 };
 
 struct WorldOptions {

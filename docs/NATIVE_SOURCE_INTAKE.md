@@ -46,6 +46,15 @@ by the source-derived GPU/AABB integration in
 | `lowleveldynamics/src/DySolverControl.cpp` | Position iterations, velocity iterations, special conclude/writeback pass, friction iteration policy and threshold streams | Preserve distinct solver passes, writeback timing and the no-contacts integration case |
 | `lowleveldynamics/src/DyTGSContactPrep.cpp`, `DyTGS.h` | Alternate TGS constraint preparation and step solver | **Separate later integration**. Do not claim TGS parity from a PGS port or quietly synthesize TGS behavior |
 
+**Contact-generator admission.** The current native box-box and plane-box
+paths translate original non-PCM `GuContactBoxBox` and `GuContactPlaneBox`.
+PhysX enables `PxSceneFlag::eENABLE_PCM` by default, selecting a different
+contact-generator family. `ExecutionMode::ReferencePhysXCpu` preserves
+that default; `ReferencePhysXCpuLegacyGu` explicitly selects the original
+non-PCM reference generator for like-for-like Gu/PGS conformance fixtures.
+Passing the latter does not establish default PCM contact/cache/point-selection
+parity. PCM support requires its own source translation and independent tests.
+
 These paths identify the **initial source intake surface**. They do **not**
 authorize compiling all of PhysX into the native SDK. Extract/translate
 needed code together with its genuine input, output, allocation and lifetime

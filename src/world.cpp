@@ -12,7 +12,7 @@ namespace fyzz {
 
 #if FYZZXYZZY_ENABLE_PHYSX_SOURCE
 // Implemented in the separately compiled reference/PhysX CPU target.
-std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend();
+std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(bool legacy_gu);
 #endif
 // Implemented by the SDK-owned native scene, with no reference PhysX dependency.
 std::unique_ptr<WorldBackend> create_native_cpu_backend();
@@ -36,8 +36,10 @@ void validate_position(Vec3 position) {
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     switch (options.execution) {
     case ExecutionMode::ReferencePhysXCpu:
+    case ExecutionMode::ReferencePhysXCpuLegacyGu:
 #if FYZZXYZZY_ENABLE_PHYSX_SOURCE
-        return create_reference_physx_cpu_backend();
+        return create_reference_physx_cpu_backend(
+            options.execution==ExecutionMode::ReferencePhysXCpuLegacyGu);
 #else
         throw std::logic_error(
             "Reference PhysX CPU backend was disabled at SDK build time; "

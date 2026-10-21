@@ -844,7 +844,7 @@ int main() {
                 fyzz::World native_join(fyzz::WorldOptions{
                     fyzz::ExecutionMode::NativeCpu});
                 fyzz::World reference_join(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
                 // The reference scene uses the same original PhysX
                 // non-PCM Gu generator as the native admitted subset.
                 // Retain default friction/restitution so this same-frame

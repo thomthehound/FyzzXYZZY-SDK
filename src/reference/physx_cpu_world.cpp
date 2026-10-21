@@ -83,7 +83,7 @@ struct PhysXCpuWorld final : WorldBackend {
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
 
-    void initialize() {
+    void initialize(bool legacy_gu) {
         runtime = acquire_runtime();
         physx::PxSceneDesc descriptor(runtime->physics->getTolerancesScale());
         descriptor.gravity = physx::PxVec3(0.0f, -9.81f, 0.0f);
@@ -93,11 +93,11 @@ struct PhysXCpuWorld final : WorldBackend {
         }
         descriptor.cpuDispatcher = dispatcher;
         descriptor.filterShader = physx::PxDefaultSimulationFilterShader;
-        // The admitted native GuContactBoxBox / GuContactPlaneBox path
-        // translates PhysX's legacy contact generation, not PCM. Match
-        // the actual upstream algorithm in this reference PGS oracle.
-        // PCM-enabled reference conformance is a separate admission gate.
-        descriptor.flags &= ~physx::PxSceneFlag::eENABLE_PCM;
+        // Keep stock PhysX PCM in ReferencePhysXCpu. The explicit Gu
+        // conformance mode selects original source contactBoxBox/PlaneBox
+        // rather than silently changing the default reference behavior.
+        if (legacy_gu)
+            descriptor.flags &= ~physx::PxSceneFlag::eENABLE_PCM;
         // The CPU execution mode is explicit. Do not ever request eGPU
         // here: pinned ScScene.cpp converts eGPU to CPU eABP when the
         // CUDA GPU factory is unavailable, making the request look valid.
@@ -138,9 +138,9 @@ struct PhysXCpuWorld final : WorldBackend {
 
     ~PhysXCpuWorld() override { cleanup(); }
 
-    PhysXCpuWorld() {
+    explicit PhysXCpuWorld(bool legacy_gu) {
         try {
-            initialize();
+            initialize(legacy_gu);
         } catch (...) {
             cleanup();
             throw;
@@ -293,8 +293,8 @@ struct PhysXCpuWorld final : WorldBackend {
 
 // The reference CPU engine is isolated from FyzzXYZZY's native World
 // implementation. This factory must not be used by the native GPU path.
-std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend() {
-    return std::make_unique<PhysXCpuWorld>();
+std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(bool legacy_gu) {
+    return std::make_unique<PhysXCpuWorld>(legacy_gu);
 }
 
 } // namespace fyzz
