@@ -266,7 +266,8 @@ struct PhysXCpuWorld final : WorldBackend {
                         : Vec3{0.0f, 0.0f, 0.0f},
                 logical_orientation,
                 dynamic ? from_physx(dynamic->getAngularVelocity())
-                        : Vec3{0.0f, 0.0f, 0.0f}};
+                        : Vec3{0.0f, 0.0f, 0.0f},
+                dynamic && dynamic->isSleeping()};
     }
 
     BodyId add(physx::PxRigidActor* actor) {
