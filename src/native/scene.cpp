@@ -936,6 +936,16 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!dynamic_found)return;
     }
 
+    // When node admission/retirement requires a rebuild, the intrusive
+    // edge lists already include this publication's found edges. Rebuild
+    // the surviving *previous* components first, excluding those new
+    // connections, then feed the found streams to merge() in source
+    // order. Each merge uses the size accumulated by earlier merges,
+    // just as IslandSim::processNewEdges/mergeIslands does. A third-pass
+    // split rebuild does not replay found edges: the first pass has
+    // already consumed them in the live island owner.
+    const bool replay_new_edges=island_topology_dirty_ && !repair_lost_edges;
+
     // A source island keeps its handle when its original root remains in
     // the surviving component. If a lost bridge splits one component,
     // only the new component needs a handle; unrelated live handles
@@ -954,6 +964,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         members.reserve(actors_.size());
         const auto& first=accurate?accurate_node_first_:
                                    speculative_node_first_;
+        const auto& new_edges=accurate?found_contacts_:found_;
+        const bool defer_new_edges=replay_new_edges && !new_edges.empty();
         std::uint32_t component_number=0;
         std::size_t islands=0;
         for(std::size_t index=0;index<actors_.size();++index) {
@@ -971,6 +983,14 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                                       edge.speculative)[i&1];
                     const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
                     i=link.next;
+                    // Source found edges belong to processNewEdges,
+                    // *after* old island identity and split ownership
+                    // are established. This lookup runs only on a
+                    // node-lifecycle rebuild, never a quiet publication.
+                    if(defer_new_edges &&
+                       std::binary_search(new_edges.begin(),
+                                          new_edges.end(),edge.pair))
+                        continue;
                     if(!dynamic_node(to) || component[to])continue;
                     component[to]=component_number;
                     members.push_back(to);
@@ -978,10 +998,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             }
             Graph::IslandId handle=Graph::invalid;
             // Retain an existing handle whose old root survives in
-            // this component. If this publication also merges formerly
-            // separate islands, preserve the largest old island's handle
-            // (IslandSim::mergeIslands), not the first encountered root.
-            // Equal-size candidates have a stable handle-order tie break.
+            // this component. On a lifecycle rebuild, found edges have
+            // not yet merged the old components; the *actual* source
+            // size-ordered merge below selects the eventual winner.
+            // In a third-pass split rebuild, retain the largest prior
+            // live root component when necessary.
             for(BodyId member:members) {
                 if(member>=graph.node_island.size())continue;
                 const auto prior=graph.node_island[member];
@@ -1086,6 +1107,21 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         ++island_full_rebuild_count_;
         speculative_island_count_=rebuild_graph(speculative_islands_,false);
         accurate_island_count_=rebuild_graph(accurate_islands_,true);
+        if(replay_new_edges) {
+            // These are the exact same source merge operations as the
+            // incremental path. In particular 2+2 then +3 must retain
+            // the four-node winner, not the original three-node ID.
+            for(Pair pair:found_)
+                if(merge(speculative_islands_,pair)) {
+                    --speculative_island_count_;
+                    merged_speculative=true;
+                }
+            for(Pair pair:found_contacts_)
+                if(merge(accurate_islands_,pair)) {
+                    --accurate_island_count_;
+                    merged_accurate=true;
+                }
+        }
         accurate_island_nodes_.clear();
         for(std::size_t i=0;i<actors_.size();++i)
             if(dynamic_node(static_cast<BodyId>(i)))
