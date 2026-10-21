@@ -836,9 +836,14 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             continue;
         }
 
-        // IslandSim::findRoute fallback, limited to the admitted awake
-        // rigid graph. A successful route provides new mFastRoute and
-        // mHopCounts estimates toward this component's existing root.
+        // IslandSim::findRoute falls back to a priority queue ordered
+        // by estimated hops to the root, rather than FIFO traversal.
+        // These estimates can be stale: the priority changes only search
+        // order, never reachability or the requirement for a live route.
+        // A successful route refreshes mFastRoute and mHopCounts hints.
+        const auto farther=[&](BodyId a,BodyId b) {
+            return hops[a]!=hops[b] ? hops[a]>hops[b] : a>b;
+        };
         if(++island_route_visit_stamp_==0) {
             std::fill(island_route_seen_.begin(),island_route_seen_.end(),0);
             island_route_visit_stamp_=1;
@@ -850,9 +855,14 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         island_route_predecessor_[node]=invalid;
         island_route_predecessor_edge_[node]=invalid_edge;
         bool found=false;
-        for(std::size_t cursor=0;
-            cursor<island_route_queue_.size() && !found;++cursor) {
-            const BodyId from=island_route_queue_[cursor];
+        // The reusable queue is a min-heap by estimated hop count.
+        // A deterministic BodyId tie-break avoids platform-dependent
+        // route choices when multiple estimates are equal.
+        while(!island_route_queue_.empty() && !found) {
+            const BodyId from=island_route_queue_.front();
+            std::pop_heap(island_route_queue_.begin(),
+                          island_route_queue_.end(),farther);
+            island_route_queue_.pop_back();
             for(std::size_t i=first[from];i!=invalid_instance;) {
                 const ContactEdge& edge=contact_edges_[i/2];
                 const auto& link=(accurate?edge.accurate:
@@ -870,6 +880,8 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                     static_cast<EdgeIndex>(i_edge);
                 if(to==root) {found=true;break;}
                 island_route_queue_.push_back(to);
+                std::push_heap(island_route_queue_.begin(),
+                               island_route_queue_.end(),farther);
             }
         }
         if(!found)return false;
