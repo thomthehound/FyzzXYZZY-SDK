@@ -2803,6 +2803,22 @@ int run_native_scene_smoke() {
                sleeping.body_wake_counter(id)==0.0f &&
                still.velocity.y==0.0f,
                "PhysX island did not deactivate a settled floor body");
+        // A failed later step must restore all existing sleep state,
+        // not just actor motion and topology. An independently admitted
+        // awake body forces a finite-input overflow before publication.
+        const auto awake=sleeping.add_dynamic_box(
+            {0.25f,0.25f,0.25f},{20,10,0},1.0f);
+        const auto before_failure=sleeping.body_state(awake);
+        bool failed=false;
+        try {sleeping.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        const auto after_failure=sleeping.body_state(awake);
+        expect(failed && sleeping.body_is_sleeping(id) &&
+               sleeping.body_wake_counter(id)==0.0f &&
+               sleeping.body_state(id).sleeping &&
+               after_failure.position.y==before_failure.position.y &&
+               sleeping.body_wake_counter(awake)==0.4f,
+               "Failed source step corrupted dormant island or wake counter");
         sleeping.set_velocity(id,{1,0,0});
         expect(!sleeping.body_is_sleeping(id) &&
                !sleeping.body_ready_for_sleep(id) &&
