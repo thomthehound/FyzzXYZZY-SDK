@@ -2840,6 +2840,41 @@ int run_native_scene_smoke() {
     }
 
     {
+        // PxsIslandSim::processLostEdges(third pass) consumes the *prior*
+        // frame's Dy::sleepCheck readiness. The frame in which the body
+        // first becomes ready is not allowed to deactivate it immediately.
+        // The next third pass then deactivates before gravity and PGS:
+        // that frame must not integrate one extra position increment.
+        Scene phase_boundary;
+        phase_boundary.add_static_floor(0.0f);
+        const auto sleeper=phase_boundary.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool saw_ready_before_sleep=false;
+        for(int frame=0;frame<600;++frame) {
+            phase_boundary.step(1.0f/120.0f);
+            if(phase_boundary.body_ready_for_sleep(sleeper)) {
+                expect(!phase_boundary.body_is_sleeping(sleeper),
+                       "New Dy sleep readiness deactivated during its own solver frame");
+                saw_ready_before_sleep=true;
+                const auto ready_pose=phase_boundary.body_state(sleeper);
+                phase_boundary.step(1.0f/120.0f);
+                const auto inactive=phase_boundary.body_state(sleeper);
+                expect(inactive.sleeping &&
+                       inactive.position.x==ready_pose.position.x &&
+                       inactive.position.y==ready_pose.position.y &&
+                       inactive.position.z==ready_pose.position.z &&
+                       inactive.velocity.x==0.0f &&
+                       inactive.velocity.y==0.0f &&
+                       inactive.velocity.z==0.0f,
+                       "Third-pass deactivation integrated an already-ready island");
+                break;
+            }
+        }
+        expect(saw_ready_before_sleep,
+               "Source third-pass fixture never produced Dy sleep readiness");
+    }
+
+    {
         // IslandSim::activateIslandInternal wakes connected rigid nodes,
         // not only the node explicitly edited by a user. A persistent
         // dynamic contact must admit both nodes together on reactivation.

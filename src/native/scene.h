@@ -403,10 +403,11 @@ private:
     void unlink_contact_edge(std::uint32_t id, bool accurate);
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
-    // connectivity repair. Original overlapping continuation tasks and
-    // deactivation remain unported; solver completion must join with
-    // their results before publishing the frame.
+    // repair. Source activation and whole-island deactivation consume
+    // already published readiness before this frame's solver begins.
+    // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
+    void deactivate_ready_islands() noexcept;
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
     void activate_published_islands() noexcept;

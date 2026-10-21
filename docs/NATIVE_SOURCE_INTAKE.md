@@ -693,10 +693,11 @@ frame in which `IslandSim::wakeIslands` activates them. This removes
 the earlier split wake sequence (old-island wake before gravity, new-touch
 wake after gravity) without a second actor or solver owner.
 
-The serial dependency chain is **contact publication → first/second
+The admitted serial dependency chain is **contact publication → first/second
 island connectivity → third-pass lost-edge repair → whole-island wake
-→ unconstrained velocities → solver preparation/PGS → integration and
-readiness → whole-island deactivation**. The third-pass-compatible
+→ third-pass deactivation from previously published readiness →
+unconstrained velocities → solver preparation/PGS → integration and
+readiness for the next third pass**. The third-pass-compatible
 repair can run before numerical PGS work; the original source permits
 speculative/accurate third-pass tasks to overlap the solver and join
 at post-third-pass. The admitted serial ordering is a valid
@@ -709,6 +710,18 @@ dropped by a later quiet query. The activation operation is no-throw
 and runs after collision-only checkpoint commit, preserving the
 existing low-cost geometry-only failure boundary. Full `step()`
 reuses the same operation before gravity, damping and Dy submission.
+
+The current synchronous CPU scene consumes prior-frame
+`Dy::sleepCheck` readiness at the third-pass boundary instead of putting a
+body to sleep in the same frame its PGS solve first marks it ready.
+`PxsIslandSim::processLostEdges(allowDeactivation)` owns the original
+per-island test, and `ScPipeline::afterIntegration` restores prior poses
+when solver and island tasks overlap. Serial CPU deactivation before PGS
+avoids the concurrent integration that requires restoration in the original
+schedule. A regression requires a visible ready-but-awake frame followed
+by an inactive frame with an unchanged pose. This does **not** implement
+the original activating/deactivating index arrays, callback lists,
+kinematic rules, or the parallel third-pass/post-integration join.
 
 **Persistent contact-manager EdgeIndex (admitted source subset):**
 `PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`

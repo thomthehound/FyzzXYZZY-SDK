@@ -1377,6 +1377,48 @@ void Scene::third_pass_island_gen() {
     speculative_dirty_nodes_.clear();
     accurate_dirty_nodes_.clear();
 }
+// PxsIslandSim.cpp::IslandSim::processLostEdges(allowDeactivation) tests
+// *previously published* Node::isReadyForSleeping flags in its third pass.
+// Dy::sleepCheck updates those flags only after the current solver step,
+// so a newly ready island cannot sleep until the next island pass.
+// The source may run the two tasks concurrently and then repair a body
+// integrated after deactivation in Sc::Scene::afterIntegration. Our serial
+// CPU lowering establishes the same observable dependency by deactivating
+// before the solver: no concurrently integrated pose needs restoration.
+// Both accurate and speculative contact graphs retain their existing
+// persistent handles and node membership while bodies are inactive.
+void Scene::deactivate_ready_islands() noexcept {
+    constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
+    for(const auto& island:speculative_islands_.islands) {
+        if(!island.live)continue;
+        bool ready=true;
+        bool has_active_node=false;
+        for(BodyId node=island.root;node!=invalid;
+            node=speculative_islands_.node_next[node]) {
+            const Actor& actor=actors_[node];
+            if(!actor.ready_for_sleep) {
+                ready=false;
+                break;
+            }
+            has_active_node |= !actor.sleeping;
+        }
+        if(!ready || !has_active_node)continue;
+        for(BodyId node=island.root;node!=invalid;
+            node=speculative_islands_.node_next[node]) {
+            Actor& actor=actors_[node];
+            if(actor.sleeping)continue;
+            // ScBodySim::deactivate clears velocities and pending motion.
+            // The surviving Gu contact managers are not retired here.
+            actor.sleeping=true;
+            actor.wake_counter=0.0f;
+            actor.velocity={};
+            actor.angular_velocity={};
+            actor.pending_angular_velocity_delta={};
+            actor.sleep_linear_acc={};
+            actor.sleep_angular_acc={};
+        }
+    }
+}
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
 //   DyConstraintPartition: ordered rigid-body contact manager batches
@@ -2657,6 +2699,9 @@ void Scene::step(float seconds) {
     advance_collision_internal(false);
     third_pass_island_gen();
     activate_published_islands();
+    // Source third pass tests readiness from the prior Dy sleepCheck,
+    // before this frame's unconstrained velocity/PGS processing.
+    deactivate_ready_islands();
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox ||
             actor.sleeping) continue;
@@ -2844,36 +2889,9 @@ void Scene::step(float seconds) {
             dirty_ = true;
         }
     }
-    // Dy::sleepCheck produces per-body readiness after PGS integration.
-    // PxsIslandSim::deactivateIsland may deactivate only whole connected
-    // islands, never one member of a still-active contact group. The
-    // speculative graph is the conservative source candidate; its
-    // deactivation must be admissible by the accurate graph as well.
-    for(const auto& island:speculative_islands_.islands) {
-        if(!island.live)continue;
-        bool ready=true;
-        for(BodyId node=island.root;
-            node!=std::numeric_limits<BodyId>::max();
-            node=speculative_islands_.node_next[node]) {
-            if(!actors_[node].ready_for_sleep) {ready=false;break;}
-        }
-        if(!ready)continue;
-        for(BodyId node=island.root;
-            node!=std::numeric_limits<BodyId>::max();
-            node=speculative_islands_.node_next[node]) {
-            Actor& actor=actors_[node];
-            if(actor.sleeping)continue;
-            // ScBodySim::deactivate zeroes velocities and pending forces,
-            // while the island owner keeps all existing contact links.
-            actor.sleeping=true;
-            actor.wake_counter=0.0f;
-            actor.velocity={};
-            actor.angular_velocity={};
-            actor.pending_angular_velocity_delta={};
-            actor.sleep_linear_acc={};
-            actor.sleep_angular_acc={};
-        }
-    }
+    // Dy::sleepCheck has only published readiness. The next source
+    // third pass decides whether entire islands may deactivate; applying
+    // that decision here would incorrectly consume this frame's flags.
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     } catch (...) {
@@ -2906,10 +2924,11 @@ void Scene::advance_collision(bool force_update) {
         step_checkpoint_.rollback(*this);
         throw;
     }
-    // Activation consists only of no-throw writes to existing native
-    // actors, after the collision transaction has successfully committed.
+    // Activation and third-pass deactivation only mutate existing
+    // actors after the collision transaction has successfully committed.
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activate_published_islands();
+    deactivate_ready_islands();
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
