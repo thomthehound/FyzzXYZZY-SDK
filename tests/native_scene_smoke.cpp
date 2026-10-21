@@ -2801,8 +2801,12 @@ int run_native_scene_smoke() {
                sleeping.body_ready_for_sleep(id) &&
                still.sleeping &&
                sleeping.body_wake_counter(id)==0.0f &&
-               still.velocity.y==0.0f,
+               still.velocity.y==0.0f &&
+               sleeping.solver_partition_count()==0,
                "PhysX island did not deactivate a settled floor body");
+        for(double impulse:sleeping.solved_normal_impulses())
+            expect(impulse==0.0,
+                   "Sleeping contact manager emitted an active solver impulse");
         // A failed later step must restore all existing sleep state,
         // not just actor motion and topology. An independently admitted
         // awake body forces a finite-input overflow before publication.
