@@ -541,6 +541,42 @@ int run_native_scene_smoke() {
                    "Source node retirement invalidated a live island handle");
         }
 
+        // Actor admission may coincide with a merge of two existing
+        // islands. Source mergeIslands retains the *larger* island handle
+        // even if the smaller island owns the lower BodyId and appears
+        // first in the full component rebuild's traversal.
+        {
+            Scene concurrent;
+            const auto singleton=concurrent.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,36,0},1.0f);
+            const auto large_root=concurrent.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{4,36,0},1.0f);
+            const auto large_member=concurrent.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{4.4f,36,0},1.0f);
+            concurrent.advance_collision();
+            const auto accurate_large=concurrent.accurate_island_id(large_root);
+            const auto speculative_large=
+                concurrent.speculative_island_id(large_root);
+            expect(concurrent.accurate_island_count()==2 &&
+                   concurrent.speculative_island_count()==2 &&
+                   concurrent.accurate_island_id(singleton)!=accurate_large &&
+                   concurrent.accurate_island_id(large_member)==accurate_large,
+                   "Rebuild merge fixture did not begin with unequal islands");
+            const auto unrelated=concurrent.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{30,36,0},1.0f);
+            concurrent.set_position(singleton,{3.4f,36,0});
+            concurrent.advance_collision();
+            expect(concurrent.accurate_island_count()==2 &&
+                   concurrent.speculative_island_count()==2 &&
+                   concurrent.accurate_island_id(singleton)==accurate_large &&
+                   concurrent.accurate_island_id(large_root)==accurate_large &&
+                   concurrent.accurate_island_id(large_member)==accurate_large &&
+                   concurrent.speculative_island_id(singleton)==speculative_large &&
+                   concurrent.speculative_island_id(large_member)==speculative_large &&
+                   concurrent.accurate_island_id(unrelated)!=accurate_large,
+                   "Rebuild-time merge discarded the larger source island handle");
+        }
+
         // A failed step must restore pre-existing source route hints,
         // not merely topology and diagnostics. Prime both IslandSim
         // caches with a redundant chord removal, reinsert the chords,
