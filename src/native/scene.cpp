@@ -2586,6 +2586,13 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
     scene.threshold_changes_.swap(threshold_changes);
+    if(capture_solver_state) {
+        // The previous active batch view is observable through the
+        // source island instrumentation, so rejected solves restore it.
+        // Keep both buffers for allocation reuse rather than copying it.
+        scene.active_accurate_island_batches_.swap(active_accurate_batches);
+        scene.active_accurate_island_batches_.clear();
+    }
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
@@ -2715,6 +2722,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
     scene.accurate_island_nodes_.swap(accurate_nodes);
     scene.accurate_island_offsets_.swap(accurate_offsets);
+    if(includes_solver_state)
+        scene.active_accurate_island_batches_.swap(active_accurate_batches);
     scene.speculative_island_count_=speculative_count;
     scene.accurate_island_count_=accurate_count;
     scene.island_topology_revision_=topology_revision;

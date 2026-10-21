@@ -600,6 +600,9 @@ private:
         IslandGraph speculative_islands, accurate_islands;
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
+        // Swap-only checkpoint for the transient active Dy batch view:
+        // no O(active islands) per-frame copying or undo allocation.
+        std::vector<std::size_t> active_accurate_batches;
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;

@@ -3013,6 +3013,33 @@ int run_native_scene_smoke() {
     }
 
     {
+        // A rejected Dy step rebuilds the active accurate island view
+        // after source wake/deactivation. The previous published active
+        // batch count must survive rollback without copying the list.
+        Scene active_rollback;
+        active_rollback.add_static_floor(0.0f);
+        const auto sleeper=active_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int i=0;i<360;++i)active_rollback.step(1.0f/120.0f);
+        expect(active_rollback.active_accurate_island_count()==0 &&
+               active_rollback.body_is_sleeping(sleeper),
+               "Active-batch rollback fixture did not become dormant");
+        active_rollback.set_velocity(sleeper,{1,0,0});
+        // Prior published active view remains empty until the next
+        // simulation publication, despite the authored actor wake.
+        bool rejected=false;
+        try {active_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               active_rollback.active_accurate_island_count()==0 &&
+               !active_rollback.body_is_sleeping(sleeper),
+               "Rejected Dy frame replaced the last active-island view");
+        active_rollback.step(1.0f/120.0f);
+        expect(active_rollback.active_accurate_island_count()==1,
+               "Active-island retry did not republish the source batch");
+    }
+
+    {
         // IslandSim::activateNode clears an already-awake node's ready
         // flag when a new contact wakes its island. A body that just
         // reached readiness must still resolve the newly added static
