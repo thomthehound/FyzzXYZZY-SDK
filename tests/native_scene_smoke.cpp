@@ -500,12 +500,18 @@ int run_native_scene_smoke() {
                 scene->advance_collision();
                 expect(scene->island_dirty_route_check_count()==6 &&
                        scene->island_fast_route_hit_count()==0 &&
-                       scene->accurate_island_count()==1,
+                       scene->accurate_island_count()==2 &&
+                       scene->speculative_island_count()==2,
                        "Fast-route rollback fixture did not prime both graphs");
                 scene->set_position(tip,{0.6f,22,0});
                 scene->advance_collision();
-                expect(scene->pairs().size()==7 &&
-                       scene->contacts().size()==7,
+                // Six box/box candidates plus the source plane's
+                // five dynamic-body candidates; only the load touches
+                // that plane, giving seven physical contact managers.
+                expect(scene->pairs().size()==11 &&
+                       scene->contacts().size()==7 &&
+                       scene->accurate_island_count()==2 &&
+                       scene->speculative_island_count()==2,
                        "Fast-route rollback fixture did not restore redundant chords");
                 scene->set_position(tip,{1.3f,22,0});
             }
