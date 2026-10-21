@@ -196,6 +196,16 @@ public:
     std::size_t accurate_island_count() const noexcept {
         return accurate_island_count_;
     }
+    // Source IslandSim persistent handle, independently owned by each
+    // graph. Static/retired actors have no island.
+    std::uint32_t speculative_island_id(BodyId id) const noexcept {
+        return id<speculative_islands_.node_island.size()
+            ? speculative_islands_.node_island[id] : IslandGraph::invalid;
+    }
+    std::uint32_t accurate_island_id(BodyId id) const noexcept {
+        return id<accurate_islands_.node_island.size()
+            ? accurate_islands_.node_island[id] : IslandGraph::invalid;
+    }
     std::uint64_t island_topology_revision() const noexcept {
         return island_topology_revision_;
     }
@@ -401,17 +411,27 @@ private:
     // Per-node intrusive adjacency heads for the two original IslandSim
     // graphs. Static world endpoints never become dynamic island nodes.
     std::vector<std::size_t> speculative_node_first_, accurate_node_first_;
-    // The admitted all-awake rigid subset of PxsSimpleIslandManager's
-    // speculative and accurate IslandSim connectivity. Pair and contact
-    // streams remain the unique authoritative graph edges. These reusable
-    // union/find work arrays are a topology-change lowering of the source
-    // graph's connected components. Bounded lost-edge route repair is
-    // active; source node activation, stable island handles and sleeping
-    // are not yet implemented.
-    std::vector<BodyId> speculative_island_parent_;
-    std::vector<BodyId> accurate_island_parent_;
-    std::vector<std::uint8_t> speculative_island_rank_;
-    std::vector<std::uint8_t> accurate_island_rank_;
+    // PxsIslandSim::IslandSim owns persistent island handles, a per-node
+    // island ID and intrusive island-node membership. This *replaces*
+    // the provisional union/find roots/ranks; the contact-manager graph
+    // above remains the sole authoritative source for connectivity.
+    // Every dynamic rigid node belongs to exactly one live island in
+    // each speculative/accurate graph, including isolated nodes.
+    struct IslandGraph {
+        using IslandId=std::uint32_t;
+        static constexpr IslandId invalid=std::numeric_limits<IslandId>::max();
+        struct Island {
+            BodyId root=std::numeric_limits<BodyId>::max();
+            BodyId tail=std::numeric_limits<BodyId>::max();
+            std::size_t count=0;
+            bool live=false;
+        };
+        std::vector<Island> islands;
+        std::vector<IslandId> node_island;
+        std::vector<BodyId> node_next, node_prev;
+        std::vector<IslandId> free_handles;
+    };
+    IslandGraph speculative_islands_, accurate_islands_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
     // active-island node sequence. These are existing actor identifiers,
     // not a duplicated actor or solver-body registry.
@@ -513,8 +533,7 @@ private:
         std::vector<ThresholdPair> threshold_previous;
         std::vector<ForceThresholdReport> threshold_changes;
         std::vector<std::size_t> partition_ends;
-        std::vector<BodyId> speculative_parent, accurate_parent;
-        std::vector<std::uint8_t> speculative_rank, accurate_rank;
+        IslandGraph speculative_islands, accurate_islands;
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
         std::size_t speculative_count=0, accurate_count=0;
