@@ -458,7 +458,7 @@ int run_native_scene_smoke() {
                dirty_routes.speculative_island_count()==1 &&
                dirty_routes.island_full_rebuild_count()==before_rebuild &&
                dirty_routes.island_dirty_route_check_count()==checks_before_retry+6 &&
-               dirty_routes.island_fast_route_hit_count()>=fast_before_retry+2,
+               dirty_routes.island_fast_route_hit_count()==fast_before_retry+4,
                "Redundant chord readdition discarded valid source fast routes");
 
         // Retiring the last surviving tip edge is a real split.
@@ -468,6 +468,71 @@ int run_native_scene_smoke() {
                dirty_routes.speculative_island_count()==2 &&
                dirty_routes.island_full_rebuild_count()==before_rebuild+1,
                "Dirty fast route falsely preserved a disconnected island");
+
+        // A failed step must not commit source route diagnostics. Here
+        // two redundant dynamic edges disappear before a different
+        // contact manager fails in material preparation. A retry must
+        // count precisely one successful publication's repair work.
+        {
+            auto populate=[](Scene& scene) {
+                scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.0f,22,0},1.0f);
+                scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.2f,22,0},1.0f);
+                scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.4f,22,0},1.0f);
+                const auto tip=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.6f,22,0},1.0f);
+                const auto floor=scene.add_static_floor(0);
+                const auto load=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+                scene.advance_collision();
+                return std::tuple{tip,floor,load};
+            };
+            Scene rejected, clean;
+            const auto [rt,rf,rl]=populate(rejected);
+            const auto [ct,cf,cl]=populate(clean);
+            const auto checks=rejected.island_dirty_route_check_count();
+            const auto hits=rejected.island_fast_route_hit_count();
+            const auto revision=rejected.island_topology_revision();
+            const auto frame=rejected.frame_index();
+            rejected.set_position(rt,{1.3f,22,0});
+            clean.set_position(ct,{1.3f,22,0});
+            auto overflowing=fyzz::Material{};
+            overflowing.static_friction=1.0e30f;
+            overflowing.dynamic_friction=1.0e30f;
+            overflowing.friction_combine=fyzz::MaterialCombineMode::Multiply;
+            rejected.set_material(rf,overflowing);
+            rejected.set_material(rl,overflowing);
+            for(int attempt=0;attempt<2;++attempt) {
+                bool threw=false;
+                try {rejected.step(1.0f/120.0f);}
+                catch(const std::overflow_error&) {threw=true;}
+                expect(threw &&
+                       rejected.frame_index()==frame &&
+                       rejected.island_topology_revision()==revision &&
+                       rejected.island_dirty_route_check_count()==checks &&
+                       rejected.island_fast_route_hit_count()==hits,
+                       "Failed PGS publication committed island route diagnostics");
+            }
+            rejected.set_material(rf,fyzz::Material{});
+            rejected.set_material(rl,fyzz::Material{});
+            rejected.step(1.0f/120.0f);
+            clean.step(1.0f/120.0f);
+            expect(rejected.island_dirty_route_check_count()==checks+6 &&
+                   rejected.island_dirty_route_check_count()==
+                       clean.island_dirty_route_check_count() &&
+                   rejected.island_fast_route_hit_count()==
+                       clean.island_fast_route_hit_count() &&
+                   rejected.accurate_island_count()==clean.accurate_island_count() &&
+                   rejected.speculative_island_count()==clean.speculative_island_count() &&
+                   rejected.frame_index()==clean.frame_index() &&
+                   rejected.body_state(rt).position.x==
+                       clean.body_state(ct).position.x &&
+                   rejected.body_state(rl).velocity.y==
+                       clean.body_state(cl).velocity.y,
+                   "Failed island route repair changed subsequent source retry");
+        }
 
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
