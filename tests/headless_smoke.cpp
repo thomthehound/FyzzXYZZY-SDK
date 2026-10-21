@@ -789,6 +789,53 @@ int main() {
                 }
             }
 
+            // Actor retirement removes the supporting Gu contact
+            // manager. Compare whether a dormant body wakes and falls
+            // through its original source world, not a separate formula.
+            {
+                fyzz::World native_support(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World reference_support(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                const auto nf=native_support.add_static_floor(0);
+                const auto pf=reference_support.add_static_floor(0);
+                const auto nb=native_support.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                const auto pb=reference_support.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                for(int frame=0;frame<360;++frame) {
+                    native_support.step(1.0f/120.0f);
+                    reference_support.step(1.0f/120.0f);
+                }
+                if(!native_support.body_state(nb).sleeping ||
+                   !reference_support.body_state(pb).sleeping)
+                    throw std::runtime_error(
+                        "PhysX support-retirement fixture never became dormant");
+                const float original_y=native_support.body_state(nb).position.y;
+                native_support.remove_body(nf);
+                reference_support.remove_body(pf);
+                for(int frame=0;frame<12;++frame) {
+                    native_support.step(1.0f/120.0f);
+                    reference_support.step(1.0f/120.0f);
+                }
+                const auto n=native_support.body_state(nb);
+                const auto p=reference_support.body_state(pb);
+                if(n.sleeping || p.sleeping ||
+                   n.position.y>=original_y-0.005f ||
+                   std::abs(n.position.y-p.position.y)>0.02f ||
+                   std::abs(n.velocity.y-p.velocity.y)>0.12f) {
+                    std::cerr<<"Native/PhysX retired-support behavior"
+                             <<" native_sleeping="<<n.sleeping
+                             <<" physx_sleeping="<<p.sleeping
+                             <<" native_y="<<n.position.y
+                             <<" physx_y="<<p.position.y
+                             <<" native_vy="<<n.velocity.y
+                             <<" physx_vy="<<p.velocity.y<<'\n';
+                    throw std::runtime_error(
+                        "Sleeping body did not resume source gravity on support retirement");
+                }
+            }
+
             // Source Dy::sleepCheck + PxsIslandSim::deactivateIsland:
             // a settled body must *actually* stop participating in
             // integration, agree with independent PxRigidDynamic::isSleeping,
