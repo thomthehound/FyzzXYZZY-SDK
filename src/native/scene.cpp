@@ -225,6 +225,13 @@ void Scene::set_position(BodyId id, Vec3 position) {
         return patch.pair.a==id || patch.pair.b==id;
     });
     actor.position = position;
+    if(actor.kind==Kind::DynamicBox) {
+        // ScBodySim::wakeUp: a user-authored pose is a wake event.
+        actor.wake_counter=0.4f;
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+        actor.ready_for_sleep=false;
+    }
     dirty_ = true;
 }
 void Scene::set_velocity(BodyId id, Vec3 velocity) {
@@ -234,6 +241,12 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors have no linear velocity");
     actor.velocity = velocity;
+    // NpRigidDynamic::setLinearVelocity wakes a dynamic body and resets
+    // its solver sleep preparation, not the authoritative island graph.
+    actor.wake_counter=0.4f;
+    actor.sleep_linear_acc={};
+    actor.sleep_angular_acc={};
+    actor.ready_for_sleep=false;
     // This base solver has no inter-frame constraint cache to invalidate.
     // No contact scan or broadphase rebuild is needed for velocity edits.
 }
@@ -248,6 +261,10 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
         throw std::logic_error(
             "Angular inertia is not representable in PhysX float body state");
     actor.angular_velocity = velocity;
+    actor.wake_counter=0.4f;
+    actor.sleep_linear_acc={};
+    actor.sleep_angular_acc={};
+    actor.ready_for_sleep=false;
 }
 void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     if (!finite(impulse))
@@ -275,6 +292,10 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     if (!finite(delta) || !finite(pending))
         throw std::overflow_error("Native world-space torque impulse overflow");
     actor.pending_angular_velocity_delta = pending;
+    actor.wake_counter=0.4f;
+    actor.sleep_linear_acc={};
+    actor.sleep_angular_acc={};
+    actor.ready_for_sleep=false;
 }
 void Scene::set_material(BodyId id, Material material) {
     // PxMaterial / PxsMaterialData admission for ordinary rigid contacts.
@@ -2320,7 +2341,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
             if(!a.alive || a.kind!=Kind::DynamicBox)continue;
             motions.push_back({static_cast<BodyId>(id),
                 a.position,a.velocity,a.angular_velocity,a.orientation,
-                a.pending_angular_velocity_delta});
+                a.pending_angular_velocity_delta,a.wake_counter,
+                a.sleep_linear_acc,a.sleep_angular_acc,a.ready_for_sleep});
         }
         friction_patches.assign(scene.friction_patches_.begin(),
                                 scene.friction_patches_.end());
@@ -2430,6 +2452,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.angular_velocity=motion.angular_velocity;
             a.orientation=motion.orientation;
             a.pending_angular_velocity_delta=motion.pending_angular_velocity_delta;
+            a.wake_counter=motion.wake_counter;
+            a.sleep_linear_acc=motion.sleep_linear_acc;
+            a.sleep_angular_acc=motion.sleep_angular_acc;
+            a.ready_for_sleep=motion.ready_for_sleep;
         }
     }
     // Swap back the exact original arena allocations. This preserves the
@@ -2566,6 +2592,23 @@ void Scene::step(float seconds) {
     write_back_contacts();
     update_threshold_stream(seconds);
     publish_solver_bodies();
+    // PxsBodyCore::numCountedInteractions is maintained by original Sc
+    // interaction edges. In this admitted contact-only subset each Gu
+    // contact manager contributes one interaction to each dynamic body.
+    // The small reusable count array is derived from the authoritative
+    // contact stream; no parallel scene registry is introduced.
+    sleep_interaction_counts_.assign(actors_.size(),0);
+    for(const auto& manifold:manifolds_) {
+        if(!manifold.count)continue;
+        for(BodyId id:{manifold.pair.a,manifold.pair.b}) {
+            if(actors_[id].kind!=Kind::DynamicBox)continue;
+            if(sleep_interaction_counts_[id]==
+               std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Native source counted interactions overflow");
+            ++sleep_interaction_counts_[id];
+        }
+    }
     // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
@@ -2614,6 +2657,70 @@ void Scene::step(float seconds) {
                 throw std::overflow_error("Native CPU orientation overflow");
             actor.position = p;
             actor.orientation = q;
+            // DySleep.cpp::updateWakeCounter (default scene with
+            // stabilization disabled). ScBodyCore's source defaults
+            // are 0.4 seconds and 5e-5*scale.speed^2 (scale.speed=1).
+            // This is the solver readiness producer; it does not itself
+            // deactivate an island or remove a body from solver admission.
+            constexpr float wake_reset_time=20.0f*0.02f;
+            constexpr float energy_threshold=5.0e-5f;
+            float wc=actor.wake_counter;
+            if(wc<wake_reset_time*0.5f || wc<seconds) {
+                const Vec3 local_angular=rotate_inverse(q,motion_angular);
+                const Vec3 linear_acc{
+                    actor.sleep_linear_acc.x+motion_linear.x,
+                    actor.sleep_linear_acc.y+motion_linear.y,
+                    actor.sleep_linear_acc.z+motion_linear.z};
+                const Vec3 angular_acc{
+                    actor.sleep_angular_acc.x+local_angular.x,
+                    actor.sleep_angular_acc.y+local_angular.y,
+                    actor.sleep_angular_acc.z+local_angular.z};
+                if(!finite(linear_acc) || !finite(angular_acc))
+                    throw std::overflow_error(
+                        "Native Dy sleep-energy accumulator overflow");
+                const Vec3 inverse_i=actor.inverse_inertia_local;
+                const Vec3 inertia{
+                    inverse_i.x>0.0f?1.0f/inverse_i.x:1.0f,
+                    inverse_i.y>0.0f?1.0f/inverse_i.y:1.0f,
+                    inverse_i.z>0.0f?1.0f/inverse_i.z:1.0f};
+                const float angular_energy=(
+                    angular_acc.x*angular_acc.x*inertia.x+
+                    angular_acc.y*angular_acc.y*inertia.y+
+                    angular_acc.z*angular_acc.z*inertia.z)*actor.inverse_mass;
+                const float linear_energy=motion_linear.x*motion_linear.x+
+                    motion_linear.y*motion_linear.y+
+                    motion_linear.z*motion_linear.z;
+                // Source uses accumulated (not instantaneous) linear
+                // energy and a cluster threshold for the actual comparison.
+                const float accumulated_linear=
+                    linear_acc.x*linear_acc.x+
+                    linear_acc.y*linear_acc.y+
+                    linear_acc.z*linear_acc.z;
+                const float normalized_energy=
+                    0.5f*(angular_energy+accumulated_linear);
+                const float cluster=1.0f+
+                    static_cast<float>(sleep_interaction_counts_[id]);
+                const float threshold=cluster*energy_threshold;
+                (void)linear_energy;
+                if(normalized_energy>=threshold) {
+                    actor.sleep_linear_acc={};
+                    actor.sleep_angular_acc={};
+                    const float factor=threshold==0.0f
+                        ? 2.0f:std::min(normalized_energy/threshold,2.0f);
+                    wc=factor*0.5f*wake_reset_time+
+                        seconds*(cluster-1.0f);
+                } else {
+                    actor.sleep_linear_acc=linear_acc;
+                    actor.sleep_angular_acc=angular_acc;
+                    wc=std::max(wc-seconds,0.0f);
+                }
+            } else wc=std::max(wc-seconds,0.0f);
+            actor.wake_counter=wc;
+            actor.ready_for_sleep=(wc==0.0f);
+            if(actor.ready_for_sleep) {
+                actor.sleep_linear_acc={};
+                actor.sleep_angular_acc={};
+            }
             dirty_ = true;
         }
     }
