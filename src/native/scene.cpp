@@ -2609,10 +2609,9 @@ void Scene::step(float seconds) {
     try {
     // ScPipeline's collision and island-activation products are
     // dependencies of Dy::bodyCoreComputeUnconstrainedVelocity.
-    // Source IslandSim::wakeIslands is a first-pass producer. Explicit
-    // velocity/pose/torque changes must activate connected sleeping peers
-    // BEFORE Dy::bodyCoreComputeUnconstrainedVelocity applies gravity.
-    // The same operation is used again after fresh Gu contacts publish.
+    // IslandSim::wakeIslands consumes activating nodes and the just
+    // published speculative graph before preIntegrationParallel runs.
+    // Explicit user edits and Gu touches share this one wake stage.
     const auto wake_node=[&](BodyId id) {
         auto& actor=actors_[id];
         if(!actor.alive || !actor.sleeping)return;
@@ -2641,7 +2640,6 @@ void Scene::step(float seconds) {
                     wake_node(node);
         }
     };
-    wake_connected_islands();
     // ScPipeline: speculative/accurate pair and touch producers must
     // publish before IslandSim::wakeIslands and preIntegrationParallel.
     // Both lost-edge graph jobs are already complete when the serial
