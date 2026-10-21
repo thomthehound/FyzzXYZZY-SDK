@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 int main() {
     try {
@@ -595,6 +596,102 @@ int main() {
                           << " at_frame=" << max_position_frame
                           << " max_vy_error=" << max_velocity_error
                           << " at_frame=" << max_velocity_frame << '\n';
+            }
+
+            // Reference PhysX CPU 6DOF PGS cross-check: unequal-mass
+            // dynamic collision, both creation orders, and a timestep
+            // change while both bodies share the same accurate island.
+            // No floor, friction or restitution obscures the normal
+            // impulse. Every frame compares the *actual* scene motion,
+            // not a separately invented two-body collision model.
+            for (bool reversed : {false,true}) {
+                for (bool heavy_left : {false,true}) {
+                    fyzz::World native_pair(fyzz::WorldOptions{
+                        fyzz::ExecutionMode::NativeCpu});
+                    fyzz::World physx_pair(fyzz::WorldOptions{
+                        fyzz::ExecutionMode::ReferencePhysXCpu});
+                    fyzz::BodyId nl=0,nr=0,pl=0,pr=0;
+                    const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                    const float left_density=heavy_left?4.0f:1.0f;
+                    const float right_density=heavy_left?1.0f:4.0f;
+                    if(reversed) {
+                        nr=native_pair.add_dynamic_box(
+                            half,{0.515f,12,0},right_density);
+                        pr=physx_pair.add_dynamic_box(
+                            half,{0.515f,12,0},right_density);
+                        nl=native_pair.add_dynamic_box(
+                            half,{-0.515f,12,0},left_density);
+                        pl=physx_pair.add_dynamic_box(
+                            half,{-0.515f,12,0},left_density);
+                    } else {
+                        nl=native_pair.add_dynamic_box(
+                            half,{-0.515f,12,0},left_density);
+                        pl=physx_pair.add_dynamic_box(
+                            half,{-0.515f,12,0},left_density);
+                        nr=native_pair.add_dynamic_box(
+                            half,{0.515f,12,0},right_density);
+                        pr=physx_pair.add_dynamic_box(
+                            half,{0.515f,12,0},right_density);
+                    }
+                    fyzz::Material material{};
+                    material.disable_friction=true;
+                    material.restitution=0.0f;
+                    for(const auto id:{nl,nr})
+                        native_pair.set_body_material(id,material);
+                    for(const auto id:{pl,pr})
+                        physx_pair.set_body_material(id,material);
+                    native_pair.set_body_velocity(nl,{1.2f,0,0});
+                    physx_pair.set_body_velocity(pl,{1.2f,0,0});
+                    native_pair.set_body_velocity(nr,{-0.4f,0,0});
+                    physx_pair.set_body_velocity(pr,{-0.4f,0,0});
+                    bool source_impact=false;
+                    for(int frame=0;frame<48;++frame) {
+                        // Both worlds must consume identical dt changes.
+                        const float dt=(frame>=12 && frame<28)
+                            ? 1.0f/60.0f : 1.0f/120.0f;
+                        native_pair.step(dt);
+                        physx_pair.step(dt);
+                        const auto left_reference=physx_pair.body_state(pl);
+                        source_impact |= std::abs(left_reference.velocity.x-1.2f)>0.2f;
+                        for(const auto [n_id,p_id,side]:
+                            {std::tuple{nl,pl,"left"},
+                             std::tuple{nr,pr,"right"}}) {
+                            const auto n=native_pair.body_state(n_id);
+                            const auto p=physx_pair.body_state(p_id);
+                            const auto pos_x=std::abs(n.position.x-p.position.x);
+                            const auto pos_y=std::abs(n.position.y-p.position.y);
+                            const auto vel_x=std::abs(n.velocity.x-p.velocity.x);
+                            const auto vel_y=std::abs(n.velocity.y-p.velocity.y);
+                            if(!std::isfinite(pos_x) ||
+                               !std::isfinite(pos_y) ||
+                               !std::isfinite(vel_x) ||
+                               !std::isfinite(vel_y) ||
+                               pos_x>0.03f || pos_y>0.025f ||
+                               vel_x>0.13f || vel_y>0.13f) {
+                                std::cerr
+                                    << "Native/PhysX unequal-mass contact"
+                                    << " frame=" << frame+1
+                                    << " side=" << side
+                                    << " reversed=" << reversed
+                                    << " heavy_left=" << heavy_left
+                                    << " dt=" << dt
+                                    << " native_x=" << n.position.x
+                                    << " physx_x=" << p.position.x
+                                    << " native_vx=" << n.velocity.x
+                                    << " physx_vx=" << p.velocity.x
+                                    << " native_y=" << n.position.y
+                                    << " physx_y=" << p.position.y
+                                    << " native_vy=" << n.velocity.y
+                                    << " physx_vy=" << p.velocity.y << '\n';
+                                throw std::runtime_error(
+                                    "Native unequal-mass dynamic PGS diverged from independent PhysX");
+                            }
+                        }
+                    }
+                    if(!source_impact)
+                        throw std::runtime_error(
+                            "Independent PhysX unequal-mass fixture did not produce an impact");
+                }
             }
 
             fyzz::World world;
