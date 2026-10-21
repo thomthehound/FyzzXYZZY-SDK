@@ -2599,6 +2599,42 @@ void Scene::step(float seconds) {
     // execution order; no ordering of third pass *after* solve is implied.
     // Actual source task continuations and deactivation are still N1 gates.
     third_pass_island_gen();
+    // IslandSim::wakeIslands: an externally reactivated body or a new
+    // touch with a moving/static scene actor activates its entire source
+    // speculative/accurate island before Dy solver admission. A quiet
+    // inactive island is never awakened merely by its persistent contact
+    // manager, which can remain connected for many sleeping frames.
+    const auto wake_node=[&](BodyId id) {
+        auto& actor=actors_[id];
+        if(!actor.sleeping)return;
+        actor.sleeping=false;
+        actor.ready_for_sleep=false;
+        actor.wake_counter=0.4f;
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+    };
+    for(Pair pair:found_contacts_) {
+        const bool a=actors_[pair.a].kind==Kind::DynamicBox;
+        const bool b=actors_[pair.b].kind==Kind::DynamicBox;
+        if(a!=b)
+            wake_node(a?pair.a:pair.b);
+    }
+    // The speculative graph may join more nodes than the accurate one.
+    // Waking follows source connectivity, not Gu solver partition IDs.
+    for(const auto& island:speculative_islands_.islands) {
+        if(!island.live)continue;
+        bool awake=false;
+        for(BodyId node=island.root;
+            node!=std::numeric_limits<BodyId>::max();
+            node=speculative_islands_.node_next[node]) {
+            if(!actors_[node].sleeping) {awake=true;break;}
+        }
+        if(awake)
+            for(BodyId node=island.root;
+                node!=std::numeric_limits<BodyId>::max();
+                node=speculative_islands_.node_next[node])
+                wake_node(node);
+    }
     prepare_solver_bodies();
     partition_constraints();
     prepare_constraints(seconds);
@@ -2733,6 +2769,36 @@ void Scene::step(float seconds) {
                 actor.sleep_angular_acc={};
             }
             dirty_ = true;
+        }
+    }
+    // Dy::sleepCheck produces per-body readiness after PGS integration.
+    // PxsIslandSim::deactivateIsland may deactivate only whole connected
+    // islands, never one member of a still-active contact group. The
+    // speculative graph is the conservative source candidate; its
+    // deactivation must be admissible by the accurate graph as well.
+    for(const auto& island:speculative_islands_.islands) {
+        if(!island.live)continue;
+        bool ready=true;
+        for(BodyId node=island.root;
+            node!=std::numeric_limits<BodyId>::max();
+            node=speculative_islands_.node_next[node]) {
+            if(!actors_[node].ready_for_sleep) {ready=false;break;}
+        }
+        if(!ready)continue;
+        for(BodyId node=island.root;
+            node!=std::numeric_limits<BodyId>::max();
+            node=speculative_islands_.node_next[node]) {
+            Actor& actor=actors_[node];
+            if(actor.sleeping)continue;
+            // ScBodySim::deactivate zeroes velocities and pending forces,
+            // while the island owner keeps all existing contact links.
+            actor.sleeping=true;
+            actor.wake_counter=0.0f;
+            actor.velocity={};
+            actor.angular_velocity={};
+            actor.pending_angular_velocity_delta={};
+            actor.sleep_linear_acc={};
+            actor.sleep_angular_acc={};
         }
     }
     // Solver and lost-edge producers have both completed before this
