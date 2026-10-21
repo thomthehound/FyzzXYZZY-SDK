@@ -771,7 +771,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     const auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
     if(dirty.empty())return true;
     const auto& first=accurate?accurate_node_first_:speculative_node_first_;
-    const auto& parents=accurate?accurate_island_parent_:speculative_island_parent_;
+    const auto& graph=accurate?accurate_islands_:speculative_islands_;
     auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
     auto& fast_edge=accurate?accurate_fast_edge_:speculative_fast_edge_;
     auto& hops=accurate?accurate_hops_:speculative_hops_;
@@ -804,8 +804,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         return links[0].linked && links[1].linked;
     };
     const auto root_for=[&](BodyId node) {
-        while(parents[node]!=node)node=parents[node];
-        return node;
+        return graph.islands[graph.node_island[node]].root;
     };
     for(BodyId node:dirty) {
         if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox)
@@ -905,150 +904,209 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
 }
 
 void Scene::update_island_connectivity(bool repair_lost_edges) {
-    // PxsSimpleIslandManager::firstPassIslandGen and
-    // secondPassIslandGenPart1 insert newly discovered edges through
-    // IslandSim::processNewEdges, merging existing islands rather than
-    // rebuilding their connectivity. The currently admitted all-awake
-    // dynamic/contact subset can make the same incremental merges in
-    // its scene-owned component arrays. Lost edges still require
-    // IslandSim::processLostEdges' path/dirty-node repair, so rebuild
-    // components from the surviving authoritative edges on removal.
-    const auto dynamic_edge=[this](Pair pair) {
-        return actors_[pair.a].kind==Kind::DynamicBox &&
-               actors_[pair.b].kind==Kind::DynamicBox;
+    // PxsIslandSim::IslandSim's node-to-island IDs and persistent island
+    // handle slots are now the authoritative connectivity owner. The
+    // speculative and accurate graphs share source contact-manager edge
+    // slots, not a second actor registry or a provisional union/find map.
+    const BodyId invalid=std::numeric_limits<BodyId>::max();
+    using Graph=IslandGraph;
+    const auto dynamic_node=[&](BodyId node) {
+        return actors_[node].alive && actors_[node].kind==Kind::DynamicBox;
     };
+    const auto dynamic_edge=[&](Pair pair) {
+        return dynamic_node(pair.a) && dynamic_node(pair.b);
+    };
+
     bool rebuild=island_topology_dirty_;
-    bool found_speculative=false;
-    bool found_accurate=false;
-    bool merged_speculative=false;
-    bool merged_accurate=false;
-    // Source first/second passes admit new edges; third pass does the
-    // dirty-route split repair. A lost contact must not prematurely split
-    // the solver's active island before the current solve has completed.
-    // Actor-node creation/retirement still uses the bounded full-rebuild
-    // path until its source lifecycle has been integrated.
     if(!rebuild && repair_lost_edges)
         rebuild=!lost_island_edges_retain_routes(false) ||
                  !lost_island_edges_retain_routes(true);
     if(!rebuild && repair_lost_edges)
         return;
-    if (!rebuild) {
-        for (Pair pair:found_)
-            if (dynamic_edge(pair)) {found_speculative=true;break;}
-        for (Pair pair:found_contacts_)
-            if (dynamic_edge(pair)) {found_accurate=true;break;}
-        if (!found_speculative && !found_accurate)
-            return;
-    }
 
-    const auto find_root=[](std::vector<BodyId>& parent,BodyId node) {
-        BodyId root=node;
-        while(parent[root]!=root)root=parent[root];
-        while(parent[node]!=node) {
-            const BodyId next=parent[node];
-            parent[node]=root;
-            node=next;
+    // A source island keeps its handle when its original root remains in
+    // the surviving component. If a lost bridge splits one component,
+    // only the new component needs a handle; unrelated live handles
+    // cannot be renumbered. Rebuilds are currently the bounded fallback
+    // for splits and actor-node admission/retirement; incremental merge
+    // and quiet frames never take this O(V+E) traversal.
+    const auto rebuild_graph=[&](Graph& graph,bool accurate) {
+        Graph next;
+        next.islands.resize(graph.islands.size());
+        next.node_island.assign(actors_.size(),Graph::invalid);
+        next.node_next.assign(actors_.size(),invalid);
+        next.node_prev.assign(actors_.size(),invalid);
+        next.free_handles=graph.free_handles;
+        std::vector<std::uint32_t> component(actors_.size(),0);
+        std::vector<BodyId> members;
+        members.reserve(actors_.size());
+        const auto& first=accurate?accurate_node_first_:
+                                   speculative_node_first_;
+        std::uint32_t component_number=0;
+        std::size_t islands=0;
+        for(std::size_t index=0;index<actors_.size();++index) {
+            const BodyId start=static_cast<BodyId>(index);
+            if(!dynamic_node(start) || component[start])continue;
+            ++component_number;
+            members.clear();
+            members.push_back(start);
+            component[start]=component_number;
+            for(std::size_t cursor=0;cursor<members.size();++cursor) {
+                const BodyId from=members[cursor];
+                for(std::size_t i=first[from];i!=invalid_instance;) {
+                    const auto& edge=contact_edges_[i/2];
+                    const auto& link=(accurate?edge.accurate:
+                                      edge.speculative)[i&1];
+                    const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+                    i=link.next;
+                    if(!dynamic_node(to) || component[to])continue;
+                    component[to]=component_number;
+                    members.push_back(to);
+                }
+            }
+            Graph::IslandId handle=Graph::invalid;
+            // Reserve an existing handle for the component containing
+            // its old root, matching source split identity ownership.
+            for(BodyId member:members) {
+                if(member>=graph.node_island.size())continue;
+                const auto prior=graph.node_island[member];
+                if(prior>=graph.islands.size() ||
+                   !graph.islands[prior].live ||
+                   next.islands[prior].live)continue;
+                const BodyId root=graph.islands[prior].root;
+                if(root<component.size() &&
+                   component[root]==component_number) {
+                    handle=prior;
+                    break;
+                }
+            }
+            // A retired root has no surviving root component. Keep its
+            // handle on the first surviving component where possible.
+            if(handle==Graph::invalid) {
+                for(BodyId member:members) {
+                    if(member>=graph.node_island.size())continue;
+                    const auto prior=graph.node_island[member];
+                    if(prior>=graph.islands.size() ||
+                       !graph.islands[prior].live ||
+                       next.islands[prior].live)continue;
+                    const BodyId root=graph.islands[prior].root;
+                    if(root>=component.size() ||
+                       !dynamic_node(root)) {
+                        handle=prior;
+                        break;
+                    }
+                }
+            }
+            if(handle==Graph::invalid) {
+                if(!next.free_handles.empty()) {
+                    handle=next.free_handles.back();
+                    next.free_handles.pop_back();
+                } else {
+                    if(next.islands.size()>=Graph::invalid)
+                        throw std::overflow_error("Source island handles exhausted");
+                    handle=static_cast<Graph::IslandId>(next.islands.size());
+                    next.islands.push_back({});
+                }
+            }
+            BodyId root=members.front();
+            if(handle<graph.islands.size()) {
+                const BodyId oldroot=graph.islands[handle].root;
+                if(oldroot<component.size() &&
+                   component[oldroot]==component_number)
+                    root=oldroot;
+            }
+            auto& island=next.islands[handle];
+            island.root=root;
+            island.tail=root;
+            island.count=members.size();
+            island.live=true;
+            next.node_island[root]=handle;
+            for(BodyId member:members) {
+                if(member==root)continue;
+                next.node_island[member]=handle;
+                next.node_prev[member]=island.tail;
+                next.node_next[island.tail]=member;
+                island.tail=member;
+            }
+            ++islands;
         }
-        return root;
+        next.free_handles.clear();
+        for(std::size_t i=0;i<next.islands.size();++i)
+            if(!next.islands[i].live)
+                next.free_handles.push_back(static_cast<Graph::IslandId>(i));
+        graph=std::move(next);
+        return islands;
     };
-    const auto join=[&](std::vector<BodyId>& parent,
-                        std::vector<std::uint8_t>& rank,Pair pair) {
-        // Neither static shape nor shared world solver body is an island
-        // node: static contacts do not connect independent rigid bodies.
-        if (!dynamic_edge(pair))return false;
-        BodyId a=find_root(parent,pair.a);
-        BodyId b=find_root(parent,pair.b);
+    const auto merge=[&](Graph& graph,Pair pair) {
+        if(!dynamic_edge(pair))return false;
+        const auto a=graph.node_island[pair.a];
+        const auto b=graph.node_island[pair.b];
         if(a==b)return false;
-        if(rank[a]<rank[b])std::swap(a,b);
-        parent[b]=a;
-        if(rank[a]==rank[b])++rank[a];
+        // IslandSim::mergeIslands preserves the larger island handle,
+        // remapping only the smaller island-node chain, then freeing
+        // the subsumed handle. Ties select the second island.
+        const bool keep_a=graph.islands[a].count>graph.islands[b].count;
+        const auto retained=keep_a?a:b;
+        const auto retired=keep_a?b:a;
+        auto& winner=graph.islands[retained];
+        auto& loser=graph.islands[retired];
+        for(BodyId node=loser.root;node!=invalid;
+            node=graph.node_next[node])
+            graph.node_island[node]=retained;
+        graph.node_prev[loser.root]=winner.tail;
+        graph.node_next[winner.tail]=loser.root;
+        winner.tail=loser.tail;
+        winner.count+=loser.count;
+        loser={};
+        graph.free_handles.push_back(retired);
         return true;
     };
 
+    bool merged_speculative=false, merged_accurate=false;
     bool order_changed=rebuild;
-    if (rebuild) {
+    if(rebuild) {
         ++island_full_rebuild_count_;
-        const BodyId invalid=std::numeric_limits<BodyId>::max();
-        const std::size_t count=actors_.size();
-        speculative_island_parent_.resize(count);
-        accurate_island_parent_.resize(count);
-        speculative_island_rank_.resize(count);
-        accurate_island_rank_.resize(count);
-        speculative_island_count_=0;
-        accurate_island_count_=0;
+        speculative_island_count_=rebuild_graph(speculative_islands_,false);
+        accurate_island_count_=rebuild_graph(accurate_islands_,true);
         accurate_island_nodes_.clear();
-        for(std::size_t i=0;i<count;++i) {
-            const bool dynamic=actors_[i].alive &&
-                actors_[i].kind==Kind::DynamicBox;
-            const BodyId root=dynamic?static_cast<BodyId>(i):invalid;
-            speculative_island_parent_[i]=root;
-            accurate_island_parent_[i]=root;
-            speculative_island_rank_[i]=0;
-            accurate_island_rank_[i]=0;
-            if(dynamic) {
-                ++speculative_island_count_;
-                ++accurate_island_count_;
-                accurate_island_nodes_.push_back(root);
-            }
-        }
-        // First pass: speculative SAP candidates. Second pass: physically
-        // connected Gu contact managers. The streams are already ordered
-        // and published by their sole owning scene.
-        for(EdgeIndex id:active_edge_handles_) {
-            const ContactEdge& edge=contact_edges_[id];
-            if(join(speculative_island_parent_,
-                    speculative_island_rank_,edge.pair))
-                --speculative_island_count_;
-            if(edge.connected &&
-               join(accurate_island_parent_,
-                    accurate_island_rank_,edge.pair))
-                --accurate_island_count_;
-        }
+        for(std::size_t i=0;i<actors_.size();++i)
+            if(dynamic_node(static_cast<BodyId>(i)))
+                accurate_island_nodes_.push_back(static_cast<BodyId>(i));
     } else {
-        // Source first/second pass insertion can merge islands without
-        // touching unrelated nodes. Deletions and deactivation still
-        // follow the rebuild path above until source lost-edge repair
-        // and third-pass sleeping have been imported.
         for(Pair pair:found_)
-            if(join(speculative_island_parent_,
-                    speculative_island_rank_,pair)) {
+            if(merge(speculative_islands_,pair)) {
                 --speculative_island_count_;
                 merged_speculative=true;
             }
         for(Pair pair:found_contacts_)
-            if(join(accurate_island_parent_,
-                    accurate_island_rank_,pair)) {
+            if(merge(accurate_islands_,pair)) {
                 --accurate_island_count_;
                 merged_accurate=true;
                 order_changed=true;
             }
     }
-
-    if (order_changed) {
-        // Dy::DynamicsContext::iterateIslandsNodes needs contiguous nodes
-        // belonging to each accurate island. Only source accurate merges
-        // or complete lost-edge rebuilds can change this iteration order.
-        for(BodyId id:accurate_island_nodes_)
-            find_root(accurate_island_parent_,id);
+    if(order_changed) {
+        // Dy::DynamicsContext::iterateIslandsNodes consumes contiguous
+        // *accurate* island batches, driven directly by source island
+        // handles, not by a second union/find component representation.
         std::sort(accurate_island_nodes_.begin(),
                   accurate_island_nodes_.end(),
             [&](BodyId a,BodyId b) {
-                const BodyId ra=accurate_island_parent_[a];
-                const BodyId rb=accurate_island_parent_[b];
-                return ra<rb || (ra==rb && a<b);
+                const auto ia=accurate_islands_.node_island[a];
+                const auto ib=accurate_islands_.node_island[b];
+                return ia<ib || (ia==ib && a<b);
             });
         accurate_island_offsets_.clear();
         accurate_island_offsets_.push_back(0);
         for(std::size_t i=1;i<accurate_island_nodes_.size();++i)
-            if(accurate_island_parent_[accurate_island_nodes_[i-1]]!=
-               accurate_island_parent_[accurate_island_nodes_[i]])
+            if(accurate_islands_.node_island[accurate_island_nodes_[i-1]]!=
+               accurate_islands_.node_island[accurate_island_nodes_[i]])
                 accurate_island_offsets_.push_back(i);
         if(!accurate_island_nodes_.empty())
             accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     }
-    // Union/find root ownership changes invalidate source root-directed
-    // route hints in O(1). They are rebuilt lazily when a dirty node
-    // needs findRoute; no per-frame metadata copy or full cache clear.
+    // Root ownership changes invalidate cached routes lazily; same-root
+    // chord insertion and unchanged topology retain their validated hints.
     if(rebuild || merged_speculative)++speculative_hint_epoch_;
     if(rebuild || merged_accurate)++accurate_hint_epoch_;
     island_topology_dirty_=false;
