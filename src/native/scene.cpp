@@ -341,7 +341,7 @@ void Scene::remove(BodyId id) {
 BodyState Scene::body_state(BodyId id) const {
     const auto& actor = require(id);
     return {actor.position, actor.velocity,
-            actor.orientation, actor.angular_velocity};
+            actor.orientation, actor.angular_velocity, actor.sleeping};
 }
 void Scene::update_bounds() {
     // Current reference SDK uses PhysX's ordinary 0.02m shape contact offset.
