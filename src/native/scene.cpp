@@ -231,6 +231,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
         actor.ready_for_sleep=false;
+        actor.sleeping=false;
     }
     dirty_ = true;
 }
@@ -247,6 +248,7 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
+    actor.sleeping=false;
     // This base solver has no inter-frame constraint cache to invalidate.
     // No contact scan or broadphase rebuild is needed for velocity edits.
 }
@@ -265,6 +267,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
+    actor.sleeping=false;
 }
 void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     if (!finite(impulse))
@@ -296,6 +299,7 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
+    actor.sleeping=false;
 }
 void Scene::set_material(BodyId id, Material material) {
     // PxMaterial / PxsMaterialData admission for ordinary rigid contacts.
@@ -1305,7 +1309,8 @@ void Scene::prepare_solver_bodies() {
     for (const auto& manifold:manifolds_) {
         const BodyId ids[2]{manifold.pair.a,manifold.pair.b};
         for(BodyId id:ids)
-            if(actors_[id].kind==Kind::DynamicBox)
+            if(actors_[id].kind==Kind::DynamicBox &&
+               !actors_[id].sleeping)
                 solver_rows_[id].prepared_frame=frame_index_;
     }
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
@@ -1388,7 +1393,8 @@ void Scene::partition_constraints() {
     for (std::size_t i=0;i<manifolds_.size();++i) {
         const Pair pair=manifolds_[i].pair;
         if (actors_[pair.a].kind == Kind::DynamicBox &&
-            actors_[pair.b].kind == Kind::DynamicBox)
+            actors_[pair.b].kind == Kind::DynamicBox &&
+            !actors_[pair.a].sleeping && !actors_[pair.b].sleeping)
             pending_dynamic_constraints_.push_back(i);
     }
 
@@ -1436,6 +1442,11 @@ void Scene::partition_constraints() {
         const Pair pair=manifolds_[i].pair;
         const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
         const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+        // Inactive accurate islands do not submit solver descriptors.
+        // An awake actor touching a sleeping island is awakened before
+        // this partition stage; the still-asleep case has no solver work.
+        if ((dynamic_a && actors_[pair.a].sleeping) ||
+            (dynamic_b && actors_[pair.b].sleeping))continue;
         // Source static/static contact managers are not solver edges.
         if (!dynamic_a && !dynamic_b) continue;
         auto& active=solver_rows_[dynamic_a ? pair.a : pair.b].solver;
@@ -2342,7 +2353,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
             motions.push_back({static_cast<BodyId>(id),
                 a.position,a.velocity,a.angular_velocity,a.orientation,
                 a.pending_angular_velocity_delta,a.wake_counter,
-                a.sleep_linear_acc,a.sleep_angular_acc,a.ready_for_sleep});
+                a.sleep_linear_acc,a.sleep_angular_acc,
+                a.ready_for_sleep,a.sleeping});
         }
         friction_patches.assign(scene.friction_patches_.begin(),
                                 scene.friction_patches_.end());
@@ -2456,6 +2468,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.sleep_linear_acc=motion.sleep_linear_acc;
             a.sleep_angular_acc=motion.sleep_angular_acc;
             a.ready_for_sleep=motion.ready_for_sleep;
+            a.sleeping=motion.sleeping;
         }
     }
     // Swap back the exact original arena allocations. This preserves the
@@ -2527,7 +2540,8 @@ void Scene::step(float seconds) {
     step_checkpoint_.capture(*this);
     try {
     for (auto& actor : actors_) {
-        if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
+        if (!actor.alive || actor.kind != Kind::DynamicBox ||
+            actor.sleeping) continue;
         float vx = actor.velocity.x;
         float vy = actor.velocity.y + gravity * seconds;
         float vz = actor.velocity.z;
@@ -2619,6 +2633,7 @@ void Scene::step(float seconds) {
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
             auto& actor=actors_[id];
+            if(actor.sleeping)continue;
             Vec3 motion_linear = actor.velocity;
             Vec3 motion_angular = actor.angular_velocity;
             // Scene clock increments in advance_collision_internal; only
@@ -2687,9 +2702,6 @@ void Scene::step(float seconds) {
                     angular_acc.x*angular_acc.x*inertia.x+
                     angular_acc.y*angular_acc.y*inertia.y+
                     angular_acc.z*angular_acc.z*inertia.z)*actor.inverse_mass;
-                const float linear_energy=motion_linear.x*motion_linear.x+
-                    motion_linear.y*motion_linear.y+
-                    motion_linear.z*motion_linear.z;
                 // Source uses accumulated (not instantaneous) linear
                 // energy and a cluster threshold for the actual comparison.
                 const float accumulated_linear=
@@ -2701,7 +2713,6 @@ void Scene::step(float seconds) {
                 const float cluster=1.0f+
                     static_cast<float>(sleep_interaction_counts_[id]);
                 const float threshold=cluster*energy_threshold;
-                (void)linear_energy;
                 if(normalized_energy>=threshold) {
                     actor.sleep_linear_acc={};
                     actor.sleep_angular_acc={};
