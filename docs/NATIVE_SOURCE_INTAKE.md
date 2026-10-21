@@ -504,7 +504,7 @@ The native runtime must remain buildable with
 are SDK-owned under preserved notices. The separately linked PhysX CPU
 reference retains its existing `PxScene` and serves only as an oracle.
 
-## Admitted awake-rigid island connectivity
+## Admitted rigid island connectivity and sleep lifecycle
 
 The native scene now consumes two distinct source contact-edge streams,
 without creating a second physics world or actor registry:
@@ -518,7 +518,7 @@ without creating a second physics world or actor registry:
 
 **Fidelity classification:** source-style persistent island IDs, island
 handle recycling and intrusive node-membership chains, **only for the
-all-awake rigid dynamic/static contact-only subset**. The previous
+rigid dynamic/static contact-only subset**. The previous
 provisional union/find parent/rank arrays have been removed. Both source
 island graphs now own independent handles and node-to-island mappings;
 the shared contact-manager `EdgeIndex` array owns both adjacency graphs,
@@ -532,9 +532,8 @@ component traversal reconcile removed edges, retire old actors, and
 rebuild intrusive node membership. Thus simultaneous found/lost edges
 cannot change retained island identity merely because a new actor was
 also admitted. A genuine split still preserves the surviving old-root
-component's handle and unrelated islands. Original local split
-migration, activation, sleeping
-and source per-frame task interleaving remain open.
+component's handle and unrelated islands. Original localized split migration, complete activating/active node lists,
+source post-integration scheduling and callback interleaving remain open.
 
 The island owner now also maintains the source `Node::mStaticTouchCount`
 and `IslandSim::mIslandStaticTouchCount` independently for speculative
@@ -545,9 +544,35 @@ touch totals, and actual split/node-lifetime rebuilds recount them from
 the authoritative surviving intrusive adjacency. A contact with the
 SDK infinite floor therefore remains a speculative candidate even
 after physical touch is lost, exactly as the underlying edge streams
-require. These counters are the necessary source inputs to the later
-`Dy::sleepCheck` / island deactivation path; recording them does **not**
-yet deactivate bodies or implement sleep/wake.
+require. These counters are the source island contact-state inputs for
+`Dy::sleepCheck` and whole-island deactivation, now used by the admitted
+default-scene non-stabilized sleep path. They remain distinct from the
+number of counted Sc contact interactions used by the wake-energy filter.
+
+### Default-scene rigid sleep and wake
+
+Native `Actor` state now retains the original `PxsBodyCore` 0.4-second
+creation wake counter, `PxsRigidBody::mSleepLinVelAcc` and
+`mSleepAngVelAcc`, and the per-node readiness outcome of
+`DySleep.cpp::updateWakeCounter`. The latter consumes each dynamic
+body's post-position-pass motion velocity, inverse mass/local inertia,
+default sleep threshold and current contact-manager interaction count.
+The two speculative/accurate island owners retain their existing
+contacts while a full component becomes inactive; inactive members skip
+gravity, constraint submission and pose integration. Explicit velocity,
+torque or position authoring reactivates the body, and connected
+speculative-island members are woken together before solver admission.
+New physical touches with static bodies are additional wake events.
+These transitions, including rollback of wake counters and readiness,
+are compared with the independent `PxRigidDynamic::isSleeping()`
+reference for an ordinary settled floor contact.
+
+This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
+activation queues, separate active-index maps, detailed edge-activation
+flags, kinematic triggers, stabilization/freeze state, deferred
+deactivation continuations, sleep/wake callbacks and exact
+`ScPipeline::afterIntegration` task semantics remain open. The active
+subset has no joints or CCD and cannot establish those dependencies.
 
 **Cost:** unchanged dynamic connectivity and static-only topology
 changes incur no component reconstruction. A newly found
