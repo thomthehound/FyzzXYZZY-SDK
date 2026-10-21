@@ -1559,6 +1559,23 @@ void Scene::prepare_constraints(float seconds) {
         while (old_patch_cursor<friction_patches_.size() &&
                friction_patches_[old_patch_cursor].pair < manifold.pair)
             ++old_patch_cursor;
+        // An inactive accurate island retains its Gu contact manager
+        // but the source does not prepare or solve constraints for it.
+        // Keep the Gu-indexed zero-impulse result slots without paying
+        // for contact Jacobians, friction correlation or solver rows.
+        const Actor& actor_a=actors_[manifold.pair.a];
+        const Actor& actor_b=actors_[manifold.pair.b];
+        const bool active_dynamic=
+            (actor_a.kind==Kind::DynamicBox && !actor_a.sleeping) ||
+            (actor_b.kind==Kind::DynamicBox && !actor_b.sleeping);
+        if(!active_dynamic) {
+            manifold.solver_offset=solver_contact_points_.size();
+            manifold.friction_patch_offset=next_friction_patches_.size();
+            manifold.friction_patch_count=0;
+            solver_contact_points_.resize(
+                manifold.solver_offset+manifold.count);
+            continue;
+        }
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
             ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
         const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
