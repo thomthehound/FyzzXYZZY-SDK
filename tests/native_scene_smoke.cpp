@@ -635,6 +635,63 @@ int run_native_scene_smoke() {
                        "Actor admission changed source accumulated merge identity");
         }
 
+        // Found edges are processed before the third-pass lost-edge
+        // split, including when independent node admission forces the
+        // full source island-membership rebuild. A-B first forms the
+        // two-node island rooted at B. In one publication A-B is lost,
+        // B-C is found, and an unrelated node is admitted in one scene.
+        // Both execution paths must preserve B's island handle for B-C.
+        {
+            auto populate=[](Scene& scene) {
+                const auto a=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,48,0},1.0f);
+                const auto b=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.4f,48,0},1.0f);
+                const auto c=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{3,48,0},1.0f);
+                scene.advance_collision();
+                return std::array{a,b,c};
+            };
+            Scene normal, admitted;
+            const auto n=populate(normal);
+            const auto a=populate(admitted);
+            const auto root_accurate=normal.accurate_island_id(n[1]);
+            const auto root_speculative=normal.speculative_island_id(n[1]);
+            expect(normal.accurate_island_id(n[0])==root_accurate &&
+                   normal.speculative_island_id(n[0])==root_speculative &&
+                   normal.accurate_island_id(n[2])!=root_accurate,
+                   "Source mixed-loss fixture lacks the initial A-B island");
+            const auto unrelated=admitted.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{30,48,0},1.0f);
+            for(auto* scene:{&normal,&admitted}) {
+                const auto& ids=scene==&normal?n:a;
+                scene->set_position(ids[0],{-3,48,0});
+                scene->set_position(ids[2],{0.8f,48,0});
+                scene->advance_collision();
+                expect(scene->lost_pairs().size()==1 &&
+                       scene->found_pairs().size()==1 &&
+                       scene->lost_contacts().size()==1 &&
+                       scene->found_contacts().size()==1,
+                       "Mixed first-pass lost/found fixture did not swap contacts");
+            }
+            expect(normal.accurate_island_count()==2 &&
+                   normal.speculative_island_count()==2 &&
+                   admitted.accurate_island_count()==3 &&
+                   admitted.speculative_island_count()==3 &&
+                   normal.accurate_island_id(n[1])==root_accurate &&
+                   normal.accurate_island_id(n[2])==root_accurate &&
+                   normal.speculative_island_id(n[1])==root_speculative &&
+                   normal.speculative_island_id(n[2])==root_speculative &&
+                   admitted.accurate_island_id(a[1])==root_accurate &&
+                   admitted.accurate_island_id(a[2])==root_accurate &&
+                   admitted.speculative_island_id(a[1])==root_speculative &&
+                   admitted.speculative_island_id(a[2])==root_speculative &&
+                   admitted.accurate_island_id(a[0])!=root_accurate &&
+                   admitted.speculative_island_id(a[0])!=root_speculative &&
+                   admitted.accurate_island_id(unrelated)!=root_accurate,
+                   "Actor admission changed first-pass merge and lost-edge split identity");
+        }
+
         // A failed step must restore pre-existing source route hints,
         // not merely topology and diagnostics. Prime both IslandSim
         // caches with a redundant chord removal, reinsert the chords,
