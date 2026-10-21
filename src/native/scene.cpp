@@ -2607,6 +2607,8 @@ void Scene::step(float seconds) {
     // authoritative state; all per-step Dy work buffers remain reusable.
     step_checkpoint_.capture(*this);
     try {
+    // ScPipeline's collision and island-activation products are
+    // dependencies of Dy::bodyCoreComputeUnconstrainedVelocity.
     // Source IslandSim::wakeIslands is a first-pass producer. Explicit
     // velocity/pose/torque changes must activate connected sleeping peers
     // BEFORE Dy::bodyCoreComputeUnconstrainedVelocity applies gravity.
@@ -2639,6 +2641,22 @@ void Scene::step(float seconds) {
                     wake_node(node);
         }
     };
+    wake_connected_islands();
+    // ScPipeline: speculative/accurate pair and touch producers must
+    // publish before IslandSim::wakeIslands and preIntegrationParallel.
+    // Both lost-edge graph jobs are already complete when the serial
+    // admitted CPU path reaches solver preparation. Their concurrent
+    // GPU/task continuations are a separate N1 admission gate.
+    advance_collision_internal(false);
+    third_pass_island_gen();
+    for(Pair pair:found_contacts_) {
+        const bool a=actors_[pair.a].kind==Kind::DynamicBox;
+        const bool b=actors_[pair.b].kind==Kind::DynamicBox;
+        if(a!=b)wake_node(a?pair.a:pair.b);
+    }
+    // IslandSim::wakeIslands activates the whole source component, not
+    // merely the user-authored or newly touching body. This runs once,
+    // after source edge publication and before any gravity/damping work.
     wake_connected_islands();
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox ||
@@ -2688,28 +2706,6 @@ void Scene::step(float seconds) {
         // Its integration requires the saved position-solver motion
         // velocity, not the final unbiased next-frame velocity.
         dirty_ = true;
-    }
-    // Source-derived per-point normals and correlated friction rows
-    // share the original actor/contact owner and ordered contact batches.
-    // The complete island task graph, packed constraint ABI, heterogeneous
-    // material/contact callbacks and CCD remain explicit N1 admission gates.
-    advance_collision_internal(false);
-    // The source third-pass island tasks may overlap the numerical solve.
-    // For this all-awake, single-threaded subset, the lost-contact
-    // producer is already complete, so this is a valid dependency-ready
-    // execution order; no ordering of third pass *after* solve is implied.
-    // Actual source task continuations and deactivation are still N1 gates.
-    third_pass_island_gen();
-    // New static Gu touches can wake sleeping bodies after the
-    // collision publication. Propagate these and any new dynamic joins
-    // through the same source speculative island membership.
-    if(!found_.empty() || !found_contacts_.empty()) {
-        for(Pair pair:found_contacts_) {
-            const bool a=actors_[pair.a].kind==Kind::DynamicBox;
-            const bool b=actors_[pair.b].kind==Kind::DynamicBox;
-            if(a!=b)wake_node(a?pair.a:pair.b);
-        }
-        wake_connected_islands();
     }
     prepare_solver_bodies();
     partition_constraints();
