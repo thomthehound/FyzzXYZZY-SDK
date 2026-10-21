@@ -2688,12 +2688,14 @@ void Scene::step(float seconds) {
     // New static Gu touches can wake sleeping bodies after the
     // collision publication. Propagate these and any new dynamic joins
     // through the same source speculative island membership.
-    for(Pair pair:found_contacts_) {
-        const bool a=actors_[pair.a].kind==Kind::DynamicBox;
-        const bool b=actors_[pair.b].kind==Kind::DynamicBox;
-        if(a!=b)wake_node(a?pair.a:pair.b);
+    if(!found_.empty() || !found_contacts_.empty()) {
+        for(Pair pair:found_contacts_) {
+            const bool a=actors_[pair.a].kind==Kind::DynamicBox;
+            const bool b=actors_[pair.b].kind==Kind::DynamicBox;
+            if(a!=b)wake_node(a?pair.a:pair.b);
+        }
+        wake_connected_islands();
     }
-    wake_connected_islands();
     prepare_solver_bodies();
     partition_constraints();
     prepare_constraints(seconds);
