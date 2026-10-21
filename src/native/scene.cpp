@@ -923,6 +923,18 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                  !lost_island_edges_retain_routes(true);
     if(!rebuild && repair_lost_edges)
         return;
+    if(!rebuild) {
+        // No newly connected dynamic edges means no island membership,
+        // handle or solver batch change. Preserve the source's quiet
+        // publication contract without touching island revision/epochs.
+        bool dynamic_found=false;
+        for(Pair pair:found_)
+            if(dynamic_edge(pair)) {dynamic_found=true;break;}
+        if(!dynamic_found)
+            for(Pair pair:found_contacts_)
+                if(dynamic_edge(pair)) {dynamic_found=true;break;}
+        if(!dynamic_found)return;
+    }
 
     // A source island keeps its handle when its original root remains in
     // the surviving component. If a lost bridge splits one component,
