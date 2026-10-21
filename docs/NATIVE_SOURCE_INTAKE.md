@@ -718,8 +718,11 @@ body to sleep in the same frame its PGS solve first marks it ready.
 per-island test, and `ScPipeline::afterIntegration` restores prior poses
 when solver and island tasks overlap. Serial CPU deactivation before PGS
 avoids the concurrent integration that requires restoration in the original
-schedule. A regression requires a visible ready-but-awake frame followed
-by an inactive frame with an unchanged pose. This does **not** implement
+schedule. Regressions require a visible ready-but-awake frame followed
+by an inactive frame with an unchanged pose, and verify that a newly
+published Gu touch clears the readiness of an **already awake** node
+before third-pass deactivation. Quiet island propagation must not clear
+readiness every frame, or no island would ever fall asleep. This does **not** implement
 the original activating/deactivating index arrays, callback lists,
 kinematic rules, or the parallel third-pass/post-integration join.
 

@@ -2875,6 +2875,35 @@ int run_native_scene_smoke() {
     }
 
     {
+        // IslandSim::activateNode clears an already-awake node's ready
+        // flag when a new contact wakes its island. A body that just
+        // reached readiness must still resolve the newly added static
+        // contact, not sleep before submitting the new Gu rows.
+        Scene new_touch;
+        new_touch.add_static_floor(0.0f);
+        const auto candidate=new_touch.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            new_touch.step(1.0f/120.0f);
+            if(new_touch.body_ready_for_sleep(candidate)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !new_touch.body_is_sleeping(candidate),
+               "New-touch activation fixture missed the ready-before-sleep frame");
+        const float previous_x=new_touch.body_state(candidate).position.x;
+        new_touch.add_static_box(
+            {0.5f,0.5f,0.5f},{previous_x+0.9f,0.5f,0});
+        new_touch.step(1.0f/120.0f);
+        const auto moved=new_touch.body_state(candidate);
+        expect(!moved.sleeping &&
+               moved.position.x<previous_x-0.001f,
+               "New Gu touch failed to revoke an awake node's sleep readiness");
+    }
+
+    {
         // IslandSim::activateIslandInternal wakes connected rigid nodes,
         // not only the node explicitly edited by a user. A persistent
         // dynamic contact must admit both nodes together on reactivation.

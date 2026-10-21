@@ -1322,21 +1322,27 @@ void Scene::activate_published_islands() noexcept {
     // Source IslandSim::wakeIslands / activateIslandInternal. Contact
     // managers already belong to the persistent speculative/accurate
     // graphs; no second activation or body registry is introduced.
-    const auto wake=[&](BodyId id) {
+    const auto wake=[&](BodyId id,bool newly_connected) {
         auto& body=actors_[id];
-        if(!body.alive || !body.sleeping)return;
+        if(!body.alive || body.kind!=Kind::DynamicBox)return;
+        // IslandSim::activateNode clears Node::isReadyForSleeping even
+        // when the node is already awake. New physical touches can
+        // revoke last frame's sleep readiness before the third pass.
+        // A quiet awake island must not clear readiness each frame.
+        if(newly_connected)
+            body.ready_for_sleep=false;
+        if(!body.sleeping)return;
         body.sleeping=false;
         body.ready_for_sleep=false;
         body.wake_counter=std::max(body.wake_counter,0.4f);
         body.sleep_linear_acc={};
         body.sleep_angular_acc={};
     };
+    // Both dynamic endpoints of a newly connected Gu touch are eligible
+    // for source activation; static endpoints have no island node.
     for(Pair pair:found_contacts_) {
-        const bool a=actors_[pair.a].alive &&
-                     actors_[pair.a].kind==Kind::DynamicBox;
-        const bool b=actors_[pair.b].alive &&
-                     actors_[pair.b].kind==Kind::DynamicBox;
-        if(a!=b)wake(a?pair.a:pair.b);
+        wake(pair.a,true);
+        wake(pair.b,true);
     }
     // Direct authoring can reactivate a member without new Gu contacts.
     // Source activating-node worklists remain future integration work:
@@ -1355,7 +1361,7 @@ void Scene::activate_published_islands() noexcept {
         if(!active)continue;
         for(BodyId id=island.root;id!=invalid;
             id=speculative_islands_.node_next[id])
-            wake(id);
+            wake(id,false);
     }
 }
 void Scene::third_pass_island_gen() {
