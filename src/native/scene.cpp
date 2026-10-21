@@ -2887,8 +2887,9 @@ void Scene::advance_collision(bool force_update) {
     // event/solver reports and advances the publication clock.
     if (!dirty_ && !force_update && !island_topology_dirty_ &&
         retired_edge_handles_.empty()) {
+        // No new edges or pending island changes: never scan live
+        // islands on the existing constant-work collision query path.
         advance_collision_internal(false);
-        activate_published_islands();
         return;
     }
     // Geometry changes, forced refreshes and pending graph retirement
