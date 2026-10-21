@@ -226,7 +226,9 @@ void Scene::set_position(BodyId id, Vec3 position) {
     });
     actor.position = position;
     if(actor.kind==Kind::DynamicBox) {
-        // ScBodySim::wakeUp: a user-authored pose is a wake event.
+        // ScBodySim::wakeUp: an authored dormant node is queued for
+        // source IslandSim activation after the next graph publication.
+        actor.activating |= actor.sleeping;
         actor.wake_counter=std::max(actor.wake_counter,0.4f);
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
@@ -244,6 +246,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
             auto& dynamic=actors_[other];
             if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
                !dynamic.sleeping)continue;
+            dynamic.activating=true;
             dynamic.sleeping=false;
             dynamic.ready_for_sleep=false;
             dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
@@ -266,6 +269,7 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     // accumulated Dy sleep filter of an already active actor. Only
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
+        actor.activating=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -290,6 +294,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     // accumulated Dy sleep filter of an already active actor. Only
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
+        actor.activating=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -327,6 +332,7 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     // accumulated Dy sleep filter of an already active actor. Only
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
+        actor.activating=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -379,6 +385,7 @@ void Scene::remove(BodyId id) {
         auto& partner=actors_[other];
         if(!partner.alive || partner.kind!=Kind::DynamicBox ||
            !partner.sleeping)continue;
+        partner.activating=true;
         partner.sleeping=false;
         partner.ready_for_sleep=false;
         partner.wake_counter=std::max(partner.wake_counter,0.4f);
@@ -1319,49 +1326,51 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     ++island_topology_revision_;
 }
 void Scene::activate_published_islands() noexcept {
-    // Source IslandSim::wakeIslands / activateIslandInternal. Contact
-    // managers already belong to the persistent speculative/accurate
-    // graphs; no second activation or body registry is introduced.
-    const auto wake=[&](BodyId id,bool newly_connected) {
-        auto& body=actors_[id];
-        if(!body.alive || body.kind!=Kind::DynamicBox)return;
-        // IslandSim::activateNode clears Node::isReadyForSleeping even
-        // when the node is already awake. New physical touches can
-        // revoke last frame's sleep readiness before the third pass.
-        // A quiet awake island must not clear readiness each frame.
-        if(newly_connected)
-            body.ready_for_sleep=false;
-        if(!body.sleeping)return;
-        body.sleeping=false;
-        body.ready_for_sleep=false;
-        body.wake_counter=std::max(body.wake_counter,0.4f);
-        body.sleep_linear_acc={};
-        body.sleep_angular_acc={};
+    // Source IslandSim::wakeIslands/activateIslandInternal: propagate
+    // actual activation events through already published speculative
+    // connectivity, not the mere existence of an awake neighbor.
+    const auto dynamic_node=[&](BodyId id) {
+        return actors_[id].alive && actors_[id].kind==Kind::DynamicBox;
     };
-    // Both dynamic endpoints of a newly connected Gu touch are eligible
-    // for source activation; static endpoints have no island node.
+    // Newly established accurate contacts can activate dormant actors
+    // and must clear readiness even for an already-awake endpoint.
     for(Pair pair:found_contacts_) {
-        wake(pair.a,true);
-        wake(pair.b,true);
+        for(BodyId id:{pair.a,pair.b}) {
+            if(!dynamic_node(id))continue;
+            actors_[id].activating=true;
+            actors_[id].ready_for_sleep=false;
+        }
     }
-    // Direct authoring can reactivate a member without new Gu contacts.
-    // Source activating-node worklists remain future integration work:
-    // here existing island chains are the sole membership authority.
+    // New speculative dynamic edges merge islands in the source first
+    // pass. An awake endpoint wakes the previously dormant component,
+    // even when the pair has not generated an accurate Gu contact.
+    for(Pair pair:found_) {
+        if(!dynamic_node(pair.a) || !dynamic_node(pair.b))continue;
+        if(!actors_[pair.a].sleeping || !actors_[pair.b].sleeping) {
+            actors_[pair.a].activating=true;
+            actors_[pair.b].activating=true;
+        }
+    }
     constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
     for(const auto& island:speculative_islands_.islands) {
         if(!island.live)continue;
-        bool active=false;
+        bool activated=false;
         for(BodyId id=island.root;id!=invalid;
             id=speculative_islands_.node_next[id]) {
-            if(actors_[id].alive && !actors_[id].sleeping) {
-                active=true;
-                break;
-            }
+            if(actors_[id].activating) {activated=true;break;}
         }
-        if(!active)continue;
+        if(!activated)continue;
         for(BodyId id=island.root;id!=invalid;
-            id=speculative_islands_.node_next[id])
-            wake(id,false);
+            id=speculative_islands_.node_next[id]) {
+            Actor& body=actors_[id];
+            body.activating=false;
+            if(!body.sleeping)continue;
+            body.sleeping=false;
+            body.ready_for_sleep=false;
+            body.wake_counter=std::max(body.wake_counter,0.4f);
+            body.sleep_linear_acc={};
+            body.sleep_angular_acc={};
+        }
     }
 }
 void Scene::third_pass_island_gen() {
@@ -1395,12 +1404,15 @@ void Scene::third_pass_island_gen() {
 // persistent handles and node membership while bodies are inactive.
 void Scene::deactivate_ready_islands() noexcept {
     constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
-    for(const auto& island:speculative_islands_.islands) {
+    // PhysX uses accurate-island deactivations for rigid-body state in
+    // ScPipeline::afterIntegration. The speculative third-pass list
+    // controls contact interaction activity, not rigid sleep admission.
+    for(const auto& island:accurate_islands_.islands) {
         if(!island.live)continue;
         bool ready=true;
         bool has_active_node=false;
         for(BodyId node=island.root;node!=invalid;
-            node=speculative_islands_.node_next[node]) {
+            node=accurate_islands_.node_next[node]) {
             const Actor& actor=actors_[node];
             if(!actor.ready_for_sleep) {
                 ready=false;
@@ -1410,7 +1422,7 @@ void Scene::deactivate_ready_islands() noexcept {
         }
         if(!ready || !has_active_node)continue;
         for(BodyId node=island.root;node!=invalid;
-            node=speculative_islands_.node_next[node]) {
+            node=accurate_islands_.node_next[node]) {
             Actor& actor=actors_[node];
             if(actor.sleeping)continue;
             // ScBodySim::deactivate clears velocities and pending motion.
@@ -2513,7 +2525,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                 a.position,a.velocity,a.angular_velocity,a.orientation,
                 a.pending_angular_velocity_delta,a.wake_counter,
                 a.sleep_linear_acc,a.sleep_angular_acc,
-                a.ready_for_sleep,a.sleeping});
+                a.ready_for_sleep,a.sleeping,a.activating});
         }
         friction_patches.assign(scene.friction_patches_.begin(),
                                 scene.friction_patches_.end());
@@ -2629,6 +2641,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.sleep_angular_acc=motion.sleep_angular_acc;
             a.ready_for_sleep=motion.ready_for_sleep;
             a.sleeping=motion.sleeping;
+            a.activating=motion.activating;
         }
     }
     // Swap back the exact original arena allocations. This preserves the
@@ -2929,6 +2942,9 @@ void Scene::advance_collision(bool force_update) {
         // No new edges or pending island changes: never scan live
         // islands on the existing constant-work collision query path.
         advance_collision_internal(false);
+        // A velocity/torque edit can queue IslandSim activation without
+        // touching geometry. Complete the no-throw source wake handoff.
+        activate_published_islands();
         return;
     }
     // Geometry changes, forced refreshes and pending graph retirement

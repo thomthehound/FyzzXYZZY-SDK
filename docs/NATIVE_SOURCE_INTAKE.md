@@ -715,7 +715,15 @@ The current synchronous CPU scene consumes prior-frame
 `Dy::sleepCheck` readiness at the third-pass boundary instead of putting a
 body to sleep in the same frame its PGS solve first marks it ready.
 `PxsIslandSim::processLostEdges(allowDeactivation)` owns the original
-per-island test, and `ScPipeline::afterIntegration` restores prior poses
+per-island test. The admitted native scene now applies rigid-body
+deactivation to accurate island membership, leaving speculative-only
+connections to govern broadphase/contact interaction activity; it no
+longer treats every awake speculative member as a wake event. Explicit
+sleep-to-wake authoring queues an actor-local activating flag, and
+new speculative/accurate edges activate their affected islands during
+the collision-publication handoff. Quiet collision queries also consume
+pending authoring activation. That flag is part of rollback state.
+`ScPipeline::afterIntegration` restores prior poses
 when solver and island tasks overlap. Serial CPU deactivation before PGS
 avoids the concurrent integration that requires restoration in the original
 schedule. Regressions require a visible ready-but-awake frame followed

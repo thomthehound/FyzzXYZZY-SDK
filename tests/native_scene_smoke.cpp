@@ -3026,6 +3026,79 @@ int run_native_scene_smoke() {
     }
 
     {
+        // IslandSim::wakeIslands consumes an actual authored activation,
+        // including when a collision-only query is otherwise quiet.
+        // An already-awake neighbor is not itself a perpetual wake event.
+        Scene queued_wake;
+        queued_wake.add_static_floor(0.0f);
+        const auto left=queued_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=queued_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            queued_wake.step(1.0f/120.0f);
+        expect(queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Activation queue fixture did not reach dormant island");
+        queued_wake.advance_collision();
+        expect(queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Quiet query spuriously activated a dormant island");
+        queued_wake.set_velocity(left,{0.3f,0,0});
+        expect(!queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Authored activation did not retain per-node handoff");
+        queued_wake.advance_collision();
+        expect(!queued_wake.body_is_sleeping(right),
+               "Quiet collision publication discarded the queued source wake");
+    }
+
+    {
+        // The speculative graph may contain a pair of overlapping AABBs
+        // whose rotated Gu boxes never touch. PhysX's third pass uses
+        // accurate islands to decide rigid-body deactivation; only
+        // contact interactions use speculative deactivation state.
+        // Keep one rod awake without translating far enough to destroy
+        // the SAP overlap, while its accurate neighbor is allowed to sleep.
+        Scene distinct_sleep;
+        const auto rod_a=distinct_sleep.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+        const auto rod_b=distinct_sleep.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(BodyId id:{rod_a,rod_b}) {
+            distinct_sleep.set_velocity(id,{0,9.81f,0});
+            distinct_sleep.set_angular_velocity(id,{0,0.83f,0});
+        }
+        distinct_sleep.step(1.0f);
+        for(BodyId id:{rod_a,rod_b}) {
+            distinct_sleep.set_angular_velocity(id,{});
+            distinct_sleep.set_velocity(id,{});
+        }
+        distinct_sleep.set_position(rod_a,{0,0.1f,0});
+        distinct_sleep.set_position(rod_b,{0.6f,0.1f,0.6f});
+        distinct_sleep.add_static_floor(0.0f);
+        distinct_sleep.advance_collision();
+        expect(has(distinct_sleep.pairs(),rod_a,rod_b) &&
+               distinct_sleep.speculative_island_count()==1 &&
+               distinct_sleep.accurate_island_count()==2,
+               "Sleep fixture failed to separate speculative and accurate islands");
+        bool independent_sleep=false;
+        for(int frame=0;frame<160;++frame) {
+            distinct_sleep.set_velocity(rod_b,{0,0,0.25f});
+            distinct_sleep.step(1.0f/120.0f);
+            if(distinct_sleep.body_is_sleeping(rod_a) &&
+               !distinct_sleep.body_is_sleeping(rod_b) &&
+               distinct_sleep.speculative_island_count()==1 &&
+               distinct_sleep.accurate_island_count()==2) {
+                independent_sleep=true;
+                break;
+            }
+        }
+        expect(independent_sleep,
+               "Accurate rigid island could not deactivate independently of SAP candidate");
+    }
+
+    {
         // Newly published contacts and island activation precede
         // unconstrained velocity integration. On a later overflow,
         // failure atomicity must roll back both the fresh contact

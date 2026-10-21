@@ -294,6 +294,10 @@ private:
         Vec3 sleep_linear_acc{}, sleep_angular_acc{};
         bool ready_for_sleep=false;
         bool sleeping=false;
+        // IslandSim::Node::eACTIVATING, set by a genuine authored
+        // sleep-to-wake transition; consumed by wakeIslands after Gu
+        // publication. Active nodes do not reawaken peers every frame.
+        bool activating=false;
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
@@ -542,6 +546,7 @@ private:
             Vec3 sleep_linear_acc{}, sleep_angular_acc{};
             bool ready_for_sleep=false;
             bool sleeping=false;
+            bool activating=false;
         };
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
