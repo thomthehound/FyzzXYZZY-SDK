@@ -227,7 +227,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
     actor.position = position;
     if(actor.kind==Kind::DynamicBox) {
         // ScBodySim::wakeUp: a user-authored pose is a wake event.
-        actor.wake_counter=0.4f;
+        actor.wake_counter=std::max(actor.wake_counter,0.4f);
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
         actor.ready_for_sleep=false;
@@ -246,7 +246,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
                !dynamic.sleeping)continue;
             dynamic.sleeping=false;
             dynamic.ready_for_sleep=false;
-            dynamic.wake_counter=0.4f;
+            dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
             dynamic.sleep_linear_acc={};
             dynamic.sleep_angular_acc={};
         }
@@ -262,7 +262,7 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     actor.velocity = velocity;
     // NpRigidDynamic::setLinearVelocity wakes a dynamic body and resets
     // its solver sleep preparation, not the authoritative island graph.
-    actor.wake_counter=0.4f;
+    actor.wake_counter=std::max(actor.wake_counter,0.4f);
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
@@ -281,7 +281,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
         throw std::logic_error(
             "Angular inertia is not representable in PhysX float body state");
     actor.angular_velocity = velocity;
-    actor.wake_counter=0.4f;
+    actor.wake_counter=std::max(actor.wake_counter,0.4f);
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
@@ -313,7 +313,7 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     if (!finite(delta) || !finite(pending))
         throw std::overflow_error("Native world-space torque impulse overflow");
     actor.pending_angular_velocity_delta = pending;
-    actor.wake_counter=0.4f;
+    actor.wake_counter=std::max(actor.wake_counter,0.4f);
     actor.sleep_linear_acc={};
     actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
@@ -366,7 +366,7 @@ void Scene::remove(BodyId id) {
            !partner.sleeping)continue;
         partner.sleeping=false;
         partner.ready_for_sleep=false;
-        partner.wake_counter=0.4f;
+        partner.wake_counter=std::max(partner.wake_counter,0.4f);
         partner.sleep_linear_acc={};
         partner.sleep_angular_acc={};
     }
