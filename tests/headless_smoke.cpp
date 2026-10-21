@@ -836,6 +836,52 @@ int main() {
                 }
             }
 
+            // ScPipeline first-pass pair publication and IslandSim
+            // activation precede Dy unconstrained velocity preparation.
+            // A dynamic body introduced against a sleeping contact island
+            // must wake its peer on that same frame in both implementations.
+            {
+                fyzz::World native_join(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World reference_join(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                native_join.add_static_floor(0);
+                reference_join.add_static_floor(0);
+                const auto n_sleeper=native_join.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                const auto p_sleeper=reference_join.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                for(int frame=0;frame<360;++frame) {
+                    native_join.step(1.0f/120.0f);
+                    reference_join.step(1.0f/120.0f);
+                }
+                if(!native_join.body_state(n_sleeper).sleeping ||
+                   !reference_join.body_state(p_sleeper).sleeping)
+                    throw std::runtime_error(
+                        "Dynamic island wake fixture failed to become dormant");
+                native_join.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1);
+                reference_join.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1);
+                native_join.step(1.0f/120.0f);
+                reference_join.step(1.0f/120.0f);
+                const auto n=native_join.body_state(n_sleeper);
+                const auto p=reference_join.body_state(p_sleeper);
+                if(n.sleeping || p.sleeping ||
+                   std::abs(n.position.x-p.position.x)>0.03f ||
+                   std::abs(n.velocity.x-p.velocity.x)>0.15f) {
+                    std::cerr<<"Source dynamic island first-pass wake"
+                             <<" native_sleeping="<<n.sleeping
+                             <<" physx_sleeping="<<p.sleeping
+                             <<" native_x="<<n.position.x
+                             <<" physx_x="<<p.position.x
+                             <<" native_vx="<<n.velocity.x
+                             <<" physx_vx="<<p.velocity.x<<'\n';
+                    throw std::runtime_error(
+                        "New dynamic touch failed source same-frame island activation");
+                }
+            }
+
             // Source Dy::sleepCheck + PxsIslandSim::deactivateIsland:
             // a settled body must *actually* stop participating in
             // integration, agree with independent PxRigidDynamic::isSleeping,
