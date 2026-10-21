@@ -469,10 +469,12 @@ int run_native_scene_smoke() {
                dirty_routes.island_full_rebuild_count()==before_rebuild+1,
                "Dirty fast route falsely preserved a disconnected island");
 
-        // A failed step must not commit source route diagnostics. Here
-        // two redundant dynamic edges disappear before a different
-        // contact manager fails in material preparation. A retry must
-        // count precisely one successful publication's repair work.
+        // A failed step must restore pre-existing source route hints,
+        // not merely topology and diagnostics. Prime both IslandSim
+        // caches with a redundant chord removal, reinsert the chords,
+        // then trigger repeated solver failures on the next removal.
+        // The successful retry must reuse all four cached non-root
+        // routes just as the never-failed scene does.
         {
             auto populate=[](Scene& scene) {
                 scene.add_dynamic_box(
@@ -492,12 +494,28 @@ int run_native_scene_smoke() {
             Scene rejected, clean;
             const auto [rt,rf,rl]=populate(rejected);
             const auto [ct,cf,cl]=populate(clean);
+            for(auto* scene:{&rejected,&clean}) {
+                const auto tip=scene==&rejected?rt:ct;
+                scene->set_position(tip,{1.3f,22,0});
+                scene->advance_collision();
+                expect(scene->island_dirty_route_check_count()==6 &&
+                       scene->island_fast_route_hit_count()==0 &&
+                       scene->accurate_island_count()==1,
+                       "Fast-route rollback fixture did not prime both graphs");
+                scene->set_position(tip,{0.6f,22,0});
+                scene->advance_collision();
+                expect(scene->pairs().size()==7 &&
+                       scene->contacts().size()==7,
+                       "Fast-route rollback fixture did not restore redundant chords");
+                scene->set_position(tip,{1.3f,22,0});
+            }
             const auto checks=rejected.island_dirty_route_check_count();
             const auto hits=rejected.island_fast_route_hit_count();
             const auto revision=rejected.island_topology_revision();
             const auto frame=rejected.frame_index();
-            rejected.set_position(rt,{1.3f,22,0});
-            clean.set_position(ct,{1.3f,22,0});
+            expect(checks==clean.island_dirty_route_check_count() &&
+                   hits==clean.island_fast_route_hit_count(),
+                   "Primed route histories disagree before rollback test");
             auto overflowing=fyzz::Material{};
             overflowing.static_friction=1.0e30f;
             overflowing.dynamic_friction=1.0e30f;
@@ -522,6 +540,7 @@ int run_native_scene_smoke() {
             expect(rejected.island_dirty_route_check_count()==checks+6 &&
                    rejected.island_dirty_route_check_count()==
                        clean.island_dirty_route_check_count() &&
+                   rejected.island_fast_route_hit_count()==hits+4 &&
                    rejected.island_fast_route_hit_count()==
                        clean.island_fast_route_hit_count() &&
                    rejected.accurate_island_count()==clean.accurate_island_count() &&
