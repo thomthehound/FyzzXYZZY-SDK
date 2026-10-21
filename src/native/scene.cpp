@@ -2743,13 +2743,15 @@ void Scene::step(float seconds) {
                 throw std::overflow_error("Native CPU orientation overflow");
             actor.position = p;
             actor.orientation = q;
-            // DySleep.cpp::updateWakeCounter (default scene with
-            // stabilization disabled). ScBodyCore's source defaults
-            // are 0.4 seconds and 5e-5*scale.speed^2 (scale.speed=1).
-            // This is the solver readiness producer; it does not itself
-            // deactivate an island or remove a body from solver admission.
+            // DySleep.cpp::updateWakeCounter (default scene, without
+            // stabilization). ScBodyCore::BodyCore and PxsBodyCore::init
+            // initialize sleepThreshold to 5e-5 * scale.speed^2.
+            // PxTolerancesScale's DEFAULT speed is 10 m/s, not 1 m/s.
+            // This only produces readiness; IslandSim owns deactivation.
             constexpr float wake_reset_time=20.0f*0.02f;
-            constexpr float energy_threshold=5.0e-5f;
+            constexpr float default_scale_speed=10.0f;
+            constexpr float energy_threshold=
+                5.0e-5f*default_scale_speed*default_scale_speed;
             float wc=actor.wake_counter;
             if(wc<wake_reset_time*0.5f || wc<seconds) {
                 const Vec3 local_angular=rotate_inverse(q,motion_angular);
