@@ -3048,6 +3048,21 @@ int run_native_scene_smoke() {
         expect(!queued_wake.body_is_sleeping(left) &&
                queued_wake.body_is_sleeping(right),
                "Authored activation did not retain per-node handoff");
+        // A failed Dy frame may consume an activating node while
+        // traversing the speculative island. The checkpoint must restore
+        // both the dormant peer and the queued activating flag so the
+        // subsequent collision-only query still wakes the peer.
+        const auto queued_frame=queued_wake.frame_index();
+        for(int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;
+            try {queued_wake.step(std::numeric_limits<float>::max());}
+            catch(const std::overflow_error&) {rejected=true;}
+            expect(rejected &&
+                   queued_wake.frame_index()==queued_frame &&
+                   !queued_wake.body_is_sleeping(left) &&
+                   queued_wake.body_is_sleeping(right),
+                   "Failed Dy frame consumed a pending source activation");
+        }
         queued_wake.advance_collision();
         expect(!queued_wake.body_is_sleeping(right),
                "Quiet collision publication discarded the queued source wake");
