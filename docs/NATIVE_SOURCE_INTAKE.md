@@ -671,10 +671,24 @@ sleep/deactivation and publication. The native all-awake rigid subset now separa
 stages inside the existing `Scene`: first/second-pass speculative
 and accurate **edge insertion** after published Gu results, followed by
 lost-edge route checking and component repair once lost-contact
-products are ready. In a synchronous frame, that third-pass-compatible
-repair can run **before** numerical PGS work; the source does not impose
-an unconditional "solve, then third pass" order. Geometry-only
-collision publication likewise completes both stages before returning.
+products are ready. In the admitted synchronous CPU path, the complete
+pair/touch publication and island connectivity handoff now precedes
+`Dy::bodyCoreComputeUnconstrainedVelocity`: newly connected sleeping
+nodes must receive their own gravity/damping preparation in the same
+frame in which `IslandSim::wakeIslands` activates them. This removes
+the earlier split wake sequence (old-island wake before gravity, new-touch
+wake after gravity) without a second actor or solver owner.
+
+The serial dependency chain is **contact publication → first/second
+island connectivity → third-pass lost-edge repair → whole-island wake
+→ unconstrained velocities → solver preparation/PGS → integration and
+readiness → whole-island deactivation**. The third-pass-compatible
+repair can run before numerical PGS work; the original source permits
+speculative/accurate third-pass tasks to overlap the solver and join
+at post-third-pass. The admitted serial ordering is a valid
+dependency-ready lowering, not an implementation of its actual
+continuations or concurrent task graph. Geometry-only collision
+publication still completes both connectivity stages before returning.
 
 **Persistent contact-manager EdgeIndex (admitted source subset):**
 `PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
