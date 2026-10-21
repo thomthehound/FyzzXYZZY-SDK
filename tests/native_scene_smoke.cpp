@@ -2884,6 +2884,29 @@ int run_native_scene_smoke() {
                "Native PGS could not advance rigid body after static wake");
     }
 
+    {
+        // Sc::Scene destroys contact-manager links when a supporting
+        // static actor is retired. A sleeping box must wake and resume
+        // falling rather than remain indefinitely suspended in space.
+        Scene removed_support;
+        const auto floor=removed_support.add_static_floor(0);
+        const auto box=removed_support.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            removed_support.step(1.0f/120.0f);
+        expect(removed_support.body_is_sleeping(box),
+               "Retired-support fixture failed to reach source sleep");
+        const float old_y=removed_support.body_state(box).position.y;
+        removed_support.remove(floor);
+        expect(!removed_support.body_is_sleeping(box),
+               "Retiring static support failed to reactivate sleeping box");
+        for(int frame=0;frame<8;++frame)
+            removed_support.step(1.0f/120.0f);
+        expect(removed_support.body_state(box).position.y<old_y-0.005f &&
+               removed_support.body_state(box).velocity.y<0.0f,
+               "Source rigid body did not fall after losing static support");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
