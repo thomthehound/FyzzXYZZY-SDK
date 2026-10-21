@@ -758,6 +758,55 @@ int main() {
                 }
             }
 
+            // Source Dy::sleepCheck + PxsIslandSim::deactivateIsland:
+            // a settled body must *actually* stop participating in
+            // integration, agree with independent PxRigidDynamic::isSleeping,
+            // and wake on user-authored motion without losing contact links.
+            {
+                fyzz::World native_sleep(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World physx_sleep(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                native_sleep.add_static_floor(0.0f);
+                physx_sleep.add_static_floor(0.0f);
+                const auto n=native_sleep.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                const auto p=physx_sleep.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                for(unsigned frame=0;frame<360;++frame) {
+                    native_sleep.step(1.0f/120.0f);
+                    physx_sleep.step(1.0f/120.0f);
+                }
+                const auto asleep_native=native_sleep.body_state(n);
+                const auto asleep_physx=physx_sleep.body_state(p);
+                if(!asleep_native.sleeping || !asleep_physx.sleeping) {
+                    std::cerr<<"Native/PhysX sleep divergence"
+                             <<" native_sleeping="<<asleep_native.sleeping
+                             <<" physx_sleeping="<<asleep_physx.sleeping
+                             <<" native_vy="<<asleep_native.velocity.y
+                             <<" physx_vy="<<asleep_physx.velocity.y<<'\n';
+                    throw std::runtime_error(
+                        "Source island deactivation failed settled floor sleep");
+                }
+                native_sleep.set_body_velocity(n,{1,0,0});
+                physx_sleep.set_body_velocity(p,{1,0,0});
+                if(native_sleep.body_state(n).sleeping ||
+                   physx_sleep.body_state(p).sleeping)
+                    throw std::runtime_error(
+                        "Explicit motion failed to wake PhysX island body");
+                native_sleep.step(1.0f/120.0f);
+                physx_sleep.step(1.0f/120.0f);
+                const auto active_native=native_sleep.body_state(n);
+                const auto active_physx=physx_sleep.body_state(p);
+                if(active_native.sleeping || active_physx.sleeping ||
+                   std::abs(active_native.velocity.x-
+                            active_physx.velocity.x)>0.12f ||
+                   std::abs(active_native.position.x-
+                            active_physx.position.x)>0.02f)
+                    throw std::runtime_error(
+                        "Source island did not resume PhysX-equivalent motion after wake");
+            }
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
