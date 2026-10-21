@@ -577,6 +577,64 @@ int run_native_scene_smoke() {
                    "Rebuild-time merge discarded the larger source island handle");
         }
 
+        // IslandSim::processNewEdges grows island sizes after each
+        // found edge. Two old 2-node islands merge before a 3-node
+        // island joins: the newly 4-node handle wins the next merge.
+        // Unrelated actor admission must not change that sequence or
+        // either graph's retained source island identity.
+        {
+            auto populate=[](Scene& scene) {
+                return std::array<fyzz::BodyId,7>{
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{0,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{0.3f,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{4,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{4.3f,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{8,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{8.3f,42,0},1),
+                    scene.add_dynamic_box({0.5f,0.5f,0.5f},{8.6f,42,0},1)};
+            };
+            Scene incremental, admitted;
+            const auto ci=populate(incremental);
+            const auto ai=populate(admitted);
+            incremental.advance_collision();
+            admitted.advance_collision();
+            const auto survivor=incremental.accurate_island_id(ci[2]);
+            const auto speculative_survivor=
+                incremental.speculative_island_id(ci[2]);
+            const auto largest_original=incremental.accurate_island_id(ci[4]);
+            expect(incremental.accurate_island_count()==3 &&
+                   incremental.speculative_island_count()==3 &&
+                   survivor!=largest_original &&
+                   survivor==incremental.accurate_island_id(ci[3]) &&
+                   incremental.accurate_island_id(ci[0])!=survivor,
+                   "Accumulated source merge fixture lacks three old islands");
+            const auto newcomer=admitted.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{30,42,0},1);
+            const std::array<float,7> joined_x{
+                0.0f,0.3f,1.0f,1.3f,2.0f,2.3f,2.6f};
+            for(std::size_t i=0;i<ci.size();++i) {
+                incremental.set_position(ci[i],{joined_x[i],42,0});
+                admitted.set_position(ai[i],{joined_x[i],42,0});
+            }
+            incremental.advance_collision();
+            admitted.advance_collision();
+            expect(incremental.accurate_island_count()==1 &&
+                   incremental.speculative_island_count()==1 &&
+                   admitted.accurate_island_count()==2 &&
+                   admitted.speculative_island_count()==2 &&
+                   incremental.accurate_island_id(ci[0])==survivor &&
+                   incremental.speculative_island_id(ci[0])==
+                       speculative_survivor &&
+                   admitted.accurate_island_id(newcomer)!=survivor,
+                   "Incremental source did not retain accumulated merge winner");
+            for(std::size_t i=0;i<ci.size();++i)
+                expect(admitted.accurate_island_id(ai[i])==
+                           incremental.accurate_island_id(ci[i]) &&
+                       admitted.speculative_island_id(ai[i])==
+                           incremental.speculative_island_id(ci[i]),
+                       "Actor admission changed source accumulated merge identity");
+        }
+
         // A failed step must restore pre-existing source route hints,
         // not merely topology and diagnostics. Prime both IslandSim
         // caches with a redundant chord removal, reinsert the chords,
