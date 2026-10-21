@@ -3065,12 +3065,12 @@ int run_native_scene_smoke() {
             {2.0f,0.1f,0.2f},{0,10,0},1.0f);
         const auto rod_b=distinct_sleep.add_dynamic_box(
             {2.0f,0.1f,0.2f},{0,10,5},1.0f);
-        for(BodyId id:{rod_a,rod_b}) {
+        for(fyzz::BodyId id:{rod_a,rod_b}) {
             distinct_sleep.set_velocity(id,{0,9.81f,0});
             distinct_sleep.set_angular_velocity(id,{0,0.83f,0});
         }
         distinct_sleep.step(1.0f);
-        for(BodyId id:{rod_a,rod_b}) {
+        for(fyzz::BodyId id:{rod_a,rod_b}) {
             distinct_sleep.set_angular_velocity(id,{});
             distinct_sleep.set_velocity(id,{});
         }
