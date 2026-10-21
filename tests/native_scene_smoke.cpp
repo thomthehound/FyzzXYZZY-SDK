@@ -1673,7 +1673,11 @@ int run_native_scene_smoke() {
     for(const bool expect_lost:{false,true}) {
         Scene rejected, clean;
         auto setup=[&](Scene& s) {
-            const auto ground=s.add_static_floor(0.0f);
+            // A bounded static box allows both the SAP overlap and the
+            // Gu contact to be lost. An infinite floor remains a SAP
+            // candidate after the dynamic body moves away vertically.
+            const auto ground=s.add_static_box(
+                {2.0f,0.5f,2.0f},{0,-0.5f,0});
             const auto box=s.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
             s.advance_collision();
@@ -1685,7 +1689,6 @@ int run_native_scene_smoke() {
         };
         const auto [floor_a,box_a]=setup(rejected);
         const auto [floor_b,box_b]=setup(clean);
-        const fyzz::native::Pair contact{floor_a,box_a};
         const auto found_pairs=rejected.found_pairs();
         const auto lost_pairs=rejected.lost_pairs();
         const auto found_contacts=rejected.found_contacts();
@@ -1755,7 +1758,6 @@ int run_native_scene_smoke() {
                recovered.velocity.y==baseline.velocity.y &&
                rejected.frame_index()==clean.frame_index(),
                "Quiet event rollback changed successful retry state");
-        (void)contact;
         (void)floor_b;
     }
 
