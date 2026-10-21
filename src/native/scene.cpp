@@ -262,9 +262,14 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     actor.velocity = velocity;
     // NpRigidDynamic::setLinearVelocity wakes a dynamic body and resets
     // its solver sleep preparation, not the authoritative island graph.
+    // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
+    // accumulated Dy sleep filter of an already active actor. Only
+    // genuine sleep-to-wake transitions begin with a cleared filter.
+    if(actor.sleeping) {
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+    }
     actor.wake_counter=std::max(actor.wake_counter,0.4f);
-    actor.sleep_linear_acc={};
-    actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
     actor.sleeping=false;
     // This base solver has no inter-frame constraint cache to invalidate.
@@ -281,9 +286,14 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
         throw std::logic_error(
             "Angular inertia is not representable in PhysX float body state");
     actor.angular_velocity = velocity;
+    // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
+    // accumulated Dy sleep filter of an already active actor. Only
+    // genuine sleep-to-wake transitions begin with a cleared filter.
+    if(actor.sleeping) {
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+    }
     actor.wake_counter=std::max(actor.wake_counter,0.4f);
-    actor.sleep_linear_acc={};
-    actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
     actor.sleeping=false;
 }
@@ -313,9 +323,14 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     if (!finite(delta) || !finite(pending))
         throw std::overflow_error("Native world-space torque impulse overflow");
     actor.pending_angular_velocity_delta = pending;
+    // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
+    // accumulated Dy sleep filter of an already active actor. Only
+    // genuine sleep-to-wake transitions begin with a cleared filter.
+    if(actor.sleeping) {
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+    }
     actor.wake_counter=std::max(actor.wake_counter,0.4f);
-    actor.sleep_linear_acc={};
-    actor.sleep_angular_acc={};
     actor.ready_for_sleep=false;
     actor.sleeping=false;
 }
