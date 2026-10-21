@@ -2923,6 +2923,34 @@ int run_native_scene_smoke() {
     }
 
     {
+        // A geometry-only Gu publication can create a static touch
+        // before the next step. IslandSim::wakeIslands consumes it at
+        // publication, not from a one-frame event stream that may be
+        // cleared by a later quiet collision query.
+        Scene collision_wake;
+        collision_wake.add_static_floor(0);
+        const auto body=collision_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+        for(int frame=0;frame<360;++frame)
+            collision_wake.step(1.0f/120.0f);
+        expect(collision_wake.body_is_sleeping(body),
+               "Geometry-only wake fixture failed to reach sleep");
+        collision_wake.add_static_box(
+            {0.5f,0.5f,0.5f},{0.85f,0.5f,0});
+        collision_wake.advance_collision();
+        expect(!collision_wake.body_is_sleeping(body) &&
+               collision_wake.accurate_island_static_touches(body)==2,
+               "Gu-only publication lost the static contact wake");
+        collision_wake.advance_collision();
+        expect(!collision_wake.body_is_sleeping(body),
+               "Quiet collision query lost previously published activation");
+        collision_wake.step(1.0f/120.0f);
+        expect(!collision_wake.body_state(body).sleeping &&
+               std::isfinite(collision_wake.body_state(body).velocity.y),
+               "Geometry-published source activation failed solver admission");
+    }
+
+    {
         // Sc::Scene destroys contact-manager links when a supporting
         // static actor is retired. A sleeping box must wake and resume
         // falling rather than remain indefinitely suspended in space.
