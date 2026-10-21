@@ -62,6 +62,9 @@ struct BodyState {
     // identity even though reference PhysX rotates its internal +X plane.
     Quat orientation{};
     Vec3 angular_velocity{};
+    // ScBodyCore::isSleeping: full-island deactivation, not merely
+    // an exhausted wake counter on an otherwise active body.
+    bool sleeping=false;
 };
 
 // SDK simulation backend. Each World owns exactly one implementation.
