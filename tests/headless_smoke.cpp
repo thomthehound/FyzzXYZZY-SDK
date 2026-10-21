@@ -886,6 +886,66 @@ int main() {
                 }
             }
 
+            // PxsBodyCore defaults penBiasClamp to -1e32f. A typical
+            // shallow overlap does not discriminate that source default
+            // from an invented finite -8, -10, or even -100 m/s clamp.
+            // Compare a deep, symmetric original-Gu box contact at a
+            // short timestep with independent PhysX CPU using the SAME
+            // non-PCM generator and the real Dy PGS solver. The source
+            // must itself produce a nontrivial bias correction.
+            for(const bool reversed : {false,true}) {
+                fyzz::World native_bias(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_bias(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                fyzz::BodyId nl=0,nr=0,pl=0,pr=0;
+                constexpr fyzz::Vec3 h{0.5f,0.5f,0.5f};
+                if(reversed) {
+                    nr=native_bias.add_dynamic_box(h,{0.65f,5,0},1.0f);
+                    pr=source_bias.add_dynamic_box(h,{0.65f,5,0},1.0f);
+                    nl=native_bias.add_dynamic_box(h,{0,5,0},1.0f);
+                    pl=source_bias.add_dynamic_box(h,{0,5,0},1.0f);
+                } else {
+                    nl=native_bias.add_dynamic_box(h,{0,5,0},1.0f);
+                    pl=source_bias.add_dynamic_box(h,{0,5,0},1.0f);
+                    nr=native_bias.add_dynamic_box(h,{0.65f,5,0},1.0f);
+                    pr=source_bias.add_dynamic_box(h,{0.65f,5,0},1.0f);
+                }
+                fyzz::Material noncompliant{};
+                noncompliant.disable_friction=true;
+                noncompliant.restitution=0.0f;
+                for(const auto id:{nl,nr})
+                    native_bias.set_body_material(id,noncompliant);
+                for(const auto id:{pl,pr})
+                    source_bias.set_body_material(id,noncompliant);
+                constexpr float short_dt=1.0f/480.0f;
+                native_bias.step(short_dt);
+                source_bias.step(short_dt);
+                const auto left=native_bias.body_state(nl);
+                const auto reference=source_bias.body_state(pl);
+                const auto right=native_bias.body_state(nr);
+                const auto reference_right=source_bias.body_state(pr);
+                if(!vec_finite(left.position) ||
+                   !vec_finite(left.velocity) ||
+                   !vec_finite(reference.position) ||
+                   !vec_finite(reference.velocity) ||
+                   !vec_finite(right.position) ||
+                   !vec_finite(reference_right.position) ||
+                   reference.position.x>-0.08f ||
+                   std::abs(left.position.x-reference.position.x)>0.02f ||
+                   std::abs(right.position.x-reference_right.position.x)>0.02f) {
+                    std::cerr<<"PhysX default penetration bias"
+                             <<" reversed="<<reversed
+                             <<" native_left_x="<<left.position.x
+                             <<" source_left_x="<<reference.position.x
+                             <<" native_right_x="<<right.position.x
+                             <<" source_right_x="<<reference_right.position.x
+                             <<" dt="<<short_dt<<'\n';
+                    throw std::runtime_error(
+                        "Native PGS default penetration bias diverged from PhysX");
+                }
+            }
+
             // Source Dy::sleepCheck + PxsIslandSim::deactivateIsland:
             // a settled body must *actually* stop participating in
             // integration, agree with independent PxRigidDynamic::isSleeping,

@@ -2903,9 +2903,11 @@ int run_native_scene_smoke() {
                "Source activation rollback lost new-touch retry");
         // PxvDynamics.h initializes the unconfigured rigid body's
         // maxPenBias to -1e32f, not an implicit -3 m/s clamp.
-        // This penetration exceeds 3*dt; clamping at that non-source
-        // value would prevent the sleeping peer from moving far enough.
-        expect(wake_rollback.body_state(sleeper).position.x < -0.03f,
+        // The source default is effectively unbounded for this contact.
+        // An incorrect finite -8 or -10 m/s clamp also must not pass.
+        // The reference-enabled suite checks a stronger deep-contact
+        // short-timestep case against actual PhysX legacy Gu/PGS.
+        expect(wake_rollback.body_state(sleeper).position.x < -0.05f,
                "Source default penetration bias was spuriously capped");
 
     }
