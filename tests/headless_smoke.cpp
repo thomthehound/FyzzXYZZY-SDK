@@ -694,6 +694,70 @@ int main() {
                 }
             }
 
+            // Coupled PGS conformance: unlike a free two-body impact,
+            // the upper dynamic contact and lower static-world contact
+            // must both be solved in the same source accurate island.
+            // Reverse the mass ratio and change dt after initial impact.
+            // Comparison is frame-by-frame, before bodies are guaranteed
+            // to satisfy the original sleep-deactivation predicates.
+            for(bool bottom_heavy:{false,true}) {
+                fyzz::World native_stack(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World physx_stack(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                native_stack.add_static_floor(0.0f);
+                physx_stack.add_static_floor(0.0f);
+                const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                const float lower_density=bottom_heavy?4.0f:1.0f;
+                const float upper_density=bottom_heavy?1.0f:4.0f;
+                const auto n_lower=native_stack.add_dynamic_box(
+                    half,{0,0.53f,0},lower_density);
+                const auto p_lower=physx_stack.add_dynamic_box(
+                    half,{0,0.53f,0},lower_density);
+                const auto n_upper=native_stack.add_dynamic_box(
+                    half,{0,1.56f,0},upper_density);
+                const auto p_upper=physx_stack.add_dynamic_box(
+                    half,{0,1.56f,0},upper_density);
+                fyzz::Material mat{};
+                mat.disable_friction=true;
+                mat.restitution=0.0f;
+                for(auto id:{n_lower,n_upper})
+                    native_stack.set_body_material(id,mat);
+                for(auto id:{p_lower,p_upper})
+                    physx_stack.set_body_material(id,mat);
+                // Remove material mismatch at the shared static floor.
+                native_stack.set_body_material(0,mat);
+                physx_stack.set_body_material(0,mat);
+                for(int frame=0;frame<48;++frame) {
+                    const float dt=frame<24?1.0f/120.0f:1.0f/60.0f;
+                    native_stack.step(dt);
+                    physx_stack.step(dt);
+                    for(const auto [n_id,p_id,level]:
+                        {std::tuple{n_lower,p_lower,"lower"},
+                         std::tuple{n_upper,p_upper,"upper"}}) {
+                        const auto n=native_stack.body_state(n_id);
+                        const auto p=physx_stack.body_state(p_id);
+                        const float y_error=std::abs(n.position.y-p.position.y);
+                        const float vy_error=std::abs(n.velocity.y-p.velocity.y);
+                        if(!std::isfinite(y_error) ||
+                           !std::isfinite(vy_error) ||
+                           y_error>0.045f || vy_error>0.22f) {
+                            std::cerr << "Native/PhysX stacked contact"
+                                      << " frame=" << frame+1
+                                      << " level=" << level
+                                      << " bottom_heavy=" << bottom_heavy
+                                      << " dt=" << dt
+                                      << " native_y=" << n.position.y
+                                      << " physx_y=" << p.position.y
+                                      << " native_vy=" << n.velocity.y
+                                      << " physx_vy=" << p.velocity.y << '\n';
+                            throw std::runtime_error(
+                                "Native coupled stack PGS diverged from independent PhysX");
+                        }
+                    }
+                }
+            }
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
