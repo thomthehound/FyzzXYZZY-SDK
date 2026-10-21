@@ -2863,6 +2863,44 @@ int run_native_scene_smoke() {
     }
 
     {
+        // Newly published contacts and island activation precede
+        // unconstrained velocity integration. On a later overflow,
+        // failure atomicity must roll back both the fresh contact
+        // manager and the previously sleeping peer's activation. The
+        // identical valid retry must admit both bodies to the solver.
+        Scene wake_rollback;
+        wake_rollback.add_static_floor(0.0f);
+        const auto sleeper=wake_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            wake_rollback.step(1.0f/120.0f);
+        expect(wake_rollback.body_is_sleeping(sleeper),
+               "Wake rollback source fixture did not reach sleep");
+        const auto newcomer=wake_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1.0f);
+        const auto prior_sleeper=wake_rollback.body_state(sleeper);
+        const auto prior_newcomer=wake_rollback.body_state(newcomer);
+        const auto prior_contacts=wake_rollback.contacts().size();
+        bool rejected=false;
+        try {wake_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               wake_rollback.body_is_sleeping(sleeper) &&
+               wake_rollback.body_wake_counter(sleeper)==0.0f &&
+               wake_rollback.body_state(sleeper).position.y==
+                   prior_sleeper.position.y &&
+               wake_rollback.body_state(newcomer).position.x==
+                   prior_newcomer.position.x &&
+               wake_rollback.contacts().size()==prior_contacts,
+               "Failed activation frame published wake or new Gu contact");
+        wake_rollback.step(1.0f/120.0f);
+        expect(!wake_rollback.body_is_sleeping(sleeper) &&
+               wake_rollback.accurate_island_id(sleeper)==
+                   wake_rollback.accurate_island_id(newcomer),
+               "Source activation rollback lost new-touch retry");
+    }
+
+    {
         // Sc static-actor pose authoring invalidates interactions with
         // an already sleeping rigid body. Reusing the existing accurate
         // contact managers wakes the touched actor before subsequent
