@@ -524,10 +524,16 @@ island graphs now own independent handles and node-to-island mappings;
 the shared contact-manager `EdgeIndex` array owns both adjacency graphs,
 not a second actor, force, contact or solver world. Merging components
 retains the larger source island's handle and remaps the smaller node
-chain. When an edge genuinely splits an island or a dynamic node is
-admitted/retired, a bounded global component traversal rebuilds the
-membership chains but preserves the old root's handle and unrelated
-island identities. Original local split migration, activation, sleeping
+chain. On actor admission/retirement, new rigid nodes are first
+admitted into the existing source island ownership and the found edges
+are merged in source order, with each merged island's accumulated size
+determining its retained handle. Only afterward does the bounded
+component traversal reconcile removed edges, retire old actors, and
+rebuild intrusive node membership. Thus simultaneous found/lost edges
+cannot change retained island identity merely because a new actor was
+also admitted. A genuine split still preserves the surviving old-root
+component's handle and unrelated islands. Original local split
+migration, activation, sleeping
 and source per-frame task interleaving remain open.
 
 **Cost:** unchanged dynamic connectivity and static-only topology
@@ -536,7 +542,10 @@ dynamic/dynamic SAP candidate merges the speculative node chains by
 remapping the smaller island's nodes (O(smaller island size)); a new
 physical touch does the same independently in the accurate graph.
 Source island identities remain stable across quiet frames and redundant
-contact changes. Accurate-node ordering is rebuilt only when a touch
+contact changes. Node-lifecycle rebuilds traverse the final live graph
+in O(V+E) without a per-incidence search through new-edge streams;
+found edges are handled once by the regular source merge operation
+before that traversal. Accurate-node ordering is rebuilt only when a touch
 merges previously separate islands or a split/node-lifetime rebuild
 occurs, costing O(dynamic nodes log dynamic nodes). On a lost dynamic
 edge, the native scene uses the
