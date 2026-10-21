@@ -511,29 +511,35 @@ without creating a second physics world or actor registry:
 
 | Source producer and type | Native owner and consumer | Admitted semantics |
 | --- | --- | --- |
-| `BpBroadPhaseSap` candidate pairs, `PxsSimpleIslandManager::firstPassIslandGen` and `IslandSim::processNewEdges` | `Scene::previous_pairs_` → scene-owned speculative union/find state | Dynamic/dynamic candidate connectivity, including non-touching rotated AABB candidates; static endpoints never merge rigid islands |
-| `GuContact*` physical touches, `Sc::Scene::setEdgesConnected`, `PxsSimpleIslandManager::secondPassIslandGenPart1` | `Scene::manifolds_` → scene-owned accurate union/find state | Only touching dynamic/dynamic contact edges connect accurate islands; candidate-only pairs do not |
+| `BpBroadPhaseSap` candidate pairs, `PxsSimpleIslandManager::firstPassIslandGen` and `IslandSim::processNewEdges` | `Scene::previous_pairs_` → scene-owned speculative `IslandGraph` with persistent island handles and intrusive node membership | Dynamic/dynamic candidate connectivity, including non-touching rotated AABB candidates; static endpoints never merge rigid islands |
+| `GuContact*` physical touches, `Sc::Scene::setEdgesConnected`, `PxsSimpleIslandManager::secondPassIslandGenPart1` | `Scene::manifolds_` → scene-owned accurate `IslandGraph` with persistent island handles and intrusive node membership | Only touching dynamic/dynamic contact edges connect accurate islands; candidate-only pairs do not |
 | `Dy::DynamicsContext::iterateIslandsNodes` and `preIntegrationParallel` | Contiguous accurate-island `BodyId` spans → the existing `SolverBodyRow` arena; same spans drive pose integration | Each live awake dynamic body is admitted once; only bodies with contacts allocate prepared solver rows; the original static-world solver row remains separate |
 | `IslandSim::processLostEdges`' connected-component result | On source dynamic pair/touch removal, update the same scene-owned graph state | Accurately split or rejoin components at the next published collision state; static-only contact changes do not rebuild dynamic connectivity |
 
-**Fidelity classification:** semantics-preserving connected-component lowering
-**only for the all-awake, rigid dynamic/static, contact-only subset**.
-Both source island graphs represent components of their respective
-undirected dynamic-body edge sets. The native lowering computes those
-components with reusable union/find storage on dynamic edge changes,
-rather than importing PhysX's incremental handles and dirty-route repair.
-Actor identity remains the original scene `BodyId`; no second actor,
-force, contact, or solver world owns results. The source's lifetime and
-per-frame interleaving behavior is **not** implied by matching component
-membership.
+**Fidelity classification:** source-style persistent island IDs, island
+handle recycling and intrusive node-membership chains, **only for the
+all-awake rigid dynamic/static contact-only subset**. The previous
+provisional union/find parent/rank arrays have been removed. Both source
+island graphs now own independent handles and node-to-island mappings;
+the shared contact-manager `EdgeIndex` array owns both adjacency graphs,
+not a second actor, force, contact or solver world. Merging components
+retains the larger source island's handle and remaps the smaller node
+chain. When an edge genuinely splits an island or a dynamic node is
+admitted/retired, a bounded global component traversal rebuilds the
+membership chains but preserves the old root's handle and unrelated
+island identities. Original local split migration, activation, sleeping
+and source per-frame task interleaving remain open.
 
 **Cost:** unchanged dynamic connectivity and static-only topology
 changes incur no component reconstruction. A newly found
-dynamic/dynamic SAP candidate merges the speculative graph in
-amortized near-constant union/find time; a new physical touch merges
-the accurate graph in the same way. Accurate-node ordering is rebuilt
-only when a touch merges two previously separate components, costing
-O(dynamic nodes log dynamic nodes). On a lost dynamic edge, the native scene now uses the
+dynamic/dynamic SAP candidate merges the speculative node chains by
+remapping the smaller island's nodes (O(smaller island size)); a new
+physical touch does the same independently in the accurate graph.
+Source island identities remain stable across quiet frames and redundant
+contact changes. Accurate-node ordering is rebuilt only when a touch
+merges previously separate islands or a split/node-lifetime rebuild
+occurs, costing O(dynamic nodes log dynamic nodes). On a lost dynamic
+edge, the native scene uses the
 `IslandSim::processLostEdges` / `findRoute` connectivity invariant:
 if the removed edge's endpoints are still connected in the surviving
 published graph, their component has not split. The scene now retains the original `IslandSim::mEdgeInstances`
@@ -546,8 +552,8 @@ Lost-edge route checks traverse this persistent state, using only
 visited marks and a reusable hop-priority queue; no temporary adjacency graph or
 edge-list reconstruction is needed for each loss. Redundant lost
 edges preserve connected components and solver-node order. A proved
-disconnection or dynamic-node retirement still reconstructs union/find
-components from surviving source edge slots, costing
+disconnection or dynamic-node retirement still reconstructs island-node
+membership from surviving source edge slots, costing
 O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
 The admitted all-awake rigid subset now also follows the source
 `IslandSim::removeConnectionFromGraph` → `mDirtyMap` →
@@ -562,8 +568,8 @@ root. Otherwise, a graph traversal through the persistent
 its path estimates. If root connectivity is lost, the existing
 rebuild fallback reconstructs correct all-awake components.
 
-The cache is generation-invalidated in constant time when union/find
-roots change. Failed publications instead restore the original epochs,
+The cache is generation-invalidated in constant time when source
+island roots change. Failed publications instead restore the original epochs,
 route successors, EdgeIndex handles, hop estimates and stamps through
 sparse per-slot undo entries, preserving successful earlier hints on a
 retry without copying entire arrays. Only dirty dynamic/dynamic edges
@@ -576,9 +582,9 @@ entries and maintains a O(log V) priority heap per visited node,
 versus O(path length) validation for an intact cached route. Visitation
 stamps are retained and advanced across publications rather than
 clearing all actor marks each frame. Source `IslandSim::findRoute`
-additionally uses previously visited island witnesses, persistent
-island handle/link ownership and optional bounded dirty-node budgets;
-those, plus sleep/activation semantics, are **not yet fully ported**.
+additionally uses previously visited island witnesses, localized
+island split repair and optional bounded dirty-node budgets; those,
+plus sleep/activation semantics, are **not yet fully ported**.
 The current queue implements the source's hop-priority traversal for
 the admitted all-awake rigid graph, not the entire island algorithm.
 The full-rebuild instrumentation differentiates redundant edge
@@ -653,16 +659,16 @@ are now represented and maintained by the existing scene's contact
 manager handles. Source dirty-node endpoint marking, hop-priority exploration and validated
 fast-root/hop-route hints are now active for all-awake rigid links,
 with speculative and accurate state kept separate. Stable island
-handles, previously visited source witnesses, multi-frame dirty-work
-budgets and activation/sleep state remain unported; the union/find
-component lowering still needs retirement or deeper integration as N1
-progresses. Failure rollback now journals **only the modified** source
-edge slots, route hints and intrusive node-head links, including splices
-into neighboring edge instances. It does not traverse or copy old EdgeIndex allocations at
-the start of successful steps. At most O(changed edge writes + changed
-node-head writes) adjacency copies occur in a frame; the existing
-union/find island-array checkpoint still copies O(allocated island
-nodes) state and remains an explicit performance-remediation item.
+handles and per-node island membership now replace the provisional
+union/find roots. Previously visited source witnesses, local component
+split migration, multi-frame dirty-work budgets and activation/sleep
+remain open. Failure rollback journals **only the modified** source edge
+slots, route hints and intrusive node-head links, including splices into
+neighboring edge instances. It does not traverse or copy old EdgeIndex
+allocations at the start of successful steps. At most O(changed edge
+writes + changed node-head writes) adjacency copies occur in a frame;
+the source island-node arrays are still fully checkpointed for rollback,
+an O(allocated island nodes) performance-remediation item.
 Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
