@@ -352,6 +352,24 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
 void Scene::remove(BodyId id) {
     auto& actor=require(id);
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    // Sc actor retirement removes physical contact-manager edges. A
+    // dormant rigid body resting on the retired actor cannot continue
+    // sleeping without its supporting contact: it must reenter the
+    // active island pipeline so gravity and Gu contact generation resume.
+    // Traverse the published Gu pairs only on this explicit edit path.
+    for(const auto& manifold:manifolds_) {
+        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
+        const BodyId other=manifold.pair.a==id
+            ? manifold.pair.b:manifold.pair.a;
+        auto& partner=actors_[other];
+        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+           !partner.sleeping)continue;
+        partner.sleeping=false;
+        partner.ready_for_sleep=false;
+        partner.wake_counter=0.4f;
+        partner.sleep_linear_acc={};
+        partner.sleep_angular_acc={};
+    }
     actor.alive = false;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
