@@ -2862,6 +2862,28 @@ int run_native_scene_smoke() {
                "Source island wake did not reactivate contact-connected peer");
     }
 
+    {
+        // Sc static-actor pose authoring invalidates interactions with
+        // an already sleeping rigid body. Reusing the existing accurate
+        // contact managers wakes the touched actor before subsequent
+        // Gu/PGS progression; quiet static-world contacts do not.
+        Scene moving_ground;
+        const auto floor=moving_ground.add_static_floor(0.0f);
+        const auto body=moving_ground.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            moving_ground.step(1.0f/120.0f);
+        expect(moving_ground.body_is_sleeping(body),
+               "Source static wake fixture never reached sleep");
+        moving_ground.set_position(floor,{0,0.1f,0});
+        expect(!moving_ground.body_is_sleeping(body),
+               "Static pose change left its touching rigid body asleep");
+        moving_ground.step(1.0f/120.0f);
+        expect(!moving_ground.body_state(body).sleeping &&
+               std::isfinite(moving_ground.body_state(body).position.y),
+               "Native PGS could not advance rigid body after static wake");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
