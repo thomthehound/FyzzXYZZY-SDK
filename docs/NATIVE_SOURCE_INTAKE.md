@@ -54,6 +54,11 @@ that default; `ReferencePhysXCpuLegacyGu` explicitly selects the original
 non-PCM reference generator for like-for-like Gu/PGS conformance fixtures.
 Passing the latter does not establish default PCM contact/cache/point-selection
 parity. PCM support requires its own source translation and independent tests.
+Track that near-term N1 follow-on in [issue #114](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/114);
+it blocks any assertion of default native contact parity and precedes N2
+native GPU scene admission. The reference adapter verifies the *actual*
+`PxScene::getFlags()` contact mode on creation, so accidentally converting
+the stock oracle into legacy-Gu mode is an immediate runtime error.
 
 These paths identify the **initial source intake surface**. They do **not**
 authorize compiling all of PhysX into the native SDK. Extract/translate

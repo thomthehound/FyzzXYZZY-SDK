@@ -110,6 +110,15 @@ struct PhysXCpuWorld final : WorldBackend {
             throw std::runtime_error(
                 "PhysX scene did not admit the requested CPU broadphase");
         }
+        // The two reference oracles must stay observably distinct.
+        // Verify the admitted PxScene flags, not only the descriptor:
+        // silently routing all reference worlds through legacy Gu would
+        // make default PCM conformance tests nondiscriminating.
+        if (scene->getFlags().isSet(physx::PxSceneFlag::eENABLE_PCM)
+            == legacy_gu) {
+            throw std::runtime_error(
+                "PhysX scene admitted the wrong PCM contact mode");
+        }
 
         material = runtime->physics->createMaterial(0.5f, 0.5f, 0.2f);
         if (!material) {
