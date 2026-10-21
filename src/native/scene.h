@@ -483,14 +483,25 @@ private:
         // per-node list heads. Replayed in reverse order on failure;
         // unchanged or historically allocated slots incur no copies.
         struct EdgeUndo { EdgeIndex id; ContactEdge previous; };
+        struct HintUndo {
+            BodyId node;
+            BodyId next;
+            EdgeIndex edge;
+            std::uint32_t hops;
+            std::uint64_t stamp;
+            bool accurate;
+        };
         struct HeadUndo {
             BodyId node;
             bool accurate;
             std::size_t previous;
         };
         std::vector<EdgeUndo> edge_undo;
+        std::vector<HintUndo> hint_undo;
         std::vector<HeadUndo> head_undo;
         std::size_t initial_edges=0;
+        std::size_t initial_speculative_hints=0, initial_accurate_hints=0;
+        std::uint64_t speculative_hint_epoch=1, accurate_hint_epoch=1;
         std::size_t initial_speculative_heads=0;
         std::size_t initial_accurate_heads=0;
         std::vector<EdgeIndex> active_handles;
@@ -515,6 +526,7 @@ private:
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
         void save_edge(const Scene& scene, EdgeIndex id);
+        void save_hint(const Scene& scene, BodyId node, bool accurate);
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
         void rollback(Scene& scene) noexcept;
