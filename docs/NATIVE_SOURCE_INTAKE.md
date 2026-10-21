@@ -688,7 +688,13 @@ speculative/accurate third-pass tasks to overlap the solver and join
 at post-third-pass. The admitted serial ordering is a valid
 dependency-ready lowering, not an implementation of its actual
 continuations or concurrent task graph. Geometry-only collision
-publication still completes both connectivity stages before returning.
+publication also completes the shared source-island wake stage before
+returning: an editor contact query may introduce a new Gu static touch
+while the body is asleep, and the resulting activation must not be
+dropped by a later quiet query. The activation operation is no-throw
+and runs after collision-only checkpoint commit, preserving the
+existing low-cost geometry-only failure boundary. Full `step()`
+reuses the same operation before gravity, damping and Dy submission.
 
 **Persistent contact-manager EdgeIndex (admitted source subset):**
 `PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
