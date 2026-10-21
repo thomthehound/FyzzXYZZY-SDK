@@ -469,6 +469,78 @@ int run_native_scene_smoke() {
                dirty_routes.island_full_rebuild_count()==before_rebuild+1,
                "Dirty fast route falsely preserved a disconnected island");
 
+        // PxsIslandSim owns stable island handles, not transient
+        // union/find roots. A split preserves the root's handle, an
+        // unaffected island retains its handle, and a merge keeps the
+        // larger island handle. Node admission/retirement must not
+        // renumber unrelated source islands in either graph.
+        {
+            Scene lifetime;
+            const auto a=lifetime.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,30,0},1.0f);
+            const auto b=lifetime.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.4f,30,0},1.0f);
+            const auto c=lifetime.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.8f,30,0},1.0f);
+            const auto isolated=lifetime.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{8,30,0},1.0f);
+            lifetime.advance_collision();
+            const auto island=lifetime.accurate_island_id(a);
+            const auto speculative=lifetime.speculative_island_id(a);
+            const auto quiet=lifetime.accurate_island_id(isolated);
+            const auto quiet_spec=lifetime.speculative_island_id(isolated);
+            expect(lifetime.accurate_island_count()==2 &&
+                   lifetime.speculative_island_count()==2 &&
+                   island!=quiet && speculative!=quiet_spec &&
+                   island==lifetime.accurate_island_id(b) &&
+                   island==lifetime.accurate_island_id(c) &&
+                   speculative==lifetime.speculative_island_id(c),
+                   "Source IslandSim did not publish persistent node handles");
+            lifetime.set_position(c,{3,30,0});
+            lifetime.advance_collision();
+            expect(lifetime.accurate_island_count()==3 &&
+                   lifetime.speculative_island_count()==3 &&
+                   lifetime.accurate_island_id(a)==island &&
+                   lifetime.speculative_island_id(a)==speculative &&
+                   lifetime.accurate_island_id(b)==island &&
+                   lifetime.accurate_island_id(c)!=island &&
+                   lifetime.accurate_island_id(isolated)==quiet &&
+                   lifetime.speculative_island_id(isolated)==quiet_spec,
+                   "Source island split renumbered old-root or unrelated island");
+            lifetime.set_position(c,{0.8f,30,0});
+            lifetime.advance_collision();
+            expect(lifetime.accurate_island_count()==2 &&
+                   lifetime.speculative_island_count()==2 &&
+                   lifetime.accurate_island_id(c)==island &&
+                   lifetime.speculative_island_id(c)==speculative &&
+                   lifetime.accurate_island_id(isolated)==quiet,
+                   "Source island merge failed to retain larger island identity");
+            const auto newcomer=lifetime.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{12,30,0},1.0f);
+            lifetime.advance_collision();
+            expect(lifetime.accurate_island_count()==3 &&
+                   lifetime.accurate_island_id(a)==island &&
+                   lifetime.accurate_island_id(isolated)==quiet &&
+                   lifetime.speculative_island_id(a)==speculative &&
+                   lifetime.speculative_island_id(isolated)==quiet_spec &&
+                   lifetime.accurate_island_id(newcomer)!=island &&
+                   lifetime.accurate_island_id(newcomer)!=quiet,
+                   "Source node admission renumbered existing island handles");
+            lifetime.remove(b);
+            lifetime.advance_collision();
+            expect(lifetime.accurate_island_count()==3 &&
+                   lifetime.speculative_island_count()==3 &&
+                   lifetime.accurate_island_id(b)==
+                       std::numeric_limits<std::uint32_t>::max() &&
+                   lifetime.speculative_island_id(b)==
+                       std::numeric_limits<std::uint32_t>::max() &&
+                   lifetime.accurate_island_id(a)==island &&
+                   lifetime.accurate_island_id(c)==island &&
+                   lifetime.accurate_island_id(isolated)==quiet &&
+                   lifetime.speculative_island_id(isolated)==quiet_spec,
+                   "Source node retirement invalidated a live island handle");
+        }
+
         // A failed step must restore pre-existing source route hints,
         // not merely topology and diagnostics. Prime both IslandSim
         // caches with a redundant chord removal, reinsert the chords,
