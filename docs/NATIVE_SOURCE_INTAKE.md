@@ -556,13 +556,20 @@ creation wake counter, `PxsRigidBody::mSleepLinVelAcc` and
 `mSleepAngVelAcc`, and the per-node readiness outcome of
 `DySleep.cpp::updateWakeCounter`. The latter consumes each dynamic
 body's post-position-pass motion velocity, inverse mass/local inertia,
-default sleep threshold and current contact-manager interaction count.
-The two speculative/accurate island owners retain their existing
+default sleep threshold (`5e-5 * 10² = 0.005` at the
+default `PxTolerancesScale.speed = 10`) and current contact-manager
+interaction count. The original creation wake counter is 0.4 seconds;
+the source wake filter accumulates motion near expiration rather than
+using instantaneous zero-velocity tests. The two speculative/accurate
+island owners retain their existing
 contacts while a full component becomes inactive; inactive members skip
 gravity, constraint submission and pose integration. Explicit velocity,
 torque or position authoring reactivates the body, and connected
-speculative-island members are woken together before solver admission.
-New physical touches with static bodies are additional wake events.
+speculative-island members are woken together **before unconstrained
+velocity integration**. New physical touches with static bodies are
+additional wake events. Retiring or moving a static contact partner
+also wakes a dormant supported body so it can resume gravity, without
+confusing retired nodes with awake island members.
 These transitions, including rollback of wake counters and readiness,
 are compared with the independent `PxRigidDynamic::isSleeping()`
 reference for an ordinary settled floor contact.
