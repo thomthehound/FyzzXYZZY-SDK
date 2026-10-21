@@ -771,27 +771,35 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     const auto& first=accurate?accurate_node_first_:speculative_node_first_;
     const auto& parents=accurate?accurate_island_parent_:speculative_island_parent_;
     auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
+    auto& fast_edge=accurate?accurate_fast_edge_:speculative_fast_edge_;
     auto& hops=accurate?accurate_hops_:speculative_hops_;
     auto& stamps=accurate?accurate_hint_stamps_:speculative_hint_stamps_;
     const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
     const BodyId invalid=std::numeric_limits<BodyId>::max();
     fast.resize(actors_.size(),invalid);
+    fast_edge.resize(actors_.size(),invalid_edge);
     hops.resize(actors_.size(),std::numeric_limits<std::uint32_t>::max());
     stamps.resize(actors_.size(),0);
     // Retain visited marks across publications; only grow on actor
     // admission, rather than clearing O(all actors) on a lost-edge pass.
     island_route_seen_.resize(actors_.size(),0);
     island_route_predecessor_.resize(actors_.size(),invalid);
+    island_route_predecessor_edge_.resize(actors_.size(),invalid_edge);
 
-    const auto connected=[&](BodyId from,BodyId target) {
-        for(std::size_t i=first[from];i!=invalid_instance;) {
-            const ContactEdge& edge=contact_edges_[i/2];
-            const auto& link=(accurate?edge.accurate:edge.speculative)[i&1];
-            const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
-            i=link.next;
-            if(to==target)return true;
-        }
-        return false;
+    // A cached source EdgeIndex is stable until retirement, and never
+    // aliases an unrelated route just because its slot is later reused:
+    // both endpoints and this graph's intrusive instances must still
+    // match. One edge-slot check per hop replaces linear neighbor scans.
+    const auto live_hop=[&](BodyId from,BodyId to,EdgeIndex id) {
+        if(id==invalid_edge || id>=contact_edges_.size())return false;
+        const auto& edge=contact_edges_[id];
+        if(!edge.live || edge.retiring ||
+           (accurate && !edge.connected))return false;
+        const bool forward=edge.pair.a==from && edge.pair.b==to;
+        const bool reverse=edge.pair.a==to && edge.pair.b==from;
+        if(!forward && !reverse)return false;
+        const auto& links=accurate?edge.accurate:edge.speculative;
+        return links[0].linked && links[1].linked;
     };
     const auto root_for=[&](BodyId node) {
         while(parents[node]!=node)node=parents[node];
@@ -816,7 +824,8 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             const BodyId next=fast[probe];
             if(next==invalid || next>=actors_.size() ||
                !actors_[next].alive || stamps[next]!=epoch ||
-               hops[next]>=hops[probe] || !connected(probe,next))
+               hops[next]>=hops[probe] ||
+               !live_hop(probe,next,fast_edge[probe]))
                 break;
             probe=next;
         }
@@ -837,6 +846,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         island_route_queue_.push_back(node);
         island_route_seen_[node]=visit_stamp;
         island_route_predecessor_[node]=invalid;
+        island_route_predecessor_edge_[node]=invalid_edge;
         bool found=false;
         for(std::size_t cursor=0;
             cursor<island_route_queue_.size() && !found;++cursor) {
@@ -846,6 +856,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                 const auto& link=(accurate?edge.accurate:
                                   edge.speculative)[i&1];
                 const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+                const std::size_t i_edge=i/2;
                 i=link.next;
                 if(!actors_[to].alive ||
                    actors_[to].kind!=Kind::DynamicBox ||
@@ -853,6 +864,8 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                     continue;
                 island_route_seen_[to]=visit_stamp;
                 island_route_predecessor_[to]=from;
+                island_route_predecessor_edge_[to]=
+                    static_cast<EdgeIndex>(i_edge);
                 if(to==root) {found=true;break;}
                 island_route_queue_.push_back(to);
             }
@@ -860,11 +873,13 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         if(!found)return false;
 
         fast[root]=invalid;
+        fast_edge[root]=invalid_edge;
         hops[root]=0;
         stamps[root]=epoch;
         for(BodyId current=root;current!=node;) {
             const BodyId predecessor=island_route_predecessor_[current];
             fast[predecessor]=current;
+            fast_edge[predecessor]=island_route_predecessor_edge_[current];
             hops[predecessor]=hops[current]+1;
             stamps[predecessor]=epoch;
             current=predecessor;
@@ -2103,6 +2118,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
     full_rebuild_count=scene.island_full_rebuild_count_;
+    dirty_route_checks=scene.island_dirty_route_checks_;
+    fast_route_hits=scene.island_fast_route_hits_;
     frame_index=scene.frame_index_;
     pair_epoch=scene.pair_epoch_;
     contact_epoch=scene.contact_epoch_;
@@ -2204,6 +2221,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_island_count_=accurate_count;
     scene.island_topology_revision_=topology_revision;
     scene.island_full_rebuild_count_=full_rebuild_count;
+    scene.island_dirty_route_checks_=dirty_route_checks;
+    scene.island_fast_route_hits_=fast_route_hits;
     scene.frame_index_=frame_index;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
