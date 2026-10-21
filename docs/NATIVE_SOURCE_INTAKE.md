@@ -536,6 +536,19 @@ component's handle and unrelated islands. Original local split
 migration, activation, sleeping
 and source per-frame task interleaving remain open.
 
+The island owner now also maintains the source `Node::mStaticTouchCount`
+and `IslandSim::mIslandStaticTouchCount` independently for speculative
+SAP candidates and accurate Gu touches. Static-edge found/lost changes
+update the owning node and island counters without changing dynamic
+connectivity revision; dynamic merges accumulate both islands' static
+touch totals, and actual split/node-lifetime rebuilds recount them from
+the authoritative surviving intrusive adjacency. A contact with the
+SDK infinite floor therefore remains a speculative candidate even
+after physical touch is lost, exactly as the underlying edge streams
+require. These counters are the necessary source inputs to the later
+`Dy::sleepCheck` / island deactivation path; recording them does **not**
+yet deactivate bodies or implement sleep/wake.
+
 **Cost:** unchanged dynamic connectivity and static-only topology
 changes incur no component reconstruction. A newly found
 dynamic/dynamic SAP candidate merges the speculative node chains by
@@ -667,8 +680,10 @@ owner, supply both graphs and their traversal.
 are now represented and maintained by the existing scene's contact
 manager handles. Source dirty-node endpoint marking, hop-priority exploration and validated
 fast-root/hop-route hints are now active for all-awake rigid links,
-with speculative and accurate state kept separate. Stable island
-handles and per-node island membership now replace the provisional
+with speculative and accurate state kept separate. Static-touch
+counters now follow physical touch and candidate transitions, including
+dynamic component merge/split and static actor retirement. Stable island
+handles and per-node island membership replace the provisional
 union/find roots. Previously visited source witnesses, local component
 split migration, multi-frame dirty-work budgets and activation/sleep
 remain open. Failure rollback journals **only the modified** source edge
