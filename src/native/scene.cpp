@@ -1437,6 +1437,27 @@ void Scene::deactivate_ready_islands() noexcept {
         }
     }
 }
+// Source PxsIslandSim::mActiveIslands is distinct from the complete
+// island inventory. Build active batch indices from the already-owned
+// contiguous accurate island-node sequence after source wake/deactivation.
+// An island is active while any member is awake; the later per-node
+// sleeping checks still protect a transitional mixed-state island.
+// Unlike copying a second body-ID array, only one index per active
+// island is retained, with reusable allocation across frames.
+void Scene::prepare_active_accurate_island_batches() {
+    active_accurate_island_batches_.clear();
+    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
+        ++island) {
+        for(std::size_t index=accurate_island_offsets_[island];
+            index<accurate_island_offsets_[island+1];++index) {
+            const BodyId id=accurate_island_nodes_[index];
+            if(actors_[id].alive && !actors_[id].sleeping) {
+                active_accurate_island_batches_.push_back(island);
+                break;
+            }
+        }
+    }
+}
 // Active native CPU stages remain within the one Scene owner:
 //   DyBodyCoreIntegrator: unconstrained velocity/force preparation
 //   DyConstraintPartition: ordered rigid-body contact manager batches
@@ -1467,8 +1488,7 @@ void Scene::prepare_solver_bodies() {
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
     // source no-constraint integration path without preparing unused rows.
-    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
-        ++island) {
+    for(std::size_t island:active_accurate_island_batches_) {
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
@@ -2733,9 +2753,14 @@ void Scene::step(float seconds) {
     // Source third pass tests readiness from the prior Dy sleepCheck,
     // before this frame's unconstrained velocity/PGS processing.
     deactivate_ready_islands();
-    for (auto& actor : actors_) {
-        if (!actor.alive || actor.kind != Kind::DynamicBox ||
-            actor.sleeping) continue;
+    // Dy::DynamicsContext takes the accurate *active* island ranges,
+    // not every actor or every dormant island in the full graph.
+    prepare_active_accurate_island_batches();
+    for(std::size_t island:active_accurate_island_batches_)
+    for(std::size_t index=accurate_island_offsets_[island];
+        index<accurate_island_offsets_[island+1];++index) {
+        auto& actor=actors_[accurate_island_nodes_[index]];
+        if(actor.sleeping)continue;
         float vx = actor.velocity.x;
         float vy = actor.velocity.y + gravity * seconds;
         float vz = actor.velocity.z;
@@ -2810,8 +2835,7 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
-        ++island) {
+    for(std::size_t island:active_accurate_island_batches_) {
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];

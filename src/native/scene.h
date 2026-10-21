@@ -254,6 +254,12 @@ public:
     }
     // Read the existing accurate-node batch boundaries without exposing
     // transient solver arrays or allocating diagnostic copies.
+    // Dy::DynamicsContext::iterateIslandsNodes receives only currently
+    // active accurate island batches. The indices reference the existing
+    // source island-node sequence; there is no second actor registry.
+    std::size_t active_accurate_island_count() const noexcept {
+        return active_accurate_island_batches_.size();
+    }
     std::size_t largest_accurate_island_size() const noexcept {
         std::size_t largest=0;
         for(std::size_t i=1;i<accurate_island_offsets_.size();++i)
@@ -412,6 +418,7 @@ private:
     // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
+    void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
     void activate_published_islands() noexcept;
@@ -484,6 +491,11 @@ private:
     // not a duplicated actor or solver-body registry.
     std::vector<BodyId> accurate_island_nodes_;
     std::vector<std::size_t> accurate_island_offsets_;
+    // Source IslandSim::mActiveIslands equivalent for the serial Dy
+    // handoff: indexes into the authoritative accurate island offsets.
+    // Reconstructed after the third-pass sleep decision, not a second
+    // registry of actors, island handles, or solver bodies.
+    std::vector<std::size_t> active_accurate_island_batches_;
     // IslandSim::findRoute traversal reuses its search queue/visited
     // marks, but now traverses the persistent EdgeInstance adjacency.
     std::vector<BodyId> island_route_queue_, island_route_predecessor_;

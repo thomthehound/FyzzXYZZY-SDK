@@ -2971,6 +2971,48 @@ int run_native_scene_smoke() {
     }
 
     {
+        // The source active-island list is a strict subset of all accurate
+        // islands. Dormant bodies remain in the persistent source graph
+        // but are excluded from unconstrained integration and PGS. An
+        // isolated awake node must retain its own active island batch.
+        Scene active_handoff;
+        active_handoff.add_static_floor(0.0f);
+        const auto resting=active_handoff.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto flyer=active_handoff.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        active_handoff.advance_collision();
+        expect(active_handoff.accurate_island_count()==2,
+               "Active-island fixture did not admit both source islands");
+        // Isolate the dormant transition from the free-flight wake state:
+        // first sleep the floor body, then introduce the distant flyer.
+        Scene staged;
+        staged.add_static_floor(0.0f);
+        const auto dormant=staged.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            staged.step(1.0f/120.0f);
+        expect(staged.body_is_sleeping(dormant) &&
+               staged.active_accurate_island_count()==0,
+               "Dormant accurate island remained on Dy active list");
+        const auto dynamic=staged.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        staged.step(1.0f/120.0f);
+        expect(staged.accurate_island_count()==2 &&
+               staged.active_accurate_island_count()==1 &&
+               staged.body_is_sleeping(dormant) &&
+               staged.body_state(dynamic).position.y<5.0f,
+               "Dy active-island handoff admitted sleeper or skipped free flight");
+        staged.set_velocity(dormant,{1,0,0});
+        staged.step(1.0f/120.0f);
+        expect(staged.active_accurate_island_count()==2 &&
+               !staged.body_is_sleeping(dormant),
+               "Wake did not restore accurate active-island admission");
+        (void)resting;
+        (void)flyer;
+    }
+
+    {
         // IslandSim::activateNode clears an already-awake node's ready
         // flag when a new contact wakes its island. A body that just
         // reached readiness must still resolve the newly added static
