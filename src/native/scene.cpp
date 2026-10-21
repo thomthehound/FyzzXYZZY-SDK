@@ -2598,7 +2598,7 @@ void Scene::step(float seconds) {
     // The same operation is used again after fresh Gu contacts publish.
     const auto wake_node=[&](BodyId id) {
         auto& actor=actors_[id];
-        if(!actor.sleeping)return;
+        if(!actor.alive || !actor.sleeping)return;
         actor.sleeping=false;
         actor.ready_for_sleep=false;
         actor.wake_counter=0.4f;
@@ -2612,7 +2612,10 @@ void Scene::step(float seconds) {
             for(BodyId node=island.root;
                 node!=std::numeric_limits<BodyId>::max();
                 node=speculative_islands_.node_next[node]) {
-                if(!actors_[node].sleeping) {awake=true;break;}
+                if(actors_[node].alive && !actors_[node].sleeping) {
+                    awake=true;
+                    break;
+                }
             }
             if(awake)
                 for(BodyId node=island.root;
