@@ -93,6 +93,11 @@ struct PhysXCpuWorld final : WorldBackend {
         }
         descriptor.cpuDispatcher = dispatcher;
         descriptor.filterShader = physx::PxDefaultSimulationFilterShader;
+        // The admitted native GuContactBoxBox / GuContactPlaneBox path
+        // translates PhysX's legacy contact generation, not PCM. Match
+        // the actual upstream algorithm in this reference PGS oracle.
+        // PCM-enabled reference conformance is a separate admission gate.
+        descriptor.flags &= ~physx::PxSceneFlag::eENABLE_PCM;
         // The CPU execution mode is explicit. Do not ever request eGPU
         // here: pinned ScScene.cpp converts eGPU to CPU eABP when the
         // CUDA GPU factory is unavailable, making the request look valid.
