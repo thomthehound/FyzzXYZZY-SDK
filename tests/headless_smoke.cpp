@@ -845,12 +845,24 @@ int main() {
                     fyzz::ExecutionMode::NativeCpu});
                 fyzz::World reference_join(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpu});
-                native_join.add_static_floor(0);
-                reference_join.add_static_floor(0);
+                // Isolate first-pass activation and rigid normal response
+                // from the separately tested source friction/restitution
+                // correlation. Both worlds use identical noncompliant
+                // contact materials; deep overlap still exercises normal
+                // bias and the immediate solver-admission dependency.
+                fyzz::Material frictionless{};
+                frictionless.disable_friction=true;
+                frictionless.restitution=0.0f;
+                const auto n_floor=native_join.add_static_floor(0);
+                const auto p_floor=reference_join.add_static_floor(0);
+                native_join.set_body_material(n_floor,frictionless);
+                reference_join.set_body_material(p_floor,frictionless);
                 const auto n_sleeper=native_join.add_dynamic_box(
                     {0.5f,0.5f,0.5f},{0,0.5f,0},1);
                 const auto p_sleeper=reference_join.add_dynamic_box(
                     {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                native_join.set_body_material(n_sleeper,frictionless);
+                reference_join.set_body_material(p_sleeper,frictionless);
                 for(int frame=0;frame<360;++frame) {
                     native_join.step(1.0f/120.0f);
                     reference_join.step(1.0f/120.0f);
@@ -859,10 +871,12 @@ int main() {
                    !reference_join.body_state(p_sleeper).sleeping)
                     throw std::runtime_error(
                         "Dynamic island wake fixture failed to become dormant");
-                native_join.add_dynamic_box(
+                const auto n_new=native_join.add_dynamic_box(
                     {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1);
-                reference_join.add_dynamic_box(
+                const auto p_new=reference_join.add_dynamic_box(
                     {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1);
+                native_join.set_body_material(n_new,frictionless);
+                reference_join.set_body_material(p_new,frictionless);
                 native_join.step(1.0f/120.0f);
                 reference_join.step(1.0f/120.0f);
                 const auto n=native_join.body_state(n_sleeper);
