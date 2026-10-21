@@ -2816,6 +2816,32 @@ int run_native_scene_smoke() {
                "Woken source island failed to reenter native solver");
     }
 
+    {
+        // IslandSim::activateIslandInternal wakes connected rigid nodes,
+        // not only the node explicitly edited by a user. A persistent
+        // dynamic contact must admit both nodes together on reactivation.
+        Scene coupled_sleep;
+        coupled_sleep.add_static_floor(0.0f);
+        const auto left=coupled_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=coupled_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            coupled_sleep.step(1.0f/120.0f);
+        expect(coupled_sleep.accurate_island_count()==1 &&
+               coupled_sleep.body_is_sleeping(left) &&
+               coupled_sleep.body_is_sleeping(right),
+               "Source dynamic contact island did not deactivate together");
+        coupled_sleep.set_velocity(left,{0.5f,0,0});
+        expect(!coupled_sleep.body_is_sleeping(left) &&
+               coupled_sleep.body_is_sleeping(right),
+               "Direct user wake bypassed source island activation stage");
+        coupled_sleep.step(1.0f/120.0f);
+        expect(!coupled_sleep.body_is_sleeping(left) &&
+               !coupled_sleep.body_is_sleeping(right),
+               "Source island wake did not reactivate contact-connected peer");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
