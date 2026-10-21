@@ -407,6 +407,9 @@ private:
     // deactivation remain unported; solver completion must join with
     // their results before publishing the frame.
     void third_pass_island_gen();
+    // IslandSim::wakeIslands lowering, shared by collision-only and
+    // full-frame source publications. No duplicated activation owner.
+    void activate_published_islands() noexcept;
     bool lost_island_edges_retain_routes(bool accurate);
     void prepare_solver_bodies();
     void partition_constraints();
