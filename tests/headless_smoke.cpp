@@ -758,6 +758,37 @@ int main() {
                 }
             }
 
+            // PhysX default PxTolerancesScale.speed is 10 m/s, so the
+            // default sleep energy threshold is 5e-3, not 5e-5.
+            // A very slow, frictionless translation on a static floor
+            // distinguishes those values: the wrong lower threshold
+            // continually renews the wake counter and never sleeps.
+            for(bool reference:{false,true}) {
+                fyzz::World threshold_world(fyzz::WorldOptions{
+                    reference?fyzz::ExecutionMode::ReferencePhysXCpu:
+                              fyzz::ExecutionMode::NativeCpu});
+                const auto floor=threshold_world.add_static_floor(0);
+                const auto body=threshold_world.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                fyzz::Material frictionless{};
+                frictionless.disable_friction=true;
+                threshold_world.set_body_material(floor,frictionless);
+                threshold_world.set_body_material(body,frictionless);
+                threshold_world.set_body_velocity(body,{0.002f,0,0});
+                for(int frame=0;frame<360;++frame)
+                    threshold_world.step(1.0f/120.0f);
+                if(!threshold_world.body_state(body).sleeping) {
+                    std::cerr<<"Default PhysX tolerance-scale sleep"
+                             <<" reference="<<reference
+                             <<" y="<<threshold_world.body_state(body).position.y
+                             <<" vx="<<threshold_world.body_state(body).velocity.x
+                             <<" vy="<<threshold_world.body_state(body).velocity.y
+                             <<'\n';
+                    throw std::runtime_error(
+                        "Very slow frictionless floor contact failed source sleep threshold");
+                }
+            }
+
             // Source Dy::sleepCheck + PxsIslandSim::deactivateIsland:
             // a settled body must *actually* stop participating in
             // integration, agree with independent PxRigidDynamic::isSleeping,
