@@ -745,12 +745,12 @@ void Scene::update_contacts() {
 // IG::SimpleIslandManager::firstPassIslandGen/secondPassIslandGen:
 // speculative edges come from the scene's published SAP candidates,
 // whereas accurate edges come only from the resolved physical touches.
-// In the current all-awake rigid-only admission, IslandSim's connected
-// components may be maintained by a reusable union/find lowering rather
-// than its incremental wake/split queues. Topology rebuild is skipped for
-// unchanged candidate AND touch connectivity. Source sleeping, persistent
-// island handles and the three-pass lost-edge/deactivation lifecycle are
-// not represented by this lowering and are still N1 requirements.
+// The admitted all-awake rigid island owner now preserves source-style
+// persistent handles, node membership and per-graph static-touch counts.
+// Topology rebuild is skipped for unchanged dynamic connectivity; source
+// sleep/deactivation, task continuations and local split budgets remain
+// N1 requirements. Static touch transitions alter counters but do not
+// manufacture dynamic-island topology changes.
 // IslandSim::processLostEdges calls findRoute on dirty endpoints before
 // splitting an island. For the admitted all-awake dynamic contact subset,
 // a lost edge can only split its component if its endpoints are no longer
@@ -761,7 +761,7 @@ void Scene::update_contacts() {
 // IslandSim::findRoute traverses per-node mFirstEdgeIndex and the
 // paired EdgeInstance indices, rather than rebuilding an adjacency
 // graph every time a contact disappears. The persistent source slot
-// lists here are already updated when the SAP/Gu edge state publishes.
+// lists and static-touch counters follow independent SAP/Gu publications.
 // IslandSim::processLostEdges processes nodes dirtied by removed graph
 // links. Its findRoute first tries mFastRoute to the island root and
 // otherwise traverses surviving mFirstEdgeIndex adjacency, rebuilding
