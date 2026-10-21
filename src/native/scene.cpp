@@ -1318,6 +1318,46 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
+void Scene::activate_published_islands() noexcept {
+    // Source IslandSim::wakeIslands / activateIslandInternal. Contact
+    // managers already belong to the persistent speculative/accurate
+    // graphs; no second activation or body registry is introduced.
+    const auto wake=[&](BodyId id) {
+        auto& body=actors_[id];
+        if(!body.alive || !body.sleeping)return;
+        body.sleeping=false;
+        body.ready_for_sleep=false;
+        body.wake_counter=std::max(body.wake_counter,0.4f);
+        body.sleep_linear_acc={};
+        body.sleep_angular_acc={};
+    };
+    for(Pair pair:found_contacts_) {
+        const bool a=actors_[pair.a].alive &&
+                     actors_[pair.a].kind==Kind::DynamicBox;
+        const bool b=actors_[pair.b].alive &&
+                     actors_[pair.b].kind==Kind::DynamicBox;
+        if(a!=b)wake(a?pair.a:pair.b);
+    }
+    // Direct authoring can reactivate a member without new Gu contacts.
+    // Source activating-node worklists remain future integration work:
+    // here existing island chains are the sole membership authority.
+    constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
+    for(const auto& island:speculative_islands_.islands) {
+        if(!island.live)continue;
+        bool active=false;
+        for(BodyId id=island.root;id!=invalid;
+            id=speculative_islands_.node_next[id]) {
+            if(actors_[id].alive && !actors_[id].sleeping) {
+                active=true;
+                break;
+            }
+        }
+        if(!active)continue;
+        for(BodyId id=island.root;id!=invalid;
+            id=speculative_islands_.node_next[id])
+            wake(id);
+    }
+}
 void Scene::third_pass_island_gen() {
     // Both original IslandSim::processLostEdges third-pass tasks depend
     // on lost-contact management and join into postThirdPassIslandGen,
@@ -2607,55 +2647,13 @@ void Scene::step(float seconds) {
     // authoritative state; all per-step Dy work buffers remain reusable.
     step_checkpoint_.capture(*this);
     try {
-    // ScPipeline's collision and island-activation products are
-    // dependencies of Dy::bodyCoreComputeUnconstrainedVelocity.
-    // IslandSim::wakeIslands consumes activating nodes and the just
-    // published speculative graph before preIntegrationParallel runs.
-    // Explicit user edits and Gu touches share this one wake stage.
-    const auto wake_node=[&](BodyId id) {
-        auto& actor=actors_[id];
-        if(!actor.alive || !actor.sleeping)return;
-        actor.sleeping=false;
-        actor.ready_for_sleep=false;
-        actor.wake_counter=0.4f;
-        actor.sleep_linear_acc={};
-        actor.sleep_angular_acc={};
-    };
-    const auto wake_connected_islands=[&] {
-        for(const auto& island:speculative_islands_.islands) {
-            if(!island.live)continue;
-            bool awake=false;
-            for(BodyId node=island.root;
-                node!=std::numeric_limits<BodyId>::max();
-                node=speculative_islands_.node_next[node]) {
-                if(actors_[node].alive && !actors_[node].sleeping) {
-                    awake=true;
-                    break;
-                }
-            }
-            if(awake)
-                for(BodyId node=island.root;
-                    node!=std::numeric_limits<BodyId>::max();
-                    node=speculative_islands_.node_next[node])
-                    wake_node(node);
-        }
-    };
-    // ScPipeline: speculative/accurate pair and touch producers must
-    // publish before IslandSim::wakeIslands and preIntegrationParallel.
-    // Both lost-edge graph jobs are already complete when the serial
-    // admitted CPU path reaches solver preparation. Their concurrent
-    // GPU/task continuations are a separate N1 admission gate.
+    // ScPipeline: contact publication and both island passes must
+    // finish before Dy::bodyCoreComputeUnconstrainedVelocity. This
+    // shared IslandSim wake stage admits all newly activated rigid
+    // members in the same frame; collision-only publications use it too.
     advance_collision_internal(false);
     third_pass_island_gen();
-    for(Pair pair:found_contacts_) {
-        const bool a=actors_[pair.a].kind==Kind::DynamicBox;
-        const bool b=actors_[pair.b].kind==Kind::DynamicBox;
-        if(a!=b)wake_node(a?pair.a:pair.b);
-    }
-    // IslandSim::wakeIslands activates the whole source component, not
-    // merely the user-authored or newly touching body. This runs once,
-    // after source edge publication and before any gravity/damping work.
-    wake_connected_islands();
+    activate_published_islands();
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox ||
             actor.sleeping) continue;
@@ -2890,6 +2888,7 @@ void Scene::advance_collision(bool force_update) {
     if (!dirty_ && !force_update && !island_topology_dirty_ &&
         retired_edge_handles_.empty()) {
         advance_collision_internal(false);
+        activate_published_islands();
         return;
     }
     // Geometry changes, forced refreshes and pending graph retirement
@@ -2903,6 +2902,10 @@ void Scene::advance_collision(bool force_update) {
         step_checkpoint_.rollback(*this);
         throw;
     }
+    // Activation consists only of no-throw writes to existing native
+    // actors, after the collision transaction has successfully committed.
+    // Geometry-only checkpoints intentionally do not copy actor motion.
+    activate_published_islands();
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
