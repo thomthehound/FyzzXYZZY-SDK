@@ -206,6 +206,20 @@ public:
         return id<accurate_islands_.node_island.size()
             ? accurate_islands_.node_island[id] : IslandGraph::invalid;
     }
+    // Source island static-contact counters used by the Dy::sleepCheck
+    // stage. These differ between SAP candidates and Gu physical touches.
+    std::size_t speculative_island_static_touches(BodyId id) const noexcept {
+        if(id>=speculative_islands_.node_island.size())return 0;
+        const auto h=speculative_islands_.node_island[id];
+        return h<speculative_islands_.islands.size()
+            ? speculative_islands_.islands[h].static_touches : 0;
+    }
+    std::size_t accurate_island_static_touches(BodyId id) const noexcept {
+        if(id>=accurate_islands_.node_island.size())return 0;
+        const auto h=accurate_islands_.node_island[id];
+        return h<accurate_islands_.islands.size()
+            ? accurate_islands_.islands[h].static_touches : 0;
+    }
     std::uint64_t island_topology_revision() const noexcept {
         return island_topology_revision_;
     }
@@ -425,10 +439,15 @@ private:
             BodyId tail=std::numeric_limits<BodyId>::max();
             std::size_t count=0;
             bool live=false;
+            // IslandSim::mIslandStaticTouchCount, updated on static-edge
+            // found/lost and transferred on dynamic-island merges.
+            std::size_t static_touches=0;
         };
         std::vector<Island> islands;
         std::vector<IslandId> node_island;
         std::vector<BodyId> node_next, node_prev;
+        // IslandSim::Node::mStaticTouchCount for live dynamic nodes.
+        std::vector<std::uint32_t> node_static_touches;
         std::vector<IslandId> free_handles;
     };
     IslandGraph speculative_islands_, accurate_islands_;
