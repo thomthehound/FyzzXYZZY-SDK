@@ -2199,14 +2199,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
     }
-    speculative_parent.assign(scene.speculative_island_parent_.begin(),
-                              scene.speculative_island_parent_.end());
-    accurate_parent.assign(scene.accurate_island_parent_.begin(),
-                           scene.accurate_island_parent_.end());
-    speculative_rank.assign(scene.speculative_island_rank_.begin(),
-                            scene.speculative_island_rank_.end());
-    accurate_rank.assign(scene.accurate_island_rank_.begin(),
-                         scene.accurate_island_rank_.end());
+    // The source island owner (handles, node membership, linked-list
+    // ordering and reusable slots) is the sole connectivity checkpoint.
+    speculative_islands=scene.speculative_islands_;
+    accurate_islands=scene.accurate_islands_;
     accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
                           scene.accurate_island_nodes_.end());
     accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
@@ -2330,10 +2326,16 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.threshold_changes_.swap(threshold_changes);
     if(includes_solver_state)
         scene.partition_ends_.swap(partition_ends);
-    scene.speculative_island_parent_.swap(speculative_parent);
-    scene.accurate_island_parent_.swap(accurate_parent);
-    scene.speculative_island_rank_.swap(speculative_rank);
-    scene.accurate_island_rank_.swap(accurate_rank);
+    scene.speculative_islands_.islands.swap(speculative_islands.islands);
+    scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
+    scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
+    scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
+    scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
+    scene.accurate_islands_.islands.swap(accurate_islands.islands);
+    scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
+    scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
+    scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
+    scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
     scene.accurate_island_nodes_.swap(accurate_nodes);
     scene.accurate_island_offsets_.swap(accurate_offsets);
     scene.speculative_island_count_=speculative_count;
