@@ -532,6 +532,71 @@ int main() {
                     "Native max-velocity clamp diverged from reference PhysX");
             }
 
+            // Independent PhysX CPU contact conformance: the same
+            // one-body floor contact runs through two different worlds.
+            // Sample every timestep rather than comparing only the
+            // eventual resting pose: a solver can reach an apparently
+            // plausible rest state while producing wrong impact impulses.
+            // This is a bounded rigid floor-contact gate, not yet a claim
+            // of stacked, rotational, multi-material or sleep/wake parity.
+            {
+                fyzz::World native_contact(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World reference_contact(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                native_contact.add_static_floor(0.0f);
+                reference_contact.add_static_floor(0.0f);
+                const auto nb=native_contact.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.0f,0.52f,0.0f},1.0f);
+                const auto rb=reference_contact.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.0f,0.52f,0.0f},1.0f);
+                float max_position_error=0.0f;
+                float max_velocity_error=0.0f;
+                int max_position_frame=0;
+                int max_velocity_frame=0;
+                for(int frame=0;frame<120;++frame) {
+                    constexpr float contact_dt=1.0f/120.0f;
+                    native_contact.step(contact_dt);
+                    reference_contact.step(contact_dt);
+                    const auto n=native_contact.body_state(nb);
+                    const auto p=reference_contact.body_state(rb);
+                    const float pos_error=std::abs(n.position.y-p.position.y);
+                    const float vel_error=std::abs(n.velocity.y-p.velocity.y);
+                    if (!std::isfinite(pos_error) ||
+                        !std::isfinite(vel_error))
+                        throw std::runtime_error(
+                            "Native/PhysX contact trajectory became nonfinite");
+                    if(pos_error>max_position_error) {
+                        max_position_error=pos_error;
+                        max_position_frame=frame+1;
+                    }
+                    if(vel_error>max_velocity_error) {
+                        max_velocity_error=vel_error;
+                        max_velocity_frame=frame+1;
+                    }
+                    // Exact SIMD rounding and comprehensive contact
+                    // correlation are future gates, but these bounds
+                    // require agreement in both trajectory and response.
+                    if(pos_error>0.02f || vel_error>0.12f) {
+                        std::cerr << "Native/PhysX floor contact divergence"
+                                  << " frame=" << frame+1
+                                  << " native_y=" << n.position.y
+                                  << " physx_y=" << p.position.y
+                                  << " native_vy=" << n.velocity.y
+                                  << " physx_vy=" << p.velocity.y
+                                  << " pos_error=" << pos_error
+                                  << " vel_error=" << vel_error << '\\n';
+                        throw std::runtime_error(
+                            "Native rigid floor-contact PGS disagrees with independent PhysX CPU");
+                    }
+                }
+                std::cout << "Native/PhysX floor-contact PGS:"
+                          << " max_y_error=" << max_position_error
+                          << " at_frame=" << max_position_frame
+                          << " max_vy_error=" << max_velocity_error
+                          << " at_frame=" << max_velocity_frame << '\\n';
+            }
+
             fyzz::World world;
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
