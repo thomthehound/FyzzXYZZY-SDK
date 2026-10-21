@@ -883,6 +883,66 @@ int run_native_scene_smoke() {
                    "Incremental accurate-island merge changed coupled PGS motion");
         }
 
+        // IslandSim::Node::mStaticTouchCount and
+        // mIslandStaticTouchCount: source SAP candidates against an
+        // infinite plane remain speculative edges even when Gu reports
+        // no touch. Dynamic-island merges accumulate static contacts;
+        // lost dynamic edges split them back into individual counters.
+        // None of these static-only changes should fabricate an island
+        // topology revision.
+        {
+            Scene static_counts;
+            const auto ground=static_counts.add_static_floor(0);
+            const auto a=static_counts.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+            const auto b=static_counts.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{4,0.5f,0},1);
+            static_counts.advance_collision();
+            expect(static_counts.speculative_island_count()==2 &&
+                   static_counts.accurate_island_count()==2 &&
+                   static_counts.speculative_island_static_touches(a)==1 &&
+                   static_counts.speculative_island_static_touches(b)==1 &&
+                   static_counts.accurate_island_static_touches(a)==1 &&
+                   static_counts.accurate_island_static_touches(b)==1,
+                   "PhysX static touches not initialized in both island graphs");
+            const auto stable_revision=static_counts.island_topology_revision();
+            static_counts.set_position(b,{4,3,0});
+            static_counts.advance_collision();
+            expect(static_counts.island_topology_revision()==stable_revision &&
+                   static_counts.speculative_island_static_touches(b)==1 &&
+                   static_counts.accurate_island_static_touches(b)==0 &&
+                   static_counts.accurate_island_static_touches(a)==1,
+                   "Gu touch loss changed SAP static counts or island identity");
+            static_counts.set_position(b,{4,0.5f,0});
+            static_counts.advance_collision();
+            expect(static_counts.island_topology_revision()==stable_revision &&
+                   static_counts.accurate_island_static_touches(b)==1,
+                   "Gu touch reentry did not restore static-touch ownership");
+            static_counts.set_position(b,{0.6f,0.5f,0});
+            static_counts.advance_collision();
+            expect(static_counts.speculative_island_count()==1 &&
+                   static_counts.accurate_island_count()==1 &&
+                   static_counts.speculative_island_static_touches(a)==2 &&
+                   static_counts.accurate_island_static_touches(a)==2 &&
+                   static_counts.accurate_island_static_touches(b)==2,
+                   "Dynamic island merge lost source static-touch counts");
+            static_counts.set_position(b,{4,0.5f,0});
+            static_counts.advance_collision();
+            expect(static_counts.accurate_island_count()==2 &&
+                   static_counts.speculative_island_count()==2 &&
+                   static_counts.accurate_island_static_touches(a)==1 &&
+                   static_counts.accurate_island_static_touches(b)==1 &&
+                   static_counts.speculative_island_static_touches(a)==1,
+                   "Lost-edge split duplicated or lost static-touch counts");
+            static_counts.remove(ground);
+            static_counts.advance_collision();
+            expect(static_counts.accurate_island_static_touches(a)==0 &&
+                   static_counts.accurate_island_static_touches(b)==0 &&
+                   static_counts.speculative_island_static_touches(a)==0 &&
+                   static_counts.speculative_island_static_touches(b)==0,
+                   "Retired static actor retained ghost island touches");
+        }
+
         Scene static_world;
         static_world.add_static_floor(0.0f);
         const auto ground_box=static_world.add_dynamic_box(
