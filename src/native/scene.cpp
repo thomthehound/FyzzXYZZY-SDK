@@ -232,6 +232,24 @@ void Scene::set_position(BodyId id, Vec3 position) {
         actor.sleep_angular_acc={};
         actor.ready_for_sleep=false;
         actor.sleeping=false;
+    } else {
+        // Moving a static shape invalidates Sc interactions with
+        // sleeping dynamic bodies. Wake only its currently touching
+        // actors from the existing Gu contact-manager stream; static
+        // authoring is not a per-step hot path.
+        for(const auto& manifold:manifolds_) {
+            if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
+            const BodyId other=manifold.pair.a==id
+                ? manifold.pair.b:manifold.pair.a;
+            auto& dynamic=actors_[other];
+            if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
+               !dynamic.sleeping)continue;
+            dynamic.sleeping=false;
+            dynamic.ready_for_sleep=false;
+            dynamic.wake_counter=0.4f;
+            dynamic.sleep_linear_acc={};
+            dynamic.sleep_angular_acc={};
+        }
     }
     dirty_ = true;
 }
