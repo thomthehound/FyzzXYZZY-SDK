@@ -977,8 +977,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 }
             }
             Graph::IslandId handle=Graph::invalid;
-            // Reserve an existing handle for the component containing
-            // its old root, matching source split identity ownership.
+            // Retain an existing handle whose old root survives in
+            // this component. If this publication also merges formerly
+            // separate islands, preserve the largest old island's handle
+            // (IslandSim::mergeIslands), not the first encountered root.
+            // Equal-size candidates have a stable handle-order tie break.
             for(BodyId member:members) {
                 if(member>=graph.node_island.size())continue;
                 const auto prior=graph.node_island[member];
@@ -987,10 +990,13 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                    next.islands[prior].live)continue;
                 const BodyId root=graph.islands[prior].root;
                 if(root<component.size() &&
-                   component[root]==component_number) {
+                   component[root]==component_number &&
+                   (handle==Graph::invalid ||
+                    graph.islands[prior].count>
+                        graph.islands[handle].count ||
+                    (graph.islands[prior].count==
+                         graph.islands[handle].count && prior>handle)))
                     handle=prior;
-                    break;
-                }
             }
             // A retired root has no surviving root component. Keep its
             // handle on the first surviving component where possible.
