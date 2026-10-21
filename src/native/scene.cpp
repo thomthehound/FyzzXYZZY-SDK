@@ -493,8 +493,10 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
                 dirty_map[node]=1;
             }
             auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
-            if(node<fast.size() && fast[node]==other)
+            if(node<fast.size() && fast[node]==other) {
+                step_checkpoint_.save_hint(*this,node,accurate);
                 fast[node]=std::numeric_limits<BodyId>::max();
+            }
         }
         step_checkpoint_.save_edge(*this,id);
         if(link.prev==invalid_instance)
@@ -872,12 +874,14 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         }
         if(!found)return false;
 
+        step_checkpoint_.save_hint(*this,root,accurate);
         fast[root]=invalid;
         fast_edge[root]=invalid_edge;
         hops[root]=0;
         stamps[root]=epoch;
         for(BodyId current=root;current!=node;) {
             const BodyId predecessor=island_route_predecessor_[current];
+            step_checkpoint_.save_hint(*this,predecessor,accurate);
             fast[predecessor]=current;
             fast_edge[predecessor]=island_route_predecessor_edge_[current];
             hops[predecessor]=hops[current]+1;
@@ -2047,6 +2051,24 @@ void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
     if(id<initial_edges)
         edge_undo.push_back({id,scene.contact_edges_[id]});
 }
+void Scene::StepCheckpoint::save_hint(
+    const Scene& scene, BodyId node, bool accurate) {
+    const auto& routes=accurate?scene.accurate_fast_route_:
+                                 scene.speculative_fast_route_;
+    const auto& edges=accurate?scene.accurate_fast_edge_:
+                                scene.speculative_fast_edge_;
+    const auto& hops=accurate?scene.accurate_hops_:
+                               scene.speculative_hops_;
+    const auto& stamps=accurate?scene.accurate_hint_stamps_:
+                                 scene.speculative_hint_stamps_;
+    const auto initial=accurate?initial_accurate_hints:
+                                initial_speculative_hints;
+    // Record before the first store. A failing journal allocation leaves
+    // the previous hint untouched. Slots added after capture are truncated.
+    if(node<initial)
+        hint_undo.push_back({node,routes[node],edges[node],
+                             hops[node],stamps[node],accurate});
+}
 void Scene::StepCheckpoint::save_head(
     const Scene& scene, BodyId node, bool accurate) {
     const auto& heads=accurate ? scene.accurate_node_first_ :
@@ -2079,8 +2101,13 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // would duplicate every historical intrusive edge four times on
     // every PGS step even when all connections remain unchanged.
     edge_undo.clear();
+    hint_undo.clear();
     head_undo.clear();
     initial_edges=scene.contact_edges_.size();
+    initial_speculative_hints=scene.speculative_fast_route_.size();
+    initial_accurate_hints=scene.accurate_fast_route_.size();
+    speculative_hint_epoch=scene.speculative_hint_epoch_;
+    accurate_hint_epoch=scene.accurate_hint_epoch_;
     initial_speculative_heads=scene.speculative_node_first_.size();
     initial_accurate_heads=scene.accurate_node_first_.size();
     handles_saved=false;
@@ -2140,11 +2167,33 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
-    // Route hints are opportunistic, not authoritative; invalidating
-    // their epochs and clearing pending dirty-node work is enough to
-    // restore correctness without copying source cache arrays.
-    ++scene.speculative_hint_epoch_;
-    ++scene.accurate_hint_epoch_;
+    // Restore the exact pre-publication route cache and epochs so retries
+    // reuse valid prior paths. Only written hint slots were journaled;
+    // replay and shrinking newly admitted slots cannot allocate.
+    for(auto it=hint_undo.rbegin();it!=hint_undo.rend();++it) {
+        auto& routes=it->accurate?scene.accurate_fast_route_:
+                                   scene.speculative_fast_route_;
+        auto& edges=it->accurate?scene.accurate_fast_edge_:
+                                  scene.speculative_fast_edge_;
+        auto& hops=it->accurate?scene.accurate_hops_:
+                                 scene.speculative_hops_;
+        auto& stamps=it->accurate?scene.accurate_hint_stamps_:
+                                   scene.speculative_hint_stamps_;
+        routes[it->node]=it->next;
+        edges[it->node]=it->edge;
+        hops[it->node]=it->hops;
+        stamps[it->node]=it->stamp;
+    }
+    scene.speculative_fast_route_.resize(initial_speculative_hints);
+    scene.speculative_fast_edge_.resize(initial_speculative_hints);
+    scene.speculative_hops_.resize(initial_speculative_hints);
+    scene.speculative_hint_stamps_.resize(initial_speculative_hints);
+    scene.accurate_fast_route_.resize(initial_accurate_hints);
+    scene.accurate_fast_edge_.resize(initial_accurate_hints);
+    scene.accurate_hops_.resize(initial_accurate_hints);
+    scene.accurate_hint_stamps_.resize(initial_accurate_hints);
+    scene.speculative_hint_epoch_=speculative_hint_epoch;
+    scene.accurate_hint_epoch_=accurate_hint_epoch;
     for(BodyId node:scene.speculative_dirty_nodes_)
         scene.speculative_dirty_map_[node]=0;
     for(BodyId node:scene.accurate_dirty_nodes_)
