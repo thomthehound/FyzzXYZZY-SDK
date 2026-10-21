@@ -588,6 +588,7 @@ private:
         std::uint64_t full_rebuild_count=0;
         std::size_t dirty_route_checks=0, fast_route_hits=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
+        std::uint64_t quiet_event_epoch=0;
         bool topology_dirty=true, dirty=true;
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
@@ -634,6 +635,9 @@ private:
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;
     std::uint64_t contact_epoch_=0;
+    // Quiet publications rotate only Found/Lost event buffers, not the
+    // authoritative pair/Gu arenas. Keep an independent rollback marker.
+    std::uint64_t quiet_event_epoch_=0;
     std::vector<Pair> found_;
     std::vector<Pair> lost_;
     std::vector<Pair> next_found_, next_lost_;

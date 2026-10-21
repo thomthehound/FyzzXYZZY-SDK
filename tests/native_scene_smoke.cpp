@@ -1665,6 +1665,100 @@ int run_native_scene_smoke() {
                "Rejected geometry advance prevented subsequent publication");
     }
 
+    // A quiet failed step must not erase Found/Lost events from a
+    // preceding successful geometry-only publication. Only event streams
+    // rotate on that path: contact managers, their point spans, and pair
+    // buffers retain their original allocations and publication epochs.
+    // Exercise both found and lost events, and two failed retries.
+    for(const bool expect_lost:{false,true}) {
+        Scene rejected, clean;
+        auto setup=[&](Scene& s) {
+            const auto ground=s.add_static_floor(0.0f);
+            const auto box=s.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            s.advance_collision();
+            if(expect_lost) {
+                s.set_position(box,{0,10.0f,0});
+                s.advance_collision();
+            }
+            return std::pair{ground,box};
+        };
+        const auto [floor_a,box_a]=setup(rejected);
+        const auto [floor_b,box_b]=setup(clean);
+        const fyzz::native::Pair contact{floor_a,box_a};
+        const auto found_pairs=rejected.found_pairs();
+        const auto lost_pairs=rejected.lost_pairs();
+        const auto found_contacts=rejected.found_contacts();
+        const auto lost_contacts=rejected.lost_contacts();
+        expect((expect_lost
+                    ? has(lost_pairs,floor_a,box_a) &&
+                      has(lost_contacts,floor_a,box_a)
+                    : has(found_pairs,floor_a,box_a) &&
+                      has(found_contacts,floor_a,box_a)) &&
+               rejected.body_state(box_a).position.y==
+                   clean.body_state(box_b).position.y,
+               "Quiet-event rollback fixture failed to publish events");
+        const std::vector<fyzz::native::Pair> prior_found(
+            found_pairs.begin(),found_pairs.end());
+        const std::vector<fyzz::native::Pair> prior_lost(
+            lost_pairs.begin(),lost_pairs.end());
+        const std::vector<fyzz::native::Pair> prior_found_contacts(
+            found_contacts.begin(),found_contacts.end());
+        const std::vector<fyzz::native::Pair> prior_lost_contacts(
+            lost_contacts.begin(),lost_contacts.end());
+        const auto* const found_ptr=found_pairs.data();
+        const auto* const lost_ptr=lost_pairs.data();
+        const auto* const touch_ptr=found_contacts.data();
+        const auto* const lost_touch_ptr=lost_contacts.data();
+        const auto* const pairs_ptr=rejected.pairs().data();
+        const auto* const manifolds_ptr=rejected.contacts().data();
+        const auto frame=rejected.frame_index();
+        const auto topology=rejected.island_topology_revision();
+        const auto original=rejected.body_state(box_a);
+        for(int attempt=0;attempt<2;++attempt) {
+            bool threw=false;
+            try {rejected.step(std::numeric_limits<float>::max());}
+            catch(const std::overflow_error&) {threw=true;}
+            const auto body=rejected.body_state(box_a);
+            expect(threw &&
+                   rejected.frame_index()==frame &&
+                   rejected.island_topology_revision()==topology &&
+                   rejected.pairs().data()==pairs_ptr &&
+                   rejected.contacts().data()==manifolds_ptr &&
+                   rejected.found_pairs().data()==found_ptr &&
+                   rejected.lost_pairs().data()==lost_ptr &&
+                   rejected.found_contacts().data()==touch_ptr &&
+                   rejected.lost_contacts().data()==lost_touch_ptr &&
+                   body.position.x==original.position.x &&
+                   body.position.y==original.position.y &&
+                   body.velocity.y==original.velocity.y,
+                   "Rejected quiet step altered previous scene publication");
+            const auto equal=[](auto span,const auto& expected) {
+                return span.size()==expected.size() &&
+                    std::equal(span.begin(),span.end(),expected.begin());
+            };
+            expect(equal(rejected.found_pairs(),prior_found) &&
+                   equal(rejected.lost_pairs(),prior_lost) &&
+                   equal(rejected.found_contacts(),prior_found_contacts) &&
+                   equal(rejected.lost_contacts(),prior_lost_contacts),
+                   "Rejected quiet step erased prior Found/Lost events");
+        }
+        rejected.step(1.0f/120.0f);
+        clean.step(1.0f/120.0f);
+        const auto recovered=rejected.body_state(box_a);
+        const auto baseline=clean.body_state(box_b);
+        expect(rejected.found_pairs().empty() &&
+               rejected.lost_pairs().empty() &&
+               rejected.found_contacts().empty() &&
+               rejected.lost_contacts().empty() &&
+               recovered.position.y==baseline.position.y &&
+               recovered.velocity.y==baseline.velocity.y &&
+               rejected.frame_index()==clean.frame_index(),
+               "Quiet event rollback changed successful retry state");
+        (void)contact;
+        (void)floor_b;
+    }
+
     // A failing Dy step must not publish its unconstrained velocities,
     // consume pending torque, advance topology/frame history, or replace
     // contact/force/threshold reports. Retrying with a valid material must

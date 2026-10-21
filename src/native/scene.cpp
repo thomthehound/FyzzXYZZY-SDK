@@ -2539,6 +2539,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     frame_index=scene.frame_index_;
     pair_epoch=scene.pair_epoch_;
     contact_epoch=scene.contact_epoch_;
+    quiet_event_epoch=scene.quiet_event_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
     includes_solver_state=capture_solver_state;
@@ -2632,8 +2633,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     }
     // Swap back the exact original arena allocations. This preserves the
     // lifetime of contact spans returned before the unsuccessful step.
+    const bool quiet_events_rotated=
+        scene.quiet_event_epoch_!=quiet_event_epoch;
     if(scene.pair_epoch_!=pair_epoch) {
         scene.previous_pairs_.swap(scene.pending_pairs_);
+        scene.found_.swap(scene.next_found_);
+        scene.lost_.swap(scene.next_lost_);
+    } else if(quiet_events_rotated) {
+        // Quiet publication swapped event streams only, not pair state.
         scene.found_.swap(scene.next_found_);
         scene.lost_.swap(scene.next_lost_);
     }
@@ -2643,8 +2650,13 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.contact_points_.swap(scene.next_contact_points_);
         scene.found_contacts_.swap(scene.next_found_contacts_);
         scene.lost_contacts_.swap(scene.next_lost_contacts_);
+    } else if(quiet_events_rotated) {
+        // Retain the prior contact-manifold arena and its published spans.
+        scene.found_contacts_.swap(scene.next_found_contacts_);
+        scene.lost_contacts_.swap(scene.next_lost_contacts_);
     }
     scene.contact_epoch_=contact_epoch;
+    scene.quiet_event_epoch_=quiet_event_epoch;
     if(includes_solver_state)
         scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);
@@ -2954,10 +2966,20 @@ void Scene::advance_collision_internal(bool force_update) {
         publish_pairs();
         update_contacts();
     } else {
-        found_.clear();
-        lost_.clear();
-        found_contacts_.clear();
-        lost_contacts_.clear();
+        // A quiet query/step still publishes empty per-frame event
+        // streams. Rotate only their reusable buffers so a later
+        // exception can undo the publication without copying events.
+        // Do NOT advance pair_epoch_ or contact_epoch_: those mark
+        // actual pair/manifold arena swaps in StepCheckpoint::rollback.
+        next_found_.clear();
+        next_lost_.clear();
+        next_found_contacts_.clear();
+        next_lost_contacts_.clear();
+        found_.swap(next_found_);
+        lost_.swap(next_lost_);
+        found_contacts_.swap(next_found_contacts_);
+        lost_contacts_.swap(next_lost_contacts_);
+        ++quiet_event_epoch_;
     }
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.
