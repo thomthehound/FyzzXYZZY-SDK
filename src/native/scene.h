@@ -420,6 +420,8 @@ private:
     // IslandSim::findRoute traversal reuses its search queue/visited
     // marks, but now traverses the persistent EdgeInstance adjacency.
     std::vector<BodyId> island_route_queue_, island_route_predecessor_;
+    // The same source EdgeIndex used to discover each BFS predecessor.
+    std::vector<EdgeIndex> island_route_predecessor_edge_;
     std::vector<std::uint32_t> island_route_seen_;
     std::uint32_t island_route_visit_stamp_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
@@ -430,6 +432,10 @@ private:
     // Reset only touched nodes after a pass or a failed publication.
     std::vector<std::uint8_t> speculative_dirty_map_, accurate_dirty_map_;
     std::vector<BodyId> speculative_fast_route_, accurate_fast_route_;
+    // Each cached hop refers directly to its source contact-manager edge.
+    // Fast-path validation checks the slot and both linked instances,
+    // never rescanning a high-degree node's intrusive adjacency.
+    std::vector<EdgeIndex> speculative_fast_edge_, accurate_fast_edge_;
     std::vector<std::uint32_t> speculative_hops_, accurate_hops_;
     std::vector<std::uint64_t> speculative_hint_stamps_, accurate_hint_stamps_;
     std::uint64_t speculative_hint_epoch_=1, accurate_hint_epoch_=1;
@@ -503,6 +509,7 @@ private:
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;
+        std::size_t dirty_route_checks=0, fast_route_hits=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         bool topology_dirty=true, dirty=true;
         bool includes_solver_state=true;
