@@ -923,6 +923,45 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                  !lost_island_edges_retain_routes(true);
     if(!rebuild && repair_lost_edges)
         return;
+    if(!rebuild && !repair_lost_edges) {
+        // IslandSim::addConnectionToGraph/removeConnectionInternal update
+        // per-node and per-island static-touch counts without merging
+        // dynamic islands. SAP candidates and Gu touches are independent.
+        // Rebuilds instead count the final intrusive static links once.
+        const auto change_static=[&](Graph& graph,Pair pair,bool added) {
+            const bool da=dynamic_node(pair.a);
+            const bool db=dynamic_node(pair.b);
+            if(da==db)return;
+            const BodyId node=da?pair.a:pair.b;
+            const auto id=graph.node_island[node];
+            if(id==Graph::invalid || id>=graph.islands.size())
+                throw std::logic_error(
+                    "PhysX static edge lacks dynamic island node");
+            auto& count=graph.node_static_touches[node];
+            auto& total=graph.islands[id].static_touches;
+            if(added) {
+                if(count==std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "PhysX island node static-touch count overflow");
+                ++count;
+                ++total;
+            } else {
+                if(!count || !total)
+                    throw std::logic_error(
+                        "PhysX static-touch counter underflow");
+                --count;
+                --total;
+            }
+        };
+        for(Pair pair:found_)
+            change_static(speculative_islands_,pair,true);
+        for(Pair pair:lost_)
+            change_static(speculative_islands_,pair,false);
+        for(Pair pair:found_contacts_)
+            change_static(accurate_islands_,pair,true);
+        for(Pair pair:lost_contacts_)
+            change_static(accurate_islands_,pair,false);
+    }
     if(!rebuild) {
         // No newly connected dynamic edges means no island membership,
         // handle or solver batch change. Preserve the source's quiet
@@ -962,6 +1001,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         graph.node_next[winner.tail]=loser.root;
         winner.tail=loser.tail;
         winner.count+=loser.count;
+        winner.static_touches+=loser.static_touches;
         loser={};
         graph.free_handles.push_back(retired);
         return true;
@@ -975,6 +1015,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         graph.node_island.resize(actors_.size(),Graph::invalid);
         graph.node_next.resize(actors_.size(),invalid);
         graph.node_prev.resize(actors_.size(),invalid);
+        graph.node_static_touches.resize(actors_.size(),0);
         for(std::size_t i=0;i<actors_.size();++i) {
             const BodyId id=static_cast<BodyId>(i);
             if(!dynamic_node(id) ||
@@ -1008,6 +1049,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.node_island.assign(actors_.size(),Graph::invalid);
         next.node_next.assign(actors_.size(),invalid);
         next.node_prev.assign(actors_.size(),invalid);
+        next.node_static_touches.assign(actors_.size(),0);
         next.free_handles=graph.free_handles;
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
@@ -1023,18 +1065,35 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             members.clear();
             members.push_back(start);
             component[start]=component_number;
+            std::size_t static_touches=0;
             for(std::size_t cursor=0;cursor<members.size();++cursor) {
                 const BodyId from=members[cursor];
+                std::size_t node_static_touches=0;
                 for(std::size_t i=first[from];i!=invalid_instance;) {
                     const auto& edge=contact_edges_[i/2];
                     const auto& link=(accurate?edge.accurate:
                                       edge.speculative)[i&1];
                     const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
                     i=link.next;
-                    if(!dynamic_node(to) || component[to])continue;
+                    if(!dynamic_node(to)) {
+                        // In each graph a static contact manager has one
+                        // intrusive instance on its dynamic endpoint.
+                        if(actors_[to].alive &&
+                           actors_[to].kind!=Kind::DynamicBox)
+                            ++node_static_touches;
+                        continue;
+                    }
+                    if(component[to])continue;
                     component[to]=component_number;
                     members.push_back(to);
                 }
+                if(node_static_touches>
+                    std::numeric_limits<std::uint32_t>::max())
+                    throw std::overflow_error(
+                        "PhysX island node static-touch count overflow");
+                next.node_static_touches[from]=
+                    static_cast<std::uint32_t>(node_static_touches);
+                static_touches+=node_static_touches;
             }
             Graph::IslandId handle=Graph::invalid;
             // Preserve the winning pre-split source handle when its root
@@ -1096,6 +1155,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             island.root=root;
             island.tail=root;
             island.count=members.size();
+            island.static_touches=static_touches;
             island.live=true;
             next.node_island[root]=handle;
             for(BodyId member:members) {
@@ -2400,11 +2460,15 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
     scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
     scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
+    scene.speculative_islands_.node_static_touches.swap(
+        speculative_islands.node_static_touches);
     scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
     scene.accurate_islands_.islands.swap(accurate_islands.islands);
     scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
     scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
     scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
+    scene.accurate_islands_.node_static_touches.swap(
+        accurate_islands.node_static_touches);
     scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
     scene.accurate_island_nodes_.swap(accurate_nodes);
     scene.accurate_island_offsets_.swap(accurate_offsets);
