@@ -2663,11 +2663,14 @@ int run_native_scene_smoke() {
         // impulse remain finite in double, but unequal inverse masses
         // previously overflowed one body's float velocity on writeback.
         // Mirror the PhysX dynamic-body maxLinearVelocitySq=1e32 default.
+        // The unconstrained speed clamp precedes the contact solver.
+        // Use touching faces (zero penetration bias) so this tests that
+        // clamp rather than incorrectly capping post-solver correction.
         Scene unequal_mass;
         const auto light = unequal_mass.add_dynamic_box(
             {1,1,1}, {0,5,0}, 1.0e-6f);
         const auto heavy = unequal_mass.add_dynamic_box(
-            {1,1,1}, {1.5f,5,0}, 1.0e6f);
+            {1,1,1}, {2.0f,5,0}, 1.0e6f);
         const float max_v = std::numeric_limits<float>::max();
         unequal_mass.set_velocity(light, {max_v,0,0});
         unequal_mass.set_velocity(heavy, {-max_v,0,0});
@@ -2681,7 +2684,7 @@ int run_native_scene_smoke() {
         expect(std::abs(vlight.x) < 2.0e16f &&
                std::abs(vheavy.x) < 2.0e16f &&
                unequal_mass.contacts().size() == 1,
-               "Source dynamic linear-speed limit was not enforced");
+               "Source unconstrained linear-speed clamp failed zero-bias contact");
     }
     {
         // A free body uses the same source default velocity clamp, so
