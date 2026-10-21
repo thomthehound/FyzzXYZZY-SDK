@@ -2574,6 +2574,36 @@ void Scene::step(float seconds) {
     // authoritative state; all per-step Dy work buffers remain reusable.
     step_checkpoint_.capture(*this);
     try {
+    // Source IslandSim::wakeIslands is a first-pass producer. Explicit
+    // velocity/pose/torque changes must activate connected sleeping peers
+    // BEFORE Dy::bodyCoreComputeUnconstrainedVelocity applies gravity.
+    // The same operation is used again after fresh Gu contacts publish.
+    const auto wake_node=[&](BodyId id) {
+        auto& actor=actors_[id];
+        if(!actor.sleeping)return;
+        actor.sleeping=false;
+        actor.ready_for_sleep=false;
+        actor.wake_counter=0.4f;
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+    };
+    const auto wake_connected_islands=[&] {
+        for(const auto& island:speculative_islands_.islands) {
+            if(!island.live)continue;
+            bool awake=false;
+            for(BodyId node=island.root;
+                node!=std::numeric_limits<BodyId>::max();
+                node=speculative_islands_.node_next[node]) {
+                if(!actors_[node].sleeping) {awake=true;break;}
+            }
+            if(awake)
+                for(BodyId node=island.root;
+                    node!=std::numeric_limits<BodyId>::max();
+                    node=speculative_islands_.node_next[node])
+                    wake_node(node);
+        }
+    };
+    wake_connected_islands();
     for (auto& actor : actors_) {
         if (!actor.alive || actor.kind != Kind::DynamicBox ||
             actor.sleeping) continue;
@@ -2634,42 +2664,15 @@ void Scene::step(float seconds) {
     // execution order; no ordering of third pass *after* solve is implied.
     // Actual source task continuations and deactivation are still N1 gates.
     third_pass_island_gen();
-    // IslandSim::wakeIslands: an externally reactivated body or a new
-    // touch with a moving/static scene actor activates its entire source
-    // speculative/accurate island before Dy solver admission. A quiet
-    // inactive island is never awakened merely by its persistent contact
-    // manager, which can remain connected for many sleeping frames.
-    const auto wake_node=[&](BodyId id) {
-        auto& actor=actors_[id];
-        if(!actor.sleeping)return;
-        actor.sleeping=false;
-        actor.ready_for_sleep=false;
-        actor.wake_counter=0.4f;
-        actor.sleep_linear_acc={};
-        actor.sleep_angular_acc={};
-    };
+    // New static Gu touches can wake sleeping bodies after the
+    // collision publication. Propagate these and any new dynamic joins
+    // through the same source speculative island membership.
     for(Pair pair:found_contacts_) {
         const bool a=actors_[pair.a].kind==Kind::DynamicBox;
         const bool b=actors_[pair.b].kind==Kind::DynamicBox;
-        if(a!=b)
-            wake_node(a?pair.a:pair.b);
+        if(a!=b)wake_node(a?pair.a:pair.b);
     }
-    // The speculative graph may join more nodes than the accurate one.
-    // Waking follows source connectivity, not Gu solver partition IDs.
-    for(const auto& island:speculative_islands_.islands) {
-        if(!island.live)continue;
-        bool awake=false;
-        for(BodyId node=island.root;
-            node!=std::numeric_limits<BodyId>::max();
-            node=speculative_islands_.node_next[node]) {
-            if(!actors_[node].sleeping) {awake=true;break;}
-        }
-        if(awake)
-            for(BodyId node=island.root;
-                node!=std::numeric_limits<BodyId>::max();
-                node=speculative_islands_.node_next[node])
-                wake_node(node);
-    }
+    wake_connected_islands();
     prepare_solver_bodies();
     partition_constraints();
     prepare_constraints(seconds);
