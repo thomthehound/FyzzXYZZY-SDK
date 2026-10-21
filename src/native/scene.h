@@ -127,6 +127,16 @@ public:
     void set_material(BodyId id, Material material);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
+    // ScBodyCore/PxsBodyCore's authoritative counter and the
+    // Dy::sleepCheck readiness output. These are not yet island sleep
+    // states: only the subsequent island deactivation stage may exclude
+    // a node from simulation.
+    float body_wake_counter(BodyId id) const {
+        return require(id).wake_counter;
+    }
+    bool body_ready_for_sleep(BodyId id) const {
+        return require(id).ready_for_sleep;
+    }
 
     // One scene-owned collision progression: update bounds -> SAP ->
     // overlap publication -> source Gu narrowphase -> contact publication.
@@ -274,6 +284,12 @@ private:
         // PhysX ScBodySim::VelocityMod's per-step angular delta; consumed
         // by the existing scene clock, not a second force owner.
         Vec3 pending_angular_velocity_delta{};
+        // ScBodyCore::BodyCore initializes the PxsBodyCore wake counter
+        // to 20 * 0.02 seconds; Dy::sleepCheck accumulates unscaled
+        // motion energies until this source counter expires.
+        float wake_counter=0.4f;
+        Vec3 sleep_linear_acc{}, sleep_angular_acc{};
+        bool ready_for_sleep=false;
         std::array<std::uint32_t, 6> encoded_bounds{};
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
@@ -514,6 +530,9 @@ private:
             Vec3 position{}, velocity{}, angular_velocity{};
             Quat orientation{};
             Vec3 pending_angular_velocity_delta{};
+            float wake_counter=0.4f;
+            Vec3 sleep_linear_acc{}, sleep_angular_acc{};
+            bool ready_for_sleep=false;
         };
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
@@ -595,6 +614,9 @@ private:
     // Prepared contact bodies for the current frame; avoids re-preparing
     // free-flight actors before the original island owner is integrated.
     std::vector<BodyId> solver_active_ids_;
+    // Sc::BodyCore::numCountedInteractions, derived once from the
+    // authoritative contact manager stream for Dy::sleepCheck.
+    std::vector<std::uint32_t> sleep_interaction_counts_;
     std::vector<Endpoint> endpoints_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
