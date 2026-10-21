@@ -2781,6 +2781,41 @@ int run_native_scene_smoke() {
         expect(std::isfinite(rotating_contact.body_state(id).angular_velocity.x),
                "Angular motion failed to continue without replaying torque");
     }
+    {
+        // Source ScBodyCore creation counter and Dy::sleepCheck: motion
+        // readiness precedes whole-island deactivation. Once a rigid
+        // body rests on its static floor it must stop integrating gravity
+        // and remain stationary, but an explicit velocity edit wakes it.
+        Scene sleeping;
+        sleeping.add_static_floor(0.0f);
+        const auto id=sleeping.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        expect(std::abs(sleeping.body_wake_counter(id)-0.4f)<1e-6f &&
+               !sleeping.body_ready_for_sleep(id) &&
+               !sleeping.body_is_sleeping(id),
+               "Source rigid-body creation did not initialize wake counter");
+        for(int frame=0;frame<360;++frame)
+            sleeping.step(1.0f/120.0f);
+        const auto still=sleeping.body_state(id);
+        expect(sleeping.body_is_sleeping(id) &&
+               sleeping.body_ready_for_sleep(id) &&
+               still.sleeping &&
+               sleeping.body_wake_counter(id)==0.0f &&
+               still.velocity.y==0.0f,
+               "PhysX island did not deactivate a settled floor body");
+        sleeping.set_velocity(id,{1,0,0});
+        expect(!sleeping.body_is_sleeping(id) &&
+               !sleeping.body_ready_for_sleep(id) &&
+               sleeping.body_wake_counter(id)==0.4f,
+               "Source velocity authoring did not wake the rigid body");
+        sleeping.step(1.0f/120.0f);
+        const auto moved=sleeping.body_state(id);
+        expect(!moved.sleeping &&
+               moved.position.x>still.position.x &&
+               std::isfinite(moved.velocity.x),
+               "Woken source island failed to reenter native solver");
+    }
+
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
