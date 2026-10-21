@@ -585,7 +585,7 @@ int main() {
                                   << " native_vy=" << n.velocity.y
                                   << " physx_vy=" << p.velocity.y
                                   << " pos_error=" << pos_error
-                                  << " vel_error=" << vel_error << '\\n';
+                                  << " vel_error=" << vel_error << '\n';
                         throw std::runtime_error(
                             "Native rigid floor-contact PGS disagrees with independent PhysX CPU");
                     }
@@ -594,7 +594,7 @@ int main() {
                           << " max_y_error=" << max_position_error
                           << " at_frame=" << max_position_frame
                           << " max_vy_error=" << max_velocity_error
-                          << " at_frame=" << max_velocity_frame << '\\n';
+                          << " at_frame=" << max_velocity_frame << '\n';
             }
 
             fyzz::World world;
