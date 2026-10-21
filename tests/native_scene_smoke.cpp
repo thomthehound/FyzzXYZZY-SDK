@@ -2898,6 +2898,13 @@ int run_native_scene_smoke() {
                wake_rollback.accurate_island_id(sleeper)==
                    wake_rollback.accurate_island_id(newcomer),
                "Source activation rollback lost new-touch retry");
+        // PxvDynamics.h initializes the unconfigured rigid body's
+        // maxPenBias to -1e32f, not an implicit -3 m/s clamp.
+        // This penetration exceeds 3*dt; clamping at that non-source
+        // value would prevent the sleeping peer from moving far enough.
+        expect(wake_rollback.body_state(sleeper).position.x < -0.03f,
+               "Source default penetration bias was spuriously capped");
+
     }
 
     {

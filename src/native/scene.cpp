@@ -1585,7 +1585,10 @@ void Scene::prepare_constraints(float seconds) {
     // source coefficient is used by DyContactPrep for penetration bias
     // and for friction-row impulse relaxation (not a 0.2 substitute).
     constexpr float rigid_contact_bias = 0.8f;
-    constexpr float max_penetration_bias = -3.0f;
+    // PxvDynamics.h::PxsBodyCore defaults maxPenBias to -1e32f.
+    // A 3 m/s depenetration limit would require an explicit rigid-body
+    // override; it is not the original PhysX default solver-body state.
+    constexpr float max_penetration_bias = -1.0e32f;
     constexpr float bounce_threshold = -2.0f;
     // PxsMaterialCombiner.h::PxsCombineMaterials: the source takes the
     // higher precedence combine mode (Average, Min, Multiply, Max) of
