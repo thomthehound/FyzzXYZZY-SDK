@@ -700,7 +700,12 @@ private:
     // sequence, expressed as indices into the authoritative Gu manifolds.
     // Both the constraint partitioner and its stable output consume it.
     std::vector<std::size_t> indexed_managers_;
-    std::vector<std::size_t> manifold_by_edge_;
+    struct IndexedManifold {
+        std::size_t index=invalid_instance;
+        std::uint64_t generation=0;
+    };
+    std::vector<IndexedManifold> manifold_by_edge_;
+    std::uint64_t indexed_manifold_generation_=0;
     std::vector<std::size_t> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
