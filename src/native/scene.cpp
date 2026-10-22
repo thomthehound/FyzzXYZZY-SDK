@@ -1621,7 +1621,7 @@ void Scene::deactivate_ready_islands() noexcept {
 // sleeping checks still protect a transitional mixed-state island.
 // Unlike copying a second body-ID array, only one index per active
 // island is retained, with reusable allocation across frames.
-void Scene::synchronize_accurate_active_nodes() noexcept {
+void Scene::synchronize_active_island_nodes() noexcept {
     // Source PxsIslandSim::markInactive uses swap-last plus a reverse
     // active-node index; markActive appends. Preserve that lifecycle
     // across quiet frames and incremental merges instead of clearing and
@@ -1632,7 +1632,11 @@ void Scene::synchronize_accurate_active_nodes() noexcept {
     // Actor admission cannot reach this path without rebuilding, so
     // neither active-list append nor index lookup allocates here. This
     // matters for the failure-atomic geometry-only commit boundary.
-    auto& graph=accurate_islands_;
+    // Original SimpleIslandManager has two independent IslandSim owners.
+    // The currently admitted rigid actors share the Sc sleep state,
+    // but each graph retains its own source active-list permutation.
+    for(IslandGraph* owner:{&speculative_islands_,&accurate_islands_}) {
+    auto& graph=*owner;
     for(std::size_t index=0;index<graph.active_nodes.size();) {
         const BodyId id=graph.active_nodes[index];
         if(actors_[id].alive && !actors_[id].sleeping &&
@@ -1669,13 +1673,15 @@ void Scene::synchronize_accurate_active_nodes() noexcept {
     }
     for(BodyId id:accurate_island_nodes_) {
         if(actors_[id].sleeping ||
+           graph.node_island[id]==IslandGraph::invalid ||
            graph.active_node_index[id]!=invalid_instance)continue;
         graph.active_node_index[id]=graph.active_nodes.size();
         graph.active_nodes.push_back(id);
     }
+    }
 }
 void Scene::prepare_active_accurate_island_batches() {
-    synchronize_accurate_active_nodes();
+    synchronize_active_island_nodes();
     // Dy::DynamicsContext is still admitted in stable source
     // accurate-island order. The membership test now consumes the
     // graph-owned active-node map rather than independently scanning
@@ -2879,6 +2885,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // are noexcept AFTER the collision transaction commits. Reserving
     // here is still inside the throwing, pre-publication checkpoint.
     // Capacity is reused over successive frames, including failed steps.
+    speculative_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
@@ -2916,6 +2923,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // swaps these originals back without invalidating exposed spans.
     // The working deactivation output retains actors_.size() capacity
     // for the subsequent noexcept third-pass sleep decision.
+    scene.speculative_islands_.active_nodes.swap(
+        speculative_islands.active_nodes);
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
@@ -3127,6 +3136,8 @@ void Scene::step(float seconds) {
     // publication subsequently rebuilds island handles.
     accurate_islands_.initial_active_node_count=
         accurate_islands_.active_nodes.size();
+    speculative_islands_.initial_active_node_count=
+        speculative_islands_.active_nodes.size();
     advance_collision_internal(false);
     third_pass_island_gen();
     activate_published_islands();
@@ -3354,13 +3365,15 @@ void Scene::advance_collision(bool force_update) {
         accurate_islands_.nodes_to_deactivate.clear();
         accurate_islands_.initial_active_node_count=
             accurate_islands_.active_nodes.size();
+        speculative_islands_.initial_active_node_count=
+            speculative_islands_.active_nodes.size();
         // A velocity/torque edit can queue IslandSim activation without
         // touching geometry. Complete the no-throw source wake handoff.
         // Keep the graph-owned active-node map in step with such wakes,
         // without traversing it on an unchanged, event-free query.
         const bool pending_wake=authored_activation_pending_;
         activate_published_islands();
-        if(pending_wake)synchronize_accurate_active_nodes();
+        if(pending_wake)synchronize_active_island_nodes();
         return;
     }
     // Geometry changes, forced refreshes and pending graph retirement
@@ -3370,6 +3383,8 @@ void Scene::advance_collision(bool force_update) {
     try {
         accurate_islands_.initial_active_node_count=
             accurate_islands_.active_nodes.size();
+        speculative_islands_.initial_active_node_count=
+            speculative_islands_.active_nodes.size();
         advance_collision_internal(force_update);
         third_pass_island_gen();
     } catch (...) {
@@ -3381,7 +3396,7 @@ void Scene::advance_collision(bool force_update) {
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activate_published_islands();
     deactivate_ready_islands();
-    synchronize_accurate_active_nodes();
+    synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's
