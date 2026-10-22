@@ -694,6 +694,107 @@ int main() {
                 }
             }
 
+            // Noncentral dynamic rigid contact: the original non-PCM Gu
+            // manifold and Dy normal Jacobians must transfer linear and
+            // angular momentum together. Compare the actual native
+            // production scene with the independent PhysX legacy-Gu PGS
+            // backend across creation orders and changing timesteps.
+            for(const bool reversed:{false,true}) {
+                fyzz::World native_offcenter(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_offcenter(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                fyzz::BodyId n_left=0,n_right=0,p_left=0,p_right=0;
+                const auto add_left=[&] {
+                    n_left=native_offcenter.add_dynamic_box(
+                        half,{-0.52f,6.0f,-0.17f},1.0f);
+                    p_left=source_offcenter.add_dynamic_box(
+                        half,{-0.52f,6.0f,-0.17f},1.0f);
+                };
+                const auto add_right=[&] {
+                    n_right=native_offcenter.add_dynamic_box(
+                        half,{0.52f,6.0f,0.17f},3.0f);
+                    p_right=source_offcenter.add_dynamic_box(
+                        half,{0.52f,6.0f,0.17f},3.0f);
+                };
+                if(reversed) {add_right();add_left();}
+                else {add_left();add_right();}
+                fyzz::Material frictionless{};
+                frictionless.disable_friction=true;
+                frictionless.restitution=0.0f;
+                for(const auto id:{n_left,n_right})
+                    native_offcenter.set_body_material(id,frictionless);
+                for(const auto id:{p_left,p_right})
+                    source_offcenter.set_body_material(id,frictionless);
+                native_offcenter.set_body_velocity(n_left,{1.3f,0,0});
+                source_offcenter.set_body_velocity(p_left,{1.3f,0,0});
+                native_offcenter.set_body_velocity(n_right,{-0.35f,0,0});
+                source_offcenter.set_body_velocity(p_right,{-0.35f,0,0});
+                float source_angular_response=0.0f;
+                for(int frame=0;frame<72;++frame) {
+                    const float h=frame<24?1.0f/240.0f:1.0f/120.0f;
+                    native_offcenter.step(h);
+                    source_offcenter.step(h);
+                    for(const auto [nid,pid,side]:
+                        {std::tuple{n_left,p_left,"left"},
+                         std::tuple{n_right,p_right,"right"}}) {
+                        const auto n=native_offcenter.body_state(nid);
+                        const auto p=source_offcenter.body_state(pid);
+                        const auto abs_error=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                            return std::max({
+                                std::abs(a.x-b.x),
+                                std::abs(a.y-b.y),
+                                std::abs(a.z-b.z)});
+                        };
+                        const float position_error=abs_error(
+                            n.position,p.position);
+                        const float linear_error=abs_error(
+                            n.velocity,p.velocity);
+                        const float angular_error=abs_error(
+                            n.angular_velocity,p.angular_velocity);
+                        const float orientation_dot=
+                            n.orientation.x*p.orientation.x+
+                            n.orientation.y*p.orientation.y+
+                            n.orientation.z*p.orientation.z+
+                            n.orientation.w*p.orientation.w;
+                        source_angular_response=std::max(
+                            source_angular_response,
+                            std::abs(p.angular_velocity.y));
+                        if(!vec_finite(n.position) ||
+                           !vec_finite(p.position) ||
+                           !vec_finite(n.velocity) ||
+                           !vec_finite(p.velocity) ||
+                           !vec_finite(n.angular_velocity) ||
+                           !vec_finite(p.angular_velocity) ||
+                           !std::isfinite(orientation_dot) ||
+                           !std::isfinite(position_error) ||
+                           !std::isfinite(linear_error) ||
+                           !std::isfinite(angular_error) ||
+                           position_error>0.065f ||
+                           linear_error>0.18f ||
+                           angular_error>0.3f ||
+                           std::abs(orientation_dot)<0.995f) {
+                            std::cerr<<"Native/PhysX off-center PGS"
+                                     <<" frame="<<frame+1
+                                     <<" reversed="<<reversed
+                                     <<" side="<<side
+                                     <<" dt="<<h
+                                     <<" position_error="<<position_error
+                                     <<" linear_error="<<linear_error
+                                     <<" angular_error="<<angular_error
+                                     <<" orientation_dot="<<orientation_dot
+                                     <<'\n';
+                            throw std::runtime_error(
+                                "Off-center angular contact diverged from PhysX legacy Gu/PGS");
+                        }
+                    }
+                }
+                if(source_angular_response<=0.01f)
+                    throw std::runtime_error(
+                        "PhysX off-center contact fixture produced no angular response");
+            }
+
             // Coupled PGS conformance: unlike a free two-body impact,
             // the upper dynamic contact and lower static-world contact
             // must both be solved in the same source accurate island.
