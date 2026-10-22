@@ -179,6 +179,94 @@ void verify_speculative_active_node_lifecycle() {
            "Speculative graph kept a retired rigid in its active list");
 }
 
+// Two orphan components can share one original indexed-manager array.
+// PhysX processes their dirty nodes in ascending mDirtyMap index,
+// NOT in the order of the smallest BodyId in each new component. These
+// orders disagree: right G is dirty ID 3; left B is dirty ID 5, while
+// left A has smaller BodyId 0 than right F's BodyId 2. Swap-last
+// compaction therefore moves F-G before A-B out of the old root array.
+void verify_dirty_order_multisplit_manager_remainder() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene scene;
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-1.6f,10,0},1);
+    const auto c=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,10,0},1);
+    const auto f=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{3.2f,10,0},1);
+    const auto g=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{2.4f,10,0},1);
+    const auto d=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,10,0},1);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.8f,10,0},1);
+    const auto e=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{1.6f,10,0},1);
+    const auto sc=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{0,10,0.54f});
+    const auto sd=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{0.8f,10,0.54f});
+    const auto se=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{1.6f,10,0.54f});
+    scene.advance_collision();
+    scene.step(1.0f/480.0f);
+    const auto initial_managers=scene.indexed_contact_manager_order();
+    const auto initial_gu=scene.contacts();
+    expect(scene.accurate_island_count()==1 &&
+           initial_gu.size()==9 && initial_managers.size()==9,
+           "Dirty-ordered two-way split fixture lacked nine managers");
+    std::vector<Pair> root_array;
+    for(std::size_t index:initial_managers)
+        root_array.push_back(initial_gu[index].pair);
+
+    // Source lost-bridge publication occurs before processLostEdges,
+    // in the deterministic Gu manager stream. Thereafter the right
+    // dirty G component splits first, then left dirty B.
+    const auto swap_remove=[&](Pair pair) {
+        const auto found=std::find(root_array.begin(),root_array.end(),pair);
+        expect(found!=root_array.end(),
+               "Source split oracle missing its old indexed manager");
+        *found=root_array.back();
+        root_array.pop_back();
+    };
+    swap_remove(Pair{b,c});
+    swap_remove(Pair{g,e});
+    swap_remove(Pair{f,g});
+    swap_remove(Pair{a,b});
+    std::vector<Pair> expected;
+    for(const Pair pair:root_array)
+        if(pair==Pair{c,d} || pair==Pair{d,e} ||
+           pair==Pair{c,sc} || pair==Pair{d,sd} ||
+           pair==Pair{e,se})
+            expected.push_back(pair);
+    expect(expected.size()==5,
+           "Dirty-order source oracle did not retain five root managers");
+
+    scene.set_position(a,{-2.5f,10,0});
+    scene.set_position(b,{-1.7f,10,0});
+    scene.set_position(f,{4.1f,10,0});
+    scene.set_position(g,{3.3f,10,0});
+    scene.step(1.0f/480.0f);
+    expect(scene.accurate_island_count()==3 &&
+           has(scene.lost_contacts(),b,c) &&
+           has(scene.lost_contacts(),g,e) &&
+           scene.contacts().size()==7,
+           "Dirty-order fixture did not detach both orphan components");
+    const auto gu=scene.contacts();
+    const auto managers=scene.indexed_contact_manager_order();
+    std::vector<Pair> retained;
+    for(std::size_t index:managers) {
+        const Pair pair=gu[index].pair;
+        if(pair==Pair{c,d} || pair==Pair{d,e} ||
+           pair==Pair{c,sc} || pair==Pair{d,sd} ||
+           pair==Pair{e,se})
+            retained.push_back(pair);
+    }
+    expect(retained==expected,
+           "Source mDirtyMap multi-split order changed retained manager sequence");
+}
+
 // Unequal original mHopCounts must change *which branch is popped*
 // before the other branch. Starting at dirty B, the source EdgeInstance
 // head discovers A before X, but a prior successful lost-chord repair
@@ -3070,6 +3158,7 @@ int run_native_scene_smoke() {
     verify_split_contact_manager_migration();
     verify_dirty_seed_split_manager_order();
     verify_hop_priority_split_migration();
+    verify_dirty_order_multisplit_manager_remainder();
 
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
