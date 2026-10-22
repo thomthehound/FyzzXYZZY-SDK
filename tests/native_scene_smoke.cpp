@@ -206,15 +206,9 @@ void verify_dirty_order_multisplit_manager_remainder() {
         {0.5f,0.5f,0.5f},{-4.2f,10,0},1);
     const auto e=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{1.6f,10,0},1);
-    const auto sc=scene.add_static_box(
-        {0.1f,0.1f,0.1f},{0,10,0.54f});
-    const auto sd=scene.add_static_box(
-        {0.1f,0.1f,0.1f},{0.8f,10,0.54f});
-    const auto se=scene.add_static_box(
-        {0.1f,0.1f,0.1f},{1.6f,10,0.54f});
     scene.advance_collision();
     expect(scene.accurate_island_count()==3 &&
-           scene.contacts().size()==7 &&
+           scene.contacts().size()==4 &&
            scene.accurate_island_root(c)==d,
            "Two-way split fixture did not establish its larger central root");
     scene.set_position(a,{-1.6f,10,0});
@@ -228,6 +222,17 @@ void verify_dirty_order_multisplit_manager_remainder() {
            has(scene.found_contacts(),b,c) &&
            has(scene.found_contacts(),g,e),
            "Two-way split fixture lost its central source root during merges");
+    // Append root-owned static managers only *after* both arm arrays
+    // have joined the central island. Their suffix is essential:
+    // removing F-G before A-B swaps these later root managers into
+    // a different order than removing A-B before F-G.
+    const auto sc=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{0,10,0.54f});
+    const auto sd=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{0.8f,10,0.54f});
+    const auto se=scene.add_static_box(
+        {0.1f,0.1f,0.1f},{1.6f,10,0.54f});
+    scene.advance_collision();
     scene.step(1.0f/480.0f);
     const auto initial_managers=scene.indexed_contact_manager_order();
     const auto initial_gu=scene.contacts();
