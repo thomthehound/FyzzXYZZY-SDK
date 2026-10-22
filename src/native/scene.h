@@ -200,6 +200,9 @@ public:
     std::size_t solver_partition_count() const noexcept {
         return partition_ends_.size();
     }
+    std::span<const std::size_t> indexed_contact_manager_order() const noexcept {
+        return indexed_managers_;
+    }
     // IG::SimpleIslandManager's speculative (BP candidate) and accurate
     // (physical touch) connectivity, limited to the admitted awake rigid
     // bodies. Static world contacts do not merge dynamic islands.
@@ -434,6 +437,10 @@ private:
     // two source edge instances per contact manager, per graph.
     void link_contact_edge(std::uint32_t id, bool accurate);
     void unlink_contact_edge(std::uint32_t id, bool accurate);
+    // PxsIslandSim's accurate island eCONTACT_MANAGER edge array:
+    // append, concatenate on merge, and swap-last on retirement.
+    void append_accurate_island_edge(std::uint32_t id, std::uint32_t island);
+    void remove_accurate_island_edge(std::uint32_t id);
     void update_island_connectivity(bool repair_lost_edges);
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // repair. Source activation and whole-island deactivation consume
@@ -474,6 +481,9 @@ private:
         // speculative and accurate IslandSim graphs.
         std::array<EdgeInstance,2> speculative{};
         std::array<EdgeInstance,2> accurate{};
+        // Ordered accurate-island manager membership. These are links in
+        // the existing source EdgeIndex slot, not another contact owner.
+        EdgeIndex island_prev=invalid_edge, island_next=invalid_edge;
     };
     // Source HandleManager-style reusable slots. Active handles align
     // with the one authoritative sorted SAP pair stream; the slots own
@@ -501,6 +511,10 @@ private:
             // IslandSim::mIslandStaticTouchCount, updated on static-edge
             // found/lost and transferred on dynamic-island merges.
             std::size_t static_touches=0;
+            // Per-island ordered eCONTACT_MANAGER edges. The indexed
+            // descriptor stream reads these slots, not Gu pair order.
+            EdgeIndex first_contact=invalid_edge, last_contact=invalid_edge;
+            std::size_t contact_count=0;
         };
         std::vector<Island> islands;
         std::vector<IslandId> node_island;
@@ -681,6 +695,11 @@ private:
     // Source overflow descriptor array, compacted in place each 32-bit
     // partition wave; previously assigned managers are never rescanned.
     std::vector<std::size_t> pending_dynamic_constraints_;
+    // DyDynamicsBase::iterateIslandsContactEdges source-indexed manager
+    // sequence, expressed as indices into the authoritative Gu manifolds.
+    // Both the constraint partitioner and its stable output consume it.
+    std::vector<std::size_t> indexed_managers_;
+    std::vector<std::size_t> manifold_by_edge_;
     std::vector<std::size_t> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
