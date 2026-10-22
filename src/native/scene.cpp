@@ -1812,8 +1812,52 @@ void Scene::partition_constraints() {
     // unassigned dynamic descriptors for each overflow wave; compact the
     // same reusable descriptor buffer in place to avoid an O(waves*all
     // manifolds) rescan for high-degree constraint graphs.
+    // DyDynamicsBase::iterateIslandsContactEdges enumerates the
+    // accurate active islands' eCONTACT_MANAGER edges. Gu manifolds
+    // remain pair-sorted for source collision caches and writeback,
+    // but that order is *not* the source constraint descriptor input.
+    // Map handle -> original Gu index once, without a second contact
+    // registry or a binary search for every island edge.
+    manifold_by_edge_.assign(contact_edges_.size(),unassigned);
+    std::size_t pair_cursor=0;
+    for(std::size_t i=0;i<manifolds_.size();++i) {
+        while(pair_cursor<previous_pairs_.size() &&
+              previous_pairs_[pair_cursor]<manifolds_[i].pair)
+            ++pair_cursor;
+        if(pair_cursor==previous_pairs_.size() ||
+           !(previous_pairs_[pair_cursor]==manifolds_[i].pair))
+            throw std::logic_error("Gu manager lacks source contact edge");
+        const EdgeIndex edge=active_edge_handles_[pair_cursor];
+        if(!contact_edges_[edge].connected)
+            throw std::logic_error("Gu manager has disconnected source edge");
+        manifold_by_edge_[edge]=i;
+    }
+    indexed_managers_.clear();
+    for(std::size_t batch:active_accurate_island_batches_) {
+        const std::size_t offset=accurate_island_offsets_[batch];
+        const BodyId root=accurate_island_nodes_[offset];
+        const auto handle=accurate_islands_.node_island[root];
+        const auto& island=accurate_islands_.islands[handle];
+        std::size_t count=0;
+        for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
+            edge=contact_edges_[edge].island_next) {
+            if(edge>=manifold_by_edge_.size() ||
+               manifold_by_edge_[edge]==unassigned)
+                throw std::logic_error(
+                    "Active PhysX island has an unindexed contact manager");
+            indexed_managers_.push_back(manifold_by_edge_[edge]);
+            if(++count>island.contact_count)
+                throw std::logic_error("PhysX island contact list cycle");
+        }
+        if(count!=island.contact_count)
+            throw std::logic_error("PhysX island contact list truncated");
+    }
+    // The admitted non-compound rigid PGS descriptor path in
+    // DyDynamics.cpp::setupDescTask consumes this indexed-manager
+    // sequence directly. The compound contact reducer's separate
+    // two-key solver-body sort remains an explicit ABI admission gate.
     pending_dynamic_constraints_.clear();
-    for (std::size_t i=0;i<manifolds_.size();++i) {
+    for(std::size_t i:indexed_managers_) {
         const Pair pair=manifolds_[i].pair;
         if (actors_[pair.a].kind == Kind::DynamicBox &&
             actors_[pair.b].kind == Kind::DynamicBox &&
@@ -1860,7 +1904,7 @@ void Scene::partition_constraints() {
                 "Native source constraint partition index overflow");
     }
 
-    for (std::size_t i=0;i<manifolds_.size();++i) {
+    for (std::size_t i:indexed_managers_) {
         if (constraint_partitions_[i]!=unassigned) continue;
         const Pair pair=manifolds_[i].pair;
         const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
@@ -1885,7 +1929,8 @@ void Scene::partition_constraints() {
     // stable-writes each descriptor by partition. This preserves the
     // input contact-manager order *within* each non-conflicting batch.
     std::size_t count=0;
-    for (std::size_t p : constraint_partitions_) {
+    for (std::size_t i:indexed_managers_) {
+        const std::size_t p=constraint_partitions_[i];
         if (p==unassigned) continue;
         if (p>=partition_ends_.size()) partition_ends_.resize(p+1,0);
         ++partition_ends_[p];
@@ -1900,7 +1945,7 @@ void Scene::partition_constraints() {
     for (std::size_t p=0;p<partition_cursors_.size();++p)
         partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
     ordered_constraints_.resize(count);
-    for (std::size_t i=0;i<constraint_partitions_.size();++i) {
+    for (std::size_t i:indexed_managers_) {
         const std::size_t partition=constraint_partitions_[i];
         if (partition!=unassigned)
             ordered_constraints_[partition_cursors_[partition]++]=i;
