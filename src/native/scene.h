@@ -262,6 +262,12 @@ public:
     std::size_t island_fast_route_hit_count() const noexcept {
         return island_fast_route_hits_;
     }
+    // Advisory source mHopCounts used by IslandSim::findRoute's
+    // priority queue. UINT_MAX denotes an unestablished route.
+    std::uint32_t accurate_cached_route_hops(BodyId id) const noexcept {
+        return id<accurate_hops_.size() ? accurate_hops_[id] :
+            std::numeric_limits<std::uint32_t>::max();
+    }
     // Number of edited source edge instances saved for step rollback,
     // distinct from the number of historical contact-manager handles.
     std::size_t edge_rollback_journal_size() const noexcept {
