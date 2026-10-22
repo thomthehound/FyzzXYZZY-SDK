@@ -613,6 +613,73 @@ void verify_equal_hop_split_queue_order() {
            "Equal-hop source heap tie order changed split manager migration");
 }
 
+// A root-bridge loss and an internal orphan chord loss occur in the
+// same publication. PhysX processLostEdges splits on the first failed
+// dirty route, then *skips* other dirty nodes already present in that
+// split's shared mVisitedState. The initial findRoute visitation supplies
+// the new node/manager ordering directly; it must not traverse twice.
+void verify_source_dirty_witness_split() {
+    using fyzz::native::Scene;
+    Scene scene;
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,16,0},1);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,16,0},1);
+    const auto c=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{1.6f,16,0},1);
+    const auto d=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{2.4f,16,0},1);
+    const auto e=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{2.55f,16,0},1);
+    scene.advance_collision();
+    expect(scene.accurate_island_count()==1 &&
+           scene.speculative_island_count()==1 &&
+           scene.accurate_island_root(c)==b &&
+           has(scene.contacts(),a,b) &&
+           has(scene.contacts(),b,c) &&
+           has(scene.contacts(),c,d) &&
+           has(scene.contacts(),c,e) &&
+           has(scene.contacts(),d,e),
+           "Dirty witness split fixture lacks its pre-loss root and chord");
+    const auto old_handle=scene.accurate_island_id(b);
+    const auto checks=scene.island_dirty_route_check_count();
+    const auto rebuilds=scene.island_full_rebuild_count();
+    const auto splits=scene.island_local_split_count();
+    // Preserve the A-B root island, but disconnect C-D-E at B-C.
+    // Remove C-E while preserving C-D-E's alternate route.
+    scene.set_position(a,{-2,16,0});
+    scene.set_position(b,{-1.2f,16,0});
+    scene.set_position(e,{3.35f,16,0});
+    scene.advance_collision();
+    expect(has(scene.lost_contacts(),b,c) &&
+           has(scene.lost_contacts(),c,e) &&
+           !has(scene.lost_contacts(),d,e) &&
+           scene.accurate_island_count()==2 &&
+           scene.speculative_island_count()==2 &&
+           scene.accurate_island_id(b)==old_handle &&
+           scene.accurate_island_root(b)==b &&
+           scene.accurate_island_root(e)==c &&
+           scene.accurate_island_id(c)!=old_handle &&
+           scene.accurate_island_id(c)==scene.accurate_island_id(e) &&
+           scene.accurate_cached_route_hops(c)==0 &&
+           scene.accurate_cached_route_hops(d)==1 &&
+           scene.accurate_cached_route_hops(e)==2 &&
+           scene.island_full_rebuild_count()==rebuilds &&
+           scene.island_local_split_count()==splits+2,
+           "Immediate source dirty split lost root, routes or handle");
+    // Dirty bitmap B,C,E per graph. B is old root; C splits all of
+    // C,D,E. E has already been witnessed and should *not* be searched.
+    // A deferred split or a second island-wide traversal does not
+    // implement this source third-pass contract.
+    expect(scene.island_dirty_route_check_count()==checks+4,
+           "Dirty orphan witnesses were re-searched after their split");
+    scene.advance_collision();
+    expect(scene.accurate_island_count()==2 &&
+           scene.island_local_split_count()==splits+2 &&
+           scene.island_full_rebuild_count()==rebuilds,
+           "Quiet publication replayed the source dirty split");
+}
+
 // A split in one island must not abort the rest of either IslandSim's
 // dirty bitmap. Replacing a temporary root chord in an unrelated island
 // requires actual source findRoute repair, rather than just retaining the
@@ -3641,6 +3708,7 @@ int run_native_scene_smoke() {
     verify_dirty_seed_split_manager_order();
     verify_hop_priority_split_migration();
     verify_equal_hop_split_queue_order();
+    verify_source_dirty_witness_split();
     verify_route_repair_continues_after_split();
     verify_dirty_order_multisplit_manager_remainder();
 
