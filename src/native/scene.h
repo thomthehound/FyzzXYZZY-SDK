@@ -613,6 +613,11 @@ private:
     // avoid clearing the entire actor vector for each dirty publication.
     std::vector<std::uint32_t> island_route_confirmed_;
     std::uint32_t island_route_confirmed_stamp_=0;
+    // Rare rigid sleep publication: process each speculative island
+    // exactly once when its final member sleeps. Indexed by root BodyId
+    // to avoid an O(all islands) scan or post-commit allocations.
+    std::vector<std::uint32_t> speculative_sleep_seen_;
+    std::uint32_t speculative_sleep_visit_stamp_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
