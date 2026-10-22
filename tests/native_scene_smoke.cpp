@@ -656,6 +656,7 @@ void verify_route_repair_continues_after_split() {
            "Added redundant D-F chord failed to shorten source hop");
     const auto checks=scene.island_dirty_route_check_count();
     const auto rebuilds=scene.island_full_rebuild_count();
+    const auto local_splits=scene.island_local_split_count();
     const auto surviving=scene.accurate_island_id(d);
     scene.set_position(b,{4,14,0});
     scene.set_position(f,{12.4f,14,0});
@@ -667,8 +668,9 @@ void verify_route_repair_continues_after_split() {
            scene.speculative_island_count()==3 &&
            scene.accurate_island_id(d)==surviving &&
            scene.accurate_island_root(f)==d &&
-           scene.island_full_rebuild_count()==rebuilds+1,
-           "Concurrent source split and redundant-chord loss misbuilt islands");
+           scene.island_full_rebuild_count()==rebuilds &&
+           scene.island_local_split_count()>local_splits,
+           "Concurrent source-local split rebuilt unrelated island graphs");
     // Four distinct dirty actors per graph: A fails, B and D are
     // roots, and F searches its surviving route via E. Both source
     // graphs must complete all four checks even when A fails.
@@ -2255,6 +2257,7 @@ int run_native_scene_smoke() {
                "Source first/second island graphs failed to merge the touching chain");
         const auto revision=connected.island_topology_revision();
         const auto initial_rebuilds=connected.island_full_rebuild_count();
+        const auto initial_local_splits=connected.island_local_split_count();
         expect(initial_rebuilds==1,
                "First active island topology was not built once");
         connected.advance_collision(true);
@@ -2268,19 +2271,20 @@ int run_native_scene_smoke() {
         expect(connected.speculative_island_count()==4 &&
                connected.accurate_island_count()==4 &&
                connected.island_topology_revision()==revision+1 &&
-               connected.island_full_rebuild_count()==initial_rebuilds+1,
-               "Lost source contact edges did not split both island graphs");
+               connected.island_full_rebuild_count()==initial_rebuilds &&
+               connected.island_local_split_count()>initial_local_splits,
+               "Lost source contact edges rebuilt unrelated island graphs");
         connected.set_position(b,{0.85f,5.0f,0.0f});
         connected.advance_collision();
         expect(connected.speculative_island_count()==2 &&
                connected.accurate_island_count()==2 &&
-               connected.island_full_rebuild_count()==initial_rebuilds+1,
+               connected.island_full_rebuild_count()==initial_rebuilds,
                "Restored source contact edges did not incrementally rejoin islands");
         connected.remove(b);
         connected.advance_collision();
         expect(connected.speculative_island_count()==3 &&
                connected.accurate_island_count()==3 &&
-               connected.island_full_rebuild_count()==initial_rebuilds+2,
+               connected.island_full_rebuild_count()==initial_rebuilds+1,
                "Destroyed source island node remained active in the graph");
         connected.step(1.0f/120.0f);
         expect(std::isfinite(connected.body_state(a).position.y) &&
@@ -2370,14 +2374,15 @@ int run_native_scene_smoke() {
                cycle.speculative_island_count()==3 &&
                cycle.accurate_island_count()==3 &&
                cycle.largest_accurate_island_size()==1 &&
-               cycle.island_full_rebuild_count()==cycle_rebuilds+1,
+               cycle.island_full_rebuild_count()==cycle_rebuilds &&
+               cycle.island_local_split_count()>0,
                "Source island split lost its final surviving route");
         cycle.set_position(cb,{0.4f,8,0});
         cycle.advance_collision();
         expect(cycle.speculative_island_count()==1 &&
                cycle.accurate_island_count()==1 &&
                cycle.largest_accurate_island_size()==3 &&
-               cycle.island_full_rebuild_count()==cycle_rebuilds+1,
+               cycle.island_full_rebuild_count()==cycle_rebuilds,
                "Source lost-edge repair did not admit incremental rejoin");
 
         // Multiple dynamic losses in one collision publication: each
@@ -2463,7 +2468,8 @@ int run_native_scene_smoke() {
         expect(relink.speculative_island_count()==3 &&
                relink.accurate_island_count()==3 &&
                relink.largest_accurate_island_size()==2 &&
-               relink.island_full_rebuild_count()==before_recycle+1,
+               relink.island_full_rebuild_count()==before_recycle &&
+               relink.island_local_split_count()>0,
                "Recycled intrusive graph failed to split on lost bridge");
 
         // Source mDirtyMap deduplicates endpoints of overlapping lost
@@ -2530,7 +2536,8 @@ int run_native_scene_smoke() {
         dirty_routes.advance_collision();
         expect(dirty_routes.accurate_island_count()==2 &&
                dirty_routes.speculative_island_count()==2 &&
-               dirty_routes.island_full_rebuild_count()==before_rebuild+1,
+               dirty_routes.island_full_rebuild_count()==before_rebuild &&
+               dirty_routes.island_local_split_count()>0,
                "Dirty fast route falsely preserved a disconnected island");
 
         // IslandSim::addNode initializes only its own route state.
@@ -2933,7 +2940,8 @@ int run_native_scene_smoke() {
         expect(candidate_only.contacts().empty() &&
                candidate_only.speculative_island_count()==1 &&
                candidate_only.accurate_island_count()==2 &&
-               candidate_only.island_full_rebuild_count()==candidate_rebuilds+1,
+               candidate_only.island_full_rebuild_count()==candidate_rebuilds &&
+               candidate_only.island_local_split_count()>0,
                "Accurate island removal did not repair separated components");
 
         // Three coupled dynamic bodies generate two competing contact
