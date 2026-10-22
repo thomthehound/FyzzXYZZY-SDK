@@ -588,8 +588,15 @@ recorded **on queue insertion**, as in source `findRoute`, rather than
 when elements are popped. An additional split regression makes the
 orphan's dirty B node follow its smaller, non-dirty A node in actor
 order, and requires B's static manager to precede A's managers in
-the new island. This avoids an incorrect globally sorted or FIFO
-discovery sequence while retaining the source-owned contact arrays.
+the new island. An additional branched fixture creates unequal cached
+source `mHopCounts` through a successful redundant-chord loss. Its
+dirty B then discovers A before X, but X's shorter route estimate
+causes the source priority queue to expand X-H before A-G. The new
+island must consequently publish H's static manager before G's,
+whereas FIFO queue expansion produces the reverse sequence.
+For simultaneous splits, components are now processed in ascending
+`mDirtyMap` seed order rather than component-number order, preserving
+the original shared old-island array's sequence of swap-last removals.
 The bounded reconstruction now preserves the surviving
 original-root component's root and promotes the first dirty-route
 node to the root of an orphaned component, as
