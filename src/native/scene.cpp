@@ -1524,9 +1524,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // A source island keeps its handle when its original root remains in
     // the surviving component. If a lost bridge splits one component,
     // only the new component needs a handle; unrelated live handles
-    // cannot be renumbered. Rebuilds are currently the bounded fallback
-    // for splits and actor-node admission/retirement; incremental merge
-    // and quiet frames never take this O(V+E) traversal.
+    // cannot be renumbered. This bounded whole-graph reconstruction is
+    // retained for actor admission/retirement only. Ordinary lost-edge
+    // splits now detach source-visited components locally instead of
+    // taking this O(V+E) path; quiet frames never take either path.
     const auto rebuild_graph=[&](Graph& graph,bool accurate) {
         Graph next;
         next.islands.resize(graph.islands.size());
@@ -1554,8 +1555,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.free_handles=graph.free_handles;
         // PxsIslandSim::processLostEdges selects roots from the
         // mDirtyMap's node-index iteration when findRoute fails.
-        // This bitmap only guides the bounded split fallback; it does
-        // not create a second graph or an independently owned actor.
+        // This bitmap guides dirty-root selection when actor admission
+        // or retirement forces full membership reconciliation; ordinary
+        // lost-edge splits use the local source visited-node chain.
         std::vector<std::uint8_t> dirty_member(actors_.size(),0);
         for(BodyId id:(accurate?accurate_dirty_nodes_:
                                  speculative_dirty_nodes_))
@@ -1734,8 +1736,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             // queue, NOT when the queued node is subsequently popped.
             // This distinction controls splitEdges' manager permutation.
             // Reuse the component map above, retaining the bounded
-            // node/handle reconstruction until the full source-local
-            // IslandSim split replacement is admitted.
+            // node/handle reconstruction only for actor-lifecycle
+            // reconciliation. The ordinary lost-edge path is now
+            // source-local and never calls this bounded reconstruction.
             std::vector<BodyId> first_node(component_number+1,invalid);
             std::vector<BodyId> first_dirty(component_number+1,invalid);
             for(BodyId node=0;node<actors_.size();++node)
@@ -1812,11 +1815,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             // the original/root island's remaining edges do NOT retain
             // their pre-split order when a middle edge migrates.
             //
-            // The visitation above now follows the source dirty-node
+            // This actor-lifecycle fallback preserves source dirty-node
             // seed, hop-priority queue and enqueue-order mVisitedNodes
-            // contract. The remaining fidelity difference is the
-            // bounded reconstruction's global component/handle choice
-            // rather than source-local dirty-route island splitting.
+            // migration, but still reconstructs the full node roster.
+            // Lost-contact splits use the local source node-chain path.
             struct MigratedManager {
                 EdgeIndex edge;
                 Graph::IslandId owner;
