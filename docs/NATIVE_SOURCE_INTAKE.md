@@ -545,24 +545,37 @@ previous frame and its free-flight translation remains usable. The
 heavy-density and subnormal-density rejected-contact fixtures exercise
 that publication and retry boundary.
 
-**Pending descriptor-order correspondence:** The original
+**Admitted indexed-manager descriptor order:** The original
 `DyDynamicsBase.cpp::iterateIslandsContactEdges` gathers contact
-managers by iterating the accurate `IslandSim`'s **active islands and
-their per-island `eCONTACT_MANAGER` edge arrays**. These arrays are
-not canonical `BodyId`-pair-sorted: `PxsIslandSim.cpp` appends edges
-during insertion/merge and updates their positions during removal.
-`DyDynamics.cpp::setupDescTask` consumes that island-indexed stream,
-with an additional two-key solver-body-index reordering when
-`PGS_SUPPORT_COMPOUND_CONSTRAINTS` is enabled.
-`DynamicsContextBase::iterateIslandsNodes` supplies the source body
-remap, with enhanced-determinism sorting only when selected.
-Therefore, the current global pair-sorted `manifolds_` traversal is
-**not** a source-equivalent descriptor order for competing contact
-managers. Source island-edge ownership and the selected contact
-descriptor sorting path must drive the existing `partition_constraints`
-and serial PGS consumer before the N1 ordering gate can close.
-Do not correct this by introducing an unrelated global sort or
-shadow scheduler.
+managers by walking accurate `IslandSim` active islands and their
+`eCONTACT_MANAGER` edge arrays, not the canonical `BodyId` pair order.
+The native accurate `IslandGraph::Island` now owns the corresponding
+ordered first/last `EdgeIndex` links; existing persistent contact-manager
+slots retain O(1) insertion, source `mergeEdges` concatenation, and
+`removeEdgeFromIsland` **swap-last** retirement. No separate contact
+registry, copied solver rows or per-manager allocations are introduced.
+The actual `partition_constraints` path builds
+`indexed_managers_` from active accurate islands and resolves these
+handles to the current Gu manifold offsets via generation-stamped
+reusable lookup slots. Both dynamic/static partition classification and
+stable partition scatter use this source-indexed sequence, while Gu
+contact/impulse writeback remains in its original pair order. Rejected
+steps recover previously published indexed-manager spans with
+allocation-preserving checkpoint swaps. The independent native smoke
+fixture creates managers in noncanonical order and verifies the source
+swap-last permutation after loss.
+
+**Remaining source ordering breadth:** The admitted non-compound rigid
+PGS path consumes the indexed-manager sequence directly, matching
+`DyDynamics.cpp::setupDescTask`'s non-compound branch. The
+`PGS_SUPPORT_COMPOUND_CONSTRAINTS` alternative performs a separate
+stable two-key solver-body remap and contact reduction, and remains an
+explicit later source admission; it is not silently approximated by an
+unrelated global pair sort. Component-split fallback preserves surviving
+island manager sequences while reconstructing membership; complete
+`PxsIslandSim::splitEdges` priority/visited-node migration order also
+remains a full-source fidelity gate alongside the outstanding graph and
+task lifecycle work.
 
 ## Native ownership and data contracts
 
