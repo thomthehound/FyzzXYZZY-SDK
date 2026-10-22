@@ -210,8 +210,25 @@ void Scene::set_position(BodyId id, Vec3 position) {
     if (!finite(position))
         throw std::invalid_argument("Native scene position must be finite");
     auto& actor = require(id);
+    // NpRigidDynamic::setGlobalPose calls wakeUpInternal when autowake is
+    // enabled, even if the new pose equals the old one. The public
+    // position setter uses that default: reset source sleep readiness and
+    // queue island activation independently of any geometry change.
+    if(actor.kind==Kind::DynamicBox) {
+        if(actor.sleeping) {
+            actor.activating=true;
+            authored_activation_pending_=true;
+        }
+        actor.wake_counter=std::max(actor.wake_counter,0.4f);
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+        actor.ready_for_sleep=false;
+        actor.sleeping=false;
+    }
     // Infinite planes have a fixed world +Y normal in the current native
     // shape model. Translating one changes its height, not its orientation.
+    // A same-position write must not invalidate Gu/friction data or force
+    // a broadphase publication merely to honor dynamic autowake.
     if (actor.position.x==position.x &&
         actor.position.y==position.y &&
         actor.position.z==position.z)
@@ -225,19 +242,6 @@ void Scene::set_position(BodyId id, Vec3 position) {
         return patch.pair.a==id || patch.pair.b==id;
     });
     actor.position = position;
-    if(actor.kind==Kind::DynamicBox) {
-        // ScBodySim::wakeUp: an authored dormant node is queued for
-        // source IslandSim activation after the next graph publication.
-        if(actor.sleeping) {
-            actor.activating=true;
-            authored_activation_pending_=true;
-        }
-        actor.wake_counter=std::max(actor.wake_counter,0.4f);
-        actor.sleep_linear_acc={};
-        actor.sleep_angular_acc={};
-        actor.ready_for_sleep=false;
-        actor.sleeping=false;
-    }
     // Moving either a static or dynamic contact participant invalidates
     // its old interactions. After the speculative graph splits, the
     // authored node's activating flag cannot reach its former peer.
