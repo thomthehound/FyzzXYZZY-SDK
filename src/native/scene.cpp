@@ -555,7 +555,80 @@ void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
         heads[node]=index;
     }
 }
+// PxsIslandSim.cpp::addEdgeToIsland appends an indexed contact-manager
+// edge to its accurate island. Links stay in the existing EdgeIndex slots;
+// source island handles own only the ordered first/last indices.
+void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
+    auto& island=accurate_islands_.islands[owner];
+    if(!island.live || !contact_edges_[id].connected ||
+       island.first_contact==id ||
+       contact_edges_[id].island_prev!=invalid_edge ||
+       contact_edges_[id].island_next!=invalid_edge)
+        throw std::logic_error("Invalid PhysX accurate island edge insertion");
+    step_checkpoint_.save_edge(*this,id);
+    if(island.last_contact!=invalid_edge) {
+        step_checkpoint_.save_edge(*this,island.last_contact);
+        contact_edges_[island.last_contact].island_next=id;
+    } else {
+        island.first_contact=id;
+    }
+    contact_edges_[id].island_prev=island.last_contact;
+    contact_edges_[id].island_next=invalid_edge;
+    island.last_contact=id;
+    ++island.contact_count;
+}
+// PxsIslandSim.cpp::removeEdgeFromIsland with
+// IG_STORE_ISLAND_EDGES_IN_ARRAYS=1 replaces the removed element with the
+// final array element. Rewire the final EdgeIndex into that slot in O(1).
+// Retaining stable order here would be *different* from PhysX.
+void Scene::remove_accurate_island_edge(EdgeIndex id) {
+    const Pair pair=contact_edges_[id].pair;
+    const BodyId node=actors_[pair.a].kind==Kind::DynamicBox
+        ? pair.a:pair.b;
+    const auto owner=accurate_islands_.node_island[node];
+    if(owner==IslandGraph::invalid) return;
+    auto& island=accurate_islands_.islands[owner];
+    if(island.first_contact==invalid_edge || !island.contact_count)
+        throw std::logic_error("PhysX accurate island edge list underflow");
+    const EdgeIndex last=island.last_contact;
+    const EdgeIndex before=contact_edges_[id].island_prev;
+    const EdgeIndex after=contact_edges_[id].island_next;
+    step_checkpoint_.save_edge(*this,id);
+    if(last!=id) {
+        const EdgeIndex last_before=contact_edges_[last].island_prev;
+        step_checkpoint_.save_edge(*this,last);
+        if(last_before!=invalid_edge) {
+            step_checkpoint_.save_edge(*this,last_before);
+            contact_edges_[last_before].island_next=invalid_edge;
+        }
+        island.last_contact=last_before;
+        const EdgeIndex successor=after==last?invalid_edge:after;
+        if(before!=invalid_edge) {
+            step_checkpoint_.save_edge(*this,before);
+            contact_edges_[before].island_next=last;
+        } else island.first_contact=last;
+        if(successor!=invalid_edge) {
+            step_checkpoint_.save_edge(*this,successor);
+            contact_edges_[successor].island_prev=last;
+        } else island.last_contact=last;
+        contact_edges_[last].island_prev=before;
+        contact_edges_[last].island_next=successor;
+    } else {
+        if(before!=invalid_edge) {
+            step_checkpoint_.save_edge(*this,before);
+            contact_edges_[before].island_next=invalid_edge;
+        } else island.first_contact=invalid_edge;
+        island.last_contact=before;
+    }
+    contact_edges_[id].island_prev=invalid_edge;
+    contact_edges_[id].island_next=invalid_edge;
+    --island.contact_count;
+}
 void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
+    // Contact manager retirement and touch loss both remove the same
+    // accurate source edge before disconnecting its intrusive endpoints.
+    if(accurate && contact_edges_[id].connected)
+        remove_accurate_island_edge(id);
     auto& edge=contact_edges_[id];
     auto& heads=accurate?accurate_node_first_:speculative_node_first_;
     auto instance_at=[&](std::size_t index)->EdgeInstance& {
@@ -1065,7 +1138,20 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!dynamic_found)
             for(Pair pair:found_contacts_)
                 if(dynamic_edge(pair)) {dynamic_found=true;break;}
-        if(!dynamic_found)return;
+        if(!dynamic_found) {
+            // Even a static-only touch is a source contact-manager edge
+            // in its awake dynamic island; it cannot be skipped merely
+            // because dynamic connectivity and handles remain unchanged.
+            if(!repair_lost_edges)
+                for(Pair pair:found_contacts_) {
+                    const auto id=contact_edge_index(pair);
+                    const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                    if(id!=invalid_edge && dynamic_node(node))
+                        append_accurate_island_edge(
+                            id,accurate_islands_.node_island[node]);
+                }
+            return;
+        }
     }
 
     // Process source node admission and processNewEdges in their
@@ -1095,6 +1181,21 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         winner.tail=loser.tail;
         winner.count+=loser.count;
         winner.static_touches+=loser.static_touches;
+        if(&graph==&accurate_islands_ &&
+           loser.first_contact!=invalid_edge) {
+            // PxsIslandSim.cpp::mergeEdges appends the losing island's
+            // ordered contact-manager array to the retained island.
+            if(winner.last_contact!=invalid_edge) {
+                step_checkpoint_.save_edge(*this,winner.last_contact);
+                step_checkpoint_.save_edge(*this,loser.first_contact);
+                contact_edges_[winner.last_contact].island_next=
+                    loser.first_contact;
+                contact_edges_[loser.first_contact].island_prev=
+                    winner.last_contact;
+            } else winner.first_contact=loser.first_contact;
+            winner.last_contact=loser.last_contact;
+            winner.contact_count+=loser.contact_count;
+        }
         loser={};
         graph.free_handles.push_back(retired);
         return true;
@@ -1281,7 +1382,33 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         for(std::size_t i=0;i<next.islands.size();++i)
             if(!next.islands[i].live)
                 next.free_handles.push_back(static_cast<Graph::IslandId>(i));
-        graph=std::move(next);
+        if(accurate) {
+            // Source split migration moves EdgeIndex entries between the
+            // original island-owned arrays, not from global Gu pair order.
+            // Retain their published manager order when rebuilding the
+            // admitted component membership after a split/actor change.
+            std::vector<EdgeIndex> sequence;
+            sequence.reserve(manifolds_.size());
+            for(const auto& island:graph.islands)
+                for(EdgeIndex id=island.first_contact;id!=invalid_edge;
+                    id=contact_edges_[id].island_next)
+                    sequence.push_back(id);
+            graph=std::move(next);
+            for(EdgeIndex id:sequence) {
+                step_checkpoint_.save_edge(*this,id);
+                contact_edges_[id].island_prev=invalid_edge;
+                contact_edges_[id].island_next=invalid_edge;
+            }
+            for(EdgeIndex id:sequence) {
+                const Pair pair=contact_edges_[id].pair;
+                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                if(!dynamic_node(node) || !contact_edges_[id].connected)
+                    continue;
+                const auto owner=graph.node_island[node];
+                if(owner!=Graph::invalid)
+                    append_accurate_island_edge(id,owner);
+            }
+        } else graph=std::move(next);
         return islands;
     };
 
@@ -1299,9 +1426,14 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             for(Pair pair:found_)
                 merged_speculative|=
                     merge(speculative_islands_,pair);
-            for(Pair pair:found_contacts_)
-                merged_accurate|=
-                    merge(accurate_islands_,pair);
+            for(Pair pair:found_contacts_) {
+                merged_accurate |= merge(accurate_islands_,pair);
+                const auto id=contact_edge_index(pair);
+                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                if(id!=invalid_edge && dynamic_node(node))
+                    append_accurate_island_edge(
+                        id,accurate_islands_.node_island[node]);
+            }
         }
         // Reconcile lost edges and actor retirement with the authoritative
         // intrusive graph. Already-selected source handles survive on the
@@ -1318,12 +1450,18 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 --speculative_island_count_;
                 merged_speculative=true;
             }
-        for(Pair pair:found_contacts_)
+        for(Pair pair:found_contacts_) {
             if(merge(accurate_islands_,pair)) {
                 --accurate_island_count_;
                 merged_accurate=true;
                 order_changed=true;
             }
+            const auto id=contact_edge_index(pair);
+            const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+            if(id!=invalid_edge && dynamic_node(node))
+                append_accurate_island_edge(
+                    id,accurate_islands_.node_island[node]);
+        }
     }
     if(order_changed) {
         // Dy::DynamicsContext::iterateIslandsNodes consumes contiguous
