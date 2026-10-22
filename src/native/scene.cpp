@@ -3085,6 +3085,12 @@ void Scene::advance_collision(bool force_update) {
         // No new edges or pending island changes: never scan live
         // islands on the existing constant-work collision query path.
         advance_collision_internal(false);
+        // PxsSimpleIslandManager::clearDeactivations runs at each island
+        // publication. A quiet geometry query has no new third-pass
+        // work, but it must retire last publication's one-frame
+        // mNodesToPutToSleep output rather than replaying the event.
+        // This is constant-work and cannot throw.
+        accurate_islands_.nodes_to_deactivate.clear();
         // A velocity/torque edit can queue IslandSim activation without
         // touching geometry. Complete the no-throw source wake handoff.
         // Keep the graph-owned active-node map in step with such wakes,

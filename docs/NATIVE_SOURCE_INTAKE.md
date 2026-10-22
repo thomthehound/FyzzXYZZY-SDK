@@ -745,7 +745,10 @@ retirement and quiet authored wakes). Its reusable active-ID capacity
 and reverse map are prepared by the topology rebuild, so that no-throw
 handoff cannot allocate after the editor collision transaction commits.
 The last solver active-batch view remains a separate successful-step
-publication.
+publication. Each successful quiet collision publication also clears
+the previous one-frame accurate rigid deactivation output without
+performing a third-pass island traversal; otherwise the old sleep event
+would be observable again against a newer frame index.
 
 Speculative graph active-node
 lists, source per-type initial-active partitions, activated/deactivated

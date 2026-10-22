@@ -3229,6 +3229,18 @@ int run_native_scene_smoke() {
             }
         }
         expect(deactivated,"Source indexed active node never slept");
+        // A public collision-only query consumes a new publication clock
+        // without invoking another ready-island transition. Source
+        // mNodesToPutToSleep is per-pass output, not sticky sleep state.
+        indexed.advance_collision();
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().empty() &&
+               indexed.accurate_active_node_index(body)==
+                   std::numeric_limits<std::size_t>::max(),
+               "Quiet collision publication replayed a deactivation event");
+        indexed.advance_collision();
+        expect(indexed.deactivating_accurate_nodes().empty(),
+               "Repeated quiet publication resurrected an old deactivation");
         indexed.step(1.0f/120.0f);
         expect(indexed.deactivating_accurate_nodes().empty() &&
                indexed.active_accurate_nodes().empty(),
