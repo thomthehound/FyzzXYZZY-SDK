@@ -482,6 +482,28 @@ does not change persistent contact/island state, and preserved
 backing-storage identity after a deterministic nonfinite AABB with
 successful retry.
 
+The failure-atomicity audit also covered two transients that must not
+borrow authoritative publication lifetimes. Prepared Dy rows now carry a
+separate monotonically increasing preparation generation: a rejected
+step restores its frame index but cannot accidentally reuse rows from
+that failed attempt if contact geometry changes before retry. The
+preparation generation does not roll back; its rare wrap clears stale
+row markers. The complete Gu manifold arena continues to be restored
+by swaps when the contact epoch advances. When a quiet step never swaps
+the arena, only the three externally visible mutable Dy descriptor
+fields (solver row offset, friction patch offset/count) are saved and
+restored; contact points and manifold storage are never duplicated.
+This quiet-path metadata snapshot has cost O(published manifolds) only
+when the step begins without pending geometry changes. Published
+Found/Lost event streams likewise rotate reversibly on a quiet step,
+even though the pair and contact arena epochs remain unchanged.
+
+An authored wake-work indicator avoids traversing all speculative
+island handles on an unchanged collision query with no new edge or
+contact events. It is saved in the step checkpoint and restored after
+rejected frames. This does not replace the source's explicit activating
+node/edge lists and active-index arrays.
+
 The remaining dynamic-scene/edge checkpoint copy cost is a
 performance-remediation item, not the final source publication
 architecture. As the original `ScPipeline`/`Dy::DynamicsContext`
@@ -581,15 +603,22 @@ gravity, constraint submission and pose integration. Explicit velocity,
 torque or position authoring reactivates the body, and connected
 speculative-island members are woken together **before unconstrained
 velocity integration**. New physical touches with static bodies are
-additional wake events. Retiring or moving a static contact partner
-also wakes a dormant supported body so it can resume gravity, without
-confusing retired nodes with awake island members.
+additional wake events. Retiring a contact participant or authoring either a static or dynamic
+pose also revokes stale readiness in its former Gu contact partners.
+This includes the one-frame interval in which the partner is ready to
+sleep but not yet deactivated. The explicit authoring path queues
+activation before contact removal can split the old island, so a
+former sleeping partner does not remain suspended after losing its
+support. Quiet queries consume genuine pending wake requests without
+scanning the entire island inventory.
 These transitions, including rollback of wake counters and readiness,
 are compared with the independent `PxRigidDynamic::isSleeping()`
 reference for an ordinary settled floor contact.
 
 This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
-activation queues, separate active-index maps, detailed edge-activation
+the actor-local activation flags and a single pending-work indicator
+do not implement the source's activation/deactivation node and edge
+lists, separate active-index maps, detailed edge-activation
 flags, kinematic triggers, stabilization/freeze state, deferred
 deactivation continuations, sleep/wake callbacks and exact
 `ScPipeline::afterIntegration` task semantics remain open. The active

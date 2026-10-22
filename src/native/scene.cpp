@@ -245,19 +245,19 @@ void Scene::set_position(BodyId id, Vec3 position) {
     // the old source Gu contact stream is retired. This is an authoring
     // operation, not an every-frame contact-manager scan.
     for(const auto& manifold:manifolds_) {
-            if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
-            const BodyId other=manifold.pair.a==id
-                ? manifold.pair.b:manifold.pair.a;
-            auto& dynamic=actors_[other];
-            if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
-               (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
-            dynamic.activating=true;
-            authored_activation_pending_=true;
-            dynamic.sleeping=false;
-            dynamic.ready_for_sleep=false;
-            dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
-            dynamic.sleep_linear_acc={};
-            dynamic.sleep_angular_acc={};
+        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
+        const BodyId other=manifold.pair.a==id
+            ? manifold.pair.b:manifold.pair.a;
+        auto& dynamic=actors_[other];
+        if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
+           (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
+        dynamic.activating=true;
+        authored_activation_pending_=true;
+        dynamic.sleeping=false;
+        dynamic.ready_for_sleep=false;
+        dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
+        dynamic.sleep_linear_acc={};
+        dynamic.sleep_angular_acc={};
     }
     dirty_ = true;
 }
