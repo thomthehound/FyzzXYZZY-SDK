@@ -295,12 +295,14 @@ void verify_dirty_order_multisplit_manager_remainder() {
 // head discovers A before X, but a prior successful lost-chord repair
 // gives X a finite route estimate and leaves A without one. The queue
 // therefore expands X-H before A-G; FIFO would reverse that ordering.
-// In source IslandSim::addNode, all newly admitted mHopCounts start
-// at zero. Build a later lost-chord route for X so X has a strictly
-// positive estimated hop count while A remains zero. Insert X-B
-// *after* A-B so B's adjacency discovers X first, but the priority
-// queue expands A's lower-hop branch first. FIFO yields the reverse
-// G-static/H-static manager order.
+// PhysX addNode starts hop counts at zero, then processNewEdges
+// adjusts them through source mergeIslandsInternal. Here X joins the
+// root island through C and has fewer hops than A, which later merges
+// through B. The older B-X edge is behind newer B-A in B's adjacency;
+// when C-X and B-C vanish together, the hop-priority queue expands X
+// before A despite having *discovered* A first. The discovered child H
+// must then precede G in the source mVisitedNodes migration list.
+// FIFO would reverse their manager order.
 void verify_hop_priority_split_migration() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
@@ -314,7 +316,7 @@ void verify_hop_priority_split_migration() {
     const auto b=split.add_dynamic_box(
         {0.5f,0.5f,0.5f},{-0.8f,10,0},1);
     const auto x=split.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{0.65f,10.65f,0},1);
+        {0.5f,0.5f,0.5f},{-0.35f,10.65f,0},1);
     const auto a=split.add_dynamic_box(
         {0.5f,0.5f,0.5f},{-3.2f,9.6f,0},1);
     const auto g=split.add_dynamic_box(
@@ -327,47 +329,31 @@ void verify_hop_priority_split_migration() {
         {0.1f,0.1f,0.1f},{-1.1f,11.6f,0.54f});
     split.advance_collision();
     expect(has(split.found_contacts(),c,x) &&
-           !has(split.found_contacts(),b,x) &&
+           has(split.found_contacts(),b,x) &&
+           has(split.found_contacts(),x,h) &&
            has(split.found_contacts(),a,g) &&
            has(split.found_contacts(),g,sg) &&
            has(split.found_contacts(),h,sh) &&
-           split.accurate_cached_route_hops(a)==0 &&
-           split.accurate_cached_route_hops(x)==0,
-           "Hop-priority fixture did not establish source zero-hop admission");
+           split.accurate_island_count()==2 &&
+           split.accurate_cached_route_hops(x)>0 &&
+           split.accurate_cached_route_hops(a)>0,
+           "Hop-priority fixture did not establish source merge estimates");
 
-    // Connect the previously isolated A-G arm through A-B first.
-    // Only afterward bring X close to B, forming a redundant B-X
-    // contact and X-H while retaining the original C-X chord.
+    // A-G is the smaller island: merging it at the newer B-A manager
+    // gives A the original mergeIslandsInternal endpoint hop B+1.
+    // X remains connected by the older B-X and C-X edges.
     split.set_position(a,{-1.6f,9.6f,0});
     split.advance_collision();
     expect(has(split.found_contacts(),a,b) &&
-           !has(split.found_contacts(),b,x),
-           "Hop-priority fixture failed to establish older A-B adjacency");
-    split.set_position(x,{-0.5f,10.65f,0});
-    split.advance_collision();
-    expect(has(split.found_contacts(),b,x) &&
-           has(split.found_contacts(),x,h) &&
-           split.accurate_island_count()==1,
-           "Hop-priority fixture failed to insert newer B-X adjacency");
-
-    // Lose C-X without losing X-B or X-H. findRoute from X to the
-    // retained root now establishes an actual nonzero hop estimate
-    // using surviving B-C, while A is still source-initialized at 0.
-    split.set_position(x,{-1.1f,10.8f,0});
-    split.advance_collision();
-    expect(has(split.lost_contacts(),c,x) &&
-           !has(split.lost_contacts(),b,x) &&
-           !has(split.lost_contacts(),x,h) &&
            split.accurate_island_count()==1 &&
-           split.accurate_cached_route_hops(a)==0 &&
-           split.accurate_cached_route_hops(x)>0 &&
            split.accurate_cached_route_hops(x)<
-               std::numeric_limits<std::uint32_t>::max(),
-           "Hop-priority fixture did not establish real non-equal hints");
+               split.accurate_cached_route_hops(a),
+           "Hop-priority fixture did not establish unequal source merge hops");
 
-    // Losing the sole root bridge B-C detaches B/A/G/X/H. B discovers
-    // the newer X-B before A-B, but A's smaller cached hop count
-    // expands A-G before X-H. FIFO would visit H before G.
+    // Lose C-X and B-C in one publication. An earlier independent
+    // lost-chord repair would raise X's estimate to B+1, obscuring the
+    // valid shorter source estimate that existed when both edges broke.
+    split.set_position(x,{-1.1f,10.8f,0});
     split.set_position(c,{1.5f,10,0});
     split.set_position(d,{2.3f,10,0});
     split.set_position(e,{3.1f,10,0});
@@ -376,8 +362,11 @@ void verify_hop_priority_split_migration() {
     const auto managers=split.indexed_contact_manager_order();
     expect(split.accurate_island_count()==2 &&
            has(split.lost_contacts(),b,c) &&
+           has(split.lost_contacts(),c,x) &&
+           !has(split.lost_contacts(),b,x) &&
+           !has(split.lost_contacts(),x,h) &&
            gu.size()==managers.size(),
-           "Hop-priority fixture did not detach its branched island");
+           "Hop-priority fixture did not detach its original branched island");
     std::size_t h_position=managers.size();
     std::size_t g_position=managers.size();
     for(std::size_t i=0;i<managers.size();++i) {
@@ -385,8 +374,8 @@ void verify_hop_priority_split_migration() {
         if(pair==Pair{h,sh})h_position=i;
         if(pair==Pair{g,sg})g_position=i;
     }
-    expect(g_position<h_position && h_position<managers.size(),
-           "Split manager migration ignored source zero-vs-positive hop priority");
+    expect(h_position<g_position && g_position<managers.size(),
+           "Split manager migration ignored source unequal merge-hop priorities");
 }
 
 // Source mDirtyMap begins a detached component's findRoute at its
