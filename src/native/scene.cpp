@@ -228,7 +228,10 @@ void Scene::set_position(BodyId id, Vec3 position) {
     if(actor.kind==Kind::DynamicBox) {
         // ScBodySim::wakeUp: an authored dormant node is queued for
         // source IslandSim activation after the next graph publication.
-        actor.activating |= actor.sleeping;
+        if(actor.sleeping) {
+            actor.activating=true;
+            authored_activation_pending_=true;
+        }
         actor.wake_counter=std::max(actor.wake_counter,0.4f);
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
@@ -249,6 +252,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
             if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
                (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
             dynamic.activating=true;
+            authored_activation_pending_=true;
             dynamic.sleeping=false;
             dynamic.ready_for_sleep=false;
             dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
@@ -272,6 +276,7 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
         actor.activating=true;
+        authored_activation_pending_=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -297,6 +302,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
         actor.activating=true;
+        authored_activation_pending_=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -335,6 +341,7 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
         actor.activating=true;
+        authored_activation_pending_=true;
         actor.sleep_linear_acc={};
         actor.sleep_angular_acc={};
     }
@@ -389,6 +396,7 @@ void Scene::remove(BodyId id) {
         if(!partner.alive || partner.kind!=Kind::DynamicBox ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
         partner.activating=true;
+        authored_activation_pending_=true;
         partner.sleeping=false;
         partner.ready_for_sleep=false;
         partner.wake_counter=std::max(partner.wake_counter,0.4f);
@@ -1329,6 +1337,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     ++island_topology_revision_;
 }
 void Scene::activate_published_islands() noexcept {
+    // Ordinary quiet collision queries do not traverse islands merely
+    // to discover that no node or edge requested source activation.
+    // This is a single scheduling bit, not a copied actor or island list.
+    if(!authored_activation_pending_ && found_contacts_.empty() &&
+       found_.empty())return;
     // Source IslandSim::wakeIslands/activateIslandInternal: propagate
     // actual activation events through already published speculative
     // connectivity, not the mere existence of an awake neighbor.
@@ -1375,6 +1388,7 @@ void Scene::activate_published_islands() noexcept {
             body.sleep_angular_acc={};
         }
     }
+    authored_activation_pending_=false;
 }
 void Scene::third_pass_island_gen() {
     // Both original IslandSim::processLostEdges third-pass tasks depend
@@ -2596,6 +2610,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     quiet_event_epoch=scene.quiet_event_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
+    authored_activation_pending=scene.authored_activation_pending_;
     includes_solver_state=capture_solver_state;
     // The prior published buffers are moved into the checkpoint only
     // after all potentially throwing copies have completed. Successful
@@ -2767,6 +2782,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.frame_index_=frame_index;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
+    scene.authored_activation_pending_=authored_activation_pending;
  }
 
 void Scene::step(float seconds) {

@@ -624,6 +624,7 @@ private:
         std::uint64_t pair_epoch=0, contact_epoch=0;
         std::uint64_t quiet_event_epoch=0;
         bool topology_dirty=true, dirty=true;
+        bool authored_activation_pending=false;
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
         void save_edge(const Scene& scene, EdgeIndex id);
@@ -691,6 +692,10 @@ private:
     std::vector<Pair> lost_contacts_;
     std::vector<Pair> next_found_contacts_, next_lost_contacts_;
     std::uint64_t frame_index_ = 0;
+    // One source wake-work indicator for authored transitions. A quiet
+    // geometry query with no found edges avoids scanning all island
+    // slots; active node flags remain on the authoritative actors.
+    bool authored_activation_pending_=false;
     bool dirty_ = true;
 };
 

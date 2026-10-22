@@ -3170,6 +3170,38 @@ int run_native_scene_smoke() {
         (void)flyer;
     }
 
+    // A quiet collision query must consume genuinely authored source
+    // wake requests without scanning the island graph for every query.
+    // Ensure a rejected step does not clear that pending wake indicator:
+    // the next quiet query still propagates to the sleeping island peer.
+    {
+        Scene pending_query;
+        pending_query.add_static_floor(0.0f);
+        const auto left=pending_query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=pending_query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int i=0;i<360;++i)pending_query.step(1.0f/120.0f);
+        pending_query.advance_collision();
+        expect(pending_query.body_is_sleeping(left) &&
+               pending_query.body_is_sleeping(right),
+               "Quiet wake indicator fixture failed to settle");
+        const auto revision=pending_query.island_topology_revision();
+        for(int i=0;i<4;++i)pending_query.advance_collision();
+        expect(pending_query.island_topology_revision()==revision,
+               "Quiet collision queries modified source island topology");
+        pending_query.set_velocity(left,{0.3f,0,0});
+        bool rejected=false;
+        try {pending_query.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected && pending_query.body_is_sleeping(right),
+               "Rejected frame corrupted queued wake");
+        pending_query.advance_collision();
+        expect(!pending_query.body_is_sleeping(right) &&
+               pending_query.island_topology_revision()==revision,
+               "Queued authored wake was lost after quiet rollback");
+    }
+
     {
         // A rejected Dy step rebuilds the active accurate island view
         // after source wake/deactivation. The previous published active
