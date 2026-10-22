@@ -562,10 +562,20 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         // deactivateNodeInternal may publish a contact edge after the
         // geometry transaction commits. Reserve its bounded source
         // output before enlarging the authoritative handle arena.
-        speculative_islands_.deactivating_edges.reserve(
-            contact_edges_.size()+1);
-        accurate_islands_.deactivating_edges.reserve(
-            contact_edges_.size()+1);
+        // As with the source's reusable event arrays, grow capacity
+        // geometrically. Reserving the exact new watermark for every
+        // edge would reallocate on every manager admission.
+        const std::size_t needed=contact_edges_.size()+1;
+        const auto reserve_events=[&](IslandGraph& graph) {
+            auto& events=graph.deactivating_edges;
+            if(events.capacity()>=needed)return;
+            const std::size_t capacity=events.capacity();
+            const std::size_t growth=capacity+
+                std::max<std::size_t>(capacity,8);
+            events.reserve(std::max(needed,growth));
+        };
+        reserve_events(speculative_islands_);
+        reserve_events(accurate_islands_);
         contact_edges_.push_back({pair,true,false,false});
     }
     return id;
