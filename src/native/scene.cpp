@@ -237,14 +237,14 @@ void Scene::set_position(BodyId id, Vec3 position) {
         actor.sleep_angular_acc={};
         actor.ready_for_sleep=false;
         actor.sleeping=false;
-    } else {
-        // Moving a static shape invalidates Sc interactions with
-        // sleeping or sleep-ready dynamic bodies. In the third-pass
-        // pipeline, a ready node is still awake for one published frame:
-        // editing its support must revoke that readiness before the
-        // next island pass. This explicit authoring path traverses only
-        // the existing Gu contact-manager stream.
-        for(const auto& manifold:manifolds_) {
+    }
+    // Moving either a static or dynamic contact participant invalidates
+    // its old interactions. After the speculative graph splits, the
+    // authored node's activating flag cannot reach its former peer.
+    // Wake currently touching dormant OR ready-but-awake partners before
+    // the old source Gu contact stream is retired. This is an authoring
+    // operation, not an every-frame contact-manager scan.
+    for(const auto& manifold:manifolds_) {
             if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
             const BodyId other=manifold.pair.a==id
                 ? manifold.pair.b:manifold.pair.a;
@@ -258,7 +258,6 @@ void Scene::set_position(BodyId id, Vec3 position) {
             dynamic.wake_counter=std::max(dynamic.wake_counter,0.4f);
             dynamic.sleep_linear_acc={};
             dynamic.sleep_angular_acc={};
-        }
     }
     dirty_ = true;
 }

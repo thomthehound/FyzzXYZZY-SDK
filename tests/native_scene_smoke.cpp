@@ -3081,6 +3081,37 @@ int run_native_scene_smoke() {
                "Source third-pass fixture never produced Dy sleep readiness");
     }
 
+    // A user-authored dynamic teleport can remove a contact edge and
+    // split the original island before its waking node is propagated.
+    // Its dormant former contact partner must be reactivated directly
+    // from the previously published Gu manager, just as for a static
+    // support edit, even when the new topology no longer connects them.
+    {
+        Scene moved_peer;
+        moved_peer.add_static_floor(0.0f);
+        const auto left=moved_peer.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=moved_peer.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            moved_peer.step(1.0f/120.0f);
+        expect(moved_peer.body_is_sleeping(left) &&
+               moved_peer.body_is_sleeping(right) &&
+               moved_peer.accurate_island_id(left)==
+                   moved_peer.accurate_island_id(right),
+               "Dynamic support edit fixture lacked dormant contact island");
+        moved_peer.set_position(left,{-10,0.5f,0});
+        expect(!moved_peer.body_is_sleeping(right) &&
+               !moved_peer.body_ready_for_sleep(right) &&
+               moved_peer.body_wake_counter(right)>0.0f,
+               "Dynamic pose edit left old contact peer dormant");
+        moved_peer.step(1.0f/120.0f);
+        expect(moved_peer.accurate_island_id(left)!=
+                   moved_peer.accurate_island_id(right) &&
+               !moved_peer.body_is_sleeping(right),
+               "Contact island split discarded the old peer wake");
+    }
+
     // Third-pass sleep readiness belongs to the previous solver frame.
     // A support edit between the ready and inactive passes must revoke
     // the ready flag while the body is still awake. Verify both static
