@@ -179,6 +179,47 @@ void verify_speculative_active_node_lifecycle() {
            "Speculative graph kept a retired rigid in its active list");
 }
 
+// PxsIslandSim::processLostEdges collects a separated component's
+// managers by visiting its node adjacency, then splitEdges appends that
+// collected sequence to its new island. Replaying globally preserved
+// manager order gives a different finite-iteration PGS input here.
+void verify_split_contact_manager_migration() {
+    using fyzz::native::Scene;
+    Scene split;
+    const auto a=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+    const auto b=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,10,0},1.0f);
+    const auto c=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{1.6f,10,0},1.0f);
+    const auto d=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{2.4f,10,0},1.0f);
+    const auto e=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{3.2f,10,0},1.0f);
+    split.advance_collision();
+    expect(split.contacts().size()==4 &&
+           split.accurate_island_count()==1 &&
+           has(split.contacts().size()?split.found_contacts():
+                                     split.lost_contacts(),b,c),
+           "Split manager fixture did not form its five-body chain");
+    // Losing B-C leaves A-B on the original root-B island. The
+    // orphan C-D-E side must migrate contacts in visited C,D,E
+    // adjacency order: C-D followed by D-E. The source's earlier
+    // array swap-last on B-C would leave D-E before C-D if we
+    // simply filtered/replayed the old array.
+    split.set_position(c,{2.0f,10,0});
+    split.step(1.0f/480.0f);
+    const auto managers=split.indexed_contact_manager_order();
+    const auto gu=split.contacts();
+    expect(split.accurate_island_count()==2 &&
+           gu.size()==3 && managers.size()==3 &&
+           gu[0].pair==fyzz::native::Pair{a,b} &&
+           gu[1].pair==fyzz::native::Pair{c,d} &&
+           gu[2].pair==fyzz::native::Pair{d,e} &&
+           managers[0]==0 && managers[1]==1 && managers[2]==2,
+           "Split migration replayed old manager order instead of visited edges");
+}
+
 // Source contact-edge ordering and removal conformance remains in its
 // own stack frame, alongside the other multi-island lifecycle fixtures.
 void verify_island_contact_manager_order() {
@@ -2885,6 +2926,7 @@ int run_native_scene_smoke() {
     }
 
     verify_island_contact_manager_order();
+    verify_split_contact_manager_migration();
 
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
