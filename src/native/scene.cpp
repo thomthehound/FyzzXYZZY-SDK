@@ -1021,6 +1021,11 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     const auto root_for=[&](BodyId node) {
         return graph.islands[graph.node_island[node]].root;
     };
+    // Source processLostEdges continues through mDirtyMap after
+    // findRoute fails and locally splits a component. Our bounded
+    // component reconstruction follows this pass, but a failure in one
+    // component must not prevent route repair in another component.
+    bool routes_intact=true;
     for(BodyId node:dirty) {
         if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox)
             continue;
@@ -1093,7 +1098,10 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                 source_hop_push(island_route_queue_,to,higher);
             }
         }
-        if(!found)return false;
+        if(!found) {
+            routes_intact=false;
+            continue;
+        }
 
         step_checkpoint_.save_hint(*this,root,accurate);
         fast[root]=invalid;
@@ -1110,7 +1118,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             current=predecessor;
         }
     }
-    return true;
+    return routes_intact;
 }
 
 void Scene::update_island_connectivity(bool repair_lost_edges) {
@@ -1128,9 +1136,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     };
 
     bool rebuild=island_topology_dirty_;
-    if(!rebuild && repair_lost_edges)
-        rebuild=!lost_island_edges_retain_routes(false) ||
-                 !lost_island_edges_retain_routes(true);
+    if(!rebuild && repair_lost_edges) {
+        // Both source IslandSim owners must consume their dirty maps.
+        // A speculative split cannot skip accurate-root hint repair.
+        const bool speculative_intact=
+            lost_island_edges_retain_routes(false);
+        const bool accurate_intact=
+            lost_island_edges_retain_routes(true);
+        rebuild=!speculative_intact || !accurate_intact;
+    }
     if(!rebuild && repair_lost_edges)
         return;
     if(!rebuild && !repair_lost_edges) {
