@@ -1262,6 +1262,14 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 ++next.initial_active_node_count;
         }
         next.free_handles=graph.free_handles;
+        // PxsIslandSim::processLostEdges selects roots from the
+        // mDirtyMap's node-index iteration when findRoute fails.
+        // This bitmap only guides the bounded split fallback; it does
+        // not create a second graph or an independently owned actor.
+        std::vector<std::uint8_t> dirty_member(actors_.size(),0);
+        for(BodyId id:(accurate?accurate_dirty_nodes_:
+                                 speculative_dirty_nodes_))
+            if(id<dirty_member.size())dirty_member[id]=1;
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
         members.reserve(actors_.size());
@@ -1362,11 +1370,24 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 }
             }
             BodyId root=members.front();
+            bool retained_root=false;
             if(handle<graph.islands.size()) {
                 const BodyId oldroot=graph.islands[handle].root;
                 if(oldroot<component.size() &&
-                   component[oldroot]==component_number)
+                   component[oldroot]==component_number) {
                     root=oldroot;
+                    retained_root=true;
+                }
+            }
+            if(!retained_root) {
+                // A component that cannot reach the original root
+                // takes the *dirty* route-start node as its new root
+                // (mVisitedNodes[0]), not its smallest BodyId. Dirty
+                // bitmap iteration in PhysX is ascending node index.
+                for(BodyId node:members)
+                    if(dirty_member[node] && (root==members.front() ||
+                                             node<root))
+                        root=node;
             }
             auto& island=next.islands[handle];
             island.root=root;
