@@ -222,6 +222,18 @@ public:
         return id<accurate_islands_.node_island.size()
             ? accurate_islands_.node_island[id] : IslandGraph::invalid;
     }
+    // Source IslandSim::Island::mRootNode: the surviving prior root
+    // remains authoritative, while a split gets its failed-route
+    // mVisitedNodes[0] root. Invalid IDs have no source island root.
+    BodyId accurate_island_root(BodyId id) const noexcept {
+        if(id>=accurate_islands_.node_island.size())
+            return std::numeric_limits<BodyId>::max();
+        const auto owner=accurate_islands_.node_island[id];
+        return owner<accurate_islands_.islands.size() &&
+               accurate_islands_.islands[owner].live
+            ? accurate_islands_.islands[owner].root
+            : std::numeric_limits<BodyId>::max();
+    }
     // Source island static-contact counters used by the Dy::sleepCheck
     // stage. These differ between SAP candidates and Gu physical touches.
     std::size_t speculative_island_static_touches(BodyId id) const noexcept {
