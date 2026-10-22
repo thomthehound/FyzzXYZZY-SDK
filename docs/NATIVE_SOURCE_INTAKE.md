@@ -571,15 +571,15 @@ PGS path consumes the indexed-manager sequence directly, matching
 `PGS_SUPPORT_COMPOUND_CONSTRAINTS` alternative performs a separate
 stable two-key solver-body remap and contact reduction, and remains an
 explicit later source admission; it is not silently approximated by an
-unrelated global pair sort. The bounded component-split fallback now explicitly executes
-`PxsIslandSim::removeEdgeFromIsland` for each migrating manager
+unrelated global pair sort. The native source-local lost-edge split
+now executes `PxsIslandSim::removeEdgeFromIsland` for each migrating manager
 in visited-node adjacency order, then applies `splitEdges`-style
 append into its new source-owned island. This preserves the
 original/root island's **swap-last-compacted remainder** instead of
 replaying managers in the pre-split indexed array order. A linear
 five-body split regression distinguishes the resulting source
 C-D, D-E order from the previous D-E, C-D fallback.
-Split manager migration now also seeds each component's
+Local split manager migration seeds each disconnected component's
 `mVisitedNodes`-equivalent discovery at the smallest **dirty** rigid
 node (the original `mDirtyMap` scan), not at its lowest `BodyId`.
 A min-priority heap of the existing hop estimates traverses the
@@ -612,23 +612,30 @@ before A-G even though FIFO would do the opposite. The fixture
 asserts actual unequal cached values before the loss and H-static
 before G-static after migration. It does not rely on an invented
 infinite-hop sentinel or on stale values left unadjusted by merges.
-For simultaneous splits, components are now processed in ascending
-`mDirtyMap` seed order rather than component-number order, preserving
-the original shared old-island array's sequence of swap-last removals.
-The bounded reconstruction now preserves the surviving
-original-root component's root and promotes the first dirty-route
-node to the root of an orphaned component, as
-`PxsIslandSim::processLostEdges` does for a failed `findRoute`.
-The fixture asserts both source root identities, not only manager
-order. However, it still assigns island handles and rebuilds member
-chains by its whole-component scan rather than successive
-`mVisitedState` witnesses and local `mVisitedNodes` migrations.
+For simultaneous splits, failed routes are consumed in ascending
+`mDirtyMap` seed order. Each disconnected component is traversed
+through the source-owned intrusive `EdgeInstance` adjacency with the
+original hop-priority heap, and only that component's visited nodes
+are detached from the original node chain. The root component keeps
+its existing handle and unchanged membership order; the detached
+component acquires a free or newly allocated source-style island
+handle and a node chain ordered by `mVisitedNodes` insertion. Its
+indexed managers are swap-last removed from the original island in
+the same visit order, then appended to the new handle. Unrelated
+islands are neither traversed nor rebuilt. The full-component scan
+remains only for actor admission/retirement and exceptional topology
+reconciliation, not ordinary lost-contact splitting. The new
+`island_local_split_count` and `island_full_rebuild_count`
+diagnostics distinguish those two paths. Source witnesses across
+dirty-route searches, exact split-time hint propagation in every
+case, and deferred dirty-work budgets still require fidelity work.
 Source `Cm::PriorityQueue` ties are now reproduced by the same binary-heap
 push/pop rules: equal-hop insertions do not bubble, and removal selects
 the left child when both children tie. The five-way split regression
 observes the resulting manager permutation (not FIFO or BodyId order).
-Incremental split-handle allocation, per-pass dirty budgets, and the
-original continuation graph remain fidelity gates.
+Full source witness-driven route reuse, per-pass dirty budgets, typed
+`PxNodeIndex` lifetime, and the original continuation graph remain
+fidelity gates. Ordinary rigid split-handle allocation is now local.
 
 ## Native ownership and data contracts
 
@@ -731,11 +738,13 @@ reference for an ordinary settled floor contact.
 
 This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
 the actor-local activation flags and a single pending-work indicator
-do not implement the source's activation/deactivation node and edge
-lists, separate active-index maps, detailed edge-activation
-flags, kinematic triggers, stabilization/freeze state, deferred
-deactivation continuations, sleep/wake callbacks and exact
-`ScPipeline::afterIntegration` task semantics remain open. The active
+do not implement the complete source node/edge activation queues,
+detailed edge-activation flags, kinematic triggers,
+stabilization/freeze state, deferred deactivation continuations,
+sleep/wake callbacks or exact `ScPipeline::afterIntegration`
+task semantics. Independent *rigid* active-index maps, their
+prefix/suffix and swap-last behavior are already implemented in both
+graphs; this is not a claim of their complete non-rigid lifecycle. The active
 subset has no joints or CCD and cannot establish those dependencies.
 
 **Cost:** unchanged dynamic connectivity and static-only topology
@@ -776,8 +785,9 @@ those dirty nodes toward their current island root. An advisory
 still exists in that graph and hop estimates decrease toward that
 root. Otherwise, a graph traversal through the persistent
 `EdgeInstance` adjacency finds a surviving root route and refreshes
-its path estimates. If root connectivity is lost, the existing
-rebuild fallback reconstructs correct all-awake components.
+its path estimates. If root connectivity is lost, the native third pass now detaches
+only the failed component into a locally allocated source-style
+island handle, leaving unrelated node chains and handles untouched.
 
 When a reconstruction changes an island root, only that root's affected
 node hints are invalidated; unrelated actor admissions do not evict
@@ -994,12 +1004,13 @@ union/find roots. Source hop-priority queue visitation and its
 equal-priority `Cm::PriorityQueue` heap order are now implemented
 for the admitted rigid graph, including split migration visitation
 order. **What remains** is witness-aware `mVisitedState` reuse between
-dirty searches, successive source-local island splitting and handle
-migration, multi-frame dirty-work budgets, and the full edge
-activation/deactivation lifecycle. The bounded
-component fallback now migrates indexed-manager edges through source
-swap-last removal and per-component visited-node appends instead of
-replaying the original manager ordering. Failure rollback journals **only the modified** source edge
+dirty searches and exact source witness/hint propagation, multi-frame
+dirty-work budgets, and the full edge activation/deactivation lifecycle.
+Ordinary lost-contact splitting now migrates only the failed
+component's nodes and indexed-manager edges using source visit order,
+swap-last removal and local handle allocation. The full-component
+rebuild remains for actor admission/retirement. Neither path replays
+managers in canonical Gu pair order. Failure rollback journals **only the modified** source edge
 slots, route hints and intrusive node-head links, including splices into
 neighboring edge instances. It does not traverse or copy old EdgeIndex
 allocations at the start of successful steps. At most O(changed edge
