@@ -326,6 +326,17 @@ public:
     std::span<const BodyId> deactivating_accurate_nodes() const noexcept {
         return accurate_islands_.nodes_to_deactivate;
     }
+    // Source IslandSim::getDeactivatingEdges(eCONTACT_MANAGER).
+    // Each graph owns its separate edge-lifetime publication; indices
+    // reference the one scene-owned contact manager slot arena.
+    std::span<const std::uint32_t>
+    deactivating_speculative_contact_edges() const noexcept {
+        return speculative_islands_.deactivating_edges;
+    }
+    std::span<const std::uint32_t>
+    deactivating_accurate_contact_edges() const noexcept {
+        return accurate_islands_.deactivating_edges;
+    }
     std::size_t largest_accurate_island_size() const noexcept {
         std::size_t largest=0;
         for(std::size_t i=1;i<accurate_island_offsets_.size();++i)
@@ -575,6 +586,10 @@ private:
         // Cleared at the next third pass; authoritative prior-frame
         // ready flags determine the members to deactivate.
         std::vector<BodyId> nodes_to_deactivate;
+        // PxsIslandSim::deactivateNodeInternal emits each active
+        // contact-manager edge when its last awake endpoint sleeps.
+        // A lost/retired edge is not a sleep-deactivation event.
+        std::vector<EdgeIndex> deactivating_edges;
     };
     IslandGraph speculative_islands_, accurate_islands_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
