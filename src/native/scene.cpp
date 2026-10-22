@@ -2644,6 +2644,14 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // ordering and reusable slots) is the sole connectivity checkpoint.
     speculative_islands=scene.speculative_islands_;
     accurate_islands=scene.accurate_islands_;
+    // Copies preserve vector elements, not spare capacity. A successful
+    // checkpoint must hand off full per-actor capacity to the scene:
+    // third-pass deactivation and geometry-only active-node reconciliation
+    // are noexcept AFTER the collision transaction commits. Reserving
+    // here is still inside the throwing, pre-publication checkpoint.
+    // Capacity is reused over successive frames, including failed steps.
+    accurate_islands.active_nodes.reserve(scene.actors_.size());
+    accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
                           scene.accurate_island_nodes_.end());
     accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
@@ -2673,6 +2681,15 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
     scene.threshold_changes_.swap(threshold_changes);
+    // The copied arrays become the mutable frame's working arrays.
+    // The checkpoint retains the actual *published* vector allocations,
+    // including retained spans into their contents. A rejected frame
+    // swaps these originals back without invalidating exposed spans.
+    // The working deactivation output retains actors_.size() capacity
+    // for the subsequent noexcept third-pass sleep decision.
+    scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
+    scene.accurate_islands_.nodes_to_deactivate.swap(
+        accurate_islands.nodes_to_deactivate);
     if(capture_solver_state) {
         // The previous active batch view is observable through the
         // source island instrumentation, so rejected solves restore it.

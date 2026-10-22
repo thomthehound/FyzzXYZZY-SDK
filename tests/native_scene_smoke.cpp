@@ -3201,6 +3201,81 @@ int run_native_scene_smoke() {
     }
 
     {
+        // Rejected steps must preserve retained source active-node
+        // spans, their actual storage, and their published elements.
+        // A failure after a newly ready body deactivates exercises
+        // swap-last active index retirement before rollback.
+        Scene retained_active;
+        retained_active.add_static_floor(0.0f);
+        const auto sleeper=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            retained_active.step(1.0f/120.0f);
+            if(retained_active.body_ready_for_sleep(sleeper)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !retained_active.body_is_sleeping(sleeper),
+               "Retained active span fixture did not become ready");
+        const auto published=retained_active.active_accurate_nodes();
+        const auto published_deactivations=
+            retained_active.deactivating_accurate_nodes();
+        expect(published.size()==1 && published[0]==sleeper &&
+               published_deactivations.empty(),
+               "Retained active span fixture was not an active rigid");
+        const auto* const published_ptr=published.data();
+        const auto* const deact_ptr=published_deactivations.data();
+        const auto frame=retained_active.frame_index();
+        for(int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;
+            try {retained_active.step(std::numeric_limits<float>::max());}
+            catch(const std::overflow_error&) {rejected=true;}
+            expect(rejected && retained_active.frame_index()==frame &&
+                   !retained_active.body_is_sleeping(sleeper) &&
+                   retained_active.active_accurate_nodes().data()==
+                       published_ptr &&
+                   retained_active.deactivating_accurate_nodes().data()==
+                       deact_ptr &&
+                   published.size()==1 && published[0]==sleeper &&
+                   retained_active.active_accurate_nodes().size()==1 &&
+                   retained_active.accurate_active_node_index(sleeper)==0 &&
+                   retained_active.deactivating_accurate_nodes().empty(),
+                   "Failed third-pass deactivation invalidated active-node span");
+        }
+        retained_active.step(1.0f/120.0f);
+        expect(retained_active.body_is_sleeping(sleeper) &&
+               retained_active.deactivating_accurate_nodes().size()==1 &&
+               retained_active.deactivating_accurate_nodes()[0]==sleeper,
+               "Valid retry failed to emit accurate third-pass deactivation");
+        // The next rejected frame can rebuild topology after a newly
+        // admitted awake body; retained deactivation storage remains
+        // readable even if the working graph was replaced.
+        const auto old_output=retained_active.deactivating_accurate_nodes();
+        const auto* const old_output_ptr=old_output.data();
+        const auto newcomer=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        const auto next_frame=retained_active.frame_index();
+        bool rejected=false;
+        try {retained_active.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected && retained_active.frame_index()==next_frame &&
+               old_output.data()==old_output_ptr && old_output.size()==1 &&
+               old_output[0]==sleeper &&
+               retained_active.deactivating_accurate_nodes().data()==
+                   old_output_ptr &&
+               retained_active.deactivating_accurate_nodes().size()==1 &&
+               retained_active.deactivating_accurate_nodes()[0]==sleeper,
+               "Rejected island rebuild invalidated deactivation report span");
+        retained_active.step(1.0f/120.0f);
+        expect(retained_active.deactivating_accurate_nodes().empty() &&
+               retained_active.active_accurate_nodes().size()==1 &&
+               retained_active.active_accurate_nodes()[0]==newcomer,
+               "Post-rollback deactivation output was replayed on retry");
+    }
+
+    {
         // Source accurate active-node indexing must stay dense and
         // bidirectional through third-pass sleep, user wake, and
         // reactivation. The separate deactivation output is published

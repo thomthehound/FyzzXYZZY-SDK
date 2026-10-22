@@ -482,6 +482,19 @@ does not change persistent contact/island state, and preserved
 backing-storage identity after a deterministic nonfinite AABB with
 successful retry.
 
+The accurate graph's `mActiveNodes` and
+`mNodesToPutToSleep` equivalents are also published read-only spans.
+Their transaction now follows the same reversible-buffer ownership rule
+as solver reports: the checkpoint copies persistent graph membership
+before mutation, reserves full per-actor capacity for the working
+active/deactivation arrays, then swaps the existing published arrays
+into the checkpoint. Failed frames restore those original allocations,
+not copies, so retained spans continue to see the last successful
+publication. Preserving the full deactivation capacity across repeated
+rollback also keeps the subsequent `noexcept` third-pass from allocating
+after the publication boundary. This does not introduce a second
+island owner or double-copy the active-node lists.
+
 The failure-atomicity audit also covered two transients that must not
 borrow authoritative publication lifetimes. Prepared Dy rows now carry a
 separate monotonically increasing preparation generation: a rejected
