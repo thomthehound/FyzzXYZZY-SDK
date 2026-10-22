@@ -170,6 +170,17 @@ void verify_island_contact_manager_order() {
                "Post-partition rejected PGS step invalidated published manager span");
         island_managers.set_material(center,fyzz::Material{});
         island_managers.set_material(b,fyzz::Material{});
+        // The same pending authored fourth contact must publish on a
+        // clean retry. This also proves the failed step would have rebuilt
+        // a different (four-entry) indexed-manager stream before throwing.
+        island_managers.step(1.0f/480.0f);
+        const auto admitted=island_managers.indexed_contact_manager_order();
+        expect(island_managers.contacts().size()==4 &&
+               has(island_managers.contacts(),center,e) &&
+               admitted.size()==4 &&
+               admitted[0]==1 && admitted[1]==0 &&
+               admitted[2]==2 && admitted[3]==3,
+               "Post-partition failure fixture did not admit its fourth manager");
         island_managers.set_position(center,{0,10,0});
         island_managers.set_position(c,{-4,10,0});
         island_managers.set_position(e,{0,10,-4});
