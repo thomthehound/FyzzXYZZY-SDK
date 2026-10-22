@@ -2175,7 +2175,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                            std::numeric_limits<std::size_t>::max(),
                        "Accurate active node list included dormant speculative-only peer");
                 const auto floor_edge=distinct_sleep.contact_edge_index(
-                    fyzz::native::Pair{source_floor,rod_a});
+                    fyzz::native::Pair{rod_a,source_floor});
                 const auto accurate_events=
                     distinct_sleep.deactivating_accurate_contact_edges();
                 expect(floor_edge!=std::numeric_limits<std::uint32_t>::max(),
