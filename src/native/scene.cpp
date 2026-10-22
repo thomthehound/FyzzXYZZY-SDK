@@ -103,6 +103,43 @@ void validate_box(Vec3 h, Vec3 p) {
 Pair ordered_pair(BodyId a, BodyId b) {
     return {std::min(a, b), std::max(a, b)};
 }
+// CmPriorityQueue.h::PriorityQueueBase uses a binary min-heap whose
+// comparator considers only the hop estimate. In particular, ties select
+// the left child during pop and do not bubble during push. std::push_heap
+// (especially with BodyId or discovery-order tie breaks) changes the
+// mVisitedNodes ordering consumed by IslandSim::splitEdges.
+template<class T, class HigherPriority>
+void source_hop_push(std::vector<T>& heap, T value, HigherPriority higher) {
+    std::size_t index=heap.size();
+    heap.push_back(value);
+    while(index) {
+        const std::size_t parent=(index-1)/2;
+        if(!higher(value,heap[parent]))break;
+        heap[index]=heap[parent];
+        index=parent;
+    }
+    heap[index]=value;
+}
+template<class T, class HigherPriority>
+T source_hop_pop(std::vector<T>& heap, HigherPriority higher) {
+    const T result=heap.front();
+    const std::size_t remaining=heap.size()-1;
+    const T last=heap.back();
+    heap.pop_back();
+    std::size_t index=0;
+    for(;;) {
+        std::size_t child=index*2+1;
+        if(child>=remaining)break;
+        const std::size_t right=child+1;
+        if(right<remaining && higher(heap[right],heap[child]))
+            child=right;
+        if(higher(last,heap[child]))break;
+        heap[index]=heap[child];
+        index=child;
+    }
+    if(remaining)heap[index]=last;
+    return result;
+}
 } // namespace
 
 BodyId Scene::add(Actor actor) {
@@ -1018,8 +1055,8 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         // These estimates can be stale: the priority changes only search
         // order, never reachability or the requirement for a live route.
         // A successful route refreshes mFastRoute and mHopCounts hints.
-        const auto farther=[&](BodyId a,BodyId b) {
-            return hops[a]!=hops[b] ? hops[a]>hops[b] : a>b;
+        const auto higher=[&](BodyId a,BodyId b) {
+            return hops[a]<hops[b];
         };
         if(++island_route_visit_stamp_==0) {
             std::fill(island_route_seen_.begin(),island_route_seen_.end(),0);
@@ -1027,19 +1064,16 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         }
         const auto visit_stamp=island_route_visit_stamp_;
         island_route_queue_.clear();
-        island_route_queue_.push_back(node);
+        source_hop_push(island_route_queue_,node,higher);
         island_route_seen_[node]=visit_stamp;
         island_route_predecessor_[node]=invalid;
         island_route_predecessor_edge_[node]=invalid_edge;
         bool found=false;
         // The reusable queue is a min-heap by estimated hop count.
-        // A deterministic BodyId tie-break avoids platform-dependent
-        // route choices when multiple estimates are equal.
+        // The source's Cm::PriorityQueue has no secondary tie-break:
+        // equal-hop promotion follows its exact binary-heap child rules.
         while(!island_route_queue_.empty() && !found) {
-            const BodyId from=island_route_queue_.front();
-            std::pop_heap(island_route_queue_.begin(),
-                          island_route_queue_.end(),farther);
-            island_route_queue_.pop_back();
+            const BodyId from=source_hop_pop(island_route_queue_,higher);
             for(std::size_t i=first[from];i!=invalid_instance;) {
                 const ContactEdge& edge=contact_edges_[i/2];
                 const auto& link=(accurate?edge.accurate:
@@ -1056,9 +1090,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                 island_route_predecessor_edge_[to]=
                     static_cast<EdgeIndex>(i_edge);
                 if(to==root) {found=true;break;}
-                island_route_queue_.push_back(to);
-                std::push_heap(island_route_queue_.begin(),
-                               island_route_queue_.end(),farther);
+                source_hop_push(island_route_queue_,to,higher);
             }
         }
         if(!found)return false;
@@ -1535,11 +1567,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             struct RouteEntry {
                 BodyId node;
                 std::uint32_t hops;
-                std::size_t discovery;
             };
-            const auto farther=[](const RouteEntry& a,const RouteEntry& b) {
-                return a.hops!=b.hops ? a.hops>b.hops :
-                       a.discovery>b.discovery;
+            const auto higher=[](const RouteEntry& a,const RouteEntry& b) {
+                return a.hops<b.hops;
             };
             std::vector<RouteEntry> pending;
             pending.reserve(actors_.size());
@@ -1562,7 +1592,6 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                     const BodyId bn=bd?first_dirty[b]:first_node[b];
                     return an!=bn?an<bn:a<b;
                 });
-            std::size_t discovery=0;
             for(std::uint32_t comp:visit_components) {
                 const BodyId start=first_dirty[comp]!=invalid
                     ? first_dirty[comp]:first_node[comp];
@@ -1575,11 +1604,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                         ? accurate_hops_[node]
                         : std::numeric_limits<std::uint32_t>::max();
                 };
-                pending.push_back({start,estimate(start),discovery++});
+                source_hop_push(pending,RouteEntry{start,estimate(start)},
+                                higher);
                 while(!pending.empty()) {
-                    std::pop_heap(pending.begin(),pending.end(),farther);
-                    const BodyId from=pending.back().node;
-                    pending.pop_back();
+                    const BodyId from=source_hop_pop(pending,higher).node;
                     for(std::size_t i=accurate_node_first_[from];
                         i!=invalid_instance;) {
                         const ContactEdge& edge=contact_edges_[i/2];
@@ -1590,8 +1618,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                            seen[to]==comp)continue;
                         seen[to]=comp;
                         split_visit_nodes.push_back(to);
-                        pending.push_back({to,estimate(to),discovery++});
-                        std::push_heap(pending.begin(),pending.end(),farther);
+                        source_hop_push(pending,RouteEntry{to,estimate(to)},
+                                        higher);
                     }
                 }
             }
