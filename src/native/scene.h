@@ -489,7 +489,7 @@ private:
     // full-frame source publications. No duplicated activation owner.
     void activate_published_islands() noexcept;
     bool lost_island_edges_retain_routes(bool accurate);
-    void split_lost_islands(bool accurate);
+    void split_lost_island(bool accurate,BodyId seed);
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
@@ -589,13 +589,16 @@ private:
     std::vector<EdgeIndex> island_route_predecessor_edge_;
     std::vector<std::uint32_t> island_route_seen_;
     std::uint32_t island_route_visit_stamp_=0;
+    // Per-third-pass processed mVisitedState witnesses. Visit generations
+    // avoid clearing the entire actor vector for each dirty publication.
+    std::vector<std::uint32_t> island_route_confirmed_;
+    std::uint32_t island_route_confirmed_stamp_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
     std::vector<BodyId> speculative_dirty_nodes_, accurate_dirty_nodes_;
     // Source processLostEdges' failed dirty-route seeds, consumed by
     // local split migration in their original ascending dirty order.
-    std::vector<BodyId> speculative_failed_routes_, accurate_failed_routes_;
     // Reused source mVisitedNodes and mIslandSplitEdges working sets.
     std::vector<BodyId> island_split_members_;
     std::vector<EdgeIndex> island_split_edges_;
