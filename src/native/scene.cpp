@@ -559,6 +559,13 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         if(contact_edges_.size()>=invalid_edge)
             throw std::overflow_error("Native island edge handles exhausted");
         id=static_cast<EdgeIndex>(contact_edges_.size());
+        // deactivateNodeInternal may publish a contact edge after the
+        // geometry transaction commits. Reserve its bounded source
+        // output before enlarging the authoritative handle arena.
+        speculative_islands_.deactivating_edges.reserve(
+            contact_edges_.size()+1);
+        accurate_islands_.deactivating_edges.reserve(
+            contact_edges_.size()+1);
         contact_edges_.push_back({pair,true,false,false});
     }
     return id;
@@ -2086,6 +2093,8 @@ void Scene::deactivate_ready_islands() noexcept {
     // stage's output only when its accurate island actually deactivates.
     // Rebuild-time capacity was reserved before collision commit.
     accurate_islands_.nodes_to_deactivate.clear();
+    speculative_islands_.deactivating_edges.clear();
+    accurate_islands_.deactivating_edges.clear();
     // PhysX uses accurate-island deactivations for rigid-body state in
     // ScPipeline::afterIntegration. The speculative third-pass list
     // controls contact interaction activity, not rigid sleep admission.
@@ -2117,6 +2126,33 @@ void Scene::deactivate_ready_islands() noexcept {
             actor.pending_angular_velocity_delta={};
             actor.sleep_linear_acc={};
             actor.sleep_angular_acc={};
+            // Source deactivateNodeInternal traverses each newly
+            // inactive rigid node's intrusive mFirstEdgeIndex list,
+            // publishing an edge only once its opposite endpoint is
+            // also inactive (or the static world). Unlike removing
+            // a contact manager, this does not unlink or retire it.
+            for(IslandGraph* graph:{&speculative_islands_,&accurate_islands_}) {
+                const bool accurate=graph==&accurate_islands_;
+                const auto& first=accurate?
+                    accurate_node_first_:speculative_node_first_;
+                for(std::size_t i=first[node];i!=invalid_instance;) {
+                    const auto& edge=contact_edges_[i/2];
+                    const auto& link=(accurate?edge.accurate:
+                                      edge.speculative)[i&1];
+                    const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
+                    const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
+                    i=link.next;
+                    if(!edge.live || edge.retiring ||
+                       (accurate && !edge.connected) ||
+                       (actors_[other].kind==Kind::DynamicBox &&
+                        !actors_[other].sleeping))
+                        continue;
+                    // The last awake endpoint emits the edge once.
+                    // The output capacity was reserved during the
+                    // throwing checkpoint/handle admission stage.
+                    graph->deactivating_edges.push_back(edge_id);
+                }
+            }
         }
     }
 }
@@ -3428,6 +3464,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     speculative_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
+    speculative_islands.deactivating_edges.reserve(
+        scene.contact_edges_.size());
+    accurate_islands.deactivating_edges.reserve(
+        scene.contact_edges_.size());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
@@ -3466,6 +3506,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
+    scene.speculative_islands_.deactivating_edges.swap(
+        speculative_islands.deactivating_edges);
+    scene.accurate_islands_.deactivating_edges.swap(
+        accurate_islands.deactivating_edges);
     if(capture_solver_state) {
         // The previous active batch view is observable through the
         // source island instrumentation, so rejected solves restore it.
@@ -3616,6 +3660,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.active_node_index);
     scene.speculative_islands_.nodes_to_deactivate.swap(
         speculative_islands.nodes_to_deactivate);
+    scene.speculative_islands_.deactivating_edges.swap(
+        speculative_islands.deactivating_edges);
     scene.speculative_islands_.initial_active_node_count=
         speculative_islands.initial_active_node_count;
     if(graph_ownership_saved) {
@@ -3632,6 +3678,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.active_node_index);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
+    scene.accurate_islands_.deactivating_edges.swap(
+        accurate_islands.deactivating_edges);
     scene.accurate_islands_.initial_active_node_count=
         accurate_islands.initial_active_node_count;
     if(graph_ownership_saved) {
@@ -3909,6 +3957,8 @@ void Scene::advance_collision(bool force_update) {
         // mNodesToPutToSleep output rather than replaying the event.
         // This is constant-work and cannot throw.
         accurate_islands_.nodes_to_deactivate.clear();
+        speculative_islands_.deactivating_edges.clear();
+        accurate_islands_.deactivating_edges.clear();
         accurate_islands_.initial_active_node_count=
             accurate_islands_.active_nodes.size();
         speculative_islands_.initial_active_node_count=
