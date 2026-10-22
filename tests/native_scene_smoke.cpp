@@ -68,18 +68,20 @@ void verify_idempotent_pose_autowake() {
                connected.found_contacts().empty() &&
                connected.lost_contacts().empty(),
                "Same-pose autowake rebuilt unchanged collision topology");
-        // A matching static pose must not activate unrelated dormant
-        // bodies: only the dynamic authoring API defaults to autowake.
-        const auto dormant=connected.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{10,0.5f,0},1.0f);
-        connected.advance_collision();
+        // A matching static pose must not wake its actual contacting
+        // sleepers; the automatic wake is specific to dynamic actors.
         for(int frame=0;frame<360;++frame)
             connected.step(1.0f/120.0f);
-        expect(connected.body_is_sleeping(dormant),
-               "Static same-pose fixture never reached sleep");
+        expect(connected.body_is_sleeping(left) &&
+               connected.body_is_sleeping(right),
+               "Static same-pose fixture never returned to sleep");
+        const auto quiet_revision=connected.island_topology_revision();
         connected.set_position(floor,connected.body_state(floor).position);
-        expect(connected.body_is_sleeping(dormant),
-               "Same-position static pose unexpectedly woke an actor");
+        connected.advance_collision();
+        expect(connected.body_is_sleeping(left) &&
+               connected.body_is_sleeping(right) &&
+               connected.island_topology_revision()==quiet_revision,
+               "Same-position static pose changed contacting sleep state");
     }
     {
         // Source Dy::sleepCheck can mark a body ready one frame before
