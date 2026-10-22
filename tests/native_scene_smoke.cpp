@@ -680,6 +680,54 @@ void verify_source_dirty_witness_split() {
            "Quiet publication replayed the source dirty split");
 }
 
+// After two redundant chords disappear, the first dirty-node search
+// reaches its original root through C while also visiting later-dirty D.
+// Source unwindRoute repairs the A-C-B path, then processLostEdges
+// updates D's off-path estimate via A and treats D as an established
+// witness instead of searching D a second time.
+void verify_successful_route_branch_witness() {
+    using fyzz::native::Scene;
+    Scene scene;
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,18,0},1);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.4f,18,0},1);
+    const auto c=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,18,0},1);
+    const auto d=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.4f,18,0},1);
+    scene.advance_collision();
+    expect(scene.accurate_island_count()==1 &&
+           scene.accurate_island_root(d)==b &&
+           has(scene.found_contacts(),a,b) &&
+           has(scene.found_contacts(),b,d) &&
+           has(scene.found_contacts(),a,d) &&
+           has(scene.found_contacts(),a,c) &&
+           has(scene.found_contacts(),b,c),
+           "Shared-witness fixture lacks its redundant root chords");
+    const auto checks=scene.island_dirty_route_check_count();
+    const auto splits=scene.island_local_split_count();
+    const auto rebuilds=scene.island_full_rebuild_count();
+    scene.set_position(b,{1.1f,18,0});
+    scene.advance_collision();
+    expect(has(scene.lost_contacts(),a,b) &&
+           has(scene.lost_contacts(),b,d) &&
+           !has(scene.lost_contacts(),b,c) &&
+           scene.accurate_island_count()==1 &&
+           scene.speculative_island_count()==1 &&
+           scene.accurate_island_root(d)==b &&
+           scene.accurate_cached_route_hops(c)==1 &&
+           scene.accurate_cached_route_hops(a)==2 &&
+           scene.accurate_cached_route_hops(d)==3 &&
+           scene.island_full_rebuild_count()==rebuilds &&
+           scene.island_local_split_count()==splits,
+           "Source successful route failed to update off-path witnesses");
+    // A and B are processed in each graph; D was already reached in
+    // A's heap search and is skipped by the source visited bitmap.
+    expect(scene.island_dirty_route_check_count()==checks+4,
+           "Successful source search repeated a witnessed dirty node");
+}
+
 // A split in one island must not abort the rest of either IslandSim's
 // dirty bitmap. Replacing a temporary root chord in an unrelated island
 // requires actual source findRoute repair, rather than just retaining the
@@ -3709,6 +3757,7 @@ int run_native_scene_smoke() {
     verify_hop_priority_split_migration();
     verify_equal_hop_split_queue_order();
     verify_source_dirty_witness_split();
+    verify_successful_route_branch_witness();
     verify_route_repair_continues_after_split();
     verify_dirty_order_multisplit_manager_remainder();
 
