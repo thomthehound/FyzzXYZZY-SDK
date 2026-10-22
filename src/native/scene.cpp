@@ -1053,8 +1053,14 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         // same pre-split island identifier.
         BodyId probe=node;
         bool fast_found=false;
+        island_split_members_.clear();
         for(std::size_t depth=0;depth<actors_.size();++depth) {
-            if(probe==root) {fast_found=true;break;}
+            if(probe==root ||
+               (island_route_confirmed_[probe]==confirmed_stamp &&
+                graph.node_island[probe]==graph.node_island[node])) {
+                fast_found=true;
+                break;
+            }
             if(stamps[probe]!=epoch)break;
             const BodyId next=fast[probe];
             if(next==invalid || next>=actors_.size() ||
@@ -1062,11 +1068,15 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                hops[next]>=hops[probe] ||
                !live_hop(probe,next,fast_edge[probe]))
                 break;
+            island_split_members_.push_back(probe);
             probe=next;
         }
         if(fast_found) {
             ++island_fast_route_hits_;
-            island_route_confirmed_[node]=confirmed_stamp;
+            // Source tryFastPath retains valid witnesses along every
+            // root-directed step, not just at the starting dirty node.
+            for(BodyId visited:island_split_members_)
+                island_route_confirmed_[visited]=confirmed_stamp;
             continue;
         }
 
@@ -1091,6 +1101,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         island_route_predecessor_[node]=invalid;
         island_route_predecessor_edge_[node]=invalid_edge;
         bool found=false;
+        BodyId witness=root;
         // The reusable queue is a min-heap by estimated hop count.
         // The source's Cm::PriorityQueue has no secondary tie-break:
         // equal-hop promotion follows its exact binary-heap child rules.
@@ -1111,7 +1122,17 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
                 island_route_predecessor_[to]=from;
                 island_route_predecessor_edge_[to]=
                     static_cast<EdgeIndex>(i_edge);
-                if(to==root) {found=true;break;}
+                // Source findRoute can terminate on an earlier pass's
+                // visited, confirmed island member as well as the root.
+                // This reuses mVisitedState's witness instead of
+                // rediscovering its complete fast route in this search.
+                if(to==root ||
+                   (island_route_confirmed_[to]==confirmed_stamp &&
+                    graph.node_island[to]==graph.node_island[node])) {
+                    found=true;
+                    witness=to;
+                    break;
+                }
                 // mVisitedNodes is ordered by queue insertion, not pop.
                 // A failed search has already collected the entire
                 // disconnected component in its exact source visit order.
@@ -1127,21 +1148,40 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             continue;
         }
 
-        step_checkpoint_.save_hint(*this,root,accurate);
-        fast[root]=invalid;
-        fast_edge[root]=invalid_edge;
-        hops[root]=0;
-        stamps[root]=epoch;
-        for(BodyId current=root;current!=node;) {
+        if(witness==root) {
+            step_checkpoint_.save_hint(*this,root,accurate);
+            fast[root]=invalid;
+            fast_edge[root]=invalid_edge;
+            hops[root]=0;
+            stamps[root]=epoch;
+        }
+        // Upstream unwindRoute repairs the critical root/witness path
+        // backward before processLostEdges fills the remaining
+        // discovered branches in their mVisitedNodes insertion order.
+        for(BodyId current=witness;current!=node;) {
             const BodyId predecessor=island_route_predecessor_[current];
             step_checkpoint_.save_hint(*this,predecessor,accurate);
             fast[predecessor]=current;
             fast_edge[predecessor]=island_route_predecessor_edge_[current];
             hops[predecessor]=hops[current]+1;
             stamps[predecessor]=epoch;
+            island_route_confirmed_[predecessor]=confirmed_stamp;
             current=predecessor;
         }
-        island_route_confirmed_[node]=confirmed_stamp;
+        for(BodyId visited:island_split_members_) {
+            if(island_route_confirmed_[visited]==confirmed_stamp)
+                continue;
+            const BodyId predecessor=island_route_predecessor_[visited];
+            if(predecessor==invalid)
+                throw std::logic_error(
+                    "Source successful route lost its traversal parent");
+            step_checkpoint_.save_hint(*this,visited,accurate);
+            fast[visited]=predecessor;
+            fast_edge[visited]=island_route_predecessor_edge_[visited];
+            hops[visited]=hops[predecessor]+1;
+            stamps[visited]=epoch;
+            island_route_confirmed_[visited]=confirmed_stamp;
+        }
     }
     return !split_occurred;
 }
