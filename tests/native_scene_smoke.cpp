@@ -1046,6 +1046,42 @@ void verify_island_contact_manager_order() {
 
 // Keep the long-running actor, sleep and rollback suites in a separate
 // frame from the broadphase and constraint fixture groups on Windows.
+// The source graph's rollback ownership is a cold-path concern. Steady
+// PGS steps may update active-node publication and motion, but must not
+// copy every persistent island node/handle array when no topology changes.
+void verify_demand_driven_island_ownership_checkpoint() {
+    using fyzz::native::Scene;
+    Scene quiet;
+    for(int i=0;i<24;++i)
+        quiet.add_dynamic_box({0.5f,0.5f,0.5f},
+                              {static_cast<float>(i*4),150,0},1.0f);
+    quiet.advance_collision();
+    const auto baseline=quiet.island_graph_checkpoint_count();
+    const auto revision=quiet.island_topology_revision();
+    const auto rebuilds=quiet.island_full_rebuild_count();
+    expect(baseline>0 && quiet.accurate_island_count()==24,
+           "Quiet checkpoint fixture did not admit all source islands");
+    for(int frame=0;frame<80;++frame)
+        quiet.step(1.0f/240.0f);
+    expect(quiet.island_graph_checkpoint_count()==baseline &&
+           quiet.island_full_rebuild_count()==rebuilds &&
+           quiet.island_topology_revision()==revision &&
+           quiet.accurate_island_count()==24,
+           "Steady PGS copied persistent island topology without a mutation");
+    const auto added=quiet.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{200,150,0},1.0f);
+    quiet.advance_collision();
+    expect(quiet.island_graph_checkpoint_count()==baseline+1 &&
+           quiet.island_full_rebuild_count()==rebuilds+1 &&
+           quiet.accurate_island_count()==25 &&
+           quiet.accurate_island_root(added)==added,
+           "Source node admission skipped the demand-driven ownership snapshot");
+    const auto after=quiet.island_graph_checkpoint_count();
+    quiet.advance_collision();
+    expect(quiet.island_graph_checkpoint_count()==after,
+           "Unchanged geometry republished a redundant graph checkpoint");
+}
+
 void verify_native_rigid_integration_and_island_lifecycle() {
     using fyzz::native::Scene;
     // End-to-end native CPU execution, without a reference PxScene.
@@ -3048,6 +3084,8 @@ int run_native_scene_smoke() {
             const auto before_revision=rejected.island_topology_revision();
             const auto before_local=rejected.island_local_split_count();
             const auto before_global=rejected.island_full_rebuild_count();
+            const auto before_graph_checkpoint=
+                rejected.island_graph_checkpoint_count();
             const auto original_root=rejected.accurate_island_id(rb);
             auto overflowing=fyzz::Material{};
             overflowing.static_friction=1.0e30f;
@@ -3064,6 +3102,8 @@ int run_native_scene_smoke() {
                        rejected.island_topology_revision()==before_revision &&
                        rejected.island_local_split_count()==before_local &&
                        rejected.island_full_rebuild_count()==before_global &&
+                       rejected.island_graph_checkpoint_count()==
+                           before_graph_checkpoint &&
                        rejected.accurate_island_id(rb)==original_root &&
                        rejected.accurate_island_count()==2 &&
                        rejected.contacts().size()==clean.contacts().size(),
@@ -3074,6 +3114,10 @@ int run_native_scene_smoke() {
             rejected.step(1.0f/120.0f);
             clean.step(1.0f/120.0f);
             expect(rejected.island_full_rebuild_count()==before_global &&
+                   rejected.island_graph_checkpoint_count()>
+                       before_graph_checkpoint &&
+                   rejected.island_graph_checkpoint_count()==
+                       clean.island_graph_checkpoint_count() &&
                    rejected.island_local_split_count()>before_local &&
                    rejected.island_local_split_count()==
                        clean.island_local_split_count() &&
@@ -4968,6 +5012,7 @@ int run_native_scene_smoke() {
     }
 #endif
 
+    verify_demand_driven_island_ownership_checkpoint();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
