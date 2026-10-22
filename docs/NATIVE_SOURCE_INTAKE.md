@@ -593,14 +593,25 @@ the new island. New rigid nodes now initialize `mHopCounts` to **zero**, as in
 Per-graph hint vectors grow during `addNode`-equivalent island
 admission; existing hop estimates are retained across unrelated
 actor admissions and backed by the existing journal on rejection.
-An additional branched fixture creates a strictly positive X hop
-estimate through a successful redundant C-X chord loss. B later
-discovers the newer X-B link before older A-B, but A retains its
-source-initialized zero hop estimate while X's remains positive.
-The source priority queue therefore expands A-G before X-H,
-publishing G's static manager before H's. FIFO queue expansion would
-reverse that order. The fixture asserts the actual unequal cached
-values before the split, not an uninitialized sentinel.
+`PxsIslandSim::processNewEdges` and `mergeIslandsInternal` also
+update hop estimates: on merge, the smaller island's member nodes
+receive the source `mHopCounts[winnerEndpoint] +
+mHopCounts[loserEndpoint] + 1` offset, then the connecting loser
+endpoint receives `winnerHop + 1`; a new chord may shorten either
+endpoint's route. These writes now occur in the existing loser-node
+remapping pass with journaled per-node hints, retaining the original
+root-directed connector in the persistent edge slot.
+
+The branched priority regression starts with C-X and B-X already
+linked. X has a shorter *merge-derived* root estimate than A, whose
+separate A-G island subsequently joins through B-A. B's adjacency
+therefore discovers the newer A-B before X-B. Removing the root
+bridge B-C and C-X chord in the **same** publication preserves the
+source estimates until the split: the hop-priority queue expands X-H
+before A-G even though FIFO would do the opposite. The fixture
+asserts actual unequal cached values before the loss and H-static
+before G-static after migration. It does not rely on an invented
+infinite-hop sentinel or on stale values left unadjusted by merges.
 For simultaneous splits, components are now processed in ascending
 `mDirtyMap` seed order rather than component-number order, preserving
 the original shared old-island array's sequence of swap-last removals.
