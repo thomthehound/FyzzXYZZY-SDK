@@ -134,6 +134,20 @@ void verify_island_contact_manager_order() {
                contacts[2].pair==fyzz::native::Pair{center,d} &&
                initial[0]==1 && initial[1]==0 && initial[2]==2,
                "Dy partitioning ignored island-owned manager insertion order");
+        // A failed solver frame must restore the exact previously exposed
+        // descriptor-order allocation, not just the same manager indices.
+        const auto published_pointer=initial.data();
+        const auto published_frame=island_managers.frame_index();
+        bool rejected=false;
+        try { island_managers.step(std::numeric_limits<float>::max()); }
+        catch(const std::exception&) { rejected=true; }
+        const auto restored=island_managers.indexed_contact_manager_order();
+        expect(rejected &&
+               island_managers.frame_index()==published_frame &&
+               restored.data()==published_pointer &&
+               restored.size()==3 &&
+               restored[0]==1 && restored[1]==0 && restored[2]==2,
+               "Rejected source-indexed PGS step invalidated manager span");
         island_managers.set_position(center,{0,10,0});
         island_managers.set_position(c,{-4,10,0});
         island_managers.step(1.0f/480.0f);
