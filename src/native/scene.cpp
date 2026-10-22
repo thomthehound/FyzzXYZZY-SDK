@@ -2136,32 +2136,69 @@ void Scene::deactivate_ready_islands() noexcept {
             actor.pending_angular_velocity_delta={};
             actor.sleep_linear_acc={};
             actor.sleep_angular_acc={};
-            // Source deactivateNodeInternal traverses each newly
-            // inactive rigid node's intrusive mFirstEdgeIndex list,
-            // publishing an edge only once its opposite endpoint is
-            // also inactive (or the static world). Unlike removing
-            // a contact manager, this does not unlink or retire it.
-            for(IslandGraph* graph:{&speculative_islands_,&accurate_islands_}) {
-                const bool accurate=graph==&accurate_islands_;
-                const auto& first=accurate?
-                    accurate_node_first_:speculative_node_first_;
-                for(std::size_t i=first[node];i!=invalid_instance;) {
-                    const auto& edge=contact_edges_[i/2];
-                    const auto& link=(accurate?edge.accurate:
-                                      edge.speculative)[i&1];
-                    const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
-                    const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
-                    i=link.next;
-                    if(!edge.live || edge.retiring ||
-                       (accurate && !edge.connected) ||
-                       (actors_[other].kind==Kind::DynamicBox &&
-                        !actors_[other].sleeping))
-                        continue;
-                    // The last awake endpoint emits the edge once.
-                    // The output capacity was reserved during the
-                    // throwing checkpoint/handle admission stage.
-                    graph->deactivating_edges.push_back(edge_id);
-                }
+            // Accurate IslandSim::deactivateNodeInternal visits only
+            // this newly inactive rigid node. Emit its manager when
+            // the second endpoint is already inactive or the world.
+            for(std::size_t i=accurate_node_first_[node];
+                i!=invalid_instance;) {
+                const auto& edge=contact_edges_[i/2];
+                const auto& link=edge.accurate[i&1];
+                const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
+                const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
+                i=link.next;
+                if(edge.live && !edge.retiring && edge.connected &&
+                   (actors_[other].kind!=Kind::DynamicBox ||
+                    actors_[other].sleeping))
+                    accurate_islands_.deactivating_edges.push_back(edge_id);
+            }
+        }
+    }
+    if(accurate_islands_.nodes_to_deactivate.empty())return;
+    // Speculative IslandSim can join accurate islands via SAP-only
+    // contacts. It must NOT emit sleep edges while any member of its
+    // larger speculative island remains active. Process only candidate
+    // islands containing a newly inactive rigid actor, once per island.
+    // A stamped root deduplicates candidates without a global scan.
+    if(++speculative_sleep_visit_stamp_==0) {
+        std::fill(speculative_sleep_seen_.begin(),
+                  speculative_sleep_seen_.end(),0);
+        speculative_sleep_visit_stamp_=1;
+    }
+    const auto stamp=speculative_sleep_visit_stamp_;
+    for(BodyId candidate:accurate_islands_.nodes_to_deactivate) {
+        const auto handle=speculative_islands_.node_island[candidate];
+        if(handle==IslandGraph::invalid)continue;
+        const auto& island=speculative_islands_.islands[handle];
+        const BodyId root=island.root;
+        if(speculative_sleep_seen_[root]==stamp)continue;
+        speculative_sleep_seen_[root]=stamp;
+        bool all_sleeping=true;
+        for(BodyId node=root;node!=invalid;
+            node=speculative_islands_.node_next[node]) {
+            if(!actors_[node].sleeping) {
+                all_sleeping=false;
+                break;
+            }
+        }
+        if(!all_sleeping)continue;
+        // Original deactivateIsland walks its island-node chain and
+        // deactivateNodeInternal records the edge when its last active
+        // endpoint is visited. Reuse this stamp as the visited prefix
+        // to preserve that event order without sorting or per-edge sets.
+        for(BodyId node=root;node!=invalid;
+            node=speculative_islands_.node_next[node]) {
+            speculative_sleep_seen_[node]=stamp;
+            for(std::size_t i=speculative_node_first_[node];
+                i!=invalid_instance;) {
+                const auto& edge=contact_edges_[i/2];
+                const auto& link=edge.speculative[i&1];
+                const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
+                const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
+                i=link.next;
+                if(edge.live && !edge.retiring &&
+                   (actors_[other].kind!=Kind::DynamicBox ||
+                    speculative_sleep_seen_[other]==stamp))
+                    speculative_islands_.deactivating_edges.push_back(edge_id);
             }
         }
     }
@@ -3420,6 +3457,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     initial_accurate_heads=scene.accurate_node_first_.size();
     handles_saved=false;
     graph_ownership_saved=false;
+    // Source sleep-edge publication is noexcept after successful Gu
+    // commit. Resize the generation scratch before any scene mutation.
+    scene.speculative_sleep_seen_.resize(scene.actors_.size(),0);
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
