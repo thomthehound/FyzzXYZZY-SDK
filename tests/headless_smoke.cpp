@@ -3,6 +3,7 @@
 
 #include "fyzzxyzzy/world.h"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <iostream>
