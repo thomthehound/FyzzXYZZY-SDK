@@ -454,9 +454,15 @@ simulation or solver.
 
 **Remaining copy cost:** successful simulation steps still checkpoint
 mutable dynamic-body motion, persistent friction history and the
-currently provisional island component arrays. Source intrusive
-`EdgeInstance` links and node-first heads are **no longer copied per
-frame**: an allocation-reusing write-ahead journal records only the
+observable active-node indices. Persistent source island handles,
+node membership chains, static-touch counts and accurate solver-node
+offsets are **now copied only on the first actual graph ownership
+mutation in a publication**, never on an unchanged-topology PGS step.
+The original topology is retained by a capacity-reusing checkpoint
+until the publication succeeds; failed attempts restore it by
+allocation-preserving swaps. Source intrusive `EdgeInstance` links
+and node-first heads are likewise **not copied per frame**:
+an allocation-reusing write-ahead journal records only the
 edge slots and heads about to change. On exception, reverse replay
 restores original adjacency; newly allocated slots are truncated.
 The active/retired/free handle arrays are copied lazily, only when an
@@ -485,10 +491,12 @@ successful retry.
 The accurate graph's `mActiveNodes` and
 `mNodesToPutToSleep` equivalents are also published read-only spans.
 Their transaction now follows the same reversible-buffer ownership rule
-as solver reports: the checkpoint copies persistent graph membership
-before mutation, reserves full per-actor capacity for the working
-active/deactivation arrays, then swaps the existing published arrays
-into the checkpoint. Failed frames restore those original allocations,
+as solver reports: the checkpoint retains the active-node permutation,
+reverse index and deactivation output on each transaction, reserves
+full per-actor capacity for the working arrays, and swaps the
+existing published arrays into the checkpoint. Persistent island
+membership is copied separately and lazily, only before a real
+graph owner mutation. Failed frames restore those original allocations,
 not copies, so retained spans continue to see the last successful
 publication. Preserving the full deactivation capacity across repeated
 rollback also keeps the subsequent `noexcept` third-pass from allocating
@@ -517,7 +525,14 @@ contact events. It is saved in the step checkpoint and restored after
 rejected frames. This does not replace the source's explicit activating
 node/edge lists and active-index arrays.
 
-The remaining dynamic-scene/edge checkpoint copy cost is a
+A reference-free regression checks that eighty steady free-flight
+PGS steps do not trigger any island ownership snapshots, while dynamic
+actor admission does. The existing failing-solver local-split
+regression additionally requires the snapshot diagnostic to roll
+back and a successful retry to match the clean-scene count.
+These are structural, not wall-clock, cost assertions: active-index
+publication and dynamic motion/friction still incur per-step copies.
+That remaining dynamic-scene checkpoint cost is a
 performance-remediation item, not the final source publication
 architecture. As the original `ScPipeline`/`Dy::DynamicsContext`
 continuation and fetch boundaries are integrated, lower the
@@ -1038,8 +1053,11 @@ slots, route hints and intrusive node-head links, including splices into
 neighboring edge instances. It does not traverse or copy old EdgeIndex
 allocations at the start of successful steps. At most O(changed edge
 writes + changed node-head writes) adjacency copies occur in a frame;
-the source island-node arrays are still fully checkpointed for rollback,
-an O(allocated island nodes) performance-remediation item.
+the persistent island-node/handle arrays are now snapshotted only
+on structural mutations; unchanged-topology PGS steps retain only
+active-node publication and motion/friction rollback state.
+Incremental ownership undo for exceptionally large changing islands
+remains a future performance investigation.
 Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
