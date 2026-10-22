@@ -904,10 +904,17 @@ and rollback in both graphs. Source rigid contact-manager
 separate sleep-lifetime event: walking each newly inactive node's
 intrusive links emits the edge only when its other endpoint is already
 inactive or static. The first sleeping endpoint of a dynamic/dynamic
-contact does not emit it; the second emits once. Destroyed/lost
+accurate contact does not emit it; the second emits once. The speculative
+graph can contain AABB-only links between independently sleeping
+accurate islands: it emits **no edges** until its own last awake rigid
+node becomes inactive. At that transition it walks its original
+island-node and EdgeInstance order, using generation-stamped nodes to
+emit each static/dynamic or dynamic/dynamic edge once. Destroyed/lost
 contact edges are *not* sleep events, and manager handles remain live.
-The one-frame outputs are graph-owned, allocation-reserved before
-the no-throw deactivation stage, and restored on failed publication.
+The one-frame outputs are graph-owned, geometrically capacity-reserved
+before the no-throw deactivation stage, and restored on failed
+publication. The distinct-sleep regression asserts that accurate
+floor deactivation does not prematurely emit speculative floor edges.
 Full active-edge flags/activated-edge worklists, non-rigid node
 types and concurrent task continuations remain unported.
 The graph-owned accurate active-node index also reconciles
