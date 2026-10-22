@@ -765,8 +765,9 @@ reference for an ordinary settled floor contact.
 This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
 the actor-local activation flags and a single pending-work indicator
 do not implement the complete source node/edge activation queues,
-detailed edge-activation flags, kinematic triggers,
-stabilization/freeze state, deferred deactivation continuations,
+`Edge::eACTIVE/eACTIVATING` state and activated-edge lists,
+kinematic triggers, stabilization/freeze state,
+deferred deactivation continuations,
 sleep/wake callbacks or exact `ScPipeline::afterIntegration`
 task semantics. Independent *rigid* active-index maps, their
 prefix/suffix and swap-last behavior are already implemented in both
@@ -898,8 +899,17 @@ reused, and no copied actor registry or second island owner is introduced.
 A regression verifies the dormant/awake split, free-flight integration
 and subsequent wake admission. Rigid per-node active-index permutations
 are now retained through append activation, swap-last deactivation,
-and rollback in both graphs. Source edge activation/deactivation lists,
-non-rigid node types and concurrent task continuations remain unported.
+and rollback in both graphs. Source rigid contact-manager
+`mDeactivatingEdges` output is now lowered for both graphs as a
+separate sleep-lifetime event: walking each newly inactive node's
+intrusive links emits the edge only when its other endpoint is already
+inactive or static. The first sleeping endpoint of a dynamic/dynamic
+contact does not emit it; the second emits once. Destroyed/lost
+contact edges are *not* sleep events, and manager handles remain live.
+The one-frame outputs are graph-owned, allocation-reserved before
+the no-throw deactivation stage, and restored on failed publication.
+Full active-edge flags/activated-edge worklists, non-rigid node
+types and concurrent task continuations remain unported.
 The graph-owned accurate active-node index also reconciles
 on successful geometry-only publications (including new admission,
 retirement and quiet authored wakes). Its reusable active-ID capacity
@@ -945,10 +955,12 @@ not speculative SAP-only contact candidates.
 
 This translates the admitted *rigid active-node index* contract for
 both IslandSim owners. The original speculative and accurate
-**edge activation/deactivation lists**, non-rigid per-type
-partitions, full source graph split traversal/edge migration
-permutation, and actual task continuations remain explicit
-acceptance requirements. The rigid Sc sleep state is not duplicated
+**active-edge flags and activated-edge worklists**, complete
+kinematic/non-rigid deactivation, original per-type partitions
+and actual task continuations remain explicit acceptance
+requirements. The rigid contact-manager deactivating-edge output
+is active separately in both graphs; that does not implement
+the complete source edge activity lifecycle. The rigid Sc sleep state is not duplicated
 as an independent speculative scheduler.
 
 The admitted serial dependency chain is **contact publication → first/second
@@ -989,9 +1001,11 @@ by an inactive frame with an unchanged pose, and verify that a newly
 published Gu touch clears the readiness of an **already awake** node
 before third-pass deactivation. Quiet island propagation must not clear
 readiness every frame, or no island would ever fall asleep. This implements the admitted rigid active-node index, activated suffix,
-and accurate deactivating-node output, but **not** the original
-activating/deactivating *edge* worklists, kinematic rules, callback lists,
-or parallel third-pass/post-integration join.
+and accurate deactivating-node output, alongside the admitted
+rigid contact-manager deactivating-edge output in both graphs,
+but **not** the source activated-edge queues, active/activating edge
+bit lifecycle, kinematic rules, callback lists, or parallel
+third-pass/post-integration join.
 
 **Persistent contact-manager EdgeIndex (admitted source subset):**
 `PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
@@ -1043,7 +1057,10 @@ The admitted rigid graph now reuses successful-search and fast-path
 witnesses as well, including source-style off-path branch hint
 propagation; **what remains** is the full invalid-island state
 transition, deferred multi-frame dirty-work budgets, typed node
-lifetime, and complete edge activation/deactivation lifecycle.
+lifetime, full active-edge/activated-edge state and
+the remaining non-rigid edge lifecycle. The rigid
+`mDeactivatingEdges[eCONTACT_MANAGER]` sleep output is implemented
+independently of manager retirement.
 Ordinary lost-contact splitting now migrates only the failed
 component's nodes and indexed-manager edges using source visit order,
 swap-last removal and local handle allocation. The full-component
