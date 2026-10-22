@@ -2185,16 +2185,19 @@ int run_native_scene_smoke() {
                dirty_routes.island_fast_route_hit_count()==before_fast,
                "Source mDirtyMap repeated an endpoint during lost-edge repair");
 
-        // The chord reintroduction does not merge distinct roots, so
-        // root-directed fast-route hints remain valid. Removing those
-        // same redundant chords must now reuse the route discovered above.
+        // Reintroducing these redundant chords cannot change island
+        // membership. Source processNewEdges *can*, however, shorten a
+        // root-directed hop estimate through one of the new edges.
+        // Removing such an edge may then invalidate that shortened
+        // cached route and require another traversal; an exact
+        // fast-route-hit delta of four would reject that correct source
+        // behavior. Retain the dirty-map work and connectivity checks.
         dirty_routes.set_position(route_tip,{0.6f,22,0});
         dirty_routes.advance_collision();
         expect(dirty_routes.pairs().size()==6 &&
                dirty_routes.contacts().size()==6 &&
                dirty_routes.island_full_rebuild_count()==before_rebuild,
                "Redundant chord readdition rebuilt an existing island");
-        const auto fast_before_retry=dirty_routes.island_fast_route_hit_count();
         const auto checks_before_retry=dirty_routes.island_dirty_route_check_count();
         dirty_routes.set_position(route_tip,{1.3f,22,0});
         dirty_routes.advance_collision();
@@ -2203,9 +2206,8 @@ int run_native_scene_smoke() {
                dirty_routes.accurate_island_count()==1 &&
                dirty_routes.speculative_island_count()==1 &&
                dirty_routes.island_full_rebuild_count()==before_rebuild &&
-               dirty_routes.island_dirty_route_check_count()==checks_before_retry+6 &&
-               dirty_routes.island_fast_route_hit_count()==fast_before_retry+4,
-               "Redundant chord readdition discarded valid source fast routes");
+               dirty_routes.island_dirty_route_check_count()==checks_before_retry+6,
+               "Redundant chord removal changed connected source island");
 
         // Retiring the last surviving tip edge is a real split.
         dirty_routes.set_position(route_tip,{3.0f,22,0});
