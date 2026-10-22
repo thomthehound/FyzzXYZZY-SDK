@@ -739,7 +739,15 @@ reused, and no copied actor registry or second island owner is introduced.
 A regression verifies the dormant/awake split, free-flight integration
 and subsequent wake admission. This still does not reproduce the source
 per-node active-index permutation, activation/deactivation edge lists,
-or concurrent task continuations. Speculative graph active-node
+or concurrent task continuations. The graph-owned accurate active-node index also reconciles
+on successful geometry-only publications (including new admission,
+retirement and quiet authored wakes). Its reusable active-ID capacity
+and reverse map are prepared by the topology rebuild, so that no-throw
+handoff cannot allocate after the editor collision transaction commits.
+The last solver active-batch view remains a separate successful-step
+publication.
+
+Speculative graph active-node
 lists, source per-type initial-active partitions, activated/deactivated
 contact-edge worklists, and exact source iteration/permutation semantics
 remain acceptance work; only the admitted accurate rigid-node list is

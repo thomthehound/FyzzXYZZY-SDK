@@ -1472,14 +1472,18 @@ void Scene::deactivate_ready_islands() noexcept {
 // sleeping checks still protect a transitional mixed-state island.
 // Unlike copying a second body-ID array, only one index per active
 // island is retained, with reusable allocation across frames.
-void Scene::prepare_active_accurate_island_batches() {
+void Scene::synchronize_accurate_active_nodes() noexcept {
     // Source PxsIslandSim::markInactive uses swap-last plus a reverse
     // active-node index; markActive appends. Preserve that lifecycle
     // across quiet frames and incremental merges instead of clearing and
     // recreating all active IDs. A component rebuild starts a new source
     // index map in update_island_connectivity's replacement graph.
+    //
+    // The rebuild reserves all live actor slots before publication.
+    // Actor admission cannot reach this path without rebuilding, so
+    // neither active-list append nor index lookup allocates here. This
+    // matters for the failure-atomic geometry-only commit boundary.
     auto& graph=accurate_islands_;
-    graph.active_node_index.resize(actors_.size(),invalid_instance);
     for(std::size_t index=0;index<graph.active_nodes.size();) {
         const BodyId id=graph.active_nodes[index];
         if(actors_[id].alive && !actors_[id].sleeping &&
@@ -1499,11 +1503,15 @@ void Scene::prepare_active_accurate_island_batches() {
         graph.active_node_index[id]=graph.active_nodes.size();
         graph.active_nodes.push_back(id);
     }
+}
+void Scene::prepare_active_accurate_island_batches() {
+    synchronize_accurate_active_nodes();
     // Dy::DynamicsContext is still admitted in stable source
     // accurate-island order. The membership test now consumes the
     // graph-owned active-node map rather than independently scanning
     // actor sleep flags to discover which bodies exist in the active
     // island batches.
+    const auto& graph=accurate_islands_;
     active_accurate_island_batches_.clear();
     for(std::size_t island=0;island+1<accurate_island_offsets_.size();
         ++island) {
@@ -3079,7 +3087,11 @@ void Scene::advance_collision(bool force_update) {
         advance_collision_internal(false);
         // A velocity/torque edit can queue IslandSim activation without
         // touching geometry. Complete the no-throw source wake handoff.
+        // Keep the graph-owned active-node map in step with such wakes,
+        // without traversing it on an unchanged, event-free query.
+        const bool pending_wake=authored_activation_pending_;
         activate_published_islands();
+        if(pending_wake)synchronize_accurate_active_nodes();
         return;
     }
     // Geometry changes, forced refreshes and pending graph retirement
@@ -3098,6 +3110,7 @@ void Scene::advance_collision(bool force_update) {
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activate_published_islands();
     deactivate_ready_islands();
+    synchronize_accurate_active_nodes();
 }
 void Scene::advance_collision_internal(bool force_update) {
     // This also serves geometry-only queries. Never publish last frame's

@@ -3160,6 +3160,47 @@ int run_native_scene_smoke() {
     }
 
     {
+        // A geometry-only query also publishes changed island membership
+        // and may consume an authored node wake, without a numerical
+        // solver step. Its accurate active-node index must not vanish
+        // after a graph rebuild or remain stale after an island split.
+        Scene queried;
+        queried.add_static_floor(0.0f);
+        const auto sleeper=queried.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.accurate_active_node_index(sleeper)==0,
+               "Geometry-only island admission did not index its active rigid");
+        for(int frame=0;frame<360;++frame)
+            queried.step(1.0f/120.0f);
+        expect(queried.body_is_sleeping(sleeper) &&
+               queried.active_accurate_nodes().empty(),
+               "Geometry query fixture never deactivated its first node");
+        queried.set_velocity(sleeper,{0.25f,0,0});
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.active_accurate_nodes()[0]==sleeper &&
+               queried.accurate_active_node_index(sleeper)==0,
+               "Quiet authored wake failed to update the accurate active map");
+        const auto added=queried.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==2 &&
+               queried.accurate_active_node_index(added)<
+                   queried.active_accurate_nodes().size(),
+               "Geometry-only rebuild lost an active rigid node");
+        queried.remove(sleeper);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.active_accurate_nodes()[0]==added &&
+               queried.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
+               queried.accurate_active_node_index(added)==0,
+               "Actor retirement left a stale active-node reverse index");
+    }
+
+    {
         // Source accurate active-node indexing must stay dense and
         // bidirectional through third-pass sleep, user wake, and
         // reactivation. The separate deactivation output is published

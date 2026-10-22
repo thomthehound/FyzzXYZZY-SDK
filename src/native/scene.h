@@ -434,6 +434,7 @@ private:
     // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
+    void synchronize_accurate_active_nodes() noexcept;
     void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
