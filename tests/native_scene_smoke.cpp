@@ -179,6 +179,85 @@ void verify_speculative_active_node_lifecycle() {
            "Speculative graph kept a retired rigid in its active list");
 }
 
+// Unequal original mHopCounts must change *which branch is popped*
+// before the other branch. Starting at dirty B, the source EdgeInstance
+// head discovers A before X, but a prior successful lost-chord repair
+// gives X a finite route estimate and leaves A without one. The queue
+// therefore expands X-H before A-G; FIFO would reverse that ordering.
+void verify_hop_priority_split_migration() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene split;
+    const auto c=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,10,0},1);
+    const auto d=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,10,0},1);
+    const auto e=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{1.6f,10,0},1);
+    const auto b=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.8f,10,0},1);
+    const auto x=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.35f,10.65f,0},1);
+    const auto a=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-3.2f,9.6f,0},1);
+    const auto g=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-2.4f,9.6f,0},1);
+    const auto h=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-1.1f,11.6f,0},1);
+    const auto sg=split.add_static_box(
+        {0.1f,0.1f,0.1f},{-2.4f,9.6f,0.54f});
+    const auto sh=split.add_static_box(
+        {0.1f,0.1f,0.1f},{-1.1f,11.6f,0.54f});
+    split.advance_collision();
+    expect(has(split.found_contacts(),c,x) &&
+           has(split.found_contacts(),b,x) &&
+           has(split.found_contacts(),a,g) &&
+           has(split.found_contacts(),g,sg) &&
+           has(split.found_contacts(),h,sh),
+           "Hop-priority fixture lacked initial redundant chord");
+
+    // Drop C-X while preserving X-B, X-H and the B-C-root route.
+    // A lost chord makes findRoute populate the original mHopCounts
+    // for X without creating a new component.
+    split.set_position(x,{-1.1f,10.8f,0});
+    split.advance_collision();
+    expect(has(split.lost_contacts(),c,x) &&
+           split.accurate_cached_route_hops(x)<
+               std::numeric_limits<std::uint32_t>::max(),
+           "Hop-priority fixture did not prime X's source route estimate");
+    split.set_position(a,{-1.6f,9.6f,0});
+    split.advance_collision();
+    expect(has(split.found_contacts(),a,b) &&
+           split.accurate_island_count()==1 &&
+           split.accurate_cached_route_hops(x)<
+               split.accurate_cached_route_hops(a),
+           "Hop-priority fixture did not establish unequal neighbor hints");
+
+    // Removing the sole root bridge B-C detaches B/A/G/X/H. New A-B
+    // has become B's adjacency head since the original X-B insertion,
+    // so B *discovers* A before X. The cached smaller X priority must
+    // nevertheless visit H before A discovers G.
+    split.set_position(c,{1.5f,10,0});
+    split.set_position(d,{2.3f,10,0});
+    split.set_position(e,{3.1f,10,0});
+    split.step(1.0f/480.0f);
+    const auto gu=split.contacts();
+    const auto managers=split.indexed_contact_manager_order();
+    expect(split.accurate_island_count()==2 &&
+           has(split.lost_contacts(),b,c) &&
+           gu.size()==managers.size(),
+           "Hop-priority fixture did not detach its branched island");
+    std::size_t h_position=managers.size();
+    std::size_t g_position=managers.size();
+    for(std::size_t i=0;i<managers.size();++i) {
+        const Pair pair=gu[managers[i]].pair;
+        if(pair==Pair{h,sh})h_position=i;
+        if(pair==Pair{g,sg})g_position=i;
+    }
+    expect(h_position<g_position && g_position<managers.size(),
+           "Split manager migration ignored source unequal hop priorities");
+}
+
 // Source mDirtyMap begins a detached component's findRoute at its
 // lowest dirty node, not its lowest BodyId. Source mVisitedNodes records
 // discovered entries as they enter the hop-priority queue. In this
@@ -2990,6 +3069,7 @@ int run_native_scene_smoke() {
     verify_island_contact_manager_order();
     verify_split_contact_manager_migration();
     verify_dirty_seed_split_manager_order();
+    verify_hop_priority_split_migration();
 
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
