@@ -976,6 +976,8 @@ void Scene::update_contacts() {
 // deferred dirty-work budget; a failed root route proves a real split.
 bool Scene::lost_island_edges_retain_routes(bool accurate) {
     auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
+    auto& failed=accurate?accurate_failed_routes_:speculative_failed_routes_;
+    failed.clear();
     if(dirty.empty())return true;
     // PxsIslandSim::processLostEdges traverses mDirtyMap by ascending
     // node index. Our deduplicated vector is filled in lost-edge
@@ -1025,7 +1027,6 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     // findRoute fails and locally splits a component. Our bounded
     // component reconstruction follows this pass, but a failure in one
     // component must not prevent route repair in another component.
-    bool routes_intact=true;
     for(BodyId node:dirty) {
         if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox)
             continue;
@@ -1099,7 +1100,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             }
         }
         if(!found) {
-            routes_intact=false;
+            failed.push_back(node);
             continue;
         }
 
@@ -1118,7 +1119,169 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             current=predecessor;
         }
     }
-    return routes_intact;
+    return failed.empty();
+}
+
+// PxsIslandSim.cpp::processLostEdges: after failed findRoute, migrate
+// precisely the visited component out of its previous island. The
+// retained root's handle and all unrelated island chains remain intact.
+// The source's heap insertion order determines the new node chain and
+// indexed contact-manager splitEdges order. This is the admitted rigid
+// graph; kinematic witnesses and bounded dirty budgets remain separate.
+void Scene::split_lost_islands(bool accurate) {
+    auto& graph=accurate?accurate_islands_:speculative_islands_;
+    const auto& failed=accurate?accurate_failed_routes_:
+                                 speculative_failed_routes_;
+    const auto& first=accurate?accurate_node_first_:
+                               speculative_node_first_;
+    auto& hops=accurate?accurate_hops_:speculative_hops_;
+    auto& routes=accurate?accurate_fast_route_:speculative_fast_route_;
+    auto& route_edges=accurate?accurate_fast_edge_:speculative_fast_edge_;
+    auto& stamps=accurate?accurate_hint_stamps_:speculative_hint_stamps_;
+    const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
+    const BodyId invalid=std::numeric_limits<BodyId>::max();
+    const auto higher=[&](BodyId a,BodyId b) {
+        return hops[a]<hops[b];
+    };
+    for(BodyId seed:failed) {
+        if(!actors_[seed].alive ||
+           actors_[seed].kind!=Kind::DynamicBox)continue;
+        const auto owner=graph.node_island[seed];
+        if(owner==IslandGraph::invalid ||
+           !graph.islands[owner].live)continue;
+        const BodyId root=graph.islands[owner].root;
+        if(root==seed)continue;
+
+        // The previous route search proved disconnection from root.
+        // Re-traverse only this old island to recover the source
+        // mVisitedNodes insertion order used for splitEdges. Already
+        // migrated seeds are checked against their current island root.
+        if(++island_route_visit_stamp_==0) {
+            std::fill(island_route_seen_.begin(),
+                      island_route_seen_.end(),0);
+            island_route_visit_stamp_=1;
+        }
+        const auto seen=island_route_visit_stamp_;
+        island_route_queue_.clear();
+        island_split_members_.clear();
+        island_route_seen_[seed]=seen;
+        island_route_predecessor_[seed]=invalid;
+        island_route_predecessor_edge_[seed]=invalid_edge;
+        island_split_members_.push_back(seed);
+        source_hop_push(island_route_queue_,seed,higher);
+        bool reached_root=false;
+        while(!island_route_queue_.empty()) {
+            const BodyId from=source_hop_pop(island_route_queue_,higher);
+            if(from==root)reached_root=true;
+            for(std::size_t i=first[from];i!=invalid_instance;) {
+                const auto& edge=contact_edges_[i/2];
+                const auto& link=(accurate?edge.accurate:
+                                  edge.speculative)[i&1];
+                const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+                const EdgeIndex edge_index=static_cast<EdgeIndex>(i/2);
+                i=link.next;
+                if(!actors_[to].alive ||
+                   actors_[to].kind!=Kind::DynamicBox ||
+                   graph.node_island[to]!=owner ||
+                   island_route_seen_[to]==seen)continue;
+                island_route_seen_[to]=seen;
+                island_route_predecessor_[to]=from;
+                island_route_predecessor_edge_[to]=edge_index;
+                island_split_members_.push_back(to);
+                source_hop_push(island_route_queue_,to,higher);
+            }
+        }
+        if(reached_root)continue;
+        if(island_split_members_.size()>=graph.islands[owner].count)
+            throw std::logic_error("Source split unexpectedly consumed root");
+
+        // Source removeEdgeFromIsland uses swap-last on the old indexed
+        // contact-manager array. Remove exactly once, in visited-node
+        // adjacency order, before changing each node's island identity.
+        island_split_edges_.clear();
+        if(accurate) {
+            for(BodyId node:island_split_members_)
+                for(std::size_t i=accurate_node_first_[node];
+                    i!=invalid_instance;) {
+                    const EdgeIndex edge_index=
+                        static_cast<EdgeIndex>(i/2);
+                    const auto& edge=contact_edges_[edge_index];
+                    const auto& link=edge.accurate[i&1];
+                    i=link.next;
+                    if(!edge.connected ||
+                       (node!=edge.pair.a &&
+                        actors_[edge.pair.a].kind==Kind::DynamicBox))
+                        continue;
+                    remove_accurate_island_edge(edge_index);
+                    island_split_edges_.push_back(edge_index);
+                }
+        }
+
+        // HandleManager::getHandle obtains a genuinely new island
+        // handle, leaving the retained root component's identity in
+        // place. The graph's existing free list is authoritative.
+        IslandGraph::IslandId created;
+        if(!graph.free_handles.empty()) {
+            created=graph.free_handles.back();
+            graph.free_handles.pop_back();
+        } else {
+            if(graph.islands.size()>=IslandGraph::invalid)
+                throw std::overflow_error("Source split handles exhausted");
+            created=static_cast<IslandGraph::IslandId>(
+                graph.islands.size());
+            graph.islands.push_back({});
+        }
+        // Detach exactly the source visited nodes from their old
+        // intrusive node chain. No unrelated graph node is visited or
+        // remapped, and the surviving old root/tail remain owned by
+        // the original handle.
+        std::size_t static_touches=0;
+        for(BodyId node:island_split_members_) {
+            const BodyId before=graph.node_prev[node];
+            const BodyId after=graph.node_next[node];
+            if(before!=invalid)graph.node_next[before]=after;
+            else graph.islands[owner].root=after;
+            if(after!=invalid)graph.node_prev[after]=before;
+            else graph.islands[owner].tail=before;
+            --graph.islands[owner].count;
+            const auto count=graph.node_static_touches[node];
+            static_touches+=count;
+            graph.islands[owner].static_touches-=count;
+        }
+
+        auto& island=graph.islands[created];
+        island={};
+        island.live=true;
+        island.root=seed;
+        island.tail=island_split_members_.back();
+        island.count=island_split_members_.size();
+        island.static_touches=static_touches;
+        for(std::size_t i=0;i<island_split_members_.size();++i) {
+            const BodyId node=island_split_members_[i];
+            const BodyId previous=i?island_split_members_[i-1]:invalid;
+            const BodyId next=i+1<island_split_members_.size()
+                ?island_split_members_[i+1]:invalid;
+            graph.node_prev[node]=previous;
+            graph.node_next[node]=next;
+            graph.node_island[node]=created;
+            step_checkpoint_.save_hint(*this,node,accurate);
+            routes[node]=previous==invalid?invalid:
+                island_route_predecessor_[node];
+            route_edges[node]=previous==invalid?invalid_edge:
+                island_route_predecessor_edge_[node];
+            hops[node]=previous==invalid?0:
+                hops[island_route_predecessor_[node]]+1;
+            stamps[node]=epoch;
+        }
+        // Source splitEdges appends the collected edge sequence,
+        // not an order reconstructed from canonical Gu pairs.
+        if(accurate)
+            for(EdgeIndex id:island_split_edges_)
+                append_accurate_island_edge(id,created);
+        if(accurate)++accurate_island_count_;
+        else ++speculative_island_count_;
+        ++island_local_split_count_;
+    }
 }
 
 void Scene::update_island_connectivity(bool repair_lost_edges) {
@@ -1136,6 +1299,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     };
 
     bool rebuild=island_topology_dirty_;
+    bool local_split=false;
     if(!rebuild && repair_lost_edges) {
         // Both source IslandSim owners must consume their dirty maps.
         // A speculative split cannot skip accurate-root hint repair.
@@ -1143,9 +1307,13 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             lost_island_edges_retain_routes(false);
         const bool accurate_intact=
             lost_island_edges_retain_routes(true);
-        rebuild=!speculative_intact || !accurate_intact;
+        local_split=!speculative_intact || !accurate_intact;
+        if(local_split) {
+            split_lost_islands(false);
+            split_lost_islands(true);
+        }
     }
-    if(!rebuild && repair_lost_edges)
+    if(!rebuild && repair_lost_edges && !local_split)
         return;
     if(!rebuild && !repair_lost_edges) {
         // IslandSim::addConnectionToGraph/removeConnectionInternal update
@@ -1196,7 +1364,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!dynamic_found)
             for(Pair pair:found_contacts_)
                 if(dynamic_edge(pair)) {dynamic_found=true;break;}
-        if(!dynamic_found) {
+        if(!dynamic_found && !local_split) {
             // Even a static-only touch is a source contact-manager edge
             // in its awake dynamic island; it cannot be skipped merely
             // because dynamic connectivity and handles remain unchanged.
@@ -1728,8 +1896,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     };
 
 
-    bool order_changed=rebuild;
-    if(rebuild) {
+    bool order_changed=rebuild || local_split;
+    if(local_split) {
+        // Only dirty, disconnected source components were migrated.
+        // Existing actor and indexed-manager streams remain authoritative.
+    } else if(rebuild) {
         ++island_full_rebuild_count_;
         if(island_topology_dirty_ && !repair_lost_edges) {
             // Existing source islands still own pre-loss membership.
@@ -3205,6 +3376,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
     full_rebuild_count=scene.island_full_rebuild_count_;
+    local_split_count=scene.island_local_split_count_;
     dirty_route_checks=scene.island_dirty_route_checks_;
     fast_route_hits=scene.island_fast_route_hits_;
     frame_index=scene.frame_index_;
@@ -3411,6 +3583,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_island_count_=accurate_count;
     scene.island_topology_revision_=topology_revision;
     scene.island_full_rebuild_count_=full_rebuild_count;
+    scene.island_local_split_count_=local_split_count;
     scene.island_dirty_route_checks_=dirty_route_checks;
     scene.island_fast_route_hits_=fast_route_hits;
     scene.frame_index_=frame_index;
