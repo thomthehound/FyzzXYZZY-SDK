@@ -623,9 +623,12 @@ The fixture asserts both source root identities, not only manager
 order. However, it still assigns island handles and rebuilds member
 chains by its whole-component scan rather than successive
 `mVisitedState` witnesses and local `mVisitedNodes` migrations.
-Exact priority-queue
-tie handling, incremental handle allocation, per-pass dirty budgets,
-and the original continuation graph remain fidelity gates.
+Source `Cm::PriorityQueue` ties are now reproduced by the same binary-heap
+push/pop rules: equal-hop insertions do not bubble, and removal selects
+the left child when both children tie. The five-way split regression
+observes the resulting manager permutation (not FIFO or BodyId order).
+Incremental split-handle allocation, per-pass dirty budgets, and the
+original continuation graph remain fidelity gates.
 
 ## Native ownership and data contracts
 
@@ -773,16 +776,18 @@ root. Otherwise, a graph traversal through the persistent
 its path estimates. If root connectivity is lost, the existing
 rebuild fallback reconstructs correct all-awake components.
 
-The cache is generation-invalidated in constant time when source
-island roots change. Failed publications instead restore the original epochs,
-route successors, EdgeIndex handles, hop estimates and stamps through
-sparse per-slot undo entries, preserving successful earlier hints on a
-retry without copying entire arrays. Only dirty dynamic/dynamic edges
-trigger this work; static touch loss does not split the admitted awake
-dynamic components. Failed fast paths use the source-style priority
-queue ordered by estimated hops to the old root (with deterministic
-BodyId ties); outdated estimates change exploration order, **never**
-connectivity. In the worst case the traversal visits O(V+E) graph
+When a reconstruction changes an island root, only that root's affected
+node hints are invalidated; unrelated actor admissions do not evict
+existing cached routes. Failed publications restore route successors,
+EdgeIndex handles, hop estimates and stamps through sparse per-slot undo
+entries, preserving successful earlier hints on retry without copying
+entire arrays. Only dirty dynamic/dynamic edges trigger this work;
+static touch loss does not split the admitted awake dynamic components.
+Failed fast paths use the source `Cm::PriorityQueue` binary min-heap
+ordered solely by estimated hops to the old root. There is **no**
+BodyId or discovery-order tie-break: `push` retains equal-priority
+parent order, while `pop` prefers the left child on a tie. Outdated
+estimates change exploration order, **never** connectivity. In the worst case the traversal visits O(V+E) graph
 entries and maintains a O(log V) priority heap per visited node,
 versus O(path length) validation for an intact cached route. Visitation
 stamps are retained and advanced across publications rather than
