@@ -1515,11 +1515,17 @@ void Scene::synchronize_accurate_active_nodes() noexcept {
             graph.active_nodes[tail]=id;
             graph.active_node_index[id]=tail;
             --graph.initial_active_node_count;
-            index=tail;
         }
+        // Retire the inactive node at its (possibly relocated) index.
+        // The original traversal index now contains the previous
+        // initial-prefix tail. It may itself be dormant, so do not
+        // advance to the tail: recheck that compacted original slot on
+        // the next iteration. This also covers repeated swap-last
+        // removals whose replacement came from the activated suffix.
+        const std::size_t retired=graph.active_node_index[id];
         const BodyId replacement=graph.active_nodes.back();
-        graph.active_nodes[index]=replacement;
-        graph.active_node_index[replacement]=index;
+        graph.active_nodes[retired]=replacement;
+        graph.active_node_index[replacement]=retired;
         graph.active_nodes.pop_back();
         graph.active_node_index[id]=invalid_instance;
     }

@@ -767,7 +767,12 @@ The accurate rigid graph also retains
 `IslandSim::mInitialActiveNodeCount[eRIGID_BODY_TYPE]`, captured before
 the wake/publication pass. Its `markInactive` lowering relocates
 removed initial members to the prefix tail before swap-last removal,
-keeping `getNodesToActivate` as a genuine suffix. Topology rebuilds
+keeping `getNodesToActivate` as a genuine suffix. The surrounding
+index traversal rechecks the original compacted slot after every
+removal; multiple initial rigid nodes can deactivate in the same pass
+without skipping a relocated dormant member. A two-island simultaneous
+sleep/new-admission regression tests both numerical and collision-only
+publication and subsequent authored reactivation. Topology rebuilds
 retain the active-node permutation and its prefix rather than
 reconstructing active nodes from actor sleep flags. The count is
 checkpointed alongside the source active-index map.

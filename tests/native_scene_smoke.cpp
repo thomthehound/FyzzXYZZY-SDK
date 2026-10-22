@@ -3354,6 +3354,77 @@ int run_native_scene_smoke() {
                "Previous initial-active suffix replayed on next frame");
     }
 
+    // Multiple initially active rigid nodes may enter the third-pass
+    // deactivation list together while a new rigid is being admitted.
+    // markInactive relocates each initial member to the initial-prefix
+    // tail, then removes it using ordinary swap-last. The traversal
+    // must recheck the ORIGINAL compacted position, including any
+    // other dormant initial member moved there; otherwise [A, B, Cnew]
+    // can leave dormant B in mActiveNodes and misreport the suffix.
+    // Exercise both numerical and collision-only publication paths.
+    for(const bool query_only : {false,true}) {
+        Scene multi_sleep;
+        multi_sleep.add_static_floor(0.0f);
+        const auto first=multi_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto second=multi_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5,0.5f,0},1.0f);
+        multi_sleep.advance_collision();
+        expect(multi_sleep.active_accurate_nodes().size()==2 &&
+               multi_sleep.accurate_active_node_index(first)==0 &&
+               multi_sleep.accurate_active_node_index(second)==1,
+               "Multi-sleep source fixture did not index two active islands");
+        bool both_ready=false;
+        for(int frame=0;frame<600;++frame) {
+            multi_sleep.step(1.0f/120.0f);
+            if(multi_sleep.body_ready_for_sleep(first) &&
+               multi_sleep.body_ready_for_sleep(second)) {
+                both_ready=true;
+                break;
+            }
+        }
+        expect(both_ready && !multi_sleep.body_is_sleeping(first) &&
+               !multi_sleep.body_is_sleeping(second),
+               "Multi-sleep source fixture missed shared readiness boundary");
+        const auto newcomer=multi_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
+        if(query_only)
+            multi_sleep.advance_collision();
+        else
+            multi_sleep.step(1.0f/120.0f);
+        const auto active=multi_sleep.active_accurate_nodes();
+        const auto fresh=multi_sleep.newly_activated_accurate_nodes();
+        const auto retired=multi_sleep.deactivating_accurate_nodes();
+        expect(multi_sleep.body_is_sleeping(first) &&
+               multi_sleep.body_is_sleeping(second) &&
+               active.size()==1 && active[0]==newcomer &&
+               fresh.size()==1 && fresh[0]==newcomer &&
+               retired.size()==2 &&
+               std::find(retired.begin(),retired.end(),first)!=retired.end() &&
+               std::find(retired.begin(),retired.end(),second)!=retired.end() &&
+               multi_sleep.accurate_active_node_index(first)==
+                   std::numeric_limits<std::size_t>::max() &&
+               multi_sleep.accurate_active_node_index(second)==
+                   std::numeric_limits<std::size_t>::max() &&
+               multi_sleep.accurate_active_node_index(newcomer)==0,
+               "Source initial-prefix compaction skipped another dormant body");
+        // The wake path must not replay the stale sleeper or lose the
+        // surviving initial active node when it starts a new pass.
+        multi_sleep.set_velocity(first,{0.25f,0,0});
+        multi_sleep.advance_collision();
+        const auto reactivated=multi_sleep.active_accurate_nodes();
+        expect(reactivated.size()==2 &&
+               std::find(reactivated.begin(),reactivated.end(),first)!=
+                   reactivated.end() &&
+               std::find(reactivated.begin(),reactivated.end(),newcomer)!=
+                   reactivated.end() &&
+               multi_sleep.accurate_active_node_index(second)==
+                   std::numeric_limits<std::size_t>::max() &&
+               multi_sleep.newly_activated_accurate_nodes().size()==1 &&
+               multi_sleep.newly_activated_accurate_nodes()[0]==first,
+               "Multi-sleep compaction corrupted later authored wake suffix");
+    }
+
     {
         // Source accurate active-node indexing must stay dense and
         // bidirectional through third-pass sleep, user wake, and
