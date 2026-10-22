@@ -613,6 +613,74 @@ void verify_equal_hop_split_queue_order() {
            "Equal-hop source heap tie order changed split manager migration");
 }
 
+// A split in one island must not abort the rest of either IslandSim's
+// dirty bitmap. Replacing a temporary root chord in an unrelated island
+// requires actual source findRoute repair, rather than just retaining the
+// same island handle after the bounded component reconstruction.
+void verify_route_repair_continues_after_split() {
+    using fyzz::native::Scene;
+    Scene scene;
+    // The initial two-node island chooses B (the second node) as its
+    // PhysX merge-tie root. Losing A-B makes the earlier dirty A fail.
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,14,0},1.0f);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,14,0},1.0f);
+    // A separate chain C-D-E-F has source root D. Its eventual D-F
+    // shortcut sets F's hop to one; removing D-F leaves F-E-D intact,
+    // requiring its cached hop to increase back to two.
+    const auto c=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10,14,0},1.0f);
+    const auto d=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10.8f,14,0},1.0f);
+    const auto e=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{11.6f,14,0},1.0f);
+    const auto f=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{12.4f,14,0},1.0f);
+    scene.advance_collision();
+    expect(scene.accurate_island_count()==2 &&
+           scene.speculative_island_count()==2 &&
+           scene.accurate_island_root(a)==b &&
+           scene.accurate_island_root(f)==d &&
+           scene.accurate_cached_route_hops(f)==2 &&
+           has(scene.found_contacts(),a,b) &&
+           has(scene.found_contacts(),c,d) &&
+           has(scene.found_contacts(),d,e) &&
+           has(scene.found_contacts(),e,f),
+           "Multi-island dirty fixture did not establish source root hops");
+    scene.set_position(f,{11.55f,14,0});
+    scene.advance_collision();
+    expect(has(scene.found_contacts(),d,f) &&
+           scene.accurate_cached_route_hops(f)==1 &&
+           scene.accurate_island_root(f)==d,
+           "Added redundant D-F chord failed to shorten source hop");
+    const auto checks=scene.island_dirty_route_check_count();
+    const auto rebuilds=scene.island_full_rebuild_count();
+    const auto surviving=scene.accurate_island_id(d);
+    scene.set_position(b,{4,14,0});
+    scene.set_position(f,{12.4f,14,0});
+    scene.advance_collision();
+    expect(has(scene.lost_contacts(),a,b) &&
+           has(scene.lost_contacts(),d,f) &&
+           !has(scene.lost_contacts(),e,f) &&
+           scene.accurate_island_count()==3 &&
+           scene.speculative_island_count()==3 &&
+           scene.accurate_island_id(d)==surviving &&
+           scene.accurate_island_root(f)==d &&
+           scene.island_full_rebuild_count()==rebuilds+1,
+           "Concurrent source split and redundant-chord loss misbuilt islands");
+    // Four distinct dirty actors per graph: A fails, B and D are
+    // roots, and F searches its surviving route via E. Both source
+    // graphs must complete all four checks even when A fails.
+    expect(scene.island_dirty_route_check_count()==checks+8 &&
+           scene.accurate_cached_route_hops(f)==2,
+           "First failed route aborted later source dirty-node repairs");
+    scene.advance_collision();
+    expect(scene.accurate_cached_route_hops(f)==2 &&
+           scene.accurate_island_id(d)==surviving,
+           "Source route repair did not survive quiet island publication");
+}
+
 // Source mDirtyMap begins a detached component's findRoute at its
 // lowest dirty node, not its lowest BodyId. Source mVisitedNodes records
 // discovered entries as they enter the hop-priority queue. In this
@@ -3490,6 +3558,7 @@ int run_native_scene_smoke() {
     verify_dirty_seed_split_manager_order();
     verify_hop_priority_split_migration();
     verify_equal_hop_split_queue_order();
+    verify_route_repair_continues_after_split();
     verify_dirty_order_multisplit_manager_remainder();
 
     // The source zero-mass world solver body does not create a dynamic
