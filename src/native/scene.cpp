@@ -606,6 +606,7 @@ void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
        contact_edges_[id].island_prev!=invalid_edge ||
        contact_edges_[id].island_next!=invalid_edge)
         throw std::logic_error("Invalid PhysX accurate island edge insertion");
+    step_checkpoint_.save_graph_ownership(*this);
     step_checkpoint_.save_edge(*this,id);
     if(island.last_contact!=invalid_edge) {
         step_checkpoint_.save_edge(*this,island.last_contact);
@@ -631,6 +632,7 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     auto& island=accurate_islands_.islands[owner];
     if(island.first_contact==invalid_edge || !island.contact_count)
         throw std::logic_error("PhysX accurate island edge list underflow");
+    step_checkpoint_.save_graph_ownership(*this);
     const EdgeIndex last=island.last_contact;
     const EdgeIndex before=contact_edges_[id].island_prev;
     const EdgeIndex after=contact_edges_[id].island_next;
@@ -1215,6 +1217,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
        island_route_seen_[root]==island_route_visit_stamp_ ||
        island_split_members_.size()>=graph.islands[owner].count)
         throw std::logic_error("Source failed-route split invariant lost");
+    step_checkpoint_.save_graph_ownership(*this);
 
         // Source removeEdgeFromIsland uses swap-last on the old indexed
         // contact-manager array. Remove exactly once, in visited-node
@@ -1347,6 +1350,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             if(id==Graph::invalid || id>=graph.islands.size())
                 throw std::logic_error(
                     "PhysX static edge lacks dynamic island node");
+            step_checkpoint_.save_graph_ownership(*this);
             auto& count=graph.node_static_touches[node];
             auto& total=graph.islands[id].static_touches;
             if(added) {
@@ -1440,6 +1444,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // IslandSim::mergeIslands preserves the larger island handle,
         // remapping only the smaller island-node chain, then freeing
         // the subsumed handle. Ties select the second island.
+        step_checkpoint_.save_graph_ownership(*this);
         const bool keep_a=graph.islands[a].count>graph.islands[b].count;
         const auto retained=keep_a?a:b;
         const auto retired=keep_a?b:a;
@@ -1921,6 +1926,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // Only dirty, disconnected source components were migrated.
         // Existing actor and indexed-manager streams remain authoritative.
     } else if(rebuild) {
+        step_checkpoint_.save_graph_ownership(*this);
         ++island_full_rebuild_count_;
         if(island_topology_dirty_ && !repair_lost_edges) {
             // Existing source islands still own pre-loss membership.
