@@ -210,18 +210,18 @@ void Scene::set_position(BodyId id, Vec3 position) {
     if (!finite(position))
         throw std::invalid_argument("Native scene position must be finite");
     auto& actor = require(id);
-    // NpRigidDynamic::setGlobalPose calls wakeUpInternal when autowake is
-    // enabled, even if the new pose equals the old one. The public
-    // position setter uses that default: reset source sleep readiness and
-    // queue island activation independently of any geometry change.
+    // NpRigidDynamic::setGlobalPose calls wakeUpInternal even when the
+    // authored pose is unchanged. As with setLinearVelocity, its source
+    // sleep-filter samples survive an already-active body's wake-counter
+    // refresh; only a genuine sleep-to-wake transition resets them.
     if(actor.kind==Kind::DynamicBox) {
         if(actor.sleeping) {
             actor.activating=true;
             authored_activation_pending_=true;
+            actor.sleep_linear_acc={};
+            actor.sleep_angular_acc={};
         }
         actor.wake_counter=std::max(actor.wake_counter,0.4f);
-        actor.sleep_linear_acc={};
-        actor.sleep_angular_acc={};
         actor.ready_for_sleep=false;
         actor.sleeping=false;
     }
