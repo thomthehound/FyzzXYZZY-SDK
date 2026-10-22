@@ -3324,6 +3324,28 @@ void Scene::StepCheckpoint::save_handle_lists(const Scene& scene) {
                         scene.free_edge_handles_.end());
     handles_saved=true;
 }
+void Scene::StepCheckpoint::save_graph_ownership(const Scene& scene) {
+    if(graph_ownership_saved)return;
+    // Snapshot the single authoritative source island owner only before
+    // its first mutation; quiet frames should never copy node chains.
+    const auto save=[](IslandGraph& saved,const IslandGraph& live) {
+        saved.islands.assign(live.islands.begin(),live.islands.end());
+        saved.node_island.assign(live.node_island.begin(),live.node_island.end());
+        saved.node_next.assign(live.node_next.begin(),live.node_next.end());
+        saved.node_prev.assign(live.node_prev.begin(),live.node_prev.end());
+        saved.node_static_touches.assign(live.node_static_touches.begin(),
+                                          live.node_static_touches.end());
+        saved.free_handles.assign(live.free_handles.begin(),
+                                   live.free_handles.end());
+    };
+    save(speculative_islands,scene.speculative_islands_);
+    save(accurate_islands,scene.accurate_islands_);
+    accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
+                           scene.accurate_island_nodes_.end());
+    accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
+                             scene.accurate_island_offsets_.end());
+    graph_ownership_saved=true;
+}
 void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Reuse capacities across frames. The checkpoint contains only state
     // that persists beyond a step or is exposed by Scene's read-only APIs.
@@ -3344,6 +3366,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     initial_speculative_heads=scene.speculative_node_first_.size();
     initial_accurate_heads=scene.accurate_node_first_.size();
     handles_saved=false;
+    graph_ownership_saved=false;
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
@@ -3375,10 +3398,20 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
     }
-    // The source island owner (handles, node membership, linked-list
-    // ordering and reusable slots) is the sole connectivity checkpoint.
-    speculative_islands=scene.speculative_islands_;
-    accurate_islands=scene.accurate_islands_;
+    // Active-index publication is observable even on quiet frames, so
+    // retain its exact permutation. Membership and handles are lazily
+    // snapshotted by save_graph_ownership() only when changed.
+    const auto copy_active=[](IslandGraph& saved,const IslandGraph& live) {
+        saved.active_nodes.assign(live.active_nodes.begin(),
+                                   live.active_nodes.end());
+        saved.active_node_index.assign(live.active_node_index.begin(),
+                                        live.active_node_index.end());
+        saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
+                                          live.nodes_to_deactivate.end());
+        saved.initial_active_node_count=live.initial_active_node_count;
+    };
+    copy_active(speculative_islands,scene.speculative_islands_);
+    copy_active(accurate_islands,scene.accurate_islands_);
     // Copies preserve vector elements, not spare capacity. A successful
     // checkpoint must hand off full per-actor capacity to the scene:
     // third-pass deactivation and geometry-only active-node reconciliation
@@ -3388,10 +3421,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     speculative_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
-    accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
-                          scene.accurate_island_nodes_.end());
-    accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
-                            scene.accurate_island_offsets_.end());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
@@ -3565,13 +3594,15 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.threshold_changes_.swap(threshold_changes);
     if(includes_solver_state)
         scene.partition_ends_.swap(partition_ends);
-    scene.speculative_islands_.islands.swap(speculative_islands.islands);
-    scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
-    scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
-    scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
-    scene.speculative_islands_.node_static_touches.swap(
-        speculative_islands.node_static_touches);
-    scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
+    if(graph_ownership_saved) {
+        scene.speculative_islands_.islands.swap(speculative_islands.islands);
+        scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
+        scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
+        scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
+        scene.speculative_islands_.node_static_touches.swap(
+            speculative_islands.node_static_touches);
+        scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
+    }
     scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
     scene.speculative_islands_.active_node_index.swap(
         speculative_islands.active_node_index);
@@ -3579,13 +3610,15 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.nodes_to_deactivate);
     scene.speculative_islands_.initial_active_node_count=
         speculative_islands.initial_active_node_count;
-    scene.accurate_islands_.islands.swap(accurate_islands.islands);
-    scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
-    scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
-    scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
-    scene.accurate_islands_.node_static_touches.swap(
-        accurate_islands.node_static_touches);
-    scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
+    if(graph_ownership_saved) {
+        scene.accurate_islands_.islands.swap(accurate_islands.islands);
+        scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
+        scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
+        scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
+        scene.accurate_islands_.node_static_touches.swap(
+            accurate_islands.node_static_touches);
+        scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
+    }
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.active_node_index.swap(
         accurate_islands.active_node_index);
@@ -3593,8 +3626,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.nodes_to_deactivate);
     scene.accurate_islands_.initial_active_node_count=
         accurate_islands.initial_active_node_count;
-    scene.accurate_island_nodes_.swap(accurate_nodes);
-    scene.accurate_island_offsets_.swap(accurate_offsets);
+    if(graph_ownership_saved) {
+        scene.accurate_island_nodes_.swap(accurate_nodes);
+        scene.accurate_island_offsets_.swap(accurate_offsets);
+    }
     if(includes_solver_state)
         scene.active_accurate_island_batches_.swap(active_accurate_batches);
     if(includes_solver_state)
