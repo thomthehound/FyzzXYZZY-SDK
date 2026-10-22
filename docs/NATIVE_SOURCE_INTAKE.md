@@ -612,11 +612,15 @@ before A-G even though FIFO would do the opposite. The fixture
 asserts actual unequal cached values before the loss and H-static
 before G-static after migration. It does not rely on an invented
 infinite-hop sentinel or on stale values left unadjusted by merges.
-For simultaneous splits, failed routes are consumed in ascending
-`mDirtyMap` seed order. Each disconnected component is traversed
-through the source-owned intrusive `EdgeInstance` adjacency with the
-original hop-priority heap, and only that component's visited nodes
-are detached from the original node chain. The root component keeps
+For simultaneous splits, dirty nodes are consumed in ascending
+`mDirtyMap` seed order. The first failed `findRoute` immediately
+splits its component, **reusing the original search's** `mVisitedNodes`
+in queue-insertion order. There is no second component traversal and
+no deferred list of failed roots. Nodes visited in that split are
+marked for the rest of the same graph's dirty-map pass, matching
+`processLostEdges`' skip of already-confirmed split members.
+Only that component's visited nodes are detached from the original
+node chain. The root component keeps
 its existing handle and unchanged membership order; the detached
 component acquires a free or newly allocated source-style island
 handle and a node chain ordered by `mVisitedNodes` insertion. Its
@@ -626,9 +630,11 @@ islands are neither traversed nor rebuilt. The full-component scan
 remains only for actor admission/retirement and exceptional topology
 reconciliation, not ordinary lost-contact splitting. The new
 `island_local_split_count` and `island_full_rebuild_count`
-diagnostics distinguish those two paths. Source witnesses across
-dirty-route searches, exact split-time hint propagation in every
-case, and deferred dirty-work budgets still require fidelity work.
+diagnostics distinguish those two paths. Shared split witnesses are
+now retained within each third pass using generation-stamped scratch.
+Source's broader fast-path and successful-search witness propagation,
+exact hint evolution for all visited branches, and deferred dirty-work
+budgets still require fidelity work.
 Source `Cm::PriorityQueue` ties are now reproduced by the same binary-heap
 push/pop rules: equal-hop insertions do not bubble, and removal selects
 the left child when both children tie. The five-way split regression
@@ -772,9 +778,11 @@ Lost-edge route checks traverse this persistent state, using only
 visited marks and a reusable hop-priority queue; no temporary adjacency graph or
 edge-list reconstruction is needed for each loss. Redundant lost
 edges preserve connected components and solver-node order. A proved
-disconnection or dynamic-node retirement still reconstructs island-node
+dynamic-node admission/retirement still reconstructs island-node
 membership from surviving source edge slots, costing
 O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
+Ordinary contact-loss disconnections instead migrate only locally
+disconnected nodes and managers, without a second heap traversal.
 The admitted all-awake rigid subset now also follows the source
 `IslandSim::removeConnectionFromGraph` → `mDirtyMap` →
 `tryFastPath`/`findRoute` sequence: unlinking a dynamic/dynamic
@@ -804,10 +812,13 @@ estimates change exploration order, **never** connectivity. In the worst case th
 entries and maintains a O(log V) priority heap per visited node,
 versus O(path length) validation for an intact cached route. Visitation
 stamps are retained and advanced across publications rather than
-clearing all actor marks each frame. Source `IslandSim::findRoute`
-additionally uses previously visited island witnesses, localized
-island split repair and optional bounded dirty-node budgets; those,
-plus sleep/activation semantics, are **not yet fully ported**.
+clearing all actor marks each frame. Split members are also marked
+confirmed for the current source dirty-map sweep, so subsequent dirty
+seeds in that same orphan incur no extra route searches. Source
+`IslandSim::findRoute` additionally reuses successful-search and
+fast-path witnesses, propagates hints to all branches and optionally
+bounds dirty-node work; those, plus full sleep/activation semantics,
+are **not yet fully ported**.
 The current queue implements the source's hop-priority traversal for
 the admitted all-awake rigid graph, not the entire island algorithm.
 The full-rebuild instrumentation differentiates redundant edge
@@ -1003,8 +1014,11 @@ handles and per-node island membership replace the provisional
 union/find roots. Source hop-priority queue visitation and its
 equal-priority `Cm::PriorityQueue` heap order are now implemented
 for the admitted rigid graph, including split migration visitation
-order. **What remains** is witness-aware `mVisitedState` reuse between
-dirty searches and exact source witness/hint propagation, multi-frame
+order. Split-local `mVisitedState` witnesses now survive across dirty
+seeds in the same graph pass, and failed `findRoute`'s discovery
+list feeds `splitEdges` without a second component traversal.
+**What remains** is full witness reuse after successful/fast-path
+searches, exact source off-path hint propagation, multi-frame
 dirty-work budgets, and the full edge activation/deactivation lifecycle.
 Ordinary lost-contact splitting now migrates only the failed
 component's nodes and indexed-manager edges using source visit order,
