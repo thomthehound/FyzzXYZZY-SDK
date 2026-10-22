@@ -822,11 +822,31 @@ retain the active-node permutation and its prefix rather than
 reconstructing active nodes from actor sleep flags. The count is
 checkpointed alongside the source active-index map.
 
-Speculative graph active-node
-lists, the other source per-type initial-active partitions, activated/deactivated
-contact-edge worklists, and exact source iteration/permutation semantics
-remain acceptance work; only the admitted accurate rigid-node list is
-now translated.
+The speculative IslandSim now independently maintains
+`mActiveNodes[eRIGID_BODY_TYPE]`, `mActiveNodeIndex`, and
+`mInitialActiveNodeCount` with the same source append/swap-last
+mechanics, rather than leaving its active-node list empty. These are
+**separate graph-owned permutations** over the one Sc actor sleep state:
+one scene-owned no-throw synchronization walks both graphs; each
+maintains its own reverse indices, originally active prefix, and
+newly activated suffix. Quiet authored wakes and collision-only
+publications update both. Before a potentially failing publication,
+the checkpoint reserves full actor capacity for both working active
+lists and swaps the prior published allocations into its undo state;
+a failed topology rebuild restores both original list pointers and
+index maps. A standalone regression exercises two ready-to-sleep
+islands, a quiet wake and non-replayed suffix, dynamic actor admission,
+rejected rebuild, successful retry, and retirement. The existing Dy
+body admission continues to use **accurate** active island batches,
+not speculative SAP-only contact candidates.
+
+This translates the admitted *rigid active-node index* contract for
+both IslandSim owners. The original speculative and accurate
+**edge activation/deactivation lists**, non-rigid per-type
+partitions, full source graph split traversal/edge migration
+permutation, and actual task continuations remain explicit
+acceptance requirements. The rigid Sc sleep state is not duplicated
+as an independent speculative scheduler.
 
 The admitted serial dependency chain is **contact publication → first/second
 island connectivity → third-pass lost-edge repair → whole-island wake
