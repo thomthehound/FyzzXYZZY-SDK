@@ -1818,7 +1818,13 @@ void Scene::partition_constraints() {
     // but that order is *not* the source constraint descriptor input.
     // Map handle -> original Gu index once, without a second contact
     // registry or a binary search for every island edge.
-    manifold_by_edge_.assign(contact_edges_.size(),unassigned);
+    // Index only touched source handles. Historical reusable EdgeIndex
+    // slots must not impose O(total lifetime allocations) frame scans.
+    manifold_by_edge_.resize(contact_edges_.size());
+    if(++indexed_manifold_generation_==0) {
+        for(auto& item:manifold_by_edge_)item.generation=0;
+        indexed_manifold_generation_=1;
+    }
     std::size_t pair_cursor=0;
     for(std::size_t i=0;i<manifolds_.size();++i) {
         while(pair_cursor<previous_pairs_.size() &&
@@ -1830,7 +1836,8 @@ void Scene::partition_constraints() {
         const EdgeIndex edge=active_edge_handles_[pair_cursor];
         if(!contact_edges_[edge].connected)
             throw std::logic_error("Gu manager has disconnected source edge");
-        manifold_by_edge_[edge]=i;
+        manifold_by_edge_[edge].index=i;
+        manifold_by_edge_[edge].generation=indexed_manifold_generation_;
     }
     indexed_managers_.clear();
     for(std::size_t batch:active_accurate_island_batches_) {
@@ -1842,10 +1849,10 @@ void Scene::partition_constraints() {
         for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
             edge=contact_edges_[edge].island_next) {
             if(edge>=manifold_by_edge_.size() ||
-               manifold_by_edge_[edge]==unassigned)
+               manifold_by_edge_[edge].generation!=indexed_manifold_generation_)
                 throw std::logic_error(
                     "Active PhysX island has an unindexed contact manager");
-            indexed_managers_.push_back(manifold_by_edge_[edge]);
+            indexed_managers_.push_back(manifold_by_edge_[edge].index);
             if(++count>island.contact_count)
                 throw std::logic_error("PhysX island contact list cycle");
         }
