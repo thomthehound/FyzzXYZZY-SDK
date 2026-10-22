@@ -526,6 +526,93 @@ void verify_hop_priority_split_migration() {
            "Split manager migration ignored source unequal merge-hop priorities");
 }
 
+// CmPriorityQueue::pop favors the left child on equal priorities.
+// With five equal-hop branches, it expands the first, second, fourth,
+// fifth and third queued branches (not FIFO). Each branch owns a leaf
+// with a static contact manager: their migration order makes this heap
+// detail observable on the actual Dy indexed constraint input.
+void verify_equal_hop_split_queue_order() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    using fyzz::Vec3;
+    Scene split;
+    const Vec3 origin{0,10,0};
+    // Admit root-anchor first so the two-node original root survives
+    // the star's later one-node merges. Losing root-center then forces
+    // a real dirty-route split, rather than visiting an already-rooted
+    // star whose dirty seed is trivially its root.
+    const auto root=split.add_dynamic_box(
+        {0.4f,0.4f,0.4f},{0,10,-1.1f},1);
+    const auto anchor=split.add_dynamic_box(
+        {0.4f,0.4f,0.4f},{0,10,-1.75f},1);
+    const auto center=split.add_dynamic_box(
+        {0.75f,0.75f,0.75f},origin,1);
+    const std::array<Vec3,5> axes{{
+        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1}}};
+    std::array<fyzz::BodyId,5> arms{},leaves{},markers{};
+    for(std::size_t i=0;i<axes.size();++i) {
+        const Vec3& a=axes[i];
+        arms[i]=split.add_dynamic_box(
+            {0.4f,0.4f,0.4f},
+            {a.x*1.1f,10+a.y*1.1f,a.z*1.1f},1);
+    }
+    for(std::size_t i=0;i<axes.size();++i) {
+        const Vec3& a=axes[i];
+        leaves[i]=split.add_dynamic_box(
+            {0.3f,0.3f,0.3f},
+            {a.x*1.7f,10+a.y*1.7f,a.z*1.7f},1);
+    }
+    for(std::size_t i=0;i<axes.size();++i) {
+        const Vec3& a=axes[i];
+        markers[i]=split.add_static_box(
+            {0.08f,0.08f,0.08f},
+            {a.x*1.96f,10+a.y*1.96f,a.z*1.96f});
+    }
+    split.advance_collision();
+    expect(split.accurate_island_count()==1 &&
+           has(split.found_contacts(),root,center) &&
+           has(split.found_contacts(),root,anchor) &&
+           split.accurate_island_root(center)==anchor,
+           "Equal-hop source fixture did not preserve the original root");
+    for(std::size_t i=0;i<axes.size();++i) {
+        expect(has(split.found_contacts(),center,arms[i]) &&
+               has(split.found_contacts(),arms[i],leaves[i]) &&
+               has(split.found_contacts(),leaves[i],markers[i]),
+               "Equal-hop fixture lacked an isolated marked branch");
+    }
+    // All five child islands joined their parent through the same
+    // hop depth. No newer redundant chords should alter the estimates.
+    const auto hop=split.accurate_cached_route_hops(arms[0]);
+    for(auto arm:arms)
+        expect(split.accurate_cached_route_hops(arm)==hop,
+               "Equal-hop priority fixture has unequal source estimates");
+
+    split.set_position(root,{0,10,-1.4f});
+    split.set_position(anchor,{0,10,-2.05f});
+    split.step(1.0f/480.0f);
+    expect(split.accurate_island_count()==2 &&
+           has(split.lost_contacts(),root,center) &&
+           split.accurate_island_root(center)==center,
+           "Equal-hop queue fixture did not separate the dirty star");
+    const auto gu=split.contacts();
+    const auto indices=split.indexed_contact_manager_order();
+    std::vector<fyzz::BodyId> visited_leaves;
+    for(auto index:indices) {
+        const auto pair=gu[index].pair;
+        for(std::size_t i=0;i<axes.size();++i)
+            if(pair==Pair{leaves[i],markers[i]})
+                visited_leaves.push_back(leaves[i]);
+    }
+    // Center's intrusive adjacency enumerates arms in reverse insertion
+    // order: 4,3,2,1,0. Source CmPriorityQueue pops the five equal-hop
+    // branches in order 4,3,1,0,2, so their grandchildren and marker
+    // managers migrate in that order. FIFO/tie-by-discovery differs.
+    const std::vector<fyzz::BodyId> expected{
+        leaves[4],leaves[3],leaves[1],leaves[0],leaves[2]};
+    expect(visited_leaves==expected,
+           "Equal-hop source heap tie order changed split manager migration");
+}
+
 // Source mDirtyMap begins a detached component's findRoute at its
 // lowest dirty node, not its lowest BodyId. Source mVisitedNodes records
 // discovered entries as they enter the hop-priority queue. In this
@@ -3402,6 +3489,7 @@ int run_native_scene_smoke() {
     verify_split_contact_manager_migration();
     verify_dirty_seed_split_manager_order();
     verify_hop_priority_split_migration();
+    verify_equal_hop_split_queue_order();
     verify_dirty_order_multisplit_manager_remainder();
 
     // The source zero-mass world solver body does not create a dynamic
