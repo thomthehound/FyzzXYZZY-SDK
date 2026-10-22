@@ -2902,6 +2902,81 @@ int run_native_scene_smoke() {
                    "Failed island route repair changed subsequent source retry");
         }
 
+        // A failed solver frame after genuine *local* island splitting
+        // must roll back handle/node-chain migration, indexed managers,
+        // route hints, split diagnostics and publication. Retrying must
+        // then perform exactly the same split as a clean production scene.
+        {
+            auto populate=[](Scene& scene) {
+                const auto a=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,20,0},1);
+                const auto b=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.85f,20,0},1);
+                const auto c=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{1.7f,20,0},1);
+                const auto floor=scene.add_static_floor(0);
+                const auto load=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.49f,0},1);
+                scene.advance_collision();
+                expect(scene.accurate_island_count()==2 &&
+                       scene.speculative_island_count()==2 &&
+                       has(scene.found_contacts(),a,b) &&
+                       has(scene.found_contacts(),b,c),
+                       "Local split rollback fixture did not form the source chain");
+                scene.set_position(b,{5,20,0});
+                return std::tuple{a,b,c,floor,load};
+            };
+            Scene rejected,clean;
+            const auto [ra,rb,rc,rf,rl]=populate(rejected);
+            const auto [ca,cb,cc,cf,cl]=populate(clean);
+            const auto before_frame=rejected.frame_index();
+            const auto before_revision=rejected.island_topology_revision();
+            const auto before_local=rejected.island_local_split_count();
+            const auto before_global=rejected.island_full_rebuild_count();
+            const auto original_root=rejected.accurate_island_id(rb);
+            auto overflowing=fyzz::Material{};
+            overflowing.static_friction=1.0e30f;
+            overflowing.dynamic_friction=1.0e30f;
+            overflowing.friction_combine=fyzz::MaterialCombineMode::Multiply;
+            rejected.set_material(rf,overflowing);
+            rejected.set_material(rl,overflowing);
+            for(int attempt=0;attempt<2;++attempt) {
+                bool threw=false;
+                try {rejected.step(1.0f/120.0f);}
+                catch(const std::overflow_error&) {threw=true;}
+                expect(threw &&
+                       rejected.frame_index()==before_frame &&
+                       rejected.island_topology_revision()==before_revision &&
+                       rejected.island_local_split_count()==before_local &&
+                       rejected.island_full_rebuild_count()==before_global &&
+                       rejected.accurate_island_id(rb)==original_root &&
+                       rejected.accurate_island_count()==2 &&
+                       rejected.contacts().size()==clean.contacts().size(),
+                       "Failed local split published partial island migration");
+            }
+            rejected.set_material(rf,fyzz::Material{});
+            rejected.set_material(rl,fyzz::Material{});
+            rejected.step(1.0f/120.0f);
+            clean.step(1.0f/120.0f);
+            expect(rejected.island_full_rebuild_count()==before_global &&
+                   rejected.island_local_split_count()>before_local &&
+                   rejected.island_local_split_count()==
+                       clean.island_local_split_count() &&
+                   rejected.accurate_island_count()==3 &&
+                   rejected.speculative_island_count()==3 &&
+                   rejected.accurate_island_id(rb)==original_root &&
+                   rejected.accurate_island_id(ra)!=original_root &&
+                   rejected.accurate_island_id(rc)!=original_root &&
+                   rejected.accurate_island_id(ra)==
+                       clean.accurate_island_id(ca) &&
+                   rejected.accurate_island_id(rc)==
+                       clean.accurate_island_id(cc) &&
+                   rejected.frame_index()==clean.frame_index() &&
+                   rejected.body_state(rl).velocity.y==
+                       clean.body_state(cl).velocity.y,
+                   "Local PhysX split rollback did not reproduce clean migration");
+        }
+
         // Two nearly parallel diagonal thin boxes may overlap in their
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
