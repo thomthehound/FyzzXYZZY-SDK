@@ -1164,9 +1164,37 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // or on a proven third-pass split, never on quiet frames.
     const auto merge=[&](Graph& graph,Pair pair) {
         if(!dynamic_edge(pair))return false;
+        const bool accurate=&graph==&accurate_islands_;
+        auto& hops=accurate?accurate_hops_:speculative_hops_;
+        auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
+        auto& fast_edge=accurate?accurate_fast_edge_:speculative_fast_edge_;
+        auto& stamps=accurate?accurate_hint_stamps_:speculative_hint_stamps_;
+        const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
         const auto a=graph.node_island[pair.a];
         const auto b=graph.node_island[pair.b];
-        if(a==b)return false;
+        const EdgeIndex connecting_edge=contact_edge_index(pair);
+        if(connecting_edge==invalid_edge)
+            throw std::logic_error("Source island merge lacks contact edge");
+        if(a==b) {
+            // PxsIslandSim::processNewEdges retains an existing island,
+            // but a new chord may shorten its root-directed hop estimate.
+            // The source updates *only* the endpoint with a shorter path.
+            const auto ha=hops[pair.a],hb=hops[pair.b];
+            if(ha+1<hb) {
+                step_checkpoint_.save_hint(*this,pair.b,accurate);
+                hops[pair.b]=ha+1;
+                fast[pair.b]=pair.a;
+                fast_edge[pair.b]=connecting_edge;
+                stamps[pair.b]=epoch;
+            } else if(hb+1<ha) {
+                step_checkpoint_.save_hint(*this,pair.a,accurate);
+                hops[pair.a]=hb+1;
+                fast[pair.a]=pair.b;
+                fast_edge[pair.a]=connecting_edge;
+                stamps[pair.a]=epoch;
+            }
+            return false;
+        }
         // IslandSim::mergeIslands preserves the larger island handle,
         // remapping only the smaller island-node chain, then freeing
         // the subsumed handle. Ties select the second island.
@@ -1175,9 +1203,28 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         const auto retired=keep_a?b:a;
         auto& winner=graph.islands[retained];
         auto& loser=graph.islands[retired];
+        const BodyId winner_node=keep_a?pair.a:pair.b;
+        const BodyId loser_node=keep_a?pair.b:pair.a;
+        // Source mergeIslandsInternal adds this conservative path
+        // estimate to every node in the subsumed island before setting
+        // the connecting endpoint to winner.hops + 1. This is already
+        // an O(loser.count) node-remap walk, not a new global pass.
+        const std::uint32_t extra_path=
+            hops[winner_node]+hops[loser_node]+1;
         for(BodyId node=loser.root;node!=invalid;
-            node=graph.node_next[node])
+            node=graph.node_next[node]) {
+            step_checkpoint_.save_hint(*this,node,accurate);
+            hops[node]+=extra_path;
             graph.node_island[node]=retained;
+        }
+        step_checkpoint_.save_hint(*this,loser_node,accurate);
+        hops[loser_node]=hops[winner_node]+1;
+        fast[loser_node]=winner_node;
+        fast_edge[loser_node]=connecting_edge;
+        // update_island_connectivity bumps the graph's hint epoch for
+        // a merge. Stamp this new source route for the *next* epoch;
+        // routes from the retired root are deliberately invalidated.
+        stamps[loser_node]=epoch+1;
         graph.node_prev[loser.root]=winner.tail;
         graph.node_next[winner.tail]=loser.root;
         winner.tail=loser.tail;
