@@ -635,11 +635,11 @@ void verify_source_dirty_witness_split() {
     expect(scene.accurate_island_count()==1 &&
            scene.speculative_island_count()==1 &&
            scene.accurate_island_root(c)==b &&
-           has(scene.contacts(),a,b) &&
-           has(scene.contacts(),b,c) &&
-           has(scene.contacts(),c,d) &&
-           has(scene.contacts(),c,e) &&
-           has(scene.contacts(),d,e),
+           has(scene.found_contacts(),a,b) &&
+           has(scene.found_contacts(),b,c) &&
+           has(scene.found_contacts(),c,d) &&
+           has(scene.found_contacts(),c,e) &&
+           has(scene.found_contacts(),d,e),
            "Dirty witness split fixture lacks its pre-loss root and chord");
     const auto old_handle=scene.accurate_island_id(b);
     const auto checks=scene.island_dirty_route_check_count();
