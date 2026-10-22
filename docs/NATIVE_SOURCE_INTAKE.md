@@ -579,12 +579,23 @@ original/root island's **swap-last-compacted remainder** instead of
 replaying managers in the pre-split indexed array order. A linear
 five-body split regression distinguishes the resulting source
 C-D, D-E order from the previous D-E, C-D fallback.
-The bounded reconstruction currently visits component nodes by its
-breadth-first traversal, however; original
-`PxsIslandSim::findRoute` produces priority-guided
-`mVisitedNodes` and the exact dirty-node worklist order. Matching
-that specific visitation and all source-local split/handle processing
-remains a fidelity gate alongside the outstanding task lifecycle work.
+Split manager migration now also seeds each component's
+`mVisitedNodes`-equivalent discovery at the smallest **dirty** rigid
+node (the original `mDirtyMap` scan), not at its lowest `BodyId`.
+A min-priority heap of the existing hop estimates traverses the
+authoritative `EdgeInstance` adjacency; the migration sequence is
+recorded **on queue insertion**, as in source `findRoute`, rather than
+when elements are popped. An additional split regression makes the
+orphan's dirty B node follow its smaller, non-dirty A node in actor
+order, and requires B's static manager to precede A's managers in
+the new island. This avoids an incorrect globally sorted or FIFO
+discovery sequence while retaining the source-owned contact arrays.
+The bounded reconstruction still chooses component roots and handles
+by its full component scan, not by `processLostEdges`' successive
+dirty-node `findRoute` failures, `mVisitedState` witnesses and
+local `mVisitedNodes` island-node migrations. Exact priority-queue
+tie handling, incremental handle allocation, per-pass dirty budgets,
+and the original continuation graph remain fidelity gates.
 
 ## Native ownership and data contracts
 
