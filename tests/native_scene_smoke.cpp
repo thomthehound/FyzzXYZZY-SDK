@@ -2228,6 +2228,53 @@ int run_native_scene_smoke() {
                dirty_routes.island_full_rebuild_count()==before_rebuild+1,
                "Dirty fast route falsely preserved a disconnected island");
 
+        // IslandSim::addNode initializes only its own route state.
+        // Rebuilding membership for an unrelated actor must not evict
+        // the alternate paths learned in an established dynamic island.
+        // Two root-directed fast hits (one per graph) must survive.
+        {
+            Scene admitted_routes;
+            const auto a=admitted_routes.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.0f,26,0},1.0f);
+            admitted_routes.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.2f,26,0},1.0f);
+            admitted_routes.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.4f,26,0},1.0f);
+            const auto tip=admitted_routes.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.6f,26,0},1.0f);
+            admitted_routes.advance_collision();
+            admitted_routes.set_position(tip,{1.3f,26,0});
+            admitted_routes.advance_collision();
+            expect(admitted_routes.lost_pairs().size()==2 &&
+                   admitted_routes.lost_contacts().size()==2,
+                   "Actor-admission route fixture did not prime lost chords");
+            admitted_routes.set_position(tip,{0.6f,26,0});
+            admitted_routes.advance_collision();
+            const auto root_accurate=admitted_routes.accurate_island_id(a);
+            const auto root_speculative=admitted_routes.speculative_island_id(a);
+            const auto before_rebuild=
+                admitted_routes.island_full_rebuild_count();
+            const auto before_hits=admitted_routes.island_fast_route_hit_count();
+            const auto unrelated=admitted_routes.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{30,26,0},1.0f);
+            admitted_routes.advance_collision();
+            expect(admitted_routes.island_full_rebuild_count()==
+                       before_rebuild+1 &&
+                   admitted_routes.accurate_island_count()==2 &&
+                   admitted_routes.speculative_island_count()==2 &&
+                   admitted_routes.accurate_island_id(a)==root_accurate &&
+                   admitted_routes.speculative_island_id(a)==root_speculative &&
+                   admitted_routes.accurate_island_id(unrelated)!=root_accurate,
+                   "Unrelated node admission changed source island ownership");
+            admitted_routes.set_position(tip,{1.3f,26,0});
+            admitted_routes.advance_collision();
+            expect(admitted_routes.lost_pairs().size()==2 &&
+                   admitted_routes.lost_contacts().size()==2 &&
+                   admitted_routes.island_fast_route_hit_count()==before_hits+2 &&
+                   admitted_routes.island_full_rebuild_count()==before_rebuild+1,
+                   "Unrelated node admission evicted valid root routes");
+        }
+
         // PxsIslandSim owns stable island handles, not transient
         // union/find roots. A split preserves the root's handle, an
         // unaffected island retains its handle, and a merge keeps the
