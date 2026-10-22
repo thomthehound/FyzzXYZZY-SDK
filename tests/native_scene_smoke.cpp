@@ -2962,8 +2962,8 @@ int run_native_scene_smoke() {
                    rejected.island_local_split_count()>before_local &&
                    rejected.island_local_split_count()==
                        clean.island_local_split_count() &&
-                   rejected.accurate_island_count()==3 &&
-                   rejected.speculative_island_count()==3 &&
+                   rejected.accurate_island_count()==4 &&
+                   rejected.speculative_island_count()==4 &&
                    rejected.accurate_island_id(rb)==original_root &&
                    rejected.accurate_island_id(ra)!=original_root &&
                    rejected.accurate_island_id(rc)!=original_root &&
