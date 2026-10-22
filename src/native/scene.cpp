@@ -934,8 +934,14 @@ void Scene::update_contacts() {
 // hop/route estimates. The all-awake rigid subset has no sleeping or
 // deferred dirty-work budget; a failed root route proves a real split.
 bool Scene::lost_island_edges_retain_routes(bool accurate) {
-    const auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
+    auto& dirty=accurate?accurate_dirty_nodes_:speculative_dirty_nodes_;
     if(dirty.empty())return true;
+    // PxsIslandSim::processLostEdges traverses mDirtyMap by ascending
+    // node index. Our deduplicated vector is filled in lost-edge
+    // endpoint order, which need not match the bitmap iteration.
+    // Sort that existing scratch worklist in place: earlier successful
+    // routes mutate hop estimates used by later dirty-node searches.
+    std::sort(dirty.begin(),dirty.end());
     const auto& first=accurate?accurate_node_first_:speculative_node_first_;
     const auto& graph=accurate?accurate_islands_:speculative_islands_;
     auto& fast=accurate?accurate_fast_route_:speculative_fast_route_;
