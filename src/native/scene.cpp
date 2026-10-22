@@ -1227,10 +1227,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         hops[loser_node]=hops[winner_node]+1;
         fast[loser_node]=winner_node;
         fast_edge[loser_node]=connecting_edge;
-        // update_island_connectivity bumps the graph's hint epoch for
-        // a merge. Stamp this new source route for the *next* epoch;
-        // routes from the retired root are deliberately invalidated.
-        stamps[loser_node]=epoch+1;
+        // The connecting route is valid immediately. Existing paths in
+        // both islands remain eligible where their live edges and hop
+        // ordering still lead to the retained root.
+        stamps[loser_node]=epoch;
         graph.node_prev[loser.root]=winner.tail;
         graph.node_next[winner.tail]=loser.root;
         winner.tail=loser.tail;
@@ -1484,6 +1484,29 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         for(std::size_t i=0;i<next.islands.size();++i)
             if(!next.islands[i].live)
                 next.free_handles.push_back(static_cast<Graph::IslandId>(i));
+        // IslandSim::addNode leaves existing mFastRoute and mHopCounts
+        // intact. A full membership reconstruction must likewise
+        // preserve hints for nodes with the same source island root.
+        // Only a split or retired root invalidates a cached root route;
+        // removed individual edges are already checked on every use.
+        auto& stamps=accurate?accurate_hint_stamps_:
+                              speculative_hint_stamps_;
+        for(std::size_t i=0;i<actors_.size();++i) {
+            const BodyId node=static_cast<BodyId>(i);
+            if(!dynamic_node(node) ||
+               node>=graph.node_island.size() ||
+               graph.node_island[node]==Graph::invalid ||
+               next.node_island[node]==Graph::invalid)
+                continue;
+            const BodyId previous_root=
+                graph.islands[graph.node_island[node]].root;
+            const BodyId current_root=
+                next.islands[next.node_island[node]].root;
+            if(previous_root!=current_root && stamps[node]!=0) {
+                step_checkpoint_.save_hint(*this,node,accurate);
+                stamps[node]=0;
+            }
+        }
         if(accurate) {
             // Original processLostEdges selects the first dirty node
             // from mDirtyMap (ascending node index), then findRoute
@@ -1659,7 +1682,6 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     };
 
 
-    bool merged_speculative=false, merged_accurate=false;
     bool order_changed=rebuild;
     if(rebuild) {
         ++island_full_rebuild_count_;
@@ -1670,10 +1692,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             admit_nodes(speculative_islands_);
             admit_nodes(accurate_islands_);
             for(Pair pair:found_)
-                merged_speculative|=
-                    merge(speculative_islands_,pair);
+                merge(speculative_islands_,pair);
             for(Pair pair:found_contacts_) {
-                merged_accurate |= merge(accurate_islands_,pair);
+                merge(accurate_islands_,pair);
                 const auto id=contact_edge_index(pair);
                 const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                 if(id!=invalid_edge && dynamic_node(node))
@@ -1692,14 +1713,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 accurate_island_nodes_.push_back(static_cast<BodyId>(i));
     } else {
         for(Pair pair:found_)
-            if(merge(speculative_islands_,pair)) {
+            if(merge(speculative_islands_,pair))
                 --speculative_island_count_;
-                merged_speculative=true;
-            }
         for(Pair pair:found_contacts_) {
             if(merge(accurate_islands_,pair)) {
                 --accurate_island_count_;
-                merged_accurate=true;
                 order_changed=true;
             }
             const auto id=contact_edge_index(pair);
@@ -1729,10 +1747,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!accurate_island_nodes_.empty())
             accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     }
-    // Root ownership changes invalidate cached routes lazily; same-root
-    // chord insertion and unchanged topology retain their validated hints.
-    if(rebuild || merged_speculative)++speculative_hint_epoch_;
-    if(rebuild || merged_accurate)++accurate_hint_epoch_;
+    // Root changes in rebuild_graph invalidate only affected node hints.
+    // Ordinary merges and independent actor admissions retain live routes
+    // in both graphs; each attempted route validates its full edge chain.
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
