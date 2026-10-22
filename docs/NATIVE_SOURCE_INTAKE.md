@@ -571,11 +571,20 @@ PGS path consumes the indexed-manager sequence directly, matching
 `PGS_SUPPORT_COMPOUND_CONSTRAINTS` alternative performs a separate
 stable two-key solver-body remap and contact reduction, and remains an
 explicit later source admission; it is not silently approximated by an
-unrelated global pair sort. Component-split fallback preserves surviving
-island manager sequences while reconstructing membership; complete
-`PxsIslandSim::splitEdges` priority/visited-node migration order also
-remains a full-source fidelity gate alongside the outstanding graph and
-task lifecycle work.
+unrelated global pair sort. The bounded component-split fallback now explicitly executes
+`PxsIslandSim::removeEdgeFromIsland` for each migrating manager
+in visited-node adjacency order, then applies `splitEdges`-style
+append into its new source-owned island. This preserves the
+original/root island's **swap-last-compacted remainder** instead of
+replaying managers in the pre-split indexed array order. A linear
+five-body split regression distinguishes the resulting source
+C-D, D-E order from the previous D-E, C-D fallback.
+The bounded reconstruction currently visits component nodes by its
+breadth-first traversal, however; original
+`PxsIslandSim::findRoute` produces priority-guided
+`mVisitedNodes` and the exact dirty-node worklist order. Matching
+that specific visitation and all source-local split/handle processing
+remains a fidelity gate alongside the outstanding task lifecycle work.
 
 ## Native ownership and data contracts
 
@@ -929,9 +938,12 @@ with speculative and accurate state kept separate. Static-touch
 counters now follow physical touch and candidate transitions, including
 dynamic component merge/split and static actor retirement. Stable island
 handles and per-node island membership replace the provisional
-union/find roots. Previously visited source witnesses, local component
-split migration, multi-frame dirty-work budgets and activation/sleep
-remain open. Failure rollback journals **only the modified** source edge
+union/find roots. Source priority-queue visitation and fully local
+split/handle migration, multi-frame dirty-work budgets and the full
+edge activation/deactivation lifecycle remain open. The bounded
+component fallback now migrates indexed-manager edges through source
+swap-last removal and per-component visited-node appends instead of
+replaying the original manager ordering. Failure rollback journals **only the modified** source edge
 slots, route hints and intrusive node-head links, including splices into
 neighboring edge instances. It does not traverse or copy old EdgeIndex
 allocations at the start of successful steps. At most O(changed edge
