@@ -1265,6 +1265,12 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
         members.reserve(actors_.size());
+        // SplitEdges receives edges collected by visiting the moved
+        // component's nodes, not by traversing the original Gu stream.
+        // The bounded component repair retains that node visitation for
+        // accurate edge migration; no second persistent graph is built.
+        std::vector<BodyId> split_visit_nodes;
+        if(accurate)split_visit_nodes.reserve(actors_.size());
         const auto& first=accurate?accurate_node_first_:
                                    speculative_node_first_;
         std::uint32_t component_number=0;
@@ -1376,6 +1382,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 next.node_next[island.tail]=member;
                 island.tail=member;
             }
+            if(accurate)
+                split_visit_nodes.insert(split_visit_nodes.end(),
+                                         members.begin(),members.end());
             ++islands;
         }
         next.free_handles.clear();
@@ -1383,31 +1392,92 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             if(!next.islands[i].live)
                 next.free_handles.push_back(static_cast<Graph::IslandId>(i));
         if(accurate) {
-            // Source split migration moves EdgeIndex entries between the
-            // original island-owned arrays, not from global Gu pair order.
-            // Retain their published manager order when rebuilding the
-            // admitted component membership after a split/actor change.
-            std::vector<EdgeIndex> sequence;
-            sequence.reserve(manifolds_.size());
+            // PxsIslandSim::processLostEdges walks visited component
+            // nodes, removing each incident manager only once (at its
+            // first dynamic endpoint, or its sole static-touch endpoint).
+            // Every removal uses removeEdgeFromIsland's replaceWithLast:
+            // the original/root island's remaining edges do NOT retain
+            // their pre-split order when a middle edge migrates.
+            //
+            // The bounded component fallback visits nodes in the order
+            // built above, rather than source findRoute's prioritized
+            // mVisitedNodes traversal. Exact dirty-root traversal is a
+            // separate fidelity gate, but migration now honors the
+            // source removal and splitEdges array contracts.
+            struct MigratedManager {
+                EdgeIndex edge;
+                Graph::IslandId owner;
+            };
+            std::vector<MigratedManager> migrated;
+            migrated.reserve(manifolds_.size());
+            const auto prior_owner_retained=[&](BodyId node) {
+                if(!dynamic_node(node))return false;
+                const auto old=graph.node_island[node];
+                const auto fresh=next.node_island[node];
+                return old!=Graph::invalid && old==fresh &&
+                    old<graph.islands.size() &&
+                    old<next.islands.size() &&
+                    graph.islands[old].live &&
+                    next.islands[old].live &&
+                    graph.islands[old].root==next.islands[old].root;
+            };
+            for(BodyId node:split_visit_nodes) {
+                if(prior_owner_retained(node))continue;
+                for(std::size_t i=accurate_node_first_[node];
+                    i!=invalid_instance;) {
+                    const EdgeIndex edge_index=static_cast<EdgeIndex>(i/2);
+                    const auto& edge=contact_edges_[edge_index];
+                    const auto& link=edge.accurate[i&1];
+                    i=link.next;
+                    if(!edge.connected)continue;
+                    // The first endpoint owns dynamic/dynamic entries.
+                    // A world/static first endpoint cannot be visited,
+                    // so admit that entry from its only dynamic endpoint.
+                    const BodyId first_node=edge.pair.a;
+                    if((node!=first_node && dynamic_node(first_node)) ||
+                       (node!=edge.pair.a && node!=edge.pair.b))
+                        continue;
+                    const auto target=next.node_island[node];
+                    if(target==Graph::invalid)
+                        throw std::logic_error(
+                            "Source split manager lost its destination island");
+                    // Every migrated manager belongs to precisely one
+                    // old accurate array and is visited once.
+                    remove_accurate_island_edge(edge_index);
+                    migrated.push_back({edge_index,target});
+                }
+            }
+            // Old (retained-root) island arrays have now been compacted
+            // with source replaceWithLast semantics. Copy their remaining
+            // order before publishing replacement component handles.
+            std::vector<MigratedManager> retained;
+            retained.reserve(manifolds_.size());
             for(const auto& island:graph.islands)
                 for(EdgeIndex id=island.first_contact;id!=invalid_edge;
-                    id=contact_edges_[id].island_next)
-                    sequence.push_back(id);
+                    id=contact_edges_[id].island_next) {
+                    const Pair pair=contact_edges_[id].pair;
+                    const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                    if(!dynamic_node(node) || !contact_edges_[id].connected)
+                        continue;
+                    const auto owner=next.node_island[node];
+                    if(owner==Graph::invalid)
+                        throw std::logic_error(
+                            "Source retained manager lost its destination island");
+                    retained.push_back({id,owner});
+                }
             graph=std::move(next);
-            for(EdgeIndex id:sequence) {
-                step_checkpoint_.save_edge(*this,id);
-                contact_edges_[id].island_prev=invalid_edge;
-                contact_edges_[id].island_next=invalid_edge;
+            // All links are journaled on the existing source EdgeIndex
+            // slots. Rebuild first from the compacted retained arrays,
+            // then append splitEdges in their collected node order.
+            for(const auto& item:retained) {
+                step_checkpoint_.save_edge(*this,item.edge);
+                contact_edges_[item.edge].island_prev=invalid_edge;
+                contact_edges_[item.edge].island_next=invalid_edge;
             }
-            for(EdgeIndex id:sequence) {
-                const Pair pair=contact_edges_[id].pair;
-                const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-                if(!dynamic_node(node) || !contact_edges_[id].connected)
-                    continue;
-                const auto owner=graph.node_island[node];
-                if(owner!=Graph::invalid)
-                    append_accurate_island_edge(id,owner);
-            }
+            for(const auto& item:retained)
+                append_accurate_island_edge(item.edge,item.owner);
+            for(const auto& item:migrated)
+                append_accurate_island_edge(item.edge,item.owner);
         } else graph=std::move(next);
         return islands;
     };
