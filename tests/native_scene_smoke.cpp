@@ -2154,7 +2154,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         }
         distinct_sleep.set_position(rod_a,{0,0.1f,0});
         distinct_sleep.set_position(rod_b,{0.6f,0.1f,0.6f});
-        distinct_sleep.add_static_floor(0.0f);
+        const auto source_floor=distinct_sleep.add_static_floor(0.0f);
         distinct_sleep.advance_collision();
         expect(has(distinct_sleep.pairs(),rod_a,rod_b) &&
                distinct_sleep.speculative_island_count()==1 &&
@@ -2174,6 +2174,15 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                        distinct_sleep.accurate_active_node_index(rod_a)==
                            std::numeric_limits<std::size_t>::max(),
                        "Accurate active node list included dormant speculative-only peer");
+                const auto floor_edge=distinct_sleep.contact_edge_index(
+                    fyzz::native::Pair{source_floor,rod_a});
+                const auto accurate_events=
+                    distinct_sleep.deactivating_accurate_contact_edges();
+                expect(floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
+                       std::count(accurate_events.begin(),
+                                  accurate_events.end(),floor_edge)==1 &&
+                       distinct_sleep.deactivating_speculative_contact_edges().empty(),
+                    "Speculative sleep edges published while its island remained awake");
                 independent_sleep=true;
                 break;
             }
