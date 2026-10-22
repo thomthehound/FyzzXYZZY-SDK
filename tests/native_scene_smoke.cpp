@@ -179,6 +179,64 @@ void verify_speculative_active_node_lifecycle() {
            "Speculative graph kept a retired rigid in its active list");
 }
 
+// Source mDirtyMap begins a detached component's findRoute at its
+// lowest dirty node, not its lowest BodyId. Source mVisitedNodes records
+// discovered entries as they enter the hop-priority queue. In this
+// arrangement B is the dirty endpoint but A is the smaller node ID;
+// moving A's static manager ahead of B's is a real descriptor-order bug.
+void verify_dirty_seed_split_manager_order() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene split;
+    const auto c=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,10,0},1);
+    const auto d=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,10,0},1);
+    const auto e=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{1.6f,10,0},1);
+    const auto a=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-1.6f,10,0},1);
+    const auto b=split.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.8f,10,0},1);
+    const auto sa=split.add_static_box(
+        {0.1f,0.1f,0.1f},{-1.6f,10,0.54f});
+    const auto sb=split.add_static_box(
+        {0.1f,0.1f,0.1f},{-0.8f,10,0.54f});
+    split.advance_collision();
+    expect(split.accurate_island_count()==1 &&
+           split.contacts().size()==6 &&
+           has(split.found_contacts(),b,c) &&
+           has(split.found_contacts(),a,sa) &&
+           has(split.found_contacts(),b,sb),
+           "Dirty-seed source split fixture did not connect six managers");
+
+    // Move only the retained-root C-D-E side. The orphan's three
+    // contact managers must survive with unchanged contact geometry.
+    split.set_position(c,{1.0f,10,0});
+    split.set_position(d,{1.8f,10,0});
+    split.set_position(e,{2.6f,10,0});
+    split.advance_collision();
+    const auto gu=split.contacts();
+    const auto indices=split.indexed_contact_manager_order();
+    expect(split.accurate_island_count()==2 &&
+           has(split.lost_contacts(),b,c) &&
+           gu.size()==5 && indices.size()==5,
+           "Dirty-seed source split fixture did not detach B/A");
+
+    std::vector<Pair> orphan_managers;
+    for(std::size_t index:indices) {
+        const Pair pair=gu[index].pair;
+        if(pair==Pair{b,sb} || pair==Pair{a,sa} ||
+           pair==Pair{a,b})
+            orphan_managers.push_back(pair);
+    }
+    expect(orphan_managers.size()==3 &&
+           orphan_managers[0]==Pair{b,sb} &&
+           orphan_managers[1]==Pair{a,sa} &&
+           orphan_managers[2]==Pair{a,b},
+           "Split manager order ignored source first-dirty B visitation");
+}
+
 // PxsIslandSim::processLostEdges collects a separated component's
 // managers by visiting its node adjacency, then splitEdges appends that
 // collected sequence to its new island. Replaying globally preserved
@@ -2927,6 +2985,7 @@ int run_native_scene_smoke() {
 
     verify_island_contact_manager_order();
     verify_split_contact_manager_migration();
+    verify_dirty_seed_split_manager_order();
 
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
