@@ -1476,6 +1476,14 @@ void Scene::prepare_solver_bodies() {
     // free-flight actors stay on the existing source body integrator.
     // This is the sole scene-owned transient solver state.
     solver_rows_.resize(actors_.size());
+    // Keep a distinct monotonic generation: StepCheckpoint rolls back
+    // frame_index_, but rejected solver rows remain in reusable storage.
+    // Reusing a frame index would otherwise reactivate stale contact rows
+    // after geometry changes on a retry.
+    if(++solver_preparation_generation_==0) {
+        for(auto& row:solver_rows_)row.prepared_generation=0;
+        solver_preparation_generation_=1;
+    }
     solver_active_ids_.clear();
     world_solver_row_ = {};
     // Mark the actual contact participants using the one Gu manager stream.
@@ -1486,7 +1494,7 @@ void Scene::prepare_solver_bodies() {
         for(BodyId id:ids)
             if(actors_[id].kind==Kind::DynamicBox &&
                !actors_[id].sleeping)
-                solver_rows_[id].prepared_frame=frame_index_;
+                solver_rows_[id].prepared_generation=solver_preparation_generation_;
     }
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
@@ -1496,9 +1504,9 @@ void Scene::prepare_solver_bodies() {
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
             auto& row=solver_rows_[id];
-            if(row.prepared_frame!=frame_index_)continue;
+            if(row.prepared_generation!=solver_preparation_generation_)continue;
             row={};
-            row.prepared_frame=frame_index_;
+            row.prepared_generation=solver_preparation_generation_;
             solver_active_ids_.push_back(id);
             const Actor& actor=actors_[id];
             row.data.position=actor.position;
@@ -2858,7 +2866,7 @@ void Scene::step(float seconds) {
             // Scene clock increments in advance_collision_internal; only
             // this frame's actual contact participants own motion snapshots.
             const bool solved_contact = id < solver_rows_.size() &&
-                solver_rows_[id].prepared_frame == frame_index_;
+                solver_rows_[id].prepared_generation == solver_preparation_generation_;
             if (solved_contact) {
                 const auto& row = solver_rows_[id];
                 const Vec3& delta = row.motion_linear_delta;

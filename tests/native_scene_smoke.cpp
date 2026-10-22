@@ -1665,6 +1665,56 @@ int run_native_scene_smoke() {
                "Rejected geometry advance prevented subsequent publication");
     }
 
+    // Rejected solver scratch must not be admitted again when the
+    // checkpoint rolls back the frame clock and the author changes the
+    // geometry before retry. Both scenes start with the same Gu contact;
+    // only one attempts an overflowing material preparation. On retry,
+    // their boxes are teleported out of contact and must follow the
+    // identical unconstrained free-flight path.
+    {
+        constexpr float dt=1.0f/120.0f;
+        Scene rejected, clean;
+        auto create=[](Scene& s) {
+            const auto floor=s.add_static_floor(0.0f);
+            const auto box=s.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            s.advance_collision();
+            return std::pair{floor,box};
+        };
+        const auto [floor_bad,body_bad]=create(rejected);
+        const auto [floor_good,body_good]=create(clean);
+        auto material=fyzz::Material{};
+        material.static_friction=1.0e30f;
+        material.dynamic_friction=1.0e30f;
+        material.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        rejected.set_material(floor_bad,material);
+        rejected.set_material(body_bad,material);
+        bool failed=false;
+        const auto old_frame=rejected.frame_index();
+        try {rejected.step(dt);}
+        catch(const std::overflow_error&) {failed=true;}
+        expect(failed && rejected.frame_index()==old_frame,
+               "Solver generation fixture failed after source row admission");
+        rejected.set_material(floor_bad,fyzz::Material{});
+        rejected.set_material(body_bad,fyzz::Material{});
+        rejected.set_position(body_bad,{0,5,0});
+        clean.set_position(body_good,{0,5,0});
+        rejected.step(dt);
+        clean.step(dt);
+        const auto a=rejected.body_state(body_bad);
+        const auto b=clean.body_state(body_good);
+        expect(rejected.contacts().empty() && clean.contacts().empty() &&
+               a.position.x==b.position.x &&
+               a.position.y==b.position.y &&
+               a.position.z==b.position.z &&
+               a.velocity.x==b.velocity.x &&
+               a.velocity.y==b.velocity.y &&
+               a.velocity.z==b.velocity.z &&
+               rejected.solved_normal_impulses().empty() &&
+               rejected.frame_index()==clean.frame_index(),
+               "Rejected solver row leaked into changed-contact retry");
+    }
+
     // A quiet failed step must not erase Found/Lost events from a
     // preceding successful geometry-only publication. Only event streams
     // rotate on that path: contact managers, their point spans, and pair

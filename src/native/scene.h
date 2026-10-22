@@ -338,7 +338,7 @@ private:
         // while the final solver deltas write back next-frame velocity.
         Vec3 motion_linear_delta{};
         Vec3 motion_angular_state{};
-        std::uint64_t prepared_frame = 0;
+        std::uint64_t prepared_generation = 0;
     };
     // Source: DySolverContact.h::SolverContactPoint and
     // DySolverConstraintsShared.h::solveDynamicContacts. Each generated
@@ -527,6 +527,11 @@ private:
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
     std::vector<SolverBodyRow> solver_rows_;
+    // A failed frame restores the published frame index but deliberately
+    // retains scratch rows. Unique preparation generations prevent those
+    // rejected rows from being mistaken for current contact participants.
+    // This is transient Dy state, not a second scene publication clock.
+    std::uint64_t solver_preparation_generation_=0;
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
