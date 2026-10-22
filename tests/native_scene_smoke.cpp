@@ -3295,11 +3295,17 @@ int run_native_scene_smoke() {
         catch(const std::overflow_error&) {rejected=true;}
         expect(rejected &&
                active_rollback.active_accurate_island_count()==0 &&
+               active_rollback.active_accurate_nodes().empty() &&
+               active_rollback.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
+               active_rollback.deactivating_accurate_nodes().empty() &&
                !active_rollback.body_is_sleeping(sleeper),
-               "Rejected Dy frame replaced the last active-island view");
+               "Rejected Dy frame replaced the published active-node/index state");
         active_rollback.step(1.0f/120.0f);
-        expect(active_rollback.active_accurate_island_count()==1,
-               "Active-island retry did not republish the source batch");
+        expect(active_rollback.active_accurate_island_count()==1 &&
+               active_rollback.active_accurate_nodes().size()==1 &&
+               active_rollback.accurate_active_node_index(sleeper)==0,
+               "Active-island retry did not republish the indexed source node");
     }
 
     {
@@ -3437,6 +3443,12 @@ int run_native_scene_smoke() {
                !distinct_sleep.body_is_sleeping(rod_b) &&
                distinct_sleep.speculative_island_count()==1 &&
                distinct_sleep.accurate_island_count()==2) {
+                const auto active=distinct_sleep.active_accurate_nodes();
+                expect(active.size()==1 && active[0]==rod_b &&
+                       distinct_sleep.accurate_active_node_index(rod_b)==0 &&
+                       distinct_sleep.accurate_active_node_index(rod_a)==
+                           std::numeric_limits<std::size_t>::max(),
+                       "Accurate active node list included dormant speculative-only peer");
                 independent_sleep=true;
                 break;
             }
