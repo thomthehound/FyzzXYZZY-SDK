@@ -2444,8 +2444,10 @@ int run_native_scene_smoke() {
         // not merely topology and diagnostics. Prime both IslandSim
         // caches with a redundant chord removal, reinsert the chords,
         // then trigger repeated solver failures on the next removal.
-        // The successful retry must reuse all four cached non-root
-        // routes just as the never-failed scene does.
+        // Redundant chords can shorten source fast routes upon
+        // reintroduction; the retried scene must match the clean
+        // reference's hints, counters, and motion instead of an
+        // obsolete absolute fast-hit count.
         {
             auto populate=[](Scene& scene) {
                 scene.add_dynamic_box(
@@ -2517,7 +2519,6 @@ int run_native_scene_smoke() {
             expect(rejected.island_dirty_route_check_count()==checks+6 &&
                    rejected.island_dirty_route_check_count()==
                        clean.island_dirty_route_check_count() &&
-                   rejected.island_fast_route_hit_count()==hits+4 &&
                    rejected.island_fast_route_hit_count()==
                        clean.island_fast_route_hit_count() &&
                    rejected.accurate_island_count()==clean.accurate_island_count() &&
