@@ -3313,23 +3313,29 @@ int run_native_scene_smoke() {
         }
         expect(ready && !partitions.body_is_sleeping(sleeper),
                "Initial-active partition fixture did not reach readiness");
+        // Admit a new island in the very pass where the old floor
+        // island deactivates. The original two-node initial prefix must
+        // shrink to the still-active flyer, while the newcomer belongs
+        // strictly to the newly activated suffix. This fails if
+        // markInactive uses unconditional swap-last without the
+        // source initial-partition tail permutation.
+        const auto newcomer=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
         partitions.set_velocity(flyer,{0,9.81f,0});
         partitions.step(1.0f/120.0f);
         expect(partitions.body_is_sleeping(sleeper) &&
-               partitions.active_accurate_nodes().size()==1 &&
+               partitions.deactivating_accurate_nodes().size()==1 &&
+               partitions.deactivating_accurate_nodes()[0]==sleeper &&
+               partitions.active_accurate_nodes().size()==2 &&
                partitions.active_accurate_nodes()[0]==flyer &&
-               partitions.newly_activated_accurate_nodes().empty() &&
-               partitions.accurate_active_node_index(flyer)==0,
-               "markInactive failed to retire an initial active rigid node");
-        const auto newcomer=partitions.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
-        partitions.advance_collision();
-        expect(partitions.active_accurate_nodes().size()==2 &&
+               partitions.active_accurate_nodes()[1]==newcomer &&
                partitions.newly_activated_accurate_nodes().size()==1 &&
                partitions.newly_activated_accurate_nodes()[0]==newcomer &&
+               partitions.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
                partitions.accurate_active_node_index(flyer)==0 &&
                partitions.accurate_active_node_index(newcomer)==1,
-               "Actor admission erased initial active-node partition");
+               "Simultaneous source markInactive/admission broke initial-active partition");
         const auto published=partitions.active_accurate_nodes();
         const auto prior_new=partitions.newly_activated_accurate_nodes();
         const auto* const original=published.data();
