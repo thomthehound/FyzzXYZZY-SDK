@@ -100,6 +100,85 @@ void verify_simultaneous_initial_sleep_compaction() {
     }
 
 }
+// Independent speculative IslandSim active indices must follow the
+// original wakeIslands/markInactive initial-prefix contract, including
+// quiet authored wakes, actor admission and failed graph reconstruction.
+void verify_speculative_active_node_lifecycle() {
+    using fyzz::native::Scene;
+    Scene scene;
+    scene.add_static_floor(0.0f);
+    const auto first=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+    const auto sleeper=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{5,0.5f,0},1.0f);
+    scene.advance_collision();
+    expect(scene.active_speculative_nodes().size()==2 &&
+           scene.newly_activated_speculative_nodes().size()==2 &&
+           scene.speculative_active_node_index(first)==0 &&
+           scene.speculative_active_node_index(sleeper)==1,
+           "Speculative IslandSim did not index initial dynamic actors");
+    for(int i=0;i<360;++i)scene.step(1.0f/120.0f);
+    expect(scene.body_is_sleeping(first) && scene.body_is_sleeping(sleeper) &&
+           scene.active_speculative_nodes().empty() &&
+           scene.active_accurate_nodes().empty() &&
+           scene.speculative_active_node_index(first)==
+               std::numeric_limits<std::size_t>::max() &&
+           scene.speculative_active_node_index(sleeper)==
+               std::numeric_limits<std::size_t>::max(),
+           "Speculative graph retained source-deactivated rigid nodes");
+
+    scene.set_velocity(first,{0.2f,0,0});
+    scene.advance_collision();
+    const auto waking=scene.newly_activated_speculative_nodes();
+    expect(scene.active_speculative_nodes().size()==1 &&
+           waking.size()==1 && waking[0]==first &&
+           scene.speculative_active_node_index(first)==0 &&
+           scene.speculative_active_node_index(sleeper)==
+               std::numeric_limits<std::size_t>::max(),
+           "Quiet authored wake failed speculative active-index publication");
+    scene.advance_collision();
+    expect(scene.newly_activated_speculative_nodes().empty() &&
+           scene.active_speculative_nodes().size()==1,
+           "Quiet collision query replayed speculative activation suffix");
+
+    const auto admitted=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+    scene.advance_collision();
+    const auto suffix=scene.newly_activated_speculative_nodes();
+    expect(scene.active_speculative_nodes().size()==2 &&
+           suffix.size()==1 && suffix[0]==admitted &&
+           scene.speculative_active_node_index(admitted)==1 &&
+           scene.newly_activated_accurate_nodes().size()==1,
+           "Speculative active prefix was lost during actor admission");
+
+    const auto published=scene.active_speculative_nodes();
+    const auto old_frame=scene.frame_index();
+    const auto candidate=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{30,5,0},1.0f);
+    bool failed=false;
+    try {scene.step(std::numeric_limits<float>::max());}
+    catch(const std::overflow_error&) {failed=true;}
+    const auto restored=scene.active_speculative_nodes();
+    expect(failed && scene.frame_index()==old_frame &&
+           restored.data()==published.data() &&
+           restored.size()==published.size() &&
+           restored[0]==first && restored[1]==admitted &&
+           scene.speculative_active_node_index(candidate)==
+               std::numeric_limits<std::size_t>::max(),
+           "Rejected graph admission replaced published speculative active span");
+    scene.step(1.0f/120.0f);
+    expect(scene.active_speculative_nodes().size()==3 &&
+           scene.speculative_active_node_index(candidate)<
+               scene.active_speculative_nodes().size(),
+           "Speculative IslandSim could not admit actor after rejected frame");
+    scene.remove(first);
+    scene.advance_collision();
+    expect(scene.active_speculative_nodes().size()==2 &&
+           scene.speculative_active_node_index(first)==
+               std::numeric_limits<std::size_t>::max(),
+           "Speculative graph kept a retired rigid in its active list");
+}
+
 // Source contact-edge ordering and removal conformance remains in its
 // own stack frame, alongside the other multi-island lifecycle fixtures.
 void verify_island_contact_manager_order() {
@@ -953,6 +1032,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     verify_simultaneous_initial_sleep_compaction();
+    verify_speculative_active_node_lifecycle();
 
     {
         // Source accurate active-node indexing must stay dense and
