@@ -175,8 +175,14 @@ void verify_island_contact_manager_order() {
         // a different (four-entry) indexed-manager stream before throwing.
         island_managers.step(1.0f/480.0f);
         const auto admitted=island_managers.indexed_contact_manager_order();
-        expect(island_managers.contacts().size()==4 &&
-               has(island_managers.contacts(),center,e) &&
+        const auto admitted_contacts=island_managers.contacts();
+        const fyzz::native::Pair fourth_pair{std::min(center,e),
+                                             std::max(center,e)};
+        expect(admitted_contacts.size()==4 &&
+               std::any_of(admitted_contacts.begin(),admitted_contacts.end(),
+                   [&](const auto& contact) {
+                       return contact.pair==fourth_pair;
+                   }) &&
                admitted.size()==4 &&
                admitted[0]==1 && admitted[1]==0 &&
                admitted[2]==2 && admitted[3]==3,
