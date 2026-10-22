@@ -134,22 +134,45 @@ void verify_island_contact_manager_order() {
                contacts[2].pair==fyzz::native::Pair{center,d} &&
                initial[0]==1 && initial[1]==0 && initial[2]==2,
                "Dy partitioning ignored island-owned manager insertion order");
-        // A failed solver frame must restore the exact previously exposed
-        // descriptor-order allocation, not just the same manager indices.
+        // A failed solver frame must restore the exact published manager
+        // allocation, not just the same values. Admit an additional contact
+        // in the *failed* frame so the transient indexed manager sequence
+        // has four entries while the published sequence still has three.
+        // The source material-combination overflow occurs in
+        // prepare_constraints(), after partition_constraints() has rebuilt
+        // this four-manager descriptor input.
         const auto published_pointer=initial.data();
+        const auto published_contacts=contacts.data();
         const auto published_frame=island_managers.frame_index();
+        const auto e=island_managers.add_static_box(
+            {0.25f,0.25f,0.25f},{0,10,-1.1f});
+        fyzz::Material overflowing{};
+        overflowing.static_friction=1.0e30f;
+        overflowing.dynamic_friction=1.0e30f;
+        overflowing.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        island_managers.set_material(center,overflowing);
+        island_managers.set_material(b,overflowing);
         bool rejected=false;
-        try { island_managers.step(std::numeric_limits<float>::max()); }
-        catch(const std::exception&) { rejected=true; }
+        try { island_managers.step(1.0f/480.0f); }
+        catch(const std::overflow_error& error) {
+            rejected=std::string(error.what())==
+                "Native Pxs material combination overflow";
+        }
         const auto restored=island_managers.indexed_contact_manager_order();
+        const auto restored_contacts=island_managers.contacts();
         expect(rejected &&
                island_managers.frame_index()==published_frame &&
                restored.data()==published_pointer &&
                restored.size()==3 &&
-               restored[0]==1 && restored[1]==0 && restored[2]==2,
-               "Rejected source-indexed PGS step invalidated manager span");
+               restored[0]==1 && restored[1]==0 && restored[2]==2 &&
+               restored_contacts.data()==published_contacts &&
+               restored_contacts.size()==3,
+               "Post-partition rejected PGS step invalidated published manager span");
+        island_managers.set_material(center,fyzz::Material{});
+        island_managers.set_material(b,fyzz::Material{});
         island_managers.set_position(center,{0,10,0});
         island_managers.set_position(c,{-4,10,0});
+        island_managers.set_position(e,{0,10,-4});
         island_managers.step(1.0f/480.0f);
         const auto after=island_managers.indexed_contact_manager_order();
         const auto remaining=island_managers.contacts();
