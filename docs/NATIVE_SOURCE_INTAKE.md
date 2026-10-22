@@ -588,12 +588,19 @@ recorded **on queue insertion**, as in source `findRoute`, rather than
 when elements are popped. An additional split regression makes the
 orphan's dirty B node follow its smaller, non-dirty A node in actor
 order, and requires B's static manager to precede A's managers in
-the new island. An additional branched fixture creates unequal cached
-source `mHopCounts` through a successful redundant-chord loss. Its
-dirty B then discovers A before X, but X's shorter route estimate
-causes the source priority queue to expand X-H before A-G. The new
-island must consequently publish H's static manager before G's,
-whereas FIFO queue expansion produces the reverse sequence.
+the new island. New rigid nodes now initialize `mHopCounts` to **zero**, as in
+`PxsIslandSim::addNode`, rather than an invented infinite default.
+Per-graph hint vectors grow during `addNode`-equivalent island
+admission; existing hop estimates are retained across unrelated
+actor admissions and backed by the existing journal on rejection.
+An additional branched fixture creates a strictly positive X hop
+estimate through a successful redundant C-X chord loss. B later
+discovers the newer X-B link before older A-B, but A retains its
+source-initialized zero hop estimate while X's remains positive.
+The source priority queue therefore expands A-G before X-H,
+publishing G's static manager before H's. FIFO queue expansion would
+reverse that order. The fixture asserts the actual unequal cached
+values before the split, not an uninitialized sentinel.
 For simultaneous splits, components are now processed in ascending
 `mDirtyMap` seed order rather than component-number order, preserving
 the original shared old-island array's sequence of swap-last removals.
