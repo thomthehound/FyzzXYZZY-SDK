@@ -260,6 +260,22 @@ public:
     std::size_t active_accurate_island_count() const noexcept {
         return active_accurate_island_batches_.size();
     }
+    // PxsIslandSim::mActiveNodes[eRIGID_BODY_TYPE] and
+    // mActiveNodeIndex, owned by the accurate graph rather than a
+    // second actor registry. The invalid index denotes an inactive node.
+    std::span<const BodyId> active_accurate_nodes() const noexcept {
+        return accurate_islands_.active_nodes;
+    }
+    std::size_t accurate_active_node_index(BodyId id) const noexcept {
+        return id<accurate_islands_.active_node_index.size()
+            ? accurate_islands_.active_node_index[id] : invalid_instance;
+    }
+    // Third-pass IslandSim::mNodesToPutToSleep for admitted rigid nodes.
+    // Distinct from Dy's prior-frame "ready" flags and from the
+    // speculative graph's contact-interaction deactivation.
+    std::span<const BodyId> deactivating_accurate_nodes() const noexcept {
+        return accurate_islands_.nodes_to_deactivate;
+    }
     std::size_t largest_accurate_island_size() const noexcept {
         std::size_t largest=0;
         for(std::size_t i=1;i<accurate_island_offsets_.size();++i)
@@ -484,6 +500,14 @@ private:
         // IslandSim::Node::mStaticTouchCount for live dynamic nodes.
         std::vector<std::uint32_t> node_static_touches;
         std::vector<IslandId> free_handles;
+        // IslandSim::mActiveNodes / mActiveNodeIndex (rigid type).
+        // markInactive uses swap-last, keeping the map O(1) to update.
+        // The node IDs are references into actors_, not copied bodies.
+        std::vector<BodyId> active_nodes;
+        std::vector<std::size_t> active_node_index;
+        // Cleared at the next third pass; authoritative prior-frame
+        // ready flags determine the members to deactivate.
+        std::vector<BodyId> nodes_to_deactivate;
     };
     IslandGraph speculative_islands_, accurate_islands_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate

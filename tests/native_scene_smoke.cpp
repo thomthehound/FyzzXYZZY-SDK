@@ -3160,6 +3160,48 @@ int run_native_scene_smoke() {
     }
 
     {
+        // Source accurate active-node indexing must stay dense and
+        // bidirectional through third-pass sleep, user wake, and
+        // reactivation. The separate deactivation output is published
+        // for exactly the boundary in which ready nodes go inactive.
+        Scene indexed;
+        indexed.add_static_floor(0.0f);
+        const auto body=indexed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        indexed.step(1.0f/120.0f);
+        expect(indexed.active_accurate_nodes().size()==1 &&
+               indexed.active_accurate_nodes()[0]==body &&
+               indexed.accurate_active_node_index(body)==0,
+               "Source active-node index missed the initially awake body");
+        bool deactivated=false;
+        for(int frame=0;frame<600;++frame) {
+            indexed.step(1.0f/120.0f);
+            if(indexed.body_is_sleeping(body)) {
+                const auto retired=indexed.deactivating_accurate_nodes();
+                expect(retired.size()==1 && retired[0]==body &&
+                       indexed.active_accurate_nodes().empty() &&
+                       indexed.accurate_active_node_index(body)==
+                           std::numeric_limits<std::size_t>::max(),
+                       "Third pass did not publish indexed rigid deactivation");
+                deactivated=true;
+                break;
+            }
+        }
+        expect(deactivated,"Source indexed active node never slept");
+        indexed.step(1.0f/120.0f);
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().empty(),
+               "Dormant third pass repeated an already published deactivation");
+        indexed.set_velocity(body,{1,0,0});
+        indexed.step(1.0f/120.0f);
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().size()==1 &&
+               indexed.active_accurate_nodes()[0]==body &&
+               indexed.accurate_active_node_index(body)==0,
+               "Source node activation did not rebuild the active index");
+    }
+
+    {
         // The source active-island list is a strict subset of all accurate
         // islands. Dormant bodies remain in the persistent source graph
         // but are excluded from unconstrained integration and PGS. An

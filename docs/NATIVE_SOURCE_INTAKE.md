@@ -724,7 +724,14 @@ wake after gravity) without a second actor or solver owner.
 
 The source-derived active-island handoff is now explicit:
 after third-pass activation/deactivation the synchronous CPU scene
-builds indices into the existing accurate-island node batches, mirroring
+maintains the accurate graph's `IslandSim::mActiveNodes` and
+`mActiveNodeIndex` rigid-node lowerings, using source-style swap-last
+retirement, append activation and a dense reverse map. The third pass
+also emits `mNodesToPutToSleep`-equivalent accurate rigid deactivations
+only when a previously ready island actually sleeps. These lists reside
+in the same persistent accurate island owner and participate in its
+rollback transaction. The dispatch then builds indices into the
+existing accurate-island node batches, mirroring
 `IslandSim::mActiveIslands`. Unconstrained velocities, prepared-contact
 solver-body admission, and pose integration consume those active batches,
 not the entire actor array or dormant graph islands. Index storage is
@@ -732,7 +739,11 @@ reused, and no copied actor registry or second island owner is introduced.
 A regression verifies the dormant/awake split, free-flight integration
 and subsequent wake admission. This still does not reproduce the source
 per-node active-index permutation, activation/deactivation edge lists,
-or concurrent task continuations.
+or concurrent task continuations. Speculative graph active-node
+lists, source per-type initial-active partitions, activated/deactivated
+contact-edge worklists, and exact source iteration/permutation semantics
+remain acceptance work; only the admitted accurate rigid-node list is
+now translated.
 
 The admitted serial dependency chain is **contact publication → first/second
 island connectivity → third-pass lost-edge repair → whole-island wake

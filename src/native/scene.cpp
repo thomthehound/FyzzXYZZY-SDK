@@ -1143,6 +1143,12 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.node_next.assign(actors_.size(),invalid);
         next.node_prev.assign(actors_.size(),invalid);
         next.node_static_touches.assign(actors_.size(),0);
+        // Source-owned active-index slots and third-pass output survive
+        // on the authoritative graph. Rebuild prepares enough capacity
+        // for no-throw deactivation after a geometry-only publication.
+        next.active_node_index.assign(actors_.size(),invalid_instance);
+        next.active_nodes.reserve(actors_.size());
+        next.nodes_to_deactivate.reserve(actors_.size());
         next.free_handles=graph.free_handles;
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
@@ -1420,6 +1426,11 @@ void Scene::third_pass_island_gen() {
 // persistent handles and node membership while bodies are inactive.
 void Scene::deactivate_ready_islands() noexcept {
     constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
+    // PxsSimpleIslandManager::thirdPassIslandGen clears the previous
+    // accurate rigid deactivations. A now-ready node belongs to this
+    // stage's output only when its accurate island actually deactivates.
+    // Rebuild-time capacity was reserved before collision commit.
+    accurate_islands_.nodes_to_deactivate.clear();
     // PhysX uses accurate-island deactivations for rigid-body state in
     // ScPipeline::afterIntegration. The speculative third-pass list
     // controls contact interaction activity, not rigid sleep admission.
@@ -1441,6 +1452,7 @@ void Scene::deactivate_ready_islands() noexcept {
             node=accurate_islands_.node_next[node]) {
             Actor& actor=actors_[node];
             if(actor.sleeping)continue;
+            accurate_islands_.nodes_to_deactivate.push_back(node);
             // ScBodySim::deactivate clears velocities and pending motion.
             // The surviving Gu contact managers are not retired here.
             actor.sleeping=true;
@@ -1461,13 +1473,44 @@ void Scene::deactivate_ready_islands() noexcept {
 // Unlike copying a second body-ID array, only one index per active
 // island is retained, with reusable allocation across frames.
 void Scene::prepare_active_accurate_island_batches() {
+    // Source PxsIslandSim::markInactive uses swap-last plus a reverse
+    // active-node index; markActive appends. Preserve that lifecycle
+    // across quiet frames and incremental merges instead of clearing and
+    // recreating all active IDs. A component rebuild starts a new source
+    // index map in update_island_connectivity's replacement graph.
+    auto& graph=accurate_islands_;
+    graph.active_node_index.resize(actors_.size(),invalid_instance);
+    for(std::size_t index=0;index<graph.active_nodes.size();) {
+        const BodyId id=graph.active_nodes[index];
+        if(actors_[id].alive && !actors_[id].sleeping &&
+           graph.node_island[id]!=IslandGraph::invalid) {
+            ++index;
+            continue;
+        }
+        const BodyId replacement=graph.active_nodes.back();
+        graph.active_nodes[index]=replacement;
+        graph.active_node_index[replacement]=index;
+        graph.active_nodes.pop_back();
+        graph.active_node_index[id]=invalid_instance;
+    }
+    for(BodyId id:accurate_island_nodes_) {
+        if(actors_[id].sleeping ||
+           graph.active_node_index[id]!=invalid_instance)continue;
+        graph.active_node_index[id]=graph.active_nodes.size();
+        graph.active_nodes.push_back(id);
+    }
+    // Dy::DynamicsContext is still admitted in stable source
+    // accurate-island order. The membership test now consumes the
+    // graph-owned active-node map rather than independently scanning
+    // actor sleep flags to discover which bodies exist in the active
+    // island batches.
     active_accurate_island_batches_.clear();
     for(std::size_t island=0;island+1<accurate_island_offsets_.size();
         ++island) {
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
-            if(actors_[id].alive && !actors_[id].sleeping) {
+            if(graph.active_node_index[id]!=invalid_instance) {
                 active_accurate_island_batches_.push_back(island);
                 break;
             }
@@ -2761,6 +2804,11 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.speculative_islands_.node_static_touches.swap(
         speculative_islands.node_static_touches);
     scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
+    scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
+    scene.speculative_islands_.active_node_index.swap(
+        speculative_islands.active_node_index);
+    scene.speculative_islands_.nodes_to_deactivate.swap(
+        speculative_islands.nodes_to_deactivate);
     scene.accurate_islands_.islands.swap(accurate_islands.islands);
     scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
     scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
@@ -2768,6 +2816,11 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_islands_.node_static_touches.swap(
         accurate_islands.node_static_touches);
     scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
+    scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
+    scene.accurate_islands_.active_node_index.swap(
+        accurate_islands.active_node_index);
+    scene.accurate_islands_.nodes_to_deactivate.swap(
+        accurate_islands.nodes_to_deactivate);
     scene.accurate_island_nodes_.swap(accurate_nodes);
     scene.accurate_island_offsets_.swap(accurate_offsets);
     if(includes_solver_state)
