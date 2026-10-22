@@ -266,6 +266,13 @@ public:
     std::span<const BodyId> active_accurate_nodes() const noexcept {
         return accurate_islands_.active_nodes;
     }
+    // Source IslandSim::getNodesToActivate(eRIGID_BODY_TYPE) exposes
+    // the suffix appended after wakeIslands captured its initial-active
+    // count. This is an indexed view into the existing active nodes.
+    std::span<const BodyId> newly_activated_accurate_nodes() const noexcept {
+        return std::span<const BodyId>(accurate_islands_.active_nodes)
+            .subspan(accurate_islands_.initial_active_node_count);
+    }
     std::size_t accurate_active_node_index(BodyId id) const noexcept {
         return id<accurate_islands_.active_node_index.size()
             ? accurate_islands_.active_node_index[id] : invalid_instance;
@@ -506,6 +513,10 @@ private:
         // The node IDs are references into actors_, not copied bodies.
         std::vector<BodyId> active_nodes;
         std::vector<std::size_t> active_node_index;
+        // IslandSim::mInitialActiveNodeCount[eRIGID_BODY_TYPE] splits
+        // the original active prefix from the wakeIslands additions.
+        // markInactive may shrink this prefix by relocating its tail.
+        std::size_t initial_active_node_count=0;
         // Cleared at the next third pass; authoritative prior-frame
         // ready flags determine the members to deactivate.
         std::vector<BodyId> nodes_to_deactivate;

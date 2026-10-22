@@ -1149,6 +1149,17 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.active_node_index.assign(actors_.size(),invalid_instance);
         next.active_nodes.reserve(actors_.size());
         next.nodes_to_deactivate.reserve(actors_.size());
+        // Keep the existing active-node permutation and the original
+        // prefix through actor admission, retirement and component
+        // splits. Source addNode does not reset mActiveNodes.
+        for(std::size_t i=0;i<graph.active_nodes.size();++i) {
+            const BodyId id=graph.active_nodes[i];
+            if(!dynamic_node(id))continue;
+            next.active_node_index[id]=next.active_nodes.size();
+            next.active_nodes.push_back(id);
+            if(i<graph.initial_active_node_count)
+                ++next.initial_active_node_count;
+        }
         next.free_handles=graph.free_handles;
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
@@ -1490,6 +1501,21 @@ void Scene::synchronize_accurate_active_nodes() noexcept {
            graph.node_island[id]!=IslandGraph::invalid) {
             ++index;
             continue;
+        }
+        // PxsIslandSim::markInactive first relocates an initially active
+        // node to the tail of the initial prefix, shrinking that prefix
+        // before removing it with the ordinary swap-last operation.
+        // This keeps getNodesToActivate() a genuine source suffix when
+        // a previously active node sleeps alongside new waking nodes.
+        if(index<graph.initial_active_node_count) {
+            const auto tail=graph.initial_active_node_count-1;
+            const BodyId previous=graph.active_nodes[tail];
+            graph.active_nodes[index]=previous;
+            graph.active_node_index[previous]=index;
+            graph.active_nodes[tail]=id;
+            graph.active_node_index[id]=tail;
+            --graph.initial_active_node_count;
+            index=tail;
         }
         const BodyId replacement=graph.active_nodes.back();
         graph.active_nodes[index]=replacement;
@@ -2834,6 +2860,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.active_node_index);
     scene.speculative_islands_.nodes_to_deactivate.swap(
         speculative_islands.nodes_to_deactivate);
+    scene.speculative_islands_.initial_active_node_count=
+        speculative_islands.initial_active_node_count;
     scene.accurate_islands_.islands.swap(accurate_islands.islands);
     scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
     scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
@@ -2846,6 +2874,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.active_node_index);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
+    scene.accurate_islands_.initial_active_node_count=
+        accurate_islands.initial_active_node_count;
     scene.accurate_island_nodes_.swap(accurate_nodes);
     scene.accurate_island_offsets_.swap(accurate_offsets);
     if(includes_solver_state)
@@ -2883,6 +2913,11 @@ void Scene::step(float seconds) {
     // finish before Dy::bodyCoreComputeUnconstrainedVelocity. This
     // shared IslandSim wake stage admits all newly activated rigid
     // members in the same frame; collision-only publications use it too.
+    // IslandSim::wakeIslands snapshots the existing active prefix before
+    // activation. Preserve the same boundary when source contact
+    // publication subsequently rebuilds island handles.
+    accurate_islands_.initial_active_node_count=
+        accurate_islands_.active_nodes.size();
     advance_collision_internal(false);
     third_pass_island_gen();
     activate_published_islands();
@@ -3108,6 +3143,8 @@ void Scene::advance_collision(bool force_update) {
         // mNodesToPutToSleep output rather than replaying the event.
         // This is constant-work and cannot throw.
         accurate_islands_.nodes_to_deactivate.clear();
+        accurate_islands_.initial_active_node_count=
+            accurate_islands_.active_nodes.size();
         // A velocity/torque edit can queue IslandSim activation without
         // touching geometry. Complete the no-throw source wake handoff.
         // Keep the graph-owned active-node map in step with such wakes,
@@ -3122,6 +3159,8 @@ void Scene::advance_collision(bool force_update) {
     // advance_collision_internal directly, without nested snapshots.
     step_checkpoint_.capture(*this,false);
     try {
+        accurate_islands_.initial_active_node_count=
+            accurate_islands_.active_nodes.size();
         advance_collision_internal(force_update);
         third_pass_island_gen();
     } catch (...) {

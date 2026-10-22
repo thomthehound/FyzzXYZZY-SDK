@@ -763,8 +763,17 @@ the previous one-frame accurate rigid deactivation output without
 performing a third-pass island traversal; otherwise the old sleep event
 would be observable again against a newer frame index.
 
+The accurate rigid graph also retains
+`IslandSim::mInitialActiveNodeCount[eRIGID_BODY_TYPE]`, captured before
+the wake/publication pass. Its `markInactive` lowering relocates
+removed initial members to the prefix tail before swap-last removal,
+keeping `getNodesToActivate` as a genuine suffix. Topology rebuilds
+retain the active-node permutation and its prefix rather than
+reconstructing active nodes from actor sleep flags. The count is
+checkpointed alongside the source active-index map.
+
 Speculative graph active-node
-lists, source per-type initial-active partitions, activated/deactivated
+lists, the other source per-type initial-active partitions, activated/deactivated
 contact-edge worklists, and exact source iteration/permutation semantics
 remain acceptance work; only the admitted accurate rigid-node list is
 now translated.

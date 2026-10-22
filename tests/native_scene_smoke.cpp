@@ -3285,6 +3285,70 @@ int run_native_scene_smoke() {
     }
 
     {
+        // PxsIslandSim::wakeIslands captures its initially active rigid
+        // prefix before admitting newly activated nodes. Deactivating
+        // an initial member must use source markInactive's prefix-tail
+        // relocation so only genuinely new rigid nodes remain in
+        // getNodesToActivate's active suffix. Rebuilding the graph for
+        // actor admission must preserve the existing active permutation.
+        Scene partitions;
+        partitions.add_static_floor(0.0f);
+        const auto sleeper=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto flyer=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10,10,0},1.0f);
+        partitions.advance_collision();
+        expect(partitions.newly_activated_accurate_nodes().size()==2,
+               "First source wake did not admit both new rigid bodies");
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            // Keep the independent free-flight body awake while the
+            // resting island reaches its prior-frame sleep boundary.
+            partitions.set_velocity(flyer,{0,9.81f,0});
+            partitions.step(1.0f/120.0f);
+            if(partitions.body_ready_for_sleep(sleeper)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !partitions.body_is_sleeping(sleeper),
+               "Initial-active partition fixture did not reach readiness");
+        partitions.set_velocity(flyer,{0,9.81f,0});
+        partitions.step(1.0f/120.0f);
+        expect(partitions.body_is_sleeping(sleeper) &&
+               partitions.active_accurate_nodes().size()==1 &&
+               partitions.active_accurate_nodes()[0]==flyer &&
+               partitions.newly_activated_accurate_nodes().empty() &&
+               partitions.accurate_active_node_index(flyer)==0,
+               "markInactive failed to retire an initial active rigid node");
+        const auto newcomer=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
+        partitions.advance_collision();
+        expect(partitions.active_accurate_nodes().size()==2 &&
+               partitions.newly_activated_accurate_nodes().size()==1 &&
+               partitions.newly_activated_accurate_nodes()[0]==newcomer &&
+               partitions.accurate_active_node_index(flyer)==0 &&
+               partitions.accurate_active_node_index(newcomer)==1,
+               "Actor admission erased initial active-node partition");
+        const auto published=partitions.active_accurate_nodes();
+        const auto prior_new=partitions.newly_activated_accurate_nodes();
+        const auto* const original=published.data();
+        bool failed=false;
+        try {partitions.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        expect(failed &&
+               partitions.active_accurate_nodes().data()==original &&
+               published[0]==flyer && published[1]==newcomer &&
+               prior_new.size()==1 && prior_new[0]==newcomer,
+               "Rejected frame damaged published active-node partitions");
+        partitions.set_velocity(flyer,{0,9.81f,0});
+        partitions.step(1.0f/120.0f);
+        expect(partitions.newly_activated_accurate_nodes().empty() &&
+               partitions.active_accurate_nodes().size()==2,
+               "Previous initial-active suffix replayed on next frame");
+    }
+
+    {
         // Source accurate active-node indexing must stay dense and
         // bidirectional through third-pass sleep, user wake, and
         // reactivation. The separate deactivation output is published
