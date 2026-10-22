@@ -112,6 +112,64 @@ void verify_idempotent_pose_autowake() {
                "Same-position wake was lost at the next source third pass");
     }
 }
+// NpRigidDynamic::setGlobalPose refreshes an awake body's wake counter
+// without clearing DySleep's accumulated low-motion samples. Use the
+// existing setLinearVelocity autowake path as a source-compatible control,
+// with an unchanged velocity to preserve the same physical state.
+void verify_active_pose_preserves_sleep_filter() {
+    using fyzz::native::Scene;
+    Scene authored, control;
+    const auto populate=[](Scene& scene) {
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        fyzz::Material material{};
+        material.disable_friction=true;
+        scene.set_material(floor,material);
+        scene.set_material(body,material);
+        scene.set_velocity(body,{0.006f,0,0});
+        return body;
+    };
+    const auto a=populate(authored);
+    const auto b=populate(control);
+    constexpr float dt=1.0f/120.0f;
+    // Once the source wake counter is below 0.2 seconds, DySleep is
+    // integrating small but nonzero lateral velocities into its filter.
+    // Preserve those samples through a same-pose authoring operation.
+    for(int frame=0;frame<40;++frame) {
+        authored.step(dt);
+        control.step(dt);
+    }
+    const auto before=authored.body_state(a);
+    const auto control_before=control.body_state(b);
+    expect(!before.sleeping && !control_before.sleeping &&
+           authored.body_wake_counter(a)>0.0f &&
+           authored.body_wake_counter(a)<0.2f &&
+           authored.body_wake_counter(a)==control.body_wake_counter(b) &&
+           before.velocity.x>0.005f &&
+           before.velocity.x==control_before.velocity.x,
+           "Active pose fixture did not accumulate low-motion sleep samples");
+    authored.set_position(a,before.position);
+    control.set_velocity(b,control_before.velocity);
+    expect(authored.body_wake_counter(a)==control.body_wake_counter(b) &&
+           !authored.body_ready_for_sleep(a),
+           "Active pose write did not refresh the source wake counter");
+    bool renewed=false;
+    float last_control_counter=control.body_wake_counter(b);
+    for(int frame=0;frame<42;++frame) {
+        authored.step(dt);
+        control.step(dt);
+        const float current=control.body_wake_counter(b);
+        renewed |= current>last_control_counter+0.02f;
+        last_control_counter=current;
+        expect(authored.body_wake_counter(a)==current &&
+               authored.body_ready_for_sleep(a)==control.body_ready_for_sleep(b) &&
+               authored.body_is_sleeping(a)==control.body_is_sleeping(b),
+               "Active pose write discarded source DySleep accumulator history");
+    }
+    expect(renewed,
+           "Active pose filter fixture did not exercise accumulated-energy renewal");
+}
 // Keep multi-island lifetime regressions in separate stack frames. The
 // native scene smoke runner contains many Scene fixtures; combining all
 // of their local allocations into one MSVC frame can exhaust the
@@ -1433,6 +1491,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     verify_idempotent_pose_autowake();
+    verify_active_pose_preserves_sleep_filter();
     verify_simultaneous_initial_sleep_compaction();
     verify_speculative_active_node_lifecycle();
 
