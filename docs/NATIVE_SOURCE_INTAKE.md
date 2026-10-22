@@ -532,6 +532,38 @@ one-shot torque impulse continuity on a retry, and a late pose-overflow
 after an earlier body has integrated. The test must fail if any of those
 stages leaks state from an unsuccessful step.
 
+### Rigid-contact solver admission and island-manager ordering
+
+`Scene::add_dynamic_box` may retain extreme finite boxes for the
+provisional free-translation path even when their density-scaled source
+`PxReal` inverse inertia is not representable. Such a body must **not**
+enter `Scene::prepare_solver_bodies` for contact solving: an implicit
+zero angular tensor alters the original per-point `DyContactPrepShared`
+Jacobians and impulse distribution. The production solver rejects the
+unsupported constrained actor, while `StepCheckpoint` restores the
+previous frame and its free-flight translation remains usable. The
+heavy-density and subnormal-density rejected-contact fixtures exercise
+that publication and retry boundary.
+
+**Pending descriptor-order correspondence:** The original
+`DyDynamicsBase.cpp::iterateIslandsContactEdges` gathers contact
+managers by iterating the accurate `IslandSim`'s **active islands and
+their per-island `eCONTACT_MANAGER` edge arrays**. These arrays are
+not canonical `BodyId`-pair-sorted: `PxsIslandSim.cpp` appends edges
+during insertion/merge and updates their positions during removal.
+`DyDynamics.cpp::setupDescTask` consumes that island-indexed stream,
+with an additional two-key solver-body-index reordering when
+`PGS_SUPPORT_COMPOUND_CONSTRAINTS` is enabled.
+`DynamicsContextBase::iterateIslandsNodes` supplies the source body
+remap, with enhanced-determinism sorting only when selected.
+Therefore, the current global pair-sorted `manifolds_` traversal is
+**not** a source-equivalent descriptor order for competing contact
+managers. Source island-edge ownership and the selected contact
+descriptor sorting path must drive the existing `partition_constraints`
+and serial PGS consumer before the N1 ordering gate can close.
+Do not correct this by introducing an unrelated global sort or
+shadow scheduler.
+
 ## Native ownership and data contracts
 
 The only production scene state owner remains `fyzz::native::Scene`.
