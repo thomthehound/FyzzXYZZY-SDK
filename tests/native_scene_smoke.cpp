@@ -22,6 +22,94 @@ bool has(std::span<const fyzz::native::Pair> p, fyzz::BodyId a, fyzz::BodyId b) 
     return std::find(p.begin(), p.end(), match) != p.end();
 }
 }
+// PxRigidDynamic::setGlobalPose(autowake=true) resets sleep state even
+// when the authored translation equals the current pose. Geometry-only
+// caches and manager handles must remain untouched by that no-op edit.
+void verify_idempotent_pose_autowake() {
+    using fyzz::native::Scene;
+    {
+        Scene connected;
+        const auto floor=connected.add_static_floor(0.0f);
+        const auto left=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            connected.step(1.0f/120.0f);
+        expect(connected.body_is_sleeping(left) &&
+               connected.body_is_sleeping(right) &&
+               connected.active_accurate_nodes().empty() &&
+               connected.active_speculative_nodes().empty(),
+               "Same-pose autowake fixture never reached a dormant island");
+        const auto before=connected.body_state(left);
+        const auto original_edge=connected.contact_edge_index({left,right});
+        const auto rebuilds=connected.island_full_rebuild_count();
+        const auto revision=connected.island_topology_revision();
+        const auto manager_count=connected.contacts().size();
+        connected.set_position(left,before.position);
+        expect(!connected.body_is_sleeping(left) &&
+               !connected.body_ready_for_sleep(left) &&
+               connected.body_wake_counter(left)>0.0f &&
+               connected.body_state(left).position.x==before.position.x &&
+               connected.body_state(left).position.y==before.position.y &&
+               connected.body_state(left).position.z==before.position.z,
+               "Same-position dynamic pose authoring skipped PhysX autowake");
+        connected.advance_collision();
+        expect(!connected.body_is_sleeping(left) &&
+               !connected.body_is_sleeping(right) &&
+               connected.active_accurate_nodes().size()==2 &&
+               connected.active_speculative_nodes().size()==2 &&
+               connected.island_full_rebuild_count()==rebuilds &&
+               connected.island_topology_revision()==revision &&
+               connected.contact_edge_index({left,right})==original_edge &&
+               connected.contacts().size()==manager_count &&
+               connected.found_pairs().empty() &&
+               connected.lost_pairs().empty() &&
+               connected.found_contacts().empty() &&
+               connected.lost_contacts().empty(),
+               "Same-pose autowake rebuilt unchanged collision topology");
+        // A matching static pose must not activate unrelated dormant
+        // bodies: only the dynamic authoring API defaults to autowake.
+        const auto dormant=connected.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10,0.5f,0},1.0f);
+        connected.advance_collision();
+        for(int frame=0;frame<360;++frame)
+            connected.step(1.0f/120.0f);
+        expect(connected.body_is_sleeping(dormant),
+               "Static same-pose fixture never reached sleep");
+        connected.set_position(floor,connected.body_state(floor).position);
+        expect(connected.body_is_sleeping(dormant),
+               "Same-position static pose unexpectedly woke an actor");
+    }
+    {
+        // Source Dy::sleepCheck can mark a body ready one frame before
+        // the third pass deactivates it. The same-pose write must reset
+        // that readiness as well as waking bodies already asleep.
+        Scene ready;
+        ready.add_static_floor(0.0f);
+        const auto body=ready.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool reached_ready=false;
+        for(int frame=0;frame<600;++frame) {
+            ready.step(1.0f/120.0f);
+            if(ready.body_ready_for_sleep(body)) {
+                reached_ready=true;
+                break;
+            }
+        }
+        expect(reached_ready && !ready.body_is_sleeping(body),
+               "Same-pose readiness fixture did not reach the source boundary");
+        const auto old=ready.body_state(body);
+        ready.set_position(body,old.position);
+        expect(!ready.body_ready_for_sleep(body) &&
+               !ready.body_is_sleeping(body) &&
+               ready.body_wake_counter(body)>0.0f,
+               "Same-position authoring retained stale Dy sleep readiness");
+        ready.step(1.0f/120.0f);
+        expect(!ready.body_is_sleeping(body),
+               "Same-position wake was lost at the next source third pass");
+    }
+}
 // Keep multi-island lifetime regressions in separate stack frames. The
 // native scene smoke runner contains many Scene fixtures; combining all
 // of their local allocations into one MSVC frame can exhaust the
@@ -1342,6 +1430,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Previous initial-active suffix replayed on next frame");
     }
 
+    verify_idempotent_pose_autowake();
     verify_simultaneous_initial_sleep_compaction();
     verify_speculative_active_node_lifecycle();
 
