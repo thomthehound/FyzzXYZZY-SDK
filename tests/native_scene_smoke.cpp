@@ -2970,6 +2970,53 @@ int run_native_scene_smoke() {
                "Source third-pass fixture never produced Dy sleep readiness");
     }
 
+    // Third-pass sleep readiness belongs to the previous solver frame.
+    // A support edit between the ready and inactive passes must revoke
+    // the ready flag while the body is still awake. Verify both static
+    // movement and retirement, with and without an intermediate
+    // collision-only publication. These cases must integrate gravity on
+    // their next actual step, not suspend the body in midair.
+    for(bool retire_support : {false,true}) {
+        for(bool query_first : {false,true}) {
+            Scene unsupported;
+            const auto floor=unsupported.add_static_floor(0.0f);
+            const auto body=unsupported.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+            bool became_ready=false;
+            for(int frame=0;frame<600;++frame) {
+                unsupported.step(1.0f/120.0f);
+                if(unsupported.body_ready_for_sleep(body)) {
+                    became_ready=true;
+                    break;
+                }
+            }
+            expect(became_ready && !unsupported.body_is_sleeping(body),
+                   "Support-edit fixture missed ready-but-awake third-pass boundary");
+            const auto settled=unsupported.body_state(body);
+            if(retire_support)
+                unsupported.remove(floor);
+            else
+                unsupported.set_position(floor,{0,-10,0});
+            expect(!unsupported.body_ready_for_sleep(body) &&
+                   !unsupported.body_is_sleeping(body) &&
+                   unsupported.body_wake_counter(body)>0.0f,
+                   "Support edit retained stale ready-but-awake sleep state");
+            if(query_first) {
+                unsupported.advance_collision();
+                expect(!unsupported.body_ready_for_sleep(body) &&
+                       !unsupported.body_is_sleeping(body),
+                       "Collision query restored obsolete third-pass readiness");
+            }
+            unsupported.step(1.0f/120.0f);
+            const auto falling=unsupported.body_state(body);
+            expect(!falling.sleeping &&
+                   !unsupported.body_ready_for_sleep(body) &&
+                   falling.position.y<settled.position.y-1.0e-5f &&
+                   falling.velocity.y<0.0f,
+                   "Support edit deactivated ready actor before gravity");
+        }
+    }
+
     {
         // The source active-island list is a strict subset of all accurate
         // islands. Dormant bodies remain in the persistent source graph

@@ -236,16 +236,18 @@ void Scene::set_position(BodyId id, Vec3 position) {
         actor.sleeping=false;
     } else {
         // Moving a static shape invalidates Sc interactions with
-        // sleeping dynamic bodies. Wake only its currently touching
-        // actors from the existing Gu contact-manager stream; static
-        // authoring is not a per-step hot path.
+        // sleeping or sleep-ready dynamic bodies. In the third-pass
+        // pipeline, a ready node is still awake for one published frame:
+        // editing its support must revoke that readiness before the
+        // next island pass. This explicit authoring path traverses only
+        // the existing Gu contact-manager stream.
         for(const auto& manifold:manifolds_) {
             if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
             const BodyId other=manifold.pair.a==id
                 ? manifold.pair.b:manifold.pair.a;
             auto& dynamic=actors_[other];
             if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
-               !dynamic.sleeping)continue;
+               (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
             dynamic.activating=true;
             dynamic.sleeping=false;
             dynamic.ready_for_sleep=false;
@@ -374,9 +376,10 @@ void Scene::remove(BodyId id) {
     auto& actor=require(id);
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     // Sc actor retirement removes physical contact-manager edges. A
-    // dormant rigid body resting on the retired actor cannot continue
-    // sleeping without its supporting contact: it must reenter the
-    // active island pipeline so gravity and Gu contact generation resume.
+    // dormant or sleep-ready rigid body resting on the retired actor
+    // cannot continue sleeping without its supporting contact: revoke
+    // prior-frame readiness before third-pass deactivation and reenter
+    // gravity/Gu contact generation on the next native step.
     // Traverse the published Gu pairs only on this explicit edit path.
     for(const auto& manifold:manifolds_) {
         if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
@@ -384,7 +387,7 @@ void Scene::remove(BodyId id) {
             ? manifold.pair.b:manifold.pair.a;
         auto& partner=actors_[other];
         if(!partner.alive || partner.kind!=Kind::DynamicBox ||
-           !partner.sleeping)continue;
+           (!partner.sleeping && !partner.ready_for_sleep))continue;
         partner.activating=true;
         partner.sleeping=false;
         partner.ready_for_sleep=false;
