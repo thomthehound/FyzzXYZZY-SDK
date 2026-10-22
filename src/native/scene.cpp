@@ -946,7 +946,9 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     const BodyId invalid=std::numeric_limits<BodyId>::max();
     fast.resize(actors_.size(),invalid);
     fast_edge.resize(actors_.size(),invalid_edge);
-    hops.resize(actors_.size(),std::numeric_limits<std::uint32_t>::max());
+    // IslandSim::addNode initializes mHopCounts to zero. A node with
+    // no established cached route is not assigned infinite hop cost.
+    hops.resize(actors_.size(),0);
     stamps.resize(actors_.size(),0);
     // Retain visited marks across publications; only grow on actor
     // admission, rather than clearing O(all actors) on a lost-edge pass.
@@ -1206,6 +1208,23 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // the same publication. Removing lost edges from intrusive adjacency
     // is not permission to split the old membership before those merges.
     const auto admit_nodes=[&](Graph& graph) {
+        // Source IslandSim::addNode sets mFastRoute=INVALID and
+        // mHopCounts=0 on each newly admitted rigid node. Preserve the
+        // existing graph's estimates on reconnect; never reset all hints
+        // because an unrelated actor joined this frame. The aligned
+        // slots are reused by subsequent dirty-route traversal.
+        auto& fast=(&graph==&accurate_islands_)?
+            accurate_fast_route_:speculative_fast_route_;
+        auto& fast_edge=(&graph==&accurate_islands_)?
+            accurate_fast_edge_:speculative_fast_edge_;
+        auto& hops=(&graph==&accurate_islands_)?
+            accurate_hops_:speculative_hops_;
+        auto& stamps=(&graph==&accurate_islands_)?
+            accurate_hint_stamps_:speculative_hint_stamps_;
+        fast.resize(actors_.size(),invalid);
+        fast_edge.resize(actors_.size(),invalid_edge);
+        hops.resize(actors_.size(),0);
+        stamps.resize(actors_.size(),0);
         graph.node_island.resize(actors_.size(),Graph::invalid);
         graph.node_next.resize(actors_.size(),invalid);
         graph.node_prev.resize(actors_.size(),invalid);
