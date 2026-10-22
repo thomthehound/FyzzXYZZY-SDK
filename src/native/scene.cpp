@@ -1610,7 +1610,14 @@ void Scene::prepare_solver_bodies() {
             row.data.linear_velocity=actor.velocity;
             row.data.angular_velocity=actor.angular_velocity;
             row.data.inverse_mass=actor.inverse_mass;
-            if(!actor.angular_inertia_available)continue;
+            // The provisional translation-only mass admission does not
+            // authorize a rotation-locked rigid contact. PhysX requires
+            // the source body's real angular response for its per-point
+            // contact Jacobians; an unavailable inverse inertia tensor
+            // cannot silently become a zero-inertia solver body.
+            if(!actor.angular_inertia_available)
+                throw std::logic_error(
+                    "Native rigid contact requires representable angular inertia");
 
             // CmUtils.h::transformInertiaTensor(sqrt(invInertia), pose.q).
             // Reuse the six unique terms of the symmetric world tensor.
