@@ -215,7 +215,7 @@ void verify_dirty_seed_split_manager_order() {
     split.set_position(c,{1.0f,10,0});
     split.set_position(d,{1.8f,10,0});
     split.set_position(e,{2.6f,10,0});
-    split.advance_collision();
+    split.step(1.0f/480.0f);
     const auto gu=split.contacts();
     const auto indices=split.indexed_contact_manager_order();
     expect(split.accurate_island_count()==2 &&
