@@ -220,8 +220,12 @@ void verify_dirty_seed_split_manager_order() {
     const auto indices=split.indexed_contact_manager_order();
     expect(split.accurate_island_count()==2 &&
            has(split.lost_contacts(),b,c) &&
-           gu.size()==5 && indices.size()==5,
-           "Dirty-seed source split fixture did not detach B/A");
+           gu.size()==5 && indices.size()==5 &&
+           split.accurate_island_root(a)==b &&
+           split.accurate_island_root(b)==b &&
+           split.accurate_island_root(c)==d &&
+           split.accurate_island_root(d)==d,
+           "Dirty-seed split did not preserve original root and promote B");
 
     std::vector<Pair> orphan_managers;
     for(std::size_t index:indices) {
