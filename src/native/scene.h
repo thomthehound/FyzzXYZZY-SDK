@@ -707,7 +707,11 @@ private:
         std::vector<ThresholdPair> threshold_previous;
         std::vector<ForceThresholdReport> threshold_changes;
         std::vector<std::size_t> partition_ends;
+        // Source graph membership is snapshotted only before its first
+        // mutation, never on a quiet step. Active-node publication
+        // remains a separate per-frame rollback concern.
         IslandGraph speculative_islands, accurate_islands;
+        bool graph_ownership_saved=false;
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
         // Swap-only checkpoint for the transient active Dy batch view:
@@ -729,6 +733,7 @@ private:
         void save_hint(const Scene& scene, BodyId node, bool accurate);
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
+        void save_graph_ownership(const Scene& scene);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
