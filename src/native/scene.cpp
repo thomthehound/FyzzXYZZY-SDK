@@ -2918,6 +2918,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         // Keep both buffers for allocation reuse rather than copying it.
         scene.active_accurate_island_batches_.swap(active_accurate_batches);
         scene.active_accurate_island_batches_.clear();
+        // Preserve any externally retained indexed-manager span on a
+        // failed frame, just like the source active-batch view.
+        scene.indexed_managers_.swap(indexed_managers);
+        scene.indexed_managers_.clear();
     }
 }
 
@@ -3076,6 +3080,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_island_offsets_.swap(accurate_offsets);
     if(includes_solver_state)
         scene.active_accurate_island_batches_.swap(active_accurate_batches);
+    if(includes_solver_state)
+        scene.indexed_managers_.swap(indexed_managers);
     scene.speculative_island_count_=speculative_count;
     scene.accurate_island_count_=accurate_count;
     scene.island_topology_revision_=topology_revision;
