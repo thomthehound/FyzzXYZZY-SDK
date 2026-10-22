@@ -3227,6 +3227,11 @@ int run_native_scene_smoke() {
                "Retained active span fixture was not an active rigid");
         const auto* const published_ptr=published.data();
         const auto* const deact_ptr=published_deactivations.data();
+        // The ready body will deactivate at the next third pass, so a
+        // second, unconnected active body is required to force the
+        // subsequent integration to reject an enormous timestep.
+        const auto overflow_body=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10,5,0},1.0f);
         const auto frame=retained_active.frame_index();
         for(int attempt=0;attempt<2;++attempt) {
             bool rejected=false;
@@ -3269,9 +3274,13 @@ int run_native_scene_smoke() {
                retained_active.deactivating_accurate_nodes()[0]==sleeper,
                "Rejected island rebuild invalidated deactivation report span");
         retained_active.step(1.0f/120.0f);
+        const auto active_after_retry=retained_active.active_accurate_nodes();
         expect(retained_active.deactivating_accurate_nodes().empty() &&
-               retained_active.active_accurate_nodes().size()==1 &&
-               retained_active.active_accurate_nodes()[0]==newcomer,
+               active_after_retry.size()==2 &&
+               std::find(active_after_retry.begin(),active_after_retry.end(),
+                         overflow_body)!=active_after_retry.end() &&
+               std::find(active_after_retry.begin(),active_after_retry.end(),
+                         newcomer)!=active_after_retry.end(),
                "Post-rollback deactivation output was replayed on retry");
     }
 
