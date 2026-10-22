@@ -679,8 +679,11 @@ component traversal reconcile removed edges, retire old actors, and
 rebuild intrusive node membership. Thus simultaneous found/lost edges
 cannot change retained island identity merely because a new actor was
 also admitted. A genuine split still preserves the surviving old-root
-component's handle and unrelated islands. Original localized split migration, complete activating/active node lists,
-source post-integration scheduling and callback interleaving remain open.
+component's handle and unrelated islands. The rigid-body active-node
+lists and initial-active/activated suffixes are implemented separately
+for both graphs; source-local split migration, activated/deactivated
+*edge* worklists, non-rigid node types, post-integration scheduling,
+and callback interleaving remain open.
 
 The island owner now also maintains the source `Node::mStaticTouchCount`
 and `IslandSim::mIslandStaticTouchCount` independently for speculative
@@ -850,9 +853,11 @@ solver-body admission, and pose integration consume those active batches,
 not the entire actor array or dormant graph islands. Index storage is
 reused, and no copied actor registry or second island owner is introduced.
 A regression verifies the dormant/awake split, free-flight integration
-and subsequent wake admission. This still does not reproduce the source
-per-node active-index permutation, activation/deactivation edge lists,
-or concurrent task continuations. The graph-owned accurate active-node index also reconciles
+and subsequent wake admission. Rigid per-node active-index permutations
+are now retained through append activation, swap-last deactivation,
+and rollback in both graphs. Source edge activation/deactivation lists,
+non-rigid node types and concurrent task continuations remain unported.
+The graph-owned accurate active-node index also reconciles
 on successful geometry-only publications (including new admission,
 retirement and quiet authored wakes). Its reusable active-ID capacity
 and reverse map are prepared by the topology rebuild, so that no-throw
@@ -940,9 +945,10 @@ schedule. Regressions require a visible ready-but-awake frame followed
 by an inactive frame with an unchanged pose, and verify that a newly
 published Gu touch clears the readiness of an **already awake** node
 before third-pass deactivation. Quiet island propagation must not clear
-readiness every frame, or no island would ever fall asleep. This does **not** implement
-the original activating/deactivating index arrays, callback lists,
-kinematic rules, or the parallel third-pass/post-integration join.
+readiness every frame, or no island would ever fall asleep. This implements the admitted rigid active-node index, activated suffix,
+and accurate deactivating-node output, but **not** the original
+activating/deactivating *edge* worklists, kinematic rules, callback lists,
+or parallel third-pass/post-integration join.
 
 **Persistent contact-manager EdgeIndex (admitted source subset):**
 `PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
@@ -984,9 +990,13 @@ with speculative and accurate state kept separate. Static-touch
 counters now follow physical touch and candidate transitions, including
 dynamic component merge/split and static actor retirement. Stable island
 handles and per-node island membership replace the provisional
-union/find roots. Source priority-queue visitation and fully local
-split/handle migration, multi-frame dirty-work budgets and the full
-edge activation/deactivation lifecycle remain open. The bounded
+union/find roots. Source hop-priority queue visitation and its
+equal-priority `Cm::PriorityQueue` heap order are now implemented
+for the admitted rigid graph, including split migration visitation
+order. **What remains** is witness-aware `mVisitedState` reuse between
+dirty searches, successive source-local island splitting and handle
+migration, multi-frame dirty-work budgets, and the full edge
+activation/deactivation lifecycle. The bounded
 component fallback now migrates indexed-manager edges through source
 swap-last removal and per-component visited-node appends instead of
 replaying the original manager ordering. Failure rollback journals **only the modified** source edge
@@ -1000,19 +1010,23 @@ Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
 `ScPipeline`'s asynchronous `destroyManagers`/lost-contact
-continuations, speculative/accurate deactivation, and
-`afterIntegration` reconciliation also remain unported. A correct
-published graph for the all-awake subset does **not** establish source
-task or island identity.
+continuations, speculative/accurate *edge* deactivation and
+`afterIntegration` reconciliation also remain unported. The admitted
+rigid-node active lists and persistent island handles are real source
+lowerings, but a correctly published graph does **not** establish full
+source island lifetime or task semantics.
 
-**Unported source responsibilities:** persistent `PxNodeIndex`
-node lifecycle and destruction, original dirty `EdgeInstance` routes,
-speculative/accurate activation flags, sleep/wake, first/second/third-pass
-task joins, post-third-pass interaction retirement,
-`afterIntegration` deactivation reconciliation, source callback
-ownership, and complete per-island solve/fetch scheduling. The
-union/find lowering must be retired or extended when those source
-responsibilities are ported; **N1 is not complete**.
+**Unported source responsibilities:** complete source `PxNodeIndex`
+node lifecycle and destruction, `findRoute`'s shared visited-island
+witnesses and local `mVisitedNodes` split migration, per-edge
+activating/deactivating lists, kinematic/non-rigid activity partitions,
+complete sleep/wake callback semantics, first/second/third-pass task
+joins, post-third-pass interaction retirement, `afterIntegration`
+deactivation reconciliation, source callback ownership, and complete
+per-island solve/fetch scheduling. The provisional union/find
+parent/rank representation **has already been retired** in favor of
+source-style graph-owned island handles and node chains. These
+remaining responsibilities still prevent N1 completion.
 
 ## Initial integrated acceptance boundary: real CPU PGS
 
