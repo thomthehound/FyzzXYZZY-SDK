@@ -259,6 +259,11 @@ public:
     std::uint64_t island_local_split_count() const noexcept {
         return island_local_split_count_;
     }
+    // Number of ownership snapshots, excluding source active-node
+    // publication snapshots. A quiet step must leave this unchanged.
+    std::uint64_t island_graph_checkpoint_count() const noexcept {
+        return island_graph_checkpoint_count_;
+    }
     std::size_t island_dirty_route_check_count() const noexcept {
         return island_dirty_route_checks_;
     }
@@ -619,6 +624,7 @@ private:
     std::uint64_t island_topology_revision_ = 0;
     std::uint64_t island_full_rebuild_count_ = 0;
     std::uint64_t island_local_split_count_ = 0;
+    std::uint64_t island_graph_checkpoint_count_ = 0;
     bool island_topology_dirty_ = true;
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
@@ -722,6 +728,7 @@ private:
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;
         std::uint64_t local_split_count=0;
+        std::uint64_t graph_checkpoint_count=0;
         std::size_t dirty_route_checks=0, fast_route_hits=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         std::uint64_t quiet_event_epoch=0;
@@ -733,7 +740,7 @@ private:
         void save_hint(const Scene& scene, BodyId node, bool accurate);
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
-        void save_graph_ownership(const Scene& scene);
+        void save_graph_ownership(Scene& scene);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
