@@ -2560,6 +2560,17 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         }
         friction_patches.assign(scene.friction_patches_.begin(),
                                 scene.friction_patches_.end());
+        quiet_manifold_metadata.clear();
+        if(!scene.dirty_) {
+            // With no Gu republication, rollback cannot recover solver
+            // descriptors by swapping the manifold arena. Journal only
+            // their three publicly visible mutable fields on this path.
+            quiet_manifold_metadata.reserve(scene.manifolds_.size());
+            for(const auto& manifold:scene.manifolds_)
+                quiet_manifold_metadata.push_back({
+                    manifold.solver_offset,manifold.friction_patch_offset,
+                    manifold.friction_patch_count});
+        }
         threshold_previous.assign(scene.threshold_previous_.begin(),
                                   scene.threshold_previous_.end());
         partition_ends.assign(scene.partition_ends_.begin(),
@@ -2708,6 +2719,18 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     }
     scene.contact_epoch_=contact_epoch;
     scene.quiet_event_epoch_=quiet_event_epoch;
+    // For a quiet solve, the Gu arena never rotated. Restore its
+    // externally exposed Dy offsets without copying contact points,
+    // replacing the published span or journaling ordinary moving frames.
+    if(includes_solver_state && !quiet_manifold_metadata.empty()) {
+        for(std::size_t i=0;i<quiet_manifold_metadata.size();++i) {
+            const auto& prior=quiet_manifold_metadata[i];
+            auto& manifold=scene.manifolds_[i];
+            manifold.solver_offset=prior.solver_offset;
+            manifold.friction_patch_offset=prior.friction_patch_offset;
+            manifold.friction_patch_count=prior.friction_patch_count;
+        }
+    }
     if(includes_solver_state)
         scene.friction_patches_.swap(friction_patches);
     scene.normal_impulse_writeback_.swap(normal_impulses);

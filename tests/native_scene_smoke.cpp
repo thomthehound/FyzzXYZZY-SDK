@@ -1665,6 +1665,67 @@ int run_native_scene_smoke() {
                "Rejected geometry advance prevented subsequent publication");
     }
 
+    // Quiet failed solver preparation must also restore Gu manifold
+    // descriptor metadata, not merely the contact-point span and pair
+    // event streams. Put the overflowing contact manager second so
+    // preparation has already advanced the solver offset of its row.
+    {
+        Scene rejected, clean;
+        auto construct=[](Scene& s) {
+            const auto floor=s.add_static_floor(0.0f);
+            const auto first=s.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            const auto second=s.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{5,0.49f,0},1.0f);
+            s.advance_collision();
+            return std::tuple{floor,first,second};
+        };
+        const auto [floor_bad,first_bad,second_bad]=construct(rejected);
+        const auto [floor_good,first_good,second_good]=construct(clean);
+        expect(rejected.contacts().size()==2 &&
+               clean.contacts().size()==2,
+               "Quiet manifold rollback fixture requires two Gu managers");
+        const auto* const published_ptr=rejected.contacts().data();
+        const auto* const points0=rejected.contacts()[0].points.data();
+        const auto* const points1=rejected.contacts()[1].points.data();
+        const auto original0=rejected.contacts()[0];
+        const auto original1=rejected.contacts()[1];
+        const auto frame=rejected.frame_index();
+        auto exploding=fyzz::Material{};
+        exploding.static_friction=1.0e30f;
+        exploding.dynamic_friction=1.0e30f;
+        exploding.friction_combine=fyzz::MaterialCombineMode::Multiply;
+        rejected.set_material(floor_bad,exploding);
+        rejected.set_material(second_bad,exploding);
+        bool failed=false;
+        try {rejected.step(1.0f/120.0f);}
+        catch(const std::overflow_error&) {failed=true;}
+        const auto after=rejected.contacts();
+        expect(failed && rejected.frame_index()==frame &&
+               after.size()==2 && after.data()==published_ptr &&
+               after[0].points.data()==points0 &&
+               after[1].points.data()==points1 &&
+               after[0].solver_offset==original0.solver_offset &&
+               after[1].solver_offset==original1.solver_offset &&
+               after[0].friction_patch_offset==original0.friction_patch_offset &&
+               after[1].friction_patch_offset==original1.friction_patch_offset &&
+               after[0].friction_patch_count==original0.friction_patch_count &&
+               after[1].friction_patch_count==original1.friction_patch_count,
+               "Rejected quiet preparation leaked partial Gu/Dy descriptors");
+        rejected.set_material(floor_bad,fyzz::Material{});
+        rejected.set_material(second_bad,fyzz::Material{});
+        rejected.step(1.0f/120.0f);
+        clean.step(1.0f/120.0f);
+        const auto bad=rejected.body_state(second_bad);
+        const auto good=clean.body_state(second_good);
+        expect(bad.position.y==good.position.y &&
+               bad.velocity.y==good.velocity.y &&
+               rejected.contacts().size()==clean.contacts().size(),
+               "Quiet manifold rollback changed valid retry dynamics");
+        (void)first_bad;
+        (void)first_good;
+    }
+
     // Rejected solver scratch must not be admitted again when the
     // checkpoint rolls back the frame clock and the author changes the
     // geometry before retry. Both scenes start with the same Gu contact;

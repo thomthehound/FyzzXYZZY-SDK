@@ -597,6 +597,15 @@ private:
         std::vector<EdgeIndex> retired_handles, free_handles;
         bool handles_saved=false;
           std::vector<FrictionPatch> friction_patches;
+        // A quiet step reuses the published Gu manifold arena. Solver
+        // preparation mutates only these three exposed descriptor fields;
+        // capture them only if no contact-epoch swap will undo the write.
+        struct ManifoldSolverMetadata {
+            std::size_t solver_offset=0;
+            std::size_t friction_patch_offset=0;
+            std::uint8_t friction_patch_count=0;
+        };
+        std::vector<ManifoldSolverMetadata> quiet_manifold_metadata;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
         std::vector<ThresholdPair> threshold_previous;
