@@ -632,9 +632,14 @@ reconciliation, not ordinary lost-contact splitting. The new
 `island_local_split_count` and `island_full_rebuild_count`
 diagnostics distinguish those two paths. Shared split witnesses are
 now retained within each third pass using generation-stamped scratch.
-Source's broader fast-path and successful-search witness propagation,
-exact hint evolution for all visited branches, and deferred dirty-work
-budgets still require fidelity work.
+The third pass now also retains witnesses along validated fast routes,
+terminates successful priority searches at an earlier confirmed island
+member, unwinds that root/witness route, and propagates hints to the
+remaining discovered branches in source `mVisitedNodes` order.
+Standalone regressions distinguish split-witness skipping from
+successful-search branch repair. The full source `mIslandIds`-based
+visited/invalid transition, deferred dirty-node budgets and
+kinematic/non-rigid visitation remain fidelity work.
 Source `Cm::PriorityQueue` ties are now reproduced by the same binary-heap
 push/pop rules: equal-hop insertions do not bubble, and removal selects
 the left child when both children tie. The five-way split regression
@@ -815,9 +820,11 @@ stamps are retained and advanced across publications rather than
 clearing all actor marks each frame. Split members are also marked
 confirmed for the current source dirty-map sweep, so subsequent dirty
 seeds in that same orphan incur no extra route searches. Source
-`IslandSim::findRoute` additionally reuses successful-search and
-fast-path witnesses, propagates hints to all branches and optionally
-bounds dirty-node work; those, plus full sleep/activation semantics,
+`IslandSim::findRoute` also reuses confirmed witnesses from earlier
+successful searches and validates cached paths; those root-witness
+and off-path branch operations are now translated for the rigid graph.
+The full source typed/invalid island witness-state transitions,
+optional dirty-node work budget, and full sleep/activation semantics
 are **not yet fully ported**.
 The current queue implements the source's hop-priority traversal for
 the admitted all-awake rigid graph, not the entire island algorithm.
@@ -1017,9 +1024,11 @@ for the admitted rigid graph, including split migration visitation
 order. Split-local `mVisitedState` witnesses now survive across dirty
 seeds in the same graph pass, and failed `findRoute`'s discovery
 list feeds `splitEdges` without a second component traversal.
-**What remains** is full witness reuse after successful/fast-path
-searches, exact source off-path hint propagation, multi-frame
-dirty-work budgets, and the full edge activation/deactivation lifecycle.
+The admitted rigid graph now reuses successful-search and fast-path
+witnesses as well, including source-style off-path branch hint
+propagation; **what remains** is the full invalid-island state
+transition, deferred multi-frame dirty-work budgets, typed node
+lifetime, and complete edge activation/deactivation lifecycle.
 Ordinary lost-contact splitting now migrates only the failed
 component's nodes and indexed-manager edges using source visit order,
 swap-last removal and local handle allocation. The full-component
