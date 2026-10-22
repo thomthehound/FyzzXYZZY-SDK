@@ -1445,8 +1445,26 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             std::vector<RouteEntry> pending;
             pending.reserve(actors_.size());
             std::vector<std::uint32_t> seen(actors_.size(),0);
+            // Original mDirtyMap enumerates *node indices*, and each
+            // failed findRoute immediately removes the orphan's edges
+            // from the same old island array. Visiting components by
+            // lowest BodyId instead would change replaceWithLast order
+            // when several orphan components split in one pass.
+            std::vector<std::uint32_t> visit_components;
+            visit_components.reserve(component_number);
+            for(std::uint32_t comp=1;comp<=component_number;++comp)
+                visit_components.push_back(comp);
+            std::sort(visit_components.begin(),visit_components.end(),
+                [&](std::uint32_t a,std::uint32_t b) {
+                    const bool ad=first_dirty[a]!=invalid;
+                    const bool bd=first_dirty[b]!=invalid;
+                    if(ad!=bd)return ad;
+                    const BodyId an=ad?first_dirty[a]:first_node[a];
+                    const BodyId bn=bd?first_dirty[b]:first_node[b];
+                    return an!=bn?an<bn:a<b;
+                });
             std::size_t discovery=0;
-            for(std::uint32_t comp=1;comp<=component_number;++comp) {
+            for(std::uint32_t comp:visit_components) {
                 const BodyId start=first_dirty[comp]!=invalid
                     ? first_dirty[comp]:first_node[comp];
                 if(start==invalid)continue;
