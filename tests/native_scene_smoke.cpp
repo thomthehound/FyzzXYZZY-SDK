@@ -189,18 +189,21 @@ void verify_dirty_order_multisplit_manager_remainder() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
     Scene scene;
+    // Form all three islands separately first. The central C-D-E
+    // source root must acquire size three before the two size-two
+    // arms connect, otherwise mergeIslands could retain an arm root.
     const auto a=scene.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{-1.6f,10,0},1);
+        {0.5f,0.5f,0.5f},{-5.0f,10,0},1);
     const auto c=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,10,0},1);
     const auto f=scene.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{3.2f,10,0},1);
+        {0.5f,0.5f,0.5f},{6.2f,10,0},1);
     const auto g=scene.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{2.4f,10,0},1);
+        {0.5f,0.5f,0.5f},{5.4f,10,0},1);
     const auto d=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.8f,10,0},1);
     const auto b=scene.add_dynamic_box(
-        {0.5f,0.5f,0.5f},{-0.8f,10,0},1);
+        {0.5f,0.5f,0.5f},{-4.2f,10,0},1);
     const auto e=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{1.6f,10,0},1);
     const auto sc=scene.add_static_box(
@@ -210,6 +213,21 @@ void verify_dirty_order_multisplit_manager_remainder() {
     const auto se=scene.add_static_box(
         {0.1f,0.1f,0.1f},{1.6f,10,0.54f});
     scene.advance_collision();
+    expect(scene.accurate_island_count()==3 &&
+           scene.contacts().size()==7 &&
+           scene.accurate_island_root(c)==d,
+           "Two-way split fixture did not establish its larger central root");
+    scene.set_position(a,{-1.6f,10,0});
+    scene.set_position(b,{-0.8f,10,0});
+    scene.set_position(f,{3.2f,10,0});
+    scene.set_position(g,{2.4f,10,0});
+    scene.advance_collision();
+    expect(scene.accurate_island_count()==1 &&
+           scene.accurate_island_root(a)==d &&
+           scene.accurate_island_root(g)==d &&
+           has(scene.found_contacts(),b,c) &&
+           has(scene.found_contacts(),g,e),
+           "Two-way split fixture lost its central source root during merges");
     scene.step(1.0f/480.0f);
     const auto initial_managers=scene.indexed_contact_manager_order();
     const auto initial_gu=scene.contacts();
