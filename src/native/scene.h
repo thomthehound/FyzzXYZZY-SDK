@@ -667,6 +667,7 @@ private:
         // Swap-only checkpoint for the transient active Dy batch view:
         // no O(active islands) per-frame copying or undo allocation.
         std::vector<std::size_t> active_accurate_batches;
+        std::vector<std::size_t> indexed_managers;
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;
