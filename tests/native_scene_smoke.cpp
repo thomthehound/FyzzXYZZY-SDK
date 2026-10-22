@@ -112,6 +112,75 @@ void verify_idempotent_pose_autowake() {
                "Same-position wake was lost at the next source third pass");
     }
 }
+// PxsIslandSim::deactivateNodeInternal emits eCONTACT_MANAGER edges
+// only when the final awake endpoint sleeps. Static world connections
+// count; destroyed edges never become sleep-deactivation events.
+void verify_source_contact_edge_deactivations() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene scene;
+    const auto floor=scene.add_static_floor(0.0f);
+    const auto left=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1);
+    const auto right=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1);
+    scene.advance_collision();
+    const auto lr=scene.contact_edge_index(Pair{left,right});
+    const auto fl=scene.contact_edge_index(Pair{floor,left});
+    const auto fr=scene.contact_edge_index(Pair{floor,right});
+    expect(lr!=std::numeric_limits<std::uint32_t>::max() &&
+           fl!=std::numeric_limits<std::uint32_t>::max() &&
+           fr!=std::numeric_limits<std::uint32_t>::max() &&
+           scene.deactivating_accurate_contact_edges().empty() &&
+           scene.deactivating_speculative_contact_edges().empty(),
+           "Contact edges deactivated before rigid sleep");
+    bool entered_sleep=false;
+    for(int frame=0;frame<600;++frame) {
+        scene.step(1.0f/120.0f);
+        if(scene.body_is_sleeping(left) &&
+           scene.body_is_sleeping(right)) {
+            entered_sleep=true;
+            break;
+        }
+    }
+    expect(entered_sleep,"Source contact-edge fixture never slept");
+    for(const auto edges:{
+        scene.deactivating_accurate_contact_edges(),
+        scene.deactivating_speculative_contact_edges()}) {
+        expect(edges.size()==3 &&
+               std::count(edges.begin(),edges.end(),lr)==1 &&
+               std::count(edges.begin(),edges.end(),fl)==1 &&
+               std::count(edges.begin(),edges.end(),fr)==1,
+               "Rigid sleep did not deactivate each contact edge once");
+    }
+    expect(scene.contact_edge_connected(Pair{left,right}) &&
+           scene.contact_edge_connected(Pair{floor,left}) &&
+           scene.contact_edge_connected(Pair{floor,right}),
+           "Rigid sleep incorrectly retired persistent contact managers");
+    scene.advance_collision();
+    expect(scene.deactivating_accurate_contact_edges().empty() &&
+           scene.deactivating_speculative_contact_edges().empty(),
+           "Quiet source publication replayed edge deactivations");
+    scene.set_position(left,scene.body_state(left).position);
+    scene.advance_collision();
+    expect(!scene.body_is_sleeping(left) &&
+           !scene.body_is_sleeping(right) &&
+           scene.deactivating_accurate_contact_edges().empty(),
+           "Authored wake replayed stale edge deactivations");
+    Scene lost;
+    const auto a=lost.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,12,0},1);
+    const auto b=lost.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.8f,12,0},1);
+    lost.advance_collision();
+    lost.set_position(b,{5,12,0});
+    lost.advance_collision();
+    expect(has(lost.lost_contacts(),a,b) &&
+           lost.deactivating_accurate_contact_edges().empty() &&
+           lost.deactivating_speculative_contact_edges().empty(),
+           "Lost contact edge incorrectly entered sleep output");
+}
+
 // NpRigidDynamic::setGlobalPose refreshes an awake body's wake counter
 // without clearing DySleep's accumulated low-motion samples. Use the
 // existing setLinearVelocity autowake path as a source-compatible control,
@@ -5013,6 +5082,7 @@ int run_native_scene_smoke() {
 #endif
 
     verify_demand_driven_island_ownership_checkpoint();
+    verify_source_contact_edge_deactivations();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
