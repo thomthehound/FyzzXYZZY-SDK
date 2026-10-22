@@ -263,9 +263,23 @@ public:
     std::size_t active_accurate_island_count() const noexcept {
         return active_accurate_island_batches_.size();
     }
+    // The independent speculative IslandSim owns its own rigid active
+    // list, reverse indices and wakeIslands initial-active boundary.
+    // These views are graph-owned; they do not duplicate actor state.
+    std::span<const BodyId> active_speculative_nodes() const noexcept {
+        return speculative_islands_.active_nodes;
+    }
+    std::span<const BodyId> newly_activated_speculative_nodes() const noexcept {
+        return std::span<const BodyId>(speculative_islands_.active_nodes)
+            .subspan(speculative_islands_.initial_active_node_count);
+    }
+    std::size_t speculative_active_node_index(BodyId id) const noexcept {
+        return id<speculative_islands_.active_node_index.size()
+            ? speculative_islands_.active_node_index[id] : invalid_instance;
+    }
     // PxsIslandSim::mActiveNodes[eRIGID_BODY_TYPE] and
-    // mActiveNodeIndex, owned by the accurate graph rather than a
-    // second actor registry. The invalid index denotes an inactive node.
+    // mActiveNodeIndex in the separate accurate graph. The invalid
+    // index denotes an inactive node.
     std::span<const BodyId> active_accurate_nodes() const noexcept {
         return accurate_islands_.active_nodes;
     }
@@ -448,7 +462,7 @@ private:
     // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
-    void synchronize_accurate_active_nodes() noexcept;
+    void synchronize_active_island_nodes() noexcept;
     void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
