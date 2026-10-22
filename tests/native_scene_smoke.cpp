@@ -611,6 +611,15 @@ void verify_island_contact_manager_order() {
                gu[2].pair==fyzz::native::Pair{c,d} &&
                sequence[0]==2 && sequence[1]==0 && sequence[2]==1,
                "Source size-tied island merge did not concatenate manager order");
+        // The tie retains C-D's D-root island. Source
+        // mergeIslandsInternal computes extraPath =
+        // hops[C](1) + hops[B](0) + 1 = 2, adds that to
+        // the losing A-B island, then pins B to hops[C]+1.
+        expect(merge_order.accurate_cached_route_hops(a)==3 &&
+               merge_order.accurate_cached_route_hops(b)==2 &&
+               merge_order.accurate_cached_route_hops(c)==1 &&
+               merge_order.accurate_cached_route_hops(d)==0,
+               "Source mergeIslandsInternal did not translate loser hop offsets");
     }
 
 }
