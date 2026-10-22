@@ -590,10 +590,15 @@ orphan's dirty B node follow its smaller, non-dirty A node in actor
 order, and requires B's static manager to precede A's managers in
 the new island. This avoids an incorrect globally sorted or FIFO
 discovery sequence while retaining the source-owned contact arrays.
-The bounded reconstruction still chooses component roots and handles
-by its full component scan, not by `processLostEdges`' successive
-dirty-node `findRoute` failures, `mVisitedState` witnesses and
-local `mVisitedNodes` island-node migrations. Exact priority-queue
+The bounded reconstruction now preserves the surviving
+original-root component's root and promotes the first dirty-route
+node to the root of an orphaned component, as
+`PxsIslandSim::processLostEdges` does for a failed `findRoute`.
+The fixture asserts both source root identities, not only manager
+order. However, it still assigns island handles and rebuilds member
+chains by its whole-component scan rather than successive
+`mVisitedState` witnesses and local `mVisitedNodes` migrations.
+Exact priority-queue
 tie handling, incremental handle allocation, per-pass dirty budgets,
 and the original continuation graph remain fidelity gates.
 
