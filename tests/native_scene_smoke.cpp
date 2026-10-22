@@ -230,7 +230,7 @@ void verify_dirty_order_multisplit_manager_remainder() {
         *found=root_array.back();
         root_array.pop_back();
     };
-    swap_remove(Pair{b,c});
+    swap_remove(Pair{c,b});
     swap_remove(Pair{g,e});
     swap_remove(Pair{f,g});
     swap_remove(Pair{a,b});
