@@ -256,6 +256,9 @@ public:
     std::uint64_t island_full_rebuild_count() const noexcept {
         return island_full_rebuild_count_;
     }
+    std::uint64_t island_local_split_count() const noexcept {
+        return island_local_split_count_;
+    }
     std::size_t island_dirty_route_check_count() const noexcept {
         return island_dirty_route_checks_;
     }
@@ -486,6 +489,7 @@ private:
     // full-frame source publications. No duplicated activation owner.
     void activate_published_islands() noexcept;
     bool lost_island_edges_retain_routes(bool accurate);
+    void split_lost_islands(bool accurate);
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
@@ -589,6 +593,12 @@ private:
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
     std::vector<BodyId> speculative_dirty_nodes_, accurate_dirty_nodes_;
+    // Source processLostEdges' failed dirty-route seeds, consumed by
+    // local split migration in their original ascending dirty order.
+    std::vector<BodyId> speculative_failed_routes_, accurate_failed_routes_;
+    // Reused source mVisitedNodes and mIslandSplitEdges working sets.
+    std::vector<BodyId> island_split_members_;
+    std::vector<EdgeIndex> island_split_edges_;
     // IslandSim::mDirtyMap lowers to reusable per-graph membership bits.
     // Reset only touched nodes after a pass or a failed publication.
     std::vector<std::uint8_t> speculative_dirty_map_, accurate_dirty_map_;
@@ -605,6 +615,7 @@ private:
     std::size_t accurate_island_count_ = 0;
     std::uint64_t island_topology_revision_ = 0;
     std::uint64_t island_full_rebuild_count_ = 0;
+    std::uint64_t island_local_split_count_ = 0;
     bool island_topology_dirty_ = true;
     // Capacity persists across frames; matching actor indices avoid a shadow
     // body-ID registry. Only solver deltas are published back to actors.
@@ -703,6 +714,7 @@ private:
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
         std::uint64_t full_rebuild_count=0;
+        std::uint64_t local_split_count=0;
         std::size_t dirty_route_checks=0, fast_route_hits=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
         std::uint64_t quiet_event_epoch=0;
