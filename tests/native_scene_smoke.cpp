@@ -2178,11 +2178,13 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                     fyzz::native::Pair{source_floor,rod_a});
                 const auto accurate_events=
                     distinct_sleep.deactivating_accurate_contact_edges();
-                expect(floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
-                       std::count(accurate_events.begin(),
-                                  accurate_events.end(),floor_edge)==1 &&
-                       distinct_sleep.deactivating_speculative_contact_edges().empty(),
-                    "Speculative sleep edges published while its island remained awake");
+                expect(floor_edge!=std::numeric_limits<std::uint32_t>::max(),
+                       "Independent accurate sleep lost floor manager handle");
+                expect(std::count(accurate_events.begin(),
+                                  accurate_events.end(),floor_edge)==1,
+                       "Accurate sleep did not publish its floor-edge deactivation");
+                expect(distinct_sleep.deactivating_speculative_contact_edges().empty(),
+                       "Speculative sleep edges published while its island remained awake");
                 independent_sleep=true;
                 break;
             }
