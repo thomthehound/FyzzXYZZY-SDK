@@ -1518,6 +1518,48 @@ int run_native_scene_smoke() {
                "Source constraint partition did not reset on next frame");
     }
 
+    // PhysX indexed-manager order belongs to the accurate island's
+    // eCONTACT_MANAGER edge array, not the pair-sorted Gu stream.
+    // Build C first, then B and D, producing source [C,B,D] against
+    // canonical Gu [B,C,D]. Removing C must swap-last to [D,B], not
+    // perform a stable erase or rebuild from canonical pair order.
+    {
+        Scene island_managers;
+        const auto center=island_managers.add_dynamic_box(
+            {1,1,1},{0,10,0},1);
+        const auto b=island_managers.add_static_box(
+            {0.25f,0.25f,0.25f},{4,10,0});
+        const auto c=island_managers.add_static_box(
+            {0.25f,0.25f,0.25f},{-1.1f,10,0});
+        const auto d=island_managers.add_static_box(
+            {0.25f,0.25f,0.25f},{0,10,4});
+        island_managers.advance_collision();
+        expect(island_managers.contacts().size()==1 &&
+               has(island_managers.found_contacts(),center,c),
+               "Island manager fixture did not establish the first touch");
+        island_managers.set_position(b,{1.1f,10,0});
+        island_managers.set_position(d,{0,10,1.1f});
+        island_managers.step(1.0f/480.0f);
+        const auto initial=island_managers.indexed_contact_manager_order();
+        const auto contacts=island_managers.contacts();
+        expect(contacts.size()==3 && initial.size()==3 &&
+               contacts[0].pair==fyzz::native::Pair{center,b} &&
+               contacts[1].pair==fyzz::native::Pair{center,c} &&
+               contacts[2].pair==fyzz::native::Pair{center,d} &&
+               initial[0]==1 && initial[1]==0 && initial[2]==2,
+               "Dy partitioning ignored island-owned manager insertion order");
+        island_managers.set_position(center,{0,10,0});
+        island_managers.set_position(c,{-4,10,0});
+        island_managers.step(1.0f/480.0f);
+        const auto after=island_managers.indexed_contact_manager_order();
+        const auto remaining=island_managers.contacts();
+        expect(remaining.size()==2 && after.size()==2 &&
+               remaining[0].pair==fyzz::native::Pair{center,b} &&
+               remaining[1].pair==fyzz::native::Pair{center,d} &&
+               after[0]==1 && after[1]==0,
+               "PhysX island edge swap-last was replaced by stable order");
+    }
+
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
     // partition zero, even though they reference one world solver row.
