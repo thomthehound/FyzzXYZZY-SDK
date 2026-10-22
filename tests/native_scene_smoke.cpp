@@ -2757,29 +2757,32 @@ int run_native_scene_smoke() {
                "Native CPU actor retirement failed to publish touch loss");
     }
     {
-        // Source Dy contact preparation can require an impulse above the
-        // representable PxReal range for an SDK-admitted, extremely heavy
-        // translational body. Narrowing its biased/unbiased error to float
-        // must not reject the actor or lose a finite solver velocity delta.
+        // The provisional translation-only mass admission must not
+        // silently turn a constrained rigid body into a rotation-locked
+        // one when source PxReal angular inertia is not representable.
         Scene heavy;
-        heavy.add_static_box({1,1,1},{0,5,0});
+        const auto obstacle=heavy.add_static_box({1,1,1},{0,5,0});
         const auto body = heavy.add_dynamic_box(
             {1,1,1},{1.5f,5,0},std::numeric_limits<float>::max());
         heavy.set_velocity(body,{-1,0,0});
-        heavy.step(1.0f/120.0f);
-        const auto state = heavy.body_state(body);
-        expect(std::isfinite(state.position.x) &&
-               std::isfinite(state.velocity.x) &&
-               std::isfinite(state.velocity.y) &&
-               state.position.x > 1.5f &&
-               state.velocity.x > -1.0f &&
-               heavy.contacts().size() == 1,
-               "Valid heavy translation-only contact was lost to float impulse narrowing");
+        bool rejected_contact=false;
+        try { heavy.step(1.0f/120.0f); }
+        catch(const std::logic_error&) { rejected_contact=true; }
+        expect(rejected_contact &&
+               heavy.frame_index()==0 &&
+               heavy.body_state(body).position.x==1.5f &&
+               heavy.body_state(body).velocity.x==-1.0f,
+               "Nonrepresentable heavy-body contact was solved or leaked state");
         bool angular_rejected = false;
         try { heavy.apply_torque_impulse(body,{1,0,0}); }
         catch(const std::logic_error&) { angular_rejected = true; }
         expect(angular_rejected,
                "Heavy body with nonrepresentable angular inertia accepted torque");
+        heavy.remove(obstacle);
+        heavy.step(1.0f/120.0f);
+        expect(heavy.body_state(body).position.x<1.5f &&
+               std::isfinite(heavy.body_state(body).velocity.x),
+               "Admitted free translation failed after unsupported contact rejection");
     }
 
     {
@@ -2853,9 +2856,9 @@ int run_native_scene_smoke() {
     }
 
     {
-        // Finite per-body inverse masses can sum beyond float response.
-        // The source position-iteration motion must separate the overlap;
-        // unbiased velocity iterations can return zero final velocities.
+        // Tiny mass can still have a representable inverse mass while
+        // its source angular tensor is not representable. Contact PGS
+        // must reject this geometry instead of using a zero tensor.
         Scene very_light;
         const auto left = very_light.add_dynamic_box(
             {1,1,1},{0,5,0},5.0e-40f);
@@ -2871,16 +2874,20 @@ int run_native_scene_smoke() {
         catch (const std::logic_error&) { rejected_angular = true; }
         expect(rejected_angular,
                "Tiny-mass body admitted an unrepresentable angular state");
-        very_light.step(1.0f / 120.0f);
-        const auto lv = very_light.body_state(left);
-        const auto rv = very_light.body_state(right);
-        expect(std::isfinite(lv.velocity.x) &&
-               std::isfinite(rv.velocity.x) &&
-               std::isfinite(lv.position.x) &&
-               std::isfinite(rv.position.x) &&
-               lv.position.x < 0.0f && rv.position.x > 1.5f &&
-               very_light.contacts().size() == 1,
-               "Finite tiny-mass position correction was silently discarded");
+        bool rejected_contact=false;
+        try { very_light.step(1.0f/120.0f); }
+        catch(const std::logic_error&) { rejected_contact=true; }
+        expect(rejected_contact &&
+               very_light.frame_index()==0 &&
+               very_light.body_state(left).position.x==0.0f &&
+               very_light.body_state(right).position.x==1.5f,
+               "Tiny-mass contact substituted a zero angular tensor");
+        very_light.set_position(right,{5,5,0});
+        very_light.set_velocity(left,{1,0,0});
+        very_light.step(1.0f/120.0f);
+        expect(std::isfinite(very_light.body_state(left).velocity.x) &&
+               very_light.body_state(left).position.x>0.0f,
+               "Rejected tiny-mass contact poisoned later free translation");
     }
 
     {
