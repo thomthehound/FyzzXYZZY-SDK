@@ -160,6 +160,38 @@ void verify_island_contact_manager_order() {
                "PhysX island edge swap-last was replaced by stable order");
     }
 
+    // PxsIslandSim::mergeEdges concatenates the retained winner's
+    // manager array with the losing island's array before appending
+    // the newly connected bridge. Equal-size merges preserve the
+    // second island, independent of canonical Gu BodyId ordering.
+    {
+        Scene merge_order;
+        const auto a=merge_order.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1);
+        const auto b=merge_order.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,10,0},1);
+        const auto c=merge_order.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,10,0},1);
+        const auto d=merge_order.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3.8f,10,0},1);
+        merge_order.advance_collision();
+        expect(merge_order.contacts().size()==2 &&
+               has(merge_order.found_contacts(),a,b) &&
+               has(merge_order.found_contacts(),c,d),
+               "Indexed manager merge fixture did not form separate islands");
+        merge_order.set_position(c,{1.6f,10,0});
+        merge_order.set_position(d,{2.4f,10,0});
+        merge_order.step(1.0f/480.0f);
+        const auto sequence=merge_order.indexed_contact_manager_order();
+        const auto gu=merge_order.contacts();
+        expect(gu.size()==3 && sequence.size()==3 &&
+               gu[0].pair==fyzz::native::Pair{a,b} &&
+               gu[1].pair==fyzz::native::Pair{b,c} &&
+               gu[2].pair==fyzz::native::Pair{c,d} &&
+               sequence[0]==2 && sequence[1]==0 && sequence[2]==1,
+               "Source size-tied island merge did not concatenate manager order");
+    }
+
 }
 
 // Keep the long-running actor, sleep and rollback suites in a separate
