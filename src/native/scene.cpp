@@ -1384,10 +1384,13 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 // takes the *dirty* route-start node as its new root
                 // (mVisitedNodes[0]), not its smallest BodyId. Dirty
                 // bitmap iteration in PhysX is ascending node index.
+                bool found_dirty=false;
                 for(BodyId node:members)
-                    if(dirty_member[node] && (root==members.front() ||
-                                             node<root))
+                    if(dirty_member[node] &&
+                       (!found_dirty || node<root)) {
                         root=node;
+                        found_dirty=true;
+                    }
             }
             auto& island=next.islands[handle];
             island.root=root;
