@@ -1265,10 +1265,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         std::vector<std::uint32_t> component(actors_.size(),0);
         std::vector<BodyId> members;
         members.reserve(actors_.size());
-        // SplitEdges receives edges collected by visiting the moved
-        // component's nodes, not by traversing the original Gu stream.
-        // The bounded component repair retains that node visitation for
-        // accurate edge migration; no second persistent graph is built.
+        // Source splitEdges consumes mVisitedNodes in discovery order,
+        // not global BodyId or Gu pair order. Build that visitation from
+        // the graph's dirty nodes and existing intrusive adjacency once
+        // the replacement components have been identified.
         std::vector<BodyId> split_visit_nodes;
         if(accurate)split_visit_nodes.reserve(actors_.size());
         const auto& first=accurate?accurate_node_first_:
@@ -1382,9 +1382,6 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 next.node_next[island.tail]=member;
                 island.tail=member;
             }
-            if(accurate)
-                split_visit_nodes.insert(split_visit_nodes.end(),
-                                         members.begin(),members.end());
             ++islands;
         }
         next.free_handles.clear();
@@ -1392,6 +1389,71 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             if(!next.islands[i].live)
                 next.free_handles.push_back(static_cast<Graph::IslandId>(i));
         if(accurate) {
+            // Original processLostEdges selects the first dirty node
+            // from mDirtyMap (ascending node index), then findRoute
+            // discovers nodes through the source EdgeInstance adjacency
+            // with a min-priority queue of cached mHopCounts estimates.
+            // mVisitedNodes is recorded when each node enters that
+            // queue, NOT when the queued node is subsequently popped.
+            // This distinction controls splitEdges' manager permutation.
+            // Reuse the component map above, retaining the bounded
+            // node/handle reconstruction until the full source-local
+            // IslandSim split replacement is admitted.
+            std::vector<BodyId> first_node(component_number+1,invalid);
+            std::vector<BodyId> first_dirty(component_number+1,invalid);
+            for(BodyId node=0;node<actors_.size();++node)
+                if(component[node] && first_node[component[node]]==invalid)
+                    first_node[component[node]]=node;
+            for(BodyId node:accurate_dirty_nodes_)
+                if(node<component.size() && component[node] &&
+                   (first_dirty[component[node]]==invalid ||
+                    node<first_dirty[component[node]]))
+                    first_dirty[component[node]]=node;
+            struct RouteEntry {
+                BodyId node;
+                std::uint32_t hops;
+                std::size_t discovery;
+            };
+            const auto farther=[](const RouteEntry& a,const RouteEntry& b) {
+                return a.hops!=b.hops ? a.hops>b.hops :
+                       a.discovery>b.discovery;
+            };
+            std::vector<RouteEntry> pending;
+            pending.reserve(actors_.size());
+            std::vector<std::uint32_t> seen(actors_.size(),0);
+            std::size_t discovery=0;
+            for(std::uint32_t comp=1;comp<=component_number;++comp) {
+                const BodyId start=first_dirty[comp]!=invalid
+                    ? first_dirty[comp]:first_node[comp];
+                if(start==invalid)continue;
+                pending.clear();
+                seen[start]=comp;
+                split_visit_nodes.push_back(start);
+                const auto estimate=[&](BodyId node) {
+                    return node<accurate_hops_.size()
+                        ? accurate_hops_[node]
+                        : std::numeric_limits<std::uint32_t>::max();
+                };
+                pending.push_back({start,estimate(start),discovery++});
+                while(!pending.empty()) {
+                    std::pop_heap(pending.begin(),pending.end(),farther);
+                    const BodyId from=pending.back().node;
+                    pending.pop_back();
+                    for(std::size_t i=accurate_node_first_[from];
+                        i!=invalid_instance;) {
+                        const ContactEdge& edge=contact_edges_[i/2];
+                        const auto& link=edge.accurate[i&1];
+                        const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
+                        i=link.next;
+                        if(to>=component.size() || component[to]!=comp ||
+                           seen[to]==comp)continue;
+                        seen[to]=comp;
+                        split_visit_nodes.push_back(to);
+                        pending.push_back({to,estimate(to),discovery++});
+                        std::push_heap(pending.begin(),pending.end(),farther);
+                    }
+                }
+            }
             // PxsIslandSim::processLostEdges walks visited component
             // nodes, removing each incident manager only once (at its
             // first dynamic endpoint, or its sole static-touch endpoint).
@@ -1399,11 +1461,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             // the original/root island's remaining edges do NOT retain
             // their pre-split order when a middle edge migrates.
             //
-            // The bounded component fallback visits nodes in the order
-            // built above, rather than source findRoute's prioritized
-            // mVisitedNodes traversal. Exact dirty-root traversal is a
-            // separate fidelity gate, but migration now honors the
-            // source removal and splitEdges array contracts.
+            // The visitation above now follows the source dirty-node
+            // seed, hop-priority queue and enqueue-order mVisitedNodes
+            // contract. The remaining fidelity difference is the
+            // bounded reconstruction's global component/handle choice
+            // rather than source-local dirty-route island splitting.
             struct MigratedManager {
                 EdgeIndex edge;
                 Graph::IslandId owner;
