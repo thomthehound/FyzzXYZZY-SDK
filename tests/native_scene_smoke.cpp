@@ -148,6 +148,1158 @@ void verify_island_contact_manager_order() {
 
 }
 
+// Keep the long-running actor, sleep and rollback suites in a separate
+// frame from the broadphase and constraint fixture groups on Windows.
+void verify_native_rigid_integration_and_island_lifecycle() {
+    using fyzz::native::Scene;
+    // End-to-end native CPU execution, without a reference PxScene.
+    {
+        Scene falling_scene;
+        falling_scene.add_static_floor(0);
+        const auto falling = falling_scene.add_dynamic_box(
+            {0.25f,0.25f,0.25f}, {0,2,0}, 1);
+        for (int frame = 0; frame < 360; ++frame)
+            falling_scene.step(1.0f / 120.0f);
+        const auto state = falling_scene.body_state(falling);
+        if (!(std::isfinite(state.position.y) &&
+              std::abs(state.position.y - 0.25f) < 0.06f &&
+              std::abs(state.velocity.y) < 0.6f))
+            std::fprintf(stderr,
+                "floor y=%g vy=%g spin=(%g,%g,%g) quat=(%g,%g,%g,%g) contacts=%zu\n",
+                state.position.y,state.velocity.y,
+                state.angular_velocity.x,state.angular_velocity.y,state.angular_velocity.z,
+                state.orientation.x,state.orientation.y,state.orientation.z,state.orientation.w,
+                falling_scene.contacts().size());
+        expect(std::isfinite(state.position.y) &&
+               std::abs(state.position.y - 0.25f) < 0.06f &&
+               std::abs(state.velocity.y) < 0.6f,
+               "Native CPU floor contact did not settle");
+        expect(falling_scene.frame_index() == 360 &&
+               falling_scene.contacts().size() == 1,
+               "Native step must publish exactly one collision frame");
+        falling_scene.remove(falling);
+        falling_scene.step(1.0f / 120.0f);
+        expect(falling_scene.contacts().empty() &&
+               !falling_scene.lost_contacts().empty(),
+               "Native CPU actor retirement failed to publish touch loss");
+    }
+    {
+        // The provisional translation-only mass admission must not
+        // silently turn a constrained rigid body into a rotation-locked
+        // one when source PxReal angular inertia is not representable.
+        Scene heavy;
+        const auto obstacle=heavy.add_static_box({1,1,1},{0,5,0});
+        const auto body = heavy.add_dynamic_box(
+            {1,1,1},{1.5f,5,0},std::numeric_limits<float>::max());
+        heavy.set_velocity(body,{-1,0,0});
+        bool rejected_contact=false;
+        try { heavy.step(1.0f/120.0f); }
+        catch(const std::logic_error&) { rejected_contact=true; }
+        expect(rejected_contact &&
+               heavy.frame_index()==0 &&
+               heavy.body_state(body).position.x==1.5f &&
+               heavy.body_state(body).velocity.x==-1.0f,
+               "Nonrepresentable heavy-body contact was solved or leaked state");
+        bool angular_rejected = false;
+        try { heavy.apply_torque_impulse(body,{1,0,0}); }
+        catch(const std::logic_error&) { angular_rejected = true; }
+        expect(angular_rejected,
+               "Heavy body with nonrepresentable angular inertia accepted torque");
+        heavy.remove(obstacle);
+        heavy.step(1.0f/120.0f);
+        expect(heavy.body_state(body).position.x<1.5f &&
+               std::isfinite(heavy.body_state(body).velocity.x),
+               "Admitted free translation failed after unsupported contact rejection");
+    }
+
+    {
+        Scene stacked;
+        const auto ground=stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
+        const auto lower = stacked.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,2,0},1);
+        const auto upper = stacked.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,3.5f,0},1);
+        // Source PGS, independently reproduced on Linux and Windows:
+        // at frame 86, the lower box/ground patch saturates during a
+        // position pass, then recovers (no clamp) during final velocity
+        // writeback. The previous "broken |= clamped" across ALL passes
+        // incorrectly reports a broken patch. Its local anchors must
+        // also remain eligible for reuse in the following frame.
+        const fyzz::native::Pair support_pair{ground,lower};
+        std::array<fyzz::Vec3,2> saved_support_anchors{};
+        std::uint8_t saved_anchor_count=0;
+        for (int frame=0;frame<600;++frame) {
+            stacked.step(1.0f/120.0f);
+            if (stacked.frame_index()==86 ||
+                stacked.frame_index()==87) {
+                const auto reports=stacked.solved_friction_patches();
+                const auto it=std::find_if(reports.begin(),reports.end(),
+                    [&](const auto& patch) {
+                        return patch.pair==support_pair;
+                    });
+                expect(it!=reports.end() && it->anchor_count>0,
+                       "Stack contact lost the frame-86 friction anchors");
+                if (stacked.frame_index()==86) {
+                    expect(!it->broken,
+                           "Position-only clamp incorrectly persisted as final friction break");
+                    saved_anchor_count=it->anchor_count;
+                    saved_support_anchors=it->anchor_positions;
+                } else {
+                    expect(it->anchor_count==saved_anchor_count,
+                           "Unbroken friction anchors were discarded next frame");
+                    for (std::size_t k=0;k<saved_anchor_count;++k) {
+                        const auto& a=it->anchor_positions[k];
+                        const auto& b=saved_support_anchors[k];
+                        expect(std::abs(a.x-b.x)<0.001f &&
+                               std::abs(a.y-b.y)<0.001f &&
+                               std::abs(a.z-b.z)<0.001f,
+                               "Recovered patch did not reuse its cached local anchors");
+                    }
+                }
+            }
+        }
+        const auto lo = stacked.body_state(lower);
+        const auto hi = stacked.body_state(upper);
+        if (!(std::isfinite(lo.position.y) &&
+               std::isfinite(hi.position.y) &&
+               lo.position.y > 0.37f && lo.position.y < 0.65f &&
+               hi.position.y > 1.25f && hi.position.y < 1.70f &&
+               std::abs(lo.velocity.y) < 0.8f &&
+               std::abs(hi.velocity.y) < 0.8f))
+            std::fprintf(stderr,
+                "stack lo(y=%g vy=%g spin=%g,%g,%g) hi(y=%g vy=%g spin=%g,%g,%g) contacts=%zu\n",
+                lo.position.y,lo.velocity.y,lo.angular_velocity.x,
+                lo.angular_velocity.y,lo.angular_velocity.z,
+                hi.position.y,hi.velocity.y,hi.angular_velocity.x,
+                hi.angular_velocity.y,hi.angular_velocity.z,
+                stacked.contacts().size());
+        expect(std::isfinite(lo.position.y) &&
+               std::isfinite(hi.position.y) &&
+               lo.position.y > 0.37f && lo.position.y < 0.65f &&
+               hi.position.y > 1.25f && hi.position.y < 1.70f &&
+               std::abs(lo.velocity.y) < 0.8f &&
+               std::abs(hi.velocity.y) < 0.8f,
+               "Native two-body contact chain failed");
+    }
+
+    {
+        // Tiny mass can still have a representable inverse mass while
+        // its source angular tensor is not representable. Contact PGS
+        // must reject this geometry instead of using a zero tensor.
+        Scene very_light;
+        const auto left = very_light.add_dynamic_box(
+            {1,1,1},{0,5,0},5.0e-40f);
+        const auto right = very_light.add_dynamic_box(
+            {1,1,1},{1.5f,5,0},5.0e-40f);
+        bool rejected_angular = false;
+        try { very_light.apply_torque_impulse(left, {1,0,0}); }
+        catch (const std::logic_error&) { rejected_angular = true; }
+        expect(rejected_angular,
+               "Unrepresentable angular inertia silently used a substitute");
+        rejected_angular = false;
+        try { very_light.set_angular_velocity(left, {1,0,0}); }
+        catch (const std::logic_error&) { rejected_angular = true; }
+        expect(rejected_angular,
+               "Tiny-mass body admitted an unrepresentable angular state");
+        bool rejected_contact=false;
+        try { very_light.step(1.0f/120.0f); }
+        catch(const std::logic_error&) { rejected_contact=true; }
+        expect(rejected_contact &&
+               very_light.frame_index()==0 &&
+               very_light.body_state(left).position.x==0.0f &&
+               very_light.body_state(right).position.x==1.5f,
+               "Tiny-mass contact substituted a zero angular tensor");
+        very_light.set_position(right,{5,5,0});
+        very_light.set_velocity(left,{1,0,0});
+        very_light.step(1.0f/120.0f);
+        expect(std::isfinite(very_light.body_state(left).velocity.x) &&
+               very_light.body_state(left).position.x>0.0f,
+               "Rejected tiny-mass contact poisoned later free translation");
+    }
+
+    {
+        // Inverse mass can remain representable when a source PxReal box
+        // inertia component underflows, overflows or has an
+        // unrepresentable inverse. Those are translation-only bodies,
+        // not grounds for rejecting the existing mass admission.
+        const std::array<std::pair<fyzz::Vec3, float>, 4> cases{{
+            {{1.0e-13f,1.0e-13f,1.0e-13f},1.0f},
+            {{1.0e-13f,1.0e-13f,1.0f},1.0f},
+            {{1.0f,1.0f,1.0f},5.0e-40f},
+            {{1.0e13f,1.0e13f,1.0e13f},1.0e-39f}
+        }};
+        for (const auto& [half_extents,density] : cases) {
+            Scene body;
+            const auto id = body.add_dynamic_box(
+                half_extents,{0,5,0},density);
+            bool rejected = false;
+            try { body.set_angular_velocity(id,{1,0,0}); }
+            catch(const std::logic_error&) { rejected = true; }
+            expect(rejected,
+                   "Unrepresentable box inertia incorrectly admitted spin");
+            rejected = false;
+            try { body.apply_torque_impulse(id,{1,0,0}); }
+            catch(const std::logic_error&) { rejected = true; }
+            expect(rejected,
+                   "Unrepresentable box inertia incorrectly admitted torque");
+            body.set_velocity(id,{1,0,0});
+            body.step(1.0f/120.0f);
+            const auto state=body.body_state(id);
+            expect(std::isfinite(state.position.x) &&
+                   std::isfinite(state.position.y) &&
+                   std::isfinite(state.velocity.x) &&
+                   std::isfinite(state.velocity.y) &&
+                   state.position.x>0.0f && state.velocity.x>0.0f &&
+                   state.orientation.w==1.0f,
+                   "Valid translational body rejected or corrupted by inertia");
+        }
+    }
+
+    {
+        // Two individually finite extreme inputs must pass through the
+        // exact PhysX unconstrained-velocity clamp before contact prep.
+        // Preserve finite impulse state without a custom wide dot product.
+        Scene extreme;
+        const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
+        const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);
+        extreme.set_velocity(a, {2.0e38f,0,0});
+        extreme.set_velocity(b, {-2.0e38f,0,0});
+        // Smallest normal float: portable even with flush-to-zero.
+        extreme.step(std::numeric_limits<float>::min());
+        const auto va = extreme.body_state(a).velocity;
+        const auto vb = extreme.body_state(b).velocity;
+        expect(std::isfinite(va.x) && std::isfinite(va.y) &&
+               std::isfinite(va.z) && std::isfinite(vb.x) &&
+               std::isfinite(vb.y) && std::isfinite(vb.z) &&
+               va.x < 0.0f && vb.x > 0.0f &&
+               std::abs(va.x) < 1.0e38f && std::abs(vb.x) < 1.0e38f,
+               "Finite high-speed contact overflowed or corrupted velocities");
+        expect(extreme.contacts().size() == 1,
+               "High-speed dynamic pair lost its contact");
+    }
+    {
+        // Regression for a second float overflow: relative velocity and
+        // impulse remain finite in double, but unequal inverse masses
+        // previously overflowed one body's float velocity on writeback.
+        // Mirror the PhysX dynamic-body maxLinearVelocitySq=1e32 default.
+        // The unconstrained speed clamp precedes the contact solver.
+        // Use touching faces (zero penetration bias) so this tests that
+        // clamp rather than incorrectly capping post-solver correction.
+        Scene unequal_mass;
+        const auto light = unequal_mass.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1.0e-6f);
+        const auto heavy = unequal_mass.add_dynamic_box(
+            {1,1,1}, {2.0f,5,0}, 1.0e6f);
+        const float max_v = std::numeric_limits<float>::max();
+        unequal_mass.set_velocity(light, {max_v,0,0});
+        unequal_mass.set_velocity(heavy, {-max_v,0,0});
+        unequal_mass.step(std::numeric_limits<float>::min());
+        const auto vlight = unequal_mass.body_state(light).velocity;
+        const auto vheavy = unequal_mass.body_state(heavy).velocity;
+        expect(std::isfinite(vlight.x) && std::isfinite(vlight.y) &&
+               std::isfinite(vlight.z) && std::isfinite(vheavy.x) &&
+               std::isfinite(vheavy.y) && std::isfinite(vheavy.z),
+               "Unequal-mass contact published infinite or NaN velocity");
+        expect(std::abs(vlight.x) < 2.0e16f &&
+               std::abs(vheavy.x) < 2.0e16f &&
+               unequal_mass.contacts().size() == 1,
+               "Source unconstrained linear-speed clamp failed zero-bias contact");
+    }
+    {
+        // A free body uses the same source default velocity clamp, so
+        // safety is independent of whether contacts are generated.
+        Scene unopposed;
+        const auto b = unopposed.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
+        unopposed.step(std::numeric_limits<float>::min());
+        const auto vel = unopposed.body_state(b).velocity;
+        // PhysX's PxReal squared speed overflows to infinity here.
+        // Consequently sqrt(1e32f / inf) is zero, not 1e16 normalization.
+        expect(vel.x == 0.0f && vel.y == 0.0f && vel.z == 0.0f,
+               "Native high-speed clamp diverged from PhysX float arithmetic");
+        Scene finite_limit;
+        const auto limited = finite_limit.add_dynamic_box(
+            {1,1,1}, {0,5,0}, 1);
+        finite_limit.set_velocity(limited, {2.0e16f,0,0});
+        finite_limit.step(1.0f / 120.0f);
+        const auto moderate = finite_limit.body_state(limited).velocity;
+        expect(std::isfinite(moderate.x) &&
+               std::abs(moderate.x - 1.0e16f) < 1.0e10f,
+               "Finite squared velocity failed PhysX source clamp");
+    }
+    {
+        // Velocity authoring has no full-manifold invalidation scan:
+        // an isolated edit changes only the selected actor's velocity.
+        Scene authoring;
+        const auto static_id = authoring.add_static_floor(0);
+        const auto dynamic_id = authoring.add_dynamic_box(
+            {0.25f,0.25f,0.25f}, {0,1,0}, 1);
+        authoring.set_velocity(dynamic_id, {2,0,3});
+        expect(authoring.body_state(dynamic_id).velocity.x == 2,
+               "Native dynamic-body velocity setter failed");
+        bool rejected = false;
+        try { authoring.set_velocity(static_id, {1,0,0}); }
+        catch (const std::logic_error&) { rejected = true; }
+        expect(rejected, "Native static body accepted linear velocity");
+        bool invalid = false;
+        try { authoring.set_velocity(dynamic_id, {INFINITY,0,0}); }
+        catch (const std::invalid_argument&) { invalid = true; }
+        expect(invalid, "Native scene accepted nonfinite velocity");
+    }
+
+    {
+        // Source inertia is directional and density-scaled. The same
+        // world torque impulse must produce different angular velocity
+        // for a rectangular body on its distinct principal axes.
+        Scene torque;
+        const auto id = torque.add_dynamic_box(
+            {0.5f,1.0f,2.0f}, {0,10,0}, 2.0f);
+        torque.apply_torque_impulse(id, {1,1,1});
+        torque.step(1.0f/120.0f);
+        const auto w = torque.body_state(id).angular_velocity;
+        // 8*0.5*1*2*2 = 16 kg; inertia = mass/3*(hy^2+hz^2...).
+        const float angular_damp = 1.0f-0.05f/120.0f;
+        const float ix=16.0f*(1.0f+4.0f)/3.0f;
+        const float iy=16.0f*(0.25f+4.0f)/3.0f;
+        const float iz=16.0f*(0.25f+1.0f)/3.0f;
+        expect(std::abs(w.x-angular_damp/ix)<0.0001f &&
+               std::abs(w.y-angular_damp/iy)<0.0001f &&
+               std::abs(w.z-angular_damp/iz)<0.0001f &&
+               w.x < w.y && w.y < w.z,
+               "Native box impulse failed source mass/inertia axes");
+        torque.step(1.0f/120.0f);
+        const auto twice=torque.body_state(id).angular_velocity;
+        expect(twice.z < w.z,
+               "Per-step angular impulse was replayed on the next frame");
+        bool invalid=false;
+        try {torque.apply_torque_impulse(id,{INFINITY,0,0});}
+        catch(const std::invalid_argument&) {invalid=true;}
+        expect(invalid,"Native torque accepted nonfinite input");
+        const auto floor_id=torque.add_static_floor(0);
+        bool rejected=false;
+        try {torque.apply_torque_impulse(floor_id,{1,0,0});}
+        catch(const std::logic_error&) {rejected=true;}
+        expect(rejected,"Static floor accepted angular impulse");
+    }
+    {
+        // Queued angular impulses are consumed at the next scene step
+        // even when static contacts are present. Normal contact rows
+        // must now accept the resulting rotated body without replaying
+        // the pending torque on later frames.
+        Scene rotating_contact;
+        const auto id = rotating_contact.add_dynamic_box(
+            {0.5f,1.0f,2.0f},{0,2,0},1);
+        rotating_contact.add_static_floor(0);
+        rotating_contact.apply_torque_impulse(id,{1,0,0});
+        const auto before = rotating_contact.body_state(id);
+        rotating_contact.step(1.0f/120.0f);
+        const auto after = rotating_contact.body_state(id);
+        expect(after.position.y < before.position.y &&
+               after.angular_velocity.x > before.angular_velocity.x &&
+               std::isfinite(after.angular_velocity.x),
+               "Queued angular impulse was not consumed in active scene");
+        rotating_contact.step(1.0f/120.0f);
+        expect(std::isfinite(rotating_contact.body_state(id).angular_velocity.x),
+               "Angular motion failed to continue without replaying torque");
+    }
+    {
+        // Source ScBodyCore creation counter and Dy::sleepCheck: motion
+        // readiness precedes whole-island deactivation. Once a rigid
+        // body rests on its static floor it must stop integrating gravity
+        // and remain stationary, but an explicit velocity edit wakes it.
+        Scene sleeping;
+        sleeping.add_static_floor(0.0f);
+        const auto id=sleeping.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        expect(std::abs(sleeping.body_wake_counter(id)-0.4f)<1e-6f &&
+               !sleeping.body_ready_for_sleep(id) &&
+               !sleeping.body_is_sleeping(id),
+               "Source rigid-body creation did not initialize wake counter");
+        for(int frame=0;frame<360;++frame)
+            sleeping.step(1.0f/120.0f);
+        const auto still=sleeping.body_state(id);
+        expect(sleeping.body_is_sleeping(id) &&
+               sleeping.body_ready_for_sleep(id) &&
+               still.sleeping &&
+               sleeping.body_wake_counter(id)==0.0f &&
+               still.velocity.y==0.0f &&
+               sleeping.solver_partition_count()==0,
+               "PhysX island did not deactivate a settled floor body");
+        for(double impulse:sleeping.solved_normal_impulses())
+            expect(impulse==0.0,
+                   "Sleeping contact manager emitted an active solver impulse");
+        // A failed later step must restore all existing sleep state,
+        // not just actor motion and topology. An independently admitted
+        // awake body forces a finite-input overflow before publication.
+        const auto awake=sleeping.add_dynamic_box(
+            {0.25f,0.25f,0.25f},{20,10,0},1.0f);
+        const auto before_failure=sleeping.body_state(awake);
+        bool failed=false;
+        try {sleeping.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        const auto after_failure=sleeping.body_state(awake);
+        expect(failed && sleeping.body_is_sleeping(id) &&
+               sleeping.body_wake_counter(id)==0.0f &&
+               sleeping.body_state(id).sleeping &&
+               after_failure.position.y==before_failure.position.y &&
+               sleeping.body_wake_counter(awake)==0.4f,
+               "Failed source step corrupted dormant island or wake counter");
+        sleeping.set_velocity(id,{1,0,0});
+        expect(!sleeping.body_is_sleeping(id) &&
+               !sleeping.body_ready_for_sleep(id) &&
+               sleeping.body_wake_counter(id)==0.4f,
+               "Source velocity authoring did not wake the rigid body");
+        sleeping.step(1.0f/120.0f);
+        const auto moved=sleeping.body_state(id);
+        expect(!moved.sleeping &&
+               moved.position.x>still.position.x &&
+               std::isfinite(moved.velocity.x),
+               "Woken source island failed to reenter native solver");
+    }
+
+    {
+        // PxsIslandSim::processLostEdges(third pass) consumes the *prior*
+        // frame's Dy::sleepCheck readiness. The frame in which the body
+        // first becomes ready is not allowed to deactivate it immediately.
+        // The next third pass then deactivates before gravity and PGS:
+        // that frame must not integrate one extra position increment.
+        Scene phase_boundary;
+        phase_boundary.add_static_floor(0.0f);
+        const auto sleeper=phase_boundary.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool saw_ready_before_sleep=false;
+        for(int frame=0;frame<600;++frame) {
+            phase_boundary.step(1.0f/120.0f);
+            if(phase_boundary.body_ready_for_sleep(sleeper)) {
+                expect(!phase_boundary.body_is_sleeping(sleeper),
+                       "New Dy sleep readiness deactivated during its own solver frame");
+                saw_ready_before_sleep=true;
+                const auto ready_pose=phase_boundary.body_state(sleeper);
+                phase_boundary.step(1.0f/120.0f);
+                const auto inactive=phase_boundary.body_state(sleeper);
+                expect(inactive.sleeping &&
+                       inactive.position.x==ready_pose.position.x &&
+                       inactive.position.y==ready_pose.position.y &&
+                       inactive.position.z==ready_pose.position.z &&
+                       inactive.velocity.x==0.0f &&
+                       inactive.velocity.y==0.0f &&
+                       inactive.velocity.z==0.0f,
+                       "Third-pass deactivation integrated an already-ready island");
+                break;
+            }
+        }
+        expect(saw_ready_before_sleep,
+               "Source third-pass fixture never produced Dy sleep readiness");
+    }
+
+    // A user-authored dynamic teleport can remove a contact edge and
+    // split the original island before its waking node is propagated.
+    // Its dormant former contact partner must be reactivated directly
+    // from the previously published Gu manager, just as for a static
+    // support edit, even when the new topology no longer connects them.
+    {
+        Scene moved_peer;
+        moved_peer.add_static_floor(0.0f);
+        const auto left=moved_peer.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=moved_peer.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            moved_peer.step(1.0f/120.0f);
+        expect(moved_peer.body_is_sleeping(left) &&
+               moved_peer.body_is_sleeping(right) &&
+               moved_peer.accurate_island_id(left)==
+                   moved_peer.accurate_island_id(right),
+               "Dynamic support edit fixture lacked dormant contact island");
+        moved_peer.set_position(left,{-10,0.5f,0});
+        expect(!moved_peer.body_is_sleeping(right) &&
+               !moved_peer.body_ready_for_sleep(right) &&
+               moved_peer.body_wake_counter(right)>0.0f,
+               "Dynamic pose edit left old contact peer dormant");
+        moved_peer.step(1.0f/120.0f);
+        expect(moved_peer.accurate_island_id(left)!=
+                   moved_peer.accurate_island_id(right) &&
+               !moved_peer.body_is_sleeping(right),
+               "Contact island split discarded the old peer wake");
+    }
+
+    // Third-pass sleep readiness belongs to the previous solver frame.
+    // A support edit between the ready and inactive passes must revoke
+    // the ready flag while the body is still awake. Verify both static
+    // movement and retirement, with and without an intermediate
+    // collision-only publication. These cases must integrate gravity on
+    // their next actual step, not suspend the body in midair.
+    for(bool retire_support : {false,true}) {
+        for(bool query_first : {false,true}) {
+            Scene unsupported;
+            const auto floor=unsupported.add_static_floor(0.0f);
+            const auto body=unsupported.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+            bool became_ready=false;
+            for(int frame=0;frame<600;++frame) {
+                unsupported.step(1.0f/120.0f);
+                if(unsupported.body_ready_for_sleep(body)) {
+                    became_ready=true;
+                    break;
+                }
+            }
+            expect(became_ready && !unsupported.body_is_sleeping(body),
+                   "Support-edit fixture missed ready-but-awake third-pass boundary");
+            const auto settled=unsupported.body_state(body);
+            if(retire_support)
+                unsupported.remove(floor);
+            else
+                unsupported.set_position(floor,{0,-10,0});
+            expect(!unsupported.body_ready_for_sleep(body) &&
+                   !unsupported.body_is_sleeping(body) &&
+                   unsupported.body_wake_counter(body)>0.0f,
+                   "Support edit retained stale ready-but-awake sleep state");
+            if(query_first) {
+                unsupported.advance_collision();
+                expect(!unsupported.body_ready_for_sleep(body) &&
+                       !unsupported.body_is_sleeping(body),
+                       "Collision query restored obsolete third-pass readiness");
+            }
+            unsupported.step(1.0f/120.0f);
+            const auto falling=unsupported.body_state(body);
+            expect(!falling.sleeping &&
+                   !unsupported.body_ready_for_sleep(body) &&
+                   falling.position.y<settled.position.y-1.0e-5f &&
+                   falling.velocity.y<0.0f,
+                   "Support edit deactivated ready actor before gravity");
+        }
+    }
+
+    {
+        // A geometry-only query also publishes changed island membership
+        // and may consume an authored node wake, without a numerical
+        // solver step. Its accurate active-node index must not vanish
+        // after a graph rebuild or remain stale after an island split.
+        Scene queried;
+        queried.add_static_floor(0.0f);
+        const auto sleeper=queried.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.accurate_active_node_index(sleeper)==0,
+               "Geometry-only island admission did not index its active rigid");
+        for(int frame=0;frame<360;++frame)
+            queried.step(1.0f/120.0f);
+        expect(queried.body_is_sleeping(sleeper) &&
+               queried.active_accurate_nodes().empty(),
+               "Geometry query fixture never deactivated its first node");
+        queried.set_velocity(sleeper,{0.25f,0,0});
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.active_accurate_nodes()[0]==sleeper &&
+               queried.accurate_active_node_index(sleeper)==0,
+               "Quiet authored wake failed to update the accurate active map");
+        const auto added=queried.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==2 &&
+               queried.accurate_active_node_index(added)<
+                   queried.active_accurate_nodes().size(),
+               "Geometry-only rebuild lost an active rigid node");
+        queried.remove(sleeper);
+        queried.advance_collision();
+        expect(queried.active_accurate_nodes().size()==1 &&
+               queried.active_accurate_nodes()[0]==added &&
+               queried.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
+               queried.accurate_active_node_index(added)==0,
+               "Actor retirement left a stale active-node reverse index");
+    }
+
+    {
+        // Rejected steps must preserve retained source active-node
+        // spans, their actual storage, and their published elements.
+        // A failure after a newly ready body deactivates exercises
+        // swap-last active index retirement before rollback.
+        Scene retained_active;
+        retained_active.add_static_floor(0.0f);
+        const auto sleeper=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            retained_active.step(1.0f/120.0f);
+            if(retained_active.body_ready_for_sleep(sleeper)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !retained_active.body_is_sleeping(sleeper),
+               "Retained active span fixture did not become ready");
+        const auto published=retained_active.active_accurate_nodes();
+        const auto published_deactivations=
+            retained_active.deactivating_accurate_nodes();
+        expect(published.size()==1 && published[0]==sleeper &&
+               published_deactivations.empty(),
+               "Retained active span fixture was not an active rigid");
+        const auto* const published_ptr=published.data();
+        const auto* const deact_ptr=published_deactivations.data();
+        // The ready body will deactivate at the next third pass, so a
+        // second, unconnected active body is required to force the
+        // subsequent integration to reject an enormous timestep.
+        const auto overflow_body=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10,5,0},1.0f);
+        const auto frame=retained_active.frame_index();
+        for(int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;
+            try {retained_active.step(std::numeric_limits<float>::max());}
+            catch(const std::overflow_error&) {rejected=true;}
+            expect(rejected && retained_active.frame_index()==frame &&
+                   !retained_active.body_is_sleeping(sleeper) &&
+                   retained_active.active_accurate_nodes().data()==
+                       published_ptr &&
+                   retained_active.deactivating_accurate_nodes().data()==
+                       deact_ptr &&
+                   published.size()==1 && published[0]==sleeper &&
+                   retained_active.active_accurate_nodes().size()==1 &&
+                   retained_active.accurate_active_node_index(sleeper)==0 &&
+                   retained_active.deactivating_accurate_nodes().empty(),
+                   "Failed third-pass deactivation invalidated active-node span");
+        }
+        retained_active.step(1.0f/120.0f);
+        expect(retained_active.body_is_sleeping(sleeper) &&
+               retained_active.deactivating_accurate_nodes().size()==1 &&
+               retained_active.deactivating_accurate_nodes()[0]==sleeper,
+               "Valid retry failed to emit accurate third-pass deactivation");
+        // The next rejected frame can rebuild topology after a newly
+        // admitted awake body; retained deactivation storage remains
+        // readable even if the working graph was replaced.
+        const auto old_output=retained_active.deactivating_accurate_nodes();
+        const auto* const old_output_ptr=old_output.data();
+        const auto newcomer=retained_active.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        const auto next_frame=retained_active.frame_index();
+        bool rejected=false;
+        try {retained_active.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected && retained_active.frame_index()==next_frame &&
+               old_output.data()==old_output_ptr && old_output.size()==1 &&
+               old_output[0]==sleeper &&
+               retained_active.deactivating_accurate_nodes().data()==
+                   old_output_ptr &&
+               retained_active.deactivating_accurate_nodes().size()==1 &&
+               retained_active.deactivating_accurate_nodes()[0]==sleeper,
+               "Rejected island rebuild invalidated deactivation report span");
+        retained_active.step(1.0f/120.0f);
+        const auto active_after_retry=retained_active.active_accurate_nodes();
+        expect(retained_active.deactivating_accurate_nodes().empty() &&
+               active_after_retry.size()==2 &&
+               std::find(active_after_retry.begin(),active_after_retry.end(),
+                         overflow_body)!=active_after_retry.end() &&
+               std::find(active_after_retry.begin(),active_after_retry.end(),
+                         newcomer)!=active_after_retry.end(),
+               "Post-rollback deactivation output was replayed on retry");
+    }
+
+    {
+        // PxsIslandSim::wakeIslands captures its initially active rigid
+        // prefix before admitting newly activated nodes. Deactivating
+        // an initial member must use source markInactive's prefix-tail
+        // relocation so only genuinely new rigid nodes remain in
+        // getNodesToActivate's active suffix. Rebuilding the graph for
+        // actor admission must preserve the existing active permutation.
+        Scene partitions;
+        partitions.add_static_floor(0.0f);
+        const auto sleeper=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto flyer=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{10,10,0},1.0f);
+        partitions.advance_collision();
+        expect(partitions.newly_activated_accurate_nodes().size()==2,
+               "First source wake did not admit both new rigid bodies");
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            // Keep the independent free-flight body awake while the
+            // resting island reaches its prior-frame sleep boundary.
+            partitions.set_velocity(flyer,{0,9.81f,0});
+            partitions.step(1.0f/120.0f);
+            if(partitions.body_ready_for_sleep(sleeper)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !partitions.body_is_sleeping(sleeper),
+               "Initial-active partition fixture did not reach readiness");
+        // Admit a new island in the very pass where the old floor
+        // island deactivates. The original two-node initial prefix must
+        // shrink to the still-active flyer, while the newcomer belongs
+        // strictly to the newly activated suffix. This fails if
+        // markInactive uses unconditional swap-last without the
+        // source initial-partition tail permutation.
+        const auto newcomer=partitions.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
+        partitions.set_velocity(flyer,{0,9.81f,0});
+        partitions.step(1.0f/120.0f);
+        expect(partitions.body_is_sleeping(sleeper) &&
+               partitions.deactivating_accurate_nodes().size()==1 &&
+               partitions.deactivating_accurate_nodes()[0]==sleeper &&
+               partitions.active_accurate_nodes().size()==2 &&
+               partitions.active_accurate_nodes()[0]==flyer &&
+               partitions.active_accurate_nodes()[1]==newcomer &&
+               partitions.newly_activated_accurate_nodes().size()==1 &&
+               partitions.newly_activated_accurate_nodes()[0]==newcomer &&
+               partitions.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
+               partitions.accurate_active_node_index(flyer)==0 &&
+               partitions.accurate_active_node_index(newcomer)==1,
+               "Simultaneous source markInactive/admission broke initial-active partition");
+        const auto published=partitions.active_accurate_nodes();
+        const auto prior_new=partitions.newly_activated_accurate_nodes();
+        const auto* const original=published.data();
+        bool failed=false;
+        try {partitions.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        expect(failed &&
+               partitions.active_accurate_nodes().data()==original &&
+               published[0]==flyer && published[1]==newcomer &&
+               prior_new.size()==1 && prior_new[0]==newcomer,
+               "Rejected frame damaged published active-node partitions");
+        partitions.set_velocity(flyer,{0,9.81f,0});
+        partitions.step(1.0f/120.0f);
+        expect(partitions.newly_activated_accurate_nodes().empty() &&
+               partitions.active_accurate_nodes().size()==2,
+               "Previous initial-active suffix replayed on next frame");
+    }
+
+    verify_simultaneous_initial_sleep_compaction();
+
+    {
+        // Source accurate active-node indexing must stay dense and
+        // bidirectional through third-pass sleep, user wake, and
+        // reactivation. The separate deactivation output is published
+        // for exactly the boundary in which ready nodes go inactive.
+        Scene indexed;
+        indexed.add_static_floor(0.0f);
+        const auto body=indexed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        indexed.step(1.0f/120.0f);
+        expect(indexed.active_accurate_nodes().size()==1 &&
+               indexed.active_accurate_nodes()[0]==body &&
+               indexed.accurate_active_node_index(body)==0,
+               "Source active-node index missed the initially awake body");
+        bool deactivated=false;
+        for(int frame=0;frame<600;++frame) {
+            indexed.step(1.0f/120.0f);
+            if(indexed.body_is_sleeping(body)) {
+                const auto retired=indexed.deactivating_accurate_nodes();
+                expect(retired.size()==1 && retired[0]==body &&
+                       indexed.active_accurate_nodes().empty() &&
+                       indexed.accurate_active_node_index(body)==
+                           std::numeric_limits<std::size_t>::max(),
+                       "Third pass did not publish indexed rigid deactivation");
+                deactivated=true;
+                break;
+            }
+        }
+        expect(deactivated,"Source indexed active node never slept");
+        // A public collision-only query consumes a new publication clock
+        // without invoking another ready-island transition. Source
+        // mNodesToPutToSleep is per-pass output, not sticky sleep state.
+        indexed.advance_collision();
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().empty() &&
+               indexed.accurate_active_node_index(body)==
+                   std::numeric_limits<std::size_t>::max(),
+               "Quiet collision publication replayed a deactivation event");
+        indexed.advance_collision();
+        expect(indexed.deactivating_accurate_nodes().empty(),
+               "Repeated quiet publication resurrected an old deactivation");
+        indexed.step(1.0f/120.0f);
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().empty(),
+               "Dormant third pass repeated an already published deactivation");
+        indexed.set_velocity(body,{1,0,0});
+        indexed.step(1.0f/120.0f);
+        expect(indexed.deactivating_accurate_nodes().empty() &&
+               indexed.active_accurate_nodes().size()==1 &&
+               indexed.active_accurate_nodes()[0]==body &&
+               indexed.accurate_active_node_index(body)==0,
+               "Source node activation did not rebuild the active index");
+    }
+
+    {
+        // The source active-island list is a strict subset of all accurate
+        // islands. Dormant bodies remain in the persistent source graph
+        // but are excluded from unconstrained integration and PGS. An
+        // isolated awake node must retain its own active island batch.
+        Scene active_handoff;
+        active_handoff.add_static_floor(0.0f);
+        const auto resting=active_handoff.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto flyer=active_handoff.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        active_handoff.advance_collision();
+        expect(active_handoff.accurate_island_count()==2,
+               "Active-island fixture did not admit both source islands");
+        // Isolate the dormant transition from the free-flight wake state:
+        // first sleep the floor body, then introduce the distant flyer.
+        Scene staged;
+        staged.add_static_floor(0.0f);
+        const auto dormant=staged.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            staged.step(1.0f/120.0f);
+        expect(staged.body_is_sleeping(dormant) &&
+               staged.active_accurate_island_count()==0,
+               "Dormant accurate island remained on Dy active list");
+        const auto dynamic=staged.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
+        staged.step(1.0f/120.0f);
+        expect(staged.accurate_island_count()==2 &&
+               staged.active_accurate_island_count()==1 &&
+               staged.body_is_sleeping(dormant) &&
+               staged.body_state(dynamic).position.y<5.0f,
+               "Dy active-island handoff admitted sleeper or skipped free flight");
+        staged.set_velocity(dormant,{1,0,0});
+        staged.step(1.0f/120.0f);
+        expect(staged.active_accurate_island_count()==2 &&
+               !staged.body_is_sleeping(dormant),
+               "Wake did not restore accurate active-island admission");
+        (void)resting;
+        (void)flyer;
+    }
+
+    // A quiet collision query must consume genuinely authored source
+    // wake requests without scanning the island graph for every query.
+    // Ensure a rejected step does not clear that pending wake indicator:
+    // the next quiet query still propagates to the sleeping island peer.
+    {
+        Scene pending_query;
+        pending_query.add_static_floor(0.0f);
+        const auto left=pending_query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=pending_query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int i=0;i<360;++i)pending_query.step(1.0f/120.0f);
+        pending_query.advance_collision();
+        expect(pending_query.body_is_sleeping(left) &&
+               pending_query.body_is_sleeping(right),
+               "Quiet wake indicator fixture failed to settle");
+        const auto revision=pending_query.island_topology_revision();
+        for(int i=0;i<4;++i)pending_query.advance_collision();
+        expect(pending_query.island_topology_revision()==revision,
+               "Quiet collision queries modified source island topology");
+        pending_query.set_velocity(left,{0.3f,0,0});
+        bool rejected=false;
+        try {pending_query.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected && pending_query.body_is_sleeping(right),
+               "Rejected frame corrupted queued wake");
+        pending_query.advance_collision();
+        expect(!pending_query.body_is_sleeping(right) &&
+               pending_query.island_topology_revision()==revision,
+               "Queued authored wake was lost after quiet rollback");
+    }
+
+    {
+        // A rejected Dy step rebuilds the active accurate island view
+        // after source wake/deactivation. The previous published active
+        // batch count must survive rollback without copying the list.
+        Scene active_rollback;
+        active_rollback.add_static_floor(0.0f);
+        const auto sleeper=active_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int i=0;i<360;++i)active_rollback.step(1.0f/120.0f);
+        expect(active_rollback.active_accurate_island_count()==0 &&
+               active_rollback.body_is_sleeping(sleeper),
+               "Active-batch rollback fixture did not become dormant");
+        active_rollback.set_velocity(sleeper,{1,0,0});
+        // Prior published active view remains empty until the next
+        // simulation publication, despite the authored actor wake.
+        bool rejected=false;
+        try {active_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               active_rollback.active_accurate_island_count()==0 &&
+               active_rollback.active_accurate_nodes().empty() &&
+               active_rollback.accurate_active_node_index(sleeper)==
+                   std::numeric_limits<std::size_t>::max() &&
+               active_rollback.deactivating_accurate_nodes().empty() &&
+               !active_rollback.body_is_sleeping(sleeper),
+               "Rejected Dy frame replaced the published active-node/index state");
+        active_rollback.step(1.0f/120.0f);
+        expect(active_rollback.active_accurate_island_count()==1 &&
+               active_rollback.active_accurate_nodes().size()==1 &&
+               active_rollback.accurate_active_node_index(sleeper)==0,
+               "Active-island retry did not republish the indexed source node");
+    }
+
+    {
+        // IslandSim::activateNode clears an already-awake node's ready
+        // flag when a new contact wakes its island. A body that just
+        // reached readiness must still resolve the newly added static
+        // contact, not sleep before submitting the new Gu rows.
+        Scene new_touch;
+        new_touch.add_static_floor(0.0f);
+        const auto candidate=new_touch.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        bool ready=false;
+        for(int frame=0;frame<600;++frame) {
+            new_touch.step(1.0f/120.0f);
+            if(new_touch.body_ready_for_sleep(candidate)) {
+                ready=true;
+                break;
+            }
+        }
+        expect(ready && !new_touch.body_is_sleeping(candidate),
+               "New-touch activation fixture missed the ready-before-sleep frame");
+        const float previous_x=new_touch.body_state(candidate).position.x;
+        new_touch.add_static_box(
+            {0.5f,0.5f,0.5f},{previous_x+0.9f,0.5f,0});
+        new_touch.step(1.0f/120.0f);
+        const auto moved=new_touch.body_state(candidate);
+        expect(!moved.sleeping &&
+               moved.position.x<previous_x-0.001f,
+               "New Gu touch failed to revoke an awake node's sleep readiness");
+    }
+
+    {
+        // IslandSim::activateIslandInternal wakes connected rigid nodes,
+        // not only the node explicitly edited by a user. A persistent
+        // dynamic contact must admit both nodes together on reactivation.
+        Scene coupled_sleep;
+        coupled_sleep.add_static_floor(0.0f);
+        const auto left=coupled_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=coupled_sleep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            coupled_sleep.step(1.0f/120.0f);
+        expect(coupled_sleep.accurate_island_count()==1 &&
+               coupled_sleep.body_is_sleeping(left) &&
+               coupled_sleep.body_is_sleeping(right),
+               "Source dynamic contact island did not deactivate together");
+        coupled_sleep.set_velocity(left,{0.5f,0,0});
+        expect(!coupled_sleep.body_is_sleeping(left) &&
+               coupled_sleep.body_is_sleeping(right),
+               "Direct user wake bypassed source island activation stage");
+        coupled_sleep.step(1.0f/120.0f);
+        expect(!coupled_sleep.body_is_sleeping(left) &&
+               !coupled_sleep.body_is_sleeping(right),
+               "Source island wake did not reactivate contact-connected peer");
+    }
+
+    {
+        // IslandSim::wakeIslands consumes an actual authored activation,
+        // including when a collision-only query is otherwise quiet.
+        // An already-awake neighbor is not itself a perpetual wake event.
+        Scene queued_wake;
+        queued_wake.add_static_floor(0.0f);
+        const auto left=queued_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
+        const auto right=queued_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            queued_wake.step(1.0f/120.0f);
+        expect(queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Activation queue fixture did not reach dormant island");
+        queued_wake.advance_collision();
+        expect(queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Quiet query spuriously activated a dormant island");
+        queued_wake.set_velocity(left,{0.3f,0,0});
+        expect(!queued_wake.body_is_sleeping(left) &&
+               queued_wake.body_is_sleeping(right),
+               "Authored activation did not retain per-node handoff");
+        // A failed Dy frame may consume an activating node while
+        // traversing the speculative island. The checkpoint must restore
+        // both the dormant peer and the queued activating flag so the
+        // subsequent collision-only query still wakes the peer.
+        const auto queued_frame=queued_wake.frame_index();
+        for(int attempt=0;attempt<2;++attempt) {
+            bool rejected=false;
+            try {queued_wake.step(std::numeric_limits<float>::max());}
+            catch(const std::overflow_error&) {rejected=true;}
+            expect(rejected &&
+                   queued_wake.frame_index()==queued_frame &&
+                   !queued_wake.body_is_sleeping(left) &&
+                   queued_wake.body_is_sleeping(right),
+                   "Failed Dy frame consumed a pending source activation");
+        }
+        queued_wake.advance_collision();
+        expect(!queued_wake.body_is_sleeping(right),
+               "Quiet collision publication discarded the queued source wake");
+    }
+
+    {
+        // The speculative graph may contain a pair of overlapping AABBs
+        // whose rotated Gu boxes never touch. PhysX's third pass uses
+        // accurate islands to decide rigid-body deactivation; only
+        // contact interactions use speculative deactivation state.
+        // Keep one rod awake without translating far enough to destroy
+        // the SAP overlap, while its accurate neighbor is allowed to sleep.
+        Scene distinct_sleep;
+        const auto rod_a=distinct_sleep.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+        const auto rod_b=distinct_sleep.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(fyzz::BodyId id:{rod_a,rod_b}) {
+            distinct_sleep.set_velocity(id,{0,9.81f,0});
+            distinct_sleep.set_angular_velocity(id,{0,0.83f,0});
+        }
+        distinct_sleep.step(1.0f);
+        for(fyzz::BodyId id:{rod_a,rod_b}) {
+            distinct_sleep.set_angular_velocity(id,{});
+            distinct_sleep.set_velocity(id,{});
+        }
+        distinct_sleep.set_position(rod_a,{0,0.1f,0});
+        distinct_sleep.set_position(rod_b,{0.6f,0.1f,0.6f});
+        distinct_sleep.add_static_floor(0.0f);
+        distinct_sleep.advance_collision();
+        expect(has(distinct_sleep.pairs(),rod_a,rod_b) &&
+               distinct_sleep.speculative_island_count()==1 &&
+               distinct_sleep.accurate_island_count()==2,
+               "Sleep fixture failed to separate speculative and accurate islands");
+        bool independent_sleep=false;
+        for(int frame=0;frame<160;++frame) {
+            distinct_sleep.set_velocity(rod_b,{0,0,0.25f});
+            distinct_sleep.step(1.0f/120.0f);
+            if(distinct_sleep.body_is_sleeping(rod_a) &&
+               !distinct_sleep.body_is_sleeping(rod_b) &&
+               distinct_sleep.speculative_island_count()==1 &&
+               distinct_sleep.accurate_island_count()==2) {
+                const auto active=distinct_sleep.active_accurate_nodes();
+                expect(active.size()==1 && active[0]==rod_b &&
+                       distinct_sleep.accurate_active_node_index(rod_b)==0 &&
+                       distinct_sleep.accurate_active_node_index(rod_a)==
+                           std::numeric_limits<std::size_t>::max(),
+                       "Accurate active node list included dormant speculative-only peer");
+                independent_sleep=true;
+                break;
+            }
+        }
+        expect(independent_sleep,
+               "Accurate rigid island could not deactivate independently of SAP candidate");
+    }
+
+    {
+        // Newly published contacts and island activation precede
+        // unconstrained velocity integration. On a later overflow,
+        // failure atomicity must roll back both the fresh contact
+        // manager and the previously sleeping peer's activation. The
+        // identical valid retry must admit both bodies to the solver.
+        Scene wake_rollback;
+        wake_rollback.add_static_floor(0.0f);
+        const auto sleeper=wake_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            wake_rollback.step(1.0f/120.0f);
+        expect(wake_rollback.body_is_sleeping(sleeper),
+               "Wake rollback source fixture did not reach sleep");
+        const auto newcomer=wake_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1.0f);
+        const auto prior_sleeper=wake_rollback.body_state(sleeper);
+        const auto prior_newcomer=wake_rollback.body_state(newcomer);
+        const auto prior_contacts=wake_rollback.contacts().size();
+        bool rejected=false;
+        try {wake_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {rejected=true;}
+        expect(rejected &&
+               wake_rollback.body_is_sleeping(sleeper) &&
+               wake_rollback.body_wake_counter(sleeper)==0.0f &&
+               wake_rollback.body_state(sleeper).position.y==
+                   prior_sleeper.position.y &&
+               wake_rollback.body_state(newcomer).position.x==
+                   prior_newcomer.position.x &&
+               wake_rollback.contacts().size()==prior_contacts,
+               "Failed activation frame published wake or new Gu contact");
+        wake_rollback.step(1.0f/120.0f);
+        expect(!wake_rollback.body_is_sleeping(sleeper) &&
+               wake_rollback.accurate_island_id(sleeper)==
+                   wake_rollback.accurate_island_id(newcomer),
+               "Source activation rollback lost new-touch retry");
+        // PxvDynamics.h initializes the unconfigured rigid body's
+        // maxPenBias to -1e32f, not an implicit -3 m/s clamp.
+        // The source default is effectively unbounded for this contact.
+        // An incorrect finite -8 or -10 m/s clamp also must not pass.
+        // The reference-enabled suite checks a stronger deep-contact
+        // short-timestep case against actual PhysX legacy Gu/PGS.
+        expect(wake_rollback.body_state(sleeper).position.x < -0.05f,
+               "Source default penetration bias was spuriously capped");
+
+    }
+
+    {
+        // Sc static-actor pose authoring invalidates interactions with
+        // an already sleeping rigid body. Reusing the existing accurate
+        // contact managers wakes the touched actor before subsequent
+        // Gu/PGS progression; quiet static-world contacts do not.
+        Scene moving_ground;
+        const auto floor=moving_ground.add_static_floor(0.0f);
+        const auto body=moving_ground.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            moving_ground.step(1.0f/120.0f);
+        expect(moving_ground.body_is_sleeping(body),
+               "Source static wake fixture never reached sleep");
+        moving_ground.set_position(floor,{0,0.1f,0});
+        expect(!moving_ground.body_is_sleeping(body),
+               "Static pose change left its touching rigid body asleep");
+        moving_ground.step(1.0f/120.0f);
+        expect(!moving_ground.body_state(body).sleeping &&
+               std::isfinite(moving_ground.body_state(body).position.y),
+               "Native PGS could not advance rigid body after static wake");
+    }
+
+    {
+        // A geometry-only Gu publication can create a static touch
+        // before the next step. IslandSim::wakeIslands consumes it at
+        // publication, not from a one-frame event stream that may be
+        // cleared by a later quiet collision query.
+        Scene collision_wake;
+        collision_wake.add_static_floor(0);
+        const auto body=collision_wake.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+        for(int frame=0;frame<360;++frame)
+            collision_wake.step(1.0f/120.0f);
+        expect(collision_wake.body_is_sleeping(body),
+               "Geometry-only wake fixture failed to reach sleep");
+        collision_wake.add_static_box(
+            {0.5f,0.5f,0.5f},{0.85f,0.5f,0});
+        collision_wake.advance_collision();
+        expect(!collision_wake.body_is_sleeping(body) &&
+               collision_wake.accurate_island_static_touches(body)==2,
+               "Gu-only publication lost the static contact wake");
+        collision_wake.advance_collision();
+        expect(!collision_wake.body_is_sleeping(body),
+               "Quiet collision query lost previously published activation");
+        collision_wake.step(1.0f/120.0f);
+        expect(!collision_wake.body_state(body).sleeping &&
+               std::isfinite(collision_wake.body_state(body).velocity.y),
+               "Geometry-published source activation failed solver admission");
+    }
+
+    {
+        // Sc::Scene destroys contact-manager links when a supporting
+        // static actor is retired. A sleeping box must wake and resume
+        // falling rather than remain indefinitely suspended in space.
+        Scene removed_support;
+        const auto floor=removed_support.add_static_floor(0);
+        const auto box=removed_support.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        for(int frame=0;frame<360;++frame)
+            removed_support.step(1.0f/120.0f);
+        expect(removed_support.body_is_sleeping(box),
+               "Retired-support fixture failed to reach source sleep");
+        const float old_y=removed_support.body_state(box).position.y;
+        removed_support.remove(floor);
+        expect(!removed_support.body_is_sleeping(box),
+               "Retiring static support failed to reactivate sleeping box");
+        for(int frame=0;frame<8;++frame)
+            removed_support.step(1.0f/120.0f);
+        expect(removed_support.body_state(box).position.y<old_y-0.005f &&
+               removed_support.body_state(box).velocity.y<0.0f,
+               "Source rigid body did not fall after losing static support");
+    }
+
+}
+
 int run_native_scene_smoke() {
     using fyzz::native::Scene;
     Scene scene, independent;
@@ -2775,1151 +3927,7 @@ int run_native_scene_smoke() {
     }
 #endif
 
-    // End-to-end native CPU execution, without a reference PxScene.
-    {
-        Scene falling_scene;
-        falling_scene.add_static_floor(0);
-        const auto falling = falling_scene.add_dynamic_box(
-            {0.25f,0.25f,0.25f}, {0,2,0}, 1);
-        for (int frame = 0; frame < 360; ++frame)
-            falling_scene.step(1.0f / 120.0f);
-        const auto state = falling_scene.body_state(falling);
-        if (!(std::isfinite(state.position.y) &&
-              std::abs(state.position.y - 0.25f) < 0.06f &&
-              std::abs(state.velocity.y) < 0.6f))
-            std::fprintf(stderr,
-                "floor y=%g vy=%g spin=(%g,%g,%g) quat=(%g,%g,%g,%g) contacts=%zu\n",
-                state.position.y,state.velocity.y,
-                state.angular_velocity.x,state.angular_velocity.y,state.angular_velocity.z,
-                state.orientation.x,state.orientation.y,state.orientation.z,state.orientation.w,
-                falling_scene.contacts().size());
-        expect(std::isfinite(state.position.y) &&
-               std::abs(state.position.y - 0.25f) < 0.06f &&
-               std::abs(state.velocity.y) < 0.6f,
-               "Native CPU floor contact did not settle");
-        expect(falling_scene.frame_index() == 360 &&
-               falling_scene.contacts().size() == 1,
-               "Native step must publish exactly one collision frame");
-        falling_scene.remove(falling);
-        falling_scene.step(1.0f / 120.0f);
-        expect(falling_scene.contacts().empty() &&
-               !falling_scene.lost_contacts().empty(),
-               "Native CPU actor retirement failed to publish touch loss");
-    }
-    {
-        // The provisional translation-only mass admission must not
-        // silently turn a constrained rigid body into a rotation-locked
-        // one when source PxReal angular inertia is not representable.
-        Scene heavy;
-        const auto obstacle=heavy.add_static_box({1,1,1},{0,5,0});
-        const auto body = heavy.add_dynamic_box(
-            {1,1,1},{1.5f,5,0},std::numeric_limits<float>::max());
-        heavy.set_velocity(body,{-1,0,0});
-        bool rejected_contact=false;
-        try { heavy.step(1.0f/120.0f); }
-        catch(const std::logic_error&) { rejected_contact=true; }
-        expect(rejected_contact &&
-               heavy.frame_index()==0 &&
-               heavy.body_state(body).position.x==1.5f &&
-               heavy.body_state(body).velocity.x==-1.0f,
-               "Nonrepresentable heavy-body contact was solved or leaked state");
-        bool angular_rejected = false;
-        try { heavy.apply_torque_impulse(body,{1,0,0}); }
-        catch(const std::logic_error&) { angular_rejected = true; }
-        expect(angular_rejected,
-               "Heavy body with nonrepresentable angular inertia accepted torque");
-        heavy.remove(obstacle);
-        heavy.step(1.0f/120.0f);
-        expect(heavy.body_state(body).position.x<1.5f &&
-               std::isfinite(heavy.body_state(body).velocity.x),
-               "Admitted free translation failed after unsupported contact rejection");
-    }
-
-    {
-        Scene stacked;
-        const auto ground=stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
-        const auto lower = stacked.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,2,0},1);
-        const auto upper = stacked.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,3.5f,0},1);
-        // Source PGS, independently reproduced on Linux and Windows:
-        // at frame 86, the lower box/ground patch saturates during a
-        // position pass, then recovers (no clamp) during final velocity
-        // writeback. The previous "broken |= clamped" across ALL passes
-        // incorrectly reports a broken patch. Its local anchors must
-        // also remain eligible for reuse in the following frame.
-        const fyzz::native::Pair support_pair{ground,lower};
-        std::array<fyzz::Vec3,2> saved_support_anchors{};
-        std::uint8_t saved_anchor_count=0;
-        for (int frame=0;frame<600;++frame) {
-            stacked.step(1.0f/120.0f);
-            if (stacked.frame_index()==86 ||
-                stacked.frame_index()==87) {
-                const auto reports=stacked.solved_friction_patches();
-                const auto it=std::find_if(reports.begin(),reports.end(),
-                    [&](const auto& patch) {
-                        return patch.pair==support_pair;
-                    });
-                expect(it!=reports.end() && it->anchor_count>0,
-                       "Stack contact lost the frame-86 friction anchors");
-                if (stacked.frame_index()==86) {
-                    expect(!it->broken,
-                           "Position-only clamp incorrectly persisted as final friction break");
-                    saved_anchor_count=it->anchor_count;
-                    saved_support_anchors=it->anchor_positions;
-                } else {
-                    expect(it->anchor_count==saved_anchor_count,
-                           "Unbroken friction anchors were discarded next frame");
-                    for (std::size_t k=0;k<saved_anchor_count;++k) {
-                        const auto& a=it->anchor_positions[k];
-                        const auto& b=saved_support_anchors[k];
-                        expect(std::abs(a.x-b.x)<0.001f &&
-                               std::abs(a.y-b.y)<0.001f &&
-                               std::abs(a.z-b.z)<0.001f,
-                               "Recovered patch did not reuse its cached local anchors");
-                    }
-                }
-            }
-        }
-        const auto lo = stacked.body_state(lower);
-        const auto hi = stacked.body_state(upper);
-        if (!(std::isfinite(lo.position.y) &&
-               std::isfinite(hi.position.y) &&
-               lo.position.y > 0.37f && lo.position.y < 0.65f &&
-               hi.position.y > 1.25f && hi.position.y < 1.70f &&
-               std::abs(lo.velocity.y) < 0.8f &&
-               std::abs(hi.velocity.y) < 0.8f))
-            std::fprintf(stderr,
-                "stack lo(y=%g vy=%g spin=%g,%g,%g) hi(y=%g vy=%g spin=%g,%g,%g) contacts=%zu\n",
-                lo.position.y,lo.velocity.y,lo.angular_velocity.x,
-                lo.angular_velocity.y,lo.angular_velocity.z,
-                hi.position.y,hi.velocity.y,hi.angular_velocity.x,
-                hi.angular_velocity.y,hi.angular_velocity.z,
-                stacked.contacts().size());
-        expect(std::isfinite(lo.position.y) &&
-               std::isfinite(hi.position.y) &&
-               lo.position.y > 0.37f && lo.position.y < 0.65f &&
-               hi.position.y > 1.25f && hi.position.y < 1.70f &&
-               std::abs(lo.velocity.y) < 0.8f &&
-               std::abs(hi.velocity.y) < 0.8f,
-               "Native two-body contact chain failed");
-    }
-
-    {
-        // Tiny mass can still have a representable inverse mass while
-        // its source angular tensor is not representable. Contact PGS
-        // must reject this geometry instead of using a zero tensor.
-        Scene very_light;
-        const auto left = very_light.add_dynamic_box(
-            {1,1,1},{0,5,0},5.0e-40f);
-        const auto right = very_light.add_dynamic_box(
-            {1,1,1},{1.5f,5,0},5.0e-40f);
-        bool rejected_angular = false;
-        try { very_light.apply_torque_impulse(left, {1,0,0}); }
-        catch (const std::logic_error&) { rejected_angular = true; }
-        expect(rejected_angular,
-               "Unrepresentable angular inertia silently used a substitute");
-        rejected_angular = false;
-        try { very_light.set_angular_velocity(left, {1,0,0}); }
-        catch (const std::logic_error&) { rejected_angular = true; }
-        expect(rejected_angular,
-               "Tiny-mass body admitted an unrepresentable angular state");
-        bool rejected_contact=false;
-        try { very_light.step(1.0f/120.0f); }
-        catch(const std::logic_error&) { rejected_contact=true; }
-        expect(rejected_contact &&
-               very_light.frame_index()==0 &&
-               very_light.body_state(left).position.x==0.0f &&
-               very_light.body_state(right).position.x==1.5f,
-               "Tiny-mass contact substituted a zero angular tensor");
-        very_light.set_position(right,{5,5,0});
-        very_light.set_velocity(left,{1,0,0});
-        very_light.step(1.0f/120.0f);
-        expect(std::isfinite(very_light.body_state(left).velocity.x) &&
-               very_light.body_state(left).position.x>0.0f,
-               "Rejected tiny-mass contact poisoned later free translation");
-    }
-
-    {
-        // Inverse mass can remain representable when a source PxReal box
-        // inertia component underflows, overflows or has an
-        // unrepresentable inverse. Those are translation-only bodies,
-        // not grounds for rejecting the existing mass admission.
-        const std::array<std::pair<fyzz::Vec3, float>, 4> cases{{
-            {{1.0e-13f,1.0e-13f,1.0e-13f},1.0f},
-            {{1.0e-13f,1.0e-13f,1.0f},1.0f},
-            {{1.0f,1.0f,1.0f},5.0e-40f},
-            {{1.0e13f,1.0e13f,1.0e13f},1.0e-39f}
-        }};
-        for (const auto& [half_extents,density] : cases) {
-            Scene body;
-            const auto id = body.add_dynamic_box(
-                half_extents,{0,5,0},density);
-            bool rejected = false;
-            try { body.set_angular_velocity(id,{1,0,0}); }
-            catch(const std::logic_error&) { rejected = true; }
-            expect(rejected,
-                   "Unrepresentable box inertia incorrectly admitted spin");
-            rejected = false;
-            try { body.apply_torque_impulse(id,{1,0,0}); }
-            catch(const std::logic_error&) { rejected = true; }
-            expect(rejected,
-                   "Unrepresentable box inertia incorrectly admitted torque");
-            body.set_velocity(id,{1,0,0});
-            body.step(1.0f/120.0f);
-            const auto state=body.body_state(id);
-            expect(std::isfinite(state.position.x) &&
-                   std::isfinite(state.position.y) &&
-                   std::isfinite(state.velocity.x) &&
-                   std::isfinite(state.velocity.y) &&
-                   state.position.x>0.0f && state.velocity.x>0.0f &&
-                   state.orientation.w==1.0f,
-                   "Valid translational body rejected or corrupted by inertia");
-        }
-    }
-
-    {
-        // Two individually finite extreme inputs must pass through the
-        // exact PhysX unconstrained-velocity clamp before contact prep.
-        // Preserve finite impulse state without a custom wide dot product.
-        Scene extreme;
-        const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
-        const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);
-        extreme.set_velocity(a, {2.0e38f,0,0});
-        extreme.set_velocity(b, {-2.0e38f,0,0});
-        // Smallest normal float: portable even with flush-to-zero.
-        extreme.step(std::numeric_limits<float>::min());
-        const auto va = extreme.body_state(a).velocity;
-        const auto vb = extreme.body_state(b).velocity;
-        expect(std::isfinite(va.x) && std::isfinite(va.y) &&
-               std::isfinite(va.z) && std::isfinite(vb.x) &&
-               std::isfinite(vb.y) && std::isfinite(vb.z) &&
-               va.x < 0.0f && vb.x > 0.0f &&
-               std::abs(va.x) < 1.0e38f && std::abs(vb.x) < 1.0e38f,
-               "Finite high-speed contact overflowed or corrupted velocities");
-        expect(extreme.contacts().size() == 1,
-               "High-speed dynamic pair lost its contact");
-    }
-    {
-        // Regression for a second float overflow: relative velocity and
-        // impulse remain finite in double, but unequal inverse masses
-        // previously overflowed one body's float velocity on writeback.
-        // Mirror the PhysX dynamic-body maxLinearVelocitySq=1e32 default.
-        // The unconstrained speed clamp precedes the contact solver.
-        // Use touching faces (zero penetration bias) so this tests that
-        // clamp rather than incorrectly capping post-solver correction.
-        Scene unequal_mass;
-        const auto light = unequal_mass.add_dynamic_box(
-            {1,1,1}, {0,5,0}, 1.0e-6f);
-        const auto heavy = unequal_mass.add_dynamic_box(
-            {1,1,1}, {2.0f,5,0}, 1.0e6f);
-        const float max_v = std::numeric_limits<float>::max();
-        unequal_mass.set_velocity(light, {max_v,0,0});
-        unequal_mass.set_velocity(heavy, {-max_v,0,0});
-        unequal_mass.step(std::numeric_limits<float>::min());
-        const auto vlight = unequal_mass.body_state(light).velocity;
-        const auto vheavy = unequal_mass.body_state(heavy).velocity;
-        expect(std::isfinite(vlight.x) && std::isfinite(vlight.y) &&
-               std::isfinite(vlight.z) && std::isfinite(vheavy.x) &&
-               std::isfinite(vheavy.y) && std::isfinite(vheavy.z),
-               "Unequal-mass contact published infinite or NaN velocity");
-        expect(std::abs(vlight.x) < 2.0e16f &&
-               std::abs(vheavy.x) < 2.0e16f &&
-               unequal_mass.contacts().size() == 1,
-               "Source unconstrained linear-speed clamp failed zero-bias contact");
-    }
-    {
-        // A free body uses the same source default velocity clamp, so
-        // safety is independent of whether contacts are generated.
-        Scene unopposed;
-        const auto b = unopposed.add_dynamic_box(
-            {1,1,1}, {0,5,0}, 1);
-        unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
-        unopposed.step(std::numeric_limits<float>::min());
-        const auto vel = unopposed.body_state(b).velocity;
-        // PhysX's PxReal squared speed overflows to infinity here.
-        // Consequently sqrt(1e32f / inf) is zero, not 1e16 normalization.
-        expect(vel.x == 0.0f && vel.y == 0.0f && vel.z == 0.0f,
-               "Native high-speed clamp diverged from PhysX float arithmetic");
-        Scene finite_limit;
-        const auto limited = finite_limit.add_dynamic_box(
-            {1,1,1}, {0,5,0}, 1);
-        finite_limit.set_velocity(limited, {2.0e16f,0,0});
-        finite_limit.step(1.0f / 120.0f);
-        const auto moderate = finite_limit.body_state(limited).velocity;
-        expect(std::isfinite(moderate.x) &&
-               std::abs(moderate.x - 1.0e16f) < 1.0e10f,
-               "Finite squared velocity failed PhysX source clamp");
-    }
-    {
-        // Velocity authoring has no full-manifold invalidation scan:
-        // an isolated edit changes only the selected actor's velocity.
-        Scene authoring;
-        const auto static_id = authoring.add_static_floor(0);
-        const auto dynamic_id = authoring.add_dynamic_box(
-            {0.25f,0.25f,0.25f}, {0,1,0}, 1);
-        authoring.set_velocity(dynamic_id, {2,0,3});
-        expect(authoring.body_state(dynamic_id).velocity.x == 2,
-               "Native dynamic-body velocity setter failed");
-        bool rejected = false;
-        try { authoring.set_velocity(static_id, {1,0,0}); }
-        catch (const std::logic_error&) { rejected = true; }
-        expect(rejected, "Native static body accepted linear velocity");
-        bool invalid = false;
-        try { authoring.set_velocity(dynamic_id, {INFINITY,0,0}); }
-        catch (const std::invalid_argument&) { invalid = true; }
-        expect(invalid, "Native scene accepted nonfinite velocity");
-    }
-
-    {
-        // Source inertia is directional and density-scaled. The same
-        // world torque impulse must produce different angular velocity
-        // for a rectangular body on its distinct principal axes.
-        Scene torque;
-        const auto id = torque.add_dynamic_box(
-            {0.5f,1.0f,2.0f}, {0,10,0}, 2.0f);
-        torque.apply_torque_impulse(id, {1,1,1});
-        torque.step(1.0f/120.0f);
-        const auto w = torque.body_state(id).angular_velocity;
-        // 8*0.5*1*2*2 = 16 kg; inertia = mass/3*(hy^2+hz^2...).
-        const float angular_damp = 1.0f-0.05f/120.0f;
-        const float ix=16.0f*(1.0f+4.0f)/3.0f;
-        const float iy=16.0f*(0.25f+4.0f)/3.0f;
-        const float iz=16.0f*(0.25f+1.0f)/3.0f;
-        expect(std::abs(w.x-angular_damp/ix)<0.0001f &&
-               std::abs(w.y-angular_damp/iy)<0.0001f &&
-               std::abs(w.z-angular_damp/iz)<0.0001f &&
-               w.x < w.y && w.y < w.z,
-               "Native box impulse failed source mass/inertia axes");
-        torque.step(1.0f/120.0f);
-        const auto twice=torque.body_state(id).angular_velocity;
-        expect(twice.z < w.z,
-               "Per-step angular impulse was replayed on the next frame");
-        bool invalid=false;
-        try {torque.apply_torque_impulse(id,{INFINITY,0,0});}
-        catch(const std::invalid_argument&) {invalid=true;}
-        expect(invalid,"Native torque accepted nonfinite input");
-        const auto floor_id=torque.add_static_floor(0);
-        bool rejected=false;
-        try {torque.apply_torque_impulse(floor_id,{1,0,0});}
-        catch(const std::logic_error&) {rejected=true;}
-        expect(rejected,"Static floor accepted angular impulse");
-    }
-    {
-        // Queued angular impulses are consumed at the next scene step
-        // even when static contacts are present. Normal contact rows
-        // must now accept the resulting rotated body without replaying
-        // the pending torque on later frames.
-        Scene rotating_contact;
-        const auto id = rotating_contact.add_dynamic_box(
-            {0.5f,1.0f,2.0f},{0,2,0},1);
-        rotating_contact.add_static_floor(0);
-        rotating_contact.apply_torque_impulse(id,{1,0,0});
-        const auto before = rotating_contact.body_state(id);
-        rotating_contact.step(1.0f/120.0f);
-        const auto after = rotating_contact.body_state(id);
-        expect(after.position.y < before.position.y &&
-               after.angular_velocity.x > before.angular_velocity.x &&
-               std::isfinite(after.angular_velocity.x),
-               "Queued angular impulse was not consumed in active scene");
-        rotating_contact.step(1.0f/120.0f);
-        expect(std::isfinite(rotating_contact.body_state(id).angular_velocity.x),
-               "Angular motion failed to continue without replaying torque");
-    }
-    {
-        // Source ScBodyCore creation counter and Dy::sleepCheck: motion
-        // readiness precedes whole-island deactivation. Once a rigid
-        // body rests on its static floor it must stop integrating gravity
-        // and remain stationary, but an explicit velocity edit wakes it.
-        Scene sleeping;
-        sleeping.add_static_floor(0.0f);
-        const auto id=sleeping.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        expect(std::abs(sleeping.body_wake_counter(id)-0.4f)<1e-6f &&
-               !sleeping.body_ready_for_sleep(id) &&
-               !sleeping.body_is_sleeping(id),
-               "Source rigid-body creation did not initialize wake counter");
-        for(int frame=0;frame<360;++frame)
-            sleeping.step(1.0f/120.0f);
-        const auto still=sleeping.body_state(id);
-        expect(sleeping.body_is_sleeping(id) &&
-               sleeping.body_ready_for_sleep(id) &&
-               still.sleeping &&
-               sleeping.body_wake_counter(id)==0.0f &&
-               still.velocity.y==0.0f &&
-               sleeping.solver_partition_count()==0,
-               "PhysX island did not deactivate a settled floor body");
-        for(double impulse:sleeping.solved_normal_impulses())
-            expect(impulse==0.0,
-                   "Sleeping contact manager emitted an active solver impulse");
-        // A failed later step must restore all existing sleep state,
-        // not just actor motion and topology. An independently admitted
-        // awake body forces a finite-input overflow before publication.
-        const auto awake=sleeping.add_dynamic_box(
-            {0.25f,0.25f,0.25f},{20,10,0},1.0f);
-        const auto before_failure=sleeping.body_state(awake);
-        bool failed=false;
-        try {sleeping.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {failed=true;}
-        const auto after_failure=sleeping.body_state(awake);
-        expect(failed && sleeping.body_is_sleeping(id) &&
-               sleeping.body_wake_counter(id)==0.0f &&
-               sleeping.body_state(id).sleeping &&
-               after_failure.position.y==before_failure.position.y &&
-               sleeping.body_wake_counter(awake)==0.4f,
-               "Failed source step corrupted dormant island or wake counter");
-        sleeping.set_velocity(id,{1,0,0});
-        expect(!sleeping.body_is_sleeping(id) &&
-               !sleeping.body_ready_for_sleep(id) &&
-               sleeping.body_wake_counter(id)==0.4f,
-               "Source velocity authoring did not wake the rigid body");
-        sleeping.step(1.0f/120.0f);
-        const auto moved=sleeping.body_state(id);
-        expect(!moved.sleeping &&
-               moved.position.x>still.position.x &&
-               std::isfinite(moved.velocity.x),
-               "Woken source island failed to reenter native solver");
-    }
-
-    {
-        // PxsIslandSim::processLostEdges(third pass) consumes the *prior*
-        // frame's Dy::sleepCheck readiness. The frame in which the body
-        // first becomes ready is not allowed to deactivate it immediately.
-        // The next third pass then deactivates before gravity and PGS:
-        // that frame must not integrate one extra position increment.
-        Scene phase_boundary;
-        phase_boundary.add_static_floor(0.0f);
-        const auto sleeper=phase_boundary.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        bool saw_ready_before_sleep=false;
-        for(int frame=0;frame<600;++frame) {
-            phase_boundary.step(1.0f/120.0f);
-            if(phase_boundary.body_ready_for_sleep(sleeper)) {
-                expect(!phase_boundary.body_is_sleeping(sleeper),
-                       "New Dy sleep readiness deactivated during its own solver frame");
-                saw_ready_before_sleep=true;
-                const auto ready_pose=phase_boundary.body_state(sleeper);
-                phase_boundary.step(1.0f/120.0f);
-                const auto inactive=phase_boundary.body_state(sleeper);
-                expect(inactive.sleeping &&
-                       inactive.position.x==ready_pose.position.x &&
-                       inactive.position.y==ready_pose.position.y &&
-                       inactive.position.z==ready_pose.position.z &&
-                       inactive.velocity.x==0.0f &&
-                       inactive.velocity.y==0.0f &&
-                       inactive.velocity.z==0.0f,
-                       "Third-pass deactivation integrated an already-ready island");
-                break;
-            }
-        }
-        expect(saw_ready_before_sleep,
-               "Source third-pass fixture never produced Dy sleep readiness");
-    }
-
-    // A user-authored dynamic teleport can remove a contact edge and
-    // split the original island before its waking node is propagated.
-    // Its dormant former contact partner must be reactivated directly
-    // from the previously published Gu manager, just as for a static
-    // support edit, even when the new topology no longer connects them.
-    {
-        Scene moved_peer;
-        moved_peer.add_static_floor(0.0f);
-        const auto left=moved_peer.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
-        const auto right=moved_peer.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            moved_peer.step(1.0f/120.0f);
-        expect(moved_peer.body_is_sleeping(left) &&
-               moved_peer.body_is_sleeping(right) &&
-               moved_peer.accurate_island_id(left)==
-                   moved_peer.accurate_island_id(right),
-               "Dynamic support edit fixture lacked dormant contact island");
-        moved_peer.set_position(left,{-10,0.5f,0});
-        expect(!moved_peer.body_is_sleeping(right) &&
-               !moved_peer.body_ready_for_sleep(right) &&
-               moved_peer.body_wake_counter(right)>0.0f,
-               "Dynamic pose edit left old contact peer dormant");
-        moved_peer.step(1.0f/120.0f);
-        expect(moved_peer.accurate_island_id(left)!=
-                   moved_peer.accurate_island_id(right) &&
-               !moved_peer.body_is_sleeping(right),
-               "Contact island split discarded the old peer wake");
-    }
-
-    // Third-pass sleep readiness belongs to the previous solver frame.
-    // A support edit between the ready and inactive passes must revoke
-    // the ready flag while the body is still awake. Verify both static
-    // movement and retirement, with and without an intermediate
-    // collision-only publication. These cases must integrate gravity on
-    // their next actual step, not suspend the body in midair.
-    for(bool retire_support : {false,true}) {
-        for(bool query_first : {false,true}) {
-            Scene unsupported;
-            const auto floor=unsupported.add_static_floor(0.0f);
-            const auto body=unsupported.add_dynamic_box(
-                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-            bool became_ready=false;
-            for(int frame=0;frame<600;++frame) {
-                unsupported.step(1.0f/120.0f);
-                if(unsupported.body_ready_for_sleep(body)) {
-                    became_ready=true;
-                    break;
-                }
-            }
-            expect(became_ready && !unsupported.body_is_sleeping(body),
-                   "Support-edit fixture missed ready-but-awake third-pass boundary");
-            const auto settled=unsupported.body_state(body);
-            if(retire_support)
-                unsupported.remove(floor);
-            else
-                unsupported.set_position(floor,{0,-10,0});
-            expect(!unsupported.body_ready_for_sleep(body) &&
-                   !unsupported.body_is_sleeping(body) &&
-                   unsupported.body_wake_counter(body)>0.0f,
-                   "Support edit retained stale ready-but-awake sleep state");
-            if(query_first) {
-                unsupported.advance_collision();
-                expect(!unsupported.body_ready_for_sleep(body) &&
-                       !unsupported.body_is_sleeping(body),
-                       "Collision query restored obsolete third-pass readiness");
-            }
-            unsupported.step(1.0f/120.0f);
-            const auto falling=unsupported.body_state(body);
-            expect(!falling.sleeping &&
-                   !unsupported.body_ready_for_sleep(body) &&
-                   falling.position.y<settled.position.y-1.0e-5f &&
-                   falling.velocity.y<0.0f,
-                   "Support edit deactivated ready actor before gravity");
-        }
-    }
-
-    {
-        // A geometry-only query also publishes changed island membership
-        // and may consume an authored node wake, without a numerical
-        // solver step. Its accurate active-node index must not vanish
-        // after a graph rebuild or remain stale after an island split.
-        Scene queried;
-        queried.add_static_floor(0.0f);
-        const auto sleeper=queried.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        queried.advance_collision();
-        expect(queried.active_accurate_nodes().size()==1 &&
-               queried.accurate_active_node_index(sleeper)==0,
-               "Geometry-only island admission did not index its active rigid");
-        for(int frame=0;frame<360;++frame)
-            queried.step(1.0f/120.0f);
-        expect(queried.body_is_sleeping(sleeper) &&
-               queried.active_accurate_nodes().empty(),
-               "Geometry query fixture never deactivated its first node");
-        queried.set_velocity(sleeper,{0.25f,0,0});
-        queried.advance_collision();
-        expect(queried.active_accurate_nodes().size()==1 &&
-               queried.active_accurate_nodes()[0]==sleeper &&
-               queried.accurate_active_node_index(sleeper)==0,
-               "Quiet authored wake failed to update the accurate active map");
-        const auto added=queried.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
-        queried.advance_collision();
-        expect(queried.active_accurate_nodes().size()==2 &&
-               queried.accurate_active_node_index(added)<
-                   queried.active_accurate_nodes().size(),
-               "Geometry-only rebuild lost an active rigid node");
-        queried.remove(sleeper);
-        queried.advance_collision();
-        expect(queried.active_accurate_nodes().size()==1 &&
-               queried.active_accurate_nodes()[0]==added &&
-               queried.accurate_active_node_index(sleeper)==
-                   std::numeric_limits<std::size_t>::max() &&
-               queried.accurate_active_node_index(added)==0,
-               "Actor retirement left a stale active-node reverse index");
-    }
-
-    {
-        // Rejected steps must preserve retained source active-node
-        // spans, their actual storage, and their published elements.
-        // A failure after a newly ready body deactivates exercises
-        // swap-last active index retirement before rollback.
-        Scene retained_active;
-        retained_active.add_static_floor(0.0f);
-        const auto sleeper=retained_active.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        bool ready=false;
-        for(int frame=0;frame<600;++frame) {
-            retained_active.step(1.0f/120.0f);
-            if(retained_active.body_ready_for_sleep(sleeper)) {
-                ready=true;
-                break;
-            }
-        }
-        expect(ready && !retained_active.body_is_sleeping(sleeper),
-               "Retained active span fixture did not become ready");
-        const auto published=retained_active.active_accurate_nodes();
-        const auto published_deactivations=
-            retained_active.deactivating_accurate_nodes();
-        expect(published.size()==1 && published[0]==sleeper &&
-               published_deactivations.empty(),
-               "Retained active span fixture was not an active rigid");
-        const auto* const published_ptr=published.data();
-        const auto* const deact_ptr=published_deactivations.data();
-        // The ready body will deactivate at the next third pass, so a
-        // second, unconnected active body is required to force the
-        // subsequent integration to reject an enormous timestep.
-        const auto overflow_body=retained_active.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{10,5,0},1.0f);
-        const auto frame=retained_active.frame_index();
-        for(int attempt=0;attempt<2;++attempt) {
-            bool rejected=false;
-            try {retained_active.step(std::numeric_limits<float>::max());}
-            catch(const std::overflow_error&) {rejected=true;}
-            expect(rejected && retained_active.frame_index()==frame &&
-                   !retained_active.body_is_sleeping(sleeper) &&
-                   retained_active.active_accurate_nodes().data()==
-                       published_ptr &&
-                   retained_active.deactivating_accurate_nodes().data()==
-                       deact_ptr &&
-                   published.size()==1 && published[0]==sleeper &&
-                   retained_active.active_accurate_nodes().size()==1 &&
-                   retained_active.accurate_active_node_index(sleeper)==0 &&
-                   retained_active.deactivating_accurate_nodes().empty(),
-                   "Failed third-pass deactivation invalidated active-node span");
-        }
-        retained_active.step(1.0f/120.0f);
-        expect(retained_active.body_is_sleeping(sleeper) &&
-               retained_active.deactivating_accurate_nodes().size()==1 &&
-               retained_active.deactivating_accurate_nodes()[0]==sleeper,
-               "Valid retry failed to emit accurate third-pass deactivation");
-        // The next rejected frame can rebuild topology after a newly
-        // admitted awake body; retained deactivation storage remains
-        // readable even if the working graph was replaced.
-        const auto old_output=retained_active.deactivating_accurate_nodes();
-        const auto* const old_output_ptr=old_output.data();
-        const auto newcomer=retained_active.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
-        const auto next_frame=retained_active.frame_index();
-        bool rejected=false;
-        try {retained_active.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {rejected=true;}
-        expect(rejected && retained_active.frame_index()==next_frame &&
-               old_output.data()==old_output_ptr && old_output.size()==1 &&
-               old_output[0]==sleeper &&
-               retained_active.deactivating_accurate_nodes().data()==
-                   old_output_ptr &&
-               retained_active.deactivating_accurate_nodes().size()==1 &&
-               retained_active.deactivating_accurate_nodes()[0]==sleeper,
-               "Rejected island rebuild invalidated deactivation report span");
-        retained_active.step(1.0f/120.0f);
-        const auto active_after_retry=retained_active.active_accurate_nodes();
-        expect(retained_active.deactivating_accurate_nodes().empty() &&
-               active_after_retry.size()==2 &&
-               std::find(active_after_retry.begin(),active_after_retry.end(),
-                         overflow_body)!=active_after_retry.end() &&
-               std::find(active_after_retry.begin(),active_after_retry.end(),
-                         newcomer)!=active_after_retry.end(),
-               "Post-rollback deactivation output was replayed on retry");
-    }
-
-    {
-        // PxsIslandSim::wakeIslands captures its initially active rigid
-        // prefix before admitting newly activated nodes. Deactivating
-        // an initial member must use source markInactive's prefix-tail
-        // relocation so only genuinely new rigid nodes remain in
-        // getNodesToActivate's active suffix. Rebuilding the graph for
-        // actor admission must preserve the existing active permutation.
-        Scene partitions;
-        partitions.add_static_floor(0.0f);
-        const auto sleeper=partitions.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        const auto flyer=partitions.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{10,10,0},1.0f);
-        partitions.advance_collision();
-        expect(partitions.newly_activated_accurate_nodes().size()==2,
-               "First source wake did not admit both new rigid bodies");
-        bool ready=false;
-        for(int frame=0;frame<600;++frame) {
-            // Keep the independent free-flight body awake while the
-            // resting island reaches its prior-frame sleep boundary.
-            partitions.set_velocity(flyer,{0,9.81f,0});
-            partitions.step(1.0f/120.0f);
-            if(partitions.body_ready_for_sleep(sleeper)) {
-                ready=true;
-                break;
-            }
-        }
-        expect(ready && !partitions.body_is_sleeping(sleeper),
-               "Initial-active partition fixture did not reach readiness");
-        // Admit a new island in the very pass where the old floor
-        // island deactivates. The original two-node initial prefix must
-        // shrink to the still-active flyer, while the newcomer belongs
-        // strictly to the newly activated suffix. This fails if
-        // markInactive uses unconditional swap-last without the
-        // source initial-partition tail permutation.
-        const auto newcomer=partitions.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,10,0},1.0f);
-        partitions.set_velocity(flyer,{0,9.81f,0});
-        partitions.step(1.0f/120.0f);
-        expect(partitions.body_is_sleeping(sleeper) &&
-               partitions.deactivating_accurate_nodes().size()==1 &&
-               partitions.deactivating_accurate_nodes()[0]==sleeper &&
-               partitions.active_accurate_nodes().size()==2 &&
-               partitions.active_accurate_nodes()[0]==flyer &&
-               partitions.active_accurate_nodes()[1]==newcomer &&
-               partitions.newly_activated_accurate_nodes().size()==1 &&
-               partitions.newly_activated_accurate_nodes()[0]==newcomer &&
-               partitions.accurate_active_node_index(sleeper)==
-                   std::numeric_limits<std::size_t>::max() &&
-               partitions.accurate_active_node_index(flyer)==0 &&
-               partitions.accurate_active_node_index(newcomer)==1,
-               "Simultaneous source markInactive/admission broke initial-active partition");
-        const auto published=partitions.active_accurate_nodes();
-        const auto prior_new=partitions.newly_activated_accurate_nodes();
-        const auto* const original=published.data();
-        bool failed=false;
-        try {partitions.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {failed=true;}
-        expect(failed &&
-               partitions.active_accurate_nodes().data()==original &&
-               published[0]==flyer && published[1]==newcomer &&
-               prior_new.size()==1 && prior_new[0]==newcomer,
-               "Rejected frame damaged published active-node partitions");
-        partitions.set_velocity(flyer,{0,9.81f,0});
-        partitions.step(1.0f/120.0f);
-        expect(partitions.newly_activated_accurate_nodes().empty() &&
-               partitions.active_accurate_nodes().size()==2,
-               "Previous initial-active suffix replayed on next frame");
-    }
-
-    verify_simultaneous_initial_sleep_compaction();
-
-    {
-        // Source accurate active-node indexing must stay dense and
-        // bidirectional through third-pass sleep, user wake, and
-        // reactivation. The separate deactivation output is published
-        // for exactly the boundary in which ready nodes go inactive.
-        Scene indexed;
-        indexed.add_static_floor(0.0f);
-        const auto body=indexed.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        indexed.step(1.0f/120.0f);
-        expect(indexed.active_accurate_nodes().size()==1 &&
-               indexed.active_accurate_nodes()[0]==body &&
-               indexed.accurate_active_node_index(body)==0,
-               "Source active-node index missed the initially awake body");
-        bool deactivated=false;
-        for(int frame=0;frame<600;++frame) {
-            indexed.step(1.0f/120.0f);
-            if(indexed.body_is_sleeping(body)) {
-                const auto retired=indexed.deactivating_accurate_nodes();
-                expect(retired.size()==1 && retired[0]==body &&
-                       indexed.active_accurate_nodes().empty() &&
-                       indexed.accurate_active_node_index(body)==
-                           std::numeric_limits<std::size_t>::max(),
-                       "Third pass did not publish indexed rigid deactivation");
-                deactivated=true;
-                break;
-            }
-        }
-        expect(deactivated,"Source indexed active node never slept");
-        // A public collision-only query consumes a new publication clock
-        // without invoking another ready-island transition. Source
-        // mNodesToPutToSleep is per-pass output, not sticky sleep state.
-        indexed.advance_collision();
-        expect(indexed.deactivating_accurate_nodes().empty() &&
-               indexed.active_accurate_nodes().empty() &&
-               indexed.accurate_active_node_index(body)==
-                   std::numeric_limits<std::size_t>::max(),
-               "Quiet collision publication replayed a deactivation event");
-        indexed.advance_collision();
-        expect(indexed.deactivating_accurate_nodes().empty(),
-               "Repeated quiet publication resurrected an old deactivation");
-        indexed.step(1.0f/120.0f);
-        expect(indexed.deactivating_accurate_nodes().empty() &&
-               indexed.active_accurate_nodes().empty(),
-               "Dormant third pass repeated an already published deactivation");
-        indexed.set_velocity(body,{1,0,0});
-        indexed.step(1.0f/120.0f);
-        expect(indexed.deactivating_accurate_nodes().empty() &&
-               indexed.active_accurate_nodes().size()==1 &&
-               indexed.active_accurate_nodes()[0]==body &&
-               indexed.accurate_active_node_index(body)==0,
-               "Source node activation did not rebuild the active index");
-    }
-
-    {
-        // The source active-island list is a strict subset of all accurate
-        // islands. Dormant bodies remain in the persistent source graph
-        // but are excluded from unconstrained integration and PGS. An
-        // isolated awake node must retain its own active island batch.
-        Scene active_handoff;
-        active_handoff.add_static_floor(0.0f);
-        const auto resting=active_handoff.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        const auto flyer=active_handoff.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
-        active_handoff.advance_collision();
-        expect(active_handoff.accurate_island_count()==2,
-               "Active-island fixture did not admit both source islands");
-        // Isolate the dormant transition from the free-flight wake state:
-        // first sleep the floor body, then introduce the distant flyer.
-        Scene staged;
-        staged.add_static_floor(0.0f);
-        const auto dormant=staged.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            staged.step(1.0f/120.0f);
-        expect(staged.body_is_sleeping(dormant) &&
-               staged.active_accurate_island_count()==0,
-               "Dormant accurate island remained on Dy active list");
-        const auto dynamic=staged.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{20,5,0},1.0f);
-        staged.step(1.0f/120.0f);
-        expect(staged.accurate_island_count()==2 &&
-               staged.active_accurate_island_count()==1 &&
-               staged.body_is_sleeping(dormant) &&
-               staged.body_state(dynamic).position.y<5.0f,
-               "Dy active-island handoff admitted sleeper or skipped free flight");
-        staged.set_velocity(dormant,{1,0,0});
-        staged.step(1.0f/120.0f);
-        expect(staged.active_accurate_island_count()==2 &&
-               !staged.body_is_sleeping(dormant),
-               "Wake did not restore accurate active-island admission");
-        (void)resting;
-        (void)flyer;
-    }
-
-    // A quiet collision query must consume genuinely authored source
-    // wake requests without scanning the island graph for every query.
-    // Ensure a rejected step does not clear that pending wake indicator:
-    // the next quiet query still propagates to the sleeping island peer.
-    {
-        Scene pending_query;
-        pending_query.add_static_floor(0.0f);
-        const auto left=pending_query.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
-        const auto right=pending_query.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
-        for(int i=0;i<360;++i)pending_query.step(1.0f/120.0f);
-        pending_query.advance_collision();
-        expect(pending_query.body_is_sleeping(left) &&
-               pending_query.body_is_sleeping(right),
-               "Quiet wake indicator fixture failed to settle");
-        const auto revision=pending_query.island_topology_revision();
-        for(int i=0;i<4;++i)pending_query.advance_collision();
-        expect(pending_query.island_topology_revision()==revision,
-               "Quiet collision queries modified source island topology");
-        pending_query.set_velocity(left,{0.3f,0,0});
-        bool rejected=false;
-        try {pending_query.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {rejected=true;}
-        expect(rejected && pending_query.body_is_sleeping(right),
-               "Rejected frame corrupted queued wake");
-        pending_query.advance_collision();
-        expect(!pending_query.body_is_sleeping(right) &&
-               pending_query.island_topology_revision()==revision,
-               "Queued authored wake was lost after quiet rollback");
-    }
-
-    {
-        // A rejected Dy step rebuilds the active accurate island view
-        // after source wake/deactivation. The previous published active
-        // batch count must survive rollback without copying the list.
-        Scene active_rollback;
-        active_rollback.add_static_floor(0.0f);
-        const auto sleeper=active_rollback.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        for(int i=0;i<360;++i)active_rollback.step(1.0f/120.0f);
-        expect(active_rollback.active_accurate_island_count()==0 &&
-               active_rollback.body_is_sleeping(sleeper),
-               "Active-batch rollback fixture did not become dormant");
-        active_rollback.set_velocity(sleeper,{1,0,0});
-        // Prior published active view remains empty until the next
-        // simulation publication, despite the authored actor wake.
-        bool rejected=false;
-        try {active_rollback.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {rejected=true;}
-        expect(rejected &&
-               active_rollback.active_accurate_island_count()==0 &&
-               active_rollback.active_accurate_nodes().empty() &&
-               active_rollback.accurate_active_node_index(sleeper)==
-                   std::numeric_limits<std::size_t>::max() &&
-               active_rollback.deactivating_accurate_nodes().empty() &&
-               !active_rollback.body_is_sleeping(sleeper),
-               "Rejected Dy frame replaced the published active-node/index state");
-        active_rollback.step(1.0f/120.0f);
-        expect(active_rollback.active_accurate_island_count()==1 &&
-               active_rollback.active_accurate_nodes().size()==1 &&
-               active_rollback.accurate_active_node_index(sleeper)==0,
-               "Active-island retry did not republish the indexed source node");
-    }
-
-    {
-        // IslandSim::activateNode clears an already-awake node's ready
-        // flag when a new contact wakes its island. A body that just
-        // reached readiness must still resolve the newly added static
-        // contact, not sleep before submitting the new Gu rows.
-        Scene new_touch;
-        new_touch.add_static_floor(0.0f);
-        const auto candidate=new_touch.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        bool ready=false;
-        for(int frame=0;frame<600;++frame) {
-            new_touch.step(1.0f/120.0f);
-            if(new_touch.body_ready_for_sleep(candidate)) {
-                ready=true;
-                break;
-            }
-        }
-        expect(ready && !new_touch.body_is_sleeping(candidate),
-               "New-touch activation fixture missed the ready-before-sleep frame");
-        const float previous_x=new_touch.body_state(candidate).position.x;
-        new_touch.add_static_box(
-            {0.5f,0.5f,0.5f},{previous_x+0.9f,0.5f,0});
-        new_touch.step(1.0f/120.0f);
-        const auto moved=new_touch.body_state(candidate);
-        expect(!moved.sleeping &&
-               moved.position.x<previous_x-0.001f,
-               "New Gu touch failed to revoke an awake node's sleep readiness");
-    }
-
-    {
-        // IslandSim::activateIslandInternal wakes connected rigid nodes,
-        // not only the node explicitly edited by a user. A persistent
-        // dynamic contact must admit both nodes together on reactivation.
-        Scene coupled_sleep;
-        coupled_sleep.add_static_floor(0.0f);
-        const auto left=coupled_sleep.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
-        const auto right=coupled_sleep.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            coupled_sleep.step(1.0f/120.0f);
-        expect(coupled_sleep.accurate_island_count()==1 &&
-               coupled_sleep.body_is_sleeping(left) &&
-               coupled_sleep.body_is_sleeping(right),
-               "Source dynamic contact island did not deactivate together");
-        coupled_sleep.set_velocity(left,{0.5f,0,0});
-        expect(!coupled_sleep.body_is_sleeping(left) &&
-               coupled_sleep.body_is_sleeping(right),
-               "Direct user wake bypassed source island activation stage");
-        coupled_sleep.step(1.0f/120.0f);
-        expect(!coupled_sleep.body_is_sleeping(left) &&
-               !coupled_sleep.body_is_sleeping(right),
-               "Source island wake did not reactivate contact-connected peer");
-    }
-
-    {
-        // IslandSim::wakeIslands consumes an actual authored activation,
-        // including when a collision-only query is otherwise quiet.
-        // An already-awake neighbor is not itself a perpetual wake event.
-        Scene queued_wake;
-        queued_wake.add_static_floor(0.0f);
-        const auto left=queued_wake.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
-        const auto right=queued_wake.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.5f,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            queued_wake.step(1.0f/120.0f);
-        expect(queued_wake.body_is_sleeping(left) &&
-               queued_wake.body_is_sleeping(right),
-               "Activation queue fixture did not reach dormant island");
-        queued_wake.advance_collision();
-        expect(queued_wake.body_is_sleeping(left) &&
-               queued_wake.body_is_sleeping(right),
-               "Quiet query spuriously activated a dormant island");
-        queued_wake.set_velocity(left,{0.3f,0,0});
-        expect(!queued_wake.body_is_sleeping(left) &&
-               queued_wake.body_is_sleeping(right),
-               "Authored activation did not retain per-node handoff");
-        // A failed Dy frame may consume an activating node while
-        // traversing the speculative island. The checkpoint must restore
-        // both the dormant peer and the queued activating flag so the
-        // subsequent collision-only query still wakes the peer.
-        const auto queued_frame=queued_wake.frame_index();
-        for(int attempt=0;attempt<2;++attempt) {
-            bool rejected=false;
-            try {queued_wake.step(std::numeric_limits<float>::max());}
-            catch(const std::overflow_error&) {rejected=true;}
-            expect(rejected &&
-                   queued_wake.frame_index()==queued_frame &&
-                   !queued_wake.body_is_sleeping(left) &&
-                   queued_wake.body_is_sleeping(right),
-                   "Failed Dy frame consumed a pending source activation");
-        }
-        queued_wake.advance_collision();
-        expect(!queued_wake.body_is_sleeping(right),
-               "Quiet collision publication discarded the queued source wake");
-    }
-
-    {
-        // The speculative graph may contain a pair of overlapping AABBs
-        // whose rotated Gu boxes never touch. PhysX's third pass uses
-        // accurate islands to decide rigid-body deactivation; only
-        // contact interactions use speculative deactivation state.
-        // Keep one rod awake without translating far enough to destroy
-        // the SAP overlap, while its accurate neighbor is allowed to sleep.
-        Scene distinct_sleep;
-        const auto rod_a=distinct_sleep.add_dynamic_box(
-            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
-        const auto rod_b=distinct_sleep.add_dynamic_box(
-            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
-        for(fyzz::BodyId id:{rod_a,rod_b}) {
-            distinct_sleep.set_velocity(id,{0,9.81f,0});
-            distinct_sleep.set_angular_velocity(id,{0,0.83f,0});
-        }
-        distinct_sleep.step(1.0f);
-        for(fyzz::BodyId id:{rod_a,rod_b}) {
-            distinct_sleep.set_angular_velocity(id,{});
-            distinct_sleep.set_velocity(id,{});
-        }
-        distinct_sleep.set_position(rod_a,{0,0.1f,0});
-        distinct_sleep.set_position(rod_b,{0.6f,0.1f,0.6f});
-        distinct_sleep.add_static_floor(0.0f);
-        distinct_sleep.advance_collision();
-        expect(has(distinct_sleep.pairs(),rod_a,rod_b) &&
-               distinct_sleep.speculative_island_count()==1 &&
-               distinct_sleep.accurate_island_count()==2,
-               "Sleep fixture failed to separate speculative and accurate islands");
-        bool independent_sleep=false;
-        for(int frame=0;frame<160;++frame) {
-            distinct_sleep.set_velocity(rod_b,{0,0,0.25f});
-            distinct_sleep.step(1.0f/120.0f);
-            if(distinct_sleep.body_is_sleeping(rod_a) &&
-               !distinct_sleep.body_is_sleeping(rod_b) &&
-               distinct_sleep.speculative_island_count()==1 &&
-               distinct_sleep.accurate_island_count()==2) {
-                const auto active=distinct_sleep.active_accurate_nodes();
-                expect(active.size()==1 && active[0]==rod_b &&
-                       distinct_sleep.accurate_active_node_index(rod_b)==0 &&
-                       distinct_sleep.accurate_active_node_index(rod_a)==
-                           std::numeric_limits<std::size_t>::max(),
-                       "Accurate active node list included dormant speculative-only peer");
-                independent_sleep=true;
-                break;
-            }
-        }
-        expect(independent_sleep,
-               "Accurate rigid island could not deactivate independently of SAP candidate");
-    }
-
-    {
-        // Newly published contacts and island activation precede
-        // unconstrained velocity integration. On a later overflow,
-        // failure atomicity must roll back both the fresh contact
-        // manager and the previously sleeping peer's activation. The
-        // identical valid retry must admit both bodies to the solver.
-        Scene wake_rollback;
-        wake_rollback.add_static_floor(0.0f);
-        const auto sleeper=wake_rollback.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            wake_rollback.step(1.0f/120.0f);
-        expect(wake_rollback.body_is_sleeping(sleeper),
-               "Wake rollback source fixture did not reach sleep");
-        const auto newcomer=wake_rollback.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1.0f);
-        const auto prior_sleeper=wake_rollback.body_state(sleeper);
-        const auto prior_newcomer=wake_rollback.body_state(newcomer);
-        const auto prior_contacts=wake_rollback.contacts().size();
-        bool rejected=false;
-        try {wake_rollback.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {rejected=true;}
-        expect(rejected &&
-               wake_rollback.body_is_sleeping(sleeper) &&
-               wake_rollback.body_wake_counter(sleeper)==0.0f &&
-               wake_rollback.body_state(sleeper).position.y==
-                   prior_sleeper.position.y &&
-               wake_rollback.body_state(newcomer).position.x==
-                   prior_newcomer.position.x &&
-               wake_rollback.contacts().size()==prior_contacts,
-               "Failed activation frame published wake or new Gu contact");
-        wake_rollback.step(1.0f/120.0f);
-        expect(!wake_rollback.body_is_sleeping(sleeper) &&
-               wake_rollback.accurate_island_id(sleeper)==
-                   wake_rollback.accurate_island_id(newcomer),
-               "Source activation rollback lost new-touch retry");
-        // PxvDynamics.h initializes the unconfigured rigid body's
-        // maxPenBias to -1e32f, not an implicit -3 m/s clamp.
-        // The source default is effectively unbounded for this contact.
-        // An incorrect finite -8 or -10 m/s clamp also must not pass.
-        // The reference-enabled suite checks a stronger deep-contact
-        // short-timestep case against actual PhysX legacy Gu/PGS.
-        expect(wake_rollback.body_state(sleeper).position.x < -0.05f,
-               "Source default penetration bias was spuriously capped");
-
-    }
-
-    {
-        // Sc static-actor pose authoring invalidates interactions with
-        // an already sleeping rigid body. Reusing the existing accurate
-        // contact managers wakes the touched actor before subsequent
-        // Gu/PGS progression; quiet static-world contacts do not.
-        Scene moving_ground;
-        const auto floor=moving_ground.add_static_floor(0.0f);
-        const auto body=moving_ground.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            moving_ground.step(1.0f/120.0f);
-        expect(moving_ground.body_is_sleeping(body),
-               "Source static wake fixture never reached sleep");
-        moving_ground.set_position(floor,{0,0.1f,0});
-        expect(!moving_ground.body_is_sleeping(body),
-               "Static pose change left its touching rigid body asleep");
-        moving_ground.step(1.0f/120.0f);
-        expect(!moving_ground.body_state(body).sleeping &&
-               std::isfinite(moving_ground.body_state(body).position.y),
-               "Native PGS could not advance rigid body after static wake");
-    }
-
-    {
-        // A geometry-only Gu publication can create a static touch
-        // before the next step. IslandSim::wakeIslands consumes it at
-        // publication, not from a one-frame event stream that may be
-        // cleared by a later quiet collision query.
-        Scene collision_wake;
-        collision_wake.add_static_floor(0);
-        const auto body=collision_wake.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1);
-        for(int frame=0;frame<360;++frame)
-            collision_wake.step(1.0f/120.0f);
-        expect(collision_wake.body_is_sleeping(body),
-               "Geometry-only wake fixture failed to reach sleep");
-        collision_wake.add_static_box(
-            {0.5f,0.5f,0.5f},{0.85f,0.5f,0});
-        collision_wake.advance_collision();
-        expect(!collision_wake.body_is_sleeping(body) &&
-               collision_wake.accurate_island_static_touches(body)==2,
-               "Gu-only publication lost the static contact wake");
-        collision_wake.advance_collision();
-        expect(!collision_wake.body_is_sleeping(body),
-               "Quiet collision query lost previously published activation");
-        collision_wake.step(1.0f/120.0f);
-        expect(!collision_wake.body_state(body).sleeping &&
-               std::isfinite(collision_wake.body_state(body).velocity.y),
-               "Geometry-published source activation failed solver admission");
-    }
-
-    {
-        // Sc::Scene destroys contact-manager links when a supporting
-        // static actor is retired. A sleeping box must wake and resume
-        // falling rather than remain indefinitely suspended in space.
-        Scene removed_support;
-        const auto floor=removed_support.add_static_floor(0);
-        const auto box=removed_support.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        for(int frame=0;frame<360;++frame)
-            removed_support.step(1.0f/120.0f);
-        expect(removed_support.body_is_sleeping(box),
-               "Retired-support fixture failed to reach source sleep");
-        const float old_y=removed_support.body_state(box).position.y;
-        removed_support.remove(floor);
-        expect(!removed_support.body_is_sleeping(box),
-               "Retiring static support failed to reactivate sleeping box");
-        for(int frame=0;frame<8;++frame)
-            removed_support.step(1.0f/120.0f);
-        expect(removed_support.body_state(box).position.y<old_y-0.005f &&
-               removed_support.body_state(box).velocity.y<0.0f,
-               "Source rigid body did not fall after losing static support");
-    }
+    verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
