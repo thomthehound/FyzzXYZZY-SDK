@@ -3330,7 +3330,7 @@ void Scene::StepCheckpoint::save_handle_lists(const Scene& scene) {
                         scene.free_edge_handles_.end());
     handles_saved=true;
 }
-void Scene::StepCheckpoint::save_graph_ownership(const Scene& scene) {
+void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
     if(graph_ownership_saved)return;
     // Snapshot the single authoritative source island owner only before
     // its first mutation; quiet frames should never copy node chains.
@@ -3351,6 +3351,7 @@ void Scene::StepCheckpoint::save_graph_ownership(const Scene& scene) {
     accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
                              scene.accurate_island_offsets_.end());
     graph_ownership_saved=true;
+    ++scene.island_graph_checkpoint_count_;
 }
 void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Reuse capacities across frames. The checkpoint contains only state
@@ -3432,6 +3433,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     topology_revision=scene.island_topology_revision_;
     full_rebuild_count=scene.island_full_rebuild_count_;
     local_split_count=scene.island_local_split_count_;
+    graph_checkpoint_count=scene.island_graph_checkpoint_count_;
     dirty_route_checks=scene.island_dirty_route_checks_;
     fast_route_hits=scene.island_fast_route_hits_;
     frame_index=scene.frame_index_;
@@ -3645,6 +3647,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.island_topology_revision_=topology_revision;
     scene.island_full_rebuild_count_=full_rebuild_count;
     scene.island_local_split_count_=local_split_count;
+    scene.island_graph_checkpoint_count_=graph_checkpoint_count;
     scene.island_dirty_route_checks_=dirty_route_checks;
     scene.island_fast_route_hits_=fast_route_hits;
     scene.frame_index_=frame_index;
