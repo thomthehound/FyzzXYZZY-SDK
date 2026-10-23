@@ -765,11 +765,12 @@ reference for an ordinary settled floor contact.
 This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
 the rigid contact-manager `Edge::eACTIVE/eACTIVATING` flags and
 activated-edge worklists are now independently owned by the speculative
-and accurate graphs. The remaining node-type activation queues,
-kinematic triggers, stabilization/freeze state,
-deferred deactivation continuations, active-reference bookkeeping,
-sleep/wake callbacks and exact `ScPipeline::afterIntegration`
-task semantics are still not implemented. Independent *rigid* active-index maps, their
+and accurate graphs. Rigid two-dynamic-endpoint
+`IslandSim::Node::mActiveRefCount` bookkeeping is also implemented.
+The remaining unsupported non-rigid node-type activation queues,
+kinematic consumption of active references, stabilization/freeze state,
+deferred deactivation continuations, complete sleep/wake callbacks and
+exact `ScPipeline::afterIntegration` task semantics are still not implemented. Independent *rigid* active-index maps, their
 prefix/suffix and swap-last behavior are already implemented in both
 graphs; this is not a claim of their complete non-rigid lifecycle. The active
 subset has no joints or CCD and cannot establish those dependencies.
@@ -1277,7 +1278,10 @@ or persistent-contact event processing.
 The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
 articulation and constraint edges, kinematic consumption of the now
 implemented rigid contact-manager active references, per-type bitmap
-partitions, callback publication, full island task continuations and
-`ScPipeline` interaction consumption still require source-derived
-N1 integration. Packed solver/contact admission and CCD
+partitions, full shape-interaction activation/notification
+semantics, persistent contact events, callback publication and full
+island task continuations still require source-derived N1 integration.
+The rigid speculative contact-manager interaction-activity consumer
+is already implemented; it is not a remaining general interaction
+callback pipeline. Packed solver/contact admission and CCD
 remain separate gates; the new activity lifecycle alone does not close N1.
