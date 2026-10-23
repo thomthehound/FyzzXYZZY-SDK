@@ -1233,7 +1233,8 @@ the source's two-valid-endpoint rigid contact managers. Static-world
 contacts never increment a dynamic node's references. Activation,
 true deactivation, touch loss, retirement, retry and the checkpoint
 restore both graphs' independent reference counts without a parallel
-contact registry. The counters are source-owned prerequisites for
+contact registry. A deduplicated per-node undo journal, rather than
+dense reference-array copies on every step, handles the failure boundary. The counters are source-owned prerequisites for
 later kinematic activation, not a claim that kinematics are admitted.
 Activity flags replay **after** the intrusive edge-undo records, which
 may contain post-deactivation bits. Quiet nontransactional publications

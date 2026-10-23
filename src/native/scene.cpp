@@ -2081,6 +2081,11 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(state&1u)return; // Edge::eACTIVE
     step_checkpoint_.save_activity(*this,id);
+    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
+       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+        step_checkpoint_.save_reference(*this,edge.pair.a);
+        step_checkpoint_.save_reference(*this,edge.pair.b);
+    }
     auto& graph=accurate?accurate_islands_:speculative_islands_;
     state|=3u; // Edge::eACTIVE | Edge::eACTIVATING
     graph.activated_edges.push_back(id);
@@ -2100,6 +2105,11 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(!(state&3u))return;
     step_checkpoint_.save_activity(*this,id);
+    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
+       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+        step_checkpoint_.save_reference(*this,edge.pair.a);
+        step_checkpoint_.save_reference(*this,edge.pair.b);
+    }
     auto& graph=accurate?accurate_islands_:speculative_islands_;
     if(state&2u) {
         auto& pending=graph.activated_edges;
@@ -3566,6 +3576,19 @@ void Scene::StepCheckpoint::save_activity(
     const auto& edge=scene.contact_edges_[id];
     activity_undo.push_back({id,edge.speculative_state,edge.accurate_state});
 }
+void Scene::StepCheckpoint::save_reference(
+    Scene& scene, BodyId node) noexcept {
+    if(!scene.activity_checkpoint_active_ ||
+       node>=initial_speculative_references ||
+       node>=initial_accurate_references)return;
+    if(scene.reference_undo_generations_[node]==
+       scene.reference_undo_generation_)return;
+    scene.reference_undo_generations_[node]=
+        scene.reference_undo_generation_;
+    reference_undo.push_back({node,
+        scene.speculative_islands_.active_reference_counts[node],
+        scene.accurate_islands_.active_reference_counts[node]});
+}
 void Scene::StepCheckpoint::save_hint(
     const Scene& scene, BodyId node, bool accurate) {
     const auto& routes=accurate?scene.accurate_fast_route_:
@@ -3640,6 +3663,18 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // every PGS step even when all connections remain unchanged.
     edge_undo.clear();
     activity_undo.clear();
+    reference_undo.clear();
+    if(++scene.reference_undo_generation_==0) {
+        std::fill(scene.reference_undo_generations_.begin(),
+                  scene.reference_undo_generations_.end(),0);
+        scene.reference_undo_generation_=1;
+    }
+    scene.reference_undo_generations_.resize(scene.actors_.size(),0);
+    reference_undo.reserve(scene.actors_.size());
+    initial_speculative_references=
+        scene.speculative_islands_.active_reference_counts.size();
+    initial_accurate_references=
+        scene.accurate_islands_.active_reference_counts.size();
     if(++scene.activity_undo_generation_==0) {
         std::fill(scene.activity_undo_generations_.begin(),
                   scene.activity_undo_generations_.end(),0);
@@ -3706,9 +3741,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                         live.active_node_index.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
-        saved.active_reference_counts.assign(
-            live.active_reference_counts.begin(),
-            live.active_reference_counts.end());
+        // Per-edge reference mutations are restored through the sparse
+        // endpoint journal. No O(all actors) counter-array snapshot is
+        // needed for a normal rigid PGS frame.
         saved.active_edge_count=live.active_edge_count;
         saved.initial_active_node_count=live.initial_active_node_count;
     };
@@ -3942,8 +3977,6 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.deactivating_edges);
     scene.speculative_islands_.activated_edges.swap(
         speculative_islands.activated_edges);
-    scene.speculative_islands_.active_reference_counts.swap(
-        speculative_islands.active_reference_counts);
     scene.speculative_islands_.active_edge_count=
         speculative_islands.active_edge_count;
     scene.speculative_islands_.initial_active_node_count=
@@ -3966,12 +3999,23 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.deactivating_edges);
     scene.accurate_islands_.activated_edges.swap(
         accurate_islands.activated_edges);
-    scene.accurate_islands_.active_reference_counts.swap(
-        accurate_islands.active_reference_counts);
     scene.accurate_islands_.active_edge_count=
         accurate_islands.active_edge_count;
     scene.accurate_islands_.initial_active_node_count=
         accurate_islands.initial_active_node_count;
+    // The reference arrays belong to their original graph owners even
+    // after a full island rebuild. Rewind only changed endpoint slots
+    // after structural ownership and edge-state undo have completed.
+    for(auto it=reference_undo.rbegin();it!=reference_undo.rend();++it) {
+        scene.speculative_islands_.active_reference_counts[it->node]=
+            it->speculative;
+        scene.accurate_islands_.active_reference_counts[it->node]=
+            it->accurate;
+    }
+    scene.speculative_islands_.active_reference_counts.resize(
+        initial_speculative_references);
+    scene.accurate_islands_.active_reference_counts.resize(
+        initial_accurate_references);
     if(graph_ownership_saved) {
         scene.accurate_island_nodes_.swap(accurate_nodes);
         scene.accurate_island_offsets_.swap(accurate_offsets);

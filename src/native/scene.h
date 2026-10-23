@@ -761,6 +761,16 @@ private:
             std::uint8_t speculative, accurate;
         };
         std::vector<ActivityUndo> activity_undo;
+        // Per-node sparse rollback for source active references. The
+        // generation journal saves a dynamic endpoint at most once per
+        // frame, avoiding two O(actor_count) copies on quiet PGS steps.
+        struct ReferenceUndo {
+            BodyId node;
+            std::uint32_t speculative, accurate;
+        };
+        std::vector<ReferenceUndo> reference_undo;
+        std::size_t initial_speculative_references=0;
+        std::size_t initial_accurate_references=0;
         std::vector<HintUndo> hint_undo;
         std::vector<HeadUndo> head_undo;
         std::size_t initial_edges=0;
@@ -811,6 +821,7 @@ private:
         void capture(Scene& scene, bool capture_solver_state=true);
         void save_edge(const Scene& scene, EdgeIndex id);
         void save_activity(Scene& scene, EdgeIndex id) noexcept;
+        void save_reference(Scene& scene, BodyId node) noexcept;
         void save_hint(const Scene& scene, BodyId node, bool accurate);
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
@@ -821,6 +832,8 @@ private:
     // Only changed EdgeIndex states are journaled for frame rollback.
     std::vector<std::uint64_t> activity_undo_generations_;
     std::uint64_t activity_undo_generation_=0;
+    std::vector<std::uint64_t> reference_undo_generations_;
+    std::uint64_t reference_undo_generation_=0;
     // Only an in-progress failure-atomic publication may journal activity.
     // Quiet collision queries mutate no rollback state and remain noexcept.
     bool activity_checkpoint_active_=false;
