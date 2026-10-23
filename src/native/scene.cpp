@@ -1611,6 +1611,11 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.active_node_index.assign(actors_.size(),invalid_instance);
         next.active_nodes.reserve(actors_.size());
         next.nodes_to_deactivate.reserve(actors_.size());
+        // Full admission/retirement rebuilds replace graph handles but
+        // do not recreate contact managers or reset their active flags.
+        next.active_edge_count=graph.active_edge_count;
+        next.activated_edges.reserve(contact_edges_.size());
+        next.deactivating_edges.reserve(contact_edges_.size());
         // Keep the existing active-node permutation and the original
         // prefix through actor admission, retirement and component
         // splits. Source addNode does not reset mActiveNodes.
