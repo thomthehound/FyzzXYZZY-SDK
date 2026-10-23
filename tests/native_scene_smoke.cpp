@@ -2279,6 +2279,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // The retained floor manager must still publish one speculative
         // deactivation in the third pass, without requiring a new
         // accurate sleep event or a local lost-edge split.
+        std::fprintf(stderr,"smoke checkpoint: retired bridge\n");
         Scene retired_bridge;
         const auto sleeping_rod=retired_bridge.add_dynamic_box(
             {2.0f,0.1f,0.2f},{0,10,0},1.0f);
@@ -2340,6 +2341,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // bits as well as each IslandSim's counts and indexed worklists.
         // Structural EdgeUndo snapshots are taken *after* the edge's
         // activity was cleared; they cannot supersede ActivityUndo.
+        std::fprintf(stderr,"smoke checkpoint: activity rollback\n");
         Scene activity_rollback;
         const auto floor=activity_rollback.add_static_floor(0.0f);
         const auto body=activity_rollback.add_dynamic_box(
@@ -5278,8 +5280,11 @@ int run_native_scene_smoke() {
     }
 #endif
 
+    std::fprintf(stderr,"smoke checkpoint: demand-driven ownership\n");
     verify_demand_driven_island_ownership_checkpoint();
+    std::fprintf(stderr,"smoke checkpoint: contact edge deactivations\n");
     verify_source_contact_edge_deactivations();
+    std::fprintf(stderr,"smoke checkpoint: rigid integration\n");
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
