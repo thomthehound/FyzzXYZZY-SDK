@@ -342,6 +342,20 @@ int main() {
                     after_rejection.orientation.w != 1.0f)
                     throw std::runtime_error(
                         "Rotated floor pose admitted or mutated a fixed plane");
+                // BodyState intentionally conceals the PhysX plane's
+                // private alignment. Prove that the physical normal still
+                // supports a falling box after the normalized pose edits.
+                const auto falling = floor_pose.add_dynamic_box(
+                    {0.25f,0.25f,0.25f}, {0,2.5f,0}, 1.0f);
+                for (int frame=0; frame<300; ++frame)
+                    floor_pose.step(1.0f/120.0f);
+                const auto supported=floor_pose.body_state(falling);
+                if (!std::isfinite(supported.position.y) ||
+                    !std::isfinite(supported.velocity.y) ||
+                    std::abs(supported.position.y-1.0f)>0.1f ||
+                    std::abs(supported.velocity.y)>1.0f)
+                    throw std::runtime_error(
+                        "Normalized floor pose changed physical plane alignment");
             }
             const auto static_reference = raised_floor.add_static_box(
                 {1,1,1}, {10,2,0});
