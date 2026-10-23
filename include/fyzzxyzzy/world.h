@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 
 namespace fyzz {
@@ -68,7 +69,7 @@ struct RigidBodyDynamics {
     float max_depenetration_velocity=1.0e32f;
     // PxRigidBody::setMaxContactImpulse -> the minimum body cap is
     // assigned to each Gu contact before Dy preparation.
-    float max_contact_impulse=3.402823466e38f;
+    float max_contact_impulse=std::numeric_limits<float>::max();
     bool gravity_enabled=true;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;
