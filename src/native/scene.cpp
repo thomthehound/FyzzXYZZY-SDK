@@ -2822,10 +2822,18 @@ void Scene::prepare_solver_bodies() {
     }
     solver_active_ids_.clear();
     world_solver_row_ = {};
-    // Mark the actual contact participants using the one Gu manager stream.
-    // The source's accurate island node sequence then determines solver
-    // body admission, not the incidental encounter order of manifolds.
+    // Only contacts admitted by DyContactPrepShared::extractContacts
+    // require rigid solver-body data. A zero maxContactImpulse on either
+    // actor removes every contact row, but retains the Gu manager and
+    // accurate island edge. Such a pair must not force angular-inertia
+    // admission for a translation-only body or initialize unused rows.
+    // The source's accurate island node order remains authoritative.
     for (const auto& manifold:manifolds_) {
+        const Actor& first=actors_[manifold.pair.a];
+        const Actor& second=actors_[manifold.pair.b];
+        if(std::min(first.dynamics.max_contact_impulse,
+                    second.dynamics.max_contact_impulse)==0.0f)
+            continue;
         const BodyId ids[2]{manifold.pair.a,manifold.pair.b};
         for(BodyId id:ids)
             if(actors_[id].kind==Kind::DynamicBox &&
