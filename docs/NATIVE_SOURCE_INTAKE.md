@@ -591,11 +591,16 @@ that failed attempt if contact geometry changes before retry. The
 preparation generation does not roll back; its rare wrap clears stale
 row markers. The complete Gu manifold arena continues to be restored
 by swaps when the contact epoch advances. When a quiet step never swaps
-the arena, only the three externally visible mutable Dy descriptor
-fields (solver row offset, friction patch offset/count) are saved and
-restored; contact points and manifold storage are never duplicated.
-This quiet-path metadata snapshot has cost O(published manifolds) only
-when the step begins without pending geometry changes. Published
+the arena, a generation-stamped journal records only those Gu managers
+whose exposed Dy descriptor fields (solver row offset, friction patch
+offset/count and preparation epoch) actually change. The journal stores
+pre-step metadata once per touched manager and restores it on rejection
+without duplicating contact points or manifold storage. Dormant
+managers retire stale solver metadata once, instead of publishing
+perpetually changing offsets on every subsequent quiet frame.
+The quiet-path snapshot now costs O(mutated Gu managers) rather than
+O(all published managers), including after hundreds of dormant
+contacts accumulate. Published
 Found/Lost event streams likewise rotate reversibly on a quiet step,
 even though the pair and contact arena epochs remain unchanged.
 
@@ -622,6 +627,20 @@ continuation and fetch boundaries are integrated, lower the
 remaining actor/cache checkpoint into staged writes and source-owned
 publication. Do not add blocking waits or re-run the simulation
 to emulate failure atomicity.
+
+**Active-only Dy partition and threshold candidates:** The source task
+descriptor stream now uses generation-stamped Gu-indexed partition
+assignments rather than writing an unassigned sentinel across the
+entire retained manifold arena every PGS frame. Overflow-wave conflict
+handling and stable per-partition descriptor ordering are unchanged;
+a failed solve advances the scratch generation so a retry cannot
+accidentally reuse its assignments. The source force-threshold stage
+likewise collects fresh candidates only from managers admitted by
+the current active island tasks. It still merges with the retained
+previous exceeded-force stream to emit the original Found, Persists
+and Lost transitions, including when a manager becomes dormant.
+These optimizations remove independent O(all dormant Gu managers)
+passes from the source task partition and threshold pipelines.
 
 The native regression exercises multiply-combined finite materials that
 overflow during contact preparation, repeated failed attempts, preservation
