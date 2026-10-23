@@ -2150,6 +2150,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // before no-throw wake/sleep publication updates mActiveIslands.
     speculative_islands_.active_island_seen.resize(
         speculative_islands_.islands.size(),0);
+    speculative_pre_retirement_index_.resize(
+        speculative_islands_.islands.size());
     accurate_islands_.active_island_seen.resize(
         accurate_islands_.islands.size(),0);
     speculative_islands_.active_islands.reserve(actors_.size());
@@ -2522,8 +2524,14 @@ void Scene::deactivate_ready_islands() noexcept {
               speculative_sleep_order_.end(),
         [&](const SpeculativeSleepCandidate& a,
             const SpeculativeSleepCandidate& b) {
-            const auto ai=speculative_islands_.islands[a.handle].active_index;
-            const auto bi=speculative_islands_.islands[b.handle].active_index;
+            const auto source_index=[&](IslandGraph::IslandId handle) {
+                const auto& saved=speculative_pre_retirement_index_[handle];
+                return saved.generation==speculative_pre_retirement_generation_
+                    ? saved.index
+                    : speculative_islands_.islands[handle].active_index;
+            };
+            const auto ai=source_index(a.handle);
+            const auto bi=source_index(b.handle);
             // A full actor-retirement rebuild can leave a newly
             // detached, already-sleeping component outside the current
             // active list; its retained loss candidate must still
@@ -2605,7 +2613,25 @@ void Scene::consume_contact_interaction_activity() noexcept {
 // sleeping checks still protect a transitional mixed-state island.
 // Unlike copying a second body-ID array, only one index per active
 // island is retained, with reusable allocation across frames.
-void Scene::synchronize_active_island_nodes() noexcept {
+void Scene::synchronize_active_island_nodes(
+    bool capture_speculative_order) noexcept {
+    // The source third pass iterates each IslandSim's active list in
+    // reverse. Capture its pre-reconciliation positions before the
+    // active-node sweep can drop a detached sleeping split or swap
+    // surviving slots. Only live active handles are touched here.
+    if(capture_speculative_order) {
+        if(++speculative_pre_retirement_generation_==0) {
+            for(auto& record:speculative_pre_retirement_index_)
+                record.generation=0;
+            speculative_pre_retirement_generation_=1;
+        }
+        for(std::size_t i=0;i<speculative_islands_.active_islands.size();++i) {
+            const auto handle=speculative_islands_.active_islands[i];
+            auto& record=speculative_pre_retirement_index_[handle];
+            record.index=i;
+            record.generation=speculative_pre_retirement_generation_;
+        }
+    }
     // Source PxsIslandSim::markInactive uses swap-last plus a reverse
     // active-node index; markActive appends. Preserve that lifecycle
     // across quiet frames and incremental merges instead of clearing and
@@ -4020,6 +4046,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // commit. Resize the generation scratch before any scene mutation.
     scene.speculative_sleep_seen_.resize(scene.actors_.size(),0);
     scene.speculative_sleep_order_.reserve(scene.actors_.size());
+    scene.speculative_pre_retirement_index_.resize(
+        scene.speculative_islands_.islands.size());
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
@@ -4460,7 +4488,7 @@ void Scene::step(float seconds) {
     // processLostEdges tests sleep readiness. Reconcile once even when
     // no island is ready, so the deactivation pass touches active roots
     // rather than the entire island-handle inventory.
-    synchronize_active_island_nodes();
+    synchronize_active_island_nodes(true);
     // Source third pass tests readiness from the prior Dy sleepCheck,
     // before this frame's unconstrained velocity/PGS processing.
     deactivate_ready_islands();
@@ -4732,7 +4760,7 @@ void Scene::advance_collision(bool force_update) {
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activity_checkpoint_active_=false;
     activate_published_islands();
-    synchronize_active_island_nodes();
+    synchronize_active_island_nodes(true);
     deactivate_ready_islands();
     consume_contact_interaction_activity();
     if(!accurate_islands_.nodes_to_deactivate.empty())
