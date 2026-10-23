@@ -3153,10 +3153,9 @@ void Scene::prepare_constraints(float seconds) {
     // source coefficient is used by DyContactPrep for penetration bias
     // and for friction-row impulse relaxation (not a 0.2 substitute).
     constexpr float rigid_contact_bias = 0.8f;
-    // PxvDynamics.h::PxsBodyCore defaults maxPenBias to -1e32f.
-    // A 3 m/s depenetration limit would require an explicit rigid-body
-    // override; it is not the original PhysX default solver-body state.
-    constexpr float max_penetration_bias = -1.0e32f;
+    // DyContactPrep uses max(body0.penBiasClamp,body1.penBiasClamp)
+    // from authoritative PxsBodyCore. The default -1e32f remains
+    // represented through each actor's initial max depenetration value.
     constexpr float bounce_threshold = -2.0f;
     // PxsMaterialCombiner.h::PxsCombineMaterials: the source takes the
     // higher precedence combine mode (Average, Min, Multiply, Max) of
@@ -3250,6 +3249,28 @@ void Scene::prepare_constraints(float seconds) {
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[manifold.pair.a];
         const Actor& actor1 = actors_[manifold.pair.b];
+        // DyContactPrepShared::extractContacts applies the minimum
+        // body-level maxContactImpulse to each Gu point. With the
+        // admitted single-material shape, a zero cap suppresses ALL
+        // solver contacts in this manager but leaves Gu touch/edge
+        // publication authoritative. Preserve Gu force offsets as
+        // explicit zero slots, without inventing contact response.
+        const float pair_max_impulse=std::min(
+            actor0.dynamics.max_contact_impulse,
+            actor1.dynamics.max_contact_impulse);
+        if(pair_max_impulse==0.0f) {
+            solver_contact_points_.resize(
+                manifold.solver_offset+manifold.count);
+            for(std::size_t j=0;j<manifold.count;++j)
+                solver_contact_order_.push_back(manifold.solver_offset+j);
+            continue;
+        }
+        // PxRigidBody::setMaxDepenetrationVelocity stores the NEGATIVE
+        // value in PxsBodyCore::penBiasClamp. DyContactPrep uses max of
+        // both signed clamps, i.e. the smaller positive depenetration cap.
+        const float max_penetration_bias=-std::min(
+            actor0.dynamics.max_depenetration_velocity,
+            actor1.dynamics.max_depenetration_velocity);
         const Material& m0=actor0.material;
         const Material& m1=actor1.material;
         const auto friction_mode=higher(m0.friction_combine,
@@ -3508,6 +3529,7 @@ void Scene::prepare_constraints(float seconds) {
             row.rb_x_n_sqrt_inertia = rb;
             row.friction_patch = patch_id;
             row.velocity_multiplier = vel_multiplier;
+            row.max_impulse=pair_max_impulse;
             row.biased_error = target*vel_multiplier-scaled_bias;
             row.unbiased_error = target*vel_multiplier -
                 (bouncing ? 0.0 : std::max(scaled_bias,0.0));
@@ -3701,6 +3723,16 @@ void Scene::solve_constraints() {
                 ? solver_rows_[manifold.pair.a] : world_solver_row_;
             auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.b] : world_solver_row_;
+            // A zero source maxContactImpulse is omitted by
+            // DyContactPrepShared::extractContacts; there is no packed
+            // solver header to execute. Gu touch state and its indexed
+            // zero force-buffer slots remain owned by this Scene.
+            if(manifold.friction_patch_count==0 &&
+               manifold.count &&
+               std::min(actors_[manifold.pair.a].dynamics.max_contact_impulse,
+                        actors_[manifold.pair.b].dynamics.max_contact_impulse)
+                   ==0.0f)
+                continue;
             std::size_t order_cursor=manifold.solver_offset;
             for(std::size_t p=manifold.friction_patch_offset;
                 p<manifold.friction_patch_offset+
@@ -3732,8 +3764,11 @@ void Scene::solve_constraints() {
                     -static_cast<double>(normal_velocity) *
                         row.velocity_multiplier + error,
                     -row.applied_force);
-                const double next_impulse = std::max(0.0,
-                    row.applied_force + delta_candidate);
+                // DySolverConstraintsShared::solveDynamicContacts
+                // caps EACH normal row's accumulated impulse, not
+                // the manager total and not the body velocity delta.
+                const double next_impulse=std::min(row.max_impulse,
+                    std::max(0.0,row.applied_force+delta_candidate));
                 const double delta = next_impulse-row.applied_force;
                 const double da = delta*a.data.inverse_mass;
                 const double db = delta*b.data.inverse_mass;
