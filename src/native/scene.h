@@ -1009,6 +1009,10 @@ private:
     std::vector<Pair> lost_;
     std::vector<Pair> next_found_, next_lost_;
 
+    // Source ScNPhaseCore notification events and their current Gu contact
+    // point windows are doubly buffered: a rejected Scene::step never
+    // overwrites the previous externally observed event storage.
+    // Event descriptors carry point offsets, not pointers to scratch.
     // Source contact streams (GuContactPlaneBox/GuContactBoxBox) are owned
     // here, not by a second narrowphase scene or external reference PxScene.
     // Reuse both vectors' allocations across frames, swap only at publish.
