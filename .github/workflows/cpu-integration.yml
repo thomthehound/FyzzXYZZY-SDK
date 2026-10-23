@@ -23,8 +23,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Godot version and bindings revision live in godot/dependency.json.
-# Cache identity follows that manifest, CMake configuration and compiler
-# toolchain; runner image patch releases must not trigger recompilation.
+# Cache identity follows that manifest, cmake/GodotDependency.cmake and
+# the compiler toolchain; unrelated SDK CMake edits do not rebuild bindings.
 jobs:
   linux:
     runs-on: ubuntu-26.04
@@ -88,7 +88,7 @@ jobs:
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
             build/.ninja_deps
             build/.ninja_log
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'CMakeLists.txt') }}-template_debug-Release
+          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Verify SDK C++23 compiler and standard library
@@ -226,7 +226,7 @@ jobs:
             build/_deps/fyzzxyzzy_godot_cpp-build
             build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'CMakeLists.txt') }}-template_debug-Release
+          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
