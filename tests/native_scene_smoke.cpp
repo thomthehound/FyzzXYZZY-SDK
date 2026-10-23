@@ -1265,14 +1265,15 @@ void verify_source_mixed_split_and_sleep_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
     Scene scene;
-    // Admit the eventually awake root FIRST so a lost SAP-only bridge
-    // detaches the already-sleeping second rod as a new island handle.
-    // PxsIslandSim::split_lost_island appends that handle after an
-    // unrelated, independently ready island's active handle.
-    const auto awake=scene.add_dynamic_box(
-        {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+    // Source mergeIslands keeps the SECOND handle on equal-sized
+    // singletons. Admit the eventually sleeping rod first, then the
+    // awake winner. Losing their SAP-only bridge must detach the
+    // sleeping rod and append it to speculative mActiveIslands after
+    // the independent ready island, exercising the pre-sync index.
     const auto dormant=scene.add_dynamic_box(
         {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+    const auto awake=scene.add_dynamic_box(
+        {2.0f,0.1f,0.2f},{0,10,0},1.0f);
     for(const auto id:{awake,dormant}) {
         scene.set_velocity(id,{0,9.81f,0});
         scene.set_angular_velocity(id,{0,0.83f,0});
