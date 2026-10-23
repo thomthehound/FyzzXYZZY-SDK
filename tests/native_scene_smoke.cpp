@@ -130,8 +130,11 @@ struct ContactCorrelationSourceFixture {
             scene.solved_normal_impulses().end());
         scene.advance_collision();
         const auto old_patches=scene.friction_patches_;
+        const auto old_spans=scene.friction_by_edge_;
+        const auto old_prepared_epoch=scene.manifolds_[0].prepared_friction_epoch;
         const auto old_threshold=scene.threshold_previous_;
         const auto* const patches_ptr=scene.friction_patches_.data();
+        const auto* const spans_ptr=scene.friction_by_edge_.data();
         const auto* const threshold_ptr=scene.threshold_previous_.data();
         const auto old_friction_epoch=scene.friction_cache_epoch_;
         const auto old_threshold_epoch=scene.threshold_cache_epoch_;
@@ -153,12 +156,23 @@ struct ContactCorrelationSourceFixture {
         if(scene.friction_cache_epoch_!=old_friction_epoch ||
            scene.threshold_cache_epoch_!=old_threshold_epoch ||
            scene.friction_patches_.data()!=patches_ptr ||
+           scene.friction_by_edge_.data()!=spans_ptr ||
+           scene.friction_by_edge_.size()!=old_spans.size() ||
+           scene.manifolds_[0].prepared_friction_epoch!=old_prepared_epoch ||
            scene.threshold_previous_.data()!=threshold_ptr ||
            scene.friction_patches_.size()!=old_patches.size() ||
            scene.threshold_previous_.size()!=old_threshold.size() ||
            scene.frame_index()!=old_frame)
             throw std::runtime_error(
                 "Rejected contact/force cache stream lost old allocation");
+        for(std::size_t i=0;i<old_spans.size();++i) {
+            const auto& a=old_spans[i];
+            const auto& b=scene.friction_by_edge_[i];
+            if(a.pair!=b.pair || a.offset!=b.offset ||
+               a.count!=b.count || a.epoch!=b.epoch)
+                throw std::runtime_error(
+                    "Rejected source friction index changed manager identity");
+        }
         for(std::size_t i=0;i<old_patches.size();++i) {
             const auto& a=old_patches[i];
             const auto& b=scene.friction_patches_[i];
