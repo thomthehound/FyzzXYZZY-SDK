@@ -304,6 +304,45 @@ int main() {
                                    native_raised_floor.body_state(native_floor_id)))
                 throw std::runtime_error(
                     "Reference floor logical orientation changed on relocation");
+            // The public orientation validator accepts sane, near-unit
+            // quaternions. A scaled logical identity must relocate a floor
+            // in all execution modes without exposing or changing the
+            // reference plane's private +X-to-+Y alignment.
+            for (auto mode : {fyzz::ExecutionMode::NativeCpu,
+                              fyzz::ExecutionMode::ReferencePhysXCpu,
+                              fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu}) {
+                fyzz::World floor_pose(fyzz::WorldOptions{mode});
+                const auto floor_id = floor_pose.add_static_floor(0.0f);
+                for (float scalar : {0.999f, 1.001f}) {
+                    const float height = scalar < 1.0f ? 0.5f : 0.75f;
+                    floor_pose.set_body_pose(floor_id, {0,height,0},
+                                             {0,0,0,scalar});
+                    const auto state = floor_pose.body_state(floor_id);
+                    if (state.position.y != height ||
+                        state.orientation.x != 0.0f ||
+                        state.orientation.y != 0.0f ||
+                        state.orientation.z != 0.0f ||
+                        state.orientation.w != 1.0f)
+                        throw std::runtime_error(
+                            "Sane scaled floor identity changed logical pose");
+                }
+                bool rejected_rotation = false;
+                try {
+                    floor_pose.set_body_pose(floor_id, {0,2.0f,0},
+                                             {0,0.1f,0,std::sqrt(0.99f)});
+                } catch (const std::logic_error&) {
+                    rejected_rotation = true;
+                }
+                const auto after_rejection = floor_pose.body_state(floor_id);
+                if (!rejected_rotation ||
+                    after_rejection.position.y != 0.75f ||
+                    after_rejection.orientation.x != 0.0f ||
+                    after_rejection.orientation.y != 0.0f ||
+                    after_rejection.orientation.z != 0.0f ||
+                    after_rejection.orientation.w != 1.0f)
+                    throw std::runtime_error(
+                        "Rotated floor pose admitted or mutated a fixed plane");
+            }
             const auto static_reference = raised_floor.add_static_box(
                 {1,1,1}, {10,2,0});
             const auto static_native = native_raised_floor.add_static_box(
