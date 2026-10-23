@@ -1320,7 +1320,15 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             for(EdgeIndex id:island_split_edges_)
                 append_accurate_island_edge(id,created);
         if(accurate)++accurate_island_count_;
-        else ++speculative_island_count_;
+        else {
+            ++speculative_island_count_;
+            // Source processLostEdges evaluates deactivation after local
+            // split repair. An awake speculative island can lose its
+            // final awake peer without ANY new accurate-node sleep.
+            // Both the retained and detached roots may now be inactive.
+            speculative_split_sleep_candidates_.push_back(root);
+            speculative_split_sleep_candidates_.push_back(seed);
+        }
         ++island_local_split_count_;
 }
 
@@ -2073,8 +2081,10 @@ void Scene::third_pass_island_gen() {
     // potentially overlapping the numerical solver. This synchronous
     // source-subset execution is scheduled once those collision products
     // are ready, *not* as a mandatory post-solver serial stage.
-    // Persistent edge handles, sleep/deactivation and their continuations
-    // remain N1 admission work.
+    // Persistent edge activity flags and task continuations still need
+    // full source admission. Prior split candidates are transient and
+    // replaced at the start of every third-pass publication.
+    speculative_split_sleep_candidates_.clear();
     update_island_connectivity(true);
     retire_destroyed_contact_edges();
     // The source dirty map is consumed by the third-pass repair. No
@@ -2153,7 +2163,8 @@ void Scene::deactivate_ready_islands() noexcept {
             }
         }
     }
-    if(accurate_islands_.nodes_to_deactivate.empty())return;
+    if(accurate_islands_.nodes_to_deactivate.empty() &&
+       speculative_split_sleep_candidates_.empty())return;
     // Speculative IslandSim can join accurate islands via SAP-only
     // contacts. It must NOT emit sleep edges while any member of its
     // larger speculative island remains active. Process only candidate
@@ -2165,12 +2176,12 @@ void Scene::deactivate_ready_islands() noexcept {
         speculative_sleep_visit_stamp_=1;
     }
     const auto stamp=speculative_sleep_visit_stamp_;
-    for(BodyId candidate:accurate_islands_.nodes_to_deactivate) {
+    const auto process_candidate=[&](BodyId candidate) {
         const auto handle=speculative_islands_.node_island[candidate];
-        if(handle==IslandGraph::invalid)continue;
+        if(handle==IslandGraph::invalid)return;
         const auto& island=speculative_islands_.islands[handle];
         const BodyId root=island.root;
-        if(speculative_sleep_seen_[root]==stamp)continue;
+        if(speculative_sleep_seen_[root]==stamp)return;
         speculative_sleep_seen_[root]=stamp;
         bool all_sleeping=true;
         for(BodyId node=root;node!=invalid;
@@ -2180,7 +2191,7 @@ void Scene::deactivate_ready_islands() noexcept {
                 break;
             }
         }
-        if(!all_sleeping)continue;
+        if(!all_sleeping)return;
         // Original deactivateIsland walks its island-node chain and
         // deactivateNodeInternal records the edge when its last active
         // endpoint is visited. Reuse this stamp as the visited prefix
@@ -2201,7 +2212,15 @@ void Scene::deactivate_ready_islands() noexcept {
                     speculative_islands_.deactivating_edges.push_back(edge_id);
             }
         }
-    }
+    };
+    // Source has two independent causes: newly inactive accurate rigid
+    // nodes, and local speculative splits that isolate previously
+    // sleeping rigid members from an awake SAP-only peer. Both must
+    // consume the same deduplicated island-root sequence.
+    for(BodyId candidate:accurate_islands_.nodes_to_deactivate)
+        process_candidate(candidate);
+    for(BodyId candidate:speculative_split_sleep_candidates_)
+        process_candidate(candidate);
 }
 // Source PxsIslandSim::mActiveIslands is distinct from the complete
 // island inventory. Build active batch indices from the already-owned
