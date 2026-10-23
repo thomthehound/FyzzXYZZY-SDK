@@ -37,6 +37,18 @@ jobs:
           test -x "${RUNNER_TEMP}/dxc/bin/dxc"
           echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
+      - name: Record runner image for compiled dependency cache
+        shell: bash
+        run: echo "FYZZXYZZY_CI_IMAGE=${ImageOS:-ubuntu}-${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+      - name: Restore compiled godot-cpp
+        id: godot_cpp_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/_deps/fyzzxyzzy_godot_cpp-src
+            build/_deps/fyzzxyzzy_godot_cpp-build
+            build/bin/libgodot-cpp.linux.template_debug.x86_64.a
+          key: godotcpp-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.FYZZXYZZY_CI_IMAGE }}-507ed9d8-4.7-template_debug-Release
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Verify SDK C++23 compiler and standard library
@@ -52,6 +64,15 @@ jobs:
           ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource$' --output-on-failure
       - name: Build
         run: cmake --build build --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_sap_broadphase_descriptor_native fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+      - name: Cache compiled godot-cpp
+        if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/_deps/fyzzxyzzy_godot_cpp-src
+            build/_deps/fyzzxyzzy_godot_cpp-build
+            build/bin/libgodot-cpp.linux.template_debug.x86_64.a
+          key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build --output-on-failure
       - name: Offline CPU source distribution
@@ -129,6 +150,18 @@ jobs:
               Sort-Object FullName -Descending)
           if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
           "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
+      - name: Record runner image for compiled dependency cache
+        shell: pwsh
+        run: '"FYZZXYZZY_CI_IMAGE=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_ENV'
+      - name: Restore compiled godot-cpp
+        id: godot_cpp_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/_deps/fyzzxyzzy_godot_cpp-src
+            build/_deps/fyzzxyzzy_godot_cpp-build
+            build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
+          key: godotcpp-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.FYZZXYZZY_CI_IMAGE }}-507ed9d8-4.7-template_debug-Release
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
@@ -155,6 +188,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config release --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot --parallel 4
+      - name: Cache compiled godot-cpp
+        if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/_deps/fyzzxyzzy_godot_cpp-src
+            build/_deps/fyzzxyzzy_godot_cpp-build
+            build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
+          key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
       - name: Godot 4.7.2 headless acceptance
