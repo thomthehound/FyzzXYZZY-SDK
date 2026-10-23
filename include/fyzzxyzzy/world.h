@@ -63,6 +63,12 @@ struct RigidBodyDynamics {
     float angular_damping=0.05f;
     float max_linear_velocity=1.0e16f;
     float max_angular_velocity=100.0f;
+    // PxRigidBody::setMaxDepenetrationVelocity -> -penBiasClamp; the
+    // default 1e32 reproduces the existing PxsBodyCore unrestricted bias.
+    float max_depenetration_velocity=1.0e32f;
+    // PxRigidBody::setMaxContactImpulse -> the minimum body cap is
+    // assigned to each Gu contact before Dy preparation.
+    float max_contact_impulse=3.402823466e38f;
     bool gravity_enabled=true;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;
