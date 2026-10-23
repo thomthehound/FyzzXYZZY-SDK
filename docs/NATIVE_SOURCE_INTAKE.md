@@ -680,6 +680,24 @@ continuations and heterogeneous constraint groups remain unported.
 The native regression checks reverse simultaneous sleep order, quiet
 retirement, and 128+2 contact-island groups with full impulse writeback.
 
+**Source-ordered friction preparation:** The active accurate-island
+contact-manager stream now drives `DyContactPrep` correlation and
+normal/friction-row creation. The original Gu manifold order and
+point offsets remain stable for collision history and force writeback.
+Retained strong-friction patches are located by the persistent manager
+`EdgeIndex`, verified against their original pair identity and the
+friction cache epoch. This avoids a global Gu-pair sort when task
+descriptor order differs from contact generation order.
+
+Each manager-span index rotates with its friction arena after successful
+preparation and reverses with that arena on failed steps. Dormant
+managers and recycled handles cannot consume stale anchors. Explicit
+shape-pose and offset changes compact the affected patch cache and
+reindex surviving managers; ordinary solver frames do not perform
+that rebuilding work. Gu-indexed force writeback clears inactive
+Dy descriptor metadata without revisiting dormant contacts during
+solver preparation. Regressions cover noncanonical task order,
+anchor retention after authored edits, and failed publication restore.
 **Remaining source ordering breadth:** The admitted non-compound rigid
 PGS path consumes the indexed-manager sequence directly, matching
 `DyDynamics.cpp::setupDescTask`'s non-compound branch. The
