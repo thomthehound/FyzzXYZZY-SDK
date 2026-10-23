@@ -955,8 +955,21 @@ void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
+    // Build the Gu-offset lookup alongside this real contact-manager
+    // publication; no second O(all Gu manifolds) pass during PGS.
+    // Generation stamps invalidate untouched/retired EdgeIndex slots
+    // without clearing the historical handle watermark each frame.
+    next_manifold_by_edge_.resize(contact_edges_.size());
+    if(++indexed_manifold_generation_==0) {
+        for(auto& item:next_manifold_by_edge_)item.generation=0;
+        for(auto& item:manifold_by_edge_)item.generation=0;
+        indexed_manifold_generation_=1;
+    }
+    const auto new_lookup_generation=indexed_manifold_generation_;
     std::size_t old_cursor = 0;
+    std::size_t pair_index = 0;
     for (const Pair pair : previous_pairs_) {
+        const EdgeIndex edge=active_edge_handles_[pair_index++];
         // The sorted source contact-manager stream retains its collision
         // axis across successive physical-touch frames.
         while (old_cursor < manifolds_.size() &&
@@ -1048,8 +1061,11 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
         }
-        if (manifold.count > 0)
+        if (manifold.count > 0) {
+            next_manifold_by_edge_[edge]={
+                next_manifolds_.size(),new_lookup_generation};
             next_manifolds_.push_back(manifold);
+        }
     }
 
     // BP pair found/lost and narrowphase touch found/lost are distinct
@@ -1105,6 +1121,8 @@ void Scene::update_contacts() {
     }
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
+    manifold_by_edge_.swap(next_manifold_by_edge_);
+    manifold_lookup_generation_=new_lookup_generation;
     found_contacts_.swap(next_found_contacts_);
     lost_contacts_.swap(next_lost_contacts_);
     ++contact_epoch_;
@@ -3007,27 +3025,12 @@ void Scene::partition_constraints() {
     // but that order is *not* the source constraint descriptor input.
     // Map handle -> original Gu index once, without a second contact
     // registry or a binary search for every island edge.
-    // Index only touched source handles. Historical reusable EdgeIndex
-    // slots must not impose O(total lifetime allocations) frame scans.
-    manifold_by_edge_.resize(contact_edges_.size());
-    if(++indexed_manifold_generation_==0) {
-        for(auto& item:manifold_by_edge_)item.generation=0;
-        indexed_manifold_generation_=1;
-    }
-    std::size_t pair_cursor=0;
-    for(std::size_t i=0;i<manifolds_.size();++i) {
-        while(pair_cursor<previous_pairs_.size() &&
-              previous_pairs_[pair_cursor]<manifolds_[i].pair)
-            ++pair_cursor;
-        if(pair_cursor==previous_pairs_.size() ||
-           !(previous_pairs_[pair_cursor]==manifolds_[i].pair))
-            throw std::logic_error("Gu manager lacks source contact edge");
-        const EdgeIndex edge=active_edge_handles_[pair_cursor];
-        if(!contact_edges_[edge].connected)
-            throw std::logic_error("Gu manager has disconnected source edge");
-        manifold_by_edge_[edge].index=i;
-        manifold_by_edge_[edge].generation=indexed_manifold_generation_;
-    }
+    // The preceding Gu narrowphase publication bound every live
+    // manifold index to its persistent contact-manager EdgeIndex. Quiet
+    // steps do not touch this lookup; topology/handle changes publish
+    // the next one atomically with their new contact arena.
+    // The generation test below rejects stale slots after touch loss,
+    // contact-manager retirement and source handle reuse.
     indexed_managers_.clear();
     solver_tasks_.clear();
     std::size_t task_body_count=0;
@@ -3052,7 +3055,11 @@ void Scene::partition_constraints() {
         for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
             edge=contact_edges_[edge].island_next) {
             if(edge>=manifold_by_edge_.size() ||
-               manifold_by_edge_[edge].generation!=indexed_manifold_generation_)
+               manifold_by_edge_[edge].generation!=
+                   manifold_lookup_generation_ ||
+               manifold_by_edge_[edge].index>=manifolds_.size() ||
+               !(manifolds_[manifold_by_edge_[edge].index].pair==
+                 contact_edges_[edge].pair))
                 throw std::logic_error(
                     "Active PhysX island has an unindexed contact manager");
             indexed_managers_.push_back(manifold_by_edge_[edge].index);
@@ -4645,6 +4652,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     frame_index=scene.frame_index_;
     pair_epoch=scene.pair_epoch_;
     contact_epoch=scene.contact_epoch_;
+    manifold_lookup_generation=scene.manifold_lookup_generation_;
     quiet_event_epoch=scene.quiet_event_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
@@ -4813,6 +4821,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(scene.contact_epoch_!=contact_epoch) {
         scene.manifolds_.swap(scene.next_manifolds_);
         scene.contact_points_.swap(scene.next_contact_points_);
+        scene.manifold_by_edge_.swap(scene.next_manifold_by_edge_);
         scene.found_contacts_.swap(scene.next_found_contacts_);
         scene.lost_contacts_.swap(scene.next_lost_contacts_);
     } else if(quiet_events_rotated) {
@@ -4821,6 +4830,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.lost_contacts_.swap(scene.next_lost_contacts_);
     }
     scene.contact_epoch_=contact_epoch;
+    scene.manifold_lookup_generation_=manifold_lookup_generation;
     scene.quiet_event_epoch_=quiet_event_epoch;
     // For a quiet solve, the Gu arena never rotated. Restore its
     // externally exposed Dy offsets without copying contact points,
