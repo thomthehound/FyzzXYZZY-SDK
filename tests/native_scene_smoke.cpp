@@ -2222,6 +2222,10 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                !distinct_sleep.accurate_contact_edge_active(
                    fyzz::native::Pair{rod_a,source_floor}),
                "Quiet publication replayed an already inactive edge");
+        const auto before_wake_spec=
+            distinct_sleep.active_speculative_contact_edge_count();
+        const auto before_wake_acc=
+            distinct_sleep.active_accurate_contact_edge_count();
         distinct_sleep.set_velocity(rod_a,{0,0,0.25f});
         distinct_sleep.advance_collision();
         const auto activated_spec=
@@ -2237,7 +2241,11 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                std::count(activated_spec.begin(),activated_spec.end(),
                           sleeping_floor)==1 &&
                std::count(activated_acc.begin(),activated_acc.end(),
-                          sleeping_floor)==1,
+                          sleeping_floor)==1 &&
+               distinct_sleep.active_speculative_contact_edge_count()==
+                   before_wake_spec+1 &&
+               distinct_sleep.active_accurate_contact_edge_count()==
+                   before_wake_acc+1,
                "Retained manager did not publish source edge activation");
         distinct_sleep.advance_collision();
         expect(distinct_sleep.activated_speculative_contact_edges().empty() &&
@@ -2247,6 +2255,22 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                distinct_sleep.accurate_contact_edge_active(
                    fyzz::native::Pair{rod_a,source_floor}),
                "eACTIVATING was replayed or persistent eACTIVE was lost");
+        // A complete membership rebuild may change island handles but
+        // must not reset Edge::eACTIVE or mActiveEdgeCount. The new
+        // distant actor creates no accurate contact with the old floor.
+        distinct_sleep.add_dynamic_box(
+            {0.25f,0.25f,0.25f},{50.0f,50.0f,50.0f},1.0f);
+        distinct_sleep.advance_collision();
+        expect(distinct_sleep.accurate_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}) &&
+               distinct_sleep.active_accurate_contact_edge_count()==
+                   before_wake_acc+1,
+               "Source edge active count was reset by actor admission");
+        distinct_sleep.set_velocity(rod_a,{0,0,0.25f});
+        distinct_sleep.advance_collision();
+        expect(distinct_sleep.activated_accurate_contact_edges().empty() &&
+               distinct_sleep.activated_speculative_contact_edges().empty(),
+               "Already awake rigid body incorrectly reactivated active edges");
     }
 
     {
