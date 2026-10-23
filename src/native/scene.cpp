@@ -456,8 +456,10 @@ void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
        !std::isfinite(d.max_angular_velocity) ||
        !std::isfinite(d.max_depenetration_velocity) ||
        !std::isfinite(d.max_contact_impulse) ||
+       !std::isfinite(d.contact_slop_coefficient) ||
        d.max_depenetration_velocity<=0 ||
        d.max_contact_impulse<0 ||
+       d.contact_slop_coefficient<0 ||
        d.linear_damping<0 || d.angular_damping<0 ||
        d.max_linear_velocity<0 || d.max_angular_velocity<0 ||
        !std::isfinite(d.max_linear_velocity*d.max_linear_velocity) ||
@@ -3208,6 +3210,13 @@ void Scene::prepare_constraints(float seconds) {
     const auto sub = [](Vec3 u, Vec3 v) {
         return Vec3{u.x-v.x,u.y-v.y,u.z-v.z};
     };
+    // DyContactPrepShared and DyContactPrep mask each Jacobian and
+    // friction positional-error component only when slop > abs(value).
+    const auto suppress_slop=[](Vec3 v,float slop) {
+        return Vec3{std::abs(v.x)<slop?0.0f:v.x,
+                    std::abs(v.y)<slop?0.0f:v.y,
+                    std::abs(v.z)<slop?0.0f:v.z};
+    };
     const auto transform = [](const SolverBodyData& d, Vec3 v) {
         const auto& c = d.sqrt_inverse_inertia;
         return Vec3{c[0].x*v.x+c[1].x*v.y+c[2].x*v.z,
@@ -3275,6 +3284,11 @@ void Scene::prepare_constraints(float seconds) {
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[manifold.pair.a];
         const Actor& actor1 = actors_[manifold.pair.b];
+        // ScShapeInteraction::initializeLowLevelContactManager stores
+        // max(body0.offsetSlop,body1.offsetSlop) in PxcNpWorkUnit.
+        const float pair_slop=std::max(
+            actor0.dynamics.contact_slop_coefficient,
+            actor1.dynamics.contact_slop_coefficient);
         // DyContactPrepShared::constructContactConstraint subtracts
         // contactDesc.restDistance from each Gu surface separation.
         const float rest_distance=actor0.rest_offset+actor1.rest_offset;
@@ -3518,11 +3532,26 @@ void Scene::prepare_constraints(float seconds) {
             const std::size_t patch_id=contact_patch_ids[j];
             const Vec3 normal=header_normals[
                 patch_id-manifold.friction_patch_offset];
-            const Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
-            const Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
+            Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
+            Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
+            const float linear_vrel =
+                dot(normal,sub(a.linear_velocity,b.linear_velocity));
+            // DyContactPrepShared scales the slop by
+            // max(vRelAngular/vRelLinear,1). A zero linear velocity uses
+            // PX_MAX_REAL as the source's ratio fallback.
+            if(pair_slop>0.0f) {
+                const float raw_angular_vrel=
+                    dot(ra_x_n,a.angular_velocity)-
+                    dot(rb_x_n,b.angular_velocity);
+                const float ratio=linear_vrel==0.0f
+                    ? std::numeric_limits<float>::max()
+                    : raw_angular_vrel/linear_vrel;
+                const float normal_slop=pair_slop*std::max(ratio,1.0f);
+                ra_x_n=suppress_slop(ra_x_n,normal_slop);
+                rb_x_n=suppress_slop(rb_x_n,normal_slop);
+            }
             const Vec3 ra = transform(a,ra_x_n);
             const Vec3 rb = transform(b,rb_x_n);
-            const float linear_vrel = dot(normal,sub(a.linear_velocity,b.linear_velocity));
             const float angular_vrel =
                 dot(ra_x_n,a.angular_velocity)-dot(rb_x_n,b.angular_velocity);
             const float vrel = linear_vrel+angular_vrel;
@@ -3676,14 +3705,14 @@ void Scene::prepare_constraints(float seconds) {
             for (std::size_t k=0;k<count;++k) {
                 const Vec3 ra=rotate(actor0.orientation,patch.body0_anchors[k]);
                 const Vec3 rb=rotate(actor1.orientation,patch.body1_anchors[k]);
-                const Vec3 error=sub(
+                const Vec3 error=suppress_slop(sub(
                     {ra.x+actor0.position.x,ra.y+actor0.position.y,
                      ra.z+actor0.position.z},
                     {rb.x+actor1.position.x,rb.y+actor1.position.y,
-                     rb.z+actor1.position.z});
+                     rb.z+actor1.position.z}),pair_slop);
                 for (const Vec3 tangent : {t0,t1}) {
-                    const Vec3 ax0=cross(ra,tangent);
-                    const Vec3 ax1=cross(rb,tangent);
+                    const Vec3 ax0=suppress_slop(cross(ra,tangent),pair_slop);
+                    const Vec3 ax1=suppress_slop(cross(rb,tangent),pair_slop);
                     const Vec3 j0=transform(a,ax0);
                     const Vec3 j1=transform(b,ax1);
                     const double response=static_cast<double>(a.inverse_mass)

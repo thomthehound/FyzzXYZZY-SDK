@@ -70,6 +70,9 @@ struct RigidBodyDynamics {
     // PxRigidBody::setMaxContactImpulse -> the minimum body cap is
     // assigned to each Gu contact before Dy preparation.
     float max_contact_impulse=std::numeric_limits<float>::max();
+    // PxRigidBody::setContactSlopCoefficient. ScShapeInteraction uses the
+    // maximum of the two body coefficients when preparing Dy constraints.
+    float contact_slop_coefficient=0.0f;
     bool gravity_enabled=true;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;

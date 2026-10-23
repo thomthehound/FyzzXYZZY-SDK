@@ -110,6 +110,40 @@ struct ContactCorrelationSourceFixture {
                     "Reused friction anchors used stale cached normal for tangent");
         }
     }
+    static void verify_source_contact_slop() {
+        // This probes the production Gu->Dy constraint stream, rather
+        // than using a symmetric floor's final angular velocity as a
+        // false oracle (the four point torques can cancel).
+        const auto probe=[](float slop) {
+            Scene scene;
+            scene.add_static_floor(0.0f);
+            const auto box=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+            RigidBodyDynamics d{};
+            d.contact_slop_coefficient=slop;
+            scene.set_dynamics(box,d);
+            scene.step(1.0f/120.0f);
+            if(scene.solver_contact_points_.size()<4 ||
+               scene.solver_friction_rows_.empty())
+                throw std::runtime_error(
+                    "Source contact slop fixture lacks live normal/friction rows");
+            const auto max_abs=[](Vec3 v) {
+                return std::max({std::abs(v.x),std::abs(v.y),std::abs(v.z)});
+            };
+            float normal=0.0f,friction=0.0f;
+            for(const auto& row:scene.solver_contact_points_)
+                normal=std::max(normal,max_abs(row.rb_x_n_sqrt_inertia));
+            for(const auto& row:scene.solver_friction_rows_)
+                friction=std::max(friction,max_abs(row.rb_x_t_sqrt_inertia));
+            return std::pair{normal,friction};
+        };
+        const auto ordinary=probe(0.0f);
+        const auto slopped=probe(1.0f);
+        if(!(ordinary.first>0.1f && ordinary.second>0.1f &&
+             slopped.first==0.0f && slopped.second==0.0f))
+            throw std::runtime_error(
+                "Source pair contact slop did not mask Dy angular Jacobians");
+    }
     static void verify_zero_capped_stream_compaction() {
         Scene scene;
         const auto floor=scene.add_static_floor(0.0f);
@@ -6862,6 +6896,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_rigid_contact_limits();
