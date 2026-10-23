@@ -31,12 +31,18 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+      - name: Record Ubuntu release for package-cache isolation
+        id: ubuntu_release
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
       - name: Restore cached Ubuntu Vulkan packages
         id: apt_debs
         uses: actions/cache/restore@v6
         with:
           path: .ci-cache/vulkan-apt/archives
-          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-26.04-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
+          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan development packages
         run: bash .github/scripts/install-vulkan.sh
       - name: Save cached Ubuntu Vulkan packages
@@ -311,12 +317,18 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
+      - name: Record Ubuntu release for package-cache isolation
+        id: ubuntu_release
+        shell: bash
+        run: |
+          . /etc/os-release
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
       - name: Restore cached Ubuntu Vulkan packages
         id: apt_debs
         uses: actions/cache/restore@v6
         with:
           path: .ci-cache/vulkan-apt/archives
-          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-26.04-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
+          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan SDK
         run: bash .github/scripts/install-vulkan.sh
       - name: Save cached Ubuntu Vulkan packages

@@ -4,47 +4,43 @@
 
 set -euo pipefail
 
-# Reuse complete Ubuntu .deb archives between CI jobs. APT itself selects
-# package versions and verifies the repository metadata; do not unpack
-# cached files by hand or bypass dpkg's dependency validation.
-# GitHub caches are best-effort; a cold or stale archive falls back to APT.
-archives="${GITHUB_WORKSPACE:-$PWD}/.ci-cache/vulkan-apt/archives"
-mkdir -p "$archives/partial"
-# APT's downloader runs as _apt; the workspace directory is runner-owned.
-# Give _apt the scratch directory while keeping completed archives readable.
-sudo chown _apt:root "$archives/partial"
-sudo chmod 0700 "$archives/partial"
+# APT must download into its normal /var/cache/apt/archives directory so
+# the unprivileged _apt sandbox can verify and fetch packages as designed.
+# Only completed, authenticated .deb files move through the Actions cache.
+# A stale or absent Actions cache simply falls back to normal APT.
+cache_dir="${GITHUB_WORKSPACE:-$PWD}/.ci-cache/vulkan-apt/archives"
+mkdir -p "$cache_dir"
+shopt -s nullglob
+
 packages=(libvulkan-dev mesa-vulkan-drivers glslang-tools)
 apt_options=(
-    -o "Dir::Cache::archives=$archives"
     -o "APT::Keep-Downloaded-Packages=true"
     -o Acquire::Retries=2
     -o Acquire::http::Timeout=30
     -o Acquire::https::Timeout=30
 )
-
 apt_install() {
     sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install \
         -y -qq --no-install-recommends "$@" "${packages[@]}"
 }
 
-if find "$archives" -maxdepth 1 -type f -name '*.deb' -print -quit | grep -q .; then
-    # A cached archive may be stale after an Ubuntu security/package update.
-    # Do not download anything or wait for mirrors on the normal hot path.
+cached=("$cache_dir/"*.deb)
+if (( ${#cached[@]} )); then
+    # Ask APT to use its own cache, never install .deb files directly.
+    sudo cp -n -- "${cached[@]}" /var/cache/apt/archives/
     if apt_install --no-download; then
-        echo 'Installed Vulkan packages entirely from the existing APT archives'
+        echo 'Installed Vulkan packages without network downloads'
     else
-        echo 'Cached packages no longer match APT indexes; downloading missing updates'
+        echo 'Cached packages no longer satisfy current APT indexes'
         apt_install || {
-            echo 'APT install failed with current indexes; refreshing repositories'
+            echo 'APT indexes are stale; refreshing the repositories'
             sudo apt-get "${apt_options[@]}" update
             apt_install
         }
     fi
 else
-    # No archive yet: populate one in the ordinary, authenticated APT path.
     apt_install || {
-        echo 'APT indexes could not satisfy Vulkan dependencies; refreshing repositories'
+        echo 'APT indexes are stale; refreshing the repositories'
         sudo apt-get "${apt_options[@]}" update
         apt_install
     }
@@ -55,8 +51,11 @@ for package in "${packages[@]}"; do
 done
 test -f /usr/include/vulkan/vulkan.h
 command -v glslangValidator >/dev/null
-# APT leaves a root-only lock and _apt-owned scratch directory. Restore the
-# runner ownership before actions/cache archives the completed .deb files.
-sudo chown -R "$(id -u):$(id -g)" "$archives"
-find "$archives" -maxdepth 1 -type f -name '*.deb' -print
-echo "APT archive count: $(find "$archives" -maxdepth 1 -type f -name '*.deb' | wc -l)"
+
+# apt-get keeps its completed archives; the copied files are ordinary
+# runner-readable cache inputs (no root-owned lock or partial directory).
+completed=(/var/cache/apt/archives/*.deb)
+if (( ${#completed[@]} )); then
+    cp -- "${completed[@]}" "$cache_dir/"
+fi
+echo "APT archive count: $(find "$cache_dir" -maxdepth 1 -type f -name '*.deb' | wc -l)"
