@@ -258,19 +258,31 @@ struct SolverIterationSourceFixture {
             return close(a.x,b.x) && close(a.y,b.y) && close(a.z,b.z);
         };
         if(actual_zero.contact_count!=2 ||
-           actual_one.contact_count!=2 ||
-           actual_zero.requested_velocity_iterations!=0 ||
-           actual_one.requested_velocity_iterations!=1 ||
-           !close_vec(actual_zero.motion,actual_one.motion) ||
-           !close_vec(actual_zero.final,actual_one.final) ||
-           !std::isfinite(actual_zero.normal_impulse) ||
+           actual_one.contact_count!=2)
+            throw std::runtime_error(
+                "Final-velocity fixture lacks two source task contacts");
+        if(actual_zero.requested_velocity_iterations!=0 ||
+           actual_one.requested_velocity_iterations!=1)
+            throw std::runtime_error(
+                "Final-velocity fixture did not preserve source requested counts");
+        if(!close_vec(actual_zero.motion,actual_one.motion))
+            throw std::runtime_error(
+                "Position-phase snapshots changed between zero/one requests");
+        if(!close_vec(actual_zero.final,actual_one.final))
+            throw std::runtime_error(
+                "Zero/one velocity requests produced different final contact motion");
+        if(!std::isfinite(actual_zero.normal_impulse) ||
            actual_zero.normal_impulse<=0 ||
            std::abs(actual_zero.normal_impulse-
-                    actual_one.normal_impulse)>1.0e-5 ||
-           std::abs(actual_one.final.y-actual_one.motion.y)<=1.0e-3f ||
-           std::abs(actual_zero.final.y-actual_zero.motion.y)<=1.0e-3f)
+                    actual_one.normal_impulse)>1.0e-5)
             throw std::runtime_error(
-                "Zero-velocity task skipped the required unbiased final PGS pass");
+                "Zero/one velocity requests changed source Gu impulse writeback");
+        if(std::abs(actual_one.final.y-actual_one.motion.y)<=1.0e-3f)
+            throw std::runtime_error(
+                "Reference one-pass contact fixture has no unbiased velocity correction");
+        if(std::abs(actual_zero.final.y-actual_zero.motion.y)<=1.0e-3f)
+            throw std::runtime_error(
+                "Zero-request task omitted the final unbiased velocity correction");
     }
 };
 }
