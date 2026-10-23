@@ -1190,6 +1190,8 @@ void verify_source_active_island_handoff() {
            active.active_accurate_islands()[0]==a_accurate &&
            active.active_speculative_islands()[0]==a_speculative,
            "Additional awake island lost existing source activation order");
+    const auto* accurate_published=active.active_accurate_islands().data();
+    const auto* speculative_published=active.active_speculative_islands().data();
     const std::vector<std::uint32_t> accurate_before(
         active.active_accurate_islands().begin(),
         active.active_accurate_islands().end());
@@ -1200,13 +1202,15 @@ void verify_source_active_island_handoff() {
     try { active.step(std::numeric_limits<float>::max()); }
     catch(const std::overflow_error&) { rejected=true; }
     expect(rejected &&
+           active.active_accurate_islands().data()==accurate_published &&
+           active.active_speculative_islands().data()==speculative_published &&
            std::equal(accurate_before.begin(),accurate_before.end(),
                       active.active_accurate_islands().begin(),
                       active.active_accurate_islands().end()) &&
            std::equal(speculative_before.begin(),speculative_before.end(),
                       active.active_speculative_islands().begin(),
                       active.active_speculative_islands().end()),
-           "Rejected source island handoff changed the active permutation");
+           "Rejected source island handoff changed published storage/order");
     active.remove(b);
     active.advance_collision();
     expect(active.active_accurate_islands().size()==1 &&
