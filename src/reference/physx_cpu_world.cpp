@@ -200,8 +200,15 @@ struct PhysXCpuWorld final : WorldBackend {
         // Preserve its private PxCreatePlane rotation on a logical
         // identity edit rather than rotating its physical normal.
         if(shape->getGeometry().getType()==physx::PxGeometryType::ePLANE) {
-            if(orientation.x!=0.0f || orientation.y!=0.0f ||
-               orientation.z!=0.0f || orientation.w!=1.0f)
+            // World validates PxQuat::isSane; PhysX normalizes a sane
+            // quaternion when setting the actor pose. Apply that same
+            // rule to the SDK's logical floor orientation before deciding
+            // whether the fixed horizontal plane would actually rotate.
+            const auto logical=physx::PxQuat(
+                orientation.x,orientation.y,orientation.z,orientation.w)
+                .getNormalized();
+            if(logical.x!=0.0f || logical.y!=0.0f ||
+               logical.z!=0.0f || logical.w!=1.0f)
                 throw std::logic_error("Native horizontal floor cannot rotate");
             auto pose=actors[id]->getGlobalPose();
             pose.p=to_physx(position);
