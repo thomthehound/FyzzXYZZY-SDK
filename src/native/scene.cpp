@@ -3452,61 +3452,80 @@ void Scene::prepare_constraints(float seconds) {
             // local-to-world error/Jacobians for disabled patches.
             if (patch.disable_friction) {
                 patch.anchor_count=0;
-                patch.row_offset=solver_friction_rows_.size();
+                patch.anchor_count=count;
+            patch.row_offset=solver_friction_rows_.size();
                 continue;
             }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
             const float diagonal_sq=squared_length(extent);
-            if (patch.anchor_count == 2) {
+            bool keep_pair=false;
+            if(patch.anchor_count==2) {
                 const Vec3 diff=sub(patch.body0_anchors[0],
                                     patch.body0_anchors[1]);
-                if (squared_length(diff)*4.0f < diagonal_sq)
-                    patch.anchor_count = 0;
+                // DyFrictionCorrelation::growPatches retains a cached
+                // two-anchor pair only when its spacing still covers
+                // at least one-quarter of the current patch diagonal.
+                // The source skips the anchor search in this case.
+                keep_pair=squared_length(diff)*4.0f>=diagonal_sq;
+                if(!keep_pair)patch.anchor_count=0;
             }
             std::array<Vec3,2> anchors{};
-            std::uint8_t count = patch.anchor_count;
-            if (count == 1)
-                anchors[0]=world_point(actor0,patch.body0_anchors[0]);
-            float point_dist_sq=0.0f;
-            for (std::size_t j=0;j<manifold.count;++j) {
-                const std::size_t idx=manifold.solver_offset+j;
-                if (solver_contact_points_[idx].friction_patch != patch_id)
-                    continue;
-                const auto& point=manifold.points[j];
-                if (point.separation >= friction_offset_threshold)
-                    continue;
-                const Vec3 w=point.position;
-                if (count == 0) {
-                    patch.contact_ids[0]=static_cast<std::uint16_t>(j);
-                    anchors[0]=w;
-                    ++count;
-                } else if (count == 1) {
-                    const float d=squared_length(sub(w,anchors[0]));
-                    if (d>1.0e-8f) {
-                        patch.contact_ids[1]=static_cast<std::uint16_t>(j);
-                        anchors[1]=w;
-                        point_dist_sq=d;
-                        ++count;
-                    }
-                } else {
-                    const float d0=squared_length(sub(w,anchors[0]));
-                    const float d1=squared_length(sub(w,anchors[1]));
-                    if (d0>d1 && d0>point_dist_sq) {
-                        patch.contact_ids[1]=static_cast<std::uint16_t>(j);
-                        anchors[1]=w;
-                        point_dist_sq=d0;
-                    } else if (d1>=d0 && d1>point_dist_sq) {
-                        patch.contact_ids[0]=static_cast<std::uint16_t>(j);
-                        anchors[0]=w;
-                        point_dist_sq=d1;
+            std::uint8_t count=patch.anchor_count;
+            if(!keep_pair) {
+                if(count==1)
+                    anchors[0]=world_point(actor0,patch.body0_anchors[0]);
+                float point_dist_sq=0.0f;
+                // The correlation linked list prepends each contact
+                // patch, so source growPatches sees its runs in reverse
+                // admission order, not in canonical Gu contact order.
+                const std::size_t local=patch_id-
+                    manifold.friction_patch_offset;
+                for(std::size_t cp=used_heads[local];
+                    cp!=invalid_instance;
+                    cp=contact_patch_scratch_[cp].next) {
+                    const auto& run=contact_patch_scratch_[cp];
+                    for(std::size_t j=run.start;j<run.start+run.count;++j) {
+                        const auto& point=manifold.points[j];
+                        if(point.separation>=friction_offset_threshold)
+                            continue;
+                        const Vec3 w=point.position;
+                        if(count==0) {
+                            patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                            anchors[0]=w;
+                            ++count;
+                        } else if(count==1) {
+                            const float d=squared_length(sub(w,anchors[0]));
+                            if(d>1.0e-8f) {
+                                patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                                anchors[1]=w;
+                                point_dist_sq=d;
+                                ++count;
+                            }
+                        } else {
+                            const float d0=squared_length(sub(w,anchors[0]));
+                            const float d1=squared_length(sub(w,anchors[1]));
+                            if(d0>d1 && d0>point_dist_sq) {
+                                patch.contact_ids[1]=static_cast<std::uint16_t>(j);
+                                anchors[1]=w;
+                                point_dist_sq=d0;
+                            } else if(d1>=d0 && d1>point_dist_sq) {
+                                patch.contact_ids[0]=static_cast<std::uint16_t>(j);
+                                anchors[0]=w;
+                                point_dist_sq=d1;
+                            }
+                        }
                     }
                 }
+                for(std::size_t k=patch.anchor_count;k<count;++k) {
+                    patch.body0_anchors[k]=local_point(actor0,anchors[k]);
+                    patch.body1_anchors[k]=local_point(actor1,anchors[k]);
+                }
+                if(count==0) {
+                    patch.body0_anchors[0]={};
+                    patch.body1_anchors[0]={};
+                }
             }
-            for (std::size_t k=patch.anchor_count;k<count;++k) {
-                patch.body0_anchors[k]=local_point(actor0,anchors[k]);
-                patch.body1_anchors[k]=local_point(actor1,anchors[k]);
-            }
-            patch.anchor_count=count;
+
             patch.row_offset=solver_friction_rows_.size();
             if (count==0) continue;
             // DyContactPrep.cpp constructs tangents from relative linear
@@ -3591,7 +3610,11 @@ void Scene::solve_constraints() {
             auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.b] : world_solver_row_;
             for (std::size_t i=0; i<manifold.count; ++i) {
-                auto& row = solver_contact_points_[manifold.solver_offset+i];
+                // DyContactPrep orders rows by friction patch and each
+                // correlation-list chain. Preserve Gu offsets separately
+                // for source writeback, rather than solve in pair order.
+                auto& row = solver_contact_points_[
+                    solver_contact_order_[manifold.solver_offset+i]];
                 const Vec3 n = row.normal;
                 const Vec3 va{
                     a.solver.linear_velocity_delta.x,
