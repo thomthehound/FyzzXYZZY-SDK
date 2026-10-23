@@ -2430,7 +2430,15 @@ void Scene::deactivate_ready_islands() noexcept {
     // PhysX uses accurate-island deactivations for rigid-body state in
     // ScPipeline::afterIntegration. The speculative third-pass list
     // controls contact interaction activity, not rigid sleep admission.
-    for(const auto& island:accurate_islands_.islands) {
+    // PxsIslandSim::processLostEdges walks mActiveIslands in reverse,
+    // after wakeIslands has published the active-index changes. A long-
+    // sleeping scene must not revisit every dormant historical handle
+    // on each solver frame, nor reverse the source deactivation order.
+    for(std::size_t index=accurate_islands_.active_islands.size();
+        index>0;--index) {
+        const auto handle=accurate_islands_.active_islands[index-1];
+        if(handle>=accurate_islands_.islands.size())continue;
+        const auto& island=accurate_islands_.islands[handle];
         if(!island.live)continue;
         bool ready=true;
         bool has_active_node=false;
@@ -2685,7 +2693,8 @@ void Scene::synchronize_active_island_nodes() noexcept {
     }
 }
 void Scene::prepare_active_accurate_island_batches() {
-    synchronize_active_island_nodes();
+    // wakeIslands and third-pass retirement already reconciled the
+    // authoritative graph lists before Dy consumes these batches.
     // Dy::DynamicsContext::iterateIslandsNodes consumes source
     // IslandSim::mActiveIslands, never all dormant island-node ranges.
     // The contiguous source node ranges remain sorted by island handle,
@@ -4369,10 +4378,19 @@ void Scene::step(float seconds) {
     advance_collision_internal(false,true);
     third_pass_island_gen();
     activate_published_islands();
+    // Source wakeIslands publishes active island membership BEFORE
+    // processLostEdges tests sleep readiness. Reconcile once even when
+    // no island is ready, so the deactivation pass touches active roots
+    // rather than the entire island-handle inventory.
+    synchronize_active_island_nodes();
     // Source third pass tests readiness from the prior Dy sleepCheck,
     // before this frame's unconstrained velocity/PGS processing.
     deactivate_ready_islands();
     consume_contact_interaction_activity();
+    // Deactivation removes nodes and islands from the active lists;
+    // ordinary awake frames do not need this second traversal.
+    if(!accurate_islands_.nodes_to_deactivate.empty())
+        synchronize_active_island_nodes();
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
     prepare_active_accurate_island_batches();
@@ -4629,9 +4647,11 @@ void Scene::advance_collision(bool force_update) {
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activity_checkpoint_active_=false;
     activate_published_islands();
+    synchronize_active_island_nodes();
     deactivate_ready_islands();
     consume_contact_interaction_activity();
-    synchronize_active_island_nodes();
+    if(!accurate_islands_.nodes_to_deactivate.empty())
+        synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
     bool force_update, bool checkpointed) {
