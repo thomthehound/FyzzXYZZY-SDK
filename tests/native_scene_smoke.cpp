@@ -1151,6 +1151,123 @@ void verify_demand_driven_island_ownership_checkpoint() {
            "Unchanged geometry republished a redundant graph checkpoint");
 }
 
+// Independent source edge-activity regressions live outside the full
+// rigid integration fixture to keep their stack frames and failures isolated.
+void verify_source_retired_bridge_deactivation() {
+    using fyzz::native::Scene;
+    {
+        // Retiring an awake actor from an otherwise dormant SAP-only
+        // bridge invokes the FULL island rebuild in the first pass.
+        // The retained floor manager must still publish one speculative
+        // deactivation in the third pass, without requiring a new
+        // accurate sleep event or a local lost-edge split.
+        std::fprintf(stderr,"smoke checkpoint: retired bridge\n");
+        Scene retired_bridge;
+        const auto sleeping_rod=retired_bridge.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+        const auto active_rod=retired_bridge.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
+            retired_bridge.set_velocity(id,{0,9.81f,0});
+            retired_bridge.set_angular_velocity(id,{0,0.83f,0});
+        }
+        retired_bridge.step(1.0f);
+        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
+            retired_bridge.set_angular_velocity(id,{});
+            retired_bridge.set_velocity(id,{});
+        }
+        retired_bridge.set_position(sleeping_rod,{0,0.1f,0});
+        retired_bridge.set_position(active_rod,{0.6f,0.1f,0.6f});
+        const auto floor=retired_bridge.add_static_floor(0.0f);
+        retired_bridge.advance_collision();
+        bool independent_sleep=false;
+        for(int frame=0;frame<160;++frame) {
+            retired_bridge.set_velocity(active_rod,{0,0,0.25f});
+            retired_bridge.step(1.0f/120.0f);
+            if(retired_bridge.body_is_sleeping(sleeping_rod) &&
+               !retired_bridge.body_is_sleeping(active_rod) &&
+               retired_bridge.speculative_island_count()==1 &&
+               retired_bridge.accurate_island_count()==2) {
+                independent_sleep=true;
+                break;
+            }
+        }
+        const fyzz::native::Pair floor_pair{
+            std::min(floor,sleeping_rod),std::max(floor,sleeping_rod)};
+        const auto floor_edge=retired_bridge.contact_edge_index(floor_pair);
+        const auto prior_spec_count=
+            retired_bridge.active_speculative_contact_edge_count();
+        expect(independent_sleep &&
+               floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
+               retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               !retired_bridge.accurate_contact_edge_active(floor_pair),
+               "Retirement fixture did not establish independent island sleep");
+        retired_bridge.remove(active_rod);
+        retired_bridge.advance_collision();
+        const auto events=retired_bridge.deactivating_speculative_contact_edges();
+        expect(retired_bridge.body_is_sleeping(sleeping_rod) &&
+               !retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               std::count(events.begin(),events.end(),floor_edge)==1 &&
+               retired_bridge.deactivating_accurate_contact_edges().empty() &&
+               prior_spec_count>0 &&
+               retired_bridge.active_speculative_contact_edge_count()==0,
+               "Full rebuild skipped speculative retirement of dormant manager");
+        retired_bridge.advance_collision();
+        expect(retired_bridge.deactivating_speculative_contact_edges().empty() &&
+               !retired_bridge.speculative_contact_edge_active(floor_pair),
+               "Retired-actor rebuild replayed speculative deactivation");
+    }
+
+}
+void verify_source_activity_rollback() {
+    using fyzz::native::Scene;
+    {
+        // A failed Gu touch-loss must restore the active contact-manager
+        // bits as well as each IslandSim's counts and indexed worklists.
+        // Structural EdgeUndo snapshots are taken *after* the edge's
+        // activity was cleared; they cannot supersede ActivityUndo.
+        std::fprintf(stderr,"smoke checkpoint: activity rollback\n");
+        Scene activity_rollback;
+        const auto floor=activity_rollback.add_static_floor(0.0f);
+        const auto body=activity_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const fyzz::native::Pair touch{std::min(floor,body),std::max(floor,body)};
+        activity_rollback.advance_collision();
+        const auto original_handle=activity_rollback.contact_edge_index(touch);
+        const auto accurate_active=
+            activity_rollback.active_accurate_contact_edge_count();
+        const auto speculative_active=
+            activity_rollback.active_speculative_contact_edge_count();
+        expect(activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch),
+               "Source activity rollback fixture failed to create active edge");
+        activity_rollback.set_position(body,{0,3,0});
+        bool failed=false;
+        try {activity_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        expect(failed &&
+               activity_rollback.contact_edge_index(touch)==original_handle &&
+               activity_rollback.contact_edge_connected(touch) &&
+               activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch) &&
+               activity_rollback.active_accurate_contact_edge_count()==
+                   accurate_active &&
+               activity_rollback.active_speculative_contact_edge_count()==
+                   speculative_active,
+               "Failed touch-loss step did not restore source edge activity");
+        activity_rollback.advance_collision();
+        expect(!activity_rollback.contact_edge_connected(touch) &&
+               !activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch) &&
+               activity_rollback.active_accurate_contact_edge_count()+1==
+                   accurate_active &&
+               activity_rollback.active_speculative_contact_edge_count()==
+                   speculative_active,
+               "Retried touch loss did not retire accurate activity exactly once");
+    }
+
+}
+
 void verify_native_rigid_integration_and_island_lifecycle() {
     using fyzz::native::Scene;
     // End-to-end native CPU execution, without a reference PxScene.
@@ -2271,114 +2388,6 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         expect(distinct_sleep.activated_accurate_contact_edges().empty() &&
                distinct_sleep.activated_speculative_contact_edges().empty(),
                "Already awake rigid body incorrectly reactivated active edges");
-    }
-
-    {
-        // Retiring an awake actor from an otherwise dormant SAP-only
-        // bridge invokes the FULL island rebuild in the first pass.
-        // The retained floor manager must still publish one speculative
-        // deactivation in the third pass, without requiring a new
-        // accurate sleep event or a local lost-edge split.
-        std::fprintf(stderr,"smoke checkpoint: retired bridge\n");
-        Scene retired_bridge;
-        const auto sleeping_rod=retired_bridge.add_dynamic_box(
-            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
-        const auto active_rod=retired_bridge.add_dynamic_box(
-            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
-        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
-            retired_bridge.set_velocity(id,{0,9.81f,0});
-            retired_bridge.set_angular_velocity(id,{0,0.83f,0});
-        }
-        retired_bridge.step(1.0f);
-        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
-            retired_bridge.set_angular_velocity(id,{});
-            retired_bridge.set_velocity(id,{});
-        }
-        retired_bridge.set_position(sleeping_rod,{0,0.1f,0});
-        retired_bridge.set_position(active_rod,{0.6f,0.1f,0.6f});
-        const auto floor=retired_bridge.add_static_floor(0.0f);
-        retired_bridge.advance_collision();
-        bool independent_sleep=false;
-        for(int frame=0;frame<160;++frame) {
-            retired_bridge.set_velocity(active_rod,{0,0,0.25f});
-            retired_bridge.step(1.0f/120.0f);
-            if(retired_bridge.body_is_sleeping(sleeping_rod) &&
-               !retired_bridge.body_is_sleeping(active_rod) &&
-               retired_bridge.speculative_island_count()==1 &&
-               retired_bridge.accurate_island_count()==2) {
-                independent_sleep=true;
-                break;
-            }
-        }
-        const fyzz::native::Pair floor_pair{
-            std::min(floor,sleeping_rod),std::max(floor,sleeping_rod)};
-        const auto floor_edge=retired_bridge.contact_edge_index(floor_pair);
-        const auto prior_spec_count=
-            retired_bridge.active_speculative_contact_edge_count();
-        expect(independent_sleep &&
-               floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
-               retired_bridge.speculative_contact_edge_active(floor_pair) &&
-               !retired_bridge.accurate_contact_edge_active(floor_pair),
-               "Retirement fixture did not establish independent island sleep");
-        retired_bridge.remove(active_rod);
-        retired_bridge.advance_collision();
-        const auto events=retired_bridge.deactivating_speculative_contact_edges();
-        expect(retired_bridge.body_is_sleeping(sleeping_rod) &&
-               !retired_bridge.speculative_contact_edge_active(floor_pair) &&
-               std::count(events.begin(),events.end(),floor_edge)==1 &&
-               retired_bridge.deactivating_accurate_contact_edges().empty() &&
-               prior_spec_count>0 &&
-               retired_bridge.active_speculative_contact_edge_count()==0,
-               "Full rebuild skipped speculative retirement of dormant manager");
-        retired_bridge.advance_collision();
-        expect(retired_bridge.deactivating_speculative_contact_edges().empty() &&
-               !retired_bridge.speculative_contact_edge_active(floor_pair),
-               "Retired-actor rebuild replayed speculative deactivation");
-    }
-
-    {
-        // A failed Gu touch-loss must restore the active contact-manager
-        // bits as well as each IslandSim's counts and indexed worklists.
-        // Structural EdgeUndo snapshots are taken *after* the edge's
-        // activity was cleared; they cannot supersede ActivityUndo.
-        std::fprintf(stderr,"smoke checkpoint: activity rollback\n");
-        Scene activity_rollback;
-        const auto floor=activity_rollback.add_static_floor(0.0f);
-        const auto body=activity_rollback.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        const fyzz::native::Pair touch{std::min(floor,body),std::max(floor,body)};
-        activity_rollback.advance_collision();
-        const auto original_handle=activity_rollback.contact_edge_index(touch);
-        const auto accurate_active=
-            activity_rollback.active_accurate_contact_edge_count();
-        const auto speculative_active=
-            activity_rollback.active_speculative_contact_edge_count();
-        expect(activity_rollback.accurate_contact_edge_active(touch) &&
-               activity_rollback.speculative_contact_edge_active(touch),
-               "Source activity rollback fixture failed to create active edge");
-        activity_rollback.set_position(body,{0,3,0});
-        bool failed=false;
-        try {activity_rollback.step(std::numeric_limits<float>::max());}
-        catch(const std::overflow_error&) {failed=true;}
-        expect(failed &&
-               activity_rollback.contact_edge_index(touch)==original_handle &&
-               activity_rollback.contact_edge_connected(touch) &&
-               activity_rollback.accurate_contact_edge_active(touch) &&
-               activity_rollback.speculative_contact_edge_active(touch) &&
-               activity_rollback.active_accurate_contact_edge_count()==
-                   accurate_active &&
-               activity_rollback.active_speculative_contact_edge_count()==
-                   speculative_active,
-               "Failed touch-loss step did not restore source edge activity");
-        activity_rollback.advance_collision();
-        expect(!activity_rollback.contact_edge_connected(touch) &&
-               !activity_rollback.accurate_contact_edge_active(touch) &&
-               activity_rollback.speculative_contact_edge_active(touch) &&
-               activity_rollback.active_accurate_contact_edge_count()+1==
-                   accurate_active &&
-               activity_rollback.active_speculative_contact_edge_count()==
-                   speculative_active,
-               "Retried touch loss did not retire accurate activity exactly once");
     }
 
     {
@@ -5284,6 +5293,10 @@ int run_native_scene_smoke() {
     verify_demand_driven_island_ownership_checkpoint();
     std::fprintf(stderr,"smoke checkpoint: contact edge deactivations\n");
     verify_source_contact_edge_deactivations();
+    std::fprintf(stderr,"smoke checkpoint: retired bridge\n");
+    verify_source_retired_bridge_deactivation();
+    std::fprintf(stderr,"smoke checkpoint: activity rollback\n");
+    verify_source_activity_rollback();
     std::fprintf(stderr,"smoke checkpoint: rigid integration\n");
     verify_native_rigid_integration_and_island_lifecycle();
 
