@@ -2936,16 +2936,21 @@ void Scene::partition_constraints() {
         manifold_by_edge_[edge].generation=indexed_manifold_generation_;
     }
     indexed_managers_.clear();
-    solver_task_manager_ends_.clear();
+    solver_tasks_.clear();
     std::size_t task_body_count=0;
     std::size_t task_constraint_count=0;
+    std::size_t task_first_batch=0;
+    std::size_t prepared_solver_bodies=0;
+    std::uint8_t task_pos_iters=0, task_vel_iters=0;
     // Source DyDynamicsContext::updatePostKinematic combines consecutive
     // accurate active islands into solver task chains. With the SDK's
     // default rigid-only scene, mSolverBatchSize is 128 bodies and the
     // source minimumConstraintCount is 1. The grouped stream directly
     // determines partition/solve descriptor ordering below.
     constexpr std::size_t source_solver_batch_size=128;
-    for(std::size_t batch:active_accurate_island_batches_) {
+    for(std::size_t batch_index=0;
+        batch_index<active_accurate_island_batches_.size();++batch_index) {
+        const auto batch=active_accurate_island_batches_[batch_index];
         const std::size_t offset=accurate_island_offsets_[batch];
         const BodyId root=accurate_island_nodes_[offset];
         const auto handle=accurate_islands_.node_island[root];
@@ -2965,15 +2970,35 @@ void Scene::partition_constraints() {
             throw std::logic_error("PhysX island contact list truncated");
         task_body_count+=island.count;
         task_constraint_count+=island.contact_count;
+        // DyDynamics.cpp::preIntegrationParallel accumulates the
+        // maximum PxsBodyCore solverIterationCounts word over precisely
+        // this source task's node array, including unconstrained bodies.
+        for(std::size_t node=accurate_island_offsets_[batch];
+            node<accurate_island_offsets_[batch+1];++node) {
+            const BodyId id=accurate_island_nodes_[node];
+            const auto& d=actors_[id].dynamics;
+            task_pos_iters=std::max(task_pos_iters,d.position_iterations);
+            task_vel_iters=std::max(task_vel_iters,d.velocity_iterations);
+            if(solver_rows_[id].prepared_generation==
+               solver_preparation_generation_)
+                ++prepared_solver_bodies;
+        }
         if(task_body_count>=source_solver_batch_size &&
            task_constraint_count>=1) {
-            solver_task_manager_ends_.push_back(indexed_managers_.size());
+            solver_tasks_.push_back({task_first_batch,batch_index+1,
+                indexed_managers_.size(),0,0,prepared_solver_bodies,
+                task_pos_iters,task_vel_iters});
+            task_first_batch=batch_index+1;
             task_body_count=0;
             task_constraint_count=0;
+            task_pos_iters=task_vel_iters=0;
         }
     }
     if(task_body_count)
-        solver_task_manager_ends_.push_back(indexed_managers_.size());
+        solver_tasks_.push_back({task_first_batch,
+            active_accurate_island_batches_.size(),
+            indexed_managers_.size(),0,0,prepared_solver_bodies,
+            task_pos_iters,task_vel_iters});
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
     // sequence directly. The compound contact reducer's separate
@@ -2985,7 +3010,8 @@ void Scene::partition_constraints() {
     std::size_t manager_begin=0;
     std::size_t partition_base=0;
     pending_dynamic_constraints_.clear();
-    for(const std::size_t manager_end:solver_task_manager_ends_) {
+    for(auto& task:solver_tasks_) {
+        const std::size_t manager_end=task.manager_end;
         pending_dynamic_constraints_.clear();
         for(std::size_t j=manager_begin;j<manager_end;++j) {
             const std::size_t i=indexed_managers_[j];
@@ -3074,6 +3100,7 @@ void Scene::partition_constraints() {
                                          global_partition+1);
         }
         partition_base=next_partition_base;
+        task.partition_end=partition_base;
         manager_begin=manager_end;
     }
 
@@ -3093,6 +3120,9 @@ void Scene::partition_constraints() {
         cumulative+=end;
         end=cumulative;
     }
+    for(auto& task:solver_tasks_)
+        task.constraint_end=task.partition_end
+            ? partition_ends_[task.partition_end-1] : 0;
     partition_cursors_.resize(partition_ends_.size());
     for (std::size_t p=0;p<partition_cursors_.size();++p)
         partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
