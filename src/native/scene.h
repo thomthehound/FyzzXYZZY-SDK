@@ -188,6 +188,14 @@ public:
     // The invalid sentinel is returned once the overlap is retired.
     std::uint32_t contact_edge_index(Pair pair) const noexcept;
     bool contact_edge_connected(Pair pair) const noexcept;
+    bool speculative_contact_edge_active(Pair pair) const noexcept;
+    bool accurate_contact_edge_active(Pair pair) const noexcept;
+    std::size_t active_speculative_contact_edge_count() const noexcept {
+        return speculative_islands_.active_edge_count;
+    }
+    std::size_t active_accurate_contact_edge_count() const noexcept {
+        return accurate_islands_.active_edge_count;
+    }
     std::size_t active_contact_edge_count() const noexcept {
         return active_edge_handles_.size();
     }
@@ -319,6 +327,16 @@ public:
     std::size_t accurate_active_node_index(BodyId id) const noexcept {
         return id<accurate_islands_.active_node_index.size()
             ? accurate_islands_.active_node_index[id] : invalid_instance;
+    }
+    // Source mActivatedEdges[eCONTACT_MANAGER] is the per-pass transition
+    // list, not the set of all persistently active contact managers.
+    std::span<const std::uint32_t>
+    activated_speculative_contact_edges() const noexcept {
+        return speculative_islands_.activated_edges;
+    }
+    std::span<const std::uint32_t>
+    activated_accurate_contact_edges() const noexcept {
+        return accurate_islands_.activated_edges;
     }
     // Third-pass IslandSim::mNodesToPutToSleep for admitted rigid nodes.
     // Distinct from Dy's prior-frame "ready" flags and from the
@@ -499,6 +517,11 @@ private:
     // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
+    void clear_activated_edges() noexcept;
+    void activate_contact_edge(std::uint32_t id, bool accurate) noexcept;
+    void deactivate_contact_edge(std::uint32_t id, bool accurate,
+                                 bool publish) noexcept;
+    void activate_node_contact_edges(BodyId node) noexcept;
     void synchronize_active_island_nodes() noexcept;
     void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
@@ -529,6 +552,8 @@ private:
         bool live=false;            // allocated by addContactManager
         bool connected=false;       // source accurate mConnectedMap bit
         bool retiring=false;        // removeConnection, pending post-third-pass
+        // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
+        std::uint8_t speculative_state=0, accurate_state=0;
         // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
         // speculative and accurate IslandSim graphs.
         std::array<EdgeInstance,2> speculative{};
@@ -590,6 +615,8 @@ private:
         // contact-manager edge when its last awake endpoint sleeps.
         // A lost/retired edge is not a sleep-deactivation event.
         std::vector<EdgeIndex> deactivating_edges;
+        std::vector<EdgeIndex> activated_edges;
+        std::size_t active_edge_count=0; // mActiveEdgeCount[eCONTACT_MANAGER]
     };
     IslandGraph speculative_islands_, accurate_islands_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
@@ -713,6 +740,11 @@ private:
             std::size_t previous;
         };
         std::vector<EdgeUndo> edge_undo;
+        struct ActivityUndo {
+            EdgeIndex id;
+            std::uint8_t speculative, accurate;
+        };
+        std::vector<ActivityUndo> activity_undo;
         std::vector<HintUndo> hint_undo;
         std::vector<HeadUndo> head_undo;
         std::size_t initial_edges=0;
@@ -762,6 +794,7 @@ private:
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
         void save_edge(const Scene& scene, EdgeIndex id);
+        void save_activity(Scene& scene, EdgeIndex id) noexcept;
         void save_hint(const Scene& scene, BodyId node, bool accurate);
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
@@ -769,6 +802,9 @@ private:
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
+    // Only changed EdgeIndex states are journaled for frame rollback.
+    std::vector<std::uint64_t> activity_undo_generations_;
+    std::uint64_t activity_undo_generation_=0;
     std::vector<ThresholdPair> threshold_current_;
     std::vector<ThresholdPair> threshold_previous_;
     std::vector<ForceThresholdReport> threshold_changes_;

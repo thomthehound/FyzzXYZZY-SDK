@@ -1201,3 +1201,31 @@ a substitute for this mapping.
 duplicate contact cache, per-stage scheduler, invented friction model or
 reference PhysX runtime dependency, stop and revise the extraction boundary
 instead of patching around it.
+
+
+## Rigid contact-manager eACTIVE/eACTIVATING source lifecycle
+
+The retained scene-owned EdgeIndex slots now hold independent speculative
+and accurate `IG::Edge::eACTIVE` and `eACTIVATING` state. Source
+`markEdgeActive` publishes the same EdgeIndex into that graph's
+`mActivatedEdges[eCONTACT_MANAGER]` on its inactive-to-active transition,
+updates `mActiveEdgeCount`, and does not re-emit an already active edge.
+The following `wakeIslands` publication clears prior `eACTIVATING`
+flags and worklists without clearing persistent `eACTIVE` state.
+
+Source `deactivateNodeInternal` emits a deactivating contact manager
+**only** when its edge was active; an already inactive edge produces no
+new event. Canceling a still pending activation uses source replace-with-
+last list removal. A retired SAP manager or lost Gu touch cancels its
+activity without manufacturing an island-sleep event. Accurate physical
+contacts and speculative SAP overlaps retain distinct histories across
+accurate-island sleep and subsequent speculative-only bridge splitting.
+Only touched source edge slots are journaled on failed publication;
+per-graph activity counts and activated-edge worklists are restored.
+
+The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
+articulation and constraint edges, source active-reference counting and
+per-type bitmap partitions, callback publication, full island task
+continuations and `ScPipeline` interaction consumption still require
+source-derived N1 integration. Packed solver/contact admission and CCD
+remain separate gates; the new activity lifecycle alone does not close N1.

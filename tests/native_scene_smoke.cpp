@@ -2181,8 +2181,12 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                 expect(floor_edge!=std::numeric_limits<std::uint32_t>::max(),
                        "Independent accurate sleep lost floor manager handle");
                 expect(std::count(accurate_events.begin(),
-                                  accurate_events.end(),floor_edge)==1,
-                       "Accurate sleep did not publish its floor-edge deactivation");
+                                  accurate_events.end(),floor_edge)==1 &&
+                       !distinct_sleep.accurate_contact_edge_active(
+                           fyzz::native::Pair{rod_a,source_floor}) &&
+                       distinct_sleep.speculative_contact_edge_active(
+                           fyzz::native::Pair{rod_a,source_floor}),
+                       "Accurate sleep did not transition only its active edge");
                 expect(distinct_sleep.deactivating_speculative_contact_edges().empty(),
                        "Speculative sleep edges published while its island remained awake");
                 independent_sleep=true;
@@ -2212,8 +2216,37 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                distinct_sleep.deactivating_accurate_contact_edges().empty(),
                "Lost SAP-only bridge missed source speculative island sleep event");
         distinct_sleep.advance_collision();
-        expect(distinct_sleep.deactivating_speculative_contact_edges().empty(),
-               "Quiet publication replayed the speculative split sleep event");
+        expect(distinct_sleep.deactivating_speculative_contact_edges().empty() &&
+               !distinct_sleep.speculative_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}) &&
+               !distinct_sleep.accurate_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}),
+               "Quiet publication replayed an already inactive edge");
+        distinct_sleep.set_velocity(rod_a,{0,0,0.25f});
+        distinct_sleep.advance_collision();
+        const auto activated_spec=
+            distinct_sleep.activated_speculative_contact_edges();
+        const auto activated_acc=
+            distinct_sleep.activated_accurate_contact_edges();
+        expect(distinct_sleep.contact_edge_index(
+                   fyzz::native::Pair{rod_a,source_floor})==sleeping_floor &&
+               distinct_sleep.speculative_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}) &&
+               distinct_sleep.accurate_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}) &&
+               std::count(activated_spec.begin(),activated_spec.end(),
+                          sleeping_floor)==1 &&
+               std::count(activated_acc.begin(),activated_acc.end(),
+                          sleeping_floor)==1,
+               "Retained manager did not publish source edge activation");
+        distinct_sleep.advance_collision();
+        expect(distinct_sleep.activated_speculative_contact_edges().empty() &&
+               distinct_sleep.activated_accurate_contact_edges().empty() &&
+               distinct_sleep.speculative_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}) &&
+               distinct_sleep.accurate_contact_edge_active(
+                   fyzz::native::Pair{rod_a,source_floor}),
+               "eACTIVATING was replayed or persistent eACTIVE was lost");
     }
 
     {

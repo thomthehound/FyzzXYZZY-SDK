@@ -546,6 +546,14 @@ bool Scene::contact_edge_connected(Pair pair) const noexcept {
     const auto handle=contact_edge_index(pair);
     return handle!=invalid_edge && contact_edges_[handle].connected;
 }
+bool Scene::speculative_contact_edge_active(Pair pair) const noexcept {
+    const auto id=contact_edge_index(pair);
+    return id!=invalid_edge && (contact_edges_[id].speculative_state&1u);
+}
+bool Scene::accurate_contact_edge_active(Pair pair) const noexcept {
+    const auto id=contact_edge_index(pair);
+    return id!=invalid_edge && (contact_edges_[id].accurate_state&1u);
+}
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     // SimpleIslandManager::addContactManager -> addEdge obtains the
     // edge handle once; accurate touch may later toggle independently.
@@ -576,6 +584,17 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         };
         reserve_events(speculative_islands_);
         reserve_events(accurate_islands_);
+        const auto reserve_activation=[&](IslandGraph& graph) {
+            auto& events=graph.activated_edges;
+            if(events.capacity()>=needed)return;
+            const std::size_t capacity=events.capacity();
+            events.reserve(std::max(needed,capacity+
+                std::max<std::size_t>(capacity,8)));
+        };
+        reserve_activation(speculative_islands_);
+        reserve_activation(accurate_islands_);
+        step_checkpoint_.activity_undo.reserve(needed);
+        activity_undo_generations_.resize(needed,0);
         contact_edges_.push_back({pair,true,false,false});
     }
     return id;
@@ -685,6 +704,9 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     --island.contact_count;
 }
 void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
+    // Gu touch loss and manager retirement cancel activity without
+    // fabricating an IslandSim sleep-deactivation event.
+    deactivate_contact_edge(id,accurate,false);
     // Contact manager retirement and touch loss both remove the same
     // accurate source edge before disconnecting its intrusive endpoints.
     if(accurate && contact_edges_[id].connected)
@@ -2021,6 +2043,74 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
+// PxsIslandSim.cpp::markEdgeActive/removeEdgeFromActivatingList:
+// the shared EdgeIndex has independent activity in the two IslandSims.
+void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
+    auto& edge=contact_edges_[id];
+    if(!edge.live || edge.retiring ||
+       (accurate && !edge.connected))return;
+    auto& state=accurate?edge.accurate_state:edge.speculative_state;
+    if(state&1u)return; // Edge::eACTIVE
+    step_checkpoint_.save_activity(*this,id);
+    auto& graph=accurate?accurate_islands_:speculative_islands_;
+    state|=3u; // Edge::eACTIVE | Edge::eACTIVATING
+    graph.activated_edges.push_back(id);
+    ++graph.active_edge_count;
+}
+void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
+                                    bool publish) noexcept {
+    auto& edge=contact_edges_[id];
+    auto& state=accurate?edge.accurate_state:edge.speculative_state;
+    if(!(state&3u))return;
+    step_checkpoint_.save_activity(*this,id);
+    auto& graph=accurate?accurate_islands_:speculative_islands_;
+    if(state&2u) {
+        auto& pending=graph.activated_edges;
+        for(std::size_t i=0;i<pending.size();++i)
+            if(pending[i]==id) {
+                pending[i]=pending.back();
+                pending.pop_back();
+                break;
+            }
+    }
+    const bool was_active=(state&1u)!=0;
+    state=0;
+    if(was_active) {
+        --graph.active_edge_count;
+        if(publish)graph.deactivating_edges.push_back(id);
+    }
+}
+void Scene::clear_activated_edges() noexcept {
+    // IslandSim::wakeIslands retires eACTIVATING from the previous
+    // transition list, preserving persistent eACTIVE and active count.
+    for(const bool accurate:{false,true}) {
+        auto& graph=accurate?accurate_islands_:speculative_islands_;
+        for(EdgeIndex id:graph.activated_edges) {
+            auto& state=accurate?contact_edges_[id].accurate_state:
+                                 contact_edges_[id].speculative_state;
+            if(state&2u) {
+                step_checkpoint_.save_activity(*this,id);
+                state&=static_cast<std::uint8_t>(~2u);
+            }
+        }
+        graph.activated_edges.clear();
+    }
+}
+void Scene::activate_node_contact_edges(BodyId node) noexcept {
+    // activateNodeInternal walks existing source intrusive edges.
+    for(const bool accurate:{false,true}) {
+        const auto& heads=accurate?accurate_node_first_:speculative_node_first_;
+        for(std::size_t instance=heads[node];
+            instance!=invalid_instance;) {
+            const EdgeIndex id=static_cast<EdgeIndex>(instance/2);
+            const auto& edge=contact_edges_[id];
+            const auto& link=(accurate?edge.accurate:
+                                       edge.speculative)[instance&1u];
+            instance=link.next;
+            activate_contact_edge(id,accurate);
+        }
+    }
+}
 void Scene::activate_published_islands() noexcept {
     // Ordinary quiet collision queries do not traverse islands merely
     // to discover that no node or edge requested source activation.
@@ -2065,13 +2155,35 @@ void Scene::activate_published_islands() noexcept {
             id=speculative_islands_.node_next[id]) {
             Actor& body=actors_[id];
             body.activating=false;
-            if(!body.sleeping)continue;
-            body.sleeping=false;
-            body.ready_for_sleep=false;
-            body.wake_counter=std::max(body.wake_counter,0.4f);
-            body.sleep_linear_acc={};
-            body.sleep_angular_acc={};
+            if(body.sleeping) {
+                body.sleeping=false;
+                body.ready_for_sleep=false;
+                body.wake_counter=std::max(body.wake_counter,0.4f);
+                body.sleep_linear_acc={};
+                body.sleep_angular_acc={};
+            }
+            activate_node_contact_edges(id);
         }
+    }
+    // addConnectionToGraph activates newly linked edges whenever
+    // either endpoint is active, including static-world contacts.
+    for(Pair pair:found_) {
+        const EdgeIndex id=contact_edge_index(pair);
+        if(id!=invalid_edge &&
+           ((actors_[pair.a].kind==Kind::DynamicBox &&
+             !actors_[pair.a].sleeping) ||
+            (actors_[pair.b].kind==Kind::DynamicBox &&
+             !actors_[pair.b].sleeping)))
+            activate_contact_edge(id,false);
+    }
+    for(Pair pair:found_contacts_) {
+        const EdgeIndex id=contact_edge_index(pair);
+        if(id!=invalid_edge &&
+           ((actors_[pair.a].kind==Kind::DynamicBox &&
+             !actors_[pair.a].sleeping) ||
+            (actors_[pair.b].kind==Kind::DynamicBox &&
+             !actors_[pair.b].sleeping)))
+            activate_contact_edge(id,true);
     }
     authored_activation_pending_=false;
 }
@@ -2159,7 +2271,7 @@ void Scene::deactivate_ready_islands() noexcept {
                 if(edge.live && !edge.retiring && edge.connected &&
                    (actors_[other].kind!=Kind::DynamicBox ||
                     actors_[other].sleeping))
-                    accurate_islands_.deactivating_edges.push_back(edge_id);
+                    deactivate_contact_edge(edge_id,true,true);
             }
         }
     }
@@ -2209,7 +2321,7 @@ void Scene::deactivate_ready_islands() noexcept {
                 if(edge.live && !edge.retiring &&
                    (actors_[other].kind!=Kind::DynamicBox ||
                     speculative_sleep_seen_[other]==stamp))
-                    speculative_islands_.deactivating_edges.push_back(edge_id);
+                    deactivate_contact_edge(edge_id,false,true);
             }
         }
     };
@@ -3392,6 +3504,16 @@ void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
     if(id<initial_edges)
         edge_undo.push_back({id,scene.contact_edges_[id]});
 }
+void Scene::StepCheckpoint::save_activity(
+    Scene& scene, EdgeIndex id) noexcept {
+    if(id>=initial_edges)return;
+    // Generation-deduplicated and pre-reserved before publication.
+    if(scene.activity_undo_generations_[id]==
+       scene.activity_undo_generation_)return;
+    scene.activity_undo_generations_[id]=scene.activity_undo_generation_;
+    const auto& edge=scene.contact_edges_[id];
+    activity_undo.push_back({id,edge.speculative_state,edge.accurate_state});
+}
 void Scene::StepCheckpoint::save_hint(
     const Scene& scene, BodyId node, bool accurate) {
     const auto& routes=accurate?scene.accurate_fast_route_:
@@ -3465,6 +3587,18 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // would duplicate every historical intrusive edge four times on
     // every PGS step even when all connections remain unchanged.
     edge_undo.clear();
+    activity_undo.clear();
+    if(++scene.activity_undo_generation_==0) {
+        std::fill(scene.activity_undo_generations_.begin(),
+                  scene.activity_undo_generations_.end(),0);
+        scene.activity_undo_generation_=1;
+    }
+    scene.activity_undo_generations_.resize(scene.contact_edges_.size(),0);
+    activity_undo.reserve(scene.contact_edges_.size());
+    scene.speculative_islands_.activated_edges.reserve(
+        scene.contact_edges_.size());
+    scene.accurate_islands_.activated_edges.reserve(
+        scene.contact_edges_.size());
     hint_undo.clear();
     head_undo.clear();
     initial_edges=scene.contact_edges_.size();
@@ -3520,6 +3654,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                         live.active_node_index.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
+        saved.activated_edges.assign(live.activated_edges.begin(),
+                                    live.activated_edges.end());
+        saved.active_edge_count=live.active_edge_count;
         saved.initial_active_node_count=live.initial_active_node_count;
     };
     copy_active(speculative_islands,scene.speculative_islands_);
@@ -3593,6 +3730,11 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
+    // Replay activity before link undo, so reused handles are restored.
+    for(auto it=activity_undo.rbegin();it!=activity_undo.rend();++it) {
+        scene.contact_edges_[it->id].speculative_state=it->speculative;
+        scene.contact_edges_[it->id].accurate_state=it->accurate;
+    }
     // Restore the exact pre-publication route cache and epochs so retries
     // reuse valid prior paths. Only written hint slots were journaled;
     // replay and shrinking newly admitted slots cannot allocate.
@@ -3731,6 +3873,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.nodes_to_deactivate);
     scene.speculative_islands_.deactivating_edges.swap(
         speculative_islands.deactivating_edges);
+    scene.speculative_islands_.activated_edges.swap(
+        speculative_islands.activated_edges);
+    scene.speculative_islands_.active_edge_count=
+        speculative_islands.active_edge_count;
     scene.speculative_islands_.initial_active_node_count=
         speculative_islands.initial_active_node_count;
     if(graph_ownership_saved) {
@@ -3749,6 +3895,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.nodes_to_deactivate);
     scene.accurate_islands_.deactivating_edges.swap(
         accurate_islands.deactivating_edges);
+    scene.accurate_islands_.activated_edges.swap(
+        accurate_islands.activated_edges);
+    scene.accurate_islands_.active_edge_count=
+        accurate_islands.active_edge_count;
     scene.accurate_islands_.initial_active_node_count=
         accurate_islands.initial_active_node_count;
     if(graph_ownership_saved) {
@@ -4064,6 +4214,8 @@ void Scene::advance_collision(bool force_update) {
     synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(bool force_update) {
+    // Previous mActivatedEdges flags are consumed at this wake boundary.
+    clear_activated_edges();
     // This also serves geometry-only queries. Never publish last frame's
     // solved force-buffer values against an unsolved contact stream.
     normal_impulse_writeback_.clear();
