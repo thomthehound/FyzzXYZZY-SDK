@@ -144,6 +144,126 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Source pair contact slop did not mask Dy angular Jacobians");
     }
+    static void verify_compliant_contact_source() {
+        using fyzz::Material;
+        using fyzz::MaterialCombineMode;
+        constexpr float dt=1.0f/120.0f;
+        // Inspect actual Gu-correlated Dy rows after the production
+        // Scene::step rather than reproducing the spring implementation
+        // in an isolated test solver.
+        const auto inspect=[&](Material floor_material,
+                               Material body_material, float height=0.49f,
+                               float density=2.0f) {
+            Scene scene;
+            const auto floor=scene.add_static_floor(0.0f);
+            const auto box=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,height,0},density);
+            floor_material.disable_friction=true;
+            body_material.disable_friction=true;
+            scene.set_material(floor,floor_material);
+            scene.set_material(box,body_material);
+            fyzz::RigidBodyDynamics dynamics{};
+            dynamics.gravity_enabled=false;
+            scene.set_dynamics(box,dynamics);
+            scene.step(dt);
+            if(scene.contacts().size()!=1 ||
+               scene.friction_patches_.size()!=1 ||
+               scene.solver_contact_points_.empty())
+                throw std::runtime_error(
+                    "Compliant PGS test did not exercise live Gu/Dy contacts");
+            const auto patch=scene.friction_patches_[0];
+            const auto row=scene.solver_contact_points_[0];
+            const auto& point=scene.contacts()[0].points[0];
+            const auto sq=[](Vec3 v) {
+                return static_cast<double>(v.x)*v.x+
+                    static_cast<double>(v.y)*v.y+
+                    static_cast<double>(v.z)*v.z;
+            };
+            const double response=scene.actors_[box].inverse_mass+
+                sq(row.ra_x_n_sqrt_inertia)+sq(row.rb_x_n_sqrt_inertia);
+            if(!(response>0.0))
+                throw std::runtime_error(
+                    "Compliant PGS prepared zero effective response");
+            if(patch.restitution<0.0f) {
+                const double nrdt=static_cast<double>(dt)*patch.restitution;
+                // Both pre-solver velocities are zero (gravity disabled).
+                const bool separated=point.separation>=0.0f;
+                const double enabled_damping=separated?0.0:patch.damping;
+                const double coeff=static_cast<double>(dt)*
+                    (enabled_damping-nrdt);
+                const double mass=patch.acceleration_spring
+                    ? 1.0/response:1.0;
+                const double x=1.0/(1.0+coeff*
+                    (patch.acceleration_spring?1.0:response));
+                const double bias=x*(-nrdt*point.separation*mass);
+                const double expected_velocity=x*coeff*mass;
+                const double expected_impulse=1.0-x;
+                const auto near=[](double x,double y) {
+                    return std::abs(x-y)<1.0e-6*
+                        std::max({1.0,std::abs(x),std::abs(y)});
+                };
+                if(!near(row.velocity_multiplier,expected_velocity) ||
+                   !near(row.impulse_multiplier,expected_impulse) ||
+                   !near(row.biased_error,-bias) ||
+                   !near(row.unbiased_error,-bias))
+                    throw std::runtime_error(
+                        "Dy compliant spring coefficients differ from original source");
+            } else if(row.impulse_multiplier!=1.0)
+                throw std::runtime_error(
+                    "Ordinary restitution incorrectly entered compliant PGS");
+            return patch;
+        };
+        Material hard{};
+        hard.restitution=0.8f;
+        hard.damping=0.0f;
+        Material force{};
+        force.restitution=-120.0f;
+        force.damping=9.0f;
+        Material acceleration=force;
+        acceleration.compliant_acceleration_spring=true;
+        acceleration.restitution=-70.0f;
+        acceleration.damping=4.0f;
+        const auto mixed=inspect(hard,force);
+        if(mixed.restitution!=-120.0f || mixed.damping!=9.0f ||
+           mixed.acceleration_spring)
+            throw std::runtime_error(
+                "PxsMaterialCombiner did not give compliant material priority");
+        const auto mixed_reverse=inspect(force,hard);
+        if(mixed_reverse.restitution!=-120.0f ||
+           mixed_reverse.damping!=9.0f)
+            throw std::runtime_error(
+                "Mixed compliant material combination depends on body order");
+        const auto fast_spring=inspect(force,acceleration);
+        if(fast_spring.restitution!=-70.0f || fast_spring.damping!=4.0f ||
+           !fast_spring.acceleration_spring)
+            throw std::runtime_error(
+                "PxsMaterialCombiner acceleration-spring priority missing");
+        const auto reversed=inspect(acceleration,force);
+        if(reversed.restitution!=-70.0f || reversed.damping!=4.0f ||
+           !reversed.acceleration_spring)
+            throw std::runtime_error(
+                "Acceleration-spring priority depends on body order");
+        Material multiplication=force;
+        multiplication.restitution=-3.0f;
+        multiplication.damping=2.0f;
+        multiplication.restitution_combine=MaterialCombineMode::Multiply;
+        multiplication.damping_combine=MaterialCombineMode::Maximum;
+        const auto multiplied=inspect(multiplication,force);
+        if(multiplied.restitution!=-360.0f ||
+           multiplied.damping!=9.0f)
+            throw std::runtime_error(
+                "PxsMaterialCombiner lost negative spring stiffness in multiply");
+        // Damping must be disabled for a separated, non-closing spring
+        // contact, even when a material authors a substantial damper.
+        const auto not_yet_colliding=inspect(hard,force,0.525f);
+        if(not_yet_colliding.restitution!=-120.0f)
+            throw std::runtime_error(
+                "Separated compliant contact was not correlated");
+        const auto ordinary=inspect(hard,hard);
+        if(ordinary.restitution!=0.8f)
+            throw std::runtime_error(
+                "Ordinary material preparation regressed");
+    }
     static void verify_zero_capped_stream_compaction() {
         Scene scene;
         const auto floor=scene.add_static_floor(0.0f);
@@ -6976,6 +7096,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
+    fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
