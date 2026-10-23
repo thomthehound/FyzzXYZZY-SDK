@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Vulkan development packages
         run: bash .github/scripts/install-vulkan.sh
       - name: Install DXC for shared PhysX HLSL to SPIR-V
@@ -48,7 +48,7 @@ jobs:
           echo "toolchain=ubuntu-${VERSION_ID}-gcc-$(c++ -dumpfullversion -dumpversion)" >> "$GITHUB_OUTPUT"
       - name: Restore compiled godot-cpp
         id: godot_cpp_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
@@ -85,7 +85,7 @@ jobs:
           find build/_deps/fyzzxyzzy_godot_cpp-build -type f -name '*.o' -print -quit | grep -q .
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
@@ -164,7 +164,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Find Windows SDK DXC
         shell: pwsh
         run: |
@@ -188,7 +188,7 @@ jobs:
           "toolchain=$($env:ImageOS)-msvc-$($toolset.Name)" >> $env:GITHUB_OUTPUT
       - name: Restore compiled godot-cpp
         id: godot_cpp_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
@@ -236,7 +236,7 @@ jobs:
           }
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
@@ -294,7 +294,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Vulkan SDK
         run: bash .github/scripts/install-vulkan.sh
       - name: Configure without external source or network
@@ -313,7 +313,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Configure without external source or network
         shell: pwsh
         run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
