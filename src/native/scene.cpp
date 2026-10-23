@@ -3984,7 +3984,7 @@ void Scene::solve_constraints() {
                         // expression without invoking std::clamp on
                         // negative, unordered compliant patch bounds.
                         const double next=source_contact_friction_limit(
-                            candidate,max_static,max_dynamic);
+                            candidate,max_dynamic,clamped);
                         const double delta=next-fr.applied_force;
                         const double da=delta*a.data.inverse_mass;
                         const double db=delta*b.data.inverse_mass;

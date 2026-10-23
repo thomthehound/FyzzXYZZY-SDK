@@ -21,8 +21,8 @@ namespace fyzz::native {
 // when a compliant spring makes maxDyn negative. This belongs to the
 // production solver's source math, not a second test-only solver.
 inline double source_contact_friction_limit(
-    double candidate,double max_static,double max_dynamic) noexcept {
-    return std::abs(candidate)>max_static
+    double candidate,double max_dynamic,bool saturated) noexcept {
+    return saturated
         ? std::min(max_dynamic,std::max(-max_dynamic,candidate))
         : candidate;
 }

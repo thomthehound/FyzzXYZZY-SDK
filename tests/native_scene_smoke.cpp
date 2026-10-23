@@ -166,12 +166,12 @@ struct ContactCorrelationSourceFixture {
         // These are numerical source invariants of the SAME inline
         // expression used in the production PGS solve.
         const auto source_limit=source_contact_friction_limit;
-        if(source_limit(0.0,-0.25,-0.125)!=-0.125 ||
-           source_limit(0.75,-0.25,-0.125)!=-0.125 ||
-           source_limit(-0.75,-0.25,-0.125)!=-0.125 ||
-           source_limit(0.1,0.25,0.125)!=0.1 ||
-           source_limit(0.75,0.25,0.125)!=0.125 ||
-           source_limit(-0.75,0.25,0.125)!=-0.125)
+        if(source_limit(0.0,-0.125,true)!=-0.125 ||
+           source_limit(0.75,-0.125,true)!=-0.125 ||
+           source_limit(-0.75,-0.125,true)!=-0.125 ||
+           source_limit(0.1,0.125,false)!=0.1 ||
+           source_limit(0.75,0.125,true)!=0.125 ||
+           source_limit(-0.75,0.125,true)!=-0.125)
             throw std::runtime_error(
                 "Production Dy signed friction limiter diverges from original FMin/FMax");
         bool saw_signed=false;
