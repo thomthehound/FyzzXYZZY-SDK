@@ -149,6 +149,7 @@ BodyId Scene::add(Actor actor) {
     actor.alive = true;
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     actors_.push_back(actor);
+    if(dynamic_node)++live_dynamic_count_;
     dirty_ = true;
     // Static nodes belong to the shared world endpoint, not an island.
     // Their insertion changes SAP/Gu edges but not dynamic connectivity.
@@ -533,6 +534,7 @@ void Scene::remove(BodyId id) {
         partner.sleep_angular_acc={};
     }
     actor.alive = false;
+    if(dynamic_node)--live_dynamic_count_;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
 }
@@ -2381,6 +2383,8 @@ void Scene::activate_published_islands() noexcept {
             append(speculative_islands_,pair.b);
             append(accurate_islands_,pair.a);
             append(accurate_islands_,pair.b);
+            step_checkpoint_.save_motion(*this,pair.a);
+            step_checkpoint_.save_motion(*this,pair.b);
             actors_[pair.a].activating=true;
             actors_[pair.b].activating=true;
         }
@@ -2390,6 +2394,7 @@ void Scene::activate_published_islands() noexcept {
             if(!dynamic_node(id))continue;
             append(accurate_islands_,id);
             append(speculative_islands_,id);
+            step_checkpoint_.save_motion(*this,id);
             actors_[id].activating=true;
             actors_[id].ready_for_sleep=false;
         }
@@ -2417,6 +2422,7 @@ void Scene::activate_published_islands() noexcept {
         for(BodyId id=graph.islands[owner].root;id!=invalid;
             id=graph.node_next[id]) {
             Actor& body=actors_[id];
+            step_checkpoint_.save_motion(*this,id);
             body.activating=false;
             if(body.sleeping) {
                 // A speculative-only edge can wake accurate components
@@ -2524,6 +2530,7 @@ void Scene::deactivate_ready_islands() noexcept {
             node=accurate_islands_.node_next[node]) {
             Actor& actor=actors_[node];
             if(actor.sleeping)continue;
+            step_checkpoint_.save_motion(*this,node);
             accurate_islands_.nodes_to_deactivate.push_back(node);
             // ScBodySim::deactivate clears velocities and pending motion.
             // The surviving Gu contact managers are not retired here.
@@ -4354,9 +4361,24 @@ void Scene::publish_solver_bodies() {
                 i[1].z*angular_state.y + i[2].z*angular_state.z};
         if (!finite(linear) || !finite(angular))
             throw std::overflow_error("Native solver publication is not finite");
+        step_checkpoint_.save_motion(*this,id);
         actor.velocity = linear;
         actor.angular_velocity = angular;
     }
+}
+void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
+    if(!includes_solver_state || !scene.activity_checkpoint_active_)return;
+    if(scene.motion_undo_generations_[id]==scene.motion_undo_generation_)
+        return;
+    const Actor& body=scene.actors_[id];
+    if(!body.alive || body.kind!=Kind::DynamicBox)return;
+    scene.motion_undo_generations_[id]=scene.motion_undo_generation_;
+    // capture() already reserved one record for each live dynamic body;
+    // neither a speculative wake nor source deactivation can allocate.
+    motions.push_back({id,body.position,body.velocity,body.angular_velocity,
+        body.orientation,body.pending_angular_velocity_delta,
+        body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
+        body.ready_for_sleep,body.sleeping,body.activating});
 }
 void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
     // Entries are recorded immediately before mutation. Multiple writes
@@ -4464,6 +4486,18 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     motions.clear();
+    if(capture_solver_state) {
+        // Activation can reach actors outside the previous active list.
+        // Reserve before entering the noexcept island publication, then
+        // journal each mutated dynamic body at most once this frame.
+        if(++scene.motion_undo_generation_==0) {
+            std::fill(scene.motion_undo_generations_.begin(),
+                      scene.motion_undo_generations_.end(),0);
+            scene.motion_undo_generation_=1;
+        }
+        scene.motion_undo_generations_.resize(scene.actors_.size(),0);
+        motions.reserve(scene.live_dynamic_count_);
+    }
     // Source EdgeInstance writes are journaled only when the contact
     // manager graph actually changes. Snapshotting the slot watermark
     // would duplicate every historical intrusive edge four times on
@@ -4515,15 +4549,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
     if(capture_solver_state) {
-        for(std::size_t id=0;id<scene.actors_.size();++id) {
-            const auto& a=scene.actors_[id];
-            if(!a.alive || a.kind!=Kind::DynamicBox)continue;
-            motions.push_back({static_cast<BodyId>(id),
-                a.position,a.velocity,a.angular_velocity,a.orientation,
-                a.pending_angular_velocity_delta,a.wake_counter,
-                a.sleep_linear_acc,a.sleep_angular_acc,
-                a.ready_for_sleep,a.sleeping,a.activating});
-        }
         friction_patches.assign(scene.friction_patches_.begin(),
                                 scene.friction_patches_.end());
         quiet_manifold_metadata.clear();
@@ -5007,6 +5032,7 @@ void Scene::step(float seconds) {
         const Vec3 velocity{vx, vy, vz};
         if (!finite(velocity) || !finite(angular))
             throw std::overflow_error("Native CPU unconstrained velocity overflow");
+        step_checkpoint_.save_motion(*this,accurate_island_nodes_[index]);
         actor.velocity = velocity;
         actor.angular_velocity = angular;
         actor.pending_angular_velocity_delta = {};
@@ -5093,6 +5119,7 @@ void Scene::step(float seconds) {
                 actor.orientation, motion_angular, seconds);
             if (!finite(q))
                 throw std::overflow_error("Native CPU orientation overflow");
+            step_checkpoint_.save_motion(*this,id);
             actor.position = p;
             actor.orientation = q;
             // DySleep.cpp::updateWakeCounter (default scene, without

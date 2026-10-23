@@ -341,6 +341,10 @@ public:
     std::size_t edge_rollback_journal_size() const noexcept {
         return step_checkpoint_.edge_undo.size();
     }
+    // Number of actor motions recorded by the previous step checkpoint.
+    std::size_t motion_rollback_journal_size() const noexcept {
+        return step_checkpoint_.motions.size();
+    }
     // Read the existing accurate-node batch boundaries without exposing
     // transient solver arrays or allocating diagnostic copies.
     // Dy::DynamicsContext::iterateIslandsNodes receives only currently
@@ -720,6 +724,9 @@ private:
         std::vector<std::uint32_t> active_reference_counts;
     };
     IslandGraph speculative_islands_, accurate_islands_;
+    // Bound the noexcept motion journal by living rigid actors rather
+    // than the historical BodyId watermark that includes retired actors.
+    std::size_t live_dynamic_count_=0;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
     // active-island node sequence. These are existing actor identifiers,
     // not a duplicated actor or solver-body registry.
@@ -937,6 +944,7 @@ private:
         bool authored_activation_pending=false;
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
+        void save_motion(Scene& scene, BodyId id) noexcept;
         void save_edge(const Scene& scene, EdgeIndex id);
         void save_activity(Scene& scene, EdgeIndex id) noexcept;
         void save_reference(Scene& scene, BodyId node) noexcept;
@@ -947,6 +955,8 @@ private:
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;
+    std::vector<std::uint64_t> motion_undo_generations_;
+    std::uint64_t motion_undo_generation_=0;
     // Only changed EdgeIndex states are journaled for frame rollback.
     std::vector<std::uint64_t> activity_undo_generations_;
     std::uint64_t activity_undo_generation_=0;

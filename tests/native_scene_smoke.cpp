@@ -2817,6 +2817,74 @@ void verify_island_contact_manager_order() {
 // The source graph's rollback ownership is a cold-path concern. Steady
 // PGS steps may update active-node publication and motion, but must not
 // copy every persistent island node/handle array when no topology changes.
+void verify_sparse_motion_checkpoint() {
+    using namespace fyzz;
+    using namespace fyzz::native;
+    constexpr float dt=1.0f/120.0f;
+    // Retired BodyIds remain allocated for stable identity. They must
+    // not force historical actor scans or motion copies in every frame.
+    Scene history;
+    for(unsigned i=0;i<512;++i) {
+        const auto id=history.add_dynamic_box(
+            {0.2f,0.2f,0.2f},{float(i)*3.0f,3.0f,0},1.0f);
+        history.remove(id);
+    }
+    const auto live=history.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,3,0},1.0f);
+    RigidBodyDynamics without_gravity{};
+    without_gravity.gravity_enabled=false;
+    history.set_dynamics(live,without_gravity);
+    history.step(dt);
+    expect(history.motion_rollback_journal_size()==1,
+           "Retired rigid bodies expanded the per-step motion checkpoint");
+    history.step(dt);
+    expect(history.motion_rollback_journal_size()==1,
+           "Quiet free-flight frame copied more than its active body");
+
+    // A dormant scene needs no motion records. A newly admitted body
+    // can subsequently wake an old sleeping neighbor, and both bodies
+    // must roll back to their pre-step states if contact preparation fails.
+    Scene wakes;
+    const auto floor=wakes.add_static_floor(0.0f);
+    const auto sleeper=wakes.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+    for(int i=0;i<360;++i)wakes.step(dt);
+    expect(wakes.body_is_sleeping(sleeper),
+           "Sparse motion checkpoint fixture did not reach source sleep");
+    wakes.step(dt);
+    expect(wakes.motion_rollback_journal_size()==0,
+           "Dormant island unnecessarily copied rigid-body motion");
+    const auto newcomer=wakes.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.4f,0.49f,0},1.0f);
+    const auto sleeping_before=wakes.body_state(sleeper);
+    const auto newcomer_before=wakes.body_state(newcomer);
+    Material exploding{};
+    exploding.static_friction=1.0e30f;
+    exploding.dynamic_friction=1.0e30f;
+    exploding.friction_combine=MaterialCombineMode::Multiply;
+    wakes.set_material(floor,exploding);
+    wakes.set_material(newcomer,exploding);
+    bool rejected=false;
+    try {wakes.step(dt);}
+    catch(const std::overflow_error&) {rejected=true;}
+    const auto sleeping_after=wakes.body_state(sleeper);
+    const auto newcomer_after=wakes.body_state(newcomer);
+    expect(rejected && wakes.motion_rollback_journal_size()==2 &&
+           sleeping_after.sleeping==sleeping_before.sleeping &&
+           sleeping_after.position.x==sleeping_before.position.x &&
+           sleeping_after.position.y==sleeping_before.position.y &&
+           newcomer_after.position.x==newcomer_before.position.x &&
+           newcomer_after.position.y==newcomer_before.position.y &&
+           newcomer_after.velocity.y==newcomer_before.velocity.y,
+           "Failed PGS admission lost the sparse source wake/motion rollback");
+    wakes.set_material(floor,Material{});
+    wakes.set_material(newcomer,Material{});
+    wakes.step(dt);
+    expect(!wakes.body_is_sleeping(sleeper) &&
+           wakes.motion_rollback_journal_size()==2,
+           "Retried new-contact wake did not journal both mutated rigid bodies");
+}
+
 void verify_demand_driven_island_ownership_checkpoint() {
     using fyzz::native::Scene;
     Scene quiet;
@@ -7754,6 +7822,7 @@ int run_native_scene_smoke() {
     verify_source_contact_interaction_consumption();
     verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
+    verify_sparse_motion_checkpoint();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
