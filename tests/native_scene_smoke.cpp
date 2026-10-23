@@ -1369,6 +1369,37 @@ void verify_source_contact_interaction_consumption() {
     expect(!scene.contact_interaction_active(floor_a) &&
            scene.active_contact_interaction_count()==0,
            "Destroyed source overlap retained stale Sc interaction activity");
+
+    // A rejected frame can discover a NEW contact-manager EdgeIndex,
+    // activate its speculative interaction, then throw in Dy. Rollback
+    // must not publish either the new manager or the interaction count;
+    // retry must admit the same logical contact exactly once.
+    Scene admission;
+    const auto wall=admission.add_static_box(
+        {0.5f,0.5f,0.5f},{0,0.5f,0});
+    const auto box=admission.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{5,0.5f,0},1.0f);
+    const fyzz::native::Pair new_pair{
+        std::min(wall,box),std::max(wall,box)};
+    admission.advance_collision();
+    expect(admission.active_contact_interaction_count()==0 &&
+           !admission.contact_interaction_active(new_pair),
+           "Sc new-contact rollback fixture started with active interaction");
+    admission.set_position(box,{0.9f,0.5f,0});
+    bool admission_failed=false;
+    try {admission.step(std::numeric_limits<float>::max());}
+    catch(const std::overflow_error&) {admission_failed=true;}
+    expect(admission_failed &&
+           admission.active_contact_interaction_count()==0 &&
+           !admission.contact_interaction_active(new_pair) &&
+           admission.contact_edge_index(new_pair)==
+               std::numeric_limits<std::uint32_t>::max(),
+           "Failed first-touch frame published Sc interaction prematurely");
+    admission.advance_collision();
+    expect(admission.active_contact_interaction_count()==1 &&
+           admission.contact_interaction_active(new_pair) &&
+           admission.speculative_contact_edge_active(new_pair),
+           "Retried first-touch failed to consume source edge activation");
 }
 
 void verify_source_active_reference_lifecycle() {
@@ -1518,6 +1549,7 @@ void verify_source_retired_bridge_deactivation() {
         expect(independent_sleep &&
                floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
                retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               retired_bridge.contact_interaction_active(floor_pair) &&
                !retired_bridge.accurate_contact_edge_active(floor_pair),
                "Retirement fixture did not establish independent island sleep");
         retired_bridge.remove(active_rod);
@@ -1525,6 +1557,7 @@ void verify_source_retired_bridge_deactivation() {
         const auto events=retired_bridge.deactivating_speculative_contact_edges();
         expect(retired_bridge.body_is_sleeping(sleeping_rod) &&
                !retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               !retired_bridge.contact_interaction_active(floor_pair) &&
                std::count(events.begin(),events.end(),floor_edge)==1 &&
                retired_bridge.deactivating_accurate_contact_edges().empty() &&
                prior_spec_count>0 &&
@@ -2619,6 +2652,8 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                        !distinct_sleep.accurate_contact_edge_active(
                            fyzz::native::Pair{rod_a,source_floor}) &&
                        distinct_sleep.speculative_contact_edge_active(
+                           fyzz::native::Pair{rod_a,source_floor}) &&
+                       distinct_sleep.contact_interaction_active(
                            fyzz::native::Pair{rod_a,source_floor}),
                        "Accurate sleep did not transition only its active edge");
                 expect(distinct_sleep.deactivating_speculative_contact_edges().empty(),
