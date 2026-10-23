@@ -3353,6 +3353,7 @@ void Scene::prepare_constraints(float seconds) {
            !(contact_edges_[edge].pair==manifold.pair))
             throw std::logic_error(
                 "Dy source manager preparation has a mismatched island edge");
+        manifold.prepared_friction_epoch=next_cache_epoch;
         // An inactive accurate island retains its Gu contact manager
         // but the source does not prepare or solve constraints for it.
         // Keep the Gu-indexed zero-impulse result slots without paying
@@ -4209,7 +4210,17 @@ void Scene::write_back_contacts() {
     // Preserve the Gu manager's patch offsets even when solver partitions
     // execute in a different order from the contact-manager stream.
     friction_impulse_writeback_.resize(friction_patches_.size());
-    for (const auto& manifold : manifolds_) {
+    for (auto& manifold : manifolds_) {
+        if(manifold.prepared_friction_epoch!=friction_cache_epoch_) {
+            // Inactive source managers retain Gu geometry, not old Dy
+            // descriptors. This Gu-indexed writeback already visits
+            // every manager, so reset the dormant metadata here instead
+            // of preparing every dormant contact in the solver hot path.
+            manifold.solver_offset=solver_contact_points_.size();
+            manifold.friction_patch_offset=friction_patches_.size();
+            manifold.friction_patch_count=0;
+            manifold.prepared_friction_epoch=friction_cache_epoch_;
+        }
         if (manifold.contact_offset > contact_points_.size() ||
             manifold.count > contact_points_.size()-manifold.contact_offset)
             throw std::logic_error(
@@ -4624,7 +4635,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
             for(const auto& manifold:scene.manifolds_)
                 quiet_manifold_metadata.push_back({
                     manifold.solver_offset,manifold.friction_patch_offset,
-                    manifold.friction_patch_count});
+                    manifold.friction_patch_count,
+                    manifold.prepared_friction_epoch});
         }
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
@@ -4880,6 +4892,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             manifold.solver_offset=prior.solver_offset;
             manifold.friction_patch_offset=prior.friction_patch_offset;
             manifold.friction_patch_count=prior.friction_patch_count;
+            manifold.prepared_friction_epoch=prior.prepared_friction_epoch;
         }
     }
     // The pre-step friction cache remains in the other source-owned
