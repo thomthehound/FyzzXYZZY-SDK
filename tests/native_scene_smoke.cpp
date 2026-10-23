@@ -158,8 +158,117 @@ struct SolverIterationSourceFixture {
            scene.solver_tasks_[1].position_iterations!=5)
             throw std::runtime_error(
                 "Per-task source iteration maxima did not persist across steps");
+        // Both bodies in the second task request ZERO velocity passes.
+        // This must remain zero in the authoritative Dy task maximum,
+        // while the solver still performs its final velocity/writeback
+        // solve. An unrelated 3-velocity request in task 0 must not
+        // promote the second task's source count.
+        RigidBodyDynamics zero{};
+        zero.velocity_iterations=0;
+        zero.position_iterations=5;
+        scene.set_dynamics(static_cast<BodyId>(bodies-1),zero);
+        scene.set_dynamics(static_cast<BodyId>(bodies),zero);
+        scene.step(1.0f/120.0f);
+        if(scene.solver_tasks_.size()!=2 ||
+           scene.solver_tasks_[0].velocity_iterations!=3 ||
+           scene.solver_tasks_[1].velocity_iterations!=0 ||
+           scene.solver_tasks_[1].position_iterations!=5 ||
+           scene.solver_tasks_[1].constraint_end!=bodies)
+            throw std::runtime_error(
+                "Zero requested source velocity count leaked across task boundary");
+        const auto forces=scene.solved_normal_impulses();
+        const auto contacts=scene.contacts();
+        std::size_t last_task_contacts=0;
+        double last_task_force=0.0;
+        for(const auto& manager:contacts) {
+            if(manager.pair.b<bodies-1)continue;
+            ++last_task_contacts;
+            for(std::size_t j=0;j<manager.count;++j)
+                last_task_force+=forces[manager.contact_offset+j];
+        }
+        if(last_task_contacts!=2 || !std::isfinite(last_task_force) ||
+           last_task_force<=0.0)
+            throw std::runtime_error(
+                "Zero-velocity task omitted the mandatory final contact writeback");
     }
 };
+}
+
+void verify_source_zero_velocity_iteration_request() {
+    using namespace fyzz;
+    using fyzz::native::Scene;
+    constexpr float dt=1.0f/120.0f;
+    const auto near=[](float a,float b,float epsilon=2.0e-5f) {
+        return std::isfinite(a) && std::isfinite(b) &&
+               std::abs(a-b)<=epsilon;
+    };
+    const auto equivalent=[&](const BodyState& a,const BodyState& b) {
+        return near(a.position.x,b.position.x) &&
+               near(a.position.y,b.position.y) &&
+               near(a.position.z,b.position.z) &&
+               near(a.velocity.x,b.velocity.x) &&
+               near(a.velocity.y,b.velocity.y) &&
+               near(a.velocity.z,b.velocity.z) &&
+               near(a.angular_velocity.x,b.angular_velocity.x) &&
+               near(a.angular_velocity.y,b.angular_velocity.y) &&
+               near(a.angular_velocity.z,b.angular_velocity.z);
+    };
+    // A real contact with closing speed and restitution is decisive:
+    // skipping the mandatory final velocity/writeback pass must
+    // change the published state. A free-flight-only comparison would
+    // not distinguish the source's zero/one velocity-iteration rule.
+    struct ContactStep {
+        BodyState body;
+        double normal_impulse=0;
+    };
+    const auto native=[&](std::uint8_t vel_iterations) {
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+        RigidBodyDynamics d{};
+        d.position_iterations=1;
+        d.velocity_iterations=vel_iterations;
+        scene.set_dynamics(box,d);
+        scene.set_velocity(box,{0.35f,-4.0f,0.0f});
+        scene.step(dt);
+        double impulse=0.0;
+        for(const double value:scene.solved_normal_impulses())
+            impulse+=value;
+        return ContactStep{scene.body_state(box),impulse};
+    };
+    const auto zero=native(0), one=native(1);
+    if(!equivalent(zero.body,one.body) ||
+       !std::isfinite(zero.normal_impulse) ||
+       zero.normal_impulse<=0 ||
+       std::abs(zero.normal_impulse-one.normal_impulse)>1.0e-6)
+        throw std::runtime_error(
+            "Source zero velocity iterations must execute final PGS/writeback");
+
+    const auto public_body=[&](ExecutionMode mode,
+                              std::uint8_t vel_iterations) {
+        World world(WorldOptions{mode});
+        world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+        RigidBodyDynamics d{};
+        d.position_iterations=1;
+        d.velocity_iterations=vel_iterations;
+        world.set_body_dynamics(box,d);
+        world.set_body_velocity(box,{0.35f,-4.0f,0.0f});
+        world.step(dt);
+        return world.body_state(box);
+    };
+    if(!equivalent(public_body(ExecutionMode::NativeCpu,0),
+                   public_body(ExecutionMode::NativeCpu,1)))
+        throw std::runtime_error(
+            "World NativeCpu rejected or skipped zero requested velocity passes");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    if(!equivalent(public_body(ExecutionMode::ReferencePhysXCpuLegacyGu,0),
+                   public_body(ExecutionMode::ReferencePhysXCpuLegacyGu,1)))
+        throw std::runtime_error(
+            "Reference PhysX CPU zero/one velocity iteration contract changed");
+#endif
 }
 
 void verify_source_body_dynamics_api() {
@@ -6234,6 +6343,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
+    verify_source_zero_velocity_iteration_request();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
