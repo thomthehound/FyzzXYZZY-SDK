@@ -140,12 +140,22 @@ struct ContactCorrelationSourceFixture {
         const auto old_threshold_epoch=scene.threshold_cache_epoch_;
         const auto old_frame=scene.frame_index();
         scene.step_checkpoint_.capture(scene);
-        // Execute the real correlation and force-threshold algorithms.
+        // The capture moves the previous indexed-manager and active-batch
+        // arrays into undo storage. Recreate this frame's REAL source
+        // task input before probing the ordinary correlation/force
+        // stages; otherwise the test would correlate zero managers.
+        scene.prepare_active_accurate_island_batches();
+        scene.prepare_solver_bodies();
+        scene.partition_constraints();
+        if(scene.indexed_managers_.size()!=1)
+            throw std::runtime_error(
+                "Quiet cache fixture did not rebuild the active PhysX manager");
         scene.prepare_constraints(dt);
         if(scene.step_checkpoint_.quiet_manifold_metadata.size()!=1 ||
-           scene.step_checkpoint_.quiet_manifold_metadata[0].index!=0)
+           scene.step_checkpoint_.quiet_manifold_metadata[0].index!=
+               scene.indexed_managers_[0])
             throw std::runtime_error(
-                "Quiet rollback copied entire Gu history instead of one mutated Dy manager");
+                "Quiet rollback failed to journal the single mutated Dy manager");
         // A collision-only publication deliberately clears solver
         // writeback. Feed the actual preceding solved impulses into
         // this isolated threshold-stage transaction.
