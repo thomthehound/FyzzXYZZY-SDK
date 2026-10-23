@@ -1261,6 +1261,94 @@ void verify_source_active_island_handoff() {
     (void)floor;
 }
 
+void verify_source_mixed_split_and_sleep_order() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene scene;
+    // Admit the eventually awake root FIRST so a lost SAP-only bridge
+    // detaches the already-sleeping second rod as a new island handle.
+    // PxsIslandSim::split_lost_island appends that handle after an
+    // unrelated, independently ready island's active handle.
+    const auto awake=scene.add_dynamic_box(
+        {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+    const auto dormant=scene.add_dynamic_box(
+        {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+    for(const auto id:{awake,dormant}) {
+        scene.set_velocity(id,{0,9.81f,0});
+        scene.set_angular_velocity(id,{0,0.83f,0});
+    }
+    scene.step(1.0f);
+    for(const auto id:{awake,dormant}) {
+        scene.set_angular_velocity(id,{});
+        scene.set_velocity(id,{});
+    }
+    scene.set_position(awake,{0.6f,0.1f,0.6f});
+    scene.set_position(dormant,{0,0.1f,0});
+    const auto floor=scene.add_static_floor(0.0f);
+    scene.advance_collision();
+    expect(has(scene.pairs(),awake,dormant) &&
+           scene.accurate_island_count()==2 &&
+           scene.speculative_island_count()==1,
+           "Mixed source sleep fixture lacks its SAP-only bridge");
+    bool dormant_ready=false;
+    for(int frame=0;frame<160;++frame) {
+        scene.set_velocity(awake,{0,0,0.25f});
+        scene.step(1.0f/120.0f);
+        if(scene.body_is_sleeping(dormant) &&
+           !scene.body_is_sleeping(awake) &&
+           scene.speculative_island_count()==1) {
+            dormant_ready=true;
+            break;
+        }
+    }
+    expect(dormant_ready,
+           "Mixed source fixture could not sleep one SAP-only endpoint");
+    const auto independent=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{30,0.5f,0},1.0f);
+    const Pair dormant_floor{dormant,floor};
+    const Pair independent_floor{independent,floor};
+    bool third_pass_ready=false;
+    for(int frame=0;frame<150;++frame) {
+        scene.set_velocity(awake,{0,0,0.25f});
+        scene.step(1.0f/120.0f);
+        if(scene.body_ready_for_sleep(independent) &&
+           !scene.body_is_sleeping(independent)) {
+            third_pass_ready=true;
+            break;
+        }
+    }
+    expect(third_pass_ready && scene.body_is_sleeping(dormant) &&
+           !scene.body_is_sleeping(awake) &&
+           has(scene.pairs(),awake,dormant) &&
+           scene.speculative_contact_edge_active(dormant_floor) &&
+           scene.speculative_contact_edge_active(independent_floor),
+           "Mixed source fixture failed to stage simultaneous split and sleep");
+    const auto dormant_edge=scene.contact_edge_index(dormant_floor);
+    const auto independent_edge=scene.contact_edge_index(independent_floor);
+    expect(dormant_edge!=std::numeric_limits<std::uint32_t>::max() &&
+           independent_edge!=std::numeric_limits<std::uint32_t>::max(),
+           "Mixed source fixture lost its floor-manager source handles");
+    // This collision-only handoff must split the sleeping component
+    // while Dy's previously ready independent node deactivates.
+    // Source speculative reverse mActiveIslands visits the appended
+    // split handle BEFORE the still-indexed independent island.
+    scene.set_position(awake,{12,0.1f,12});
+    scene.advance_collision();
+    const auto events=scene.deactivating_speculative_contact_edges();
+    const auto a=std::find(events.begin(),events.end(),dormant_edge);
+    const auto b=std::find(events.begin(),events.end(),independent_edge);
+    expect(a!=events.end() && b!=events.end() && a<b &&
+           scene.body_is_sleeping(dormant) &&
+           scene.body_is_sleeping(independent) &&
+           scene.speculative_island_count()==3,
+           "Split sleeper lost its original reverse speculative active index");
+    scene.advance_collision();
+    expect(scene.deactivating_speculative_contact_edges().empty() &&
+           !scene.speculative_contact_edge_active(dormant_floor) &&
+           !scene.speculative_contact_edge_active(independent_floor),
+           "Mixed split/sleep replayed the one-shot speculative events");
+}
+
 void verify_source_speculative_reverse_sleep_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
@@ -5824,6 +5912,7 @@ int run_native_scene_smoke() {
     verify_source_retired_bridge_deactivation();
     verify_source_active_island_handoff();
     verify_source_speculative_reverse_sleep_order();
+    verify_source_mixed_split_and_sleep_order();
     verify_source_solver_task_batch_partitioning();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
