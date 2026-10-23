@@ -110,6 +110,65 @@ struct ContactCorrelationSourceFixture {
                     "Reused friction anchors used stale cached normal for tangent");
         }
     }
+    static void verify_zero_capped_stream_compaction() {
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto zero=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-3.0f,0.49f,0},1.0f);
+        const auto live=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3.0f,0.49f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.max_contact_impulse=0.0f;
+        scene.set_dynamics(zero,d);
+        constexpr float dt=1.0f/120.0f;
+        scene.step(dt);
+        if(scene.manifolds_.size()!=2 ||
+           scene.manifolds_[0].pair!=Pair{floor,zero} ||
+           scene.manifolds_[1].pair!=Pair{floor,live})
+            throw std::runtime_error(
+                "Source compact-zero fixture lost ordered Gu managers");
+        const auto first=scene.manifolds_[0];
+        const auto second=scene.manifolds_[1];
+        if(first.count<2 || second.count<2 ||
+           first.friction_patch_count!=0 ||
+           second.friction_patch_count==0 ||
+           first.solver_offset!=0 ||
+           second.solver_offset!=0 ||
+           scene.solver_contact_points_.size()!=second.count ||
+           scene.solver_contact_order_.size()!=second.count)
+            throw std::runtime_error(
+                "Zero-capped Gu manager allocated forbidden source Dy rows");
+        for(std::size_t j=0;j<first.count;++j)
+            if(scene.normal_impulse_writeback_[first.contact_offset+j]!=0)
+                throw std::runtime_error(
+                    "Zero-capped source Gu force buffer not explicitly zeroed");
+        double live_sum=0.0;
+        for(std::size_t j=0;j<second.count;++j)
+            live_sum+=scene.normal_impulse_writeback_[
+                second.contact_offset+j];
+        if(!(live_sum>0.0) || !scene.contact_edge_connected({floor,zero}))
+            throw std::runtime_error(
+                "Compacted source Dy rows lost later live Gu writeback or edge");
+        d.max_contact_impulse=std::numeric_limits<float>::max();
+        scene.set_dynamics(zero,d);
+        scene.step(dt);
+        if(scene.manifolds_.size()!=2 ||
+           scene.solver_contact_points_.size()!=
+               scene.manifolds_[0].count+scene.manifolds_[1].count)
+            throw std::runtime_error(
+                "Previously zero-capped source manager failed solver readmission");
+        d.max_contact_impulse=0.0f;
+        scene.set_dynamics(zero,d);
+        scene.step(dt);
+        if(scene.solver_contact_points_.size()!=scene.manifolds_[1].count)
+            throw std::runtime_error(
+                "Zero-cap retry retained stale source Dy rows");
+        for(std::size_t j=0;j<scene.manifolds_[0].count;++j)
+            if(scene.normal_impulse_writeback_[
+                scene.manifolds_[0].contact_offset+j]!=0)
+                throw std::runtime_error(
+                    "Zero-cap retry leaked prior frame impulse into Gu writeback");
+    }
 };
 }
 
@@ -419,7 +478,8 @@ void verify_source_rigid_contact_limits() {
     const auto capped=impulse_case(0.05f);
     const auto unrestricted=impulse_case(
         std::numeric_limits<float>::max());
-    if(!(capped.second>0.0 && capped.second<=0.2+1.0e-6 &&
+    if(!(capped.second>0.05+1.0e-5 &&
+         capped.second<=0.2+1.0e-6 &&
          unrestricted.second>capped.second*4.0 &&
          capped.first.velocity.y<unrestricted.first.velocity.y-1.0f))
         throw std::runtime_error(
@@ -6645,6 +6705,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_rigid_contact_limits();
