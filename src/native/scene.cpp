@@ -1638,6 +1638,12 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             graph.node_island[id]=handle;
             graph.node_next[id]=invalid;
             graph.node_prev[id]=invalid;
+            // Source addNode(isActive=true) queues the admitted rigid
+            // body for its graph's active-node publication. Admission
+            // already traverses actor IDs; avoid another whole-scene
+            // pass in every subsequent solver frame.
+            if(!actors_[id].sleeping)
+                graph.activating_nodes.push_back(id);
         }
     };
 
@@ -2319,6 +2325,11 @@ void Scene::activate_published_islands() noexcept {
             Actor& body=actors_[id];
             body.activating=false;
             if(body.sleeping) {
+                // A speculative-only edge can wake accurate components
+                // that have no newly found accurate contact. Propagate
+                // this genuine node activation into the accurate
+                // IslandSim's independently ordered mActivatingNodes.
+                append(accurate_islands_,id);
                 body.sleeping=false;
                 body.ready_for_sleep=false;
                 body.wake_counter=std::max(body.wake_counter,0.4f);
@@ -2574,13 +2585,10 @@ void Scene::synchronize_active_island_nodes() noexcept {
         }
     }
     graph.activating_nodes.clear();
-    for(BodyId id:accurate_island_nodes_) {
-        if(actors_[id].sleeping ||
-           graph.node_island[id]==IslandGraph::invalid ||
-           graph.active_node_index[id]!=invalid_instance)continue;
-        graph.active_node_index[id]=graph.active_nodes.size();
-        graph.active_nodes.push_back(id);
-    }
+    // Node admission, authored wakes, SAP edges, Gu contacts and
+    // speculative wake propagation all enqueue their source node once.
+    // No need to scan the complete accurate island-node inventory
+    // for previously dormant, unmodified bodies on every PGS step.
     // Original IslandSim::mActiveIslands / Island::mActiveIndex use
     // replace-with-last on a dormant island and append on activation.
     // Reconcile only the already-owned active rigid-node stream, never
