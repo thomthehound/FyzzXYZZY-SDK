@@ -125,6 +125,9 @@ public:
     // One noncompliant PxsMaterialData per currently admitted shape.
     // A material change is consumed by next native contact preparation.
     void set_material(BodyId id, Material material);
+    // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
+    // separate solver owner or scene-global parameter shadow.
+    void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
     // ScBodyCore/PxsBodyCore's authoritative counter and the
@@ -405,6 +408,7 @@ private:
         float inverse_mass = 0.0f;  // immutable cached derived body property
         float contact_report_threshold=std::numeric_limits<float>::max();
         Material material{};
+        RigidBodyDynamics dynamics{};
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.
         Vec3 inverse_inertia_local{};
@@ -932,6 +936,15 @@ private:
     // rigid-only default batches 128 bodies or until one contact exists.
     // Scratch boundaries only; source islands and Gu managers own data.
     std::vector<std::size_t> solver_task_manager_ends_;
+    // Serial lowering of DyDynamicsContext task chains. Iteration counts
+    // come from the MAXIMUM of each chain's active PxsBodyCore counts,
+    // and are never promoted to a scene-global maximum.
+    struct SolverTask {
+        std::size_t first_batch=0, batch_end=0;
+        std::size_t partition_end=0;
+        std::uint8_t position_iterations=0, velocity_iterations=0;
+    };
+    std::vector<SolverTask> solver_tasks_;
     struct IndexedManifold {
         std::size_t index=invalid_instance;
         std::uint64_t generation=0;
