@@ -4078,9 +4078,16 @@ void Scene::write_back_contacts() {
         for (std::size_t i=0;i<manifold.count;++i) {
             const double impulse=solver_contact_points_[
                 manifold.solver_offset+i].applied_force;
-            if (!std::isfinite(impulse) || impulse < 0.0)
+            // Source DySolverConstraintsShared::solveDynamicContacts
+            // clamps the compliant recurrence from above, but does NOT
+            // clamp it to zero after multiplying the previous impulse
+            // by a coefficient below one. DySolverConstraints::writeBackContact
+            // copies that signed PxReal force buffer without rejecting it.
+            // Reject only nonfinite state: clipping here or in the solver
+            // would replace the source's actual spring recurrence.
+            if (!std::isfinite(impulse))
                 throw std::overflow_error(
-                    "Native Dy contact writeback has invalid normal impulse");
+                    "Native Dy contact writeback has nonfinite normal impulse");
             normal_impulse_writeback_[manifold.contact_offset+i]=impulse;
         }
         if (manifold.friction_patch_offset>friction_patches_.size() ||
