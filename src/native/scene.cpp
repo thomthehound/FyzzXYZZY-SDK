@@ -3032,8 +3032,16 @@ void Scene::partition_constraints() {
     // A dynamic/static contact is then placed after that dynamic body's
     // last dynamic/dynamic partition, one static edge per partition.
     constexpr std::size_t partition_bits = 32;
-    constexpr std::size_t unassigned = SIZE_MAX;
-    constraint_partitions_.assign(manifolds_.size(), unassigned);
+    // Retry-safe generation labels avoid writing an unassigned
+    // sentinel to every retained dormant Gu manager on each PGS step.
+    constraint_partitions_.resize(manifolds_.size());
+    constraint_partition_stamps_.resize(manifolds_.size(),0);
+    if(++constraint_partition_generation_==0) {
+        std::fill(constraint_partition_stamps_.begin(),
+                  constraint_partition_stamps_.end(),0);
+        constraint_partition_generation_=1;
+    }
+    const auto partition_generation=constraint_partition_generation_;
     ordered_constraints_.clear();
     partition_ends_.clear();
     partition_cursors_.clear();
@@ -3184,6 +3192,7 @@ void Scene::partition_constraints() {
                 const std::size_t global_partition=
                     partition_base+local_partition;
                 constraint_partitions_[i]=global_partition;
+                constraint_partition_stamps_[i]=partition_generation;
                 next_partition_base=std::max(next_partition_base,
                                              global_partition+1);
             }
@@ -3199,7 +3208,8 @@ void Scene::partition_constraints() {
 
         for(std::size_t j=manager_begin;j<manager_end;++j) {
             const std::size_t i=indexed_managers_[j];
-            if(constraint_partitions_[i]!=unassigned)continue;
+            if(constraint_partition_stamps_[i]==partition_generation)
+                continue;
             const Pair pair=manifolds_[i].pair;
             const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
             const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
@@ -3218,6 +3228,7 @@ void Scene::partition_constraints() {
             const std::size_t global_partition=
                 partition_base+local_partition;
             constraint_partitions_[i]=global_partition;
+            constraint_partition_stamps_[i]=partition_generation;
             next_partition_base=std::max(next_partition_base,
                                          global_partition+1);
         }
@@ -3231,8 +3242,9 @@ void Scene::partition_constraints() {
     // input contact-manager order *within* each non-conflicting batch.
     std::size_t count=0;
     for (std::size_t i:indexed_managers_) {
+        if(constraint_partition_stamps_[i]!=partition_generation)
+            continue;
         const std::size_t p=constraint_partitions_[i];
-        if (p==unassigned) continue;
         if (p>=partition_ends_.size()) partition_ends_.resize(p+1,0);
         ++partition_ends_[p];
         ++count;
@@ -3250,9 +3262,10 @@ void Scene::partition_constraints() {
         partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
     ordered_constraints_.resize(count);
     for (std::size_t i:indexed_managers_) {
-        const std::size_t partition=constraint_partitions_[i];
-        if (partition!=unassigned)
+        if(constraint_partition_stamps_[i]==partition_generation) {
+            const std::size_t partition=constraint_partitions_[i];
             ordered_constraints_[partition_cursors_[partition]++]=i;
+        }
     }
 }
 
