@@ -430,6 +430,43 @@ void verify_source_rigid_contact_limits() {
         throw std::runtime_error(
             "Source zero maxContactImpulse did not omit Dy contact response");
 
+    // A dynamic/dynamic manager takes the SMALLER of the two per-body
+    // caps, independent of which actor is first in the canonical pair.
+    const auto dynamic_pair=[&](float lower_cap,float upper_cap) {
+        Scene scene;
+        const auto lower=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto upper=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1.49f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.max_contact_impulse=lower_cap;
+        scene.set_dynamics(lower,d);
+        d.max_contact_impulse=upper_cap;
+        scene.set_dynamics(upper,d);
+        scene.set_velocity(upper,{0,-3.0f,0});
+        scene.step(dt);
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].count<1)
+            throw std::runtime_error(
+                "Source two-body contact cap fixture lacks a live Gu pair");
+        double total=0.0;
+        for(std::size_t i=0;i<scene.contacts()[0].count;++i) {
+            const double impulse=scene.solved_normal_impulses()[
+                scene.contacts()[0].contact_offset+i];
+            if(!std::isfinite(impulse) || impulse<0 ||
+               impulse>std::min(lower_cap,upper_cap)+1.0e-6)
+                throw std::runtime_error(
+                    "Source two-body minimum contact cap not enforced per point");
+            total+=impulse;
+        }
+        return total;
+    };
+    const auto loose_pair=dynamic_pair(0.09f,0.07f);
+    const auto tight_pair=dynamic_pair(0.02f,0.09f);
+    if(!(loose_pair>tight_pair && tight_pair>0.0))
+        throw std::runtime_error(
+            "Source dynamic pair did not apply minimum body contact cap");
+
     // Source penBiasClamp is NEGATIVE maxDepenetrationVelocity.
     // Under deep penetration, limiting either actor must limit biased
     // position motion, without clamping the ordinary final velocity.
