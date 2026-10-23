@@ -1165,6 +1165,33 @@ void verify_source_contact_notification_world() {
                 event.contact_count==0))
                 throw std::runtime_error(
                     "Sc contact notification has invalid Gu/Dy force fields");
+            // Original PxContactPair::extractContacts publishes real
+            // per-point geometry and its ordered normal-force slots.
+            const auto points=world.contact_event_points();
+            if(event.point_offset>points.size() ||
+               event.contact_count>points.size()-event.point_offset ||
+               points.size()!=event.contact_count)
+                throw std::runtime_error(
+                    "Sc touch event did not preserve per-point report range");
+            double sum=0.0;
+            for(std::size_t i=0;i<event.contact_count;++i) {
+                const auto& point=points[event.point_offset+i];
+                const auto finite=[](Vec3 v) {
+                    return std::isfinite(v.x) &&
+                           std::isfinite(v.y) && std::isfinite(v.z);
+                };
+                if(!finite(point.position) || !finite(point.normal) ||
+                   !std::isfinite(point.separation) ||
+                   !std::isfinite(point.normal_impulse))
+                    throw std::runtime_error(
+                        "Sc event point geometry or force is nonfinite");
+                sum+=point.normal_impulse;
+            }
+            if(std::abs(sum-event.normal_impulse)>1.0e-6*
+               std::max({1.0,std::abs(sum),
+                         std::abs(event.normal_impulse)}))
+                throw std::runtime_error(
+                    "Sc event point impulses disagree with original force buffer");
         };
         if(!world.contact_events().empty())
             throw std::runtime_error(
@@ -1198,7 +1225,8 @@ void verify_source_contact_notification_world() {
         const auto dynamic_body=disabled.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
         disabled.step(dt);
-        if(!disabled.contact_events().empty())
+        if(!disabled.contact_events().empty() ||
+           !disabled.contact_event_points().empty())
             throw std::runtime_error(
                 "Default PxDefaultSimulationFilterShader emitted opt-in touch event");
         (void)static_body;
@@ -1220,6 +1248,9 @@ void verify_source_contact_notification_world() {
             throw std::runtime_error(
                 "Native source touch event baseline not published");
         const auto* const old_storage=scene.contact_events().data();
+        const auto* const old_point_storage=
+            scene.contact_event_points().data();
+        const auto old_point=scene.contact_event_points()[0];
         const auto old=scene.contact_events()[0];
         // Reuse original admission failure already tested for materials:
         // eMULTIPLY 1e30*1e30 overflows PxsMaterialCombiner's PxReal.
@@ -1234,6 +1265,10 @@ void verify_source_contact_notification_world() {
         catch(const std::overflow_error&) {threw=true;}
         const auto published=scene.contact_events();
         if(!threw || published.data()!=old_storage ||
+           scene.contact_event_points().data()!=old_point_storage ||
+           scene.contact_event_points()[0].normal_impulse!=
+               old_point.normal_impulse ||
+           scene.contact_event_points()[0].separation!=old_point.separation ||
            published.size()!=1 ||
            published[0].body0!=old.body0 ||
            published[0].body1!=old.body1 ||
@@ -1245,7 +1280,9 @@ void verify_source_contact_notification_world() {
         scene.set_material(box,Material{});
         scene.step(dt);
         if(scene.contact_events().size()!=1 ||
-           scene.contact_events()[0].kind!=ContactEventKind::Persists)
+           scene.contact_events()[0].kind!=ContactEventKind::Persists ||
+           scene.contact_events()[0].contact_count!=
+               scene.contact_event_points().size())
             throw std::runtime_error(
                 "Source touch event publication did not recover on retry");
     }
