@@ -7057,20 +7057,23 @@ int run_native_scene_smoke() {
         expect(std::abs(disabled.first-0.2f)<0.002f &&
                disabled.second==0.0,
                "PxsMaterial flag eDISABLE_FRICTION did not suppress tangent rows");
-        Scene invalid;
-        const auto box=invalid.add_dynamic_box(
+        Scene spring_scene;
+        const auto spring_box=spring_scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,2,0},1.0f);
         Material compliant{};
         compliant.restitution=-0.1f;
+        spring_scene.set_material(spring_box,compliant);
+        Material invalid=compliant;
+        invalid.damping=-1.0f;
         bool refused=false;
-        try {invalid.set_material(box,compliant);}
+        try {spring_scene.set_material(spring_box,invalid);}
         catch(const std::invalid_argument&) {refused=true;}
         expect(refused,
-               "Unimplemented source compliant-spring material was silently admitted");
+               "Negative damping was admitted into compliant spring material");
     }
-    // PxsCombineMaterials' restitution mode uses the higher-precedence
-    // mode independently of the friction mode. Keep both rigid inputs
-    // nonnegative: compliant springs are a separate Dy solver branch.
+    // For ordinary nonnegative restitution, PxsCombineMaterials'
+    // restitution mode uses the higher-precedence combine mode
+    // independently of the friction mode.
     {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
@@ -7132,11 +7135,13 @@ int run_native_scene_smoke() {
         expect(std::abs(world.body_state(box).velocity.x-0.3f)<0.002f,
                "Public World noncompliant material authoring missed native solver");
         surface.restitution=-0.2f;
+        world.set_body_material(box,surface);
+        surface.damping=-1.0f;
         bool invalid=false;
         try{world.set_body_material(box,surface);}
         catch(const std::invalid_argument&){invalid=true;}
         expect(invalid,
-               "Public World accepted unsupported compliant-source material");
+               "Public World accepted negative compliant damping");
     }
 
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
