@@ -618,6 +618,11 @@ private:
     // to avoid an O(all islands) scan or post-commit allocations.
     std::vector<std::uint32_t> speculative_sleep_seen_;
     std::uint32_t speculative_sleep_visit_stamp_=0;
+    // Source processLostEdges can make a formerly awake speculative
+    // island entirely inactive merely by disconnecting its last awake
+    // member. Retain both resulting roots as third-pass candidates;
+    // no duplicate actor registry or speculative-wide sleep scan.
+    std::vector<BodyId> speculative_split_sleep_candidates_;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
