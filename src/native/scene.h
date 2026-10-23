@@ -550,7 +550,8 @@ private:
     void deactivate_contact_edge(std::uint32_t id, bool accurate,
                                  bool publish) noexcept;
     void activate_node_contact_edges(BodyId node) noexcept;
-    void synchronize_active_island_nodes() noexcept;
+    void synchronize_active_island_nodes(
+        bool capture_speculative_order=false) noexcept;
     void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
@@ -707,6 +708,16 @@ private:
         std::size_t discovery;
     };
     std::vector<SpeculativeSleepCandidate> speculative_sleep_order_;
+    // Saved at the wake/third-pass boundary, BEFORE the active-node
+    // reconciliation can swap-last and retire speculative split handles.
+    // This is generation-stamped scratch, not another island owner.
+    struct SpeculativePreRetirementIndex {
+        std::size_t index=invalid_instance;
+        std::uint32_t generation=0;
+    };
+    std::vector<SpeculativePreRetirementIndex>
+        speculative_pre_retirement_index_;
+    std::uint32_t speculative_pre_retirement_generation_=0;
     // Source processLostEdges can make a formerly awake speculative
     // island entirely inactive merely by disconnecting its last awake
     // member. Retain both resulting roots as third-pass candidates;
