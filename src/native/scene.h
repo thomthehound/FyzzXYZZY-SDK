@@ -762,6 +762,18 @@ private:
     // Reusable flat Dy normal-constraint stream; patch ownership and all
     // point offsets remain with this scene, not with allocating manifolds.
     std::vector<SolverContactPoint> solver_contact_points_;
+    // DyFrictionCorrelation::ContactPatchData is constructed from
+    // CONTIGUOUS runs of compatible Gu contacts before friction patch
+    // correlation; one reused scratch arena, not per-manager objects.
+    struct ContactPatchData {
+        std::size_t start=0, count=0, next=invalid_instance;
+        Vec3 normal{}, bounds_min{}, bounds_max{};
+    };
+    std::vector<ContactPatchData> contact_patch_scratch_;
+    // The source correlates each contact run with a friction patch via
+    // a reverse-linked list. Its ordered solver contact stream retains
+    // global Gu row IDs, preserving original Gu-indexed writeback.
+    std::vector<std::size_t> solver_contact_order_;
     // DySolverConstraints.cpp::writeBackContact output is indexed by the
     // same authoritative Gu contact offset, irrespective of Dy ordering.
     // Capacity persists, while output is explicitly invalidated on a
