@@ -3366,6 +3366,7 @@ void Scene::prepare_constraints(float seconds) {
            !(contact_edges_[edge].pair==manifold.pair))
             throw std::logic_error(
                 "Dy source manager preparation has a mismatched island edge");
+        step_checkpoint_.save_manifold_solver_metadata(*this,manager_index);
         manifold.prepared_friction_epoch=next_cache_epoch;
         // An inactive accurate island retains its Gu contact manager
         // but the source does not prepare or solve constraints for it.
@@ -4223,16 +4224,24 @@ void Scene::write_back_contacts() {
     // Preserve the Gu manager's patch offsets even when solver partitions
     // execute in a different order from the contact-manager stream.
     friction_impulse_writeback_.resize(friction_patches_.size());
-    for (auto& manifold : manifolds_) {
-        if(manifold.prepared_friction_epoch!=friction_cache_epoch_) {
-            // Inactive source managers retain Gu geometry, not old Dy
-            // descriptors. This Gu-indexed writeback already visits
-            // every manager, so reset the dormant metadata here instead
-            // of preparing every dormant contact in the solver hot path.
-            manifold.solver_offset=solver_contact_points_.size();
-            manifold.friction_patch_offset=friction_patches_.size();
+    for (std::size_t manifold_index=0;
+         manifold_index<manifolds_.size();++manifold_index) {
+        auto& manifold=manifolds_[manifold_index];
+        if(manifold.prepared_friction_epoch!=friction_cache_epoch_ &&
+           (manifold.solver_offset!=0 ||
+            manifold.friction_patch_offset!=0 ||
+            manifold.friction_patch_count!=0 ||
+            manifold.prepared_friction_epoch!=0)) {
+            // An inactive source manager keeps Gu contacts but no live
+            // Dy descriptors. Retire stale offsets ONCE when a manager
+            // becomes dormant, rather than rewriting all dormant slots
+            // and copying their checkpoint metadata every quiet frame.
+            step_checkpoint_.save_manifold_solver_metadata(
+                *this,manifold_index);
+            manifold.solver_offset=0;
+            manifold.friction_patch_offset=0;
             manifold.friction_patch_count=0;
-            manifold.prepared_friction_epoch=friction_cache_epoch_;
+            manifold.prepared_friction_epoch=0;
         }
         if (manifold.contact_offset > contact_points_.size() ||
             manifold.count > contact_points_.size()-manifold.contact_offset)
@@ -4470,6 +4479,24 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
         body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
         body.ready_for_sleep,body.sleeping,body.activating});
 }
+void Scene::StepCheckpoint::save_manifold_solver_metadata(
+    Scene& scene, std::size_t index) {
+    // Gu arena rotation already restores these fields for a dirty step.
+    // Only the quiet, previously published arena needs an undo record.
+    // Generation stamps ensure multiple writes to one live manager save
+    // exactly its pre-step descriptor, not intermediate Dy offsets.
+    if(!scene.activity_checkpoint_active_ || !includes_solver_state ||
+       !quiet_manifold_undo_enabled ||
+       scene.contact_epoch_!=contact_epoch)return;
+    if(scene.manifold_undo_generations_[index]==
+       scene.manifold_undo_generation_)return;
+    const auto& manifold=scene.manifolds_[index];
+    quiet_manifold_metadata.push_back({
+        index,manifold.solver_offset,manifold.friction_patch_offset,
+        manifold.friction_patch_count,manifold.prepared_friction_epoch});
+    scene.manifold_undo_generations_[index]=
+        scene.manifold_undo_generation_;
+}
 void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
     // Entries are recorded immediately before mutation. Multiple writes
     // to the same slot are permitted; reverse replay restores its original
@@ -4638,19 +4665,17 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
-    if(capture_solver_state) {
-        quiet_manifold_metadata.clear();
-        if(!scene.dirty_) {
-            // With no Gu republication, rollback cannot recover solver
-            // descriptors by swapping the manifold arena. Journal only
-            // their three publicly visible mutable fields on this path.
-            quiet_manifold_metadata.reserve(scene.manifolds_.size());
-            for(const auto& manifold:scene.manifolds_)
-                quiet_manifold_metadata.push_back({
-                    manifold.solver_offset,manifold.friction_patch_offset,
-                    manifold.friction_patch_count,
-                    manifold.prepared_friction_epoch});
+    quiet_manifold_metadata.clear();
+    quiet_manifold_undo_enabled=capture_solver_state && !scene.dirty_;
+    if(quiet_manifold_undo_enabled) {
+        if(++scene.manifold_undo_generation_==0) {
+            std::fill(scene.manifold_undo_generations_.begin(),
+                      scene.manifold_undo_generations_.end(),0);
+            scene.manifold_undo_generation_=1;
         }
+        scene.manifold_undo_generations_.resize(scene.manifolds_.size(),0);
+    }
+    if(capture_solver_state) {
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
     }
@@ -4899,9 +4924,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // externally exposed Dy offsets without copying contact points,
     // replacing the published span or journaling ordinary moving frames.
     if(includes_solver_state && !quiet_manifold_metadata.empty()) {
-        for(std::size_t i=0;i<quiet_manifold_metadata.size();++i) {
-            const auto& prior=quiet_manifold_metadata[i];
-            auto& manifold=scene.manifolds_[i];
+        for(const auto& prior:quiet_manifold_metadata) {
+            auto& manifold=scene.manifolds_[prior.index];
             manifold.solver_offset=prior.solver_offset;
             manifold.friction_patch_offset=prior.friction_patch_offset;
             manifold.friction_patch_count=prior.friction_patch_count;
