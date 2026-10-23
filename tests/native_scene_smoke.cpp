@@ -997,6 +997,80 @@ void verify_source_shape_offsets() {
     }
 }
 
+void verify_source_compliant_world_parity() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/60.0f;
+    struct Outcome { float height, velocity; };
+    const auto run=[](ExecutionMode mode, bool acceleration) {
+        World world(WorldOptions{mode});
+        const auto floor=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.47f,0.0f},5.0f);
+        Material rigid{};
+        rigid.static_friction=0.0f;
+        rigid.dynamic_friction=0.0f;
+        rigid.restitution=0.0f;
+        Material spring=rigid;
+        spring.restitution=-600.0f;
+        spring.damping=4.0f;
+        spring.compliant_acceleration_spring=acceleration;
+        world.set_body_material(floor,rigid);
+        world.set_body_material(box,spring);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        world.set_body_dynamics(box,dynamics);
+        world.set_body_velocity(box,{0.0f,-0.4f,0.0f});
+        world.step(dt);
+        const auto state=world.body_state(box);
+        if(!std::isfinite(state.position.y) ||
+           !std::isfinite(state.velocity.y))
+            throw std::runtime_error(
+                "Compliant material corrupted World solver publication");
+        return Outcome{state.position.y,state.velocity.y};
+    };
+    const auto force=run(ExecutionMode::NativeCpu,false);
+    const auto acceleration=run(ExecutionMode::NativeCpu,true);
+    if(!(force.velocity>-0.4f && acceleration.velocity>force.velocity &&
+         force.height>0.45f && acceleration.height>force.height))
+        throw std::runtime_error(
+            "Native compliant spring did not distinguish source force/acceleration");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto ref_force=run(ExecutionMode::ReferencePhysXCpuLegacyGu,false);
+    const auto ref_acceleration=run(ExecutionMode::ReferencePhysXCpuLegacyGu,true);
+    // Geometry and solver phase should agree in direction and magnitude.
+    // Strict matching of the original packed SIMD rounding is separately
+    // gated by the N1 source descriptor admission criteria.
+    const auto compare=[](Outcome a,Outcome b) {
+        return std::abs(a.velocity-b.velocity)<0.2f &&
+               std::abs(a.height-b.height)<0.025f;
+    };
+    if(!(ref_force.velocity>-0.4f &&
+         ref_acceleration.velocity>ref_force.velocity &&
+         compare(force,ref_force) &&
+         compare(acceleration,ref_acceleration)))
+        throw std::runtime_error(
+            "Compliant PGS World differs from independent PhysX CPU oracle");
+#endif
+    World check(WorldOptions{ExecutionMode::NativeCpu});
+    const auto id=check.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,4,0},1.0f);
+    Material bad{};
+    bad.damping=-1.0f;
+    bool rejected=false;
+    try {check.set_body_material(id,bad);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected)
+        throw std::runtime_error(
+            "Invalid source compliant damping was accepted");
+    bad.damping=0.0f;
+    bad.restitution=-200.0f;
+    check.set_body_material(id,bad);
+    check.step(dt);
+    if(!std::isfinite(check.body_state(id).position.y))
+        throw std::runtime_error(
+            "Compliant material incorrectly disabled free-flight integration");
+}
+
 void verify_source_body_dynamics_api() {
     using namespace fyzz;
     RigidBodyDynamics configured{};
@@ -7100,6 +7174,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
+    verify_source_compliant_world_parity();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
     verify_source_pose_authoring();
