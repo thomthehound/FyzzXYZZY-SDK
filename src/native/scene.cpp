@@ -2295,16 +2295,27 @@ void Scene::activate_published_islands() noexcept {
         }
     }
     constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
-    for(const auto& island:speculative_islands_.islands) {
-        if(!island.live)continue;
-        bool activated=false;
-        for(BodyId id=island.root;id!=invalid;
-            id=speculative_islands_.node_next[id]) {
-            if(actors_[id].activating) {activated=true;break;}
-        }
-        if(!activated)continue;
-        for(BodyId id=island.root;id!=invalid;
-            id=speculative_islands_.node_next[id]) {
+    // PxsIslandSim::wakeIslandsInternal consumes mActivatingNodes,
+    // not the full island inventory. The graph's existing visit stamps
+    // ensure each linked island is propagated once per publication,
+    // even when several event nodes share one component.
+    auto& graph=speculative_islands_;
+    if(++graph.active_island_visit_stamp==0) {
+        std::fill(graph.active_island_seen.begin(),
+                  graph.active_island_seen.end(),0);
+        graph.active_island_visit_stamp=1;
+    }
+    const auto wake_stamp=graph.active_island_visit_stamp;
+    for(BodyId waking:graph.activating_nodes) {
+        if(waking>=graph.node_island.size())continue;
+        const auto owner=graph.node_island[waking];
+        if(owner==IslandGraph::invalid ||
+           owner>=graph.islands.size() ||
+           !graph.islands[owner].live ||
+           graph.active_island_seen[owner]==wake_stamp)continue;
+        graph.active_island_seen[owner]=wake_stamp;
+        for(BodyId id=graph.islands[owner].root;id!=invalid;
+            id=graph.node_next[id]) {
             Actor& body=actors_[id];
             body.activating=false;
             if(body.sleeping) {
