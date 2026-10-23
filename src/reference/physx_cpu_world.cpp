@@ -4,6 +4,8 @@
 #include "fyzzxyzzy/world.h"
 #include <PxPhysicsAPI.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -76,12 +78,87 @@ std::shared_ptr<PhysXRuntime> acquire_runtime() {
 
 } // namespace
 
-struct PhysXCpuWorld final : WorldBackend {
+// Preserve PxDefaultSimulationFilterShader's group policy and only
+// request original Sc contact notifications for surviving rigid pairs.
+physx::PxFilterFlags source_touch_reporting_filter(
+    physx::PxFilterObjectAttributes attributes0,
+    physx::PxFilterData data0,
+    physx::PxFilterObjectAttributes attributes1,
+    physx::PxFilterData data1,
+    physx::PxPairFlags& pair_flags,
+    const void* constant_block, physx::PxU32 constant_block_size) {
+    const auto filter=physx::PxDefaultSimulationFilterShader(
+        attributes0,data0,attributes1,data1,pair_flags,
+        constant_block,constant_block_size);
+    if(!(filter & physx::PxFilterFlag::eSUPPRESS) &&
+       !physx::PxFilterObjectIsTrigger(attributes0) &&
+       !physx::PxFilterObjectIsTrigger(attributes1)) {
+        pair_flags |= physx::PxPairFlag::eNOTIFY_TOUCH_FOUND |
+                      physx::PxPairFlag::eNOTIFY_TOUCH_PERSISTS |
+                      physx::PxPairFlag::eNOTIFY_TOUCH_LOST |
+                      physx::PxPairFlag::eNOTIFY_CONTACT_POINTS;
+    }
+    return filter;
+}
+
+struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     std::shared_ptr<PhysXRuntime> runtime;
     physx::PxDefaultCpuDispatcher* dispatcher = nullptr;
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
+    bool contact_notifications=false;
+    std::vector<ContactEvent> published_contact_events;
+    std::vector<ContactEvent> pending_contact_events;
+
+    // Sc/NPhaseCore reports callbacks at PxScene::fetchResults on the
+    // user's thread. The authoring-time userData token maps directly
+    // back to the already-existing World actor ID without another
+    // reverse-lookup registry or per-contact O(actor count) search.
+    void onContact(const physx::PxContactPairHeader& header,
+                   const physx::PxContactPair* pairs,
+                   physx::PxU32 count) override {
+        if(header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0) ||
+           header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1))
+            return; // deleted-actor reports require separate lifetime retention
+        if(!header.actors[0] || !header.actors[1])return;
+        const auto raw0=reinterpret_cast<std::uintptr_t>(
+            header.actors[0]->userData);
+        const auto raw1=reinterpret_cast<std::uintptr_t>(
+            header.actors[1]->userData);
+        if(!raw0 || !raw1)return;
+        const BodyId a=static_cast<BodyId>(std::min(raw0,raw1)-1);
+        const BodyId b=static_cast<BodyId>(std::max(raw0,raw1)-1);
+        for(physx::PxU32 p=0;p<count;++p) {
+            const auto& pair=pairs[p];
+            const bool found=pair.events.isSet(
+                physx::PxPairFlag::eNOTIFY_TOUCH_FOUND);
+            const bool lost=pair.events.isSet(
+                physx::PxPairFlag::eNOTIFY_TOUCH_LOST);
+            const bool persists=pair.events.isSet(
+                physx::PxPairFlag::eNOTIFY_TOUCH_PERSISTS);
+            if(!found && !lost && !persists)continue;
+            double impulse=0.0;
+            const std::uint8_t n=lost ? 0 : pair.contactCount;
+            if(!lost && pair.contactImpulses)
+                for(std::size_t i=0;i<n;++i)
+                    impulse+=pair.contactImpulses[i];
+            pending_contact_events.push_back({
+                a,b,found?ContactEventKind::Found:
+                    lost?ContactEventKind::Lost:ContactEventKind::Persists,
+                n,impulse});
+        }
+    }
+    void onConstraintBreak(physx::PxConstraintInfo*,physx::PxU32) override {}
+    void onWake(physx::PxActor**,physx::PxU32) override {}
+    void onSleep(physx::PxActor**,physx::PxU32) override {}
+    void onTrigger(physx::PxTriggerPair*,physx::PxU32) override {}
+    void onAdvance(const physx::PxRigidBody*const*,
+                   const physx::PxTransform*,physx::PxU32) override {}
+
+    std::span<const ContactEvent> contact_events() const override {
+        return published_contact_events;
+    }
 
     void initialize(bool legacy_gu) {
         runtime = acquire_runtime();
@@ -92,7 +169,10 @@ struct PhysXCpuWorld final : WorldBackend {
             throw std::runtime_error("Failed to create PhysX CPU dispatcher");
         }
         descriptor.cpuDispatcher = dispatcher;
-        descriptor.filterShader = physx::PxDefaultSimulationFilterShader;
+        descriptor.filterShader = contact_notifications
+            ? source_touch_reporting_filter
+            : physx::PxDefaultSimulationFilterShader;
+        descriptor.simulationEventCallback = contact_notifications ? this : nullptr;
         // Keep stock PhysX PCM in ReferencePhysXCpu. The explicit Gu
         // conformance mode selects original source contactBoxBox/PlaneBox
         // rather than silently changing the default reference behavior.
@@ -147,7 +227,8 @@ struct PhysXCpuWorld final : WorldBackend {
 
     ~PhysXCpuWorld() override { cleanup(); }
 
-    explicit PhysXCpuWorld(bool legacy_gu) {
+    explicit PhysXCpuWorld(bool legacy_gu,bool notify)
+        :contact_notifications(notify) {
         try {
             initialize(legacy_gu);
         } catch (...) {
@@ -175,9 +256,21 @@ struct PhysXCpuWorld final : WorldBackend {
     }
 
     void step(float seconds) override {
+        if(contact_notifications)pending_contact_events.clear();
         scene->simulate(seconds);
         if (!scene->fetchResults(true)) {
             throw std::runtime_error("PhysX simulation failed");
+        }
+        if(contact_notifications) {
+            std::sort(pending_contact_events.begin(),
+                      pending_contact_events.end(),
+                      [](const ContactEvent& a,const ContactEvent& b) {
+                          if(a.body0!=b.body0)return a.body0<b.body0;
+                          if(a.body1!=b.body1)return a.body1<b.body1;
+                          return static_cast<unsigned>(a.kind)<
+                              static_cast<unsigned>(b.kind);
+                      });
+            published_contact_events.swap(pending_contact_events);
         }
     }
 
@@ -365,6 +458,9 @@ struct PhysXCpuWorld final : WorldBackend {
             actor->release();
             throw;
         }
+        if(contact_notifications)
+            actor->userData=reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(id)+1);
         scene->addActor(*actor);
         return id;
     }
@@ -372,8 +468,9 @@ struct PhysXCpuWorld final : WorldBackend {
 
 // The reference CPU engine is isolated from FyzzXYZZY's native World
 // implementation. This factory must not be used by the native GPU path.
-std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(bool legacy_gu) {
-    return std::make_unique<PhysXCpuWorld>(legacy_gu);
+std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(
+    bool legacy_gu,bool notify) {
+    return std::make_unique<PhysXCpuWorld>(legacy_gu,notify);
 }
 
 } // namespace fyzz
