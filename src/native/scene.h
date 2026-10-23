@@ -109,6 +109,9 @@ struct ContactManifold {
     std::size_t solver_offset = 0;
     std::size_t friction_patch_offset = 0;
     std::uint8_t friction_patch_count = 0;
+    // Dy descriptor offsets apply only to the preparation epoch in
+    // which this Gu manager was admitted through an active island.
+    std::uint64_t prepared_friction_epoch = 0;
 };
 
 // Source translation: GuContactBoxBox's SAT and contact generation on
@@ -919,6 +922,7 @@ private:
             std::size_t solver_offset=0;
             std::size_t friction_patch_offset=0;
             std::uint8_t friction_patch_count=0;
+            std::uint64_t prepared_friction_epoch=0;
         };
         std::vector<ManifoldSolverMetadata> quiet_manifold_metadata;
         std::vector<double> normal_impulses;
