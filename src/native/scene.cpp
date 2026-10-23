@@ -419,6 +419,26 @@ void Scene::set_material(BodyId id, Material material) {
             "Native noncompliant material coefficients/modes invalid");
     require(id).material=material;
 }
+void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
+    auto& actor=require(id);
+    if(actor.kind!=Kind::DynamicBox)
+        throw std::logic_error("Static actors have no dynamic solver state");
+    // ScBodyCore::setSolverIterationCounts packs two nonzero uint8
+    // iteration counts. The source pre-integrator stores squared speed
+    // limits in PxReal. Validate the complete edit before publishing it.
+    if(!std::isfinite(d.linear_damping) ||
+       !std::isfinite(d.angular_damping) ||
+       !std::isfinite(d.max_linear_velocity) ||
+       !std::isfinite(d.max_angular_velocity) ||
+       d.linear_damping<0 || d.angular_damping<0 ||
+       d.max_linear_velocity<0 || d.max_angular_velocity<0 ||
+       !std::isfinite(d.max_linear_velocity*d.max_linear_velocity) ||
+       !std::isfinite(d.max_angular_velocity*d.max_angular_velocity) ||
+       d.position_iterations==0 || d.velocity_iterations==0)
+        throw std::invalid_argument("Native PxsBodyCore dynamics invalid");
+    actor.dynamics=d;
+}
+
 void Scene::set_contact_report_threshold(BodyId id, float force) {
     // ScBodyCore::contactReportThreshold and
     // DySolverConstraints::writeBackContact's finite threshold gate.
@@ -4579,10 +4599,6 @@ void Scene::step(float seconds) {
     // DyBodyCoreIntegrator.h::bodyCoreComputeUnconstrainedVelocity:
     // gravity, linear/angular damping, then PxReal speed clamps.
     constexpr float gravity = -9.81f;
-    constexpr float linear_damping = 0.0f;
-    constexpr float angular_damping = 0.05f;
-    constexpr float max_linear_velocity_squared = 1.0e32f;
-    constexpr float max_angular_velocity_squared = 1.0e4f;
     // A failed frame must not consume impulses or publish partial
     // contacts, island nodes, body motion or result streams. Snapshot only
     // authoritative state; all per-step Dy work buffers remain reusable.
@@ -4624,10 +4640,12 @@ void Scene::step(float seconds) {
         auto& actor=actors_[accurate_island_nodes_[index]];
         if(actor.sleeping)continue;
         float vx = actor.velocity.x;
-        float vy = actor.velocity.y + gravity * seconds;
+        const auto& d=actor.dynamics;
+        float vy = actor.velocity.y +
+            (d.gravity_enabled ? gravity*seconds : 0.0f);
         float vz = actor.velocity.z;
         const float lin_mult = std::max(
-            1.0f - linear_damping*seconds,0.0f);
+            1.0f - d.linear_damping*seconds,0.0f);
         vx *= lin_mult; vy *= lin_mult; vz *= lin_mult;
         // Per-step angular velocity modification is accumulated on the
         // actor and consumed exactly once, as in ScBodySim::VelocityMod.
@@ -4638,11 +4656,15 @@ void Scene::step(float seconds) {
         if (!finite(angular))
             throw std::overflow_error("Native angular impulse accumulation overflow");
         const float ang_mult = std::max(
-            1.0f - angular_damping*seconds,0.0f);
+            1.0f - d.angular_damping*seconds,0.0f);
         angular.x *= ang_mult;
         angular.y *= ang_mult;
         angular.z *= ang_mult;
         const float speed_squared = vx*vx + vy*vy + vz*vz;
+        const float max_linear_velocity_squared=
+            d.max_linear_velocity*d.max_linear_velocity;
+        const float max_angular_velocity_squared=
+            d.max_angular_velocity*d.max_angular_velocity;
         if (speed_squared > max_linear_velocity_squared) {
             const float factor =
                 std::sqrt(max_linear_velocity_squared / speed_squared);
@@ -4962,6 +4984,9 @@ public:
     }
     void set_body_material(BodyId id, Material material) override {
         scene_.set_material(id,material);
+    }
+    void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics) override {
+        scene_.set_dynamics(id,dynamics);
     }
 private:
     native::Scene scene_;
