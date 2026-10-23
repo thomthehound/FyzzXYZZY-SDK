@@ -1619,6 +1619,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         graph.node_prev.resize(actors_.size(),invalid);
         graph.node_static_touches.resize(actors_.size(),0);
         graph.active_reference_counts.resize(actors_.size(),0);
+        graph.activating_seen.resize(actors_.size(),0);
         for(std::size_t i=0;i<actors_.size();++i) {
             const BodyId id=static_cast<BodyId>(i);
             if(!dynamic_node(id) ||
@@ -1662,6 +1663,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.active_islands.reserve(actors_.size());
         next.activating_nodes=graph.activating_nodes;
         next.activating_nodes.reserve(actors_.size());
+        next.activating_seen.assign(actors_.size(),0);
         next.active_island_seen.resize(next.islands.size(),0);
         next.nodes_to_deactivate.reserve(actors_.size());
         // Full admission/retirement rebuilds replace graph handles but
@@ -2122,6 +2124,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     accurate_islands_.active_islands.reserve(actors_.size());
     speculative_islands_.activating_nodes.reserve(actors_.size());
     accurate_islands_.activating_nodes.reserve(actors_.size());
+    speculative_islands_.activating_seen.resize(actors_.size(),0);
+    accurate_islands_.activating_seen.resize(actors_.size(),0);
     // Root changes in rebuild_graph invalidate only affected node hints.
     // Ordinary merges and independent actor admissions retain live routes
     // in both graphs; each attempted route validates its full edge chain.
@@ -2240,34 +2244,54 @@ void Scene::queue_node_activation(BodyId id) {
     accurate.push_back(id);
 }
 void Scene::activate_published_islands() noexcept {
-    // Ordinary quiet collision queries do not traverse islands merely
-    // to discover that no node or edge requested source activation.
-    // This is a single scheduling bit, not a copied actor or island list.
+    // Quiet publications without source wake/connection events never
+    // visit graph islands or allocate per-node activation records.
     if(!authored_activation_pending_ && found_contacts_.empty() &&
        found_.empty())return;
-    // Source IslandSim::wakeIslands/activateIslandInternal: propagate
-    // actual activation events through already published speculative
-    // connectivity, not the mere existence of an awake neighbor.
     const auto dynamic_node=[&](BodyId id) {
         return actors_[id].alive && actors_[id].kind==Kind::DynamicBox;
     };
-    // Newly established accurate contacts can activate dormant actors
-    // and must clear readiness even for an already-awake endpoint.
-    for(Pair pair:found_contacts_) {
-        for(BodyId id:{pair.a,pair.b}) {
-            if(!dynamic_node(id))continue;
-            actors_[id].activating=true;
-            actors_[id].ready_for_sleep=false;
+    // A single generation per publication deduplicates each graph's
+    // mActivatingNodes independently. This bounds the event list by
+    // actor count, which was reserved before noexcept publication.
+    const auto begin=[&](IslandGraph& graph) {
+        if(++graph.activating_generation==0) {
+            std::fill(graph.activating_seen.begin(),
+                      graph.activating_seen.end(),0);
+            graph.activating_generation=1;
         }
-    }
-    // New speculative dynamic edges merge islands in the source first
-    // pass. An awake endpoint wakes the previously dormant component,
-    // even when the pair has not generated an accurate Gu contact.
+        for(BodyId id:graph.activating_nodes)
+            if(id<graph.activating_seen.size())
+                graph.activating_seen[id]=graph.activating_generation;
+    };
+    begin(speculative_islands_);
+    begin(accurate_islands_);
+    const auto append=[&](IslandGraph& graph,BodyId id) {
+        if(!dynamic_node(id))return;
+        if(graph.activating_seen[id]==graph.activating_generation)return;
+        graph.activating_seen[id]=graph.activating_generation;
+        graph.activating_nodes.push_back(id);
+    };
+    // Source first-pass SAP new-edge events precede second-pass Gu
+    // touches. Each graph can receive a different subset and order.
     for(Pair pair:found_) {
         if(!dynamic_node(pair.a) || !dynamic_node(pair.b))continue;
         if(!actors_[pair.a].sleeping || !actors_[pair.b].sleeping) {
+            append(speculative_islands_,pair.a);
+            append(speculative_islands_,pair.b);
+            append(accurate_islands_,pair.a);
+            append(accurate_islands_,pair.b);
             actors_[pair.a].activating=true;
             actors_[pair.b].activating=true;
+        }
+    }
+    for(Pair pair:found_contacts_) {
+        for(BodyId id:{pair.a,pair.b}) {
+            if(!dynamic_node(id))continue;
+            append(accurate_islands_,id);
+            append(speculative_islands_,id);
+            actors_[id].activating=true;
+            actors_[id].ready_for_sleep=false;
         }
     }
     constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
@@ -3902,6 +3926,12 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     accurate_islands.active_islands.reserve(scene.actors_.size());
     speculative_islands.activating_nodes.reserve(scene.actors_.size());
     accurate_islands.activating_nodes.reserve(scene.actors_.size());
+    // Both dedup stamp arrays are scratch and remain in the scene;
+    // resize them before any noexcept wake publication is possible.
+    scene.speculative_islands_.activating_seen.resize(
+        scene.actors_.size(),0);
+    scene.accurate_islands_.activating_seen.resize(
+        scene.actors_.size(),0);
     // Reserve only the working copies, never the published arrays:
     // rejected frames restore the exact original active-island storage.
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());

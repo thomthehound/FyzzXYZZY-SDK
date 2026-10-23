@@ -621,6 +621,10 @@ private:
         // each IslandSim. This is a pending event stream, not a second
         // actor owner or a global sorted waking-body registry.
         std::vector<BodyId> activating_nodes;
+        // Per-publication duplicate suppression for the source
+        // mActivatingNodes stream. Stamped scratch, not another owner.
+        std::vector<std::uint32_t> activating_seen;
+        std::uint32_t activating_generation=0;
         // Reusable island-handle visit stamps for reconciling source
         // active-node transitions without walking dormant islands.
         std::vector<std::uint32_t> active_island_seen;

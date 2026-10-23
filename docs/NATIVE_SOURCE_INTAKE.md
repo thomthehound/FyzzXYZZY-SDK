@@ -1246,9 +1246,11 @@ there is no heuristic component-size inference or global island rescan. Separate
 retained-manager speculative sleep event after retiring an awake SAP-only
 peer, and failure-atomic eACTIVE/count restoration after Gu touch loss.
 
-The accurate and speculative island owners also retain source
-`mActivatingNodes` wake-event sequences, including authored reverse-order
-wakes. The rollback checkpoint pre-reserves active-handle and pending
+The accurate and speculative island owners also retain separate
+source `mActivatingNodes` wake-event sequences, including authored
+reverse-order wakes and graph-specific SAP/Gu events. Generation-stamped
+node membership suppresses duplicate event insertion without quadratic
+wake-list scans or allocations in the no-throw publication. The rollback checkpoint pre-reserves active-handle and pending
 wake capacity in both owners before entering any no-throw publication.
 `mActiveIslands` dense handle lists and their `Island::mActiveIndex`
 reverse indices. Source swap-last removal and append preserve active
