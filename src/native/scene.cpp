@@ -2205,8 +2205,9 @@ void Scene::third_pass_island_gen() {
     // potentially overlapping the numerical solver. This synchronous
     // source-subset execution is scheduled once those collision products
     // are ready, *not* as a mandatory post-solver serial stage.
-    // Persistent edge activity flags and task continuations still need
-    // full source admission. Prior split candidates are transient and
+    // Rigid contact-manager edge activity is persistent; task
+    // continuations and other edge types still need source admission.
+    // Prior split candidates are transient and
     // replaced at the start of every third-pass publication.
     speculative_split_sleep_candidates_.clear();
     update_island_connectivity(true);

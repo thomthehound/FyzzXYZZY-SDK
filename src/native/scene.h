@@ -514,7 +514,8 @@ private:
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // repair. Source activation and whole-island deactivation consume
     // already published readiness before this frame's solver begins.
-    // Concurrent continuations and deactivation lists remain open.
+    // Concurrent continuations and non-rigid callback consumers
+    // remain open. Contact-manager deactivation lists are active.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
     void clear_activated_edges(bool checkpointed) noexcept;
