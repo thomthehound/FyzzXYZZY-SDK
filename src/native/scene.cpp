@@ -3760,7 +3760,15 @@ void Scene::solve_constraints() {
                 // The per-patch impulse sum is already available from
                 // the current normal pass; no repeated O(patches*points)
                 // scan of other contact groups is necessary.
-                if (iter != 0 && patch.anchor_count) {
+                // DySolverControl.cpp selects friction on the LAST
+                // THREE position iterations, regardless of this task's
+                // maximum position iteration count. The default 4+1
+                // skips its first position pass, while 1+N must solve
+                // friction on its only position pass. Velocity passes
+                // retain the enabled friction state from conclude.
+                if ((iter>=position_iterations ||
+                     position_iterations-iter<=3) &&
+                    patch.anchor_count) {
                     const double coefficient=patch.anchor_count==2
                         ? 0.5 : 1.0;
                     const double max_static=
