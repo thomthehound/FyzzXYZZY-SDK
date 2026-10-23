@@ -1071,6 +1071,34 @@ void verify_source_compliant_world_parity() {
             "Compliant material incorrectly disabled free-flight integration");
 }
 
+void verify_source_signed_compliant_contact_writeback() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/60.0f;
+    World world(WorldOptions{ExecutionMode::NativeCpu});
+    const auto ground=world.add_static_floor(0.0f);
+    const auto box=world.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+    Material spring{};
+    spring.restitution=-100.0f;
+    world.set_body_material(box,spring);
+    world.set_body_velocity(box,{1.0f,1.0f,0.0f});
+    // Codex's actual public-API repro fails on frame 27 if native
+    // writeback rejects a small signed compliant spring impulse.
+    // Original DySolverConstraintsShared does not clamp the result to
+    // zero after applying the spring's impulse multiplier.
+    for(unsigned frame=0;frame<80;++frame) {
+        world.step(dt);
+        const auto state=world.body_state(box);
+        if(!std::isfinite(state.position.x) ||
+           !std::isfinite(state.position.y) ||
+           !std::isfinite(state.velocity.x) ||
+           !std::isfinite(state.velocity.y))
+            throw std::runtime_error(
+                "Source compliant impulse caused nonfinite body publication");
+    }
+    (void)ground;
+}
+
 void verify_source_body_dynamics_api() {
     using namespace fyzz;
     RigidBodyDynamics configured{};
@@ -7180,6 +7208,7 @@ int run_native_scene_smoke() {
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_compliant_world_parity();
+    verify_source_signed_compliant_contact_writeback();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
     verify_source_pose_authoring();
