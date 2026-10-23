@@ -226,6 +226,22 @@ struct PhysXCpuWorld final : WorldBackend {
         authored->release();
     }
 
+    void set_body_dynamics(BodyId id, RigidBodyDynamics d) override {
+        if(id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* actor=actors[id]->is<physx::PxRigidDynamic>();
+        if(!actor)
+            throw std::logic_error("Static actors have no dynamic solver state");
+        actor->setLinearDamping(d.linear_damping);
+        actor->setAngularDamping(d.angular_damping);
+        actor->setMaxLinearVelocity(d.max_linear_velocity);
+        actor->setMaxAngularVelocity(d.max_angular_velocity);
+        actor->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY,
+                            !d.gravity_enabled);
+        actor->setSolverIterationCounts(d.position_iterations,
+                                         d.velocity_iterations);
+    }
+
     void set_body_velocity(BodyId id, Vec3 velocity) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
