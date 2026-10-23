@@ -200,11 +200,23 @@ void verify_source_body_dynamics_api() {
             "Native source rigid damping/gravity/speed clamps not applied");
     RigidBodyDynamics default_d{};
     const auto baseline=motion(ExecutionMode::NativeCpu,default_d);
-    if(!(baseline.position.y<native.position.y &&
-         baseline.velocity.y<native.velocity.y &&
-         baseline.angular_velocity.z>native.angular_velocity.z))
+    if(!(baseline.angular_velocity.z>native.angular_velocity.z &&
+         baseline.velocity.x>native.velocity.x))
         throw std::runtime_error(
-            "Source rigid body authoring failed to change unconstrained Dy motion");
+            "Source rigid body damping and clamp authoring had no effect");
+    // Isolate gravity from the deliberate speed limit. Compare otherwise
+    // identical bodies with a high clamp, so a stronger downward force
+    // cannot be hidden by a different velocity-length normalization.
+    RigidBodyDynamics no_gravity=configured;
+    no_gravity.max_linear_velocity=100.0f;
+    RigidBodyDynamics with_gravity=no_gravity;
+    with_gravity.gravity_enabled=true;
+    const auto floating=motion(ExecutionMode::NativeCpu,no_gravity);
+    const auto falling=motion(ExecutionMode::NativeCpu,with_gravity);
+    if(!(floating.velocity.y>falling.velocity.y+0.7f &&
+         floating.position.y>falling.position.y+0.07f))
+        throw std::runtime_error(
+            "Source per-body eDISABLE_GRAVITY did not change free-flight motion");
     World scene(WorldOptions{ExecutionMode::NativeCpu});
     const auto floor=scene.add_static_floor(0.0f);
     const auto id=scene.add_dynamic_box(
