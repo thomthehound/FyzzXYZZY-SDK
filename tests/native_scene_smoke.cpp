@@ -113,6 +113,126 @@ struct ContactCorrelationSourceFixture {
 };
 }
 
+namespace fyzz::native {
+// Verify the actual production DyDynamics task-chain descriptors. The
+// source computes maximum solverIterationCounts across all bodies in
+// each task (including unconstrained members), not across the scene.
+struct SolverIterationSourceFixture {
+    static void verify() {
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        constexpr std::size_t bodies=130;
+        for(std::size_t i=0;i<bodies;++i) {
+            const auto id=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},
+                {static_cast<float>(i)*3.0f,0.49f,0},1.0f);
+            RigidBodyDynamics d{};
+            if(i==0) {d.position_iterations=7;d.velocity_iterations=2;}
+            if(i==127) {d.position_iterations=9;d.velocity_iterations=3;}
+            if(i==128) {d.position_iterations=5;d.velocity_iterations=4;}
+            scene.set_dynamics(id,d);
+        }
+        scene.step(1.0f/120.0f);
+        if(scene.solver_tasks_.size()!=2 ||
+           scene.solver_tasks_[0].manager_end!=128 ||
+           scene.solver_tasks_[1].manager_end!=130 ||
+           scene.solver_tasks_[0].position_iterations!=9 ||
+           scene.solver_tasks_[0].velocity_iterations!=3 ||
+           scene.solver_tasks_[1].position_iterations!=5 ||
+           scene.solver_tasks_[1].velocity_iterations!=4 ||
+           scene.solver_tasks_[0].solver_body_end!=128 ||
+           scene.solver_tasks_[1].solver_body_end!=130 ||
+           scene.solver_tasks_[0].constraint_end!=128 ||
+           scene.solver_tasks_[1].constraint_end!=130)
+            throw std::runtime_error(
+                "Source PGS task iteration maxima leaked across 128-body boundary");
+        // Iteration settings must never alter the permanent island graph
+        // or repartition independent body contacts into a false conflict.
+        if(scene.active_accurate_islands().size()!=bodies ||
+           scene.solver_partition_count()!=2)
+            throw std::runtime_error(
+                "Per-body source solver iterations changed island ownership");
+        scene.step(1.0f/120.0f);
+        if(scene.solver_tasks_.size()!=2 ||
+           scene.solver_tasks_[0].position_iterations!=9 ||
+           scene.solver_tasks_[1].position_iterations!=5)
+            throw std::runtime_error(
+                "Per-task source iteration maxima did not persist across steps");
+    }
+};
+}
+
+void verify_source_body_dynamics_api() {
+    using namespace fyzz;
+    RigidBodyDynamics configured{};
+    configured.linear_damping=2.0f;
+    configured.angular_damping=1.0f;
+    configured.gravity_enabled=false;
+    configured.max_linear_velocity=1.5f;
+    configured.max_angular_velocity=2.0f;
+    configured.position_iterations=6;
+    configured.velocity_iterations=2;
+
+    const auto motion=[](ExecutionMode mode,RigidBodyDynamics d) {
+        World scene(WorldOptions{mode});
+        const auto id=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,12,0},1.0f);
+        scene.set_body_dynamics(id,d);
+        scene.set_body_velocity(id,{3.0f,2.0f,-1.0f});
+        scene.set_body_angular_velocity(id,{0,0,4.0f});
+        scene.step(0.1f);
+        return scene.body_state(id);
+    };
+    const auto native=motion(ExecutionMode::NativeCpu,configured);
+    const auto lin=std::sqrt(
+        native.velocity.x*native.velocity.x+
+        native.velocity.y*native.velocity.y+
+        native.velocity.z*native.velocity.z);
+    const auto ang=std::sqrt(
+        native.angular_velocity.x*native.angular_velocity.x+
+        native.angular_velocity.y*native.angular_velocity.y+
+        native.angular_velocity.z*native.angular_velocity.z);
+    if(!std::isfinite(lin) || !std::isfinite(ang) ||
+       std::abs(lin-1.5f)>1.0e-4f ||
+       std::abs(ang-2.0f)>1.0e-4f ||
+       native.position.y<12.0f)
+        throw std::runtime_error(
+            "Native source rigid damping/gravity/speed clamps not applied");
+    RigidBodyDynamics default_d{};
+    const auto baseline=motion(ExecutionMode::NativeCpu,default_d);
+    if(!(baseline.position.y<native.position.y &&
+         baseline.velocity.y<native.velocity.y &&
+         baseline.angular_velocity.z>native.angular_velocity.z))
+        throw std::runtime_error(
+            "Source rigid body authoring failed to change unconstrained Dy motion");
+    World scene(WorldOptions{ExecutionMode::NativeCpu});
+    const auto floor=scene.add_static_floor(0.0f);
+    const auto id=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+    bool static_rejected=false,invalid_rejected=false;
+    try {scene.set_body_dynamics(floor,configured);}
+    catch(const std::logic_error&) {static_rejected=true;}
+    RigidBodyDynamics bad=configured;
+    bad.position_iterations=0;
+    try {scene.set_body_dynamics(id,bad);}
+    catch(const std::invalid_argument&) {invalid_rejected=true;}
+    if(!static_rejected || !invalid_rejected)
+        throw std::runtime_error("Source rigid body dynamics admission invalid");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto reference=motion(ExecutionMode::ReferencePhysXCpuLegacyGu,
+                                configured);
+    const auto close=[](Vec3 a,Vec3 b,float epsilon) {
+        return std::abs(a.x-b.x)<=epsilon &&
+               std::abs(a.y-b.y)<=epsilon &&
+               std::abs(a.z-b.z)<=epsilon;
+    };
+    if(!close(native.velocity,reference.velocity,0.0004f) ||
+       !close(native.angular_velocity,reference.angular_velocity,0.0004f))
+        throw std::runtime_error(
+            "Native rigid body source preintegration differs from PhysX CPU");
+#endif
+}
+
 namespace {
 void expect(bool value, const char* why) {
     if (!value) throw std::runtime_error(why);
@@ -6100,6 +6220,8 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::SolverIterationSourceFixture::verify();
+    verify_source_body_dynamics_api();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
