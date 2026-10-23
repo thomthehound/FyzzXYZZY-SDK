@@ -18,8 +18,9 @@ on:
       - 'docs/**'
   workflow_dispatch:
 
-# Keep both godot-cpp cache keys aligned with the pinned CMake dependency,
-# Godot API version, target profile, and build configuration.
+# Godot version and bindings revision live in godot/dependency.json.
+# Cache identity follows that manifest, CMake configuration and compiler
+# toolchain; runner image patch releases must not trigger recompilation.
 jobs:
   linux:
     runs-on: ubuntu-26.04
@@ -39,10 +40,12 @@ jobs:
           test -x "${RUNNER_TEMP}/dxc/bin/dxc"
           echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
           echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
-      - name: Record runner image for compiled dependency cache
-        id: cache_image
+      - name: Record compiler for compiled dependency cache
+        id: cache_toolchain
         shell: bash
-        run: echo "image=${ImageOS:-ubuntu}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        run: |
+          . /etc/os-release
+          echo "toolchain=ubuntu-${VERSION_ID}-gcc-$(c++ -dumpfullversion -dumpversion)" >> "$GITHUB_OUTPUT"
       - name: Restore compiled godot-cpp
         id: godot_cpp_cache
         uses: actions/cache/restore@v4
@@ -54,7 +57,7 @@ jobs:
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
             build/.ninja_deps
             build/.ninja_log
-          key: godotcpp-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_image.outputs.image }}-507ed9d8-4.7-template_debug-Release
+          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'CMakeLists.txt') }}-template_debug-Release
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
       - name: Verify SDK C++23 compiler and standard library
@@ -112,14 +115,16 @@ jobs:
           # lacking C++23 std::expected when BUILD_TESTING=OFF.
           cmake -S FyzzXYZZY-SDK -B offline-production -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
 
-      - name: Godot 4.7.2 headless acceptance
+      - name: Godot headless acceptance
         shell: bash
         run: |
-          curl -fsSL --retry 3 "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip" -o "${RUNNER_TEMP}/godot.zip"
+          version="$(python3 -c 'import json; print(json.load(open("godot/dependency.json"))["engine_version"])')"
+          curl -fsSL --retry 3 "https://github.com/godotengine/godot/releases/download/${version}-stable/Godot_v${version}-stable_linux.x86_64.zip" -o "${RUNNER_TEMP}/godot.zip"
           mkdir -p "${RUNNER_TEMP}/godot-bin"
           unzip -q "${RUNNER_TEMP}/godot.zip" -d "${RUNNER_TEMP}/godot-bin"
-          chmod +x "${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
-          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          engine="${RUNNER_TEMP}/godot-bin/Godot_v${version}-stable_linux.x86_64"
+          chmod +x "$engine"
+          echo "FYZZXYZZY_GODOT_ENGINE=$engine" >> "$GITHUB_ENV"
           # Exercise the runtime GDExtension contract directly. Editor import is
           # an independent integration test and must not gate the headless SDK test.
           set +e
@@ -135,16 +140,16 @@ jobs:
           fi
           grep -Fq "FyzzXYZZY Godot acceptance PASS" "${RUNNER_TEMP}/fyzzxyzzy-godot.log"
 
-      - name: Godot 4.7.2 editor import acceptance
+      - name: Godot editor import acceptance
         shell: bash
         run: |
-          engine="${RUNNER_TEMP}/godot-bin/Godot_v4.7.2-stable_linux.x86_64"
+          engine="$FYZZXYZZY_GODOT_ENGINE"
           project="${RUNNER_TEMP}/fyzzxyzzy-editor-acceptance"
           cp -a godot/test_project "$project"
           rm -rf "$project/.godot"
 
           # Populate the extension registry before the first normal headless
-          # editor session; Godot 4.7.2 needs this for registered native classes.
+          # editor session; the acceptance editor needs registered native classes.
           timeout 45s "$engine" --headless --recovery-mode --editor --import --path "$project"
           test -s "$project/.godot/extension_list.cfg"
 
@@ -169,13 +174,18 @@ jobs:
               Sort-Object FullName -Descending)
           if ($candidates.Count -eq 0) { throw 'Windows SDK DXC compiler not found' }
           "FYZZXYZZY_DXC=$($candidates[0].FullName)" >> $env:GITHUB_ENV
-      - name: Record runner image for compiled dependency cache
-        id: cache_image
+      - name: Record compiler for compiled dependency cache
+        id: cache_toolchain
         shell: pwsh
         run: |
-          $imageOs = if ($env:ImageOS) { $env:ImageOS } else { 'windows' }
-          $imageVersion = if ($env:ImageVersion) { $env:ImageVersion } else { 'unknown' }
-          "image=$imageOs-$imageVersion" >> $env:GITHUB_OUTPUT
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'MSVC cache identity requires vswhere' }
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'MSVC installation not found' }
+          $toolset = Get-ChildItem -Path (Join-Path $installation 'VC\Tools\MSVC') -Directory |
+              Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $toolset) { throw 'MSVC toolset version not found' }
+          "toolchain=$($env:ImageOS)-msvc-$($toolset.Name)" >> $env:GITHUB_OUTPUT
       - name: Restore compiled godot-cpp
         id: godot_cpp_cache
         uses: actions/cache/restore@v4
@@ -185,7 +195,7 @@ jobs:
             build/_deps/fyzzxyzzy_godot_cpp-build
             build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
-          key: godotcpp-v3-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_image.outputs.image }}-507ed9d8-4.7-template_debug-Release
+          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'CMakeLists.txt') }}-template_debug-Release
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
@@ -236,15 +246,17 @@ jobs:
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
-      - name: Godot 4.7.2 headless acceptance
+      - name: Godot headless acceptance
         shell: pwsh
         run: |
+          $version = (Get-Content 'godot/dependency.json' -Raw | ConvertFrom-Json).engine_version
           $zip = Join-Path $env:RUNNER_TEMP 'godot.zip'
           $bin = Join-Path $env:RUNNER_TEMP 'godot-bin'
-          Invoke-WebRequest -Uri 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -OutFile $zip
+          Invoke-WebRequest -Uri "https://github.com/godotengine/godot/releases/download/$version-stable/Godot_v$version-stable_win64.exe.zip" -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $bin
-          $exe = Join-Path $bin 'Godot_v4.7.2-stable_win64_console.exe'
+          $exe = Join-Path $bin "Godot_v$version-stable_win64_console.exe"
           if (-not (Test-Path $exe)) { throw "Godot console executable not found: $exe" }
+          "FYZZXYZZY_GODOT_ENGINE=$exe" >> $env:GITHUB_ENV
           $godotOutput = & $exe --headless --path godot/test_project --script res://tests/headless_smoke.gd 2>&1
           $status = $LASTEXITCODE
           $godotOutput | ForEach-Object { Write-Output $_ }
@@ -252,10 +264,10 @@ jobs:
           if (-not ($godotOutput -match 'FyzzXYZZY Godot acceptance PASS')) {
             throw "Godot acceptance completion marker missing"
           }
-      - name: Godot 4.7.2 editor import acceptance
+      - name: Godot editor import acceptance
         shell: pwsh
         run: |
-          $exe = Join-Path $env:RUNNER_TEMP 'godot-bin/Godot_v4.7.2-stable_win64_console.exe'
+          $exe = $env:FYZZXYZZY_GODOT_ENGINE
           $project = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-editor-acceptance'
           Copy-Item -Path 'godot/test_project' -Destination $project -Recurse
           $cache = Join-Path $project '.godot'
