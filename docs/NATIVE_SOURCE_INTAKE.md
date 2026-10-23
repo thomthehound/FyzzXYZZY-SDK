@@ -1246,6 +1246,15 @@ there is no heuristic component-size inference or global island rescan. Separate
 retained-manager speculative sleep event after retiring an awake SAP-only
 peer, and failure-atomic eACTIVE/count restoration after Gu touch loss.
 
+The accurate and speculative island owners also retain source
+`mActiveIslands` dense handle lists and their `Island::mActiveIndex`
+reverse indices. Source swap-last removal and append preserve active
+handle order across sleep/wake, actor admission, split and merge;
+the serial `Dy::DynamicsContext::iterateIslandsNodes` handoff now
+resolves only active handles against the existing contiguous accurate
+island-node ranges, instead of scanning every dormant node range.
+These are not a second island registry or a separate task scheduler.
+
 The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
 articulation and constraint edges, kinematic consumption of the now
 implemented rigid contact-manager active references, per-type bitmap

@@ -1630,6 +1630,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // for no-throw deactivation after a geometry-only publication.
         next.active_node_index.assign(actors_.size(),invalid_instance);
         next.active_nodes.reserve(actors_.size());
+        next.active_islands.reserve(actors_.size());
+        next.active_island_seen.resize(next.islands.size(),0);
         next.nodes_to_deactivate.reserve(actors_.size());
         // Full admission/retirement rebuilds replace graph handles but
         // do not recreate contact managers or reset their active flags.
@@ -1826,6 +1828,17 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 stamps[node]=0;
             }
         }
+        // Preserve the source active-island permutation across a
+        // full actor admission/retirement rebuild for surviving handles.
+        // Deleted handles and newly created components reconcile from
+        // the active-node list at the source wake/third-pass handoff.
+        for(const Graph::IslandId id:graph.active_islands)
+            if(id<next.islands.size() && next.islands[id].live &&
+               next.islands[id].active_index==invalid_instance) {
+                next.islands[id].active_index=next.active_islands.size();
+                next.active_islands.push_back(id);
+            }
+        next.active_island_seen.resize(next.islands.size(),0);
         if(accurate) {
             // Original processLostEdges selects the first dirty node
             // from mDirtyMap (ascending node index), then findRoute
@@ -2066,6 +2079,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         if(!accurate_island_nodes_.empty())
             accurate_island_offsets_.push_back(accurate_island_nodes_.size());
     }
+    // New source split handles may extend the visited-stamp arrays.
+    // Allocate here, inside the failure-atomic topology transaction,
+    // before no-throw wake/sleep publication updates mActiveIslands.
+    speculative_islands_.active_island_seen.resize(
+        speculative_islands_.islands.size(),0);
+    accurate_islands_.active_island_seen.resize(
+        accurate_islands_.islands.size(),0);
+    speculative_islands_.active_islands.reserve(actors_.size());
+    accurate_islands_.active_islands.reserve(actors_.size());
     // Root changes in rebuild_graph invalidate only affected node hints.
     // Ordinary merges and independent actor admissions retain live routes
     // in both graphs; each attempted route validates its full edge chain.
@@ -2460,27 +2482,69 @@ void Scene::synchronize_active_island_nodes() noexcept {
         graph.active_node_index[id]=graph.active_nodes.size();
         graph.active_nodes.push_back(id);
     }
+    // Original IslandSim::mActiveIslands / Island::mActiveIndex use
+    // replace-with-last on a dormant island and append on activation.
+    // Reconcile only the already-owned active rigid-node stream, never
+    // the full set of dormant island handles or candidate edges.
+    if(++graph.active_island_visit_stamp==0) {
+        std::fill(graph.active_island_seen.begin(),
+                  graph.active_island_seen.end(),0);
+        graph.active_island_visit_stamp=1;
+    }
+    const auto generation=graph.active_island_visit_stamp;
+    for(BodyId id:graph.active_nodes) {
+        const auto owner_id=graph.node_island[id];
+        if(owner_id!=IslandGraph::invalid)
+            graph.active_island_seen[owner_id]=generation;
+    }
+    for(std::size_t index=0;index<graph.active_islands.size();) {
+        const auto id=graph.active_islands[index];
+        if(id<graph.islands.size() && graph.islands[id].live &&
+           graph.active_island_seen[id]==generation) {
+            graph.islands[id].active_index=index;
+            ++index;
+            continue;
+        }
+        if(id<graph.islands.size())
+            graph.islands[id].active_index=invalid_instance;
+        const auto moved=graph.active_islands.back();
+        graph.active_islands[index]=moved;
+        graph.active_islands.pop_back();
+        if(index<graph.active_islands.size())
+            graph.islands[moved].active_index=index;
+    }
+    for(BodyId id:graph.active_nodes) {
+        const auto handle=graph.node_island[id];
+        if(handle==IslandGraph::invalid)continue;
+        auto& island=graph.islands[handle];
+        if(island.active_index!=invalid_instance)continue;
+        island.active_index=graph.active_islands.size();
+        graph.active_islands.push_back(handle);
+    }
     }
 }
 void Scene::prepare_active_accurate_island_batches() {
     synchronize_active_island_nodes();
-    // Dy::DynamicsContext is still admitted in stable source
-    // accurate-island order. The membership test now consumes the
-    // graph-owned active-node map rather than independently scanning
-    // actor sleep flags to discover which bodies exist in the active
-    // island batches.
+    // Dy::DynamicsContext::iterateIslandsNodes consumes source
+    // IslandSim::mActiveIslands, never all dormant island-node ranges.
+    // The contiguous source node ranges remain sorted by island handle,
+    // so resolve each active handle by binary search over their offsets.
+    // This visits only active islands, in their persistent source order.
     const auto& graph=accurate_islands_;
     active_accurate_island_batches_.clear();
-    for(std::size_t island=0;island+1<accurate_island_offsets_.size();
-        ++island) {
-        for(std::size_t index=accurate_island_offsets_[island];
-            index<accurate_island_offsets_[island+1];++index) {
-            const BodyId id=accurate_island_nodes_[index];
-            if(graph.active_node_index[id]!=invalid_instance) {
-                active_accurate_island_batches_.push_back(island);
-                break;
-            }
-        }
+    if(accurate_island_offsets_.size()<2)return;
+    const auto end=accurate_island_offsets_.end()-1;
+    for(const auto handle:graph.active_islands) {
+        const auto found=std::lower_bound(
+            accurate_island_offsets_.begin(),end,handle,
+            [&](std::size_t offset, IslandGraph::IslandId target) {
+                return graph.node_island[accurate_island_nodes_[offset]]<target;
+            });
+        if(found==end ||
+           graph.node_island[accurate_island_nodes_[*found]]!=handle)
+            continue;
+        active_accurate_island_batches_.push_back(
+            static_cast<std::size_t>(found-accurate_island_offsets_.begin()));
     }
 }
 // Active native CPU stages remain within the one Scene owner:
@@ -3739,6 +3803,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                    live.active_nodes.end());
         saved.active_node_index.assign(live.active_node_index.begin(),
                                         live.active_node_index.end());
+        saved.active_islands.assign(live.active_islands.begin(),
+                                     live.active_islands.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
         // Per-edge reference mutations are restored through the sparse
@@ -3971,6 +4037,20 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
     scene.speculative_islands_.active_node_index.swap(
         speculative_islands.active_node_index);
+    // The structural island snapshot restores mActiveIndex itself.
+    // A quiet step has no such snapshot: clear its current live slots,
+    // then restore the previous ordered active list and reverse slots.
+    if(!graph_ownership_saved)
+        for(auto handle:scene.speculative_islands_.active_islands)
+            if(handle<scene.speculative_islands_.islands.size())
+                scene.speculative_islands_.islands[handle].active_index=
+                    invalid_instance;
+    scene.speculative_islands_.active_islands.swap(
+        speculative_islands.active_islands);
+    if(!graph_ownership_saved)
+        for(std::size_t i=0;i<scene.speculative_islands_.active_islands.size();++i)
+            scene.speculative_islands_.islands[
+                scene.speculative_islands_.active_islands[i]].active_index=i;
     scene.speculative_islands_.nodes_to_deactivate.swap(
         speculative_islands.nodes_to_deactivate);
     scene.speculative_islands_.deactivating_edges.swap(
@@ -3993,6 +4073,17 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.active_node_index.swap(
         accurate_islands.active_node_index);
+    if(!graph_ownership_saved)
+        for(auto handle:scene.accurate_islands_.active_islands)
+            if(handle<scene.accurate_islands_.islands.size())
+                scene.accurate_islands_.islands[handle].active_index=
+                    invalid_instance;
+    scene.accurate_islands_.active_islands.swap(
+        accurate_islands.active_islands);
+    if(!graph_ownership_saved)
+        for(std::size_t i=0;i<scene.accurate_islands_.active_islands.size();++i)
+            scene.accurate_islands_.islands[
+                scene.accurate_islands_.active_islands[i]].active_index=i;
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
     scene.accurate_islands_.deactivating_edges.swap(

@@ -196,6 +196,14 @@ public:
     std::size_t active_accurate_contact_edge_count() const noexcept {
         return accurate_islands_.active_edge_count;
     }
+    // PxsIslandSim::mActiveIslands: independently owned, dense active
+    // handle lists, not another connectivity graph or actor collection.
+    std::span<const std::uint32_t> active_speculative_islands() const noexcept {
+        return speculative_islands_.active_islands;
+    }
+    std::span<const std::uint32_t> active_accurate_islands() const noexcept {
+        return accurate_islands_.active_islands;
+    }
     // IslandSim::Node::mActiveRefCount, only for pairs with two
     // dynamic endpoints. Each IslandSim owns its own reference history.
     std::uint32_t speculative_active_reference_count(BodyId id) const noexcept {
@@ -603,8 +611,15 @@ private:
             // descriptor stream reads these slots, not Gu pair order.
             EdgeIndex first_contact=invalid_edge, last_contact=invalid_edge;
             std::size_t contact_count=0;
+            // mActiveIndex, invalid outside the source mActiveIslands list.
+            std::size_t active_index=invalid_instance;
         };
         std::vector<Island> islands;
+        std::vector<IslandId> active_islands;
+        // Reusable island-handle visit stamps for reconciling source
+        // active-node transitions without walking dormant islands.
+        std::vector<std::uint32_t> active_island_seen;
+        std::uint32_t active_island_visit_stamp=0;
         std::vector<IslandId> node_island;
         std::vector<BodyId> node_next, node_prev;
         // IslandSim::Node::mStaticTouchCount for live dynamic nodes.
