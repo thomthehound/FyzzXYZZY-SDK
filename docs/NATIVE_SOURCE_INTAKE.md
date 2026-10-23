@@ -1254,6 +1254,29 @@ reversed offset edits, and normal/friction prepared Jacobians under
 nonzero versus default contact slop. Multi-shape actors, CCD and per-
 contact modification remain separately unported admission boundaries.
 
+## Source rigid-pose authoring and shape alignment
+
+`World::set_body_pose` now lowers full `PxRigidActor::setGlobalPose`
+semantics into the authoritative native `Scene::set_pose` and independent
+reference PhysX CPU actor. `PxQuat::isSane` magnitude tolerance
+(1e-2), `PxTransform::getNormalized` quaternion publication, native
+actor wake, authoritative orientation, friction-anchor retirement,
+and Gu/SAP geometry invalidation share the existing position-edit
+transaction; translation-only edits retain the stored quaternion
+without roundoff-only discontinuities. The scene has no second
+transform registry. `Scene::prepare_solver_bodies` subsequently derives
+rotated world inertia from that same published actor quaternion.
+
+The currently admitted logical horizontal floor remains a +Y-normal
+primitive with identity user orientation; the reference adapter
+preserves `PxCreatePlane`'s private +X-to-+Y alignment on a pose edit.
+Arbitrary plane-normal rotation remains unsupported, rather than
+silently claiming general rotated plane geometry. Tests exercise
+quaternion rejection and normalization, translation preserving spin,
+rotated static-box SAP and original Gu SAT contact transitions, public
+World free-flight integration, and rejection of unsupported floor
+rotation across native and optional reference CPU backends.
+
 ## Initial integrated acceptance boundary: real CPU PGS
 
 A PR may be large. It must connect a **whole source execution slice**
