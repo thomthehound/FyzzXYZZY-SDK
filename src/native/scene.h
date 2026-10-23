@@ -935,13 +935,13 @@ private:
     // groups: cumulative offsets into indexed_managers_. The admitted
     // rigid-only default batches 128 bodies or until one contact exists.
     // Scratch boundaries only; source islands and Gu managers own data.
-    std::vector<std::size_t> solver_task_manager_ends_;
     // Serial lowering of DyDynamicsContext task chains. Iteration counts
     // come from the MAXIMUM of each chain's active PxsBodyCore counts,
     // and are never promoted to a scene-global maximum.
     struct SolverTask {
         std::size_t first_batch=0, batch_end=0;
-        std::size_t partition_end=0;
+        std::size_t manager_end=0, partition_end=0;
+        std::size_t constraint_end=0, solver_body_end=0;
         std::uint8_t position_iterations=0, velocity_iterations=0;
     };
     std::vector<SolverTask> solver_tasks_;
