@@ -2274,6 +2274,68 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        // Retiring an awake actor from an otherwise dormant SAP-only
+        // bridge invokes the FULL island rebuild in the first pass.
+        // The retained floor manager must still publish one speculative
+        // deactivation in the third pass, without requiring a new
+        // accurate sleep event or a local lost-edge split.
+        Scene retired_bridge;
+        const auto sleeping_rod=retired_bridge.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+        const auto active_rod=retired_bridge.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
+            retired_bridge.set_velocity(id,{0,9.81f,0});
+            retired_bridge.set_angular_velocity(id,{0,0.83f,0});
+        }
+        retired_bridge.step(1.0f);
+        for(fyzz::BodyId id:{sleeping_rod,active_rod}) {
+            retired_bridge.set_angular_velocity(id,{});
+            retired_bridge.set_velocity(id,{});
+        }
+        retired_bridge.set_position(sleeping_rod,{0,0.1f,0});
+        retired_bridge.set_position(active_rod,{0.6f,0.1f,0.6f});
+        const auto floor=retired_bridge.add_static_floor(0.0f);
+        retired_bridge.advance_collision();
+        bool independent_sleep=false;
+        for(int frame=0;frame<160;++frame) {
+            retired_bridge.set_velocity(active_rod,{0,0,0.25f});
+            retired_bridge.step(1.0f/120.0f);
+            if(retired_bridge.body_is_sleeping(sleeping_rod) &&
+               !retired_bridge.body_is_sleeping(active_rod) &&
+               retired_bridge.speculative_island_count()==1 &&
+               retired_bridge.accurate_island_count()==2) {
+                independent_sleep=true;
+                break;
+            }
+        }
+        const fyzz::native::Pair floor_pair{
+            std::min(floor,sleeping_rod),std::max(floor,sleeping_rod)};
+        const auto floor_edge=retired_bridge.contact_edge_index(floor_pair);
+        const auto prior_spec_count=
+            retired_bridge.active_speculative_contact_edge_count();
+        expect(independent_sleep &&
+               floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
+               retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               !retired_bridge.accurate_contact_edge_active(floor_pair),
+               "Retirement fixture did not establish independent island sleep");
+        retired_bridge.remove(active_rod);
+        retired_bridge.advance_collision();
+        const auto events=retired_bridge.deactivating_speculative_contact_edges();
+        expect(retired_bridge.body_is_sleeping(sleeping_rod) &&
+               !retired_bridge.speculative_contact_edge_active(floor_pair) &&
+               std::count(events.begin(),events.end(),floor_edge)==1 &&
+               retired_bridge.deactivating_accurate_contact_edges().empty() &&
+               retired_bridge.active_speculative_contact_edge_count()+2==
+                   prior_spec_count,
+               "Full rebuild skipped speculative retirement of dormant manager");
+        retired_bridge.advance_collision();
+        expect(retired_bridge.deactivating_speculative_contact_edges().empty() &&
+               !retired_bridge.speculative_contact_edge_active(floor_pair),
+               "Retired-actor rebuild replayed speculative deactivation");
+    }
+
+    {
         // A failed Gu touch-loss must restore the active contact-manager
         // bits as well as each IslandSim's counts and indexed worklists.
         // Structural EdgeUndo snapshots are taken *after* the edge's
