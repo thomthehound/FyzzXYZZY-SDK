@@ -100,7 +100,7 @@ struct ContactManifold {
 std::uint8_t source_box_box_contacts(
     Vec3 half0, Vec3 position0, Quat rotation0,
     Vec3 half1, Vec3 position1, Quat rotation1,
-    std::uint8_t& previous_axis,
+    float contact_distance, std::uint8_t& previous_axis,
     std::span<ContactPoint> output);
 
 class Scene final {
@@ -125,6 +125,7 @@ public:
     // One noncompliant PxsMaterialData per currently admitted shape.
     // A material change is consumed by next native contact preparation.
     void set_material(BodyId id, Material material);
+    void set_shape_offsets(BodyId id, float contact_offset, float rest_offset);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
@@ -409,6 +410,9 @@ private:
         float inverse_mass = 0.0f;  // immutable cached derived body property
         float contact_report_threshold=std::numeric_limits<float>::max();
         Material material{};
+        // PxShapeCore owns both distances for the sole admitted shape.
+        float contact_offset=0.02f;
+        float rest_offset=0.0f;
         RigidBodyDynamics dynamics{};
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.

@@ -635,6 +635,134 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
+void verify_source_shape_offsets() {
+    using fyzz::native::Scene;
+    using fyzz::ExecutionMode;
+    using fyzz::World;
+    using fyzz::WorldOptions;
+    using fyzz::RigidBodyDynamics;
+    using fyzz::Material;
+    constexpr float dt=1.0f/120.0f;
+    // Shape-specific contact distances must affect both the SAP
+    // candidate bounds and original Gu box-box contact generation.
+    {
+        Scene scene;
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.0f,2.0f,0.0f});
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.07f,2.0f,0.0f},1.0f);
+        scene.advance_collision();
+        if(!scene.pairs().empty() || !scene.contacts().empty())
+            throw std::runtime_error(
+                "Default box contact offsets admitted separated pair");
+        scene.set_shape_offsets(moving,0.10f,0.0f);
+        scene.advance_collision();
+        if(scene.pairs().size()!=1 || scene.contacts().size()!=1 ||
+           scene.contacts()[0].pair!=fyzz::native::Pair{fixed,moving} ||
+           scene.contacts()[0].count==0 ||
+           scene.found_contacts().size()!=1 ||
+           !scene.contact_edge_connected({fixed,moving}))
+            throw std::runtime_error(
+                "Shape contact offsets did not reach SAP and Gu box contact");
+        scene.set_shape_offsets(moving,0.02f,0.0f);
+        scene.advance_collision();
+        if(!scene.contacts().empty() || scene.lost_contacts().size()!=1 ||
+           !scene.pairs().empty())
+            throw std::runtime_error(
+                "Restored contact offset failed to retire Gu touch and SAP pair");
+    }
+    // Plane-box Gu uses exactly the same pair distance, even though the
+    // infinite plane enters broadphase as an unconditional candidate.
+    {
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.56f,0},1.0f);
+        scene.advance_collision();
+        if(!scene.contacts().empty())
+            throw std::runtime_error(
+                "Plane contact appeared outside default contact distance");
+        scene.set_shape_offsets(box,0.08f,0.0f);
+        scene.advance_collision();
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].pair!=fyzz::native::Pair{floor,box} ||
+           scene.contacts()[0].count==0)
+            throw std::runtime_error(
+                "Plane Gu ignored authored shape contact offset");
+        scene.set_shape_offsets(box,0.02f,0.0f);
+        scene.advance_collision();
+        if(!scene.contacts().empty())
+            throw std::runtime_error(
+                "Plane Gu retained contact after offset reduction");
+    }
+    // Rest offset is NOT the Gu contact-generation margin: Dy subtracts
+    // the pair rest distance from the already-generated separation.
+    // Both independent CPU backends must respond more strongly to a
+    // larger rest distance without changing contact-offset admission.
+    const auto solve=[&](ExecutionMode execution,float rest) {
+        World world(WorldOptions{execution});
+        const auto floor=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        Material material{};
+        material.static_friction=0;
+        material.dynamic_friction=0;
+        material.restitution=0;
+        world.set_body_material(floor,material);
+        world.set_body_material(box,material);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        world.set_body_dynamics(box,d);
+        world.set_body_shape_offsets(box,0.08f,rest);
+        world.step(dt);
+        return world.body_state(box);
+    };
+    const auto native_zero=solve(ExecutionMode::NativeCpu,0.0f);
+    const auto native_rest=solve(ExecutionMode::NativeCpu,0.035f);
+    if(!std::isfinite(native_rest.position.y) ||
+       !std::isfinite(native_zero.position.y) ||
+       !(native_rest.position.y>native_zero.position.y+1.0e-3f))
+        throw std::runtime_error(
+            "Dy contact bias ignored source PxShape rest distance");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto ref_zero=solve(ExecutionMode::ReferencePhysXCpuLegacyGu,0.0f);
+    const auto ref_rest=solve(ExecutionMode::ReferencePhysXCpuLegacyGu,0.035f);
+    if(!std::isfinite(ref_zero.position.y) ||
+       !std::isfinite(ref_rest.position.y) ||
+       !(ref_rest.position.y>ref_zero.position.y+1.0e-3f))
+        throw std::runtime_error(
+            "Reference PhysX shape rest distance did not change contact bias");
+#endif
+    // Validate the full authored pair BEFORE either backend mutates it.
+    for(const auto mode:{ExecutionMode::NativeCpu
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+            ,ExecutionMode::ReferencePhysXCpuLegacyGu
+#endif
+        }) {
+        World world(WorldOptions{mode});
+        const auto id=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const auto invalid=[&](float contact,float rest) {
+            try {world.set_body_shape_offsets(id,contact,rest);}
+            catch(const std::invalid_argument&) {return true;}
+            return false;
+        };
+        if(!invalid(0.02f,0.02f) || !invalid(-0.01f,-0.02f) ||
+           !invalid(std::numeric_limits<float>::infinity(),0.0f) ||
+           !invalid(0.02f,std::numeric_limits<float>::quiet_NaN()))
+            throw std::runtime_error(
+                "Invalid source shape offset pair was admitted");
+        // Both source PxShape setters validate against the *old*
+        // opposite field; transitions must work in both directions.
+        world.set_body_shape_offsets(id,0.10f,0.08f);
+        world.set_body_shape_offsets(id,0.02f,-0.01f);
+        world.step(dt);
+        if(!std::isfinite(world.body_state(id).position.y))
+            throw std::runtime_error(
+                "Valid shape offset transition corrupted integration");
+    }
+}
+
 void verify_source_body_dynamics_api() {
     using namespace fyzz;
     RigidBodyDynamics configured{};
@@ -6737,6 +6865,7 @@ int run_native_scene_smoke() {
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_rigid_contact_limits();
+    verify_source_shape_offsets();
     verify_source_zero_velocity_iteration_request();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();

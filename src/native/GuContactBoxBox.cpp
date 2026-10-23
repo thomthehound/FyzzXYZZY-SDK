@@ -699,7 +699,7 @@ static PxI32 doBoxBoxContactGeneration(PxContactBuffer& contactBuffer,
 std::uint8_t source_box_box_contacts(
     Vec3 half0, Vec3 position0, Quat rotation0,
     Vec3 half1, Vec3 position1, Quat rotation1,
-    std::uint8_t& previous_axis,
+    float contact_distance, std::uint8_t& previous_axis,
     std::span<ContactPoint> output)
 {
     if (output.size() < 255)
@@ -708,7 +708,7 @@ std::uint8_t source_box_box_contacts(
     PxU32 axis=previous_axis;
     const PxI32 count=doBoxBoxContactGeneration(
         buffer,{half0.x,half0.y,half0.z},{half1.x,half1.y,half1.z},
-        axis,boxTransform(position0,rotation0),boxTransform(position1,rotation1),0.04f);
+        axis,boxTransform(position0,rotation0),boxTransform(position1,rotation1),contact_distance);
     previous_axis = count ? static_cast<std::uint8_t>(axis) : 0;
     return static_cast<std::uint8_t>(count);
 }

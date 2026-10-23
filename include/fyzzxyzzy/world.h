@@ -120,6 +120,10 @@ public:
     virtual void set_body_material(BodyId, Material) {
         throw std::logic_error("This backend cannot author rigid material");
     }
+    // PxShape's contact and rest distances belong to the existing actor shape.
+    virtual void set_body_shape_offsets(BodyId, float, float) {
+        throw std::logic_error("This backend cannot author shape offsets");
+    }
     virtual void set_body_dynamics(BodyId, RigidBodyDynamics) {
         throw std::logic_error("This backend cannot author rigid dynamics");
     }
@@ -150,6 +154,9 @@ public:
     // Matches PxRigidDynamic::addTorque(..., PxForceMode::eIMPULSE).
     void apply_body_torque_impulse(BodyId id, Vec3 impulse);
     void set_body_material(BodyId id, Material material);
+    // PhysX PxShape::setContactOffset / setRestOffset: both in metres.
+    // Contact offset must be nonnegative and greater than rest offset.
+    void set_body_shape_offsets(BodyId id, float contact_offset, float rest_offset);
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics);
 
 private:

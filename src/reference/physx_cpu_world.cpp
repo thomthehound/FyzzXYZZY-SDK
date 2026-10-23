@@ -200,6 +200,25 @@ struct PhysXCpuWorld final : WorldBackend {
         actors[id] = nullptr;
     }
 
+    void set_body_shape_offsets(BodyId id, float contact_offset,
+                                float rest_offset) override {
+        if(id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        physx::PxShape* shape=nullptr;
+        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
+            throw std::logic_error("Reference actor lacks single shape");
+        // PxShape validates each setter against the current opposite
+        // distance. Apply the valid final pair in an order that preserves
+        // the intermediate source invariant for either edit direction.
+        if(contact_offset>shape->getRestOffset()) {
+            shape->setContactOffset(contact_offset);
+            shape->setRestOffset(rest_offset);
+        } else {
+            shape->setRestOffset(rest_offset);
+            shape->setContactOffset(contact_offset);
+        }
+    }
+
     void set_body_material(BodyId id, Material source) override {
         if (id>=actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");

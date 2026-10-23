@@ -136,6 +136,14 @@ void World::set_body_material(BodyId id, Material material) {
     impl_->set_body_material(id,material);
 }
 
+void World::set_body_shape_offsets(BodyId id, float contact_offset,
+                                   float rest_offset) {
+    if (!std::isfinite(contact_offset) || !std::isfinite(rest_offset) ||
+        contact_offset < 0.0f || rest_offset >= contact_offset)
+        throw std::invalid_argument("Invalid PhysX contact/rest shape offsets");
+    impl_->set_body_shape_offsets(id, contact_offset, rest_offset);
+}
+
 void World::set_body_dynamics(BodyId id, RigidBodyDynamics d) {
     // PxsBodyCore holds squared velocity limits in PxReal. Reject
     // overflow before any backend can partially mutate an actor.

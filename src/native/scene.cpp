@@ -403,6 +403,28 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     actor.ready_for_sleep=false;
     actor.sleeping=false;
 }
+void Scene::set_shape_offsets(BodyId id, float contact_offset,
+                              float rest_offset) {
+    // NpShape::setContactOffset and setRestOffset require finite values,
+    // contactOffset >= 0 and restOffset < contactOffset. The two fields
+    // are published together, avoiding invalid intermediate authored
+    // states when lowering to the source PxShape API.
+    if (!std::isfinite(contact_offset) || !std::isfinite(rest_offset) ||
+        contact_offset < 0.0f || rest_offset >= contact_offset)
+        throw std::invalid_argument("Native PhysX shape offsets invalid");
+    auto& actor=require(id);
+    if(actor.contact_offset==contact_offset &&
+       actor.rest_offset==rest_offset)return;
+    // An authored shape change invalidates prior friction correlation;
+    // retire only this shape's anchors in the existing scene-owned cache.
+    std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
+        return patch.pair.a==id || patch.pair.b==id;
+    });
+    actor.contact_offset=contact_offset;
+    actor.rest_offset=rest_offset;
+    dirty_=true;
+}
+
 void Scene::set_material(BodyId id, Material material) {
     // PxMaterial / PxsMaterialData admission for ordinary rigid contacts.
     // The source compliant branch uses negative restitution and damping;
@@ -500,9 +522,7 @@ BodyState Scene::body_state(BodyId id) const {
             actor.orientation, actor.angular_velocity, actor.sleeping};
 }
 void Scene::update_bounds() {
-    // Current reference SDK uses PhysX's ordinary 0.02m shape contact offset.
-    // That value will become scene material/shape state in the source import.
-    constexpr float contact_offset = 0.02f;
+    // GuBounds expands each shape by its own PxShapeCore contactOffset.
     endpoints_.clear();
     for (std::size_t index = 0; index < actors_.size(); ++index) {
         auto& actor = actors_[index];
@@ -526,9 +546,9 @@ void Scene::update_bounds() {
                 std::abs(x.z)*h.x + std::abs(y.z)*h.y + std::abs(z.z)*h.z
             };
         }
-        extent.x += contact_offset;
-        extent.y += contact_offset;
-        extent.z += contact_offset;
+        extent.x += actor.contact_offset;
+        extent.y += actor.contact_offset;
+        extent.z += actor.contact_offset;
         const std::array<float, 6> e{
             p.x-extent.x, p.y-extent.y, p.z-extent.z,
             p.x+extent.x, p.y+extent.y, p.z+extent.z};
@@ -910,10 +930,7 @@ void Scene::publish_pairs() {
     ++pair_epoch_;
 }
 void Scene::update_contacts() {
-    // The source's default contact offsets are currently 0.02m per shape.
-    // The near-contact generation distance is their *sum* (0.04m).
-    // Once N1 imports per-shape state, this is computed per candidate.
-    constexpr float contact_distance = 0.04f;
+    // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
     std::size_t old_cursor = 0;
@@ -925,6 +942,9 @@ void Scene::update_contacts() {
             ++old_cursor;
         const Actor& a = actors_[pair.a];
         const Actor& b = actors_[pair.b];
+        const float contact_distance=a.contact_offset+b.contact_offset;
+        if(!std::isfinite(contact_distance))
+            throw std::overflow_error("Native Gu contact distance overflow");
         ContactManifold manifold{};
         manifold.pair = pair;
         manifold.contact_offset = next_contact_points_.size();
@@ -1001,7 +1021,7 @@ void Scene::update_contacts() {
             manifold.count = source_box_box_contacts(
                 a.half_extents, a.position, a.orientation,
                 b.half_extents, b.position, b.orientation,
-                manifold.collision_axis, box_contact_scratch_);
+                contact_distance, manifold.collision_axis, box_contact_scratch_);
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
@@ -3255,6 +3275,12 @@ void Scene::prepare_constraints(float seconds) {
         manifold.friction_patch_count = 0;
         const Actor& actor0 = actors_[manifold.pair.a];
         const Actor& actor1 = actors_[manifold.pair.b];
+        // DyContactPrepShared::constructContactConstraint subtracts
+        // contactDesc.restDistance from each Gu surface separation.
+        const float rest_distance=actor0.rest_offset+actor1.rest_offset;
+        if(!std::isfinite(rest_distance) ||
+           !std::isfinite(rest_distance+friction_offset_threshold))
+            throw std::overflow_error("Native Dy rest distance overflow");
         // DyContactPrepShared::extractContacts applies the minimum
         // body-level maxContactImpulse to each Gu point. With the
         // admitted single-material shape, a zero cap suppresses ALL
@@ -3505,7 +3531,7 @@ void Scene::prepare_constraints(float seconds) {
                 static_cast<double>(dot(ra,ra)) + dot(rb,rb);
             const double vel_multiplier = response > 0.0
                 ? 1.0 / response : 0.0;
-            const float penetration = contact.separation;
+            const float penetration = contact.separation-rest_distance;
             const float penetration_inv_dt = penetration*inv_dt;
             const bool separated = penetration >= 0.0f;
             const bool closing = -vrel > penetration_inv_dt;
@@ -3588,7 +3614,8 @@ void Scene::prepare_constraints(float seconds) {
                     const auto& run=contact_patch_scratch_[cp];
                     for(std::size_t j=run.start;j<run.start+run.count;++j) {
                         const auto& point=manifold.points[j];
-                        if(point.separation>=friction_offset_threshold)
+                        if(point.separation>=
+                           friction_offset_threshold+rest_distance)
                             continue;
                         const Vec3 w=point.position;
                         if(count==0) {
