@@ -1413,6 +1413,85 @@ void verify_source_contact_notification_world() {
 #endif
 }
 
+void verify_removed_actor_touch_notifications() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/120.0f;
+    const auto verify=[](ExecutionMode mode) {
+        WorldOptions opts{mode};
+        opts.contact_notifications=true;
+        World world(opts);
+        const auto floor=world.add_static_floor(0.0f);
+        const auto left=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-4.0f,0.49f,0},1.0f);
+        const auto right=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4.0f,0.49f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        world.set_body_dynamics(left,d);
+        world.set_body_dynamics(right,d);
+        world.step(dt);
+        if(world.contact_events().size()!=2)
+            throw std::runtime_error(
+                "Source removed-actor fixture lacks both initial contacts");
+        // Both actors are retired before the next source Sc fetch. The
+        // original callback marks dangling actor pointers with
+        // eREMOVED_ACTOR_*. A stale PxActor address must be compared
+        // only against IDs preserved on the retirement path.
+        world.remove_body(left);
+        world.remove_body(right);
+        world.step(dt);
+        const auto events=world.contact_events();
+        if(events.size()!=2 || !world.contact_event_points().empty())
+            throw std::runtime_error(
+                "Retiring rigid actors did not publish both Lost contacts");
+        bool saw_left=false,saw_right=false;
+        for(const auto& event:events) {
+            if(event.body0!=floor ||
+               event.kind!=ContactEventKind::Lost ||
+               event.contact_count!=0 ||
+               event.normal_impulse!=0.0)
+                throw std::runtime_error(
+                    "Removed-actor Sc Lost callback has invalid event fields");
+            if(event.body1==left)saw_left=true;
+            else if(event.body1==right)saw_right=true;
+            else throw std::runtime_error(
+                "Removed-actor callback corrupted stable BodyId tokens");
+        }
+        if(!saw_left || !saw_right)
+            throw std::runtime_error(
+                "Two removed actors were aliased in original callback identity");
+        world.step(dt);
+        if(!world.contact_events().empty())
+            throw std::runtime_error(
+                "Removed actor Lost callbacks replayed on a later fetch");
+
+        // Removal of the STATIC endpoint must retain the same
+        // identity contract, not only the removed dynamic endpoint.
+        const auto support=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        world.set_body_dynamics(box,d);
+        world.step(dt);
+        if(world.contact_events().size()!=1 ||
+           world.contact_events()[0].kind!=ContactEventKind::Found)
+            throw std::runtime_error(
+                "Removed-static callback fixture missed initial contact");
+        world.remove_body(support);
+        world.step(dt);
+        if(world.contact_events().size()!=1 ||
+           world.contact_events()[0].kind!=ContactEventKind::Lost ||
+           world.contact_events()[0].body0!=support ||
+           world.contact_events()[0].body1!=box)
+            throw std::runtime_error(
+                "Retired static actor lost its stable Sc contact identity");
+    };
+    verify(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    verify(ExecutionMode::ReferencePhysXCpuLegacyGu);
+    verify(ExecutionMode::ReferencePhysXCpu);
+#endif
+}
+
 void verify_source_signed_compliant_contact_writeback() {
     using namespace fyzz;
     constexpr float dt=1.0f/60.0f;
@@ -7554,6 +7633,7 @@ int run_native_scene_smoke() {
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
     verify_source_contact_notification_world();
+    verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
     verify_source_pose_authoring();
