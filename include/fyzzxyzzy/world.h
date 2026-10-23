@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <limits>
+#include <span>
 #include <stdexcept>
 
 namespace fyzz {
@@ -38,6 +39,9 @@ enum class ExecutionMode : std::uint8_t {
 
 struct WorldOptions {
     ExecutionMode execution = ExecutionMode::ReferencePhysXCpu;
+    // PxPairFlag eNOTIFY_TOUCH_{FOUND,PERSISTS,LOST} plus
+    // eNOTIFY_CONTACT_POINTS. Disabled for original default filter policy.
+    bool contact_notifications = false;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX
@@ -84,6 +88,18 @@ struct RigidBodyDynamics {
 
 using BodyId = std::uint32_t;
 
+// ShapeInteraction / NPhaseCore user notification from a completed
+// simulation fetch, not Gu broadphase found/lost overlap candidates.
+enum class ContactEventKind : std::uint8_t { Found, Persists, Lost };
+struct ContactEvent {
+    BodyId body0=0, body1=0; // canonical actor IDs (one shape per actor)
+    ContactEventKind kind=ContactEventKind::Found;
+    std::uint8_t contact_count=0;
+    // Sum of the source per-contact normal impulse force buffer.
+    // Compliant spring impulses can be signed; lost contacts report zero.
+    double normal_impulse=0.0;
+};
+
 struct BodyState {
     Vec3 position;
     Vec3 velocity;
@@ -107,6 +123,9 @@ public:
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
+    virtual std::span<const ContactEvent> contact_events() const {
+        return {};
+    }
     // All built-in CPU backends implement scene actor lifecycle. Additional
     // backends must reject unsupported operations explicitly.
     virtual void set_body_position(BodyId, Vec3) {
@@ -156,6 +175,8 @@ public:
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
+    // Events are valid until the next completed World::step.
+    std::span<const ContactEvent> contact_events() const;
     void set_body_position(BodyId id, Vec3 position);
     // PxRigidActor::setGlobalPose, with logical identity for the SDK floor.
     void set_body_pose(BodyId id, Vec3 position, Quat orientation);

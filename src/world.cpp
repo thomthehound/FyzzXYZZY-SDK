@@ -13,10 +13,11 @@ namespace fyzz {
 
 #if FYZZXYZZY_ENABLE_PHYSX_SOURCE
 // Implemented in the separately compiled reference/PhysX CPU target.
-std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(bool legacy_gu);
+std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(
+    bool legacy_gu, bool contact_notifications);
 #endif
 // Implemented by the SDK-owned native scene, with no reference PhysX dependency.
-std::unique_ptr<WorldBackend> create_native_cpu_backend();
+std::unique_ptr<WorldBackend> create_native_cpu_backend(bool contact_notifications);
 
 namespace {
 void validate_half_extents(Vec3 half_extents) {
@@ -48,14 +49,15 @@ std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     case ExecutionMode::ReferencePhysXCpuLegacyGu:
 #if FYZZXYZZY_ENABLE_PHYSX_SOURCE
         return create_reference_physx_cpu_backend(
-            options.execution==ExecutionMode::ReferencePhysXCpuLegacyGu);
+            options.execution==ExecutionMode::ReferencePhysXCpuLegacyGu,
+            options.contact_notifications);
 #else
         throw std::logic_error(
             "Reference PhysX CPU backend was disabled at SDK build time; "
             "the native CPU solver is not yet integrated");
 #endif
     case ExecutionMode::NativeCpu:
-        return create_native_cpu_backend();
+        return create_native_cpu_backend(options.contact_notifications);
     case ExecutionMode::NativePortableGpu:
         throw std::logic_error(
             "Native FyzzXYZZY GPU scene is not yet implemented; "
@@ -110,6 +112,9 @@ void World::step(float seconds) {
 
 BodyState World::body_state(BodyId id) const {
     return impl_->body_state(id);
+}
+std::span<const ContactEvent> World::contact_events() const {
+    return impl_->contact_events();
 }
 void World::set_body_position(BodyId id, Vec3 position) {
     validate_position(position);

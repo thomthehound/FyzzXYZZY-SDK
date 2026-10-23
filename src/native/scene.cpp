@@ -4046,6 +4046,58 @@ void Scene::solve_constraints() {
     task_solver_begin=task.solver_body_end;
     }
 }
+void Scene::publish_contact_events() {
+    if(!contact_notifications_)return;
+    // ScNPhaseCore::processPersistentContactEvents reports touching
+    // interactions only while at least one rigid body is active.
+    // The found/lost lists and sorted Gu managers belong to this very
+    // scene: no shadow contact-pair history or global event registry.
+    next_contact_events_.clear();
+    next_contact_events_.reserve(manifolds_.size()+lost_contacts_.size());
+    std::size_t lost=0,found=0;
+    for(const auto& manifold:manifolds_) {
+        while(lost<lost_contacts_.size() &&
+              lost_contacts_[lost]<manifold.pair) {
+            const Pair pair=lost_contacts_[lost++];
+            next_contact_events_.push_back({
+                pair.a,pair.b,ContactEventKind::Lost,0,0.0});
+        }
+        while(found<found_contacts_.size() &&
+              found_contacts_[found]<manifold.pair)++found;
+        const bool is_new=found<found_contacts_.size() &&
+            found_contacts_[found]==manifold.pair;
+        const auto& first=actors_[manifold.pair.a];
+        const auto& second=actors_[manifold.pair.b];
+        const bool active=
+            (first.kind==Kind::DynamicBox && !first.sleeping) ||
+            (second.kind==Kind::DynamicBox && !second.sleeping);
+        if(!is_new && !active)continue;
+        if(manifold.contact_offset>normal_impulse_writeback_.size() ||
+           manifold.count>normal_impulse_writeback_.size()-
+                              manifold.contact_offset)
+            throw std::logic_error(
+                "Contact notification references unpublished Gu forces");
+        double impulse=0.0;
+        for(std::size_t i=0;i<manifold.count;++i)
+            impulse+=normal_impulse_writeback_[manifold.contact_offset+i];
+        if(!std::isfinite(impulse))
+            throw std::overflow_error(
+                "Contact notification impulse is not finite");
+        next_contact_events_.push_back({
+            manifold.pair.a,manifold.pair.b,
+            is_new?ContactEventKind::Found:ContactEventKind::Persists,
+            manifold.count,impulse});
+    }
+    for(;lost<lost_contacts_.size();++lost) {
+        const Pair pair=lost_contacts_[lost];
+        next_contact_events_.push_back({
+            pair.a,pair.b,ContactEventKind::Lost,0,0.0});
+    }
+    // Publish only after every Sc/Dy stage and this event preparation
+    // succeeds. A rejected step leaves the previous returned span and
+    // backing storage untouched; the scratch is reused on retry.
+    contact_events_.swap(next_contact_events_);
+}
 void Scene::write_back_contacts() {
     // DySolverConstraints.cpp::writeBackContact copies final forceBuffer
     // impulses after the last velocity/writeback solve. Gu contact order,
@@ -5084,6 +5136,9 @@ void Scene::step(float seconds) {
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.
+    // ScNPhaseCore reports are derived only after final Gu/Dy force
+    // writeback and all body/island integration has succeeded.
+    publish_contact_events();
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
@@ -5204,6 +5259,12 @@ namespace fyzz {
 namespace {
 class NativeCpuWorld final : public WorldBackend {
 public:
+    explicit NativeCpuWorld(bool contact_notifications) {
+        scene_.set_contact_notifications(contact_notifications);
+    }
+    std::span<const ContactEvent> contact_events() const override {
+        return scene_.contact_events();
+    }
     BodyId add_static_box(Vec3 h, Vec3 p) override {
         return scene_.add_static_box(h, p);
     }
@@ -5245,7 +5306,7 @@ private:
     native::Scene scene_;
 };
 } // namespace
-std::unique_ptr<WorldBackend> create_native_cpu_backend() {
-    return std::make_unique<NativeCpuWorld>();
+std::unique_ptr<WorldBackend> create_native_cpu_backend(bool notify) {
+    return std::make_unique<NativeCpuWorld>(notify);
 }
 } // namespace fyzz

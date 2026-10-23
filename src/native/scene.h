@@ -110,6 +110,13 @@ public:
     Scene& operator=(const Scene&) = delete;
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
+    // Configured only at World construction, before scene admission.
+    void set_contact_notifications(bool enabled) noexcept {
+        contact_notifications_=enabled;
+    }
+    std::span<const ContactEvent> contact_events() const noexcept {
+        return contact_events_;
+    }
 
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
@@ -588,6 +595,7 @@ private:
     void solve_constraints();
     void write_back_contacts();
     void update_threshold_stream(float seconds);
+    void publish_contact_events();
     void publish_solver_bodies();
 
     std::vector<Actor> actors_;
