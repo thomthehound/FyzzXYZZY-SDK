@@ -1306,7 +1306,8 @@ void verify_source_mixed_split_and_sleep_order() {
     const auto independent=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{30,0.5f,0},1.0f);
     const Pair dormant_floor{dormant,floor};
-    const Pair independent_floor{independent,floor};
+    const Pair independent_floor{std::min(independent,floor),
+                                 std::max(independent,floor)};
     bool third_pass_ready=false;
     for(int frame=0;frame<150;++frame) {
         scene.set_velocity(awake,{0,0,0.25f});
