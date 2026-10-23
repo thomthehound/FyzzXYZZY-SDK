@@ -423,8 +423,10 @@ void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
     auto& actor=require(id);
     if(actor.kind!=Kind::DynamicBox)
         throw std::logic_error("Static actors have no dynamic solver state");
-    // ScBodyCore::setSolverIterationCounts packs two nonzero uint8
-    // iteration counts. The source pre-integrator stores squared speed
+    // ScBodyCore::setSolverIterationCounts requires at least one
+    // position iteration, but permits ZERO requested velocity iterations.
+    // DySolverControl still runs its mandatory final velocity/writeback
+    // pass when that count is zero. The source stores squared speed
     // limits in PxReal. Validate the complete edit before publishing it.
     if(!std::isfinite(d.linear_damping) ||
        !std::isfinite(d.angular_damping) ||
