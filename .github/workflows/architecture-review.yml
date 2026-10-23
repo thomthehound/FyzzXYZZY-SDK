@@ -17,7 +17,7 @@ permissions:
 jobs:
   architecture-review:
     name: Architecture ownership and runtime review
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
