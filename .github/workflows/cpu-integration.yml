@@ -216,7 +216,14 @@ jobs:
           $toolset = Get-ChildItem -Path (Join-Path $installation 'VC\Tools\MSVC') -Directory |
               Sort-Object Name -Descending | Select-Object -First 1
           if (-not $toolset) { throw 'MSVC toolset version not found' }
-          "toolchain=$($env:ImageOS)-msvc-$($toolset.Name)" >> $env:GITHUB_OUTPUT
+          # SDK headers and CRT also contribute to compiled godot-cpp objects.
+          # Roll the cache when the Windows SDK changes, not for unrelated
+          # hosted-runner image patch updates.
+          $sdkIncludes = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
+          $sdkVersion = Get-ChildItem -Path $sdkIncludes -Directory |
+              Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $sdkVersion) { throw 'Windows SDK include version not found' }
+          "toolchain=$($env:ImageOS)-msvc-$($toolset.Name)-sdk-$($sdkVersion.Name)" >> $env:GITHUB_OUTPUT
       - name: Restore compiled godot-cpp
         id: godot_cpp_cache
         uses: actions/cache/restore@v6
