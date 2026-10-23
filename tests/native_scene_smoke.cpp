@@ -548,6 +548,30 @@ void verify_source_rigid_contact_limits() {
          reference_wide.position.y>reference_limited.position.y))
         throw std::runtime_error(
             "Source PhysX reference depenetration cap ignored authoring");
+    const auto reference_impulse_case=[](float cap) {
+        fyzz::World reference(fyzz::WorldOptions{
+            fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+        reference.add_static_floor(0.0f);
+        const auto box=reference.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.max_contact_impulse=cap;
+        reference.set_body_dynamics(box,d);
+        reference.set_body_velocity(box,{0,-5.0f,0});
+        reference.step(dt);
+        return reference.body_state(box).velocity.y;
+    };
+    const float source_disabled=reference_impulse_case(0.0f);
+    const float source_capped=reference_impulse_case(0.05f);
+    const float source_unlimited=reference_impulse_case(
+        std::numeric_limits<float>::max());
+    if(!(std::isfinite(source_disabled) &&
+         std::isfinite(source_capped) &&
+         std::isfinite(source_unlimited) &&
+         source_disabled<source_capped &&
+         source_capped<source_unlimited))
+        throw std::runtime_error(
+            "Real PhysX CPU reference contact impulse limits lack ordered response");
 #endif
 }
 
