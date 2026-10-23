@@ -2832,6 +2832,25 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                very_light.body_state(left).position.x==0.0f &&
                very_light.body_state(right).position.x==1.5f,
                "Tiny-mass contact substituted a zero angular tensor");
+        // Zero maxContactImpulse is extracted before Dy constraint
+        // construction. Even an unrepresentable angular tensor must
+        // remain translation-capable when the existing Gu touch has
+        // no response rows. This also checks a retry after rejection.
+        fyzz::RigidBodyDynamics no_response{};
+        no_response.max_contact_impulse=0.0f;
+        very_light.set_dynamics(left,no_response);
+        very_light.step(1.0f/120.0f);
+        expect(very_light.frame_index()==1 &&
+               very_light.contacts().size()==1 &&
+               very_light.contact_edge_connected({left,right}) &&
+               very_light.solved_normal_impulses().size()==
+                   very_light.contacts()[0].count &&
+               std::all_of(very_light.solved_normal_impulses().begin(),
+                           very_light.solved_normal_impulses().end(),
+                           [](double value){return value==0.0;}) &&
+               std::isfinite(very_light.body_state(left).position.y) &&
+               std::isfinite(very_light.body_state(right).position.y),
+               "Zero-capped Gu touch unnecessarily required angular inertia");
         very_light.set_position(right,{5,5,0});
         very_light.set_velocity(left,{1,0,0});
         very_light.step(1.0f/120.0f);
