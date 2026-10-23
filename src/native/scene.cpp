@@ -257,10 +257,18 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     if(!finite(position) || !finite(orientation) ||
        !std::isfinite(magnitude) || std::abs(magnitude-1.0f)>=1.0e-2f)
         throw std::invalid_argument("Native rigid pose is not sane");
-    const Quat normalized{
+    Quat normalized{
         orientation.x/magnitude,orientation.y/magnitude,
         orientation.z/magnitude,orientation.w/magnitude};
     auto& actor=require(id);
+    // A translation-only edit passes the stored orientation unchanged.
+    // Avoid introducing roundoff-only rotation discontinuities while
+    // preserving the existing idempotent-pose/anchor-cache contract.
+    if(orientation.x==actor.orientation.x &&
+       orientation.y==actor.orientation.y &&
+       orientation.z==actor.orientation.z &&
+       orientation.w==actor.orientation.w)
+        normalized=actor.orientation;
     // The admitted plane's world normal is fixed to +Y; rotated
     // planes require the still-unported general plane pose geometry.
     if(actor.kind==Kind::StaticPlane &&
