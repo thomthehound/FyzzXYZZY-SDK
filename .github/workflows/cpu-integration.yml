@@ -45,8 +45,17 @@ jobs:
           key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan development packages
         run: bash .github/scripts/install-vulkan.sh
+      - name: Identify completed Ubuntu package archives
+        id: apt_archive_state
+        shell: bash
+        run: |
+          if find .ci-cache/vulkan-apt/archives -maxdepth 1 -type f -name '*.deb' -print -quit | grep -q .; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Save cached Ubuntu Vulkan packages
-        if: steps.apt_debs.outputs.cache-hit != 'true'
+        if: steps.apt_debs.outputs.cache-hit != 'true' && steps.apt_archive_state.outputs.available == 'true'
         uses: actions/cache/save@v6
         with:
           path: .ci-cache/vulkan-apt/archives
@@ -331,8 +340,17 @@ jobs:
           key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan SDK
         run: bash .github/scripts/install-vulkan.sh
+      - name: Identify completed Ubuntu package archives
+        id: apt_archive_state
+        shell: bash
+        run: |
+          if find .ci-cache/vulkan-apt/archives -maxdepth 1 -type f -name '*.deb' -print -quit | grep -q .; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Save cached Ubuntu Vulkan packages
-        if: steps.apt_debs.outputs.cache-hit != 'true'
+        if: steps.apt_debs.outputs.cache-hit != 'true' && steps.apt_archive_state.outputs.available == 'true'
         uses: actions/cache/save@v6
         with:
           path: .ci-cache/vulkan-apt/archives
