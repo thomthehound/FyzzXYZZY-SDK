@@ -47,7 +47,10 @@ jobs:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
             build/_deps/fyzzxyzzy_godot_cpp-build
+            build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
+            build/.ninja_deps
+            build/.ninja_log
           key: godotcpp-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.FYZZXYZZY_CI_IMAGE }}-507ed9d8-4.7-template_debug-Release
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
@@ -69,6 +72,9 @@ jobs:
         run: |
           test -s build/bin/libgodot-cpp.linux.template_debug.x86_64.a
           test -d build/_deps/fyzzxyzzy_godot_cpp-src/.git
+          test -d build/_deps/fyzzxyzzy_godot_cpp-subbuild
+          test -s build/.ninja_deps
+          test -s build/.ninja_log
           test -d build/_deps/fyzzxyzzy_godot_cpp-build/gen/include/godot_cpp
           find build/_deps/fyzzxyzzy_godot_cpp-build -type f -name '*.o' -print -quit | grep -q .
       - name: Cache compiled godot-cpp
@@ -78,7 +84,10 @@ jobs:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
             build/_deps/fyzzxyzzy_godot_cpp-build
+            build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
+            build/.ninja_deps
+            build/.ninja_log
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build --output-on-failure
@@ -167,6 +176,7 @@ jobs:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
             build/_deps/fyzzxyzzy_godot_cpp-build
+            build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
           key: godotcpp-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.FYZZXYZZY_CI_IMAGE }}-507ed9d8-4.7-template_debug-Release
       - name: Configure
@@ -202,6 +212,7 @@ jobs:
           $buildDir = 'build/_deps/fyzzxyzzy_godot_cpp-build'
           if (-not (Test-Path $library) -or (Get-Item $library).Length -eq 0) { throw 'Missing compiled godot-cpp library' }
           if (-not (Test-Path 'build/_deps/fyzzxyzzy_godot_cpp-src/.git')) { throw 'Missing pinned godot-cpp source checkout' }
+          if (-not (Test-Path 'build/_deps/fyzzxyzzy_godot_cpp-subbuild')) { throw 'Missing dependency population state' }
           if (-not (Test-Path "$buildDir/gen/include/godot_cpp")) { throw 'Missing generated bindings' }
           if (-not (Get-ChildItem -Path $buildDir -Filter '*.obj' -File -Recurse | Select-Object -First 1)) {
             throw 'Missing godot-cpp compilation intermediates'
@@ -213,6 +224,7 @@ jobs:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
             build/_deps/fyzzxyzzy_godot_cpp-build
+            build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
