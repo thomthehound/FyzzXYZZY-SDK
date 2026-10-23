@@ -529,9 +529,12 @@ persistent friction history and island/threshold bookkeeping. Immutable
 shape geometry and actor materials are not cloned; there is no second
 simulation or solver.
 
-**Remaining copy cost:** successful simulation steps still checkpoint
-mutable dynamic-body motion, persistent friction history and the
-observable active-node indices. Persistent source island handles,
+**Remaining copy cost:** native steps now journal only mutated
+dynamic-body motion, while the source's retained friction anchors
+and previous exceeded-threshold streams use reversible scene-owned
+buffer rotations instead of O(cache size) checkpoint copies.
+Active-node publication and solver-partition metadata still incur
+checkpoint bandwidth. Persistent source island handles,
 node membership chains, static-touch counts and accurate solver-node
 offsets are **now copied only on the first actual graph ownership
 mutation in a publication**, never on an unchanged-topology PGS step.
@@ -608,7 +611,10 @@ actor admission does. The existing failing-solver local-split
 regression additionally requires the snapshot diagnostic to roll
 back and a successful retry to match the clean-scene count.
 These are structural, not wall-clock, cost assertions: active-index
-publication and dynamic motion/friction still incur per-step copies.
+publication and solver-partition metadata still incur per-step copies.
+Motion uses a sparse journal; friction and threshold caches use
+reversible buffer ownership, preserving the original published state
+when a solve is rejected.
 That remaining dynamic-scene checkpoint cost is a
 performance-remediation item, not the final source publication
 architecture. As the original `ScPipeline`/`Dy::DynamicsContext`

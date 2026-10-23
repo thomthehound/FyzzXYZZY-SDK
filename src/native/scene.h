@@ -906,7 +906,8 @@ private:
         std::vector<EdgeIndex> active_handles;
         std::vector<EdgeIndex> retired_handles, free_handles;
         bool handles_saved=false;
-          std::vector<FrictionPatch> friction_patches;
+        // These prior caches remain in scene-owned scratch on rotation.
+        std::uint64_t friction_cache_epoch=0, threshold_cache_epoch=0;
         // A quiet step reuses the published Gu manifold arena. Solver
         // preparation mutates only these three exposed descriptor fields;
         // capture them only if no contact-epoch swap will undo the write.
@@ -918,7 +919,6 @@ private:
         std::vector<ManifoldSolverMetadata> quiet_manifold_metadata;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
-        std::vector<ThresholdPair> threshold_previous;
         std::vector<ForceThresholdReport> threshold_changes;
         std::vector<std::size_t> partition_ends;
         // Source graph membership is snapshotted only before its first
@@ -967,6 +967,7 @@ private:
     bool activity_checkpoint_active_=false;
     std::vector<ThresholdPair> threshold_current_;
     std::vector<ThresholdPair> threshold_previous_;
+    std::uint64_t threshold_cache_epoch_=0;
     std::vector<ForceThresholdReport> threshold_changes_;
     // DyConstraintPartition::partitionContactConstraints writes ordered
     // contact-manager descriptors grouped by body-conflict-free partition.
@@ -1007,6 +1008,7 @@ private:
     // frames, while patches carry actor-local anchors across contact frames.
     std::vector<FrictionPatch> friction_patches_;
     std::vector<FrictionPatch> next_friction_patches_;
+    std::uint64_t friction_cache_epoch_=0;
     std::vector<SolverContactFriction> solver_friction_rows_;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
     // solver body shared by all static collision participants.

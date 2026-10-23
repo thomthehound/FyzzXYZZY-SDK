@@ -3832,6 +3832,7 @@ void Scene::prepare_constraints(float seconds) {
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.
     friction_patches_.swap(next_friction_patches_);
+    ++friction_cache_epoch_;
 }
 void Scene::solve_constraints() {
     // DySolverConstraintsShared.h::solveDynamicContacts /
@@ -4331,6 +4332,7 @@ void Scene::update_threshold_stream(float seconds) {
         }
     }
     threshold_previous_.swap(threshold_current_);
+    ++threshold_cache_epoch_;
 }
 void Scene::publish_solver_bodies() {
     // The source retains pre-solver velocity independently and publishes
@@ -4549,8 +4551,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
     if(capture_solver_state) {
-        friction_patches.assign(scene.friction_patches_.begin(),
-                                scene.friction_patches_.end());
         quiet_manifold_metadata.clear();
         if(!scene.dirty_) {
             // With no Gu republication, rollback cannot recover solver
@@ -4562,8 +4562,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                     manifold.solver_offset,manifold.friction_patch_offset,
                     manifold.friction_patch_count});
         }
-        threshold_previous.assign(scene.threshold_previous_.begin(),
-                                  scene.threshold_previous_.end());
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
     }
@@ -4633,6 +4631,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     dirty=scene.dirty_;
     authored_activation_pending=scene.authored_activation_pending_;
     includes_solver_state=capture_solver_state;
+    friction_cache_epoch=scene.friction_cache_epoch_;
+    threshold_cache_epoch=scene.threshold_cache_epoch_;
     // The prior published buffers are moved into the checkpoint only
     // after all potentially throwing copies have completed. Successful
     // solves write directly into the reusable alternate allocations.
@@ -4815,12 +4815,21 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             manifold.friction_patch_count=prior.friction_patch_count;
         }
     }
-    if(includes_solver_state)
-        scene.friction_patches_.swap(friction_patches);
+    // The pre-step friction cache remains in the other source-owned
+    // buffer after the complete new correlation stream is published.
+    // Reverse the swap only if that boundary was actually crossed.
+    if(includes_solver_state &&
+       scene.friction_cache_epoch_!=friction_cache_epoch)
+        scene.friction_patches_.swap(scene.next_friction_patches_);
+    scene.friction_cache_epoch_=friction_cache_epoch;
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
-    if(includes_solver_state)
-        scene.threshold_previous_.swap(threshold_previous);
+    // Previous exceeded-force pairs likewise remain in the reused
+    // current buffer after the source force-change stream rotates.
+    if(includes_solver_state &&
+       scene.threshold_cache_epoch_!=threshold_cache_epoch)
+        scene.threshold_previous_.swap(scene.threshold_current_);
+    scene.threshold_cache_epoch_=threshold_cache_epoch;
     scene.threshold_changes_.swap(threshold_changes);
     if(includes_solver_state)
         scene.partition_ends_.swap(partition_ends);

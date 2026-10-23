@@ -110,6 +110,82 @@ struct ContactCorrelationSourceFixture {
                     "Reused friction anchors used stale cached normal for tangent");
         }
     }
+    static void verify_reversible_cache_checkpoint() {
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        scene.set_contact_report_threshold(box,0.01f);
+        for(unsigned i=0;i<8;++i)scene.step(dt);
+        if(scene.friction_patches_.empty() ||
+           scene.threshold_previous_.empty())
+            throw std::runtime_error(
+                "Source cache fixture has no persistent contact histories");
+        // A quiet Gu publication journals the public solver offsets as
+        // well, so this direct transaction exercises the exact rollback
+        // boundary without leaving modified manifold metadata behind.
+        scene.advance_collision();
+        const auto old_patches=scene.friction_patches_;
+        const auto old_threshold=scene.threshold_previous_;
+        const auto* const patches_ptr=scene.friction_patches_.data();
+        const auto* const threshold_ptr=scene.threshold_previous_.data();
+        const auto old_friction_epoch=scene.friction_cache_epoch_;
+        const auto old_threshold_epoch=scene.threshold_cache_epoch_;
+        const auto old_frame=scene.frame_index();
+        scene.step_checkpoint_.capture(scene);
+        // Execute the real correlation and force-threshold algorithms.
+        scene.prepare_constraints(dt);
+        scene.normal_impulse_writeback_.assign(
+            scene.step_checkpoint_.normal_impulses.begin(),
+            scene.step_checkpoint_.normal_impulses.end());
+        scene.update_threshold_stream(dt);
+        if(scene.friction_cache_epoch_!=old_friction_epoch+1 ||
+           scene.threshold_cache_epoch_!=old_threshold_epoch+1)
+            throw std::runtime_error(
+                "Production contact/force streams were not rotated");
+        scene.step_checkpoint_.rollback(scene);
+        if(scene.friction_cache_epoch_!=old_friction_epoch ||
+           scene.threshold_cache_epoch_!=old_threshold_epoch ||
+           scene.friction_patches_.data()!=patches_ptr ||
+           scene.threshold_previous_.data()!=threshold_ptr ||
+           scene.friction_patches_.size()!=old_patches.size() ||
+           scene.threshold_previous_.size()!=old_threshold.size() ||
+           scene.frame_index()!=old_frame)
+            throw std::runtime_error(
+                "Rejected contact/force cache stream lost old allocation");
+        for(std::size_t i=0;i<old_patches.size();++i) {
+            const auto& a=old_patches[i];
+            const auto& b=scene.friction_patches_[i];
+            if(a.pair!=b.pair || a.anchor_count!=b.anchor_count ||
+               a.static_friction!=b.static_friction ||
+               a.dynamic_friction!=b.dynamic_friction ||
+               a.broken!=b.broken)
+                throw std::runtime_error(
+                    "Rejected correlation changed cached friction patch");
+            for(std::size_t j=0;j<a.anchor_count;++j)
+                if(a.body0_anchors[j].x!=b.body0_anchors[j].x ||
+                   a.body0_anchors[j].y!=b.body0_anchors[j].y ||
+                   a.body0_anchors[j].z!=b.body0_anchors[j].z ||
+                   a.body1_anchors[j].x!=b.body1_anchors[j].x ||
+                   a.body1_anchors[j].y!=b.body1_anchors[j].y ||
+                   a.body1_anchors[j].z!=b.body1_anchors[j].z)
+                    throw std::runtime_error(
+                        "Rejected correlation changed cached friction anchors");
+        }
+        for(std::size_t i=0;i<old_threshold.size();++i)
+            if(scene.threshold_previous_[i].key!=old_threshold[i].key ||
+               scene.threshold_previous_[i].impulse!=old_threshold[i].impulse ||
+               scene.threshold_previous_[i].threshold!=old_threshold[i].threshold)
+                throw std::runtime_error(
+                    "Rejected force stream changed prior exceeded pairs");
+        scene.step(dt);
+        if(scene.friction_patches_.empty() ||
+           scene.friction_cache_epoch_!=old_friction_epoch+1 ||
+           scene.threshold_cache_epoch_!=old_threshold_epoch+1)
+            throw std::runtime_error(
+                "Retried native PGS did not restore cached correlation");
+    }
     static void verify_source_contact_slop() {
         // This probes the production Gu->Dy constraint stream, rather
         // than using a symmetric floor's final angular velocity as a
@@ -7800,6 +7876,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
