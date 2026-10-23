@@ -8,11 +8,24 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <vector>
 
 namespace fyzz::native {
+
+// The exact rigid friction saturation expression from
+// DySolverConstraints.cpp::{solveContact,solveContact_BStatic}.
+// The original FMin(maxDyn,FMax(-maxDyn,candidate)) is defined even
+// when a compliant spring makes maxDyn negative. This belongs to the
+// production solver's source math, not a second test-only solver.
+inline double source_contact_friction_limit(
+    double candidate,double max_static,double max_dynamic) noexcept {
+    return std::abs(candidate)>max_static
+        ? std::min(max_dynamic,std::max(-max_dynamic,candidate))
+        : candidate;
+}
 
 // Source correspondence: BpBroadPhaseSap / BpBroadPhaseIntegerAABB.
 // The scene exclusively owns actors, encoded bounds, overlap history and reports.
