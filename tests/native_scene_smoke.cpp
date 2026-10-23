@@ -433,7 +433,7 @@ void verify_source_rigid_contact_limits() {
     // Source penBiasClamp is NEGATIVE maxDepenetrationVelocity.
     // Under deep penetration, limiting either actor must limit biased
     // position motion, without clamping the ordinary final velocity.
-    const auto bias_case=[&](float cap,bool static_cap) {
+    const auto bias_case=[&](float cap) {
         Scene scene;
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
@@ -447,18 +447,13 @@ void verify_source_rigid_contact_limits() {
         RigidBodyDynamics d{};
         d.max_depenetration_velocity=cap;
         scene.set_dynamics(box,d);
-        if(static_cap) {
-            // Public PhysX limits are per rigid body; a static actor
-            // can author them via PxRigidStatic, but our current native
-            // SDK public setter restricts dynamics to dynamic actors.
-            // The fixture still verifies the two-sided Dy preparation
-            // from the authoritative actor cores below.
-        }
+        // PxsBodyCore owns this clamp on dynamic rigid bodies.
+        // The static world solver row has the source unrestricted cap.
         scene.step(dt);
         return scene.body_state(box);
     };
-    const auto limited=bias_case(0.25f,false);
-    const auto wide=bias_case(1.0e32f,false);
+    const auto limited=bias_case(0.25f);
+    const auto wide=bias_case(1.0e32f);
     if(!(std::isfinite(limited.position.y) &&
          std::isfinite(wide.position.y) &&
          wide.position.y>limited.position.y+0.02f))
