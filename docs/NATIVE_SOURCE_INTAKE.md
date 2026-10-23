@@ -228,11 +228,18 @@ position motion snapshot, and unbiased velocity passes, without imposing
 an unrelated group's higher iteration count on the entire scene.
 The source `DySolverControl::solve` friction policy also scales with the
 per-task count: only the final three position iterations (or all of them
-when fewer than three) enable friction by default, followed by all
-velocity iterations. This replaces the accidentally 4+1-specific
-"skip iteration zero" rule. The default 4+1 behavior remains unchanged. Native tests exercise 130
+when fewer than three) enable friction by default, followed by velocity
+solves. This replaces the accidentally 4+1-specific "skip iteration
+zero" rule. `NpRigidDynamic::setSolverIterationCounts` permits **zero
+requested velocity iterations** (but requires at least one position
+iteration). `DySolverControl::solveV_Blocks` still performs one mandatory
+final velocity/writeback solve when that request is zero. The native task
+descriptor preserves the exact requested maximum, while its PGS execution
+uses `max(requestedVelocityIterations, 1)` for the final pass. The
+default 4+1 behavior remains unchanged. Native tests exercise 130
 independent floor-contact bodies across the 128-body task boundary,
-including different maxima on each side, plus authored gravity,
+including one task with zero requested velocity iterations and verified
+normal-impulse writeback, plus authored gravity,
 damping, speed-clamp, invalid-input and static-body rejection. The
 source-enabled fixture additionally compares native free-body velocities
 to a real `PxRigidDynamic` using the same public settings. This is
