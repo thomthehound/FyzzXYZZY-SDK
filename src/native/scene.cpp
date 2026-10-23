@@ -3601,19 +3601,27 @@ void Scene::solve_constraints() {
          iter < position_iterations + velocity_iterations; ++iter) {
         // DyConstraintPartition's ordered descriptors, rather than
         // raw broadphase pair order, govern every position/velocity pass.
-        // All contacts within a descriptor retain original Gu ordering.
+        // Within each descriptor, PhysX consumes the correlated
+        // friction patches in source order: each patch's normal rows
+        // followed immediately by its friction rows. Gu force-buffer
+        // offsets remain independent from this solver permutation.
         for (const std::size_t index : ordered_constraints_) {
             const auto& manifold = manifolds_[index];
             auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.a] : world_solver_row_;
             auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.b] : world_solver_row_;
-            for (std::size_t i=0; i<manifold.count; ++i) {
-                // DyContactPrep orders rows by friction patch and each
-                // correlation-list chain. Preserve Gu offsets separately
-                // for source writeback, rather than solve in pair order.
-                auto& row = solver_contact_points_[
-                    solver_contact_order_[manifold.solver_offset+i]];
+            std::size_t order_cursor=manifold.solver_offset;
+            for(std::size_t p=manifold.friction_patch_offset;
+                p<manifold.friction_patch_offset+
+                  manifold.friction_patch_count;++p) {
+                auto& patch=friction_patches_[p];
+                double normal_impulse=0.0;
+                for(std::size_t i=0;i<patch.contact_count;++i) {
+                // DyContactPrep concatenates this patch's reversed
+                // contact-run list, then writes Gu-indexed force slots.
+                auto& row=solver_contact_points_[
+                    solver_contact_order_[order_cursor++]];
                 const Vec3 n = row.normal;
                 const Vec3 va{
                     a.solver.linear_velocity_delta.x,
@@ -3665,26 +3673,15 @@ void Scene::solve_constraints() {
                 a.solver.angular_state = {commit[6],commit[7],commit[8]};
                 b.solver.angular_state = {commit[9],commit[10],commit[11]};
                 row.applied_force = next_impulse;
-            }
-            // DySolverConstraints.cpp::solveContact/solveContact_BStatic:
-            // each correlated friction patch uses the sum of its normal
-            // impulses to clamp two tangent axes per retained anchor.
-            // DySolverControl skips friction on the first of four
-            // position iterations; later position and final velocity
-            // writeback passes all solve these same patch constraints.
-            if (iter != 0) {
-                for (std::size_t p=manifold.friction_patch_offset;
-                     p<manifold.friction_patch_offset+
-                       manifold.friction_patch_count; ++p) {
-                    auto& patch=friction_patches_[p];
-                    if (!patch.anchor_count) continue;
-                    double normal_impulse=0.0;
-                    for (std::size_t j=0;j<manifold.count;++j) {
-                        const auto& row=solver_contact_points_[
-                            manifold.solver_offset+j];
-                        if (row.friction_patch==p)
-                            normal_impulse+=row.applied_force;
-                    }
+                normal_impulse+=next_impulse;
+                }
+                // DySolverConstraints::solveContact and _BStatic walk
+                // one packed SolverContactHeader at a time: each
+                // header solves its normal rows before friction rows.
+                // The per-patch impulse sum is already available from
+                // the current normal pass; no repeated O(patches*points)
+                // scan of other contact groups is necessary.
+                if (iter != 0 && patch.anchor_count) {
                     const double coefficient=patch.anchor_count==2
                         ? 0.5 : 1.0;
                     const double max_static=
@@ -3763,6 +3760,9 @@ void Scene::solve_constraints() {
                         patch.broken=broken_this_iteration;
                 }
             }
+            if(order_cursor!=manifold.solver_offset+manifold.count)
+                throw std::logic_error(
+                    "Native source contact solver patch stream truncated");
         }
         if (iter + 1 == position_iterations) {
             // DySolverControl.cpp::saveMotionVelocities occurs immediately
