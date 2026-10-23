@@ -483,6 +483,10 @@ private:
         double biased_error = 0.0;
         double unbiased_error = 0.0;
         double applied_force = 0.0;
+        // DyContactPrepShared::extractContacts supplies the minimum
+        // PxsBodyCore contact-impulse limit (overridden per-point only
+        // by the source contact-modification branch, still unadmitted).
+        double max_impulse = std::numeric_limits<float>::max();
         std::size_t friction_patch = 0;
     };
     // DyFrictionPatch.h, DyCorrelationBuffer.h and DySolverContact.h:
