@@ -1097,8 +1097,9 @@ and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
 `ScPipeline`'s asynchronous `destroyManagers`/lost-contact
 continuations, deactivation for unsupported constraint/non-rigid edge
-types, active-reference bookkeeping and `afterIntegration`
-reconciliation also remain unported. Rigid contact-manager deactivation
+types, kinematic/non-rigid active-reference paths and `afterIntegration`
+reconciliation also remain unported. Rigid contact-manager
+`IslandSim::Node::mActiveRefCount` bookkeeping is implemented. Rigid contact-manager deactivation
 is already published independently by the accurate/speculative graphs. The admitted
 rigid-node active lists and persistent island handles are real source
 lowerings, but a correctly published graph does **not** establish full
