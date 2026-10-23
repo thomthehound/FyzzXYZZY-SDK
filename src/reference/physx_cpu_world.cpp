@@ -138,6 +138,11 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if(!raw0 || !raw1)return;
         const BodyId a=static_cast<BodyId>(std::min(raw0,raw1)-1);
         const BodyId b=static_cast<BodyId>(std::max(raw0,raw1)-1);
+        // PxContactPairPoint::normal is directed from shape1 toward
+        // shape0. When the original callback actor pair order differs
+        // from our canonical BodyId order, invert the normal together
+        // with the actor ordering, not the normal force magnitude.
+        const float normal_sign=raw0<=raw1 ? 1.0f : -1.0f;
         for(physx::PxU32 p=0;p<count;++p) {
             const auto& pair=pairs[p];
             const bool found=pair.events.isSet(
@@ -165,9 +170,11 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                     const double normal_force=pair.contactImpulses
                         ? static_cast<double>(pair.contactImpulses[i]):0.0;
                     impulse+=normal_force;
+                    const Vec3 normal=from_physx(extracted[i].normal);
                     pending_contact_points.push_back({
                         from_physx(extracted[i].position),
-                        from_physx(extracted[i].normal),
+                        {normal.x*normal_sign,normal.y*normal_sign,
+                         normal.z*normal_sign},
                         extracted[i].separation,normal_force});
                 }
             }
