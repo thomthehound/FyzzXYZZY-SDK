@@ -4339,7 +4339,13 @@ void Scene::update_threshold_stream(float seconds) {
     // dt and narrow to PxReal: this SDK also admits extreme mass cases.
     threshold_current_.clear();
     threshold_changes_.clear();
-    for (const auto& manifold:manifolds_) {
+    // PxsForceThresholdTask consumes Dy writeback from the CURRENT
+    // source solve tasks, not historical Gu managers in dormant islands.
+    // Old exceeded-force records are reconciled below independently,
+    // so a once-active pair still emits LOST when it stops being solved.
+    // Keep each authoritative Gu contact_offset for impulse indexing.
+    for(std::size_t index:indexed_managers_) {
+        const auto& manifold=manifolds_[index];
         const Pair pair=manifold.pair;
         const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
         const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
