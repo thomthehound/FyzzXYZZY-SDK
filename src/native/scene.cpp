@@ -2888,7 +2888,20 @@ void Scene::prepare_solver_bodies() {
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
             auto& row=solver_rows_[id];
-            if(row.prepared_generation!=solver_preparation_generation_)continue;
+            if(row.prepared_generation!=solver_preparation_generation_) {
+                // DyConstraintPartition::initSolverProgress initializes
+                // all active partition inputs, not only bodies with
+                // nonzero Dy contact rows. A zero-capped Gu manager
+                // still owns a source constraint descriptor, so its
+                // lightweight partition fields must be reset every
+                // frame even though extractContacts omits every row.
+                // Piggyback on the existing active-island traversal:
+                // no dormant-actor scan and no unused solver-body setup.
+                row.solver.partition_mask=0;
+                row.solver.max_dynamic_partition=0;
+                row.solver.static_constraint_count=0;
+                continue;
+            }
             row={};
             row.prepared_generation=solver_preparation_generation_;
             solver_active_ids_.push_back(id);
