@@ -1214,6 +1214,46 @@ parent/rank representation **has already been retired** in favor of
 source-style graph-owned island handles and node chains. These
 remaining responsibilities still prevent N1 completion.
 
+## Shape offsets and contact-slop source correspondence
+
+The admitted one-shape-per-actor native Scene now owns the shape's
+`contact_offset` and `rest_offset`, initially 0.02 m and 0 m.
+`World::set_body_shape_offsets` validates the same finite, nonnegative
+contact and strictly smaller rest constraints as `NpShape::setContactOffset`
+and `NpShape::setRestOffset`. The optional real PhysX CPU adapter edits
+the existing `PxShape` with a setter order valid for either transition;
+it does not create an alternate shape or material registry.
+
+The contact offset follows `ScShapeCore::setContactOffset` through
+the native `Scene::update_bounds` Gu AABB enlargement and the pair-summed
+contact distance in original `GuContactPlaneBox` and translated
+`GuContactBoxBox`. Raw Gu contact separation stays a geometric surface
+separation; `DyContactPrepShared::constructContactConstraint` subtracts
+the pair's **rest distance** when computing penetration and bias, and
+`DyContactPrep::growPatches` uses that same distance in its friction
+anchor admission threshold. Authoring an offset retires only affected
+friction patches and schedules a fresh Gu publication. Geometry-only
+queries retain the same failure-atomic publication boundary.
+
+`RigidBodyDynamics::contact_slop_coefficient` follows
+`NpRigidBodyTemplate::setContactSlopCoefficient`, its original
+`PxsBodyCore::offsetSlop`, and `ScShapeInteraction`'s maximum of
+the two rigid bodies. The production `Scene::prepare_constraints`
+suppresses small normal angular Jacobian components with the
+`DyContactPrepShared` relative-angular/linear velocity scale, and
+independently suppresses small friction angular Jacobians and tangent
+anchor-position errors following `DyContactPrep.cpp`. The independent
+reference backend forwards the coefficient to real `PxRigidDynamic`.
+Both parameters remain per-source actor/shape fields, not scene-global
+solver tunables.
+
+Production-path regressions exercise separated box-box broadphase and
+Gu touch found/lost, plane-box offset admission, nonzero rest-distance
+bias through native and optional original PhysX CPU World, invalid and
+reversed offset edits, and normal/friction prepared Jacobians under
+nonzero versus default contact slop. Multi-shape actors, CCD and per-
+contact modification remain separately unported admission boundaries.
+
 ## Initial integrated acceptance boundary: real CPU PGS
 
 A PR may be large. It must connect a **whole source execution slice**
