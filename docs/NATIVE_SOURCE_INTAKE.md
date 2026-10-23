@@ -207,6 +207,30 @@ The same Scene-owned final writeback now also reconstructs `DyContactPrep.cpp::w
 
 Shape-interaction threshold callback/event dispatch, heterogeneous material-dependent writeback, exact source contact/patch mapping, packed descriptor publication and full scene report dispatch remain unported.
 
+**Source contact impulse and penetration limits:** The same
+`ScBodyCore/PxsBodyCore` authoring now admits
+`PxRigidBody::setMaxContactImpulse` and
+`PxRigidBody::setMaxDepenetrationVelocity` on the real dynamic body.
+`DyContactPrepShared::extractContacts` takes the minimum of both
+body-contact impulse limits and applies it independently to each
+`SolverContactPoint`; `DySolverConstraints` clamps the accumulated
+normal impulse before changing any linear/angular solver velocity.
+With a zero source cap, contact extraction contributes no solver rows
+for that manager, while Gu touch events and the source contact-manager
+edge remain alive. The native one-shape-per-actor lowering preserves
+those Gu-indexed zero force slots and does not treat a zero cap as
+contact separation. `DyContactPrep` separately computes
+`max(data0.penBiasClamp,data1.penBiasClamp)`, the negative of the
+smaller positive depenetration velocity, and uses it to clamp position
+bias before PGS response. The original unrestricted defaults remain
+unchanged. Public settings are checked before mutation and also
+forwarded to actual reference `PxRigidDynamic` bodies. Regressions
+exercise capped multipoint plane contacts, the minimum of two dynamic
+body limits, zero-impulse response without touch loss, restricted
+penetration recovery and invalid-input rejection. Complete contact
+modification, per-point impulse overrides and independent packed
+contact stream extraction remain outside the current rigid subset.
+
 **Source rigid body preintegration and per-task iteration control:** The
 public `World::set_body_dynamics` now authors `ScBodyCore/PxsBodyCore`
 linear/angular damping, the gravity-disable flag, maximum linear/angular
