@@ -1457,6 +1457,72 @@ void verify_source_speculative_reverse_sleep_order() {
            "Quiet source publication repeated speculative retirement");
 }
 
+void verify_source_correlated_friction_patch_lifecycle() {
+    using fyzz::native::Scene;
+    Scene scene;
+    const auto floor=scene.add_static_floor(0.0f);
+    const auto left=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-3.0f,0.49f,0.0f},1.0f);
+    const auto right=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{3.0f,0.49f,0.0f},1.0f);
+    constexpr float dt=1.0f/120.0f;
+    scene.step(dt);
+    scene.step(dt);
+    const auto& contacts=scene.contacts();
+    const auto patches=scene.solved_friction_patches();
+    expect(contacts.size()==2 &&
+           patches.size()==2 &&
+           contacts[0].count>=2 && contacts[1].count>=2 &&
+           patches[0].anchor_count==2 &&
+           patches[1].anchor_count==2 &&
+           !patches[0].broken && !patches[1].broken,
+           "Dy source multi-contact patch caching failed to admit both anchors");
+    // eDISABLE_FRICTION disables all tangent rows on precisely one
+    // manager without removing that manager's normal contact header.
+    // Cached strong-friction anchors of the other manager must survive
+    // independent shape-material authoring and the compact source
+    // friction patch stream must remain in Gu pair order.
+    fyzz::Material disabled{};
+    disabled.disable_friction=true;
+    scene.set_material(left,disabled);
+    scene.step(dt);
+    const auto disabled_patches=scene.solved_friction_patches();
+    const auto impulses=scene.solved_normal_impulses();
+    expect(disabled_patches.size()==2 &&
+           disabled_patches[0].anchor_count==0 &&
+           disabled_patches[1].anchor_count==2 &&
+           scene.contacts().size()==2,
+           "Source cached friction correlation leaked disabled anchor rows");
+    for(const auto& manager:scene.contacts()) {
+        double force=0;
+        for(std::size_t j=0;j<manager.count;++j)
+            force+=impulses[manager.contact_offset+j];
+        expect(std::isfinite(force) && force>0.0,
+               "Source friction patch compaction lost Gu-indexed normal writeback");
+    }
+    scene.set_material(left,fyzz::Material{});
+    scene.step(dt);
+    const auto restored=scene.solved_friction_patches();
+    expect(restored.size()==2 &&
+           restored[0].anchor_count==2 &&
+           restored[1].anchor_count==2,
+           "Source patch correlation failed to rebuild missing friction anchors");
+    // A quiet publication removes transient force writeback, but does
+    // not invalidate the prior source friction cache or manager identity.
+    const auto a_edge=scene.contact_edge_index({floor,left});
+    const auto b_edge=scene.contact_edge_index({floor,right});
+    scene.advance_collision();
+    expect(scene.solved_normal_impulses().empty() &&
+           scene.contact_edge_index({floor,left})==a_edge &&
+           scene.contact_edge_index({floor,right})==b_edge,
+           "Quiet Gu publication changed source persistent contact managers");
+    scene.step(dt);
+    expect(scene.solved_friction_patches().size()==2 &&
+           scene.solved_friction_patches()[0].anchor_count==2 &&
+           scene.solved_friction_patches()[1].anchor_count==2,
+           "Source friction cache failed across a quiet contact publication");
+}
+
 void verify_source_solver_task_batch_partitioning() {
     using fyzz::native::Scene;
     Scene scene;
@@ -5928,6 +5994,7 @@ int run_native_scene_smoke() {
     verify_source_speculative_reverse_sleep_order();
     verify_source_mixed_split_and_sleep_order();
     verify_source_solver_task_batch_partitioning();
+    verify_source_correlated_friction_patch_lifecycle();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
