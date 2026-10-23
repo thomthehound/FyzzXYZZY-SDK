@@ -189,7 +189,88 @@ struct SolverIterationSourceFixture {
         if(last_task_contacts!=2 || !std::isfinite(last_task_force) ||
            last_task_force<=0.0)
             throw std::runtime_error(
-                "Zero-velocity task omitted the mandatory final contact writeback");
+                "Zero-velocity task lost its Gu-indexed contact force buffer");
+
+        // A positive force buffer is NOT evidence of a velocity pass:
+        // position iterations already populate applied_force. Exercise
+        // the actual final unbiased phase in a fresh source 128+2 task
+        // arrangement. The last two contacts begin with a substantial
+        // closing velocity and penetration bias, so their position
+        // motion differs measurably from the unbiased final velocity.
+        struct FinalPassSample {
+            Vec3 motion{}, final{};
+            double normal_impulse=0.0;
+            std::size_t contact_count=0;
+            std::uint8_t requested_velocity_iterations=255;
+        };
+        const auto run_final_pass=[](std::uint8_t request) {
+            Scene tested;
+            tested.add_static_floor(0.0f);
+            constexpr BodyId body_count=130;
+            for(BodyId i=0;i<body_count;++i) {
+                const auto id=tested.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},
+                    {static_cast<float>(i)*3.0f,0.49f,0.0f},1.0f);
+                RigidBodyDynamics d{};
+                d.position_iterations=5;
+                d.velocity_iterations=i>=128 ? request : 3;
+                tested.set_dynamics(id,d);
+                if(i>=128)
+                    tested.set_velocity(id,{0.0f,-4.0f,0.0f});
+            }
+            tested.step(1.0f/120.0f);
+            if(tested.solver_tasks_.size()!=2 ||
+               tested.solver_tasks_[0].velocity_iterations!=3 ||
+               tested.solver_tasks_[1].velocity_iterations!=request ||
+               tested.solver_tasks_[1].constraint_end!=body_count)
+                throw std::runtime_error(
+                    "Final-pass fixture lost source 128+2 task isolation");
+            const BodyId last=body_count;
+            const auto& row=tested.solver_rows_[last];
+            if(row.prepared_generation!=tested.solver_preparation_generation_)
+                throw std::runtime_error(
+                    "Final-pass fixture omitted second-task solver body");
+            FinalPassSample sample{};
+            sample.motion={
+                row.data.linear_velocity.x+row.motion_linear_delta.x,
+                row.data.linear_velocity.y+row.motion_linear_delta.y,
+                row.data.linear_velocity.z+row.motion_linear_delta.z};
+            sample.final=tested.body_state(last).velocity;
+            sample.requested_velocity_iterations=
+                tested.solver_tasks_[1].velocity_iterations;
+            for(const auto& manager:tested.contacts()) {
+                if(manager.pair.b<body_count-1)continue;
+                ++sample.contact_count;
+                for(std::size_t j=0;j<manager.count;++j)
+                    sample.normal_impulse+=
+                        tested.solved_normal_impulses()[
+                            manager.contact_offset+j];
+            }
+            return sample;
+        };
+        const auto actual_zero=run_final_pass(0);
+        const auto actual_one=run_final_pass(1);
+        const auto close=[](float a,float b) {
+            return std::isfinite(a) && std::isfinite(b) &&
+                   std::abs(a-b)<=2.0e-5f;
+        };
+        const auto close_vec=[&](Vec3 a,Vec3 b) {
+            return close(a.x,b.x) && close(a.y,b.y) && close(a.z,b.z);
+        };
+        if(actual_zero.contact_count!=2 ||
+           actual_one.contact_count!=2 ||
+           actual_zero.requested_velocity_iterations!=0 ||
+           actual_one.requested_velocity_iterations!=1 ||
+           !close_vec(actual_zero.motion,actual_one.motion) ||
+           !close_vec(actual_zero.final,actual_one.final) ||
+           !std::isfinite(actual_zero.normal_impulse) ||
+           actual_zero.normal_impulse<=0 ||
+           std::abs(actual_zero.normal_impulse-
+                    actual_one.normal_impulse)>1.0e-5 ||
+           std::abs(actual_one.final.y-actual_one.motion.y)<=1.0e-3f ||
+           std::abs(actual_zero.final.y-actual_zero.motion.y)<=1.0e-3f)
+            throw std::runtime_error(
+                "Zero-velocity task skipped the required unbiased final PGS pass");
     }
 };
 }
