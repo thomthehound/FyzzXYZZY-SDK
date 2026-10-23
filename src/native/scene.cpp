@@ -2862,6 +2862,15 @@ void Scene::partition_constraints() {
         manifold_by_edge_[edge].generation=indexed_manifold_generation_;
     }
     indexed_managers_.clear();
+    solver_task_manager_ends_.clear();
+    std::size_t task_body_count=0;
+    std::size_t task_constraint_count=0;
+    // Source DyDynamicsContext::updatePostKinematic combines consecutive
+    // accurate active islands into solver task chains. With the SDK's
+    // default rigid-only scene, mSolverBatchSize is 128 bodies and the
+    // source minimumConstraintCount is 1. The grouped stream directly
+    // determines partition/solve descriptor ordering below.
+    constexpr std::size_t source_solver_batch_size=128;
     for(std::size_t batch:active_accurate_island_batches_) {
         const std::size_t offset=accurate_island_offsets_[batch];
         const BodyId root=accurate_island_nodes_[offset];
@@ -2880,78 +2889,117 @@ void Scene::partition_constraints() {
         }
         if(count!=island.contact_count)
             throw std::logic_error("PhysX island contact list truncated");
+        task_body_count+=island.count;
+        task_constraint_count+=island.contact_count;
+        if(task_body_count>=source_solver_batch_size &&
+           task_constraint_count>=1) {
+            solver_task_manager_ends_.push_back(indexed_managers_.size());
+            task_body_count=0;
+            task_constraint_count=0;
+        }
     }
+    if(task_body_count)
+        solver_task_manager_ends_.push_back(indexed_managers_.size());
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
     // sequence directly. The compound contact reducer's separate
     // two-key solver-body sort remains an explicit ABI admission gate.
-    pending_dynamic_constraints_.clear();
-    for(std::size_t i:indexed_managers_) {
-        const Pair pair=manifolds_[i].pair;
-        if (actors_[pair.a].kind == Kind::DynamicBox &&
-            actors_[pair.b].kind == Kind::DynamicBox &&
-            !actors_[pair.a].sleeping && !actors_[pair.b].sleeping)
-            pending_dynamic_constraints_.push_back(i);
-    }
-
-    for (std::size_t wave=0;!pending_dynamic_constraints_.empty();
-         wave+=partition_bits) {
-        // Source 32-partition rollover; reset only the transient progress
-        // fields on already-prepared dynamic solver bodies.
-        for (BodyId id : solver_active_ids_)
-            solver_rows_[id].solver.partition_mask=0;
-        std::size_t overflow_count=0;
-        for (std::size_t k=0;k<pending_dynamic_constraints_.size();++k) {
-            const std::size_t i=pending_dynamic_constraints_[k];
+    // Each source task chain partitions only its own island batch.
+    // Use disjoint global partition ranges when concatenating the serial
+    // CPU lowering; the original source can execute these chains in
+    // parallel, but none may share a solver body across task groups.
+    std::size_t manager_begin=0;
+    std::size_t partition_base=0;
+    for(const std::size_t manager_end:solver_task_manager_ends_) {
+        pending_dynamic_constraints_.clear();
+        for(std::size_t j=manager_begin;j<manager_end;++j) {
+            const std::size_t i=indexed_managers_[j];
             const Pair pair=manifolds_[i].pair;
-            auto& a=solver_rows_[pair.a].solver;
-            auto& b=solver_rows_[pair.b].solver;
-            const std::uint32_t available=~(a.partition_mask |
-                                             b.partition_mask);
-            if (!available) {
-                pending_dynamic_constraints_[overflow_count++]=i;
-                continue;
-            }
-            const unsigned bit=std::countr_zero(available);
-            const std::uint32_t mask=std::uint32_t{1}<<bit;
-            a.partition_mask |= mask;
-            b.partition_mask |= mask;
-            const std::size_t partition=wave+bit;
-            a.max_dynamic_partition=std::max(
-                a.max_dynamic_partition,partition+1);
-            b.max_dynamic_partition=std::max(
-                b.max_dynamic_partition,partition+1);
-            constraint_partitions_[i]=partition;
+            if(actors_[pair.a].kind==Kind::DynamicBox &&
+               actors_[pair.b].kind==Kind::DynamicBox &&
+               !actors_[pair.a].sleeping && !actors_[pair.b].sleeping)
+                pending_dynamic_constraints_.push_back(i);
         }
-        if (overflow_count==pending_dynamic_constraints_.size())
-            throw std::logic_error(
-                "Native source constraint partition made no progress");
-        pending_dynamic_constraints_.resize(overflow_count);
-        if (overflow_count &&
-            wave>std::numeric_limits<std::size_t>::max()-partition_bits)
-            throw std::overflow_error(
-                "Native source constraint partition index overflow");
-    }
+        std::size_t next_partition_base=partition_base;
+        for(std::size_t wave=0;!pending_dynamic_constraints_.empty();
+            wave+=partition_bits) {
+            // After a 32-partition overflow, only still-pending dynamic
+            // descriptors participate in the next wave. Resetting every
+            // active body in the scene would multiply work by unrelated
+            // islands and by source task-group count.
+            if(wave)
+                for(std::size_t i:pending_dynamic_constraints_) {
+                    const Pair pair=manifolds_[i].pair;
+                    solver_rows_[pair.a].solver.partition_mask=0;
+                    solver_rows_[pair.b].solver.partition_mask=0;
+                }
+            std::size_t overflow_count=0;
+            for(std::size_t k=0;k<pending_dynamic_constraints_.size();++k) {
+                const std::size_t i=pending_dynamic_constraints_[k];
+                const Pair pair=manifolds_[i].pair;
+                auto& a=solver_rows_[pair.a].solver;
+                auto& b=solver_rows_[pair.b].solver;
+                const std::uint32_t available=~(a.partition_mask |
+                                                 b.partition_mask);
+                if(!available) {
+                    pending_dynamic_constraints_[overflow_count++]=i;
+                    continue;
+                }
+                const unsigned bit=std::countr_zero(available);
+                const std::uint32_t mask=std::uint32_t{1}<<bit;
+                a.partition_mask|=mask;
+                b.partition_mask|=mask;
+                const std::size_t local_partition=wave+bit;
+                a.max_dynamic_partition=std::max(
+                    a.max_dynamic_partition,local_partition+1);
+                b.max_dynamic_partition=std::max(
+                    b.max_dynamic_partition,local_partition+1);
+                if(partition_base>std::numeric_limits<std::size_t>::max()-
+                                  local_partition)
+                    throw std::overflow_error(
+                        "Native source task partition offset overflow");
+                const std::size_t global_partition=
+                    partition_base+local_partition;
+                constraint_partitions_[i]=global_partition;
+                next_partition_base=std::max(next_partition_base,
+                                             global_partition+1);
+            }
+            if(overflow_count==pending_dynamic_constraints_.size())
+                throw std::logic_error(
+                    "Native source constraint partition made no progress");
+            pending_dynamic_constraints_.resize(overflow_count);
+            if(overflow_count &&
+               wave>std::numeric_limits<std::size_t>::max()-partition_bits)
+                throw std::overflow_error(
+                    "Native source constraint partition index overflow");
+        }
 
-    for (std::size_t i:indexed_managers_) {
-        if (constraint_partitions_[i]!=unassigned) continue;
-        const Pair pair=manifolds_[i].pair;
-        const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
-        const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
-        // Inactive accurate islands do not submit solver descriptors.
-        // An awake actor touching a sleeping island is awakened before
-        // this partition stage; the still-asleep case has no solver work.
-        if ((dynamic_a && actors_[pair.a].sleeping) ||
-            (dynamic_b && actors_[pair.b].sleeping))continue;
-        // Source static/static contact managers are not solver edges.
-        if (!dynamic_a && !dynamic_b) continue;
-        auto& active=solver_rows_[dynamic_a ? pair.a : pair.b].solver;
-        const std::size_t partition=active.max_dynamic_partition+
-                                      active.static_constraint_count++;
-        if (partition<active.max_dynamic_partition)
-            throw std::overflow_error(
-                "Native source static constraint partition overflow");
-        constraint_partitions_[i]=partition;
+        for(std::size_t j=manager_begin;j<manager_end;++j) {
+            const std::size_t i=indexed_managers_[j];
+            if(constraint_partitions_[i]!=unassigned)continue;
+            const Pair pair=manifolds_[i].pair;
+            const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
+            const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
+            if((dynamic_a && actors_[pair.a].sleeping) ||
+               (dynamic_b && actors_[pair.b].sleeping))continue;
+            if(!dynamic_a && !dynamic_b)continue;
+            auto& active=solver_rows_[dynamic_a?pair.a:pair.b].solver;
+            const std::size_t local_partition=
+                active.max_dynamic_partition+
+                active.static_constraint_count++;
+            if(local_partition<active.max_dynamic_partition ||
+               partition_base>std::numeric_limits<std::size_t>::max()-
+                                  local_partition)
+                throw std::overflow_error(
+                    "Native source static constraint partition overflow");
+            const std::size_t global_partition=
+                partition_base+local_partition;
+            constraint_partitions_[i]=global_partition;
+            next_partition_base=std::max(next_partition_base,
+                                         global_partition+1);
+        }
+        partition_base=next_partition_base;
+        manager_begin=manager_end;
     }
 
     // The source accumulates counts into ordered descriptor offsets, then
