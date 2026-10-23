@@ -236,6 +236,8 @@ struct PhysXCpuWorld final : WorldBackend {
         actor->setAngularDamping(d.angular_damping);
         actor->setMaxLinearVelocity(d.max_linear_velocity);
         actor->setMaxAngularVelocity(d.max_angular_velocity);
+        actor->setMaxDepenetrationVelocity(d.max_depenetration_velocity);
+        actor->setMaxContactImpulse(d.max_contact_impulse);
         actor->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY,
                             !d.gravity_enabled);
         actor->setSolverIterationCounts(d.position_iterations,
