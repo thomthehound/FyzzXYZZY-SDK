@@ -436,7 +436,7 @@ void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
        d.max_linear_velocity<0 || d.max_angular_velocity<0 ||
        !std::isfinite(d.max_linear_velocity*d.max_linear_velocity) ||
        !std::isfinite(d.max_angular_velocity*d.max_angular_velocity) ||
-       d.position_iterations==0 || d.velocity_iterations==0)
+       d.position_iterations==0)
         throw std::invalid_argument("Native PxsBodyCore dynamics invalid");
     actor.dynamics=d;
 }
