@@ -377,6 +377,93 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Ordinary material preparation regressed");
     }
+    static void verify_zero_capped_dynamic_partition_lifecycle() {
+        // Source DyConstraintPartition::initSolverProgress resets the
+        // three scheduler fields of every admitted active rigid body,
+        // even when DyContactPrepShared::extractContacts filters ALL
+        // its zero-maxImpulse rows. This is a real dynamic/dynamic
+        // manager, not a static-floor case that bypasses mask logic.
+        Scene scene;
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,2.0f,0.0f},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.9f,2.0f,0.0f},1.0f);
+        RigidBodyDynamics capped{};
+        capped.gravity_enabled=false;
+        capped.max_contact_impulse=0.0f;
+        scene.set_dynamics(a,capped);
+        scene.set_dynamics(b,capped);
+        constexpr float dt=1.0f/480.0f;
+        const Pair pair{a,b};
+        for(unsigned frame=0;frame<112;++frame) {
+            scene.step(dt);
+            if(scene.manifolds_.size()!=1 ||
+               scene.manifolds_[0].pair!=pair ||
+               !scene.contact_edge_connected(pair) ||
+               scene.indexed_managers_.size()!=1 ||
+               scene.ordered_constraints_.size()!=1 ||
+               scene.solver_contact_points_.size()!=0 ||
+               !scene.solver_contact_order_.empty() ||
+               !scene.solver_active_ids_.empty())
+                throw std::runtime_error(
+                    "Zero-capped dynamic pair lost source Gu manager or created Dy rows");
+            for(const BodyId id:{a,b}) {
+                const auto& row=scene.solver_rows_[id];
+                if(row.prepared_generation==scene.solver_preparation_generation_ ||
+                   row.solver.partition_mask!=1 ||
+                   row.solver.max_dynamic_partition!=1 ||
+                   row.solver.static_constraint_count!=0)
+                    throw std::runtime_error(
+                        "Source zero-response dynamic partition retained prior-frame progress");
+            }
+            const auto& contact=scene.manifolds_[0];
+            if(!scene.solved_normal_impulses().size() ||
+               contact.contact_offset>scene.solved_normal_impulses().size() ||
+               contact.count>scene.solved_normal_impulses().size()-
+                   contact.contact_offset)
+                throw std::runtime_error(
+                    "Zero-response partition lost original Gu writeback offsets");
+            for(std::size_t j=0;j<contact.count;++j)
+                if(scene.solved_normal_impulses()[contact.contact_offset+j]!=0)
+                    throw std::runtime_error(
+                        "Zero-response dynamic manager wrote nonzero Gu impulse");
+        }
+        // Move from zero response to live Dy rows, then back again,
+        // without changing the source edge or actor IDs.
+        RigidBodyDynamics live=capped;
+        live.max_contact_impulse=std::numeric_limits<float>::max();
+        scene.set_dynamics(a,live);
+        scene.set_dynamics(b,live);
+        scene.step(dt);
+        if(scene.manifolds_.size()!=1 ||
+           scene.solver_contact_points_.empty() ||
+           scene.solver_active_ids_.size()!=2 ||
+           scene.solver_rows_[a].prepared_generation!=
+               scene.solver_preparation_generation_ ||
+           scene.solver_rows_[b].prepared_generation!=
+               scene.solver_preparation_generation_)
+            throw std::runtime_error(
+                "Zero-capped dynamic pair did not reenter source PGS");
+        scene.set_dynamics(a,capped);
+        scene.set_dynamics(b,capped);
+        for(unsigned frame=0;frame<48;++frame) {
+            // Keep the same two source contact managers overlapping
+            // through readmission's prior impact displacement.
+            scene.set_position(a,{0.0f,2.0f,0.0f});
+            scene.set_position(b,{0.9f,2.0f,0.0f});
+            scene.set_velocity(a,{});
+            scene.set_velocity(b,{});
+            scene.step(dt);
+            if(scene.manifolds_.size()!=1 ||
+               scene.ordered_constraints_.size()!=1 ||
+               !scene.solver_contact_points_.empty() ||
+               !scene.solver_active_ids_.empty() ||
+               scene.solver_rows_[a].solver.partition_mask!=1 ||
+               scene.solver_rows_[b].solver.partition_mask!=1)
+                throw std::runtime_error(
+                    "Re-capping original PGS manager leaked stale partition or rows");
+        }
+    }
     static void verify_zero_capped_stream_compaction() {
         Scene scene;
         const auto floor=scene.add_static_floor(0.0f);
@@ -7643,6 +7730,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
+    fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
