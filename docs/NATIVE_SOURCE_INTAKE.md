@@ -226,7 +226,11 @@ range, and the prepared solver-body range. The actual PGS dispatcher
 runs each chain independently through its own biased position passes,
 position motion snapshot, and unbiased velocity passes, without imposing
 an unrelated group's higher iteration count on the entire scene.
-The default 4+1 behavior remains unchanged. Native tests exercise 130
+The source `DySolverControl::solve` friction policy also scales with the
+per-task count: only the final three position iterations (or all of them
+when fewer than three) enable friction by default, followed by all
+velocity iterations. This replaces the accidentally 4+1-specific
+"skip iteration zero" rule. The default 4+1 behavior remains unchanged. Native tests exercise 130
 independent floor-contact bodies across the 128-body task boundary,
 including different maxima on each side, plus authored gravity,
 damping, speed-clamp, invalid-input and static-body rejection. The
