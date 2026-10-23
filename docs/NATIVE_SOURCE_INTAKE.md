@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Compliant/multi-shape material correlation, island task execution, reports and full N1 acceptance remain open.**
+**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Per-shape compliant spring-damper PGS is connected; heterogeneous per-contact material correlation, island task execution, shape-interaction reports and full N1 acceptance remain open.**
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -193,7 +193,7 @@ Important verified source edges:
 
 **Current integrated CPU slice and remaining departure:** `src/native/scene.cpp::step` now runs the scene-owned Gu collision stage at the starting pose, source-derived `DyContactPrepShared` per-point rigid-body normal Jacobian/effective-mass/bias preparation, and `DySolverConstraintsShared` normal impulse passes. Following `DySolverControl`, it snapshots motion deltas after biased position iterations and separately executes unbiased velocity iterations; `DyBodyCoreIntegrator` uses saved position-phase motion to advance poses and final velocity-phase deltas to update next-frame body velocity. This retires the predicted-pose/one-normal-per-manifold solver and its angular guard.
 
-The active native contact path now also translates the **noncompliant rigid-material** portion of `PxsMaterialCore.h`, `PxsMaterialCombiner.h`, and `DyContactPrep.cpp`: each currently supported authored shape owns one noncompliant material, with static/dynamic friction, restitution, the source's higher-precedence friction/restitution combine mode (`AVERAGE`, `MIN`, `MULTIPLY`, `MAX`) and friction/strong-friction disable flags. Combined restitution drives per-point normal bounce, while combined static/dynamic friction drives source friction-anchor limits and patch cache admission. The source's `staticFriction >= dynamicFriction` promotion and disable-friction row omission are preserved; default material behavior is unchanged. Public `World::set_body_material` authors material on the existing NativeCpu Scene owner. The optional reference PhysX CPU adapter assigns a real `PxMaterial` to its existing `PxShape` and releases the temporary reference after assignment; neither mode adds a shadow material-table authority. Native and source-enabled reference smoke cases validate this same authoring operation. Native regressions validate the combined coefficients by actual normal/friction body response. Materials with negative restitution (compliant spring/acceleration), damping combinations, multi-material geometry, per-point material assignments and source packed/SIMD constraints are **not** admitted by this subset.
+The active native contact path translates the rigid single-shape `PxsMaterialCore.h`, `PxsMaterialCombiner.h`, `DyContactPrep.cpp` and `DyContactPrepShared.h` material branches: every admitted shape owns its material, whose static/dynamic friction, signed restitution (including compliant stiffness), damping, independently ranked combine modes, acceleration-spring flag and friction/strong-friction disable flags flow into the existing Gu→Dy contact-manager preparation. The `PxsMaterialCombiner` special cases for single-compliant and mixed force/acceleration spring combinations are active. Ordinary restitution and the default material path remain unchanged; compliant contacts retain source spring equations in both position and velocity passes and its `DySolverConstraintsShared.h` impulse-multiplier recurrence on every solve. The `staticFriction >= dynamicFriction` promotion and disable-friction omission are preserved. Public `World::set_body_material` modifies the existing NativeCpu Scene actor; the optional real PhysX CPU backend assigns a `PxMaterial` on the existing `PxShape`. Neither mode owns a parallel material table. Native Dy-row and source-enabled real PhysX parity regressions cover the same inputs. Multi-material shapes, per-contact material assignments, packed SIMD ABI and source event callbacks remain unported.
 
 The active PGS preparation now uses the original CPU `DyCpuGpuBiasCoefficient::rigidContact = 0.8f` for both normal penetration correction and friction relaxation. Cached friction normals live in both actors' local frames and survive correlated contact motion; source `DyContactPrepShared::pointsAreClose` uses **absolute** projected anchor separation to retire patches on either excessive compression or positive separation. These numerical and lifetime boundaries are covered by the current draft review, without declaring full source parity.
 
@@ -288,7 +288,7 @@ The native solver also imports the **rigid-body** ownership/ordering slice of `D
 
 The existing scene now also applies the admitted rigid-body `DyFrictionCorrelation` pipeline: `createContactPatches` retains contiguous same-normal/material Gu runs; `correlatePatches` links those runs in source reverse-chain order to cached or newly created friction patches; `getFrictionPatches` validates unbroken body-local anchors against current relative normals and absolute separation; and `growPatches` retains adequately separated two-anchor caches or rebuilds anchors from the linked contact runs. The `DySolverConstraints` PGS loop consumes each correlated patch's normal rows immediately before its friction rows, while source Gu offset indexing remains authoritative for contact-force writeback. The solver header normal is selected once from the current reversed contact-patch correlation head and used for every correlated normal Jacobian and friction tangent, independently of the historical cached body-local friction normal; the noncontiguous-run regression exercises this distinction with near-aligned normals and reused anchors. Reused per-scene scratch and a mapped row-order vector avoid per-contact allocations and redundant per-patch force rescans. A two-manager fixture checks multi-contact anchor formation, material-specific friction disablement, and cache re-entry; the existing 600-frame stack and velocity-writeback regressions continue to cover solver dynamics.
 
-This is **not** full source solver admission: heterogeneous per-contact material groups and target velocities, strict `DyCorrelationBuffer` SIMD/packed layout and all geometry/mixed-material cache permutations, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and shape-interaction contact event/callback publication remain unported. The admitted two-material noncompliant combine modes, final per-contact normal/friction writeback and low-level threshold-change stream are implemented; these do not constitute full reporting. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
+This is **not** full source solver admission: heterogeneous per-contact material groups and target velocities, strict `DyCorrelationBuffer` SIMD/packed layout and all geometry/mixed-material cache permutations, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and shape-interaction contact event/callback publication remain unported. The admitted two-material compliant/noncompliant combine modes, force/acceleration spring rows, final per-contact normal/friction writeback and low-level threshold-change stream are implemented; these do not constitute full reporting. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
@@ -1276,6 +1276,50 @@ quaternion rejection and normalization, translation preserving spin,
 rotated static-box SAP and original Gu SAT contact transitions, public
 World free-flight integration, and rejection of unsupported floor
 rotation across native and optional reference CPU backends.
+
+## Compliant spring-damper PGS correspondence and ownership
+
+`PxsMaterialCombiner.h::PxsCombineMaterials` consumes both actor-owned
+`Material` values when preparing the EXISTING `Scene::prepare_constraints`
+stream. A single compliant material (negative `restitution`) takes
+precedence over any rigid material regardless of ordinary restitution
+combine mode. Two compliant materials honor the higher-precedence
+restitution and damping combine modes; `Multiply` restores the
+negative stiffness sign. When exactly one of two compliant materials
+has `eCOMPLIANT_ACCELERATION_SPRING`, that material's stiffness and
+damping take precedence. The combined acceleration flag follows the
+original OR of both material flag sets.
+
+`DyContactPrepShared.h::computeCompliantDamping` zeroes damping only
+for a separated contact that is not closing within the timestep.
+`computeCompliantContactCoefficients` then computes `nrdt`, `a`,
+`b`, `x`, `velocityMultiplier`, `impulseMultiplier` and the
+equal compliant biased/unbiased errors; force-based springs use the
+unit response, while acceleration-based springs use its reciprocal
+for the mass factor. `Scene::solve_constraints` consumes that
+`impulseMultiplier` at every original PGS normal row iteration before
+clamping each source Gu contact's impulse. Ordinary noncompliant
+contacts retain an exact multiplier of one and their distinct
+position/velocity-phase bias.
+
+The same `Scene::FrictionPatch` cache stores the combined spring
+properties and checks their equivalence alongside friction/normal
+before correlating previous-frame anchors. Contact point order,
+indexed contact-manager scheduling, Gu-indexed force writeback,
+force-threshold changes and failed-step rollback retain their
+existing ownership. The reference adapter authors
+`PxMaterial::setDamping`, `setDampingCombineMode` and
+`eCOMPLIANT_ACCELERATION_SPRING` on the original material shape.
+
+Native regressions inspect the actual prepared normal constraints
+for force- and acceleration-spring equations, mixed compliant and
+rigid pairs in either body order, negative-stiffness multiply,
+precontact damping suppression and public World motion. The
+reference-enabled regression compares native and independent real
+PhysX CPU free-motion/contact results for the same authored material
+and timestep. Heterogeneous shape/triangle material IDs, packed
+`PxSolverConstraintDesc` layout, contact modification callbacks
+and complete island task continuations remain N1 requirements.
 
 ## Initial integrated acceptance boundary: real CPU PGS
 
