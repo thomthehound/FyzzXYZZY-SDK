@@ -160,6 +160,7 @@ struct ContactCorrelationSourceFixture {
         scene.set_material(box,spring);
         scene.set_velocity(box,{-1.39922f,4.64631f,0.0f});
         bool saw_signed=false;
+        bool saw_signed_friction_limit=false;
         for(unsigned frame=0;frame<100;++frame) {
             scene.step(1.0f/60.0f);
             for(double force:scene.solved_normal_impulses()) {
@@ -167,6 +168,38 @@ struct ContactCorrelationSourceFixture {
                     throw std::runtime_error(
                         "Source signed spring emitted nonfinite Gu force");
                 saw_signed|=force<0.0;
+            }
+            // Inspect the FINAL production solver rows, not merely
+            // the output's finiteness. Every live friction patch with
+            // negative summed normal force must satisfy the exact
+            // DySolverConstraints::solveContact signed FMin/FMax
+            // limiter: negative maxDynamic makes the final result
+            // maxDynamic for EVERY executed tangential row. Replacing
+            // this with std::clamp(-abs(maxDyn),abs(maxDyn)) fails.
+            for(std::size_t patch_id=0;
+                patch_id<scene.friction_patches_.size();++patch_id) {
+                const auto& patch=scene.friction_patches_[patch_id];
+                if(!patch.anchor_count)continue;
+                double normal_sum=0.0;
+                for(const auto& row:scene.solver_contact_points_)
+                    if(row.friction_patch==patch_id)
+                        normal_sum+=row.applied_force;
+                if(normal_sum>=-1.0e-8)continue;
+                const double max_dynamic=patch.dynamic_friction*
+                    (patch.anchor_count==2 ? 0.5:1.0)*normal_sum;
+                if(!(max_dynamic<-1.0e-8))continue;
+                bool inspected=false;
+                for(std::size_t k=patch.row_offset;
+                    k<patch.row_offset+2*patch.anchor_count;++k) {
+                    const double result=scene.solver_friction_rows_[k].applied_force;
+                    if(!std::isfinite(result) ||
+                       std::abs(result-max_dynamic)>1.0e-6*
+                           std::max(1.0,std::abs(max_dynamic)))
+                        throw std::runtime_error(
+                            "Signed Dy friction row differs from source FMin/FMax limiter");
+                    inspected=true;
+                }
+                saw_signed_friction_limit|=inspected;
             }
             for(const auto& patch:scene.solved_friction_patches())
                 for(std::size_t i=0;i<patch.anchor_count;++i) {
@@ -177,9 +210,9 @@ struct ContactCorrelationSourceFixture {
                             "Source signed friction bound emitted nonfinite impulse");
                 }
         }
-        if(!saw_signed)
+        if(!saw_signed || !saw_signed_friction_limit)
             throw std::runtime_error(
-                "Signed PGS friction oracle did not exercise negative spring force");
+                "Signed PGS fixture did not execute a negative-total friction row");
     }
     static void verify_signed_compliant_source_writeback() {
         Scene scene;
