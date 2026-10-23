@@ -3234,10 +3234,8 @@ void Scene::prepare_constraints(float seconds) {
             manifold.solver_offset=solver_contact_points_.size();
             manifold.friction_patch_offset=next_friction_patches_.size();
             manifold.friction_patch_count=0;
-            solver_contact_points_.resize(
-                manifold.solver_offset+manifold.count);
-            for(std::size_t j=0;j<manifold.count;++j)
-                solver_contact_order_.push_back(manifold.solver_offset+j);
+            // No Dy contact rows are admitted for dormant Gu managers.
+            // The independently Gu-indexed writeback provides zeros.
             continue;
         }
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
@@ -3259,10 +3257,9 @@ void Scene::prepare_constraints(float seconds) {
             actor0.dynamics.max_contact_impulse,
             actor1.dynamics.max_contact_impulse);
         if(pair_max_impulse==0.0f) {
-            solver_contact_points_.resize(
-                manifold.solver_offset+manifold.count);
-            for(std::size_t j=0;j<manifold.count;++j)
-                solver_contact_order_.push_back(manifold.solver_offset+j);
+            // DyContactPrepShared::extractContacts omits these before
+            // filling ANY contact/patch solver descriptors. Subsequent
+            // live managers pack immediately after prior live rows.
             continue;
         }
         // PxRigidBody::setMaxDepenetrationVelocity stores the NEGATIVE
@@ -3727,11 +3724,7 @@ void Scene::solve_constraints() {
             // DyContactPrepShared::extractContacts; there is no packed
             // solver header to execute. Gu touch state and its indexed
             // zero force-buffer slots remain owned by this Scene.
-            if(manifold.friction_patch_count==0 &&
-               manifold.count &&
-               std::min(actors_[manifold.pair.a].dynamics.max_contact_impulse,
-                        actors_[manifold.pair.b].dynamics.max_contact_impulse)
-                   ==0.0f)
+            if(manifold.friction_patch_count==0)
                 continue;
             std::size_t order_cursor=manifold.solver_offset;
             for(std::size_t p=manifold.friction_patch_offset;
@@ -3928,11 +3921,21 @@ void Scene::write_back_contacts() {
     friction_impulse_writeback_.resize(friction_patches_.size());
     for (const auto& manifold : manifolds_) {
         if (manifold.contact_offset > contact_points_.size() ||
-            manifold.count > contact_points_.size()-manifold.contact_offset ||
-            manifold.solver_offset > solver_contact_points_.size() ||
-            manifold.count > solver_contact_points_.size()-manifold.solver_offset)
+            manifold.count > contact_points_.size()-manifold.contact_offset)
             throw std::logic_error(
-                "Native Dy contact writeback offset exceeds source streams");
+                "Native Gu contact writeback offset exceeds published stream");
+        if(manifold.friction_patch_count==0) {
+            // No solver rows exist for zero-capped or dormant Gu
+            // contacts. Explicitly zero just their Gu offset window,
+            // preserving subsequent active-manager force indexing.
+            std::fill_n(normal_impulse_writeback_.begin()+
+                            manifold.contact_offset,manifold.count,0.0);
+            continue;
+        }
+        if(manifold.solver_offset > solver_contact_points_.size() ||
+           manifold.count > solver_contact_points_.size()-manifold.solver_offset)
+            throw std::logic_error(
+                "Native Dy contact writeback offset exceeds solver rows");
         for (std::size_t i=0;i<manifold.count;++i) {
             const double impulse=solver_contact_points_[
                 manifold.solver_offset+i].applied_force;
