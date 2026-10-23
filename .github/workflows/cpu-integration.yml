@@ -37,12 +37,19 @@ jobs:
         run: |
           . /etc/os-release
           echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+      - name: Identify resolved Ubuntu package revisions
+        id: apt_revision
+        shell: bash
+        run: echo "revision=$(bash .github/scripts/install-vulkan.sh --cache-revision)" >> "$GITHUB_OUTPUT"
       - name: Restore cached Ubuntu Vulkan packages
         id: apt_debs
         uses: actions/cache/restore@v6
         with:
           path: .ci-cache/vulkan-apt/archives
-          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
+          key: fyzzxyzzy-apt-debs-v2-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ steps.apt_revision.outputs.revision }}
+          restore-keys: |
+            fyzzxyzzy-apt-debs-v2-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-
+            fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-
       - name: Install Vulkan development packages
         run: bash .github/scripts/install-vulkan.sh
       - name: Identify completed Ubuntu package archives
@@ -339,12 +346,19 @@ jobs:
         run: |
           . /etc/os-release
           echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+      - name: Identify resolved Ubuntu package revisions
+        id: apt_revision
+        shell: bash
+        run: echo "revision=$(bash .github/scripts/install-vulkan.sh --cache-revision)" >> "$GITHUB_OUTPUT"
       - name: Restore cached Ubuntu Vulkan packages
         id: apt_debs
         uses: actions/cache/restore@v6
         with:
           path: .ci-cache/vulkan-apt/archives
-          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
+          key: fyzzxyzzy-apt-debs-v2-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-${{ steps.apt_revision.outputs.revision }}
+          restore-keys: |
+            fyzzxyzzy-apt-debs-v2-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-
+            fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-${{ steps.ubuntu_release.outputs.version }}-
       - name: Install Vulkan SDK
         run: bash .github/scripts/install-vulkan.sh
       - name: Identify completed Ubuntu package archives

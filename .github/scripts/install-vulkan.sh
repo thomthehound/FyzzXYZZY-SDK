@@ -4,6 +4,20 @@
 
 set -euo pipefail
 
+# Key the immutable Actions cache to what APT would install, including
+# currently selected transitive upgrades. This local query performs no
+# downloads; changed package candidates create a new writable cache key.
+if [[ "${1:-}" == '--cache-revision' ]]; then
+    {
+        apt-cache policy libvulkan-dev mesa-vulkan-drivers glslang-tools |
+            awk '/^[^ ]/ { package=$1 } /^  Candidate:/ { print package, $2 }'
+        apt-get -s install --no-install-recommends \
+            libvulkan-dev mesa-vulkan-drivers glslang-tools 2>/dev/null |
+            grep '^Inst ' || true
+    } | sha256sum | cut -c 1-20
+    exit 0
+fi
+
 # APT must download into its normal /var/cache/apt/archives directory so
 # the unprivileged _apt sandbox can verify and fetch packages as designed.
 # Only completed, authenticated .deb files move through the Actions cache.
