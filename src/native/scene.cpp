@@ -3675,7 +3675,12 @@ void Scene::solve_constraints() {
     std::size_t task_solver_begin=0;
     for(const auto& task:solver_tasks_) {
     const unsigned position_iterations=task.position_iterations;
-    const unsigned velocity_iterations=task.velocity_iterations;
+    // DySolverControl::solveV_Blocks executes max(requested, 1):
+    // a zero requested velocity count skips optional velocity passes,
+    // never the mandatory final solve/writeback pass. Preserve the raw
+    // requested count in the source task descriptor.
+    const unsigned velocity_iterations=std::max<unsigned>(
+        task.velocity_iterations,1u);
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
         // DyConstraintPartition's ordered descriptors, rather than
