@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -133,6 +134,25 @@ void World::set_body_material(BodyId id, Material material) {
         throw std::invalid_argument(
             "Noncompliant contact material coefficients/modes invalid");
     impl_->set_body_material(id,material);
+}
+
+void World::set_body_dynamics(BodyId id, RigidBodyDynamics d) {
+    // PxsBodyCore holds squared velocity limits in PxReal. Reject
+    // overflow before any backend can partially mutate an actor.
+    if(!std::isfinite(d.linear_damping) ||
+       !std::isfinite(d.angular_damping) ||
+       !std::isfinite(d.max_linear_velocity) ||
+       !std::isfinite(d.max_angular_velocity) ||
+       d.linear_damping<0.0f || d.angular_damping<0.0f ||
+       d.max_linear_velocity<0.0f || d.max_angular_velocity<0.0f ||
+       d.max_linear_velocity*d.max_linear_velocity >
+           std::numeric_limits<float>::max() ||
+       d.max_angular_velocity*d.max_angular_velocity >
+           std::numeric_limits<float>::max() ||
+       d.position_iterations==0 || d.velocity_iterations==0)
+        throw std::invalid_argument(
+            "Source rigid dynamics inputs/iteration counts invalid");
+    impl_->set_body_dynamics(id,d);
 }
 
 } // namespace fyzz
