@@ -3376,6 +3376,22 @@ void Scene::prepare_constraints(float seconds) {
                 remap[contact_patch_ids[j]-manifold.friction_patch_offset];
         manifold.friction_patch_count=static_cast<std::uint8_t>(kept);
         next_friction_patches_.resize(manifold.friction_patch_offset+kept);
+        // DyContactPrep.cpp::setupFinalizeSolverConstraints selects the
+        // first Gu normal of each reverse correlation-list head ONCE for
+        // its SolverContactHeader. That one normal governs *all* contact
+        // Jacobians, effective masses, restitution projections and both
+        // friction tangents in the header. It is distinct from a cached
+        // FrictionPatch::body0Normal/body1Normal, which belong to the
+        // older strong-friction anchor correlation lifecycle.
+        std::array<Vec3,max_source_patches> header_normals{};
+        for(std::size_t j=0;j<kept;++j) {
+            const auto head=used_heads[j];
+            if(head==invalid_instance)
+                throw std::logic_error(
+                    "Source correlated friction patch has no contact head");
+            header_normals[j]=
+                manifold.points[contact_patch_scratch_[head].start].normal;
+        }
         // Preserve source reverse correlation-list visitation in the
         // actual PGS solver while keeping Gu-indexed rows/force writeback.
         for(std::size_t j=0;j<kept;++j)
@@ -3392,7 +3408,8 @@ void Scene::prepare_constraints(float seconds) {
         for(std::size_t j=0;j<manifold.count;++j) {
             const ContactPoint& contact=manifold.points[j];
             const std::size_t patch_id=contact_patch_ids[j];
-            const Vec3 normal = contact.normal;
+            const Vec3 normal=header_normals[
+                patch_id-manifold.friction_patch_offset];
             const Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
             const Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
             const Vec3 ra = transform(a,ra_x_n);
@@ -3533,7 +3550,8 @@ void Scene::prepare_constraints(float seconds) {
             // DyContactPrep.cpp constructs tangents from relative linear
             // velocity, with the same 0.7071 normal-axis fallback and
             // 1e-4 squared-tangent threshold as the source.
-            const Vec3 n=patch.normal;
+            const Vec3 n=header_normals[
+                patch_id-manifold.friction_patch_offset];
             const Vec3 rel=sub(a.linear_velocity,b.linear_velocity);
             Vec3 t0=sub(rel,{n.x*dot(rel,n),
                               n.y*dot(rel,n),n.z*dot(rel,n)});
