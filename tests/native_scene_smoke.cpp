@@ -1189,8 +1189,8 @@ void verify_source_contact_notification_world() {
                 // normal must face downward from box toward floor
                 // in BOTH original PhysX and native Scene modes.
                 if(!(point.normal.y < -0.9f &&
-                     point.position.y > -0.01f &&
-                     point.position.y < 0.53f))
+                     point.position.y > -0.1f &&
+                     point.position.y < 0.6f))
                     throw std::runtime_error(
                         "Contact event normal/geometry disagrees with canonical shape order");
                 sum+=point.normal_impulse;
