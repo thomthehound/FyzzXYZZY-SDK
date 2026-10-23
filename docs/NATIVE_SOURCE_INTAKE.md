@@ -215,19 +215,25 @@ Shape-interaction threshold callback/event dispatch, heterogeneous material-depe
 body-contact impulse limits and applies it independently to each
 `SolverContactPoint`; `DySolverConstraints` clamps the accumulated
 normal impulse before changing any linear/angular solver velocity.
-With a zero source cap, contact extraction contributes no solver rows
-for that manager, while Gu touch events and the source contact-manager
-edge remain alive. The native one-shape-per-actor lowering preserves
-those Gu-indexed zero force slots and does not treat a zero cap as
-contact separation. `DyContactPrep` separately computes
+With a zero source cap, contact extraction contributes **no**
+solver contact rows, solver-order entries or friction patches for that
+manager, while Gu touch events and the source contact-manager edge
+remain alive. Dormant managers likewise need no Dy contact-row placeholders.
+The native one-shape-per-actor lowering packs only admitted active solver
+rows contiguously, while explicitly zeroing omitted managers' original
+Gu-indexed force slots during writeback; later live managers retain their
+correct compact Dy offsets and independent Gu offsets. This does not
+treat a zero cap as contact separation. `DyContactPrep` separately computes
 `max(data0.penBiasClamp,data1.penBiasClamp)`, the negative of the
 smaller positive depenetration velocity, and uses it to clamp position
 bias before PGS response. The original unrestricted defaults remain
 unchanged. Public settings are checked before mutation and also
 forwarded to actual reference `PxRigidDynamic` bodies. Regressions
-exercise capped multipoint plane contacts, the minimum of two dynamic
-body limits, zero-impulse response without touch loss, restricted
-penetration recovery and invalid-input rejection. Complete contact
+exercise independently saturated multipoint plane contacts
+(their total must exceed a single point's cap), the minimum of two
+dynamic body limits, zero-impulse response without touch loss, compact
+zero/live/zero solver-row transitions with exact Gu force indexing,
+restricted penetration recovery and invalid-input rejection. Complete contact
 modification, per-point impulse overrides and independent packed
 contact stream extraction remain outside the current rigid subset.
 
