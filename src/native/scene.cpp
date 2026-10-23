@@ -3661,13 +3661,19 @@ void Scene::solve_constraints() {
     // Wide prepared errors and impulses remain for the independently
     // admitted extreme translational mass range. Ordinary source PhysX
     // PxReal row precision is a separate strict-parity acceptance gate.
-    constexpr unsigned position_iterations = 4;
-    constexpr unsigned velocity_iterations = 1;
+    // Source task groups carry their own maximum of constituent
+    // PxsBodyCore solverIterationCounts. In particular, an unrelated
+    // high-iteration island must never increase another group's solve.
     constexpr double max_float =
         static_cast<double>(std::numeric_limits<float>::max());
     const auto dot = [](Vec3 u, Vec3 v) {
         return u.x*v.x + u.y*v.y + u.z*v.z;
     };
+    std::size_t task_constraint_begin=0;
+    std::size_t task_solver_begin=0;
+    for(const auto& task:solver_tasks_) {
+    const unsigned position_iterations=task.position_iterations;
+    const unsigned velocity_iterations=task.velocity_iterations;
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
         // DyConstraintPartition's ordered descriptors, rather than
@@ -3676,7 +3682,9 @@ void Scene::solve_constraints() {
         // friction patches in source order: each patch's normal rows
         // followed immediately by its friction rows. Gu force-buffer
         // offsets remain independent from this solver permutation.
-        for (const std::size_t index : ordered_constraints_) {
+        for(std::size_t desc=task_constraint_begin;
+            desc<task.constraint_end;++desc) {
+            const auto index=ordered_constraints_[desc];
             const auto& manifold = manifolds_[index];
             auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
                 ? solver_rows_[manifold.pair.a] : world_solver_row_;
@@ -3839,12 +3847,17 @@ void Scene::solve_constraints() {
             // DySolverControl.cpp::saveMotionVelocities occurs immediately
             // after the last biased/conclude position iteration, BEFORE
             // unbiased velocity iterations alter the solver deltas.
-            for (BodyId id : solver_active_ids_) {
+            for(std::size_t body=task_solver_begin;
+                body<task.solver_body_end;++body) {
+                const BodyId id=solver_active_ids_[body];
                 auto& row = solver_rows_[id];
                 row.motion_linear_delta = row.solver.linear_velocity_delta;
                 row.motion_angular_state = row.solver.angular_state;
             }
         }
+    }
+    task_constraint_begin=task.constraint_end;
+    task_solver_begin=task.solver_body_end;
     }
 }
 void Scene::write_back_contacts() {
