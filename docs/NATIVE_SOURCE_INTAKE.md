@@ -207,6 +207,34 @@ The same Scene-owned final writeback now also reconstructs `DyContactPrep.cpp::w
 
 Shape-interaction threshold callback/event dispatch, heterogeneous material-dependent writeback, exact source contact/patch mapping, packed descriptor publication and full scene report dispatch remain unported.
 
+**Source rigid body preintegration and per-task iteration control:** The
+public `World::set_body_dynamics` now authors `ScBodyCore/PxsBodyCore`
+linear/angular damping, the gravity-disable flag, maximum linear/angular
+speeds, and the packed 8-bit position/velocity iteration counts. These
+inputs travel through the single authoritative actor to the existing
+native `DyBodyCoreIntegrator::bodyCoreComputeUnconstrainedVelocity`
+translation, including the same damping-before-speed-clamp progression
+and per-body velocity-limit squaring. The independent CPU reference
+adapter authors the corresponding real `PxRigidDynamic` parameters,
+so comparison does not rely on a shadow source model.
+
+`DyDynamics::preIntegrationParallel` accumulates **maximum** position
+and velocity iterations from each source task's participating bodies.
+The native `DyDynamicsContext::updatePostKinematic` source task chains
+now retain that per-task maximum, the exact manager/partition descriptor
+range, and the prepared solver-body range. The actual PGS dispatcher
+runs each chain independently through its own biased position passes,
+position motion snapshot, and unbiased velocity passes, without imposing
+an unrelated group's higher iteration count on the entire scene.
+The default 4+1 behavior remains unchanged. Native tests exercise 130
+independent floor-contact bodies across the 128-body task boundary,
+including different maxima on each side, plus authored gravity,
+damping, speed-clamp, invalid-input and static-body rejection. The
+source-enabled fixture additionally compares native free-body velocities
+to a real `PxRigidDynamic` using the same public settings. This is
+source **serial task-chain execution**, not a claim that asynchronous
+ScPipeline continuation objects or packed SIMD descriptors are complete.
+
 The native solver also imports the **rigid-body** ownership/ordering slice of `DyConstraintPartition::partitionContactConstraints`: actor-owned 32-bit dynamic constraint masks, 32-partition overflow waves, per-body static contacts after dynamic constraints, stable counting-prefix ordering of authoritative contact managers and reusable scene-owned arrays. Both normal and friction rows execute in that order within each original PGS pass. A 35-edge dynamic contact star tests partition rollover; twelve unrelated boxes contacting the shared zero-mass static floor verify there is no false partition conflict. This path is serial; it does **not** claim the complete source island-manager lifecycle, per-island task graph, parallel batch execution, rigid-body static SIMD specialization or articulation partitioning.
 
 The existing scene now also applies the admitted rigid-body `DyFrictionCorrelation` pipeline: `createContactPatches` retains contiguous same-normal/material Gu runs; `correlatePatches` links those runs in source reverse-chain order to cached or newly created friction patches; `getFrictionPatches` validates unbroken body-local anchors against current relative normals and absolute separation; and `growPatches` retains adequately separated two-anchor caches or rebuilds anchors from the linked contact runs. The `DySolverConstraints` PGS loop consumes each correlated patch's normal rows immediately before its friction rows, while source Gu offset indexing remains authoritative for contact-force writeback. The solver header normal is selected once from the current reversed contact-patch correlation head and used for every correlated normal Jacobian and friction tangent, independently of the historical cached body-local friction normal; the noncontiguous-run regression exercises this distinction with near-aligned normals and reused anchors. Reused per-scene scratch and a mapped row-order vector avoid per-contact allocations and redundant per-patch force rescans. A two-manager fixture checks multi-contact anchor formation, material-specific friction disablement, and cache re-entry; the existing 600-frame stack and velocity-writeback regressions continue to cover solver dynamics.
