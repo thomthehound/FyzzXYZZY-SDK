@@ -125,6 +125,9 @@ struct ContactCorrelationSourceFixture {
         // A quiet Gu publication journals the public solver offsets as
         // well, so this direct transaction exercises the exact rollback
         // boundary without leaving modified manifold metadata behind.
+        const std::vector<double> preceding_forces(
+            scene.solved_normal_impulses().begin(),
+            scene.solved_normal_impulses().end());
         scene.advance_collision();
         const auto old_patches=scene.friction_patches_;
         const auto old_threshold=scene.threshold_previous_;
@@ -136,9 +139,11 @@ struct ContactCorrelationSourceFixture {
         scene.step_checkpoint_.capture(scene);
         // Execute the real correlation and force-threshold algorithms.
         scene.prepare_constraints(dt);
+        // A collision-only publication deliberately clears solver
+        // writeback. Feed the actual preceding solved impulses into
+        // this isolated threshold-stage transaction.
         scene.normal_impulse_writeback_.assign(
-            scene.step_checkpoint_.normal_impulses.begin(),
-            scene.step_checkpoint_.normal_impulses.end());
+            preceding_forces.begin(),preceding_forces.end());
         scene.update_threshold_stream(dt);
         if(scene.friction_cache_epoch_!=old_friction_epoch+1 ||
            scene.threshold_cache_epoch_!=old_threshold_epoch+1)
