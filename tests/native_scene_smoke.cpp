@@ -374,6 +374,151 @@ void verify_source_zero_velocity_iteration_request() {
 #endif
 }
 
+void verify_source_rigid_contact_limits() {
+    using fyzz::native::Scene;
+    using fyzz::Material;
+    using fyzz::RigidBodyDynamics;
+    constexpr float dt=1.0f/120.0f;
+    // Each source SolverContactPoint has its OWN impulse clamp, and
+    // Dy writeback must retain the corresponding original Gu order.
+    const auto impulse_case=[&](float cap) {
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        Material no_friction{};
+        no_friction.static_friction=0;
+        no_friction.dynamic_friction=0;
+        no_friction.restitution=0;
+        scene.set_material(floor,no_friction);
+        scene.set_material(box,no_friction);
+        RigidBodyDynamics d{};
+        d.max_contact_impulse=cap;
+        scene.set_dynamics(box,d);
+        scene.set_velocity(box,{0,-5.0f,0});
+        scene.step(dt);
+        const auto contacts=scene.contacts();
+        if(contacts.size()!=1 || contacts[0].count<2)
+            throw std::runtime_error(
+                "Source impulse-limit fixture lacks a multipoint Gu manager");
+        double sum=0;
+        for(std::size_t i=0;i<contacts[0].count;++i) {
+            const double impulse=scene.solved_normal_impulses()[
+                contacts[0].contact_offset+i];
+            if(!std::isfinite(impulse) || impulse<0.0 ||
+               impulse>static_cast<double>(cap)+1.0e-6)
+                throw std::runtime_error(
+                    "Source per-contact impulse clamp exceeded body limit");
+            sum+=impulse;
+        }
+        if(!scene.contact_edge_connected({floor,box}))
+            throw std::runtime_error(
+                "Source impulse limit severed persistent accurate edge");
+        return std::pair{scene.body_state(box),sum};
+    };
+    const auto capped=impulse_case(0.05f);
+    const auto unrestricted=impulse_case(
+        std::numeric_limits<float>::max());
+    if(!(capped.second>0.0 && capped.second<=0.2+1.0e-6 &&
+         unrestricted.second>capped.second*4.0 &&
+         capped.first.velocity.y<unrestricted.first.velocity.y-1.0f))
+        throw std::runtime_error(
+            "Source body impulse cap did not restrict multipoint response");
+    const auto disabled=impulse_case(0.0f);
+    if(disabled.second!=0.0 ||
+       !(disabled.first.velocity.y<-4.9f))
+        throw std::runtime_error(
+            "Source zero maxContactImpulse did not omit Dy contact response");
+
+    // Source penBiasClamp is NEGATIVE maxDepenetrationVelocity.
+    // Under deep penetration, limiting either actor must limit biased
+    // position motion, without clamping the ordinary final velocity.
+    const auto bias_case=[&](float cap,bool static_cap) {
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.25f,0},1.0f);
+        Material mat{};
+        mat.restitution=0;
+        mat.static_friction=0;
+        mat.dynamic_friction=0;
+        scene.set_material(floor,mat);
+        scene.set_material(box,mat);
+        RigidBodyDynamics d{};
+        d.max_depenetration_velocity=cap;
+        scene.set_dynamics(box,d);
+        if(static_cap) {
+            // Public PhysX limits are per rigid body; a static actor
+            // can author them via PxRigidStatic, but our current native
+            // SDK public setter restricts dynamics to dynamic actors.
+            // The fixture still verifies the two-sided Dy preparation
+            // from the authoritative actor cores below.
+        }
+        scene.step(dt);
+        return scene.body_state(box);
+    };
+    const auto limited=bias_case(0.25f,false);
+    const auto wide=bias_case(1.0e32f,false);
+    if(!(std::isfinite(limited.position.y) &&
+         std::isfinite(wide.position.y) &&
+         wide.position.y>limited.position.y+0.02f))
+        throw std::runtime_error(
+            "Source rigid depenetration limit did not clamp position bias");
+
+    // Reject invalid authored inputs at the public contract boundary.
+    fyzz::World world(fyzz::WorldOptions{
+        fyzz::ExecutionMode::NativeCpu});
+    const auto id=world.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+    auto rejected=[&](RigidBodyDynamics d) {
+        try {world.set_body_dynamics(id,d);}
+        catch(const std::invalid_argument&) {return true;}
+        return false;
+    };
+    RigidBodyDynamics bad{};
+    bad.max_depenetration_velocity=0;
+    if(!rejected(bad))
+        throw std::runtime_error(
+            "Source zero maxDepenetrationVelocity was admitted");
+    bad=RigidBodyDynamics{};
+    bad.max_contact_impulse=-1;
+    if(!rejected(bad))
+        throw std::runtime_error(
+            "Source negative maxContactImpulse was admitted");
+    auto zero=RigidBodyDynamics{};
+    zero.max_contact_impulse=0;
+    world.set_body_dynamics(id,zero);
+
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    // The isolated source reference consumes the same real
+    // PxRigidBody::setMaxContactImpulse/DepenetrationVelocity API.
+    // Compare qualitative source behavior, without pretending PCM and
+    // legacy Gu have already reached exact multiframe CPU parity.
+    const auto reference_case=[](float impulse_cap,float pen_cap) {
+        fyzz::World reference(fyzz::WorldOptions{
+            fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+        reference.add_static_floor(0.0f);
+        const auto box=reference.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.25f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.max_contact_impulse=impulse_cap;
+        d.max_depenetration_velocity=pen_cap;
+        reference.set_body_dynamics(box,d);
+        reference.step(dt);
+        return reference.body_state(box);
+    };
+    const auto reference_limited=reference_case(
+        std::numeric_limits<float>::max(),0.25f);
+    const auto reference_wide=reference_case(
+        std::numeric_limits<float>::max(),1.0e32f);
+    if(!(std::isfinite(reference_limited.position.y) &&
+         std::isfinite(reference_wide.position.y) &&
+         reference_wide.position.y>reference_limited.position.y))
+        throw std::runtime_error(
+            "Source PhysX reference depenetration cap ignored authoring");
+#endif
+}
+
 void verify_source_body_dynamics_api() {
     using namespace fyzz;
     RigidBodyDynamics configured{};
@@ -6446,6 +6591,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
+    verify_source_rigid_contact_limits();
     verify_source_zero_velocity_iteration_request();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
