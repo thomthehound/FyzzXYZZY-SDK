@@ -1257,6 +1257,56 @@ void verify_source_active_island_handoff() {
     (void)floor;
 }
 
+void verify_source_reverse_wake_order_and_rollback_capacity() {
+    using fyzz::native::Scene;
+    Scene scene;
+    scene.add_static_floor(0.0f);
+    std::array<fyzz::BodyId,4> ids{};
+    for(std::size_t i=0;i<ids.size();++i)
+        ids[i]=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{static_cast<float>(i)*3.0f,0.5f,0},1.0f);
+    for(int frame=0;frame<360;++frame)
+        scene.step(1.0f/120.0f);
+    expect(scene.active_accurate_islands().empty() &&
+           scene.active_speculative_islands().empty(),
+           "Reverse wake fixture did not retire the dormant source islands");
+    std::array<std::uint32_t,4> accurate{},speculative{};
+    for(std::size_t i=0;i<ids.size();++i) {
+        accurate[i]=scene.accurate_island_id(ids[i]);
+        speculative[i]=scene.speculative_island_id(ids[i]);
+        expect(scene.body_is_sleeping(ids[i]),
+               "Reverse wake fixture did not put all bodies to sleep");
+    }
+    // Queue multiple distinct authored wakes before a single source
+    // wakeIslands publication, explicitly against the sorted BodyId order.
+    // Reject the publication first: its rollback must restore both
+    // graphs' pending event sequences and reserve no-throw list capacity.
+    const std::array<std::size_t,4> order{3,1,2,0};
+    for(std::size_t index:order)
+        scene.set_position(ids[index],scene.body_state(ids[index]).position);
+    bool rejected=false;
+    try {scene.step(std::numeric_limits<float>::max());}
+    catch(const std::overflow_error&) {rejected=true;}
+    expect(rejected &&
+           scene.active_accurate_islands().empty() &&
+           scene.active_speculative_islands().empty(),
+           "Rejected multi-wake step prematurely published source islands");
+    scene.advance_collision();
+    const auto actual=scene.active_accurate_islands();
+    const auto sap=scene.active_speculative_islands();
+    expect(actual.size()==order.size() && sap.size()==order.size(),
+           "Wake events omitted some previously dormant island");
+    for(std::size_t i=0;i<order.size();++i)
+        expect(actual[i]==accurate[order[i]] &&
+               sap[i]==speculative[order[i]],
+               "Source mActivatingNodes order lost in graph-specific handoff");
+    scene.advance_collision();
+    for(std::size_t i=0;i<order.size();++i)
+        expect(scene.active_accurate_islands()[i]==accurate[order[i]] &&
+               scene.active_speculative_islands()[i]==speculative[order[i]],
+               "Quiet handoff duplicated or sorted source active handles");
+}
+
 void verify_source_active_reference_lifecycle() {
     using fyzz::native::Scene;
     Scene refs;
@@ -5496,6 +5546,7 @@ int run_native_scene_smoke() {
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
     verify_source_active_island_handoff();
+    verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
     verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
