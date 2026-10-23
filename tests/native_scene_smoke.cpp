@@ -615,6 +615,69 @@ namespace fyzz::native {
 // source computes maximum solverIterationCounts across all bodies in
 // each task (including unconstrained members), not across the scene.
 struct SolverIterationSourceFixture {
+    static void verify_active_manager_admission() {
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        // Retain a substantial accurate Gu contact history that is
+        // entirely dormant. Its managers must not be traversed again
+        // for either rigid-body solver admission or Dy sleepCheck.
+        constexpr unsigned resting=48;
+        for(unsigned i=0;i<resting;++i)
+            scene.add_dynamic_box({0.5f,0.5f,0.5f},
+                {static_cast<float>(i)*3.0f,0.5f,0.0f},1.0f);
+        for(unsigned i=0;i<360;++i)scene.step(dt);
+        if(!scene.accurate_islands_.active_islands.empty() ||
+           scene.manifolds_.size()<resting)
+            throw std::runtime_error(
+                "Active-manager admission fixture has no dormant Gu history");
+        const auto first=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1000.0f,0.49f,0.0f},1.0f);
+        const auto second=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1000.8f,0.49f,0.0f},1.0f);
+        scene.step(dt);
+        if(scene.manifolds_.size()<=3 ||
+           scene.indexed_managers_.size()!=3 ||
+           scene.solver_active_ids_.size()!=2 ||
+           std::find(scene.solver_active_ids_.begin(),
+                     scene.solver_active_ids_.end(),first)==
+               scene.solver_active_ids_.end() ||
+           std::find(scene.solver_active_ids_.begin(),
+                     scene.solver_active_ids_.end(),second)==
+               scene.solver_active_ids_.end() ||
+           scene.sleep_interaction_counts_[first]!=2 ||
+           scene.sleep_interaction_counts_[second]!=2)
+            throw std::runtime_error(
+                "PhysX active island contact edges did not drive both Dy stages");
+        for(std::size_t i=0;i<scene.indexed_managers_.size();++i) {
+            const auto pair=scene.manifolds_[
+                scene.indexed_managers_[i]].pair;
+            if(pair.a!=first && pair.b!=first &&
+               pair.a!=second && pair.b!=second)
+                throw std::runtime_error(
+                    "Dormant Gu manager leaked into active PGS task chain");
+        }
+        // Even when a live accurate manager has no Dy response rows,
+        // Sc retains its contact edge and counted interactions. Only
+        // the remaining floor contact should require solver-body data.
+        RigidBodyDynamics disabled{};
+        disabled.max_contact_impulse=0.0f;
+        scene.set_dynamics(second,disabled);
+        scene.step(dt);
+        if(scene.solver_active_ids_.size()!=1 ||
+           scene.solver_active_ids_[0]!=first ||
+           scene.indexed_managers_.size()!=3 ||
+           scene.sleep_interaction_counts_[first]!=2 ||
+           scene.sleep_interaction_counts_[second]!=2)
+            throw std::runtime_error(
+                "Zero-response accurate edge changed source body admission or sleep count");
+        scene.set_dynamics(second,RigidBodyDynamics{});
+        scene.step(dt);
+        if(scene.solver_active_ids_.size()!=2 ||
+           scene.indexed_managers_.size()!=3)
+            throw std::runtime_error(
+                "Source active manager admission failed after response reenable");
+    }
     static void verify() {
         Scene scene;
         scene.add_static_floor(0.0f);
@@ -7888,6 +7951,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
+    fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_compliant_world_parity();
