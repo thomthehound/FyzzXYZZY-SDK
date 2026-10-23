@@ -3452,8 +3452,7 @@ void Scene::prepare_constraints(float seconds) {
             // local-to-world error/Jacobians for disabled patches.
             if (patch.disable_friction) {
                 patch.anchor_count=0;
-                patch.anchor_count=count;
-            patch.row_offset=solver_friction_rows_.size();
+                patch.row_offset=solver_friction_rows_.size();
                 continue;
             }
             const Vec3 extent=sub(patch.bounds_max,patch.bounds_min);
@@ -3525,7 +3524,7 @@ void Scene::prepare_constraints(float seconds) {
                     patch.body1_anchors[0]={};
                 }
             }
-
+            patch.anchor_count=count;
             patch.row_offset=solver_friction_rows_.size();
             if (count==0) continue;
             // DyContactPrep.cpp constructs tangents from relative linear
