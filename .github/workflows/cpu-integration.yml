@@ -64,6 +64,13 @@ jobs:
           ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource$' --output-on-failure
       - name: Build
         run: cmake --build build --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_sap_broadphase_descriptor_native fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+      - name: Validate reusable godot-cpp outputs
+        shell: bash
+        run: |
+          test -s build/bin/libgodot-cpp.linux.template_debug.x86_64.a
+          test -d build/_deps/fyzzxyzzy_godot_cpp-src/.git
+          test -d build/_deps/fyzzxyzzy_godot_cpp-build/gen/include/godot_cpp
+          find build/_deps/fyzzxyzzy_godot_cpp-build -type f -name '*.o' -print -quit | grep -q .
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -188,6 +195,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config release --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot --parallel 4
+      - name: Validate reusable godot-cpp outputs
+        shell: pwsh
+        run: |
+          $library = 'build/bin/libgodot-cpp.windows.template_debug.x86_64.lib'
+          $buildDir = 'build/_deps/fyzzxyzzy_godot_cpp-build'
+          if (-not (Test-Path $library) -or (Get-Item $library).Length -eq 0) { throw 'Missing compiled godot-cpp library' }
+          if (-not (Test-Path 'build/_deps/fyzzxyzzy_godot_cpp-src/.git')) { throw 'Missing pinned godot-cpp source checkout' }
+          if (-not (Test-Path "$buildDir/gen/include/godot_cpp")) { throw 'Missing generated bindings' }
+          if (-not (Get-ChildItem -Path $buildDir -Filter '*.obj' -File -Recurse | Select-Object -First 1)) {
+            throw 'Missing godot-cpp compilation intermediates'
+          }
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
