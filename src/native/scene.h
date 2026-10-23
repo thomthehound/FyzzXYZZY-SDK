@@ -939,6 +939,7 @@ private:
         std::uint64_t graph_checkpoint_count=0;
         std::size_t dirty_route_checks=0, fast_route_hits=0;
         std::uint64_t pair_epoch=0, contact_epoch=0;
+        std::uint64_t manifold_lookup_generation=0;
         std::uint64_t quiet_event_epoch=0;
         bool topology_dirty=true, dirty=true;
         bool authored_activation_pending=false;
@@ -999,8 +1000,15 @@ private:
         std::size_t index=invalid_instance;
         std::uint64_t generation=0;
     };
+    // The live Gu manager-to-island-edge index is rebuilt ONLY when
+    // narrowphase publishes a new contact arena. An unchanged geometry
+    // epoch reuses it across all PGS frames, including dormant scenes.
+    // Staging has its own buffer so a rejected contact publication
+    // restores both the Gu arena and this index with reversible swaps.
     std::vector<IndexedManifold> manifold_by_edge_;
+    std::vector<IndexedManifold> next_manifold_by_edge_;
     std::uint64_t indexed_manifold_generation_=0;
+    std::uint64_t manifold_lookup_generation_=0;
     std::vector<std::size_t> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
