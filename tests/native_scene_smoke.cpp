@@ -205,18 +205,28 @@ struct SolverIterationSourceFixture {
         };
         const auto run_final_pass=[](std::uint8_t request) {
             Scene tested;
-            tested.add_static_floor(0.0f);
+            const auto floor=tested.add_static_floor(0.0f);
+            // Suppress restitution, which removes the position bias in
+            // DyContactPrep. We need an actual penetration-bias delta
+            // that the final UNBIASED pass must undo, not a bouncing
+            // contact where both phases may legitimately coincide.
+            Material no_bounce{};
+            no_bounce.restitution=0.0f;
+            tested.set_material(floor,no_bounce);
             constexpr BodyId body_count=130;
             for(BodyId i=0;i<body_count;++i) {
                 const auto id=tested.add_dynamic_box(
                     {0.5f,0.5f,0.5f},
-                    {static_cast<float>(i)*3.0f,0.49f,0.0f},1.0f);
+                    {static_cast<float>(i)*3.0f,
+                     i>=128 ? 0.45f : 0.49f,0.0f},1.0f);
                 RigidBodyDynamics d{};
                 d.position_iterations=5;
                 d.velocity_iterations=i>=128 ? request : 3;
                 tested.set_dynamics(id,d);
-                if(i>=128)
-                    tested.set_velocity(id,{0.0f,-4.0f,0.0f});
+                if(i>=128) {
+                    tested.set_material(id,no_bounce);
+                    tested.set_velocity(id,{0.0f,-2.0f,0.0f});
+                }
             }
             tested.step(1.0f/120.0f);
             if(tested.solver_tasks_.size()!=2 ||
