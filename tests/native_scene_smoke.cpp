@@ -1234,6 +1234,26 @@ void verify_source_active_island_handoff() {
            active.active_accurate_islands()[0]==c_accurate &&
            active.active_speculative_islands()[0]==c_speculative,
            "First-slot source active-island retirement broke swap-last");
+    // Rejected actor admission rebuilds both IslandSims and changes their
+    // visited-island scratch capacities. The old source permutation,
+    // handles and scratch watermark must all survive and work on retry.
+    const auto d=active.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{9,3,0},1.0f);
+    bool failed_rebuild=false;
+    try { active.step(std::numeric_limits<float>::max()); }
+    catch(const std::overflow_error&) { failed_rebuild=true; }
+    expect(failed_rebuild &&
+           active.active_accurate_islands().size()==1 &&
+           active.active_speculative_islands().size()==1 &&
+           active.active_accurate_islands()[0]==c_accurate &&
+           active.active_speculative_islands()[0]==c_speculative,
+           "Rejected full island rebuild corrupted source active handles");
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==2 &&
+           active.active_speculative_islands().size()==2 &&
+           active.accurate_island_id(d)!=c_accurate &&
+           active.speculative_island_id(d)!=c_speculative,
+           "Retried source island rebuild reused stale active-list slots");
     (void)floor;
 }
 
