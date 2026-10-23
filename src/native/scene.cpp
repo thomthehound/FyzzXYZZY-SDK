@@ -4457,11 +4457,18 @@ void Scene::step(float seconds) {
     // contact manager contributes one interaction to each dynamic body.
     // The small reusable count array is derived from the authoritative
     // contact stream; no parallel scene registry is introduced.
-    sleep_interaction_counts_.assign(actors_.size(),0);
+    // Only accurate active rigid nodes can reach Dy::sleepCheck this
+    // frame. Preserve the reusable per-actor arena but clear just the
+    // currently active slots, not every dormant/historical actor.
+    // A later wake reinitializes its slot before consuming it.
+    sleep_interaction_counts_.resize(actors_.size(),0);
+    for(BodyId id:accurate_islands_.active_nodes)
+        sleep_interaction_counts_[id]=0;
     for(const auto& manifold:manifolds_) {
         if(!manifold.count)continue;
         for(BodyId id:{manifold.pair.a,manifold.pair.b}) {
-            if(actors_[id].kind!=Kind::DynamicBox)continue;
+            if(actors_[id].kind!=Kind::DynamicBox ||
+               actors_[id].sleeping)continue;
             if(sleep_interaction_counts_[id]==
                std::numeric_limits<std::uint32_t>::max())
                 throw std::overflow_error(
