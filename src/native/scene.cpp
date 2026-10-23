@@ -4062,14 +4062,17 @@ void Scene::publish_contact_events() {
     // The found/lost lists and sorted Gu managers belong to this very
     // scene: no shadow contact-pair history or global event registry.
     next_contact_events_.clear();
+    next_contact_event_points_.clear();
     next_contact_events_.reserve(manifolds_.size()+lost_contacts_.size());
+    next_contact_event_points_.reserve(contact_points_.size());
     std::size_t lost=0,found=0;
     for(const auto& manifold:manifolds_) {
         while(lost<lost_contacts_.size() &&
               lost_contacts_[lost]<manifold.pair) {
             const Pair pair=lost_contacts_[lost++];
             next_contact_events_.push_back({
-                pair.a,pair.b,ContactEventKind::Lost,0,0.0});
+                pair.a,pair.b,ContactEventKind::Lost,0,
+                next_contact_event_points_.size(),0.0});
         }
         while(found<found_contacts_.size() &&
               found_contacts_[found]<manifold.pair)++found;
@@ -4087,24 +4090,33 @@ void Scene::publish_contact_events() {
             throw std::logic_error(
                 "Contact notification references unpublished Gu forces");
         double impulse=0.0;
-        for(std::size_t i=0;i<manifold.count;++i)
-            impulse+=normal_impulse_writeback_[manifold.contact_offset+i];
+        const auto offset=next_contact_event_points_.size();
+        for(std::size_t i=0;i<manifold.count;++i) {
+            const std::size_t index=manifold.contact_offset+i;
+            const auto& point=contact_points_[index];
+            const double normal_force=normal_impulse_writeback_[index];
+            impulse+=normal_force;
+            next_contact_event_points_.push_back({
+                point.position,point.normal,point.separation,normal_force});
+        }
         if(!std::isfinite(impulse))
             throw std::overflow_error(
                 "Contact notification impulse is not finite");
         next_contact_events_.push_back({
             manifold.pair.a,manifold.pair.b,
             is_new?ContactEventKind::Found:ContactEventKind::Persists,
-            manifold.count,impulse});
+            manifold.count,offset,impulse});
     }
     for(;lost<lost_contacts_.size();++lost) {
         const Pair pair=lost_contacts_[lost];
         next_contact_events_.push_back({
-            pair.a,pair.b,ContactEventKind::Lost,0,0.0});
+            pair.a,pair.b,ContactEventKind::Lost,0,
+            next_contact_event_points_.size(),0.0});
     }
     // Publish only after every Sc/Dy stage and this event preparation
     // succeeds. A rejected step leaves the previous returned span and
     // backing storage untouched; the scratch is reused on retry.
+    contact_event_points_.swap(next_contact_event_points_);
     contact_events_.swap(next_contact_events_);
 }
 void Scene::write_back_contacts() {
@@ -5273,6 +5285,9 @@ public:
     }
     std::span<const ContactEvent> contact_events() const override {
         return scene_.contact_events();
+    }
+    std::span<const ContactEventPoint> contact_event_points() const override {
+        return scene_.contact_event_points();
     }
     BodyId add_static_box(Vec3 h, Vec3 p) override {
         return scene_.add_static_box(h, p);

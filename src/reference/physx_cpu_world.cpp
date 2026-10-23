@@ -5,6 +5,7 @@
 #include <PxPhysicsAPI.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -110,6 +111,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     bool contact_notifications=false;
     std::vector<ContactEvent> published_contact_events;
     std::vector<ContactEvent> pending_contact_events;
+    std::vector<ContactEventPoint> published_contact_points;
+    std::vector<ContactEventPoint> pending_contact_points;
 
     // Sc/NPhaseCore reports callbacks at PxScene::fetchResults on the
     // user's thread. The authoring-time userData token maps directly
@@ -140,13 +143,32 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             if(!found && !lost && !persists)continue;
             double impulse=0.0;
             const std::uint8_t n=lost ? 0 : pair.contactCount;
-            if(!lost && pair.contactImpulses)
-                for(std::size_t i=0;i<n;++i)
-                    impulse+=pair.contactImpulses[i];
+            const auto offset=pending_contact_points.size();
+            if(n>0) {
+                // Original PxContactPair::extractContacts returns
+                // source PxContactPairPoint position/normal/separation.
+                // Contact force-buffer slots stay Gu-indexed; the
+                // summed scalar below is not a fictitious manifold cap.
+                std::array<physx::PxContactPairPoint,255> extracted{};
+                const auto count=pair.extractContacts(extracted.data(),
+                    static_cast<physx::PxU32>(extracted.size()));
+                if(count!=n)
+                    throw std::logic_error(
+                        "Original PxContactPair contact count exceeds admitted Gu buffer");
+                for(std::size_t i=0;i<count;++i) {
+                    const double normal_force=pair.contactImpulses
+                        ? static_cast<double>(pair.contactImpulses[i]):0.0;
+                    impulse+=normal_force;
+                    pending_contact_points.push_back({
+                        from_physx(extracted[i].position),
+                        from_physx(extracted[i].normal),
+                        extracted[i].separation,normal_force});
+                }
+            }
             pending_contact_events.push_back({
                 a,b,found?ContactEventKind::Found:
                     lost?ContactEventKind::Lost:ContactEventKind::Persists,
-                n,impulse});
+                n,offset,impulse});
         }
     }
     void onConstraintBreak(physx::PxConstraintInfo*,physx::PxU32) override {}
@@ -158,6 +180,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 
     std::span<const ContactEvent> contact_events() const override {
         return published_contact_events;
+    }
+    std::span<const ContactEventPoint> contact_event_points() const override {
+        return published_contact_points;
     }
 
     void initialize(bool legacy_gu) {
@@ -256,7 +281,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     }
 
     void step(float seconds) override {
-        if(contact_notifications)pending_contact_events.clear();
+        if(contact_notifications) {
+            pending_contact_events.clear();
+            pending_contact_points.clear();
+        }
         scene->simulate(seconds);
         if (!scene->fetchResults(true)) {
             throw std::runtime_error("PhysX simulation failed");
@@ -270,6 +298,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                           return static_cast<unsigned>(a.kind)<
                               static_cast<unsigned>(b.kind);
                       });
+            // A callback can report several shape pairs. Each event's
+            // offset was recorded during onContact, so sort only event
+            // descriptors; point ranges remain in the same shared arena.
+            published_contact_points.swap(pending_contact_points);
             published_contact_events.swap(pending_contact_events);
         }
     }

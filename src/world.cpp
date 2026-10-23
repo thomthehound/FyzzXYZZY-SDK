@@ -116,6 +116,9 @@ BodyState World::body_state(BodyId id) const {
 std::span<const ContactEvent> World::contact_events() const {
     return impl_->contact_events();
 }
+std::span<const ContactEventPoint> World::contact_event_points() const {
+    return impl_->contact_event_points();
+}
 void World::set_body_position(BodyId id, Vec3 position) {
     validate_position(position);
     impl_->set_body_position(id, position);

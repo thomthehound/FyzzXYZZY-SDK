@@ -117,6 +117,9 @@ public:
     std::span<const ContactEvent> contact_events() const noexcept {
         return contact_events_;
     }
+    std::span<const ContactEventPoint> contact_event_points() const noexcept {
+        return contact_event_points_;
+    }
 
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
@@ -1025,6 +1028,8 @@ private:
     bool contact_notifications_=false;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
+    std::vector<ContactEventPoint> contact_event_points_;
+    std::vector<ContactEventPoint> next_contact_event_points_;
     std::uint64_t frame_index_ = 0;
     // One source wake-work indicator for authored transitions. A quiet
     // geometry query with no found edges avoids scanning all island

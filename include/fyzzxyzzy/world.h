@@ -95,8 +95,21 @@ struct ContactEvent {
     BodyId body0=0, body1=0; // canonical actor IDs (one shape per actor)
     ContactEventKind kind=ContactEventKind::Found;
     std::uint8_t contact_count=0;
+    // Offset into World::contact_event_points(); each event owns a
+    // contiguous current-frame Gu contact window, with no copying
+    // inside each event and no pointer valid across scene publications.
+    std::size_t point_offset=0;
     // Sum of the source per-contact normal impulse force buffer.
     // Compliant spring impulses can be signed; lost contacts report zero.
+    double normal_impulse=0.0;
+};
+// Original PxContactPairPoint normal geometry + per-Gu-contact signed
+// normal force buffer. Tangential friction is reported separately at
+// correlated anchors, not fabricated as per-point friction impulses.
+struct ContactEventPoint {
+    Vec3 position{};
+    Vec3 normal{};
+    float separation=0.0f;
     double normal_impulse=0.0;
 };
 
@@ -124,6 +137,9 @@ public:
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
     virtual std::span<const ContactEvent> contact_events() const {
+        return {};
+    }
+    virtual std::span<const ContactEventPoint> contact_event_points() const {
         return {};
     }
     // All built-in CPU backends implement scene actor lifecycle. Additional
@@ -177,6 +193,7 @@ public:
     BodyState body_state(BodyId id) const;
     // Events are valid until the next completed World::step.
     std::span<const ContactEvent> contact_events() const;
+    std::span<const ContactEventPoint> contact_event_points() const;
     void set_body_position(BodyId id, Vec3 position);
     // PxRigidActor::setGlobalPose, with logical identity for the SDK floor.
     void set_body_pose(BodyId id, Vec3 position, Quat orientation);
