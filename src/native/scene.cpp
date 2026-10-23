@@ -2910,6 +2910,7 @@ void Scene::partition_constraints() {
     // parallel, but none may share a solver body across task groups.
     std::size_t manager_begin=0;
     std::size_t partition_base=0;
+    pending_dynamic_constraints_.clear();
     for(const std::size_t manager_end:solver_task_manager_ends_) {
         pending_dynamic_constraints_.clear();
         for(std::size_t j=manager_begin;j<manager_end;++j) {
