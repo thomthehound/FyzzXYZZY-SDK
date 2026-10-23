@@ -1095,8 +1095,10 @@ Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
 `ScPipeline`'s asynchronous `destroyManagers`/lost-contact
-continuations, speculative/accurate *edge* deactivation and
-`afterIntegration` reconciliation also remain unported. The admitted
+continuations, deactivation for unsupported constraint/non-rigid edge
+types, active-reference bookkeeping and `afterIntegration`
+reconciliation also remain unported. Rigid contact-manager deactivation
+is already published independently by the accurate/speculative graphs. The admitted
 rigid-node active lists and persistent island handles are real source
 lowerings, but a correctly published graph does **not** establish full
 source island lifetime or task semantics.

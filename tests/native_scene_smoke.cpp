@@ -2274,6 +2274,50 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        // A failed Gu touch-loss must restore the active contact-manager
+        // bits as well as each IslandSim's counts and indexed worklists.
+        // Structural EdgeUndo snapshots are taken *after* the edge's
+        // activity was cleared; they cannot supersede ActivityUndo.
+        Scene activity_rollback;
+        const auto floor=activity_rollback.add_static_floor(0.0f);
+        const auto body=activity_rollback.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const Pair touch{std::min(floor,body),std::max(floor,body)};
+        activity_rollback.advance_collision();
+        const auto original_handle=activity_rollback.contact_edge_index(touch);
+        const auto accurate_active=
+            activity_rollback.active_accurate_contact_edge_count();
+        const auto speculative_active=
+            activity_rollback.active_speculative_contact_edge_count();
+        expect(activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch),
+               "Source activity rollback fixture failed to create active edge");
+        activity_rollback.set_position(body,{0,3,0});
+        bool failed=false;
+        try {activity_rollback.step(std::numeric_limits<float>::max());}
+        catch(const std::overflow_error&) {failed=true;}
+        expect(failed &&
+               activity_rollback.contact_edge_index(touch)==original_handle &&
+               activity_rollback.contact_edge_connected(touch) &&
+               activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch) &&
+               activity_rollback.active_accurate_contact_edge_count()==
+                   accurate_active &&
+               activity_rollback.active_speculative_contact_edge_count()==
+                   speculative_active,
+               "Failed touch-loss step did not restore source edge activity");
+        activity_rollback.advance_collision();
+        expect(!activity_rollback.contact_edge_connected(touch) &&
+               !activity_rollback.accurate_contact_edge_active(touch) &&
+               activity_rollback.speculative_contact_edge_active(touch) &&
+               activity_rollback.active_accurate_contact_edge_count()+1==
+                   accurate_active &&
+               activity_rollback.active_speculative_contact_edge_count()==
+                   speculative_active,
+               "Retried touch loss did not retire accurate activity exactly once");
+    }
+
+    {
         // Newly published contacts and island activation precede
         // unconstrained velocity integration. On a later overflow,
         // failure atomicity must roll back both the fresh contact

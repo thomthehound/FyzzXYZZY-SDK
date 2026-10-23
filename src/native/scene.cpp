@@ -1759,6 +1759,26 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                         found_dirty=true;
                     }
             }
+            // A full rebuild on actor retirement can detach a sleeping
+            // component just as processLostEdges does on local SAP loss.
+            // The previous island was larger, but the surviving members
+            // retain their own contact-manager eACTIVE history. Check the
+            // resulting speculative island in the same third-pass
+            // deactivation stage as the source-local split candidates.
+            if(!accurate &&
+               std::all_of(members.begin(),members.end(),
+                   [&](BodyId node) { return actors_[node].sleeping; })) {
+                for(BodyId member:members) {
+                    if(member>=graph.node_island.size())continue;
+                    const auto previous=graph.node_island[member];
+                    if(previous<graph.islands.size() &&
+                       graph.islands[previous].live &&
+                       graph.islands[previous].count>members.size()) {
+                        speculative_split_sleep_candidates_.push_back(root);
+                        break;
+                    }
+                }
+            }
             auto& island=next.islands[handle];
             island.root=root;
             island.tail=root;
@@ -2207,9 +2227,8 @@ void Scene::third_pass_island_gen() {
     // are ready, *not* as a mandatory post-solver serial stage.
     // Rigid contact-manager edge activity is persistent; task
     // continuations and other edge types still need source admission.
-    // Prior split candidates are transient and
-    // replaced at the start of every third-pass publication.
-    speculative_split_sleep_candidates_.clear();
+    // Rebuild candidates from the first pass must survive until the
+    // third-pass deactivation decision, alongside local lost-edge splits.
     update_island_connectivity(true);
     retire_destroyed_contact_edges();
     // The source dirty map is consumed by the third-pass repair. No
@@ -3519,7 +3538,7 @@ void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
 }
 void Scene::StepCheckpoint::save_activity(
     Scene& scene, EdgeIndex id) noexcept {
-    if(id>=initial_edges)return;
+    if(!scene.activity_checkpoint_active_ || id>=initial_edges)return;
     // Generation-deduplicated and pre-reserved before publication.
     if(scene.activity_undo_generations_[id]==
        scene.activity_undo_generation_)return;
@@ -3746,14 +3765,13 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         scene.indexed_managers_.swap(indexed_managers);
         scene.indexed_managers_.clear();
     }
+    // No throwing operation remains in capture. All journaling is scoped
+    // to the transaction and disabled again at commit/rollback.
+    scene.activity_checkpoint_active_=true;
 }
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
-    // Replay activity before link undo, so reused handles are restored.
-    for(auto it=activity_undo.rbegin();it!=activity_undo.rend();++it) {
-        scene.contact_edges_[it->id].speculative_state=it->speculative;
-        scene.contact_edges_[it->id].accurate_state=it->accurate;
-    }
+    scene.activity_checkpoint_active_=false;
     // Restore the exact pre-publication route cache and epochs so retries
     // reuse valid prior paths. Only written hint slots were journaled;
     // replay and shrinking newly admitted slots cannot allocate.
@@ -3792,6 +3810,13 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // copied, so unchanged history never incurs a full watermark copy.
     for(auto it=edge_undo.rbegin();it!=edge_undo.rend();++it)
         scene.contact_edges_[it->id]=it->previous;
+    // Structural edge records can be taken after an activity change.
+    // The compact activity journal is authoritative for the original
+    // eACTIVE/eACTIVATING state and must replay LAST for each old slot.
+    for(auto it=activity_undo.rbegin();it!=activity_undo.rend();++it) {
+        scene.contact_edges_[it->id].speculative_state=it->speculative;
+        scene.contact_edges_[it->id].accurate_state=it->accurate;
+    }
     while(scene.contact_edges_.size()>initial_edges)
         scene.contact_edges_.pop_back();
     for(auto it=head_undo.rbegin();it!=head_undo.rend();++it) {
@@ -4172,6 +4197,7 @@ void Scene::step(float seconds) {
     // that decision here would incorrectly consume this frame's flags.
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
+    activity_checkpoint_active_=false;
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
@@ -4228,12 +4254,17 @@ void Scene::advance_collision(bool force_update) {
     // Activation and third-pass deactivation only mutate existing
     // actors after the collision transaction has successfully committed.
     // Geometry-only checkpoints intentionally do not copy actor motion.
+    activity_checkpoint_active_=false;
     activate_published_islands();
     deactivate_ready_islands();
     synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
     bool force_update, bool checkpointed) {
+    // Begin one complete source publication. The first pass can rebuild
+    // island membership before third-pass lost-edge repair, so preserve
+    // any resulting sleep candidates across both passes of this frame.
+    speculative_split_sleep_candidates_.clear();
     // Previous mActivatedEdges flags are consumed at this wake boundary.
     clear_activated_edges(checkpointed);
     // This also serves geometry-only queries. Never publish last frame's

@@ -806,6 +806,9 @@ private:
     // Only changed EdgeIndex states are journaled for frame rollback.
     std::vector<std::uint64_t> activity_undo_generations_;
     std::uint64_t activity_undo_generation_=0;
+    // Only an in-progress failure-atomic publication may journal activity.
+    // Quiet collision queries mutate no rollback state and remain noexcept.
+    bool activity_checkpoint_active_=false;
     std::vector<ThresholdPair> threshold_current_;
     std::vector<ThresholdPair> threshold_previous_;
     std::vector<ForceThresholdReport> threshold_changes_;
