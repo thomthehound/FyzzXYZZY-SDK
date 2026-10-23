@@ -288,7 +288,7 @@ The native solver also imports the **rigid-body** ownership/ordering slice of `D
 
 The existing scene now also applies the admitted rigid-body `DyFrictionCorrelation` pipeline: `createContactPatches` retains contiguous same-normal/material Gu runs; `correlatePatches` links those runs in source reverse-chain order to cached or newly created friction patches; `getFrictionPatches` validates unbroken body-local anchors against current relative normals and absolute separation; and `growPatches` retains adequately separated two-anchor caches or rebuilds anchors from the linked contact runs. The `DySolverConstraints` PGS loop consumes each correlated patch's normal rows immediately before its friction rows, while source Gu offset indexing remains authoritative for contact-force writeback. The solver header normal is selected once from the current reversed contact-patch correlation head and used for every correlated normal Jacobian and friction tangent, independently of the historical cached body-local friction normal; the noncontiguous-run regression exercises this distinction with near-aligned normals and reused anchors. Reused per-scene scratch and a mapped row-order vector avoid per-contact allocations and redundant per-patch force rescans. A two-manager fixture checks multi-contact anchor formation, material-specific friction disablement, and cache re-entry; the existing 600-frame stack and velocity-writeback regressions continue to cover solver dynamics.
 
-This is **not** full source solver admission: heterogeneous per-contact material groups and target velocities, strict `DyCorrelationBuffer` SIMD/packed layout and all geometry/mixed-material cache permutations, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and shape-interaction contact event/callback publication remain unported. The admitted two-material compliant/noncompliant combine modes, force/acceleration spring rows, final per-contact normal/friction writeback and low-level threshold-change stream are implemented; these do not constitute full reporting. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
+This is **not** full source solver admission: heterogeneous per-contact material groups and target velocities, strict `DyCorrelationBuffer` SIMD/packed layout and all geometry/mixed-material cache permutations, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and full shape-interaction event/callback publication remains unported (the opt-in rigid-touch subset is now admitted). The admitted two-material compliant/noncompliant combine modes, force/acceleration spring rows, final per-contact normal/friction writeback and low-level threshold-change stream are implemented; these do not constitute full reporting. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
@@ -1320,6 +1320,51 @@ PhysX CPU free-motion/contact results for the same authored material
 and timestep. Heterogeneous shape/triangle material IDs, packed
 `PxSolverConstraintDesc` layout, contact modification callbacks
 and complete island task continuations remain N1 requirements.
+
+## Source contact-touch reporting publication
+
+`WorldOptions::contact_notifications` opts the admitted one-shape
+rigid-pair scene into `PxPairFlag::eNOTIFY_TOUCH_FOUND`,
+`eNOTIFY_TOUCH_PERSISTS`, `eNOTIFY_TOUCH_LOST` and
+`eNOTIFY_CONTACT_POINTS`. The original default no-notification
+filter remains unchanged. The public `World::contact_events()`
+returns a read-only span of `ContactEvent` outputs from the latest
+completed `World::step`: canonical actor IDs, event kind, current
+contact count and summed signed per-Gu-contact normal impulses.
+
+Native `Scene::publish_contact_events` consumes the **existing**
+sorted Gu found/lost pairs, current manifold stream, per-Gu-point
+Dy force-writeback arena and actor activity; it does not invent an
+independent collision registry or a second source of touch state.
+Persistent touch events are emitted only when an involved rigid body
+is active, matching
+`ScNPhaseCore::processPersistentContactEvents`'s active-actor
+check. Zero maxContactImpulse does not suppress Sc touch reporting,
+because its Gu/accurate-island contact manager still exists. Output
+is prepared in a reusable temporary arena and published only after
+body integration and all exception-capable stages succeed. Failed
+frames preserve the prior event span's backing storage and content.
+
+The **independent** original PhysX CPU oracle now registers a real
+`PxSimulationEventCallback` at scene creation when opted in; a
+filter shader preserves `PxDefaultSimulationFilterShader` group
+behavior while requesting only the above additional contact flags.
+`onContact` consumes PhysX's actual pair-event and per-contact
+force data from `fetchResults`, with canonical actor IDs carried
+through the existing actor `userData` slot rather than an
+O(all-actors)-per-event reverse lookup. It reports no synthesized
+events from pose overlap and no events by default.
+
+Regression coverage exercises found→persists→lost→found transitions,
+zero-response Gu touches, absent default notifications, independent
+legacy-Gu and default-PCM callbacks, and failure-atomic native event
+publication with a successful retry. This is **not** complete
+`Sc::ShapeInteraction` callback parity: removed-actor callback
+tokens require lifetime-safe retirement handling; trigger reports,
+threshold-callback joining, CCD notifications, interaction flag
+mutations and batched per-shape/multi-shape callbacks remain later
+N1 admission gates. The new stream is an admitted rigid contact-touch
+subset, not a replacement for the entire PhysX callback machinery.
 
 ## Initial integrated acceptance boundary: real CPU PGS
 
