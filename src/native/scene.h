@@ -190,6 +190,12 @@ public:
     bool contact_edge_connected(Pair pair) const noexcept;
     bool speculative_contact_edge_active(Pair pair) const noexcept;
     bool accurate_contact_edge_active(Pair pair) const noexcept;
+    // Sc::InteractionFlag::eIS_ACTIVE for the admitted rigid contact
+    // manager, distinct from both IslandSim edge-state bitfields.
+    bool contact_interaction_active(Pair pair) const noexcept;
+    std::size_t active_contact_interaction_count() const noexcept {
+        return active_contact_interaction_count_;
+    }
     std::size_t active_speculative_contact_edge_count() const noexcept {
         return speculative_islands_.active_edge_count;
     }
@@ -536,6 +542,9 @@ private:
     // remain open. Contact-manager deactivation lists are active.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
+    // Serial ScPipeline::activateEdgesInternal/postThirdPassIslandGen
+    // consumption for rigid eCONTACT_MANAGER, using source edge outputs.
+    void consume_contact_interaction_activity() noexcept;
     void clear_activated_edges(bool checkpointed) noexcept;
     void activate_contact_edge(std::uint32_t id, bool accurate) noexcept;
     void deactivate_contact_edge(std::uint32_t id, bool accurate,
@@ -572,6 +581,7 @@ private:
         bool live=false;            // allocated by addContactManager
         bool connected=false;       // source accurate mConnectedMap bit
         bool retiring=false;        // removeConnection, pending post-third-pass
+        bool interaction_active=false; // Sc::InteractionFlag::eIS_ACTIVE
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
         // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
@@ -586,6 +596,9 @@ private:
     // with the one authoritative sorted SAP pair stream; the slots own
     // lifecycle and accurate touch state, not another collision graph.
     std::vector<ContactEdge> contact_edges_;
+    // One aggregate count, derived only from transitions on the same
+    // authoritative EdgeIndex contact-manager slots.
+    std::size_t active_contact_interaction_count_=0;
     std::vector<EdgeIndex> active_edge_handles_, next_edge_handles_;
     std::vector<EdgeIndex> retired_edge_handles_, free_edge_handles_;
     // Per-node intrusive adjacency heads for the two original IslandSim
@@ -783,6 +796,7 @@ private:
         struct ActivityUndo {
             EdgeIndex id;
             std::uint8_t speculative, accurate;
+            bool interaction_active;
         };
         std::vector<ActivityUndo> activity_undo;
         // Per-node sparse rollback for source active references. The
@@ -798,6 +812,7 @@ private:
         std::vector<HintUndo> hint_undo;
         std::vector<HeadUndo> head_undo;
         std::size_t initial_edges=0;
+        std::size_t initial_active_interactions=0;
         std::size_t initial_speculative_hints=0, initial_accurate_hints=0;
         std::uint64_t speculative_hint_epoch=1, accurate_hint_epoch=1;
         std::size_t initial_speculative_heads=0;

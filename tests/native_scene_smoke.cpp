@@ -1316,6 +1316,53 @@ void verify_source_reverse_wake_order_and_rollback_capacity() {
                "Quiet handoff duplicated or sorted source active handles");
 }
 
+void verify_source_contact_interaction_consumption() {
+    using fyzz::native::Scene;
+    // Sc::InteractionFlag::eIS_ACTIVE follows the speculative graph,
+    // not the accurate Gu contact or an actor's individual sleep flag.
+    Scene scene;
+    const auto floor=scene.add_static_floor(0.0f);
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{4,0.5f,0},1.0f);
+    const fyzz::native::Pair floor_a{std::min(a,floor),std::max(a,floor)};
+    scene.advance_collision();
+    expect(scene.speculative_contact_edge_active(floor_a) &&
+           scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==2,
+           "Sc activation did not consume source speculative contact edges");
+    scene.advance_collision();
+    expect(scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==2,
+           "Sc interaction was spuriously reactivated on a quiet query");
+    for(int i=0;i<360;++i)scene.step(1.0f/120.0f);
+    expect(scene.body_is_sleeping(a) &&
+           !scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==0 &&
+           !scene.speculative_contact_edge_active(floor_a),
+           "Sc third-pass failed to consume sleeping speculative edges");
+    // Wake only one dormant island; its other floor interaction must
+    // remain inactive and cannot be woken by accurate island ordering.
+    scene.set_velocity(a,{});
+    scene.advance_collision();
+    expect(scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==1,
+           "Sc speculative interaction did not reactivate on authored wake");
+    // Force a Dy overflow after a published interaction transition.
+    scene.set_position(a,{0,3,0});
+    bool rejected=false;
+    try {scene.step(std::numeric_limits<float>::max());}
+    catch(const std::overflow_error&) {rejected=true;}
+    expect(rejected && scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==1,
+           "Rejected Sc pipeline step corrupted interaction activity");
+    scene.advance_collision();
+    expect(!scene.contact_interaction_active(floor_a) &&
+           scene.active_contact_interaction_count()==0,
+           "Retired SAP contact retained stale Sc interaction activity");
+}
+
 void verify_source_active_reference_lifecycle() {
     using fyzz::native::Scene;
     Scene refs;
@@ -5557,6 +5604,7 @@ int run_native_scene_smoke() {
     verify_source_active_island_handoff();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
+    verify_source_contact_interaction_consumption();
     verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
     verify_native_rigid_integration_and_island_lifecycle();

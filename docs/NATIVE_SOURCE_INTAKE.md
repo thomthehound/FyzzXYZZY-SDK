@@ -1260,6 +1260,20 @@ resolves only active handles against the existing contiguous accurate
 island-node ranges, instead of scanning every dormant node range.
 These are not a second island registry or a separate task scheduler.
 
+ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) and
+postThirdPassIslandGen now consume the speculative island owner's
+activated/deactivating edge streams into persistent
+`Sc::InteractionFlag::eIS_ACTIVE` on the **same** source EdgeIndex
+contact-manager record. Source accurate sleep leaves the interaction
+active while a speculative SAP-only bridge remains awake. True
+speculative deactivation retires the interaction exactly once; SAP
+overlap destruction clears the flag via overlap retirement rather than
+fabricating a sleep-deactivation event. The aggregate count and the
+per-edge flag are failure-atomic under the existing sparse activity
+journal, including rejected Dy frames. This is the admitted rigid
+interaction-activity subset, not shape-interaction callback registration
+or persistent-contact event processing.
+
 The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
 articulation and constraint edges, kinematic consumption of the now
 implemented rigid contact-manager active references, per-type bitmap

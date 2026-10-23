@@ -575,6 +575,10 @@ bool Scene::accurate_contact_edge_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
     return id!=invalid_edge && (contact_edges_[id].accurate_state&1u);
 }
+bool Scene::contact_interaction_active(Pair pair) const noexcept {
+    const auto id=contact_edge_index(pair);
+    return id!=invalid_edge && contact_edges_[id].interaction_active;
+}
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     // SimpleIslandManager::addContactManager -> addEdge obtains the
     // edge handle once; accurate touch may later toggle independently.
@@ -745,7 +749,14 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
         }
     }
     // Gu touch loss and manager retirement cancel activity without
-    // fabricating an IslandSim sleep-deactivation event.
+    // fabricating an IslandSim sleep-deactivation event. Source Sc's
+    // overlap removal destroys the interaction rather than publishing
+    // an IslandSim sleep event. Retire that flag on the same EdgeIndex.
+    if(!accurate && contact_edges_[id].interaction_active) {
+        step_checkpoint_.save_activity(*this,id);
+        contact_edges_[id].interaction_active=false;
+        --active_contact_interaction_count_;
+    }
     deactivate_contact_edge(id,accurate,false);
     // Contact manager retirement and touch loss both remove the same
     // accurate source edge before disconnecting its intrusive endpoints.
@@ -2523,6 +2534,34 @@ void Scene::deactivate_ready_islands() noexcept {
     for(BodyId candidate:speculative_split_sleep_candidates_)
         process_candidate(candidate);
 }
+// ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) consumes the
+// speculative graph's mActivatedEdges, then postThirdPassIslandGen
+// consumes mDeactivatingEdges after both lost-edge tasks have joined.
+// The admitted rigid contact manager is already the single EdgeIndex
+// owner, so retain Sc::InteractionFlag::eIS_ACTIVE in that same slot.
+// This serial execution preserves activation-before-deactivation order
+// without inventing a second interaction registry or task dispatcher.
+void Scene::consume_contact_interaction_activity() noexcept {
+    for(EdgeIndex id:speculative_islands_.activated_edges) {
+        auto& edge=contact_edges_[id];
+        if(!edge.live || edge.retiring || edge.interaction_active ||
+           !(edge.speculative_state&1u))continue;
+        step_checkpoint_.save_activity(*this,id);
+        edge.interaction_active=true;
+        ++active_contact_interaction_count_;
+    }
+    // No accurate-island deactivation is consumed here. Sc explicitly
+    // uses the speculative graph so an accurate component can sleep
+    // while its speculative-only bridge remains interaction-active.
+    for(EdgeIndex id:speculative_islands_.deactivating_edges) {
+        auto& edge=contact_edges_[id];
+        if(!edge.live || edge.retiring || !edge.interaction_active ||
+           (edge.speculative_state&1u))continue;
+        step_checkpoint_.save_activity(*this,id);
+        edge.interaction_active=false;
+        --active_contact_interaction_count_;
+    }
+}
 // Source PxsIslandSim::mActiveIslands is distinct from the complete
 // island inventory. Build active batch indices from the already-owned
 // contiguous accurate island-node sequence after source wake/deactivation.
@@ -3760,7 +3799,8 @@ void Scene::StepCheckpoint::save_activity(
        scene.activity_undo_generation_)return;
     scene.activity_undo_generations_[id]=scene.activity_undo_generation_;
     const auto& edge=scene.contact_edges_[id];
-    activity_undo.push_back({id,edge.speculative_state,edge.accurate_state});
+    activity_undo.push_back({id,edge.speculative_state,edge.accurate_state,
+                             edge.interaction_active});
 }
 void Scene::StepCheckpoint::save_reference(
     Scene& scene, BodyId node) noexcept {
@@ -3881,6 +3921,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     hint_undo.clear();
     head_undo.clear();
     initial_edges=scene.contact_edges_.size();
+    initial_active_interactions=scene.active_contact_interaction_count_;
     initial_speculative_hints=scene.speculative_fast_route_.size();
     initial_accurate_hints=scene.accurate_fast_route_.size();
     speculative_hint_epoch=scene.speculative_hint_epoch_;
@@ -4093,6 +4134,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     for(auto it=activity_undo.rbegin();it!=activity_undo.rend();++it) {
         scene.contact_edges_[it->id].speculative_state=it->speculative;
         scene.contact_edges_[it->id].accurate_state=it->accurate;
+        scene.contact_edges_[it->id].interaction_active=
+            it->interaction_active;
     }
     while(scene.contact_edges_.size()>initial_edges)
         scene.contact_edges_.pop_back();
@@ -4289,6 +4332,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.island_dirty_route_checks_=dirty_route_checks;
     scene.island_fast_route_hits_=fast_route_hits;
     scene.frame_index_=frame_index;
+    scene.active_contact_interaction_count_=initial_active_interactions;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
     scene.authored_activation_pending_=authored_activation_pending;
@@ -4328,6 +4372,7 @@ void Scene::step(float seconds) {
     // Source third pass tests readiness from the prior Dy sleepCheck,
     // before this frame's unconstrained velocity/PGS processing.
     deactivate_ready_islands();
+    consume_contact_interaction_activity();
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
     prepare_active_accurate_island_batches();
@@ -4560,6 +4605,7 @@ void Scene::advance_collision(bool force_update) {
         // without traversing it on an unchanged, event-free query.
         const bool pending_wake=authored_activation_pending_;
         activate_published_islands();
+        consume_contact_interaction_activity();
         if(pending_wake)synchronize_active_island_nodes();
         return;
     }
@@ -4584,6 +4630,7 @@ void Scene::advance_collision(bool force_update) {
     activity_checkpoint_active_=false;
     activate_published_islands();
     deactivate_ready_islands();
+    consume_contact_interaction_activity();
     synchronize_active_island_nodes();
 }
 void Scene::advance_collision_internal(
