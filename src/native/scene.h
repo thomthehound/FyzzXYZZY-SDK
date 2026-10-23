@@ -196,6 +196,16 @@ public:
     std::size_t active_accurate_contact_edge_count() const noexcept {
         return accurate_islands_.active_edge_count;
     }
+    // IslandSim::Node::mActiveRefCount, only for pairs with two
+    // dynamic endpoints. Each IslandSim owns its own reference history.
+    std::uint32_t speculative_active_reference_count(BodyId id) const noexcept {
+        return id<speculative_islands_.active_reference_counts.size()
+            ? speculative_islands_.active_reference_counts[id] : 0;
+    }
+    std::uint32_t accurate_active_reference_count(BodyId id) const noexcept {
+        return id<accurate_islands_.active_reference_counts.size()
+            ? accurate_islands_.active_reference_counts[id] : 0;
+    }
     std::size_t active_contact_edge_count() const noexcept {
         return active_edge_handles_.size();
     }
@@ -618,6 +628,11 @@ private:
         std::vector<EdgeIndex> deactivating_edges;
         std::vector<EdgeIndex> activated_edges;
         std::size_t active_edge_count=0; // mActiveEdgeCount[eCONTACT_MANAGER]
+        // IslandSim::Node::mActiveRefCount is incremented on
+        // markEdgeActive and decremented on removeEdgeFromActivatingList
+        // only if BOTH edge endpoints are non-static. These counts are
+        // prerequisites for correct kinematic activation admission.
+        std::vector<std::uint32_t> active_reference_counts;
     };
     IslandGraph speculative_islands_, accurate_islands_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate

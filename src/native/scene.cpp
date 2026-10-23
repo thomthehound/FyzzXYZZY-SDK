@@ -1589,6 +1589,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         graph.node_next.resize(actors_.size(),invalid);
         graph.node_prev.resize(actors_.size(),invalid);
         graph.node_static_touches.resize(actors_.size(),0);
+        graph.active_reference_counts.resize(actors_.size(),0);
         for(std::size_t i=0;i<actors_.size();++i) {
             const BodyId id=static_cast<BodyId>(i);
             if(!dynamic_node(id) ||
@@ -1633,6 +1634,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // Full admission/retirement rebuilds replace graph handles but
         // do not recreate contact managers or reset their active flags.
         next.active_edge_count=graph.active_edge_count;
+        // The original EdgeIndex slots, not reconstructed island
+        // membership, determine each node's active references.
+        next.active_reference_counts=graph.active_reference_counts;
+        next.active_reference_counts.resize(actors_.size(),0);
         next.activated_edges.reserve(contact_edges_.size());
         next.deactivating_edges.reserve(contact_edges_.size());
         // Keep the existing active-node permutation and the original
@@ -2080,6 +2085,14 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     state|=3u; // Edge::eACTIVE | Edge::eACTIVATING
     graph.activated_edges.push_back(id);
     ++graph.active_edge_count;
+    // Source IslandSim::markEdgeActive counts references only for
+    // edges with two valid node endpoints. Static world edges do not
+    // contribute to either rigid node's active reference count.
+    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
+       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+        ++graph.active_reference_counts[edge.pair.a];
+        ++graph.active_reference_counts[edge.pair.b];
+    }
 }
 void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
                                     bool publish) noexcept {
@@ -2101,6 +2114,14 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     state=0;
     if(was_active) {
         --graph.active_edge_count;
+        // Source removeEdgeFromActivatingList releases both valid
+        // endpoint references on every real active-to-inactive edge
+        // transition, including retirement of an actor no longer alive.
+        if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
+           actors_[edge.pair.b].kind==Kind::DynamicBox) {
+            --graph.active_reference_counts[edge.pair.a];
+            --graph.active_reference_counts[edge.pair.b];
+        }
         if(publish)graph.deactivating_edges.push_back(id);
     }
 }
@@ -3685,6 +3706,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                         live.active_node_index.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
+        saved.active_reference_counts.assign(
+            live.active_reference_counts.begin(),
+            live.active_reference_counts.end());
         saved.active_edge_count=live.active_edge_count;
         saved.initial_active_node_count=live.initial_active_node_count;
     };
@@ -3918,6 +3942,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.deactivating_edges);
     scene.speculative_islands_.activated_edges.swap(
         speculative_islands.activated_edges);
+    scene.speculative_islands_.active_reference_counts.swap(
+        speculative_islands.active_reference_counts);
     scene.speculative_islands_.active_edge_count=
         speculative_islands.active_edge_count;
     scene.speculative_islands_.initial_active_node_count=
@@ -3940,6 +3966,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.deactivating_edges);
     scene.accurate_islands_.activated_edges.swap(
         accurate_islands.activated_edges);
+    scene.accurate_islands_.active_reference_counts.swap(
+        accurate_islands.active_reference_counts);
     scene.accurate_islands_.active_edge_count=
         accurate_islands.active_edge_count;
     scene.accurate_islands_.initial_active_node_count=

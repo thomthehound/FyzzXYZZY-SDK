@@ -1153,6 +1153,68 @@ void verify_demand_driven_island_ownership_checkpoint() {
 
 // Independent source edge-activity regressions live outside the full
 // rigid integration fixture to keep their stack frames and failures isolated.
+void verify_source_active_reference_lifecycle() {
+    using fyzz::native::Scene;
+    Scene refs;
+    const auto floor=refs.add_static_floor(0.0f);
+    const auto a=refs.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.5f,0},1.0f);
+    const auto b=refs.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.85f,0.5f,0},1.0f);
+    const fyzz::native::Pair pair{std::min(a,b),std::max(a,b)};
+    refs.advance_collision();
+    const auto handle=refs.contact_edge_index(pair);
+    const auto valid=std::numeric_limits<std::uint32_t>::max();
+    expect(handle!=valid &&
+           refs.speculative_contact_edge_active(pair) &&
+           refs.accurate_contact_edge_active(pair) &&
+           refs.speculative_active_reference_count(a)==1 &&
+           refs.speculative_active_reference_count(b)==1 &&
+           refs.accurate_active_reference_count(a)==1 &&
+           refs.accurate_active_reference_count(b)==1 &&
+           refs.speculative_active_reference_count(floor)==0 &&
+           refs.accurate_active_reference_count(floor)==0,
+           "Source dynamic contact references incorrectly include static edges");
+    // A persistent active edge cannot double-count its endpoints during
+    // unchanged collision publications or another dynamic actor's entry.
+    refs.advance_collision();
+    refs.add_dynamic_box({0.5f,0.5f,0.5f},{50,50,0},1.0f);
+    refs.advance_collision();
+    expect(refs.speculative_active_reference_count(a)==1 &&
+           refs.accurate_active_reference_count(a)==1 &&
+           refs.speculative_active_reference_count(b)==1 &&
+           refs.accurate_active_reference_count(b)==1,
+           "Source active-edge references drifted on quiet/rebuilt graph");
+    refs.set_position(b,{6,0.5f,0});
+    bool failed=false;
+    try {refs.step(std::numeric_limits<float>::max());}
+    catch(const std::overflow_error&) {failed=true;}
+    expect(failed && refs.contact_edge_index(pair)==handle &&
+           refs.speculative_active_reference_count(a)==1 &&
+           refs.speculative_active_reference_count(b)==1 &&
+           refs.accurate_active_reference_count(a)==1 &&
+           refs.accurate_active_reference_count(b)==1,
+           "Rejected lost-contact step corrupted source endpoint references");
+    refs.advance_collision();
+    expect(refs.speculative_active_reference_count(a)==0 &&
+           refs.speculative_active_reference_count(b)==0 &&
+           refs.accurate_active_reference_count(a)==0 &&
+           refs.accurate_active_reference_count(b)==0,
+           "Retired dynamic contact did not release both source references");
+    refs.set_position(b,{0.85f,0.5f,0});
+    refs.advance_collision();
+    expect(refs.speculative_active_reference_count(a)==1 &&
+           refs.speculative_active_reference_count(b)==1 &&
+           refs.accurate_active_reference_count(a)==1 &&
+           refs.accurate_active_reference_count(b)==1,
+           "Reconnected source manager did not reacquire endpoint references");
+    refs.remove(b);
+    refs.advance_collision();
+    expect(refs.speculative_active_reference_count(a)==0 &&
+           refs.accurate_active_reference_count(a)==0,
+           "Actor retirement left stale source endpoint references");
+}
+
 void verify_source_retired_bridge_deactivation() {
     using fyzz::native::Scene;
     {
@@ -5290,6 +5352,7 @@ int run_native_scene_smoke() {
     verify_demand_driven_island_ownership_checkpoint();
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
+    verify_source_active_reference_lifecycle();
     verify_source_activity_rollback();
     verify_native_rigid_integration_and_island_lifecycle();
 

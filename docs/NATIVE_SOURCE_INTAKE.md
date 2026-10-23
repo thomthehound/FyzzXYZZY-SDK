@@ -1104,13 +1104,16 @@ lowerings, but a correctly published graph does **not** establish full
 source island lifetime or task semantics.
 
 **Unported source responsibilities:** complete source `PxNodeIndex`
-node lifecycle and destruction, `findRoute`'s shared visited-island
-witnesses and local `mVisitedNodes` split migration, per-edge
-activating/deactivating lists, kinematic/non-rigid activity partitions,
-complete sleep/wake callback semantics, first/second/third-pass task
-joins, post-third-pass interaction retirement, `afterIntegration`
-deactivation reconciliation, source callback ownership, and complete
-per-island solve/fetch scheduling. The provisional union/find
+node lifecycle and destruction; non-rigid, kinematic and articulation
+variants of the shared visited-island witness and `mVisitedNodes`
+split-migration paths; unsupported constraint/kinematic edge partitions
+and their activation/deactivation lists; complete sleep/wake callback
+semantics; first/second/third-pass task joins; post-third-pass interaction
+retirement; `afterIntegration` deactivation reconciliation; source
+callback ownership; and complete per-island solve/fetch scheduling.
+The rigid contact-manager graph already implements shared route
+witnesses, local split migration and both activating/deactivating
+edge lists; these are **not** still-open rigid lifecycle tasks. The provisional union/find
 parent/rank representation **has already been retired** in favor of
 source-style graph-owned island handles and node chains. These
 remaining responsibilities still prevent N1 completion.
@@ -1225,6 +1228,13 @@ contacts and speculative SAP overlaps retain distinct histories across
 accurate-island sleep and subsequent speculative-only bridge splitting.
 Only touched source edge slots are journaled on failed publication;
 per-graph activity counts and activated-edge worklists are restored.
+Both graph owners now also carry `IslandSim::Node::mActiveRefCount` for
+the source's two-valid-endpoint rigid contact managers. Static-world
+contacts never increment a dynamic node's references. Activation,
+true deactivation, touch loss, retirement, retry and the checkpoint
+restore both graphs' independent reference counts without a parallel
+contact registry. The counters are source-owned prerequisites for
+later kinematic activation, not a claim that kinematics are admitted.
 Activity flags replay **after** the intrusive edge-undo records, which
 may contain post-deactivation bits. Quiet nontransactional publications
 clear expired activation flags without acquiring rollback records.
@@ -1236,8 +1246,9 @@ retained-manager speculative sleep event after retiring an awake SAP-only
 peer, and failure-atomic eACTIVE/count restoration after Gu touch loss.
 
 The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
-articulation and constraint edges, source active-reference counting and
-per-type bitmap partitions, callback publication, full island task
-continuations and `ScPipeline` interaction consumption still require
-source-derived N1 integration. Packed solver/contact admission and CCD
+articulation and constraint edges, kinematic consumption of the now
+implemented rigid contact-manager active references, per-type bitmap
+partitions, callback publication, full island task continuations and
+`ScPipeline` interaction consumption still require source-derived
+N1 integration. Packed solver/contact admission and CCD
 remain separate gates; the new activity lifecycle alone does not close N1.
