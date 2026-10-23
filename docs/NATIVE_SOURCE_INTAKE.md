@@ -906,15 +906,23 @@ intrusive links emits the edge only when its other endpoint is already
 inactive or static. The first sleeping endpoint of a dynamic/dynamic
 accurate contact does not emit it; the second emits once. The speculative
 graph can contain AABB-only links between independently sleeping
-accurate islands: it emits **no edges** until its own last awake rigid
-node becomes inactive. At that transition it walks its original
-island-node and EdgeInstance order, using generation-stamped nodes to
-emit each static/dynamic or dynamic/dynamic edge once. Destroyed/lost
+accurate islands: it emits **no edges** while its own island retains an
+awake member. Both newly sleeping accurate members **and** roots of
+components detached by speculative third-pass lost-edge repair are
+candidate triggers: a SAP-only bridge can retire its final awake member
+without any new accurate sleep event. Only those locally touched island
+roots are examined, deduplicated with generation stamps; there is no
+global island scan. On the resulting speculative island deactivation,
+its original island-node and EdgeInstance order emits each static/dynamic
+or dynamic/dynamic edge once. Destroyed/lost
 contact edges are *not* sleep events, and manager handles remain live.
 The one-frame outputs are graph-owned, geometrically capacity-reserved
 before the no-throw deactivation stage, and restored on failed
-publication. The distinct-sleep regression asserts that accurate
-floor deactivation does not prematurely emit speculative floor edges.
+publication. The distinct-sleep regression first asserts that accurate
+floor deactivation does not prematurely emit speculative floor edges,
+then removes the SAP-only bridge and requires the formerly sleeping
+component's speculative floor edge to deactivate in that new publication,
+without a new accurate sleep event or a repeated quiet-frame event.
 Full active-edge flags/activated-edge worklists, non-rigid node
 types and concurrent task continuations remain unported.
 The graph-owned accurate active-node index also reconciles
