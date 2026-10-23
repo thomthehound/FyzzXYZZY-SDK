@@ -94,6 +94,9 @@ struct ForceThresholdReport {
 };
 struct ContactManifold {
     Pair pair{};
+    // PhysX contact manager owns this stable island EdgeIndex; the Gu
+    // manifold is simply its current generation of contact geometry.
+    std::uint32_t edge_handle=std::numeric_limits<std::uint32_t>::max();
     // Source contact streams use a scene-owned contiguous arena, not an
     // eight-vertex limit or an allocating vector for each manager.
     std::span<const ContactPoint> points{};
@@ -612,6 +615,7 @@ private:
     void prepare_solver_bodies();
     void partition_constraints();
     void prepare_constraints(float seconds);
+    void erase_shape_friction_history(BodyId id);
     void solve_constraints();
     void write_back_contacts();
     void update_threshold_stream(float seconds);
@@ -1016,6 +1020,16 @@ private:
     // frames, while patches carry actor-local anchors across contact frames.
     std::vector<FrictionPatch> friction_patches_;
     std::vector<FrictionPatch> next_friction_patches_;
+    // The original PxcNp manager is the friction-history owner. Rotate
+    // this bounded span index together with the source friction arena.
+    struct FrictionManagerSpan {
+        Pair pair{};
+        std::size_t offset=0;
+        std::uint8_t count=0;
+        std::uint64_t epoch=0;
+    };
+    std::vector<FrictionManagerSpan> friction_by_edge_;
+    std::vector<FrictionManagerSpan> next_friction_by_edge_;
     std::uint64_t friction_cache_epoch_=0;
     std::vector<SolverContactFriction> solver_friction_rows_;
     // DyDynamics::mWorldSolverBody / mWorldSolverBodyData: one zero-mass
