@@ -3706,6 +3706,12 @@ void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
                                           live.node_static_touches.end());
         saved.free_handles.assign(live.free_handles.begin(),
                                    live.free_handles.end());
+        // A rejected structural rebuild must also restore the stamp
+        // storage to the PREVIOUS island-handle watermark. Otherwise a
+        // later no-throw active-node handoff may index a shorter array.
+        saved.active_island_seen.assign(live.active_island_seen.begin(),
+                                        live.active_island_seen.end());
+        saved.active_island_visit_stamp=live.active_island_visit_stamp;
     };
     save(speculative_islands,scene.speculative_islands_);
     save(accurate_islands,scene.accurate_islands_);
@@ -4033,6 +4039,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.speculative_islands_.node_static_touches.swap(
             speculative_islands.node_static_touches);
         scene.speculative_islands_.free_handles.swap(speculative_islands.free_handles);
+        scene.speculative_islands_.active_island_seen.swap(
+            speculative_islands.active_island_seen);
+        scene.speculative_islands_.active_island_visit_stamp=
+            speculative_islands.active_island_visit_stamp;
     }
     scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
     scene.speculative_islands_.active_node_index.swap(
@@ -4069,6 +4079,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.accurate_islands_.node_static_touches.swap(
             accurate_islands.node_static_touches);
         scene.accurate_islands_.free_handles.swap(accurate_islands.free_handles);
+        scene.accurate_islands_.active_island_seen.swap(
+            accurate_islands.active_island_seen);
+        scene.accurate_islands_.active_island_visit_stamp=
+            accurate_islands.active_island_visit_stamp;
     }
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.active_node_index.swap(
