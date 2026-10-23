@@ -2496,13 +2496,49 @@ void Scene::deactivate_ready_islands() noexcept {
         speculative_sleep_visit_stamp_=1;
     }
     const auto stamp=speculative_sleep_visit_stamp_;
-    const auto process_candidate=[&](BodyId candidate) {
+    speculative_sleep_order_.clear();
+    const auto collect_candidate=[&](BodyId candidate) {
+        if(candidate>=speculative_islands_.node_island.size())return;
         const auto handle=speculative_islands_.node_island[candidate];
-        if(handle==IslandGraph::invalid)return;
+        if(handle==IslandGraph::invalid ||
+           handle>=speculative_islands_.islands.size())return;
         const auto& island=speculative_islands_.islands[handle];
+        if(!island.live || island.root==invalid)return;
+        if(speculative_sleep_seen_[island.root]==stamp)return;
+        speculative_sleep_seen_[island.root]=stamp;
+        speculative_sleep_order_.push_back({
+            handle,speculative_sleep_order_.size()});
+    };
+    // Accurate deactivations and speculative split/retirement produce
+    // independent candidate streams. Do not publish in their encounter
+    // order: PxsIslandSim::processLostEdges iterates each graph's own
+    // mActiveIslands backwards. Order only the affected island handles,
+    // without scanning all dormant or still-active speculative islands.
+    for(BodyId candidate:accurate_islands_.nodes_to_deactivate)
+        collect_candidate(candidate);
+    for(BodyId candidate:speculative_split_sleep_candidates_)
+        collect_candidate(candidate);
+    std::sort(speculative_sleep_order_.begin(),
+              speculative_sleep_order_.end(),
+        [&](const SpeculativeSleepCandidate& a,
+            const SpeculativeSleepCandidate& b) {
+            const auto ai=speculative_islands_.islands[a.handle].active_index;
+            const auto bi=speculative_islands_.islands[b.handle].active_index;
+            // A full actor-retirement rebuild can leave a newly
+            // detached, already-sleeping component outside the current
+            // active list; its retained loss candidate must still
+            // retire its active edges. Existing source active handles
+            // always precede these exceptional detached candidates.
+            if(ai==invalid_instance || bi==invalid_instance) {
+                if(ai==invalid_instance && bi==invalid_instance)
+                    return a.discovery<b.discovery;
+                return bi==invalid_instance;
+            }
+            return ai>bi;
+        });
+    for(const auto candidate:speculative_sleep_order_) {
+        const auto& island=speculative_islands_.islands[candidate.handle];
         const BodyId root=island.root;
-        if(speculative_sleep_seen_[root]==stamp)return;
-        speculative_sleep_seen_[root]=stamp;
         bool all_sleeping=true;
         for(BodyId node=root;node!=invalid;
             node=speculative_islands_.node_next[node]) {
@@ -2511,11 +2547,11 @@ void Scene::deactivate_ready_islands() noexcept {
                 break;
             }
         }
-        if(!all_sleeping)return;
-        // Original deactivateIsland walks its island-node chain and
-        // deactivateNodeInternal records the edge when its last active
-        // endpoint is visited. Reuse this stamp as the visited prefix
-        // to preserve that event order without sorting or per-edge sets.
+        if(!all_sleeping)continue;
+        // Source deactivateIsland walks the original intrusive node
+        // chain; deactivateNodeInternal publishes each active edge on
+        // visiting its last inactive endpoint. Reuse the same stamp as
+        // the candidate deduplication for the visited node prefix.
         for(BodyId node=root;node!=invalid;
             node=speculative_islands_.node_next[node]) {
             speculative_sleep_seen_[node]=stamp;
@@ -2532,15 +2568,7 @@ void Scene::deactivate_ready_islands() noexcept {
                     deactivate_contact_edge(edge_id,false,true);
             }
         }
-    };
-    // Source has two independent causes: newly inactive accurate rigid
-    // nodes, and local speculative splits that isolate previously
-    // sleeping rigid members from an awake SAP-only peer. Both must
-    // consume the same deduplicated island-root sequence.
-    for(BodyId candidate:accurate_islands_.nodes_to_deactivate)
-        process_candidate(candidate);
-    for(BodyId candidate:speculative_split_sleep_candidates_)
-        process_candidate(candidate);
+    }
 }
 // ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) consumes the
 // speculative graph's mActivatedEdges, then postThirdPassIslandGen
@@ -3991,6 +4019,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Source sleep-edge publication is noexcept after successful Gu
     // commit. Resize the generation scratch before any scene mutation.
     scene.speculative_sleep_seen_.resize(scene.actors_.size(),0);
+    scene.speculative_sleep_order_.reserve(scene.actors_.size());
     // Collision-only advancement does not modify body motion, retained
     // friction patches, threshold history, or solver partition ends.
     // Avoid snapshotting any of these on editor/geometry-only queries.
