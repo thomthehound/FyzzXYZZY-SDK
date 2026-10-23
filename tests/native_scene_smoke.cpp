@@ -1215,6 +1215,45 @@ void verify_source_active_reference_lifecycle() {
            "Actor retirement left stale source endpoint references");
 }
 
+void verify_source_speculative_only_active_references() {
+    using fyzz::native::Scene;
+    Scene separated;
+    const auto a=separated.add_dynamic_box(
+        {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+    const auto b=separated.add_dynamic_box(
+        {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+    for(fyzz::BodyId id:{a,b}) {
+        separated.set_velocity(id,{0,9.81f,0});
+        separated.set_angular_velocity(id,{0,0.83f,0});
+    }
+    separated.step(1.0f);
+    for(fyzz::BodyId id:{a,b}) {
+        separated.set_velocity(id,{});
+        separated.set_angular_velocity(id,{});
+    }
+    separated.set_position(a,{0,0.1f,0});
+    separated.set_position(b,{0.6f,0.1f,0.6f});
+    separated.advance_collision();
+    const fyzz::native::Pair candidate{a,b};
+    expect(has(separated.pairs(),a,b) &&
+           !has(separated.found_contacts(),a,b) &&
+           separated.speculative_island_count()==1 &&
+           separated.accurate_island_count()==2 &&
+           separated.speculative_active_reference_count(a)==1 &&
+           separated.speculative_active_reference_count(b)==1 &&
+           separated.accurate_active_reference_count(a)==0 &&
+           separated.accurate_active_reference_count(b)==0,
+           "SAP-only source contact references leaked into accurate graph");
+    separated.set_position(b,{12.0f,0.1f,12.0f});
+    separated.advance_collision();
+    expect(has(separated.lost_pairs(),a,b) &&
+           separated.speculative_active_reference_count(a)==0 &&
+           separated.speculative_active_reference_count(b)==0 &&
+           separated.accurate_active_reference_count(a)==0 &&
+           separated.accurate_active_reference_count(b)==0,
+           "SAP-only source reference retirement missed the lost edge");
+}
+
 void verify_source_retired_bridge_deactivation() {
     using fyzz::native::Scene;
     {
@@ -5353,6 +5392,7 @@ int run_native_scene_smoke() {
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
     verify_source_active_reference_lifecycle();
+    verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
     verify_native_rigid_integration_and_island_lifecycle();
 
