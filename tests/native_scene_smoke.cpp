@@ -193,7 +193,7 @@ struct ContactCorrelationSourceFixture {
                     k<patch.row_offset+2*patch.anchor_count;++k) {
                     const double result=scene.solver_friction_rows_[k].applied_force;
                     if(!std::isfinite(result) ||
-                       std::abs(result-max_dynamic)>1.0e-6*
+                       std::abs(result-max_dynamic)>1.0e-9*
                            std::max(1.0,std::abs(max_dynamic)))
                         throw std::runtime_error(
                             "Signed Dy friction row differs from source FMin/FMax limiter");
