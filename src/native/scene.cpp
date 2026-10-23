@@ -3980,8 +3980,17 @@ void Scene::solve_constraints() {
                             (fr.target_velocity-bias-tangent_delta)*
                                 fr.velocity_multiplier;
                         const bool clamped=std::abs(candidate)>max_static;
+                        // DySolverConstraints.cpp::solveContact and
+                        // solveContact_BStatic use FMin(maxDyn,
+                        // FMax(-maxDyn, totalImpulse)). A compliant
+                        // spring can produce a NEGATIVE accumulated
+                        // normal force; then maxDyn is negative and
+                        // std::clamp's ordered-bounds precondition fails.
+                        // Preserve the exact original min/max nesting,
+                        // including its signed-limit behavior.
                         const double next=clamped
-                            ? std::clamp(candidate,-max_dynamic,max_dynamic)
+                            ? std::min(max_dynamic,
+                                std::max(-max_dynamic,candidate))
                             : candidate;
                         const double delta=next-fr.applied_force;
                         const double da=delta*a.data.inverse_mass;
