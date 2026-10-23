@@ -1261,6 +1261,100 @@ void verify_source_active_island_handoff() {
     (void)floor;
 }
 
+void verify_source_speculative_reverse_sleep_order() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    Scene scene;
+    const auto a=scene.add_dynamic_box({2.0f,0.1f,0.2f},{0,10,0},1.0f);
+    const auto b=scene.add_dynamic_box({2.0f,0.1f,0.2f},{20,10,0},1.0f);
+    const auto c=scene.add_dynamic_box({2.0f,0.1f,0.2f},{0,10,5},1.0f);
+    // Two long rotated boxes overlap in SAP, but the Gu boxes remain
+    // separate. Source speculative merge swaps the first active handle
+    // with the last while accurate singleton handles retain their order.
+    for(const auto id:{a,b,c}) {
+        scene.set_velocity(id,{0,9.81f,0});
+        scene.set_angular_velocity(id,{0,0.83f,0});
+    }
+    scene.step(1.0f);
+    for(const auto id:{a,b,c}) {
+        scene.set_angular_velocity(id,{});
+        scene.set_velocity(id,{});
+    }
+    scene.set_position(a,{0,0.1f,0});
+    scene.set_position(b,{20,0.1f,0});
+    scene.set_position(c,{0.6f,0.1f,0.6f});
+    const auto floor=scene.add_static_floor(0.0f);
+    scene.advance_collision();
+    expect(has(scene.pairs(),a,c) &&
+           !has(scene.found_contacts(),a,c) &&
+           scene.accurate_island_count()==3 &&
+           scene.speculative_island_count()==2 &&
+           scene.active_accurate_islands().size()==3 &&
+           scene.active_speculative_islands().size()==2,
+           "Speculative sleep fixture did not establish SAP-only source merge");
+
+    const std::array<fyzz::BodyId,3> bodies{a,b,c};
+    const std::array<std::uint32_t,3> floor_edges{
+        scene.contact_edge_index({a,floor}),
+        scene.contact_edge_index({b,floor}),
+        scene.contact_edge_index({c,floor})};
+    for(const auto edge:floor_edges)
+        expect(edge!=std::numeric_limits<std::uint32_t>::max(),
+               "Speculative sleep fixture lacks an active floor manager");
+    std::array<std::uint32_t,3> accurate_handles{};
+    for(std::size_t i=0;i<bodies.size();++i)
+        accurate_handles[i]=scene.accurate_island_id(bodies[i]);
+
+    // Verify that the fixture would fail with candidate-order
+    // publication. An accurate reverse traversal must yield a different
+    // speculative order from the speculative reverse active list.
+    std::vector<std::uint32_t> accurate_derived;
+    for(auto it=scene.active_accurate_islands().rbegin();
+        it!=scene.active_accurate_islands().rend();++it)
+        for(std::size_t j=0;j<bodies.size();++j)
+            if(*it==accurate_handles[j]) {
+                const auto handle=scene.speculative_island_id(bodies[j]);
+                if(std::find(accurate_derived.begin(),
+                             accurate_derived.end(),handle)==
+                   accurate_derived.end())
+                    accurate_derived.push_back(handle);
+            }
+    const std::vector<std::uint32_t> source_reverse{
+        scene.active_speculative_islands().rbegin(),
+        scene.active_speculative_islands().rend()};
+    expect(accurate_derived!=source_reverse &&
+           source_reverse.size()==2,
+           "Speculative sleep fixture does not discriminate graph ordering");
+
+    bool retired=false;
+    for(int frame=0;frame<360;++frame) {
+        scene.step(1.0f/120.0f);
+        const auto events=scene.deactivating_speculative_contact_edges();
+        if(events.empty())continue;
+        expect(!retired,"Speculative source sleep re-published retired edges");
+        std::vector<std::uint32_t> observed;
+        for(const auto edge:events)
+            for(std::size_t i=0;i<bodies.size();++i)
+                if(edge==floor_edges[i]) {
+                    const auto handle=scene.speculative_island_id(bodies[i]);
+                    if(std::find(observed.begin(),observed.end(),handle)==
+                       observed.end())
+                        observed.push_back(handle);
+                }
+        expect(observed==source_reverse &&
+               scene.body_is_sleeping(a) &&
+               scene.body_is_sleeping(b) &&
+               scene.body_is_sleeping(c),
+               "Source speculative deactivation ignored reverse active-island order");
+        retired=true;
+    }
+    expect(retired && scene.active_speculative_islands().empty(),
+           "Speculative source island retirement did not complete");
+    scene.advance_collision();
+    expect(scene.deactivating_speculative_contact_edges().empty(),
+           "Quiet source publication repeated speculative retirement");
+}
+
 void verify_source_solver_task_batch_partitioning() {
     using fyzz::native::Scene;
     Scene scene;
@@ -5729,6 +5823,7 @@ int run_native_scene_smoke() {
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
     verify_source_active_island_handoff();
+    verify_source_speculative_reverse_sleep_order();
     verify_source_solver_task_batch_partitioning();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
