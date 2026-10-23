@@ -303,9 +303,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     if(!changing_pose)return;
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
-    std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
-        return patch.pair.a==id || patch.pair.b==id;
-    });
+    erase_shape_friction_history(id);
     actor.position=position;
     actor.orientation=normalized;
     // Preserve the established source contact-manager wake handoff:
@@ -328,6 +326,31 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         dynamic.sleep_angular_acc={};
     }
     dirty_=true;
+}
+void Scene::erase_shape_friction_history(BodyId id) {
+    // Explicit authored shape discontinuities compact only affected
+    // cached anchors. Reindex remaining source manager spans after
+    // this explicit edit; the normal PGS path rotates its own index.
+    if(!std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
+        return patch.pair.a==id || patch.pair.b==id;
+    }))return;
+    for(auto& span:friction_by_edge_)span.epoch=0;
+    for(std::size_t cursor=0;cursor<friction_patches_.size();) {
+        const Pair pair=friction_patches_[cursor].pair;
+        const std::size_t first=cursor;
+        do {++cursor;}
+        while(cursor<friction_patches_.size() &&
+              friction_patches_[cursor].pair==pair);
+        const EdgeIndex edge=contact_edge_index(pair);
+        if(edge==invalid_edge || edge>=friction_by_edge_.size())
+            continue;
+        const std::size_t count=cursor-first;
+        if(count>32)
+            throw std::logic_error(
+                "PhysX contact manager has more than 32 friction patches");
+        friction_by_edge_[edge]={pair,first,
+            static_cast<std::uint8_t>(count),friction_cache_epoch_};
+    }
 }
 void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (!finite(velocity))
@@ -435,9 +458,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
        actor.rest_offset==rest_offset)return;
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
-    std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
-        return patch.pair.a==id || patch.pair.b==id;
-    });
+    erase_shape_friction_history(id);
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
     dirty_=true;
@@ -982,6 +1003,7 @@ void Scene::update_contacts() {
             throw std::overflow_error("Native Gu contact distance overflow");
         ContactManifold manifold{};
         manifold.pair = pair;
+        manifold.edge_handle=edge;
         manifold.contact_offset = next_contact_points_.size();
         if (old_cursor < manifolds_.size() &&
             manifolds_[old_cursor].pair == pair)
