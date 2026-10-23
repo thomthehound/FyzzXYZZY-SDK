@@ -704,6 +704,25 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     --island.contact_count;
 }
 void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
+    // A removed speculative bridge can isolate an already sleeping node
+    // when its awake neighbor is being retired. The full graph rebuild
+    // runs in the first pass, so record the affected surviving node
+    // directly from this source edge before it is disconnected.
+    // Third-pass deactivation validates the rebuilt island; no island
+    // inventory reconstruction or unrelated island scan is needed.
+    const auto& retiring=contact_edges_[id];
+    if(!accurate && (retiring.speculative_state&1u)) {
+        for(BodyId candidate:{retiring.pair.a,retiring.pair.b}) {
+            const BodyId other=(candidate==retiring.pair.a)
+                ? retiring.pair.b:retiring.pair.a;
+            if(actors_[candidate].alive &&
+               actors_[candidate].kind==Kind::DynamicBox &&
+               actors_[candidate].sleeping &&
+               actors_[other].kind==Kind::DynamicBox &&
+               !actors_[other].alive)
+                speculative_split_sleep_candidates_.push_back(candidate);
+        }
+    }
     // Gu touch loss and manager retirement cancel activity without
     // fabricating an IslandSim sleep-deactivation event.
     deactivate_contact_edge(id,accurate,false);
@@ -1758,26 +1777,6 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                         root=node;
                         found_dirty=true;
                     }
-            }
-            // A full rebuild on actor retirement can detach a sleeping
-            // component just as processLostEdges does on local SAP loss.
-            // The previous island was larger, but the surviving members
-            // retain their own contact-manager eACTIVE history. Check the
-            // resulting speculative island in the same third-pass
-            // deactivation stage as the source-local split candidates.
-            if(!accurate &&
-               std::all_of(members.begin(),members.end(),
-                   [&](BodyId node) { return actors_[node].sleeping; })) {
-                for(BodyId member:members) {
-                    if(member>=graph.node_island.size())continue;
-                    const auto previous=graph.node_island[member];
-                    if(previous<graph.islands.size() &&
-                       graph.islands[previous].live &&
-                       graph.islands[previous].count>members.size()) {
-                        speculative_split_sleep_candidates_.push_back(root);
-                        break;
-                    }
-                }
             }
             auto& island=next.islands[handle];
             island.root=root;

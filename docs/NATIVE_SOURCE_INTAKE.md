@@ -1228,9 +1228,10 @@ per-graph activity counts and activated-edge worklists are restored.
 Activity flags replay **after** the intrusive edge-undo records, which
 may contain post-deactivation bits. Quiet nontransactional publications
 clear expired activation flags without acquiring rollback records.
-Both the ordinary third-pass split and the first-pass full rebuild caused
-by actor retirement retain affected speculative sleep candidates until
-the third-pass decision. Separate regressions require exactly one
+Both local lost-edge splits and a retiring dynamic edge that disconnects
+an already sleeping rigid peer record the affected source node for the
+third-pass decision. The latter survives the first-pass ownership rebuild;
+there is no heuristic component-size inference or global island rescan. Separate regressions require exactly one
 retained-manager speculative sleep event after retiring an awake SAP-only
 peer, and failure-atomic eACTIVE/count restoration after Gu touch loss.
 
