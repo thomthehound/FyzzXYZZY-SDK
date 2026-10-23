@@ -31,8 +31,20 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+      - name: Restore cached Ubuntu Vulkan packages
+        id: apt_debs
+        uses: actions/cache/restore@v6
+        with:
+          path: .ci-cache/vulkan-apt/archives
+          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-26.04-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan development packages
         run: bash .github/scripts/install-vulkan.sh
+      - name: Save cached Ubuntu Vulkan packages
+        if: steps.apt_debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .ci-cache/vulkan-apt/archives
+          key: ${{ steps.apt_debs.outputs.cache-primary-key }}
       - name: Install DXC for shared PhysX HLSL to SPIR-V
         shell: bash
         run: |
@@ -299,8 +311,20 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
+      - name: Restore cached Ubuntu Vulkan packages
+        id: apt_debs
+        uses: actions/cache/restore@v6
+        with:
+          path: .ci-cache/vulkan-apt/archives
+          key: fyzzxyzzy-apt-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-26.04-${{ hashFiles('.github/scripts/install-vulkan.sh') }}
       - name: Install Vulkan SDK
         run: bash .github/scripts/install-vulkan.sh
+      - name: Save cached Ubuntu Vulkan packages
+        if: steps.apt_debs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .ci-cache/vulkan-apt/archives
+          key: ${{ steps.apt_debs.outputs.cache-primary-key }}
       - name: Configure without external source or network
         run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build and test native core and compute

@@ -4,16 +4,51 @@
 
 set -euo pipefail
 
-# Standard hosted images may already have usable APT package indexes.
-# Avoid unconditional mirror refreshes: they have delayed CI by 5-10 min.
-# Refresh only if an install from the current indexes fails.
+# Reuse complete Ubuntu .deb archives between CI jobs. APT itself selects
+# package versions and verifies the repository metadata; do not unpack
+# cached files by hand or bypass dpkg's dependency validation.
+# GitHub caches are best-effort; a cold or stale archive falls back to APT.
+archives="${GITHUB_WORKSPACE:-$PWD}/.ci-cache/vulkan-apt/archives"
+mkdir -p "$archives/partial"
 packages=(libvulkan-dev mesa-vulkan-drivers glslang-tools)
-apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+apt_options=(
+    -o "Dir::Cache::archives=$archives"
+    -o "APT::Keep-Downloaded-Packages=true"
+    -o Acquire::Retries=2
+    -o Acquire::http::Timeout=30
+    -o Acquire::https::Timeout=30
+)
 
-if sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y -qq --no-install-recommends "${packages[@]}"; then
-    exit 0
+apt_install() {
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install \
+        -y -qq --no-install-recommends "$@" "${packages[@]}"
+}
+
+if find "$archives" -maxdepth 1 -type f -name '*.deb' -print -quit | grep -q .; then
+    # A cached archive may be stale after an Ubuntu security/package update.
+    # Do not download anything or wait for mirrors on the normal hot path.
+    if apt_install --no-download; then
+        echo 'Installed Vulkan packages entirely from the existing APT archives'
+    else
+        echo 'Cached packages no longer match APT indexes; downloading missing updates'
+        apt_install || {
+            echo 'APT install failed with current indexes; refreshing repositories'
+            sudo apt-get "${apt_options[@]}" update
+            apt_install
+        }
+    fi
+else
+    # No archive yet: populate one in the ordinary, authenticated APT path.
+    apt_install || {
+        echo 'APT indexes could not satisfy Vulkan dependencies; refreshing repositories'
+        sudo apt-get "${apt_options[@]}" update
+        apt_install
+    }
 fi
 
-echo 'Cached APT indexes could not satisfy Vulkan dependencies; refreshing repositories'
-sudo apt-get "${apt_options[@]}" update
-sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y -qq --no-install-recommends "${packages[@]}"
+for package in "${packages[@]}"; do
+    dpkg-query -W -f='${db:Status-Abbrev}' "$package" | grep -qx 'ii '
+done
+test -f /usr/include/vulkan/vulkan.h
+command -v glslangValidator >/dev/null
+echo "APT archive count: $(find "$archives" -maxdepth 1 -type f -name '*.deb' | wc -l)"
