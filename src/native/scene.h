@@ -1020,6 +1020,11 @@ private:
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
     std::vector<Pair> next_found_contacts_, next_lost_contacts_;
+    // Source ScNPhaseCore touch events are emitted only if contact
+    // notifications were requested when the World was constructed.
+    bool contact_notifications_=false;
+    std::vector<ContactEvent> contact_events_;
+    std::vector<ContactEvent> next_contact_events_;
     std::uint64_t frame_index_ = 0;
     // One source wake-work indicator for authored transitions. A quiet
     // geometry query with no found edges avoids scanning all island
