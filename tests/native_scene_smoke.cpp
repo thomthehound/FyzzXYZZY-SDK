@@ -445,8 +445,11 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Zero-capped dynamic pair did not reenter source PGS");
         scene.set_dynamics(a,capped);
-        scene.set_dynamics(b,capped);
         for(unsigned frame=0;frame<48;++frame) {
+            // The first 24 frames have ONE capped body and a live
+            // partner; the second 24 have BOTH sides capped. Source
+            // extractContacts applies the minimum across the pair.
+            if(frame==24)scene.set_dynamics(b,capped);
             // Keep the same two source contact managers overlapping
             // through readmission's prior impact displacement.
             scene.set_position(a,{0.0f,2.0f,0.0f});
