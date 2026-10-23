@@ -698,6 +698,15 @@ private:
     // to avoid an O(all islands) scan or post-commit allocations.
     std::vector<std::uint32_t> speculative_sleep_seen_;
     std::uint32_t speculative_sleep_visit_stamp_=0;
+    // Transient source third-pass candidate order. Accurate node sleep
+    // and speculative edge loss nominate islands, but only speculative
+    // mActiveIndex determines their deactivation publication order.
+    // Reserve in the throwing checkpoint before noexcept island work.
+    struct SpeculativeSleepCandidate {
+        IslandGraph::IslandId handle;
+        std::size_t discovery;
+    };
+    std::vector<SpeculativeSleepCandidate> speculative_sleep_order_;
     // Source processLostEdges can make a formerly awake speculative
     // island entirely inactive merely by disconnecting its last awake
     // member. Retain both resulting roots as third-pass candidates;
