@@ -1071,6 +1071,80 @@ void verify_source_compliant_world_parity() {
             "Compliant material incorrectly disabled free-flight integration");
 }
 
+void verify_source_contact_notification_world() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/120.0f;
+    const auto verify=[&](ExecutionMode mode) {
+        WorldOptions enabled{mode};
+        enabled.contact_notifications=true;
+        World world(enabled);
+        const auto floor=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+        RigidBodyDynamics no_gravity{};
+        no_gravity.gravity_enabled=false;
+        world.set_body_dynamics(box,no_gravity);
+        const auto only_event=[&](ContactEventKind expected) {
+            const auto events=world.contact_events();
+            if(events.size()!=1 ||
+               events[0].body0!=floor || events[0].body1!=box ||
+               events[0].kind!=expected)
+                throw std::runtime_error(
+                    "Sc touch notification did not match PhysX event lifecycle");
+            const auto& event=events[0];
+            if(!std::isfinite(event.normal_impulse) ||
+               (expected==ContactEventKind::Lost &&
+                (event.contact_count!=0 || event.normal_impulse!=0.0)) ||
+               (expected!=ContactEventKind::Lost &&
+                event.contact_count==0))
+                throw std::runtime_error(
+                    "Sc contact notification has invalid Gu/Dy force fields");
+        };
+        if(!world.contact_events().empty())
+            throw std::runtime_error(
+                "Contact event stream reported before first source fetch");
+        world.step(dt);
+        only_event(ContactEventKind::Found);
+        world.step(dt);
+        only_event(ContactEventKind::Persists);
+        world.set_body_position(box,{0,4,0});
+        world.step(dt);
+        only_event(ContactEventKind::Lost);
+        world.step(dt);
+        if(!world.contact_events().empty())
+            throw std::runtime_error(
+                "Sc contact events replayed after touch was already lost");
+        world.set_body_position(box,{0,0.49f,0});
+        world.step(dt);
+        only_event(ContactEventKind::Found);
+        // A zero max-contact-impulse skips Dy entirely, but it still
+        // belongs to the source Gu and Sc touch reporting lifecycle.
+        no_gravity.max_contact_impulse=0.0f;
+        world.set_body_dynamics(box,no_gravity);
+        world.step(dt);
+        only_event(ContactEventKind::Persists);
+        if(world.contact_events()[0].normal_impulse!=0.0)
+            throw std::runtime_error(
+                "Zero-response source contact falsely reported a solved impulse");
+
+        World disabled(WorldOptions{mode});
+        const auto static_body=disabled.add_static_floor(0.0f);
+        const auto dynamic_body=disabled.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        disabled.step(dt);
+        if(!disabled.contact_events().empty())
+            throw std::runtime_error(
+                "Default PxDefaultSimulationFilterShader emitted opt-in touch event");
+        (void)static_body;
+        (void)dynamic_body;
+    };
+    verify(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    verify(ExecutionMode::ReferencePhysXCpuLegacyGu);
+    verify(ExecutionMode::ReferencePhysXCpu);
+#endif
+}
+
 void verify_source_signed_compliant_contact_writeback() {
     using namespace fyzz;
     constexpr float dt=1.0f/60.0f;
@@ -7209,6 +7283,7 @@ int run_native_scene_smoke() {
     verify_source_body_dynamics_api();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
+    verify_source_contact_notification_world();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
     verify_source_pose_authoring();
