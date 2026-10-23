@@ -1232,6 +1232,61 @@ void verify_source_contact_notification_world() {
         (void)static_body;
         (void)dynamic_body;
     };
+    // The second source acceptance axis is packed event geometry:
+    // distinct shape interactions must not alias point offsets even if
+    // the PhysX callback order differs from native Gu manager order.
+    const auto verify_multi_manager=[&](ExecutionMode mode) {
+        WorldOptions opts{mode};
+        opts.contact_notifications=true;
+        World world(opts);
+        const auto first=world.add_static_floor(0.0f);
+        const auto second=world.add_static_floor(0.001f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.495f,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        world.set_body_dynamics(box,d);
+        world.step(dt);
+        const auto events=world.contact_events();
+        const auto points=world.contact_event_points();
+        if(events.size()!=2 || points.empty())
+            throw std::runtime_error(
+                "Source contact callbacks lost an independent shape interaction");
+        std::vector<bool> claimed(points.size(),false);
+        bool saw_first=false,saw_second=false;
+        for(const auto& e:events) {
+            if(e.body1!=box || e.kind!=ContactEventKind::Found ||
+               e.contact_count==0 || e.point_offset>points.size() ||
+               e.contact_count>points.size()-e.point_offset)
+                throw std::runtime_error(
+                    "Source contact callback lost Gu contact point window");
+            saw_first|=e.body0==first;
+            saw_second|=e.body0==second;
+            double sum=0.0;
+            for(std::size_t i=e.point_offset;
+                i<e.point_offset+e.contact_count;++i) {
+                if(claimed[i])
+                    throw std::runtime_error(
+                        "Multiple shape interactions alias published contact points");
+                claimed[i]=true;
+                sum+=points[i].normal_impulse;
+            }
+            if(std::abs(sum-e.normal_impulse)>1.0e-5*
+               std::max({1.0,std::abs(sum),std::abs(e.normal_impulse)}))
+                throw std::runtime_error(
+                    "Multiple shape interactions lost Gu-indexed impulse totals");
+        }
+        if(!saw_first || !saw_second ||
+           !std::all_of(claimed.begin(),claimed.end(),
+                        [](bool x){return x;}))
+            throw std::runtime_error(
+                "Sc callback packing dropped one of the source contact point ranges");
+    };
+    verify_multi_manager(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    verify_multi_manager(ExecutionMode::ReferencePhysXCpuLegacyGu);
+    verify_multi_manager(ExecutionMode::ReferencePhysXCpu);
+#endif
     verify(ExecutionMode::NativeCpu);
     // The externally returned span is the LAST successfully published
     // simulation result. A rejected step must not replace that storage
