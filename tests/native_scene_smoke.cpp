@@ -1286,8 +1286,13 @@ void verify_source_reverse_wake_order_and_rollback_capacity() {
     // Reject the publication first: its rollback must restore both
     // graphs' pending event sequences and reserve no-throw list capacity.
     const std::array<std::size_t,4> order{3,1,2,0};
-    for(std::size_t index:order)
-        scene.set_position(ids[index],scene.body_state(ids[index]).position);
+    // Exercise all four public wake sources. The event sequence must
+    // survive the failed step exactly as authored, rather than silently
+    // falling back to accurate graph handle or BodyId ordering.
+    scene.set_velocity(ids[3],{});
+    scene.set_angular_velocity(ids[1],{});
+    scene.apply_torque_impulse(ids[2],{});
+    scene.set_position(ids[0],scene.body_state(ids[0]).position);
     bool rejected=false;
     try {scene.step(std::numeric_limits<float>::max());}
     catch(const std::overflow_error&) {rejected=true;}
