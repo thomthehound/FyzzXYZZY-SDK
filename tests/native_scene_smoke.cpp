@@ -144,6 +144,43 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Source pair contact slop did not mask Dy angular Jacobians");
     }
+    static void verify_signed_compliant_friction_solver() {
+        // Codex's two-floor repro enters the signed normal-force path
+        // after dozens of ordinary PGS steps. The original source
+        // applies FMin(maxDyn,FMax(-maxDyn,candidate)) even when
+        // maxDyn is negative; std::clamp has undefined behavior there.
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        scene.add_static_floor(0.001f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.495876f,0.0f},1.0f);
+        fyzz::Material spring{};
+        spring.restitution=-95.11f;
+        spring.damping=3.33204f;
+        scene.set_material(box,spring);
+        scene.set_velocity(box,{-1.39922f,4.64631f,0.0f});
+        bool saw_signed=false;
+        for(unsigned frame=0;frame<100;++frame) {
+            scene.step(1.0f/60.0f);
+            for(double force:scene.solved_normal_impulses()) {
+                if(!std::isfinite(force))
+                    throw std::runtime_error(
+                        "Source signed spring emitted nonfinite Gu force");
+                saw_signed|=force<0.0;
+            }
+            for(const auto& patch:scene.solved_friction_patches())
+                for(std::size_t i=0;i<patch.anchor_count;++i) {
+                    const auto v=patch.anchor_impulses[i];
+                    if(!std::isfinite(v.x)||!std::isfinite(v.y)||
+                       !std::isfinite(v.z))
+                        throw std::runtime_error(
+                            "Source signed friction bound emitted nonfinite impulse");
+                }
+        }
+        if(!saw_signed)
+            throw std::runtime_error(
+                "Signed PGS friction oracle did not exercise negative spring force");
+    }
     static void verify_signed_compliant_source_writeback() {
         Scene scene;
         scene.add_static_floor(0.0f);
@@ -7352,6 +7389,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
+    fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
