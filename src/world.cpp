@@ -33,6 +33,14 @@ void validate_position(Vec3 position) {
         throw std::invalid_argument("Position must be finite");
     }
 }
+void validate_orientation(Quat q) {
+    // PxQuat::isSane tests a finite unit magnitude within 1e-2.
+    const float magnitude=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);
+    if (!std::isfinite(q.x) || !std::isfinite(q.y) ||
+        !std::isfinite(q.z) || !std::isfinite(q.w) ||
+        !std::isfinite(magnitude) || std::abs(magnitude-1.0f)>=1.0e-2f)
+        throw std::invalid_argument("Rigid pose orientation is not sane");
+}
 
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     switch (options.execution) {
@@ -106,6 +114,11 @@ BodyState World::body_state(BodyId id) const {
 void World::set_body_position(BodyId id, Vec3 position) {
     validate_position(position);
     impl_->set_body_position(id, position);
+}
+void World::set_body_pose(BodyId id, Vec3 position, Quat orientation) {
+    validate_position(position);
+    validate_orientation(orientation);
+    impl_->set_body_pose(id, position, orientation);
 }
 void World::remove_body(BodyId id) {
     impl_->remove_body(id);

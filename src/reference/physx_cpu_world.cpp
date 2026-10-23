@@ -184,13 +184,33 @@ struct PhysXCpuWorld final : WorldBackend {
     void set_body_position(BodyId id, Vec3 position) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        // PxCreatePlane uses a non-identity pose quaternion to align its
-        // local +X plane normal with world +Y. A position-only transform
-        // would reset that rotation (and any dynamic body's rotation).
-        // Preserve the existing orientation, changing translation only.
+        // Preserve PhysX's internal plane alignment and any box spin.
         auto pose = actors[id]->getGlobalPose();
         pose.p = to_physx(position);
         actors[id]->setGlobalPose(pose);
+    }
+
+    void set_body_pose(BodyId id, Vec3 position, Quat orientation) override {
+        if (id >= actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        physx::PxShape* shape=nullptr;
+        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
+            throw std::logic_error("Reference actor lacks single shape");
+        // The SDK horizontal floor is a fixed +Y-normal primitive.
+        // Preserve its private PxCreatePlane rotation on a logical
+        // identity edit rather than rotating its physical normal.
+        if(shape->getGeometry().getType()==physx::PxGeometryType::ePLANE) {
+            if(orientation.x!=0.0f || orientation.y!=0.0f ||
+               orientation.z!=0.0f || orientation.w!=1.0f)
+                throw std::logic_error("Native horizontal floor cannot rotate");
+            auto pose=actors[id]->getGlobalPose();
+            pose.p=to_physx(position);
+            actors[id]->setGlobalPose(pose);
+            return;
+        }
+        actors[id]->setGlobalPose(physx::PxTransform(
+            to_physx(position),physx::PxQuat(
+                orientation.x,orientation.y,orientation.z,orientation.w)));
     }
 
     void remove_body(BodyId id) override {

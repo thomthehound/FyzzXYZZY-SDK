@@ -669,6 +669,86 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
+void verify_source_pose_authoring() {
+    constexpr float dt=1.0f/120.0f;
+    constexpr float sine=0.38268343236f;
+    constexpr float cosine=0.92387953251f;
+    const fyzz::Quat rotated{0,-sine,0,cosine};
+    // A slender static box's rotation brings it into a previously
+    // separated dynamic box. Exercise original Gu SAT and SAP bounds,
+    // not a rotated AABB approximation or a manually injected row.
+    {
+        fyzz::native::Scene scene;
+        const auto fixed=scene.add_static_box(
+            {1.0f,0.4f,0.15f},{0,2,0});
+        const auto moving=scene.add_dynamic_box(
+            {0.3f,0.3f,0.3f},{0.6f,2.0f,0.6f},1.0f);
+        scene.advance_collision();
+        if(!scene.pairs().empty() || !scene.contacts().empty())
+            throw std::runtime_error(
+                "Rotated-geometry fixture initially intersects");
+        scene.set_pose(fixed,{0,2,0},rotated);
+        scene.advance_collision();
+        if(scene.pairs().size()!=1 || scene.contacts().size()!=1 ||
+           scene.contacts()[0].count==0 ||
+           !scene.contact_edge_connected({fixed,moving}))
+            throw std::runtime_error(
+                "Authored box rotation did not reach native Gu SAT and SAP");
+        scene.set_pose(fixed,{0,2,0},{});
+        scene.advance_collision();
+        if(!scene.contacts().empty())
+            throw std::runtime_error(
+                "Reversed authored pose retained stale rotated Gu contacts");
+    }
+    for(const auto mode:{fyzz::ExecutionMode::NativeCpu
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+                         ,fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu
+#endif
+        }) {
+        fyzz::World world(fyzz::WorldOptions{mode});
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,3,0},1.0f);
+        const auto floor=world.add_static_floor(0.0f);
+        const auto invalid=[&](fyzz::Quat q) {
+            try {world.set_body_pose(box,{0,3,0},q);}
+            catch(const std::invalid_argument&) {return true;}
+            return false;
+        };
+        if(!invalid({0,0,0,0}) ||
+           !invalid({0,0,0,std::numeric_limits<float>::infinity()}) ||
+           !invalid({0,0,0,0.8f}))
+            throw std::runtime_error(
+                "PxQuat::isSane pose validation admitted invalid rotation");
+        const fyzz::Quat near_unit{
+            rotated.x*1.003f,rotated.y*1.003f,
+            rotated.z*1.003f,rotated.w*1.003f};
+        world.set_body_pose(box,{0,3,0},near_unit);
+        auto pose=world.body_state(box);
+        if(std::abs(pose.orientation.y-rotated.y)>2.0e-5f ||
+           std::abs(pose.orientation.w-rotated.w)>2.0e-5f)
+            throw std::runtime_error(
+                "Source getNormalized authored quaternion was not published");
+        world.set_body_position(box,{0,4,0});
+        pose=world.body_state(box);
+        if(std::abs(pose.orientation.y-rotated.y)>2.0e-5f ||
+           pose.position.y!=4.0f)
+            throw std::runtime_error(
+                "Translation-only pose edit destroyed rigid orientation");
+        bool plane_rejected=false;
+        try {world.set_body_pose(floor,{0,0,0},rotated);}
+        catch(const std::logic_error&) {plane_rejected=true;}
+        if(!plane_rejected)
+            throw std::runtime_error(
+                "Fixed horizontal floor admitted unsupported rotation");
+        world.set_body_pose(floor,{0,0,0},{});
+        world.step(dt);
+        if(!std::isfinite(world.body_state(box).position.y) ||
+           std::abs(world.body_state(box).orientation.y-rotated.y)>5.0e-4f)
+            throw std::runtime_error(
+                "Source authored rigid orientation did not survive integration");
+    }
+}
+
 void verify_source_shape_offsets() {
     using fyzz::native::Scene;
     using fyzz::ExecutionMode;
@@ -6901,6 +6981,7 @@ int run_native_scene_smoke() {
     verify_source_body_dynamics_api();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
+    verify_source_pose_authoring();
     verify_source_zero_velocity_iteration_request();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();

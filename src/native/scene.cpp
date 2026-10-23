@@ -246,21 +246,39 @@ const Scene::Actor& Scene::require(BodyId id) const {
 void Scene::set_position(BodyId id, Vec3 position) {
     if (!finite(position))
         throw std::invalid_argument("Native scene position must be finite");
-    auto& actor = require(id);
-    // This explicit edit can wake several published Gu peers after the
-    // pose and retained friction state have been changed. Reserve both
-    // source activation queues first, so a failed allocation cannot
-    // leave a partially authored pose and partner wake history.
-    const bool changing_position=actor.position.x!=position.x ||
-        actor.position.y!=position.y || actor.position.z!=position.z;
-    if(changing_position) {
+    set_pose(id,position,require(id).orientation);
+}
+void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
+    // PxRigidActor::setGlobalPose accepts PxQuat::isSane and stores
+    // getNormalized(). Validate before mutating wake or cache state.
+    const float magnitude=std::sqrt(
+        orientation.x*orientation.x+orientation.y*orientation.y+
+        orientation.z*orientation.z+orientation.w*orientation.w);
+    if(!finite(position) || !finite(orientation) ||
+       !std::isfinite(magnitude) || std::abs(magnitude-1.0f)>=1.0e-2f)
+        throw std::invalid_argument("Native rigid pose is not sane");
+    const Quat normalized{
+        orientation.x/magnitude,orientation.y/magnitude,
+        orientation.z/magnitude,orientation.w/magnitude};
+    auto& actor=require(id);
+    // The admitted plane's world normal is fixed to +Y; rotated
+    // planes require the still-unported general plane pose geometry.
+    if(actor.kind==Kind::StaticPlane &&
+       (normalized.x!=0.0f || normalized.y!=0.0f ||
+        normalized.z!=0.0f || normalized.w!=1.0f))
+        throw std::logic_error("Native horizontal floor cannot rotate");
+    const bool changing_pose=
+        actor.position.x!=position.x ||
+        actor.position.y!=position.y || actor.position.z!=position.z ||
+        actor.orientation.x!=normalized.x ||
+        actor.orientation.y!=normalized.y ||
+        actor.orientation.z!=normalized.z ||
+        actor.orientation.w!=normalized.w;
+    if(changing_pose) {
         speculative_islands_.activating_nodes.reserve(actors_.size());
         accurate_islands_.activating_nodes.reserve(actors_.size());
     }
-    // NpRigidDynamic::setGlobalPose calls wakeUpInternal even when the
-    // authored pose is unchanged. As with setLinearVelocity, its source
-    // sleep-filter samples survive an already-active body's wake-counter
-    // refresh; only a genuine sleep-to-wake transition resets them.
+    // NpRigidDynamic::setGlobalPose wakes even on an idempotent edit.
     if(actor.kind==Kind::DynamicBox) {
         if(actor.sleeping) {
             if(!actor.activating)queue_node_activation(id);
@@ -273,26 +291,17 @@ void Scene::set_position(BodyId id, Vec3 position) {
         actor.ready_for_sleep=false;
         actor.sleeping=false;
     }
-    // Infinite planes have a fixed world +Y normal in the current native
-    // shape model. Translating one changes its height, not its orientation.
-    // A same-position write must not invalidate Gu/friction data or force
-    // a broadphase publication merely to honor dynamic autowake.
-    if(!changing_position)return;
-    // Explicit pose authoring is a discontinuity, unlike integration.
-    // DyFrictionCorrelation's retained local anchors must not bridge a
-    // teleport, even when projected separation along the contact normal
-    // remains zero. Retire only the affected manager patches; this rare
-    // edit-time scan avoids additional hot-path checks or cache registries.
+    if(!changing_pose)return;
+    // Authored transforms are discontinuities: retained strong-friction
+    // anchors must not bridge either a translation or an orientation edit.
     std::erase_if(friction_patches_, [id](const FrictionPatch& patch) {
         return patch.pair.a==id || patch.pair.b==id;
     });
-    actor.position = position;
-    // Moving either a static or dynamic contact participant invalidates
-    // its old interactions. After the speculative graph splits, the
-    // authored node's activating flag cannot reach its former peer.
-    // Wake currently touching dormant OR ready-but-awake partners before
-    // the old source Gu contact stream is retired. This is an authoring
-    // operation, not an every-frame contact-manager scan.
+    actor.position=position;
+    actor.orientation=normalized;
+    // Preserve the established source contact-manager wake handoff:
+    // relocating or rotating either endpoint wakes old touching peers
+    // before their previous Gu managers can be retired.
     for(const auto& manifold:manifolds_) {
         if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
         const BodyId other=manifold.pair.a==id
@@ -309,7 +318,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
         dynamic.sleep_linear_acc={};
         dynamic.sleep_angular_acc={};
     }
-    dirty_ = true;
+    dirty_=true;
 }
 void Scene::set_velocity(BodyId id, Vec3 velocity) {
     if (!finite(velocity))
@@ -5135,6 +5144,9 @@ public:
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }
     void set_body_position(BodyId id, Vec3 p) override {
         scene_.set_position(id, p);
+    }
+    void set_body_pose(BodyId id, Vec3 p, Quat q) override {
+        scene_.set_pose(id, p, q);
     }
     void remove_body(BodyId id) override { scene_.remove(id); }
     void set_body_velocity(BodyId id, Vec3 velocity) override {

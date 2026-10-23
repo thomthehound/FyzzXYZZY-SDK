@@ -108,6 +108,9 @@ public:
     virtual void set_body_position(BodyId, Vec3) {
         throw std::logic_error("This backend cannot relocate an actor");
     }
+    virtual void set_body_pose(BodyId, Vec3, Quat) {
+        throw std::logic_error("This backend cannot author rigid pose");
+    }
     virtual void remove_body(BodyId) {
         throw std::logic_error("This backend cannot remove an actor");
     }
@@ -150,6 +153,8 @@ public:
     void step(float seconds);
     BodyState body_state(BodyId id) const;
     void set_body_position(BodyId id, Vec3 position);
+    // PxRigidActor::setGlobalPose, with logical identity for the SDK floor.
+    void set_body_pose(BodyId id, Vec3 position, Quat orientation);
     void remove_body(BodyId id);
     void set_body_velocity(BodyId id, Vec3 velocity);
     void set_body_angular_velocity(BodyId id, Vec3 velocity);

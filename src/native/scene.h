@@ -115,6 +115,7 @@ public:
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     void set_position(BodyId id, Vec3 position);
+    void set_pose(BodyId id, Vec3 position, Quat orientation);
     void set_velocity(BodyId id, Vec3 velocity);
     void set_angular_velocity(BodyId id, Vec3 velocity);
     void apply_torque_impulse(BodyId id, Vec3 impulse);
