@@ -144,6 +144,35 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Source pair contact slop did not mask Dy angular Jacobians");
     }
+    static void verify_signed_compliant_source_writeback() {
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        fyzz::Material compliant{};
+        compliant.restitution=-100.0f;
+        scene.set_material(box,compliant);
+        scene.set_velocity(box,{1.0f,1.0f,0.0f});
+        scene.step(1.0f/60.0f);
+        if(scene.manifolds_.size()!=1 ||
+           scene.manifolds_[0].count==0 ||
+           scene.solver_contact_points_.empty())
+            throw std::runtime_error(
+                "Signed compliant force test lacks real Gu/Dy contact rows");
+        const auto& manifold=scene.manifolds_[0];
+        // Original DySolverConstraintsShared::solveDynamicContacts can
+        // produce this signed result after the compliant multiplier;
+        // its original writeBackContact does not clamp the force slot.
+        constexpr double source_signed_force=-0.000160085;
+        scene.solver_contact_points_[manifold.solver_offset].applied_force=
+            source_signed_force;
+        scene.write_back_contacts();
+        if(scene.solved_normal_impulses().size()!=scene.contact_points_.size() ||
+           scene.solved_normal_impulses()[manifold.contact_offset]!=
+               source_signed_force)
+            throw std::runtime_error(
+                "Signed source compliant force was clipped at Dy writeback");
+    }
     static void verify_compliant_contact_source() {
         using fyzz::Material;
         using fyzz::MaterialCombineMode;
@@ -7322,6 +7351,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
+    fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
