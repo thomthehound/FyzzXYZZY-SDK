@@ -253,6 +253,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
     // refresh; only a genuine sleep-to-wake transition resets them.
     if(actor.kind==Kind::DynamicBox) {
         if(actor.sleeping) {
+            if(!actor.activating)queue_node_activation(id);
             actor.activating=true;
             authored_activation_pending_=true;
             actor.sleep_linear_acc={};
@@ -292,6 +293,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
         auto& dynamic=actors_[other];
         if(!dynamic.alive || dynamic.kind!=Kind::DynamicBox ||
            (!dynamic.sleeping && !dynamic.ready_for_sleep))continue;
+        if(!dynamic.activating)queue_node_activation(other);
         dynamic.activating=true;
         authored_activation_pending_=true;
         dynamic.sleeping=false;
@@ -315,6 +317,9 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     // accumulated Dy sleep filter of an already active actor. Only
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
+        if(!actor.activating)queue_node_activation(id);
+        if(!actor.activating)queue_node_activation(id);
+        if(!actor.activating)queue_node_activation(id);
         actor.activating=true;
         authored_activation_pending_=true;
         actor.sleep_linear_acc={};
@@ -435,6 +440,7 @@ void Scene::remove(BodyId id) {
         auto& partner=actors_[other];
         if(!partner.alive || partner.kind!=Kind::DynamicBox ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
+        if(!partner.activating)queue_node_activation(other);
         partner.activating=true;
         authored_activation_pending_=true;
         partner.sleeping=false;
@@ -1654,6 +1660,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         next.active_node_index.assign(actors_.size(),invalid_instance);
         next.active_nodes.reserve(actors_.size());
         next.active_islands.reserve(actors_.size());
+        next.activating_nodes=graph.activating_nodes;
+        next.activating_nodes.reserve(actors_.size());
         next.active_island_seen.resize(next.islands.size(),0);
         next.nodes_to_deactivate.reserve(actors_.size());
         // Full admission/retirement rebuilds replace graph handles but
@@ -2112,6 +2120,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         accurate_islands_.islands.size(),0);
     speculative_islands_.active_islands.reserve(actors_.size());
     accurate_islands_.active_islands.reserve(actors_.size());
+    speculative_islands_.activating_nodes.reserve(actors_.size());
+    accurate_islands_.activating_nodes.reserve(actors_.size());
     // Root changes in rebuild_graph invalidate only affected node hints.
     // Ordinary merges and independent actor admissions retain live routes
     // in both graphs; each attempted route validates its full edge chain.
@@ -2218,6 +2228,16 @@ void Scene::activate_node_contact_edges(BodyId node) noexcept {
             activate_contact_edge(id,accurate);
         }
     }
+}
+void Scene::queue_node_activation(BodyId id) {
+    // Reserve both owners before appending either: allocation failure
+    // cannot leave a half-published authored wake or modified body.
+    auto& speculative=speculative_islands_.activating_nodes;
+    auto& accurate=accurate_islands_.activating_nodes;
+    speculative.reserve(speculative.size()+1);
+    accurate.reserve(accurate.size()+1);
+    speculative.push_back(id);
+    accurate.push_back(id);
 }
 void Scene::activate_published_islands() noexcept {
     // Ordinary quiet collision queries do not traverse islands merely
@@ -2499,6 +2519,26 @@ void Scene::synchronize_active_island_nodes() noexcept {
         graph.active_nodes.pop_back();
         graph.active_node_index[id]=invalid_instance;
     }
+    // Source wakeIslands processes mActivatingNodes in event order,
+    // independently for each graph. Append the woken island's linked
+    // rigid members before adding newly admitted (not awakened) actors.
+    // The reverse active-node index suppresses repeated event entries.
+    for(BodyId waking:graph.activating_nodes) {
+        if(waking>=graph.node_island.size())continue;
+        const auto handle=graph.node_island[waking];
+        if(handle==IslandGraph::invalid ||
+           handle>=graph.islands.size() ||
+           !graph.islands[handle].live)continue;
+        for(BodyId id=graph.islands[handle].root;
+            id!=std::numeric_limits<BodyId>::max();
+            id=graph.node_next[id]) {
+            if(!actors_[id].alive || actors_[id].sleeping ||
+               graph.active_node_index[id]!=invalid_instance)continue;
+            graph.active_node_index[id]=graph.active_nodes.size();
+            graph.active_nodes.push_back(id);
+        }
+    }
+    graph.activating_nodes.clear();
     for(BodyId id:accurate_island_nodes_) {
         if(actors_[id].sleeping ||
            graph.node_island[id]==IslandGraph::invalid ||
@@ -3835,6 +3875,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                         live.active_node_index.end());
         saved.active_islands.assign(live.active_islands.begin(),
                                      live.active_islands.end());
+        saved.activating_nodes.assign(live.activating_nodes.begin(),
+                                      live.activating_nodes.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
         // Per-edge reference mutations are restored through the sparse
@@ -3853,6 +3895,17 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Capacity is reused over successive frames, including failed steps.
     speculative_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.active_nodes.reserve(scene.actors_.size());
+    // A copied vector's capacity is only its current count. Both
+    // source mActiveIslands owners must retain full no-throw wake
+    // capacity after checkpoint publication or rejected rollback.
+    speculative_islands.active_islands.reserve(scene.actors_.size());
+    accurate_islands.active_islands.reserve(scene.actors_.size());
+    speculative_islands.activating_nodes.reserve(scene.actors_.size());
+    accurate_islands.activating_nodes.reserve(scene.actors_.size());
+    scene.speculative_islands_.active_islands.reserve(scene.actors_.size());
+    scene.accurate_islands_.active_islands.reserve(scene.actors_.size());
+    scene.speculative_islands_.activating_nodes.reserve(scene.actors_.size());
+    scene.accurate_islands_.activating_nodes.reserve(scene.actors_.size());
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     speculative_islands.deactivating_edges.reserve(
         scene.contact_edges_.size());
@@ -4081,6 +4134,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
                     invalid_instance;
     scene.speculative_islands_.active_islands.swap(
         speculative_islands.active_islands);
+    scene.speculative_islands_.activating_nodes.swap(
+        speculative_islands.activating_nodes);
     if(!graph_ownership_saved)
         for(std::size_t i=0;i<scene.speculative_islands_.active_islands.size();++i)
             scene.speculative_islands_.islands[
@@ -4118,6 +4173,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
                     invalid_instance;
     scene.accurate_islands_.active_islands.swap(
         accurate_islands.active_islands);
+    scene.accurate_islands_.activating_nodes.swap(
+        accurate_islands.activating_nodes);
     if(!graph_ownership_saved)
         for(std::size_t i=0;i<scene.accurate_islands_.active_islands.size();++i)
             scene.accurate_islands_.islands[

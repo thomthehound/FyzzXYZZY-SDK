@@ -546,6 +546,7 @@ private:
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.
     void activate_published_islands() noexcept;
+    void queue_node_activation(BodyId id);
     bool lost_island_edges_retain_routes(bool accurate);
     void split_lost_island(bool accurate,BodyId seed);
     void prepare_solver_bodies();
@@ -616,6 +617,10 @@ private:
         };
         std::vector<Island> islands;
         std::vector<IslandId> active_islands;
+        // Source mActivatingNodes order, independently published by
+        // each IslandSim. This is a pending event stream, not a second
+        // actor owner or a global sorted waking-body registry.
+        std::vector<BodyId> activating_nodes;
         // Reusable island-handle visit stamps for reconciling source
         // active-node transitions without walking dormant islands.
         std::vector<std::uint32_t> active_island_seen;
