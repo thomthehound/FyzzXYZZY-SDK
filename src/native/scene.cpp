@@ -3208,7 +3208,8 @@ void Scene::prepare_constraints(float seconds) {
     // PxsMaterialCombiner.h::PxsCombineMaterials: the source takes the
     // higher precedence combine mode (Average, Min, Multiply, Max) of
     // both shapes and promotes static friction to at least dynamic.
-    // All currently admitted materials are noncompliant (restitution >=0).
+    // PhysX PxsMaterialCombiner also gives compliant spring/damping
+    // combinations precise priority before contact patch correlation.
     const auto combine=[](float a,float b,MaterialCombineMode mode) {
         switch(mode) {
         case MaterialCombineMode::Average: return 0.5f*(a+b);
@@ -3338,10 +3339,42 @@ void Scene::prepare_constraints(float seconds) {
         const Material& m1=actor1.material;
         const auto friction_mode=higher(m0.friction_combine,
                                         m1.friction_combine);
-        const auto restitution_mode=higher(m0.restitution_combine,
-                                           m1.restitution_combine);
-        const float restitution=combine(m0.restitution,m1.restitution,
-                                        restitution_mode);
+        // PxsMaterialCombiner::PxsCombineMaterials: a compliant material
+        // wins over an ordinary one. An acceleration spring wins over
+        // a force spring when both materials are compliant.
+        const bool c0=m0.restitution<0.0f;
+        const bool c1=m1.restitution<0.0f;
+        const bool both_compliant=c0 && c1;
+        const bool exactly_one_compliant=c0 != c1;
+        const bool acceleration_override=both_compliant &&
+            (m0.compliant_acceleration_spring !=
+             m1.compliant_acceleration_spring);
+        const bool acceleration_spring=
+            m0.compliant_acceleration_spring ||
+            m1.compliant_acceleration_spring;
+        float restitution;
+        float damping;
+        if(acceleration_override) {
+            restitution=m0.compliant_acceleration_spring
+                ? m0.restitution : m1.restitution;
+            damping=m0.compliant_acceleration_spring
+                ? m0.damping : m1.damping;
+        } else {
+            const auto restitution_mode=exactly_one_compliant
+                ? MaterialCombineMode::Minimum
+                : higher(m0.restitution_combine,m1.restitution_combine);
+            const auto damping_mode=exactly_one_compliant
+                ? MaterialCombineMode::Maximum
+                : higher(m0.damping_combine,m1.damping_combine);
+            // Multiply two negative spring stiffnesses, then restore
+            // the negative sign of the combined compliant stiffness.
+            const float sign=both_compliant &&
+                restitution_mode==MaterialCombineMode::Multiply
+                ? -1.0f:1.0f;
+            restitution=sign*combine(m0.restitution,m1.restitution,
+                                     restitution_mode);
+            damping=combine(m0.damping,m1.damping,damping_mode);
+        }
         const bool disable_friction=m0.disable_friction || m1.disable_friction;
         const bool disable_strong_friction=disable_friction ||
             m0.disable_strong_friction || m1.disable_strong_friction;
@@ -3353,6 +3386,7 @@ void Scene::prepare_constraints(float seconds) {
                      combine(m0.static_friction,m1.static_friction,
                              friction_mode));
         if (!std::isfinite(restitution) ||
+            !std::isfinite(damping) ||
             !std::isfinite(static_friction) ||
             !std::isfinite(dynamic_friction))
             throw std::overflow_error("Native Pxs material combination overflow");
@@ -3451,6 +3485,8 @@ void Scene::prepare_constraints(float seconds) {
                     manifold.friction_patch_offset+local_patch];
                 if(dot(p.normal,cp.normal)>=same_normal &&
                    p.restitution==restitution &&
+                   p.damping==damping &&
+                   p.acceleration_spring==acceleration_spring &&
                    p.static_friction==static_friction &&
                    p.dynamic_friction==dynamic_friction)
                     break;
@@ -3465,6 +3501,8 @@ void Scene::prepare_constraints(float seconds) {
                 patch.static_friction=static_friction;
                 patch.dynamic_friction=dynamic_friction;
                 patch.restitution=restitution;
+                patch.damping=damping;
+                patch.acceleration_spring=acceleration_spring;
                 patch.disable_friction=disable_friction;
                 patch.disable_strong_friction=disable_strong_friction;
                 patch.body0_normal=local_normal(actor0,cp.normal);
@@ -3586,33 +3624,49 @@ void Scene::prepare_constraints(float seconds) {
                 bounce_threshold > vrel && closing;
             const float target_velocity = bouncing
                 ? -vrel*restitution : 0.0f;
-            // Source noncompliant (restitution >= 0) branch. Negative
-            // penetration is bias-limited, positive speculative separation
-            // retains full separation speed; restitution clears positive
-            // velocity-phase bias before conclude.
-            const float penetration_inv_dt_scaled = separated
-                ? penetration_inv_dt
-                : penetration*(inv_dt*rigid_contact_bias);
-            // DyContactPrepShared::constructContactConstraint clears
-            // scaledBias on a qualifying restitution bounce. The current
-            // rigid subset does not admit CCD, so its CCD separation gate
-            // does not exclude these contacts.
-            const double scaled_bias = bouncing ? 0.0 :
-                vel_multiplier *
-                    std::max(max_penetration_bias,penetration_inv_dt_scaled);
-            const double target = target_velocity-vrel;
             SolverContactPoint row{};
-            row.normal = normal;
-            row.ra_x_n_sqrt_inertia = ra;
-            row.rb_x_n_sqrt_inertia = rb;
-            row.friction_patch = patch_id;
-            row.velocity_multiplier = vel_multiplier;
+            row.normal=normal;
+            row.ra_x_n_sqrt_inertia=ra;
+            row.rb_x_n_sqrt_inertia=rb;
+            row.friction_patch=patch_id;
             row.max_impulse=pair_max_impulse;
-            row.biased_error = target*vel_multiplier-scaled_bias;
-            row.unbiased_error = target*vel_multiplier -
-                (bouncing ? 0.0 : std::max(scaled_bias,0.0));
+            const double target=static_cast<double>(target_velocity-vrel);
+            if(restitution<0.0f) {
+                // DyContactPrepShared::computeCompliantContactCoefficients
+                // disables damping for separated nonclosing contacts.
+                // Force springs use unitResponse; acceleration springs
+                // use the reciprocal response as a mass factor.
+                const float enabled_damping=
+                    separated && !closing ? 0.0f : damping;
+                const double nrdt=static_cast<double>(seconds)*restitution;
+                const double a_coeff=static_cast<double>(seconds)*
+                    (static_cast<double>(enabled_damping)-nrdt);
+                const double mass_factor=acceleration_spring
+                    ? vel_multiplier : 1.0;
+                const double x=1.0/(1.0+a_coeff*
+                    (acceleration_spring ? 1.0 : response));
+                const double bias=x*(-nrdt*penetration*mass_factor);
+                row.velocity_multiplier=x*a_coeff*mass_factor;
+                row.impulse_multiplier=1.0-x;
+                row.biased_error=target*row.velocity_multiplier-bias;
+                row.unbiased_error=row.biased_error;
+            } else {
+                // Normal restitution keeps a distinct unbiased
+                // velocity-pass error after the biased position passes.
+                const float penetration_inv_dt_scaled=separated
+                    ? penetration_inv_dt
+                    : penetration*(inv_dt*rigid_contact_bias);
+                const double scaled_bias=bouncing ? 0.0 :
+                    vel_multiplier*std::max(
+                        max_penetration_bias,penetration_inv_dt_scaled);
+                row.velocity_multiplier=vel_multiplier;
+                row.biased_error=target*vel_multiplier-scaled_bias;
+                row.unbiased_error=target*vel_multiplier-
+                    (bouncing?0.0:std::max(scaled_bias,0.0));
+            }
             if (!std::isfinite(row.biased_error) ||
                 !std::isfinite(row.unbiased_error) ||
+                !std::isfinite(row.impulse_multiplier) ||
                 !std::isfinite(row.velocity_multiplier))
                 throw std::overflow_error("Native Dy contact preparation overflow");
             solver_contact_points_.push_back(row);
@@ -3842,8 +3896,11 @@ void Scene::solve_constraints() {
                 // DySolverConstraintsShared::solveDynamicContacts
                 // caps EACH normal row's accumulated impulse, not
                 // the manager total and not the body velocity delta.
+                // DySolverConstraintsShared multiplies the old force
+                // by impulseMultiplier for every compliant PGS solve.
+                // Noncompliant rows retain a multiplier of exactly 1.
                 const double next_impulse=std::min(row.max_impulse,
-                    std::max(0.0,row.applied_force+delta_candidate));
+                    row.impulse_multiplier*row.applied_force+delta_candidate);
                 const double delta = next_impulse-row.applied_force;
                 const double da = delta*a.data.inverse_mass;
                 const double db = delta*b.data.inverse_mass;
