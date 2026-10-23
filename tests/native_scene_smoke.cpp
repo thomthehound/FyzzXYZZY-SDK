@@ -1317,12 +1317,18 @@ void verify_source_mixed_split_and_sleep_order() {
             break;
         }
     }
-    expect(third_pass_ready && scene.body_is_sleeping(dormant) &&
-           !scene.body_is_sleeping(awake) &&
-           has(scene.pairs(),awake,dormant) &&
-           scene.speculative_contact_edge_active(dormant_floor) &&
-           scene.speculative_contact_edge_active(independent_floor),
-           "Mixed source fixture failed to stage simultaneous split and sleep");
+    expect(third_pass_ready,
+           "Mixed source fixture independent island never became ready");
+    expect(scene.body_is_sleeping(dormant),
+           "Mixed source fixture dormant rod woke before independent readiness");
+    expect(!scene.body_is_sleeping(awake),
+           "Mixed source fixture bridge root slept before independent readiness");
+    expect(has(scene.pairs(),awake,dormant),
+           "Mixed source fixture lost its SAP-only bridge before splitting");
+    expect(scene.speculative_contact_edge_active(dormant_floor),
+           "Mixed source fixture dormant floor edge not speculative-active");
+    expect(scene.speculative_contact_edge_active(independent_floor),
+           "Mixed source fixture independent floor edge not speculative-active");
     const auto dormant_edge=scene.contact_edge_index(dormant_floor);
     const auto independent_edge=scene.contact_edge_index(independent_floor);
     expect(dormant_edge!=std::numeric_limits<std::uint32_t>::max() &&
