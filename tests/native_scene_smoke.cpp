@@ -1139,6 +1139,50 @@ void verify_source_contact_notification_world() {
         (void)dynamic_body;
     };
     verify(ExecutionMode::NativeCpu);
+    // The externally returned span is the LAST successfully published
+    // simulation result. A rejected step must not replace that storage
+    // with partially prepared Sc/Dy event data.
+    {
+        fyzz::native::Scene scene;
+        scene.set_contact_notifications(true);
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        scene.step(dt);
+        if(scene.contact_events().size()!=1 ||
+           scene.contact_events()[0].kind!=ContactEventKind::Found)
+            throw std::runtime_error(
+                "Native source touch event baseline not published");
+        const auto* const old_storage=scene.contact_events().data();
+        const auto old=scene.contact_events()[0];
+        // Reuse original admission failure already tested for materials:
+        // eMULTIPLY 1e30*1e30 overflows PxsMaterialCombiner's PxReal.
+        Material huge{};
+        huge.static_friction=1.0e30f;
+        huge.dynamic_friction=1.0e30f;
+        huge.friction_combine=MaterialCombineMode::Multiply;
+        scene.set_material(floor,huge);
+        scene.set_material(box,huge);
+        bool threw=false;
+        try {scene.step(dt);}
+        catch(const std::overflow_error&) {threw=true;}
+        const auto published=scene.contact_events();
+        if(!threw || published.data()!=old_storage ||
+           published.size()!=1 ||
+           published[0].body0!=old.body0 ||
+           published[0].body1!=old.body1 ||
+           published[0].kind!=old.kind ||
+           published[0].normal_impulse!=old.normal_impulse)
+            throw std::runtime_error(
+                "Failed native PGS step replaced published Sc contact events");
+        scene.set_material(floor,Material{});
+        scene.set_material(box,Material{});
+        scene.step(dt);
+        if(scene.contact_events().size()!=1 ||
+           scene.contact_events()[0].kind!=ContactEventKind::Persists)
+            throw std::runtime_error(
+                "Source touch event publication did not recover on retry");
+    }
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     verify(ExecutionMode::ReferencePhysXCpuLegacyGu);
     verify(ExecutionMode::ReferencePhysXCpu);
