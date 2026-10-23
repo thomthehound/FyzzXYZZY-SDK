@@ -2191,6 +2191,29 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         }
         expect(independent_sleep,
                "Accurate rigid island could not deactivate independently of SAP candidate");
+        // Source processLostEdges also deactivates a speculative island
+        // that becomes entirely inactive after its awake SAP-only bridge
+        // is removed. No new accurate rigid node falls asleep in this
+        // publication, so sourcing candidates solely from the accurate
+        // deactivation output misses this edge event.
+        const auto sleeping_floor=distinct_sleep.contact_edge_index(
+            fyzz::native::Pair{rod_a,source_floor});
+        distinct_sleep.set_position(rod_b,{12.0f,0.1f,12.0f});
+        distinct_sleep.advance_collision();
+        const auto speculative_after_split=
+            distinct_sleep.deactivating_speculative_contact_edges();
+        expect(has(distinct_sleep.lost_pairs(),rod_a,rod_b) &&
+               distinct_sleep.speculative_island_count()==2 &&
+               distinct_sleep.body_is_sleeping(rod_a) &&
+               !distinct_sleep.body_is_sleeping(rod_b) &&
+               sleeping_floor!=std::numeric_limits<std::uint32_t>::max() &&
+               std::count(speculative_after_split.begin(),
+                          speculative_after_split.end(),sleeping_floor)==1 &&
+               distinct_sleep.deactivating_accurate_contact_edges().empty(),
+               "Lost SAP-only bridge missed source speculative island sleep event");
+        distinct_sleep.advance_collision();
+        expect(distinct_sleep.deactivating_speculative_contact_edges().empty(),
+               "Quiet publication replayed the speculative split sleep event");
     }
 
     {
