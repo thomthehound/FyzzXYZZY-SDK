@@ -18,6 +18,8 @@ on:
       - 'docs/**'
   workflow_dispatch:
 
+# Keep both godot-cpp cache keys aligned with the pinned CMake dependency,
+# Godot API version, target profile, and build configuration.
 jobs:
   linux:
     runs-on: ubuntu-24.04
