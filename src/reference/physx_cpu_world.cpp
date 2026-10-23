@@ -109,6 +109,13 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
+    // Deleted PhysX callback pointers are address tokens ONLY:
+    // a removed actor must never be dereferenced after PxActor::release.
+    struct RetiredActorToken {
+        const physx::PxActor* address=nullptr;
+        std::uintptr_t token=0;
+    };
+    std::vector<RetiredActorToken> retired_actor_tokens;
     bool contact_notifications=false;
     std::vector<ContactEvent> published_contact_events;
     std::vector<ContactEvent> pending_contact_events;
@@ -127,14 +134,25 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                    physx::PxU32 count) override {
         if(callback_error)return;
         try {
-        if(header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0) ||
-           header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1))
-            return; // deleted-actor reports require separate lifetime retention
         if(!header.actors[0] || !header.actors[1])return;
-        const auto raw0=reinterpret_cast<std::uintptr_t>(
-            header.actors[0]->userData);
-        const auto raw1=reinterpret_cast<std::uintptr_t>(
-            header.actors[1]->userData);
+        // PxContactPairHeaderFlag::eREMOVED_ACTOR_* forbids actor
+        // dereference. Match the captured pointer address to the ID
+        // token recorded before release. Live actors take the direct
+        // zero-search userData path.
+        const auto token_for=[&](unsigned index) -> std::uintptr_t {
+            const bool removed=header.flags.isSet(index==0
+                ? physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0
+                : physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1);
+            if(!removed)
+                return reinterpret_cast<std::uintptr_t>(
+                    header.actors[index]->userData);
+            for(const auto& retired:retired_actor_tokens)
+                if(retired.address==header.actors[index])
+                    return retired.token;
+            return 0;
+        };
+        const auto raw0=token_for(0);
+        const auto raw1=token_for(1);
         if(!raw0 || !raw1)return;
         const BodyId a=static_cast<BodyId>(std::min(raw0,raw1)-1);
         const BodyId b=static_cast<BodyId>(std::max(raw0,raw1)-1);
@@ -251,6 +269,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         for (physx::PxRigidActor* actor : actors)
             if (actor) actor->release();
         actors.clear();
+        retired_actor_tokens.clear();
         if (material) {
             material->release();
             material = nullptr;
@@ -322,6 +341,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             // descriptors; point ranges remain in the same shared arena.
             published_contact_points.swap(pending_contact_points);
             published_contact_events.swap(pending_contact_events);
+            // All callbacks referencing these retired actors were
+            // consumed by this completed fetchResults boundary.
+            retired_actor_tokens.clear();
         }
     }
 
@@ -367,7 +389,15 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     void remove_body(BodyId id) override {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        actors[id]->release();  // PhysX removes it from the scene.
+        auto* const actor=actors[id];
+        if(contact_notifications) {
+            // Push before release: allocation failure leaves actor
+            // ownership intact. The stale pointer is compared only,
+            // NEVER dereferenced by the contact callback.
+            retired_actor_tokens.push_back({
+                actor,static_cast<std::uintptr_t>(id)+1});
+        }
+        actor->release(); // PhysX removes it from the scene.
         actors[id] = nullptr;
     }
 
