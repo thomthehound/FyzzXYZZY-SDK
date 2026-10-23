@@ -1223,6 +1223,17 @@ void verify_source_active_island_handoff() {
            active.active_speculative_islands()[0]==a_speculative &&
            active.accurate_island_id(c)!=a_accurate,
            "Actor admission rebuilt instead of preserving active island owner");
+    const auto c_accurate=active.accurate_island_id(c);
+    const auto c_speculative=active.speculative_island_id(c);
+    // Retire the FIRST active island, not the last. Source
+    // markIslandInactive replaces it with the final active handle.
+    active.remove(a);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==1 &&
+           active.active_speculative_islands().size()==1 &&
+           active.active_accurate_islands()[0]==c_accurate &&
+           active.active_speculative_islands()[0]==c_speculative,
+           "First-slot source active-island retirement broke swap-last");
     (void)floor;
 }
 
