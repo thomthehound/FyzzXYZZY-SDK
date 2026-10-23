@@ -55,6 +55,19 @@ struct Material {
     bool disable_strong_friction=false;
 };
 
+// ScBodyCore/PxsBodyCore::solverIterationCounts and
+// DyDynamics::preIntegrationParallel rigid-body inputs. These values
+// belong to each dynamic body, not to a second scene/global solver.
+struct RigidBodyDynamics {
+    float linear_damping=0.0f;
+    float angular_damping=0.05f;
+    float max_linear_velocity=1.0e16f;
+    float max_angular_velocity=100.0f;
+    bool gravity_enabled=true;
+    std::uint8_t position_iterations=4;
+    std::uint8_t velocity_iterations=1;
+};
+
 using BodyId = std::uint32_t;
 
 struct BodyState {
@@ -100,6 +113,9 @@ public:
     virtual void set_body_material(BodyId, Material) {
         throw std::logic_error("This backend cannot author rigid material");
     }
+    virtual void set_body_dynamics(BodyId, RigidBodyDynamics) {
+        throw std::logic_error("This backend cannot author rigid dynamics");
+    }
 };
 
 class World final {
@@ -127,6 +143,7 @@ public:
     // Matches PxRigidDynamic::addTorque(..., PxForceMode::eIMPULSE).
     void apply_body_torque_impulse(BodyId id, Vec3 impulse);
     void set_body_material(BodyId id, Material material);
+    void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics);
 
 private:
     std::unique_ptr<WorldBackend> impl_;
