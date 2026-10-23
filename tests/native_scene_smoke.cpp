@@ -1261,6 +1261,49 @@ void verify_source_active_island_handoff() {
     (void)floor;
 }
 
+void verify_source_reverse_active_island_sleep_retirement() {
+    using fyzz::native::Scene;
+    Scene scene;
+    scene.add_static_floor(0.0f);
+    std::array<fyzz::BodyId,4> bodies{};
+    for(std::size_t i=0;i<bodies.size();++i)
+        bodies[i]=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},
+            {static_cast<float>(i)*3.0f,0.5f,0},1.0f);
+    scene.advance_collision();
+    expect(scene.active_accurate_islands().size()==bodies.size(),
+           "Sleep order fixture failed to publish independent active islands");
+    bool deactivated=false;
+    for(int frame=0;frame<360;++frame) {
+        const std::vector<std::uint32_t> before(
+            scene.active_accurate_islands().begin(),
+            scene.active_accurate_islands().end());
+        scene.step(1.0f/120.0f);
+        const auto retired=scene.deactivating_accurate_nodes();
+        if(retired.empty())continue;
+        expect(!deactivated && retired.size()==bodies.size() &&
+               before.size()==bodies.size(),
+               "Source independent sleep islands did not retire together");
+        // PxsIslandSim::processLostEdges walks mActiveIslands backwards.
+        // The old forward scan of the full island-handle table must
+        // fail this assertion even though it sleeps the same bodies.
+        for(std::size_t i=0;i<retired.size();++i)
+            expect(scene.accurate_island_id(retired[i])==
+                   before[before.size()-i-1],
+                   "Third-pass deactivation lost source reverse active-island order");
+        expect(scene.active_accurate_islands().empty() &&
+               scene.active_speculative_islands().empty(),
+               "Third-pass sleep left stale published active islands");
+        deactivated=true;
+    }
+    expect(deactivated,
+           "Source reverse active-island retirement never reached sleep");
+    scene.advance_collision();
+    expect(scene.deactivating_accurate_nodes().empty() &&
+           scene.active_accurate_islands().empty(),
+           "Quiet publication replayed already retired active islands");
+}
+
 void verify_source_reverse_wake_order_and_rollback_capacity() {
     using fyzz::native::Scene;
     Scene scene;
@@ -5645,6 +5688,7 @@ int run_native_scene_smoke() {
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
     verify_source_active_island_handoff();
+    verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
     verify_source_contact_interaction_consumption();
