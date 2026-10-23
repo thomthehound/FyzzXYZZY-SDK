@@ -5120,6 +5120,10 @@ public:
     void set_body_material(BodyId id, Material material) override {
         scene_.set_material(id,material);
     }
+    void set_body_shape_offsets(BodyId id, float contact_offset,
+                                float rest_offset) override {
+        scene_.set_shape_offsets(id,contact_offset,rest_offset);
+    }
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics) override {
         scene_.set_dynamics(id,dynamics);
     }
