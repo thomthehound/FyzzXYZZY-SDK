@@ -1261,6 +1261,47 @@ void verify_source_active_island_handoff() {
     (void)floor;
 }
 
+void verify_source_solver_task_batch_partitioning() {
+    using fyzz::native::Scene;
+    Scene scene;
+    scene.add_static_floor(0.0f);
+    // DyDynamicsContext::updatePostKinematic uses the default
+    // solverBatchSize=128 and requires at least one contact before
+    // ending a task group. These 130 independent rigid contact islands
+    // must form two descriptor groups, not one global partition zero.
+    constexpr std::size_t bodies=130;
+    for(std::size_t i=0;i<bodies;++i)
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},
+            {static_cast<float>(i)*3.0f,0.5f,0},1.0f);
+    scene.step(1.0f/120.0f);
+    expect(scene.contacts().size()==bodies &&
+           scene.indexed_contact_manager_order().size()==bodies &&
+           scene.solver_partition_count()==2,
+           "Source Dy task-group boundary failed to partition 128+2 islands");
+    const auto impulses=scene.solved_normal_impulses();
+    std::size_t total=0;
+    for(std::size_t i=0;i<scene.contacts().size();++i) {
+        const auto& manager=scene.contacts()[i];
+        expect(manager.contact_offset==total &&
+               total+manager.count<=impulses.size(),
+               "Task-group source descriptor writeback lost its Gu offset");
+        double force=0.0;
+        for(std::size_t j=0;j<manager.count;++j)
+            force+=impulses[total+j];
+        expect(std::isfinite(force) && force>0.0,
+               i>=128
+                   ? "Final source task group dropped rigid solver work"
+                   : "First source task group dropped rigid solver work");
+        total+=manager.count;
+    }
+    expect(total==impulses.size(),
+           "Source task groups did not write all rigid contact impulses");
+    scene.step(1.0f/120.0f);
+    expect(scene.solver_partition_count()==2 &&
+           scene.contacts().size()==bodies,
+           "Source task-group boundaries leaked partition state across steps");
+}
+
 void verify_source_reverse_active_island_sleep_retirement() {
     using fyzz::native::Scene;
     Scene scene;
@@ -5688,6 +5729,7 @@ int run_native_scene_smoke() {
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
     verify_source_active_island_handoff();
+    verify_source_solver_task_batch_partitioning();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
