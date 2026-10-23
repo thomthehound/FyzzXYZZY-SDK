@@ -1153,6 +1153,79 @@ void verify_demand_driven_island_ownership_checkpoint() {
 
 // Independent source edge-activity regressions live outside the full
 // rigid integration fixture to keep their stack frames and failures isolated.
+void verify_source_active_island_handoff() {
+    using fyzz::native::Scene;
+    Scene active;
+    const auto floor=active.add_static_floor(0.0f);
+    const auto a=active.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+    const auto b=active.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{3,0.5f,0},1.0f);
+    for(int frame=0;frame<360;++frame)
+        active.step(1.0f/120.0f);
+    expect(active.body_is_sleeping(a) && active.body_is_sleeping(b) &&
+           active.active_accurate_islands().empty() &&
+           active.active_speculative_islands().empty(),
+           "Sleeping isolated rigid islands retained source active handles");
+    // Source markIslandActive appends on the first genuine node wake.
+    // Each independent graph owns its own active-index permutation.
+    active.set_position(a,active.body_state(a).position);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==1 &&
+           active.active_accurate_islands()[0]==active.accurate_island_id(a) &&
+           active.active_speculative_islands().size()==1 &&
+           active.active_speculative_islands()[0]==
+               active.speculative_island_id(a),
+           "Same-pose wake failed to append source island handles");
+    const auto a_accurate=active.accurate_island_id(a);
+    const auto a_speculative=active.speculative_island_id(a);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==1 &&
+           active.active_speculative_islands().size()==1,
+           "Quiet publication duplicated already active source island");
+    active.set_position(b,active.body_state(b).position);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==2 &&
+           active.active_speculative_islands().size()==2 &&
+           active.active_accurate_islands()[0]==a_accurate &&
+           active.active_speculative_islands()[0]==a_speculative,
+           "Additional awake island lost existing source activation order");
+    const std::vector<std::uint32_t> accurate_before(
+        active.active_accurate_islands().begin(),
+        active.active_accurate_islands().end());
+    const std::vector<std::uint32_t> speculative_before(
+        active.active_speculative_islands().begin(),
+        active.active_speculative_islands().end());
+    bool rejected=false;
+    try { active.step(std::numeric_limits<float>::max()); }
+    catch(const std::overflow_error&) { rejected=true; }
+    expect(rejected &&
+           std::equal(accurate_before.begin(),accurate_before.end(),
+                      active.active_accurate_islands().begin(),
+                      active.active_accurate_islands().end()) &&
+           std::equal(speculative_before.begin(),speculative_before.end(),
+                      active.active_speculative_islands().begin(),
+                      active.active_speculative_islands().end()),
+           "Rejected source island handoff changed the active permutation");
+    active.remove(b);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==1 &&
+           active.active_accurate_islands()[0]==a_accurate &&
+           active.active_speculative_islands().size()==1 &&
+           active.active_speculative_islands()[0]==a_speculative,
+           "Retiring rigid actor left stale mActiveIslands handles");
+    const auto c=active.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{6,3,0},1.0f);
+    active.advance_collision();
+    expect(active.active_accurate_islands().size()==2 &&
+           active.active_speculative_islands().size()==2 &&
+           active.active_accurate_islands()[0]==a_accurate &&
+           active.active_speculative_islands()[0]==a_speculative &&
+           active.accurate_island_id(c)!=a_accurate,
+           "Actor admission rebuilt instead of preserving active island owner");
+    (void)floor;
+}
+
 void verify_source_active_reference_lifecycle() {
     using fyzz::native::Scene;
     Scene refs;
@@ -5391,6 +5464,7 @@ int run_native_scene_smoke() {
     verify_demand_driven_island_ownership_checkpoint();
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
+    verify_source_active_island_handoff();
     verify_source_active_reference_lifecycle();
     verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
