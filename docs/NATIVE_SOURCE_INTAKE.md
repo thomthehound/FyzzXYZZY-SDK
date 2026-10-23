@@ -238,8 +238,14 @@ descriptor preserves the exact requested maximum, while its PGS execution
 uses `max(requestedVelocityIterations, 1)` for the final pass. The
 default 4+1 behavior remains unchanged. Native tests exercise 130
 independent floor-contact bodies across the 128-body task boundary,
-including one task with zero requested velocity iterations and verified
-normal-impulse writeback, plus authored gravity,
+including one task with zero requested velocity iterations. That
+task's dedicated test contrasts zero versus one requested pass under
+identical closing contact velocities and penetration bias: the final
+unbiased solver velocity must differ from the saved position-phase
+motion velocity, while zero and one requests must produce the same
+final velocity and Gu-indexed normal impulse. Merely observing positive
+normal-impulse writeback is insufficient, because position iterations
+already generate force-buffer values. Additional cases cover authored gravity,
 damping, speed-clamp, invalid-input and static-body rejection. The
 source-enabled fixture additionally compares native free-body velocities
 to a real `PxRigidDynamic` using the same public settings. This is
