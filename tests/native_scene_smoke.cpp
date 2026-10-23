@@ -199,7 +199,7 @@ struct ContactCorrelationSourceFixture {
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
         const Pair pair{floor,box};
         scene.advance_collision();
-        const EdgeIndex handle=scene.contact_edge_index(pair);
+        const auto handle=scene.contact_edge_index(pair);
         if(handle==Scene::invalid_edge || scene.manifolds_.size()!=1 ||
            scene.manifold_by_edge_.size()<=handle ||
            scene.manifold_by_edge_[handle].index!=0 ||
