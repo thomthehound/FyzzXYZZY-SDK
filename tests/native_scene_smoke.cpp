@@ -1280,13 +1280,23 @@ void verify_source_contact_notification_world() {
         WorldOptions opts{mode};
         opts.contact_notifications=true;
         World world(opts);
-        const auto first=world.add_static_floor(0.0f);
-        const auto second=world.add_static_floor(0.001f);
-        const auto box=world.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,0.495f,0},1.0f);
+        // Two spatially separated interactions, rather than nearly
+        // coplanar floors: swapping the two complete point windows
+        // would still pass nonoverlap, count and force-sum checks,
+        // but MUST fail the pair-local geometry check below.
+        constexpr float left_x=-4.0f,right_x=4.0f;
+        const auto left_floor=world.add_static_box(
+            {0.5f,0.5f,0.5f},{left_x,-0.5f,0.0f});
+        const auto right_floor=world.add_static_box(
+            {0.5f,0.5f,0.5f},{right_x,-0.5f,0.0f});
+        const auto left_box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{left_x,0.49f,0.0f},1.0f);
+        const auto right_box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{right_x,0.49f,0.0f},1.0f);
         RigidBodyDynamics d{};
         d.gravity_enabled=false;
-        world.set_body_dynamics(box,d);
+        world.set_body_dynamics(left_box,d);
+        world.set_body_dynamics(right_box,d);
         world.step(dt);
         const auto events=world.contact_events();
         const auto points=world.contact_event_points();
@@ -1294,15 +1304,22 @@ void verify_source_contact_notification_world() {
             throw std::runtime_error(
                 "Source contact callbacks lost an independent shape interaction");
         std::vector<bool> claimed(points.size(),false);
-        bool saw_first=false,saw_second=false;
+        bool saw_left=false,saw_right=false;
         for(const auto& e:events) {
-            if(e.body1!=box || e.kind!=ContactEventKind::Found ||
+            if(e.kind!=ContactEventKind::Found ||
                e.contact_count==0 || e.point_offset>points.size() ||
                e.contact_count>points.size()-e.point_offset)
                 throw std::runtime_error(
                     "Source contact callback lost Gu contact point window");
-            saw_first|=e.body0==first;
-            saw_second|=e.body0==second;
+            float expected_x;
+            if(e.body0==left_floor && e.body1==left_box) {
+                expected_x=left_x;
+                saw_left=true;
+            } else if(e.body0==right_floor && e.body1==right_box) {
+                expected_x=right_x;
+                saw_right=true;
+            } else throw std::runtime_error(
+                "Source event misidentified its interacting rigid-body pair");
             double sum=0.0;
             for(std::size_t i=e.point_offset;
                 i<e.point_offset+e.contact_count;++i) {
@@ -1310,14 +1327,22 @@ void verify_source_contact_notification_world() {
                     throw std::runtime_error(
                         "Multiple shape interactions alias published contact points");
                 claimed[i]=true;
-                sum+=points[i].normal_impulse;
+                const auto& point=points[i];
+                if(std::abs(point.position.x-expected_x)>0.55f ||
+                   !(point.position.y>-0.1f && point.position.y<0.1f) ||
+                   point.normal.y>-0.9f ||
+                   !std::isfinite(point.separation) ||
+                   !std::isfinite(point.normal_impulse))
+                    throw std::runtime_error(
+                        "Sc event's point range belongs to a different actor pair");
+                sum+=point.normal_impulse;
             }
             if(std::abs(sum-e.normal_impulse)>1.0e-5*
                std::max({1.0,std::abs(sum),std::abs(e.normal_impulse)}))
                 throw std::runtime_error(
                     "Multiple shape interactions lost Gu-indexed impulse totals");
         }
-        if(!saw_first || !saw_second ||
+        if(!saw_left || !saw_right ||
            !std::all_of(claimed.begin(),claimed.end(),
                         [](bool x){return x;}))
             throw std::runtime_error(
