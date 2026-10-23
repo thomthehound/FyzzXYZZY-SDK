@@ -247,6 +247,16 @@ void Scene::set_position(BodyId id, Vec3 position) {
     if (!finite(position))
         throw std::invalid_argument("Native scene position must be finite");
     auto& actor = require(id);
+    // This explicit edit can wake several published Gu peers after the
+    // pose and retained friction state have been changed. Reserve both
+    // source activation queues first, so a failed allocation cannot
+    // leave a partially authored pose and partner wake history.
+    const bool changing_position=actor.position.x!=position.x ||
+        actor.position.y!=position.y || actor.position.z!=position.z;
+    if(changing_position) {
+        speculative_islands_.activating_nodes.reserve(actors_.size());
+        accurate_islands_.activating_nodes.reserve(actors_.size());
+    }
     // NpRigidDynamic::setGlobalPose calls wakeUpInternal even when the
     // authored pose is unchanged. As with setLinearVelocity, its source
     // sleep-filter samples survive an already-active body's wake-counter
@@ -267,10 +277,7 @@ void Scene::set_position(BodyId id, Vec3 position) {
     // shape model. Translating one changes its height, not its orientation.
     // A same-position write must not invalidate Gu/friction data or force
     // a broadphase publication merely to honor dynamic autowake.
-    if (actor.position.x==position.x &&
-        actor.position.y==position.y &&
-        actor.position.z==position.z)
-        return;
+    if(!changing_position)return;
     // Explicit pose authoring is a discontinuity, unlike integration.
     // DyFrictionCorrelation's retained local anchors must not bridge a
     // teleport, even when projected separation along the contact normal
@@ -310,6 +317,9 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     auto& actor = require(id);
     if (actor.kind != Kind::DynamicBox)
         throw std::logic_error("Static actors have no linear velocity");
+    // Publish the source wake before changing velocity; an allocator
+    // failure must not commit half of an authored state change.
+    if(actor.sleeping && !actor.activating)queue_node_activation(id);
     actor.velocity = velocity;
     // NpRigidDynamic::setLinearVelocity wakes a dynamic body and resets
     // its solver sleep preparation, not the authoritative island graph.
@@ -317,9 +327,6 @@ void Scene::set_velocity(BodyId id, Vec3 velocity) {
     // accumulated Dy sleep filter of an already active actor. Only
     // genuine sleep-to-wake transitions begin with a cleared filter.
     if(actor.sleeping) {
-        if(!actor.activating)queue_node_activation(id);
-        if(!actor.activating)queue_node_activation(id);
-        if(!actor.activating)queue_node_activation(id);
         actor.activating=true;
         authored_activation_pending_=true;
         actor.sleep_linear_acc={};
@@ -341,6 +348,7 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
         (velocity.x != 0.0f || velocity.y != 0.0f || velocity.z != 0.0f))
         throw std::logic_error(
             "Angular inertia is not representable in PhysX float body state");
+    if(actor.sleeping && !actor.activating)queue_node_activation(id);
     actor.angular_velocity = velocity;
     // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
     // accumulated Dy sleep filter of an already active actor. Only
@@ -380,6 +388,7 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
         actor.pending_angular_velocity_delta.z + delta.z};
     if (!finite(delta) || !finite(pending))
         throw std::overflow_error("Native world-space torque impulse overflow");
+    if(actor.sleeping && !actor.activating)queue_node_activation(id);
     actor.pending_angular_velocity_delta = pending;
     // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
     // accumulated Dy sleep filter of an already active actor. Only
@@ -427,6 +436,12 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
 void Scene::remove(BodyId id) {
     auto& actor=require(id);
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    // Retirement may wake multiple sleeping Gu partners. Reserve both
+    // graph-local event queues before touching partner motion flags.
+    if(!manifolds_.empty()) {
+        speculative_islands_.activating_nodes.reserve(actors_.size());
+        accurate_islands_.activating_nodes.reserve(actors_.size());
+    }
     // Sc actor retirement removes physical contact-manager edges. A
     // dormant or sleep-ready rigid body resting on the retired actor
     // cannot continue sleeping without its supporting contact: revoke
