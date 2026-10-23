@@ -3902,10 +3902,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     accurate_islands.active_islands.reserve(scene.actors_.size());
     speculative_islands.activating_nodes.reserve(scene.actors_.size());
     accurate_islands.activating_nodes.reserve(scene.actors_.size());
-    scene.speculative_islands_.active_islands.reserve(scene.actors_.size());
-    scene.accurate_islands_.active_islands.reserve(scene.actors_.size());
-    scene.speculative_islands_.activating_nodes.reserve(scene.actors_.size());
-    scene.accurate_islands_.activating_nodes.reserve(scene.actors_.size());
+    // Reserve only the working copies, never the published arrays:
+    // rejected frames restore the exact original active-island storage.
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     speculative_islands.deactivating_edges.reserve(
         scene.contact_edges_.size());
@@ -3947,6 +3945,14 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     scene.speculative_islands_.active_nodes.swap(
         speculative_islands.active_nodes);
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
+    scene.speculative_islands_.active_islands.swap(
+        speculative_islands.active_islands);
+    scene.accurate_islands_.active_islands.swap(
+        accurate_islands.active_islands);
+    scene.speculative_islands_.activating_nodes.swap(
+        speculative_islands.activating_nodes);
+    scene.accurate_islands_.activating_nodes.swap(
+        accurate_islands.activating_nodes);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
     scene.speculative_islands_.deactivating_edges.swap(
