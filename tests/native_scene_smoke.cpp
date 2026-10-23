@@ -277,6 +277,74 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Retried source Gu publication did not rebuild usable active mapping");
     }
+    static void verify_source_friction_task_order() {
+        // Source island contact-manager order C,B,D differs from Gu's
+        // canonical B,C,D. Friction patch preparation, retained anchors
+        // and per-manager source handles must follow the former; Gu
+        // force writeback must retain its independent original offsets.
+        constexpr float dt=1.0f/480.0f;
+        Scene scene;
+        const auto center=scene.add_dynamic_box(
+            {1,1,1},{0,10,0},1.0f);
+        const auto b=scene.add_static_box(
+            {0.25f,0.25f,0.25f},{4,10,0});
+        const auto c=scene.add_static_box(
+            {0.25f,0.25f,0.25f},{-1.1f,10,0});
+        const auto d=scene.add_static_box(
+            {0.25f,0.25f,0.25f},{0,10,4});
+        scene.advance_collision();
+        scene.set_position(b,{1.1f,10,0});
+        scene.set_position(d,{0,10,1.1f});
+        scene.step(dt);
+        const std::array<Pair,3> expected{
+            Pair{center,c},Pair{center,b},Pair{center,d}};
+        if(scene.indexed_managers_.size()!=expected.size() ||
+           scene.friction_patches_.size()<expected.size())
+            throw std::runtime_error(
+                "Source friction task-order fixture lacks three live managers");
+        for(std::size_t i=0;i<expected.size();++i) {
+            const auto& manifold=scene.manifolds_[
+                scene.indexed_managers_[i]];
+            if(!(manifold.pair==expected[i]) ||
+               !manifold.friction_patch_count ||
+               !(scene.friction_patches_[
+                   manifold.friction_patch_offset].pair==expected[i]))
+                throw std::runtime_error(
+                    "PhysX friction prep followed Gu order instead of island order");
+            const auto& record=scene.friction_by_edge_[
+                manifold.edge_handle];
+            if(record.epoch!=scene.friction_cache_epoch_ ||
+               !(record.pair==expected[i]) ||
+               record.offset!=manifold.friction_patch_offset ||
+               record.count!=manifold.friction_patch_count)
+                throw std::runtime_error(
+                    "PhysX cached friction index lost source manager identity");
+        }
+        scene.step(dt);
+        for(const Pair pair:expected) {
+            bool retained=false;
+            for(const auto& patch:scene.friction_patches_)
+                if(patch.pair==pair && patch.anchor_count)
+                    retained=true;
+            if(!retained)
+                throw std::runtime_error(
+                    "Noncanonical PhysX manager lost cached friction anchors");
+        }
+        // Explicit shape editing compacts only B's old patch entries.
+        // The remaining C and D cached offsets need rebuilding, but
+        // no normal PGS step should scan or re-sort the whole cache.
+        scene.set_position(b,{1.15f,10,0});
+        scene.step(dt);
+        for(const Pair pair:expected) {
+            bool retained=false;
+            for(const auto& patch:scene.friction_patches_)
+                if(patch.pair==pair && patch.anchor_count)
+                    retained=true;
+            if(!retained)
+                throw std::runtime_error(
+                    "Shape-edit compaction corrupted source friction history");
+        }
+    }
     static void verify_source_contact_slop() {
         // This probes the production Gu->Dy constraint stream, rather
         // than using a symmetric floor's final angular velocity as a
@@ -8032,6 +8100,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_friction_task_order();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
