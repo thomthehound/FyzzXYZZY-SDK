@@ -2326,8 +2326,8 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                !retired_bridge.speculative_contact_edge_active(floor_pair) &&
                std::count(events.begin(),events.end(),floor_edge)==1 &&
                retired_bridge.deactivating_accurate_contact_edges().empty() &&
-               retired_bridge.active_speculative_contact_edge_count()+2==
-                   prior_spec_count,
+               prior_spec_count>0 &&
+               retired_bridge.active_speculative_contact_edge_count()==0,
                "Full rebuild skipped speculative retirement of dormant manager");
         retired_bridge.advance_collision();
         expect(retired_bridge.deactivating_speculative_contact_edges().empty() &&
