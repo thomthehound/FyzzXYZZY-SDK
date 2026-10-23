@@ -915,16 +915,18 @@ private:
         bool handles_saved=false;
         // These prior caches remain in scene-owned scratch on rotation.
         std::uint64_t friction_cache_epoch=0, threshold_cache_epoch=0;
-        // A quiet step reuses the published Gu manifold arena. Solver
-        // preparation mutates only these three exposed descriptor fields;
-        // capture them only if no contact-epoch swap will undo the write.
+        // A quiet step reuses published Gu manifold storage. Save only
+        // descriptor slots actually overwritten by Dy preparation or
+        // writeback; dirty Gu republication is undone by arena swap.
         struct ManifoldSolverMetadata {
+            std::size_t index=0;
             std::size_t solver_offset=0;
             std::size_t friction_patch_offset=0;
             std::uint8_t friction_patch_count=0;
             std::uint64_t prepared_friction_epoch=0;
         };
         std::vector<ManifoldSolverMetadata> quiet_manifold_metadata;
+        bool quiet_manifold_undo_enabled=false;
         std::vector<double> normal_impulses;
         std::vector<FrictionPatchWriteback> friction_impulses;
         std::vector<ForceThresholdReport> threshold_changes;
@@ -954,6 +956,8 @@ private:
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
         void save_motion(Scene& scene, BodyId id) noexcept;
+        void save_manifold_solver_metadata(Scene& scene,
+                                           std::size_t index);
         void save_edge(const Scene& scene, EdgeIndex id);
         void save_activity(Scene& scene, EdgeIndex id) noexcept;
         void save_reference(Scene& scene, BodyId node) noexcept;
@@ -966,6 +970,8 @@ private:
     StepCheckpoint step_checkpoint_;
     std::vector<std::uint64_t> motion_undo_generations_;
     std::uint64_t motion_undo_generation_=0;
+    std::vector<std::uint64_t> manifold_undo_generations_;
+    std::uint64_t manifold_undo_generation_=0;
     // Only changed EdgeIndex states are journaled for frame rollback.
     std::vector<std::uint64_t> activity_undo_generations_;
     std::uint64_t activity_undo_generation_=0;
