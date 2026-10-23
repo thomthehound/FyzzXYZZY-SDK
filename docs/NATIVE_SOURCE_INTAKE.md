@@ -580,6 +580,23 @@ allocation-preserving checkpoint swaps. The independent native smoke
 fixture creates managers in noncanonical order and verifies the source
 swap-last permutation after loss.
 
+**Active-island retirement and rigid solver task grouping:** The
+admitted `PxsIslandSim::processLostEdges` deactivation pass now
+consumes the accurate graph's `mActiveIslands` in reverse source order,
+after wake publication; dormant historical handles are not scanned in
+steady-state frames. The graph reconciles sleeping nodes after an actual
+deactivation, not through an unconditional second traversal. The rigid
+`DyDynamicsContext::updatePostKinematic` descriptor lowering groups
+consecutive accurate active islands using the default 128-body
+`solverBatchSize` and source minimum of one contact manager, and runs
+`DyConstraintPartition` independently within each group. Its
+32-partition overflow reprocesses only pending manager endpoints instead
+of resetting unrelated solver bodies. The existing single Scene still
+executes these disjoint groups serially; asynchronous source task
+continuations and heterogeneous constraint groups remain unported.
+The native regression checks reverse simultaneous sleep order, quiet
+retirement, and 128+2 contact-island groups with full impulse writeback.
+
 **Remaining source ordering breadth:** The admitted non-compound rigid
 PGS path consumes the indexed-manager sequence directly, matching
 `DyDynamics.cpp::setupDescTask`'s non-compound branch. The
