@@ -1338,6 +1338,13 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
         island.tail=island_split_members_.back();
         island.count=island_split_members_.size();
         island.static_touches=static_touches;
+        // PhysX processLostEdges creates an active detached island when
+        // the original island was active. Preserve this event order now,
+        // before another split can consume a recycled island handle.
+        if(graph.islands[owner].active_index!=invalid_instance) {
+            island.active_index=graph.active_islands.size();
+            graph.active_islands.push_back(created);
+        }
         for(std::size_t i=0;i<island_split_members_.size();++i) {
             const BodyId node=island_split_members_[i];
             const BodyId previous=i?island_split_members_[i-1]:invalid;
@@ -1557,6 +1564,22 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             } else winner.first_contact=loser.first_contact;
             winner.last_contact=loser.last_contact;
             winner.contact_count+=loser.contact_count;
+        }
+        // Source mergeIslands removes the subsumed island from the
+        // dense mActiveIslands array with markIslandInactive's swap-last
+        // operation. Do this BEFORE the freed handle can be recycled by
+        // a lost-edge split in the same publication.
+        const bool losing_active=loser.active_index!=invalid_instance;
+        if(losing_active) {
+            const auto index=loser.active_index;
+            const auto last=graph.active_islands.back();
+            graph.active_islands[index]=last;
+            graph.islands[last].active_index=index;
+            graph.active_islands.pop_back();
+        }
+        if(losing_active && winner.active_index==invalid_instance) {
+            winner.active_index=graph.active_islands.size();
+            graph.active_islands.push_back(retained);
         }
         loser={};
         graph.free_handles.push_back(retired);
@@ -1834,6 +1857,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // the active-node list at the source wake/third-pass handoff.
         for(const Graph::IslandId id:graph.active_islands)
             if(id<next.islands.size() && next.islands[id].live &&
+               graph.islands[id].root==next.islands[id].root &&
                next.islands[id].active_index==invalid_instance) {
                 next.islands[id].active_index=next.active_islands.size();
                 next.active_islands.push_back(id);
