@@ -10,6 +10,10 @@ set -euo pipefail
 # GitHub caches are best-effort; a cold or stale archive falls back to APT.
 archives="${GITHUB_WORKSPACE:-$PWD}/.ci-cache/vulkan-apt/archives"
 mkdir -p "$archives/partial"
+# APT's downloader runs as _apt; the workspace directory is runner-owned.
+# Give _apt the scratch directory while keeping completed archives readable.
+sudo chown _apt:root "$archives/partial"
+sudo chmod 0700 "$archives/partial"
 packages=(libvulkan-dev mesa-vulkan-drivers glslang-tools)
 apt_options=(
     -o "Dir::Cache::archives=$archives"
@@ -51,4 +55,8 @@ for package in "${packages[@]}"; do
 done
 test -f /usr/include/vulkan/vulkan.h
 command -v glslangValidator >/dev/null
+# APT leaves a root-only lock and _apt-owned scratch directory. Restore the
+# runner ownership before actions/cache archives the completed .deb files.
+sudo chown -R "$(id -u):$(id -g)" "$archives"
+find "$archives" -maxdepth 1 -type f -name '*.deb' -print
 echo "APT archive count: $(find "$archives" -maxdepth 1 -type f -name '*.deb' | wc -l)"
