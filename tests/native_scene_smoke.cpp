@@ -1465,6 +1465,11 @@ void verify_removed_actor_touch_notifications() {
             throw std::runtime_error(
                 "Removed actor Lost callbacks replayed on a later fetch");
 
+        // The first support plane is no longer part of the scenario.
+        // Retire it before introducing the next pair, or a new dynamic
+        // box would legitimately contact BOTH coincident planes.
+        world.remove_body(floor);
+        world.step(dt);
         // Removal of the STATIC endpoint must retain the same
         // identity contract, not only the removed dynamic endpoint.
         const auto support=world.add_static_floor(0.0f);
