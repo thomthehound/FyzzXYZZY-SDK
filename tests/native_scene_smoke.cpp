@@ -2282,7 +2282,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         const auto floor=activity_rollback.add_static_floor(0.0f);
         const auto body=activity_rollback.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
-        const Pair touch{std::min(floor,body),std::max(floor,body)};
+        const fyzz::native::Pair touch{std::min(floor,body),std::max(floor,body)};
         activity_rollback.advance_collision();
         const auto original_handle=activity_rollback.contact_edge_index(touch);
         const auto accurate_active=
