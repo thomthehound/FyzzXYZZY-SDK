@@ -1344,11 +1344,17 @@ void verify_source_mixed_split_and_sleep_order() {
     const auto events=scene.deactivating_speculative_contact_edges();
     const auto a=std::find(events.begin(),events.end(),dormant_edge);
     const auto b=std::find(events.begin(),events.end(),independent_edge);
-    expect(a!=events.end() && b!=events.end() && a<b &&
-           scene.body_is_sleeping(dormant) &&
-           scene.body_is_sleeping(independent) &&
-           scene.speculative_island_count()==3,
-           "Split sleeper lost its original reverse speculative active index");
+    expect(a!=events.end(),
+           "Mixed source split did not publish dormant component floor edge");
+    expect(b!=events.end(),
+           "Mixed source third pass missed independent ready floor edge");
+    expect(a<b,
+           "Mixed source split/sleep reversed pre-reconciliation speculative order");
+    expect(scene.body_is_sleeping(dormant) &&
+           scene.body_is_sleeping(independent),
+           "Mixed source third pass did not retire both independent sleepers");
+    expect(scene.speculative_island_count()==3,
+           "Mixed source split did not detach sleeping speculative component");
     scene.advance_collision();
     expect(scene.deactivating_speculative_contact_edges().empty() &&
            !scene.speculative_contact_edge_active(dormant_floor) &&
