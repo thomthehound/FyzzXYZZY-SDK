@@ -2869,23 +2869,42 @@ void Scene::prepare_solver_bodies() {
     }
     solver_active_ids_.clear();
     world_solver_row_ = {};
-    // Only contacts admitted by DyContactPrepShared::extractContacts
-    // require rigid solver-body data. A zero maxContactImpulse on either
-    // actor removes every contact row, but retains the Gu manager and
-    // accurate island edge. Such a pair must not force angular-inertia
-    // admission for a translation-only body or initialize unused rows.
-    // The source's accurate island node order remains authoritative.
-    for (const auto& manifold:manifolds_) {
-        const Actor& first=actors_[manifold.pair.a];
-        const Actor& second=actors_[manifold.pair.b];
-        if(std::min(first.dynamics.max_contact_impulse,
-                    second.dynamics.max_contact_impulse)==0.0f)
-            continue;
-        const BodyId ids[2]{manifold.pair.a,manifold.pair.b};
-        for(BodyId id:ids)
-            if(actors_[id].kind==Kind::DynamicBox &&
-               !actors_[id].sleeping)
-                solver_rows_[id].prepared_generation=solver_preparation_generation_;
+    // DyDynamicsContext::iterateIslandsContactEdges gives pre-integration
+    // the accurate ACTIVE islands' ordered contact-manager EdgeIndices.
+    // Consume the same intrusive stream as setupDescTask: retained Gu
+    // managers in dormant islands are not solver-body admission work.
+    // A zero maxContactImpulse still retains the accurate edge but
+    // DyContactPrepShared::extractContacts admits no response rows.
+    for(std::size_t batch:active_accurate_island_batches_) {
+        const BodyId root=accurate_island_nodes_[
+            accurate_island_offsets_[batch]];
+        const auto handle=accurate_islands_.node_island[root];
+        const auto& island=accurate_islands_.islands[handle];
+        std::size_t visited=0;
+        for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
+            edge=contact_edges_[edge].island_next) {
+            if(++visited>island.contact_count)
+                throw std::logic_error(
+                    "PhysX active contact-manager chain contains a cycle");
+            const auto& manager=contact_edges_[edge];
+            if(!manager.live || !manager.connected || manager.retiring)
+                throw std::logic_error(
+                    "PhysX active island contains an inactive contact manager");
+            const Pair pair=manager.pair;
+            const Actor& first=actors_[pair.a];
+            const Actor& second=actors_[pair.b];
+            if(std::min(first.dynamics.max_contact_impulse,
+                        second.dynamics.max_contact_impulse)==0.0f)
+                continue;
+            for(BodyId id:{pair.a,pair.b})
+                if(actors_[id].kind==Kind::DynamicBox &&
+                   !actors_[id].sleeping)
+                    solver_rows_[id].prepared_generation=
+                        solver_preparation_generation_;
+        }
+        if(visited!=island.contact_count)
+            throw std::logic_error(
+                "PhysX active contact-manager chain is truncated");
     }
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
@@ -5061,17 +5080,17 @@ void Scene::step(float seconds) {
     // PxsBodyCore::numCountedInteractions is maintained by original Sc
     // interaction edges. In this admitted contact-only subset each Gu
     // contact manager contributes one interaction to each dynamic body.
-    // The small reusable count array is derived from the authoritative
-    // contact stream; no parallel scene registry is introduced.
-    // Only accurate active rigid nodes can reach Dy::sleepCheck this
-    // frame. Preserve the reusable per-actor arena but clear just the
-    // currently active slots, not every dormant/historical actor.
-    // A later wake reinitializes its slot before consuming it.
+    // Derive counted interactions from the SAME source-indexed
+    // contact-manager descriptor stream used by the current Dy task
+    // chains, not every Gu manager retained by dormant accurate islands.
+    // Zero-response contacts still count as interactions. A sleeping
+    // graph may retain its managers, but cannot add energy to any body
+    // processed by this frame's Dy::sleepCheck.
     sleep_interaction_counts_.resize(actors_.size(),0);
     for(BodyId id:accurate_islands_.active_nodes)
         sleep_interaction_counts_[id]=0;
-    for(const auto& manifold:manifolds_) {
-        if(!manifold.count)continue;
+    for(std::size_t index:indexed_managers_) {
+        const auto& manifold=manifolds_[index];
         for(BodyId id:{manifold.pair.a,manifold.pair.b}) {
             if(actors_[id].kind!=Kind::DynamicBox ||
                actors_[id].sleeping)continue;
