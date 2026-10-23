@@ -3730,6 +3730,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         speculative_islands.activated_edges);
     scene.accurate_islands_.activated_edges.swap(
         accurate_islands.activated_edges);
+    // The checkpoint owns the prior published lists; its former scratch
+    // buffers must start empty before the next activation publication.
+    scene.speculative_islands_.activated_edges.clear();
+    scene.accurate_islands_.activated_edges.clear();
     if(capture_solver_state) {
         // The previous active batch view is observable through the
         // source island instrumentation, so rejected solves restore it.
