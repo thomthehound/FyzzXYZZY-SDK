@@ -13,6 +13,81 @@
 #include <utility>
 #include <vector>
 
+// Exercise the actual production Dy preparation after installing a Gu
+// contact stream with noncontiguous, nearly aligned normal runs.
+// Ordinary admitted box-box/plane-box Gu managers usually supply one
+// exact normal, so a purely geometric fixture would miss the source
+// header-normal rule when correlation joins distinct runs.
+namespace fyzz::native {
+struct ContactCorrelationSourceFixture {
+    static void verify() {
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        scene.add_dynamic_box({0.5f,0.5f,0.5f},
+                              {0.0f,0.49f,0.0f},1.0f);
+        constexpr float dt=1.0f/120.0f;
+        scene.step(dt);
+        if(scene.manifolds_.size()!=1 ||
+           scene.manifolds_[0].count<4)
+            throw std::runtime_error(
+                "Source header probe lacks four live Gu floor contacts");
+        auto& manifold=scene.manifolds_[0];
+        const std::size_t offset=manifold.contact_offset;
+        // A and C are within PXC_SAME_NORMAL (0.999), while B is
+        // distinct. createContactPatches yields A, B, C; the source
+        // correlatePatches prepends C ahead of A in patch 0.
+        const Vec3 a{0.0f,-1.0f,0.0f};
+        const Vec3 b{1.0f,0.0f,0.0f};
+        const Vec3 c{0.02f,-std::sqrt(1.0f-0.0004f),0.0f};
+        scene.contact_points_[offset].normal=a;
+        scene.contact_points_[offset+1].normal=b;
+        for(std::size_t j=2;j<manifold.count;++j)
+            scene.contact_points_[offset+j].normal=c;
+        // Cached anchor data from the preceding frame is irrelevant
+        // to this fixture's uncached C-to-A patch chain.
+        scene.friction_patches_.clear();
+        scene.prepare_constraints(dt);
+        if(manifold.friction_patch_count!=2 ||
+           scene.friction_patches_.size()!=2 ||
+           scene.solver_contact_order_.size()!=manifold.count ||
+           scene.solver_contact_order_[0]!=offset+2 ||
+           scene.solver_contact_order_[1]!=offset+3 ||
+           scene.solver_contact_order_[2]!=offset ||
+           scene.solver_contact_order_[3]!=offset+1)
+            throw std::runtime_error(
+                "Source header probe lost reverse linked contact-patch order");
+        const auto close=[](Vec3 x,Vec3 y) {
+            const float dx=x.x-y.x,dy=x.y-y.y,dz=x.z-y.z;
+            return dx*dx+dy*dy+dz*dz<1.0e-8f;
+        };
+        for(std::size_t j=0;j<manifold.count;++j) {
+            const Vec3 expected=j==1?b:c;
+            if(!close(scene.solver_contact_points_[
+                          manifold.solver_offset+j].normal,expected))
+                throw std::runtime_error(
+                    "Correlated normal constraint ignored source header normal");
+        }
+        // Contact 0 (normal A) must nevertheless use the later
+        // correlation head C; test the actual friction basis produced
+        // from that same head, not from FrictionPatch's cached A.
+        const auto& patch=scene.friction_patches_[0];
+        if(patch.anchor_count==0)
+            throw std::runtime_error(
+                "Source header probe lacks active friction constraints");
+        for(std::size_t i=0;i<patch.anchor_count*2;++i) {
+            const Vec3 tangent=scene.solver_friction_rows_[
+                patch.row_offset+i].tangent;
+            const float projection=tangent.x*c.x+tangent.y*c.y+
+                                   tangent.z*c.z;
+            if(!std::isfinite(projection) ||
+               std::abs(projection)>1.0e-4f)
+                throw std::runtime_error(
+                    "Correlated friction tangent not orthogonal to header normal");
+        }
+    }
+};
+}
+
 namespace {
 void expect(bool value, const char* why) {
     if (!value) throw std::runtime_error(why);
@@ -5999,6 +6074,7 @@ int run_native_scene_smoke() {
     verify_source_mixed_split_and_sleep_order();
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
+    fyzz::native::ContactCorrelationSourceFixture::verify();
     verify_source_reverse_active_island_sleep_retirement();
     verify_source_reverse_wake_order_and_rollback_capacity();
     verify_source_active_reference_lifecycle();
