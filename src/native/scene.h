@@ -891,6 +891,11 @@ private:
     // sequence, expressed as indices into the authoritative Gu manifolds.
     // Both the constraint partitioner and its stable output consume it.
     std::vector<std::size_t> indexed_managers_;
+    // DyDynamicsContext::updatePostKinematic's contiguous source task
+    // groups: cumulative offsets into indexed_managers_. The admitted
+    // rigid-only default batches 128 bodies or until one contact exists.
+    // Scratch boundaries only; source islands and Gu managers own data.
+    std::vector<std::size_t> solver_task_manager_ends_;
     struct IndexedManifold {
         std::size_t index=invalid_instance;
         std::uint64_t generation=0;
