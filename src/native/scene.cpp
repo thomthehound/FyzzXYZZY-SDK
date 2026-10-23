@@ -2080,12 +2080,19 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
         if(publish)graph.deactivating_edges.push_back(id);
     }
 }
-void Scene::clear_activated_edges() noexcept {
+void Scene::clear_activated_edges(bool checkpointed) noexcept {
     // IslandSim::wakeIslands retires eACTIVATING from the previous
     // transition list, preserving persistent eACTIVE and active count.
     for(const bool accurate:{false,true}) {
         auto& graph=accurate?accurate_islands_:speculative_islands_;
-        for(EdgeIndex id:graph.activated_edges) {
+        // Checkpointed publications swapped the previous output into
+        // the rollback owner. Traverse it without changing its storage:
+        // a rejected publication must restore the original span.
+        auto& prior=checkpointed ?
+            (accurate?step_checkpoint_.accurate_islands.activated_edges:
+                      step_checkpoint_.speculative_islands.activated_edges):
+            graph.activated_edges;
+        for(EdgeIndex id:prior) {
             auto& state=accurate?contact_edges_[id].accurate_state:
                                  contact_edges_[id].speculative_state;
             if(state&2u) {
@@ -2093,7 +2100,7 @@ void Scene::clear_activated_edges() noexcept {
                 state&=static_cast<std::uint8_t>(~2u);
             }
         }
-        graph.activated_edges.clear();
+        if(!checkpointed)prior.clear();
     }
 }
 void Scene::activate_node_contact_edges(BodyId node) noexcept {
@@ -3595,9 +3602,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     }
     scene.activity_undo_generations_.resize(scene.contact_edges_.size(),0);
     activity_undo.reserve(scene.contact_edges_.size());
-    scene.speculative_islands_.activated_edges.reserve(
+    speculative_islands.activated_edges.reserve(
         scene.contact_edges_.size());
-    scene.accurate_islands_.activated_edges.reserve(
+    accurate_islands.activated_edges.reserve(
         scene.contact_edges_.size());
     hint_undo.clear();
     head_undo.clear();
@@ -3654,8 +3661,6 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                                         live.active_node_index.end());
         saved.nodes_to_deactivate.assign(live.nodes_to_deactivate.begin(),
                                           live.nodes_to_deactivate.end());
-        saved.activated_edges.assign(live.activated_edges.begin(),
-                                    live.activated_edges.end());
         saved.active_edge_count=live.active_edge_count;
         saved.initial_active_node_count=live.initial_active_node_count;
     };
@@ -3716,6 +3721,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         speculative_islands.deactivating_edges);
     scene.accurate_islands_.deactivating_edges.swap(
         accurate_islands.deactivating_edges);
+    scene.speculative_islands_.activated_edges.swap(
+        speculative_islands.activated_edges);
+    scene.accurate_islands_.activated_edges.swap(
+        accurate_islands.activated_edges);
     if(capture_solver_state) {
         // The previous active batch view is observable through the
         // source island instrumentation, so rejected solves restore it.
@@ -3951,7 +3960,7 @@ void Scene::step(float seconds) {
         accurate_islands_.active_nodes.size();
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
-    advance_collision_internal(false);
+    advance_collision_internal(false,true);
     third_pass_island_gen();
     activate_published_islands();
     // Source third pass tests readiness from the prior Dy sleepCheck,
@@ -4169,7 +4178,7 @@ void Scene::advance_collision(bool force_update) {
         retired_edge_handles_.empty()) {
         // No new edges or pending island changes: never scan live
         // islands on the existing constant-work collision query path.
-        advance_collision_internal(false);
+        advance_collision_internal(false,false);
         // PxsSimpleIslandManager::clearDeactivations runs at each island
         // publication. A quiet geometry query has no new third-pass
         // work, but it must retire last publication's one-frame
@@ -4200,7 +4209,7 @@ void Scene::advance_collision(bool force_update) {
             accurate_islands_.active_nodes.size();
         speculative_islands_.initial_active_node_count=
             speculative_islands_.active_nodes.size();
-        advance_collision_internal(force_update);
+        advance_collision_internal(force_update,true);
         third_pass_island_gen();
     } catch (...) {
         step_checkpoint_.rollback(*this);
@@ -4213,9 +4222,10 @@ void Scene::advance_collision(bool force_update) {
     deactivate_ready_islands();
     synchronize_active_island_nodes();
 }
-void Scene::advance_collision_internal(bool force_update) {
+void Scene::advance_collision_internal(
+    bool force_update, bool checkpointed) {
     // Previous mActivatedEdges flags are consumed at this wake boundary.
-    clear_activated_edges();
+    clear_activated_edges(checkpointed);
     // This also serves geometry-only queries. Never publish last frame's
     // solved force-buffer values against an unsolved contact stream.
     normal_impulse_writeback_.clear();

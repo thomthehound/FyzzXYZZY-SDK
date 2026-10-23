@@ -493,7 +493,7 @@ private:
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
     // Shared Gu collision progression, independent of Dy solver execution.
-    void advance_collision_internal(bool force_update);
+    void advance_collision_internal(bool force_update, bool checkpointed);
     void update_bounds();
     void update_pairs();
     void publish_pairs();
@@ -517,7 +517,7 @@ private:
     // Concurrent continuations and deactivation lists remain open.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
-    void clear_activated_edges() noexcept;
+    void clear_activated_edges(bool checkpointed) noexcept;
     void activate_contact_edge(std::uint32_t id, bool accurate) noexcept;
     void deactivate_contact_edge(std::uint32_t id, bool accurate,
                                  bool publish) noexcept;
