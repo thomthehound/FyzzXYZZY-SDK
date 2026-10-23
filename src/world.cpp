@@ -143,6 +143,10 @@ void World::set_body_dynamics(BodyId id, RigidBodyDynamics d) {
        !std::isfinite(d.angular_damping) ||
        !std::isfinite(d.max_linear_velocity) ||
        !std::isfinite(d.max_angular_velocity) ||
+       !std::isfinite(d.max_depenetration_velocity) ||
+       !std::isfinite(d.max_contact_impulse) ||
+       d.max_depenetration_velocity<=0.0f ||
+       d.max_contact_impulse<0.0f ||
        d.linear_damping<0.0f || d.angular_damping<0.0f ||
        d.max_linear_velocity<0.0f || d.max_angular_velocity<0.0f ||
        d.max_linear_velocity*d.max_linear_velocity >
