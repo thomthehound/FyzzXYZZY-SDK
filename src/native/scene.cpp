@@ -3338,13 +3338,21 @@ void Scene::prepare_constraints(float seconds) {
     const auto squared_length = [](Vec3 v) {
         return v.x*v.x + v.y*v.y + v.z*v.z;
     };
-    std::size_t old_patch_cursor=0;
-    for (auto& manifold : manifolds_) {
-        // Patches follow sorted contact managers. One monotonic cursor
-        // prevents a full previous-frame scan for every contact manager.
-        while (old_patch_cursor<friction_patches_.size() &&
-               friction_patches_[old_patch_cursor].pair < manifold.pair)
-            ++old_patch_cursor;
+    // Source DyContactPrep consumes each active island task's indexed
+    // contact managers. Gu storage and its original point offsets remain
+    // pair-sorted for collision and force writeback, but preparation
+    // follows the true source solver descriptor sequence.
+    if(friction_cache_epoch_==std::numeric_limits<std::uint64_t>::max())
+        throw std::overflow_error("Native friction cache epoch exhausted");
+    const auto next_cache_epoch=friction_cache_epoch_+1;
+    next_friction_by_edge_.resize(contact_edges_.size());
+    for(std::size_t manager_index:indexed_managers_) {
+        auto& manifold=manifolds_[manager_index];
+        const EdgeIndex edge=manifold.edge_handle;
+        if(edge>=contact_edges_.size() ||
+           !(contact_edges_[edge].pair==manifold.pair))
+            throw std::logic_error(
+                "Dy source manager preparation has a mismatched island edge");
         // An inactive accurate island retains its Gu contact manager
         // but the source does not prepare or solve constraints for it.
         // Keep the Gu-indexed zero-impulse result slots without paying
@@ -3501,10 +3509,14 @@ void Scene::prepare_constraints(float seconds) {
         // FIRST, only with a valid relative normal, separation and
         // strong-friction state. Fresh contact patches correlate against
         // this source-ordered cache before creating any new patch.
-        if(!disable_strong_friction) {
-            for(std::size_t previous=old_patch_cursor;
-                previous<friction_patches_.size() &&
-                friction_patches_[previous].pair==manifold.pair;++previous) {
+        if(!disable_strong_friction && edge<friction_by_edge_.size()) {
+            const auto& history=friction_by_edge_[edge];
+            if(history.epoch==friction_cache_epoch_ &&
+               history.count && history.pair==manifold.pair &&
+               history.offset<=friction_patches_.size() &&
+               history.count<=friction_patches_.size()-history.offset)
+            for(std::size_t previous=history.offset;
+                previous<history.offset+history.count;++previous) {
                 const auto& old=friction_patches_[previous];
                 if(old.broken || old.disable_strong_friction ||
                    old.anchor_count==0)continue;
@@ -3622,6 +3634,9 @@ void Scene::prepare_constraints(float seconds) {
                 remap[contact_patch_ids[j]-manifold.friction_patch_offset];
         manifold.friction_patch_count=static_cast<std::uint8_t>(kept);
         next_friction_patches_.resize(manifold.friction_patch_offset+kept);
+        next_friction_by_edge_[edge]={manifold.pair,
+            manifold.friction_patch_offset,manifold.friction_patch_count,
+            next_cache_epoch};
         // DyContactPrep.cpp::setupFinalizeSolverConstraints selects the
         // first Gu normal of each reverse correlation-list head ONCE for
         // its SolverContactHeader. That one normal governs *all* contact
@@ -3880,7 +3895,8 @@ void Scene::prepare_constraints(float seconds) {
     // Swap only after the new rows and patch anchors are fully prepared.
     // Old shape-local anchors remain available throughout correlation.
     friction_patches_.swap(next_friction_patches_);
-    ++friction_cache_epoch_;
+    friction_by_edge_.swap(next_friction_by_edge_);
+    friction_cache_epoch_=next_cache_epoch;
 }
 void Scene::solve_constraints() {
     // DySolverConstraintsShared.h::solveDynamicContacts /
@@ -4870,8 +4886,10 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // buffer after the complete new correlation stream is published.
     // Reverse the swap only if that boundary was actually crossed.
     if(includes_solver_state &&
-       scene.friction_cache_epoch_!=friction_cache_epoch)
+       scene.friction_cache_epoch_!=friction_cache_epoch) {
         scene.friction_patches_.swap(scene.next_friction_patches_);
+        scene.friction_by_edge_.swap(scene.next_friction_by_edge_);
+    }
     scene.friction_cache_epoch_=friction_cache_epoch;
     scene.normal_impulse_writeback_.swap(normal_impulses);
     scene.friction_impulse_writeback_.swap(friction_impulses);
