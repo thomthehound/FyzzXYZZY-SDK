@@ -3087,8 +3087,11 @@ void Scene::partition_constraints() {
 void Scene::prepare_constraints(float seconds) {
     // DyContactPrepShared.h::constructContactConstraint, rigid-body
     // noncompliant branch. Every Gu contact is a distinct constraint row.
-    // Contact/friction patch correlation is not yet integrated; this
-    // stream retains the original contact ordering and no shadow solver.
+    // Contiguous source Gu contact runs are correlated into the same
+    // friction-patch linked lists before normal/friction row preparation.
+    // Solver rows consume the patch order; Gu offsets remain writeback
+    // indices. Multi-material contact patches and packed block ABI remain
+    // separate source admission requirements.
     // DyCpuGpuBiasCoefficient.h::BiasCoefficientCollection::set(false,
     // false, ...): rigidContact = 0.8f for the CPU PGS solver. The same
     // source coefficient is used by DyContactPrep for penetration bias
