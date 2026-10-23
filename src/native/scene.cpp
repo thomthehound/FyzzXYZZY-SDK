@@ -3332,10 +3332,10 @@ void Scene::prepare_constraints(float seconds) {
             }
             auto& patch=next_friction_patches_[
                 manifold.friction_patch_offset+local_patch];
-            if(patch.contact_count==0)
-                patch.bounds_min=cp.bounds_min,
+            if(patch.contact_count==0) {
+                patch.bounds_min=cp.bounds_min;
                 patch.bounds_max=cp.bounds_max;
-            else {
+            } else {
                 patch.bounds_min={
                     std::min(patch.bounds_min.x,cp.bounds_min.x),
                     std::min(patch.bounds_min.y,cp.bounds_min.y),
