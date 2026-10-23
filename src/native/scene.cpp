@@ -3129,6 +3129,7 @@ void Scene::prepare_constraints(float seconds) {
                     c[0].z*v.x+c[1].z*v.y+c[2].z*v.z};
     };
     solver_contact_points_.clear();
+    solver_contact_order_.clear();
     solver_friction_rows_.clear();
     next_friction_patches_.clear();
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
@@ -3177,6 +3178,8 @@ void Scene::prepare_constraints(float seconds) {
             manifold.friction_patch_count=0;
             solver_contact_points_.resize(
                 manifold.solver_offset+manifold.count);
+            for(std::size_t j=0;j<manifold.count;++j)
+                solver_contact_order_.push_back(manifold.solver_offset+j);
             continue;
         }
         const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
@@ -3210,110 +3213,182 @@ void Scene::prepare_constraints(float seconds) {
             !std::isfinite(static_friction) ||
             !std::isfinite(dynamic_friction))
             throw std::overflow_error("Native Pxs material combination overflow");
-        for (const ContactPoint& contact : manifold.points) {
-            // DyFrictionCorrelation::createContactPatches/correlatePatches:
-            // all currently admitted contacts use the same material, so
-            // identical-normal contiguous groups correlate into one
-            // friction patch. Source cap remains 32 per contact manager.
-            std::size_t patch_id = next_friction_patches_.size();
-            for (std::size_t j=manifold.friction_patch_offset;
-                 j<next_friction_patches_.size(); ++j) {
-                if (dot(next_friction_patches_[j].normal,
-                        contact.normal) >= same_normal) {
-                    patch_id = j;
-                    break;
-                }
+
+        // Original DyContactPrep::createContactPatches preserves
+        // CONTIGUOUS Gu runs of compatible normal/material contacts.
+        // DyFrictionCorrelation::correlatePatches then links each run
+        // onto an existing friction patch (new or strong-friction
+        // history), prepending to that patch's correlation list.
+        // Construct those original two passes before preparing normal
+        // rows; simply grouping individual normals loses linked-list
+        // order and fails to prioritize valid previous-frame anchors.
+        contact_patch_scratch_.clear();
+        contact_patch_scratch_.reserve(manifold.count);
+        for(std::size_t j=0;j<manifold.count;++j) {
+            const auto& point=manifold.points[j];
+            if(contact_patch_scratch_.empty() ||
+               dot(contact_patch_scratch_.back().normal,point.normal)<
+                   same_normal) {
+                ContactPatchData cp{};
+                cp.start=j;
+                cp.count=1;
+                cp.normal=point.normal;
+                cp.bounds_min=cp.bounds_max=point.position;
+                contact_patch_scratch_.push_back(cp);
+            } else {
+                auto& cp=contact_patch_scratch_.back();
+                ++cp.count;
+                cp.bounds_min={
+                    std::min(cp.bounds_min.x,point.position.x),
+                    std::min(cp.bounds_min.y,point.position.y),
+                    std::min(cp.bounds_min.z,point.position.z)};
+                cp.bounds_max={
+                    std::max(cp.bounds_max.x,point.position.x),
+                    std::max(cp.bounds_max.y,point.position.y),
+                    std::max(cp.bounds_max.z,point.position.z)};
             }
-            if (patch_id == next_friction_patches_.size()) {
-                if (manifold.friction_patch_count == 32)
+        }
+        constexpr std::size_t max_source_patches=32;
+        std::array<std::size_t,max_source_patches> contact_heads{};
+        contact_heads.fill(invalid_instance);
+        std::array<std::size_t,255> contact_patch_ids{};
+        // DyContactPrepShared::getFrictionPatches admits prior anchors
+        // FIRST, only with a valid relative normal, separation and
+        // strong-friction state. Fresh contact patches correlate against
+        // this source-ordered cache before creating any new patch.
+        if(!disable_strong_friction) {
+            for(std::size_t previous=old_patch_cursor;
+                previous<friction_patches_.size() &&
+                friction_patches_[previous].pair==manifold.pair;++previous) {
+                const auto& old=friction_patches_[previous];
+                if(old.broken || old.disable_strong_friction ||
+                   old.anchor_count==0)continue;
+                const Vec3 old_normal_1_world=
+                    rotate(actor1.orientation,old.body1_normal);
+                const Vec3 old_normal_1_in_0=
+                    local_normal(actor0,old_normal_1_world);
+                if(dot(old.body0_normal,old_normal_1_in_0)<=same_normal)
+                    continue;
+                bool separated=false;
+                for(std::size_t k=0;k<old.anchor_count;++k) {
+                    const Vec3 p1_in0=local_point(actor0,
+                        world_point(actor1,old.body1_anchors[k]));
+                    if(std::abs(dot(sub(old.body0_anchors[k],p1_in0),
+                                    old.body0_normal))>=correlation_distance) {
+                        separated=true;
+                        break;
+                    }
+                }
+                if(separated)continue;
+                if(manifold.friction_patch_count==max_source_patches)
+                    throw std::overflow_error(
+                        "Native source cached friction exceeds 32 patches");
+                FrictionPatch copied=old;
+                copied.normal=rotate(actor0.orientation,old.body0_normal);
+                copied.contact_count=0;
+                copied.contact_ids.fill(0xffff);
+                copied.bounds_min={
+                    std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max()};
+                copied.bounds_max={
+                    -std::numeric_limits<float>::max(),
+                    -std::numeric_limits<float>::max(),
+                    -std::numeric_limits<float>::max()};
+                next_friction_patches_.push_back(copied);
+                ++manifold.friction_patch_count;
+            }
+        }
+        for(std::size_t cp_index=0;
+            cp_index<contact_patch_scratch_.size();++cp_index) {
+            auto& cp=contact_patch_scratch_[cp_index];
+            std::size_t local_patch=0;
+            for(;local_patch<manifold.friction_patch_count;++local_patch) {
+                const auto& p=next_friction_patches_[
+                    manifold.friction_patch_offset+local_patch];
+                if(dot(p.normal,cp.normal)>=same_normal &&
+                   p.restitution==restitution &&
+                   p.static_friction==static_friction &&
+                   p.dynamic_friction==dynamic_friction)
+                    break;
+            }
+            if(local_patch==manifold.friction_patch_count) {
+                if(manifold.friction_patch_count==max_source_patches)
                     throw std::overflow_error(
                         "Native source friction correlation exceeds 32 patches");
                 FrictionPatch patch{};
-                patch.pair = manifold.pair;
-                patch.normal = contact.normal;
+                patch.pair=manifold.pair;
+                patch.normal=cp.normal;
                 patch.static_friction=static_friction;
                 patch.dynamic_friction=dynamic_friction;
                 patch.restitution=restitution;
                 patch.disable_friction=disable_friction;
                 patch.disable_strong_friction=disable_strong_friction;
-                // DyFrictionCorrelation::initFrictionPatch saves the normal
-                // in both actor frames. These local normals are only reused
-                // when the bodies still agree on the contact orientation.
-                patch.body0_normal = local_normal(actor0,contact.normal);
-                patch.body1_normal = local_normal(actor1,contact.normal);
-                patch.bounds_min = patch.bounds_max = contact.position;
+                patch.body0_normal=local_normal(actor0,cp.normal);
+                patch.body1_normal=local_normal(actor1,cp.normal);
                 patch.contact_ids.fill(0xffff);
-                // Source getFrictionPatches keeps unbroken local anchors
-                // only if their normal and separation still correlate.
-                for (std::size_t previous=old_patch_cursor;
-                     previous<friction_patches_.size() &&
-                     friction_patches_[previous].pair == manifold.pair;
-                     ++previous) {
-                    const auto& old=friction_patches_[previous];
-                    // DyContactPrepShared::getFrictionPatches:
-                    // validate the cached normal under the *current*
-                    // relative actor orientation, then correlate it with
-                    // the current generated world's contact normal.
-                    const Vec3 old_normal_1_world =
-                        rotate(actor1.orientation,old.body1_normal);
-                    const Vec3 old_normal_1_in_0 =
-                        local_normal(actor0,old_normal_1_world);
-                    const Vec3 old_normal_0_world =
-                        rotate(actor0.orientation,old.body0_normal);
-                    // DyFrictionCorrelation groups by combined material
-                    // and only reuses cached anchors when strong friction
-                    // is enabled and those properties remain identical.
-                    if (disable_strong_friction || old.disable_strong_friction ||
-                        old.static_friction!=static_friction ||
-                        old.dynamic_friction!=dynamic_friction ||
-                        old.restitution!=restitution ||
-                        old.broken || !old.anchor_count ||
-                        dot(old.body0_normal,old_normal_1_in_0) <=
-                            same_normal ||
-                        dot(old_normal_0_world,patch.normal) <
-                            same_normal)
-                        continue;
-                    bool separated = false;
-                    for (std::size_t k=0;k<old.anchor_count;++k) {
-                        // DyContactPrepShared::pointsAreClose tests the
-                        // absolute normal separation in body-0 local space.
-                        // Deep penetration ALSO invalidates the anchor,
-                        // contrary to the recent proposed signed shortcut.
-                        const Vec3 p1_in0=local_point(actor0,
-                            world_point(actor1,old.body1_anchors[k]));
-                        const Vec3 between=sub(old.body0_anchors[k],p1_in0);
-                        if (std::abs(dot(between,old.body0_normal)) >=
-                            correlation_distance) {
-                            separated=true;
-                            break;
-                        }
-                    }
-                    if (!separated) {
-                        // Preserve the original local normal with its
-                        // anchors. Replacing it with this frame's contact
-                        // normal would forgive incremental drift and
-                        // eventually extend a cache past source admission.
-                        patch.body0_normal = old.body0_normal;
-                        patch.body1_normal = old.body1_normal;
-                        patch.body0_anchors = old.body0_anchors;
-                        patch.body1_anchors = old.body1_anchors;
-                        patch.anchor_count = old.anchor_count;
-                        break;
-                    }
-                }
                 next_friction_patches_.push_back(patch);
                 ++manifold.friction_patch_count;
             }
-            auto& patch = next_friction_patches_[patch_id];
-            ++patch.contact_count;
-            patch.bounds_min = {
-                std::min(patch.bounds_min.x,contact.position.x),
-                std::min(patch.bounds_min.y,contact.position.y),
-                std::min(patch.bounds_min.z,contact.position.z)};
-            patch.bounds_max = {
-                std::max(patch.bounds_max.x,contact.position.x),
-                std::max(patch.bounds_max.y,contact.position.y),
-                std::max(patch.bounds_max.z,contact.position.z)};
+            auto& patch=next_friction_patches_[
+                manifold.friction_patch_offset+local_patch];
+            if(patch.contact_count==0)
+                patch.bounds_min=cp.bounds_min,
+                patch.bounds_max=cp.bounds_max;
+            else {
+                patch.bounds_min={
+                    std::min(patch.bounds_min.x,cp.bounds_min.x),
+                    std::min(patch.bounds_min.y,cp.bounds_min.y),
+                    std::min(patch.bounds_min.z,cp.bounds_min.z)};
+                patch.bounds_max={
+                    std::max(patch.bounds_max.x,cp.bounds_max.x),
+                    std::max(patch.bounds_max.y,cp.bounds_max.y),
+                    std::max(patch.bounds_max.z,cp.bounds_max.z)};
+            }
+            patch.contact_count+=static_cast<std::uint16_t>(cp.count);
+            cp.next=contact_heads[local_patch];
+            contact_heads[local_patch]=cp_index;
+            for(std::size_t j=cp.start;j<cp.start+cp.count;++j)
+                contact_patch_ids[j]=manifold.friction_patch_offset+local_patch;
+        }
+        // Source writes only friction patches with correlated contacts;
+        // unused cached patches are never returned to the next frame.
+        // Compact the same cache arena and remap Gu point/linked-list
+        // indices together without allocating a second patch registry.
+        std::array<std::size_t,max_source_patches> remap{};
+        std::array<std::size_t,max_source_patches> used_heads{};
+        std::size_t kept=0;
+        for(std::size_t j=0;j<manifold.friction_patch_count;++j) {
+            const std::size_t src=manifold.friction_patch_offset+j;
+            if(next_friction_patches_[src].contact_count==0)continue;
+            remap[j]=kept;
+            used_heads[kept]=contact_heads[j];
+            if(kept!=j)
+                next_friction_patches_[manifold.friction_patch_offset+kept]=
+                    next_friction_patches_[src];
+            ++kept;
+        }
+        for(std::size_t j=0;j<manifold.count;++j)
+            contact_patch_ids[j]=manifold.friction_patch_offset+
+                remap[contact_patch_ids[j]-manifold.friction_patch_offset];
+        manifold.friction_patch_count=static_cast<std::uint8_t>(kept);
+        next_friction_patches_.resize(manifold.friction_patch_offset+kept);
+        // Preserve source reverse correlation-list visitation in the
+        // actual PGS solver while keeping Gu-indexed rows/force writeback.
+        for(std::size_t j=0;j<kept;++j)
+            for(std::size_t cp=used_heads[j];cp!=invalid_instance;
+                cp=contact_patch_scratch_[cp].next)
+                for(std::size_t c=contact_patch_scratch_[cp].start;
+                    c<contact_patch_scratch_[cp].start+
+                      contact_patch_scratch_[cp].count;++c)
+                    solver_contact_order_.push_back(manifold.solver_offset+c);
+        if(solver_contact_order_.size()!=
+           manifold.solver_offset+manifold.count)
+            throw std::logic_error(
+                "Source correlation omitted a Gu contact descriptor");
+        for(std::size_t j=0;j<manifold.count;++j) {
+            const ContactPoint& contact=manifold.points[j];
+            const std::size_t patch_id=contact_patch_ids[j];
             const Vec3 normal = contact.normal;
             const Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
             const Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
