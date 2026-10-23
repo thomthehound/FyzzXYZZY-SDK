@@ -482,6 +482,9 @@ private:
         Vec3 ra_x_n_sqrt_inertia{};
         Vec3 rb_x_n_sqrt_inertia{};
         double velocity_multiplier = 0.0;
+        // DyContactPrepShared's compliant spring recurrence, applied on
+        // every PGS normal iteration; always 1.0 for noncompliant rows.
+        double impulse_multiplier = 1.0;
         // Extended only for SDK-admitted inverse masses below the range
         // of a representable PhysX float impulse. No float narrowing
         // between constraint preparation and the actual impulse update.
@@ -505,6 +508,8 @@ private:
         float static_friction=0.5f;
         float dynamic_friction=0.5f;
         float restitution=0.2f;
+        float damping=0.0f;
+        bool acceleration_spring=false;
         bool disable_friction=false;
         bool disable_strong_friction=false;
         Vec3 body0_normal{};

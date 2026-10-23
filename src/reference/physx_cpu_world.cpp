@@ -260,6 +260,11 @@ struct PhysXCpuWorld final : WorldBackend {
             source.restitution);
         if (!authored)
             throw std::runtime_error("PhysX material creation failed");
+        authored->setDamping(source.damping);
+        authored->setDampingCombineMode(
+            static_cast<physx::PxCombineMode::Enum>(source.damping_combine));
+        authored->setFlag(physx::PxMaterialFlag::eCOMPLIANT_ACCELERATION_SPRING,
+                          source.compliant_acceleration_spring);
         authored->setFrictionCombineMode(
             static_cast<physx::PxCombineMode::Enum>(source.friction_combine));
         authored->setRestitutionCombineMode(

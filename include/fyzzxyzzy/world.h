@@ -42,16 +42,20 @@ struct WorldOptions {
 
 // Provider-neutral noncompliant contact material, matching PhysX
 // PxsMaterialCombiner's rigid-material combine modes and friction flags.
-// Compliant springs and per-triangle material tables are future features.
+// PhysX source PxsMaterialData: regular and compliant PGS materials.
 enum class MaterialCombineMode : std::uint8_t {
     Average=0, Minimum=1, Multiply=2, Maximum=3
 };
 struct Material {
     float static_friction=0.5f;
     float dynamic_friction=0.5f;
+    // Negative restitution is compliant stiffness in PhysX (e.g. -100).
     float restitution=0.2f;
+    float damping=0.0f;
     MaterialCombineMode friction_combine=MaterialCombineMode::Average;
     MaterialCombineMode restitution_combine=MaterialCombineMode::Average;
+    MaterialCombineMode damping_combine=MaterialCombineMode::Average;
+    bool compliant_acceleration_spring=false;
     bool disable_friction=false;
     bool disable_strong_friction=false;
 };

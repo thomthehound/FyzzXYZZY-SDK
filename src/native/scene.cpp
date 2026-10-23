@@ -443,19 +443,20 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
 }
 
 void Scene::set_material(BodyId id, Material material) {
-    // PxMaterial / PxsMaterialData admission for ordinary rigid contacts.
-    // The source compliant branch uses negative restitution and damping;
-    // refuse those inputs until its spring constraint rows are integrated.
+    // NpMaterial::setRestitution and PxsMaterialData accept negative
+    // restitution as source compliant spring stiffness and nonnegative damping.
     if (!std::isfinite(material.static_friction) ||
         !std::isfinite(material.dynamic_friction) ||
         !std::isfinite(material.restitution) ||
+        !std::isfinite(material.damping) ||
         material.static_friction<0.0f ||
         material.dynamic_friction<0.0f ||
-        material.restitution<0.0f || material.restitution>1.0f ||
+        material.restitution>1.0f || material.damping<0.0f ||
         static_cast<unsigned>(material.friction_combine)>3 ||
-        static_cast<unsigned>(material.restitution_combine)>3)
+        static_cast<unsigned>(material.restitution_combine)>3 ||
+        static_cast<unsigned>(material.damping_combine)>3)
         throw std::invalid_argument(
-            "Native noncompliant material coefficients/modes invalid");
+            "Native PhysX contact material coefficients/modes invalid");
     require(id).material=material;
 }
 void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
