@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -113,6 +114,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     std::vector<ContactEvent> pending_contact_events;
     std::vector<ContactEventPoint> published_contact_points;
     std::vector<ContactEventPoint> pending_contact_points;
+    // A C++ allocation/validation failure must never unwind through
+    // PhysX's C++ task/callback frames. Surface it after fetchResults.
+    std::exception_ptr callback_error;
 
     // Sc/NPhaseCore reports callbacks at PxScene::fetchResults on the
     // user's thread. The authoring-time userData token maps directly
@@ -121,6 +125,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     void onContact(const physx::PxContactPairHeader& header,
                    const physx::PxContactPair* pairs,
                    physx::PxU32 count) override {
+        if(callback_error)return;
+        try {
         if(header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0) ||
            header.flags.isSet(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1))
             return; // deleted-actor reports require separate lifetime retention
@@ -169,6 +175,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                 a,b,found?ContactEventKind::Found:
                     lost?ContactEventKind::Lost:ContactEventKind::Persists,
                 n,offset,impulse});
+        }
+        } catch (...) {
+            callback_error=std::current_exception();
         }
     }
     void onConstraintBreak(physx::PxConstraintInfo*,physx::PxU32) override {}
@@ -282,6 +291,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 
     void step(float seconds) override {
         if(contact_notifications) {
+            callback_error=nullptr;
             pending_contact_events.clear();
             pending_contact_points.clear();
         }
@@ -289,6 +299,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if (!scene->fetchResults(true)) {
             throw std::runtime_error("PhysX simulation failed");
         }
+        if(callback_error)
+            std::rethrow_exception(callback_error);
         if(contact_notifications) {
             std::sort(pending_contact_events.begin(),
                       pending_contact_events.end(),
