@@ -1470,13 +1470,14 @@ void verify_source_correlated_friction_patch_lifecycle() {
     scene.step(dt);
     const auto& contacts=scene.contacts();
     const auto patches=scene.solved_friction_patches();
-    expect(contacts.size()==2 &&
-           patches.size()==2 &&
-           contacts[0].count>=2 && contacts[1].count>=2 &&
-           patches[0].anchor_count==2 &&
-           patches[1].anchor_count==2 &&
-           !patches[0].broken && !patches[1].broken,
-           "Dy source multi-contact patch caching failed to admit both anchors");
+    expect(contacts.size()==2 && patches.size()==2,
+           "Dy correlation did not publish two independent source managers");
+    expect(contacts[0].count>=2 && contacts[1].count>=2,
+           "Dy correlation source fixture lacks multipoint Gu contacts");
+    expect(patches[0].anchor_count==2 && patches[1].anchor_count==2,
+           "Dy correlation failed to grow two source friction anchors");
+    expect(!patches[0].broken && !patches[1].broken,
+           "Dy source friction patches unexpectedly broke at rest");
     // eDISABLE_FRICTION disables all tangent rows on precisely one
     // manager without removing that manager's normal contact header.
     // Cached strong-friction anchors of the other manager must survive
