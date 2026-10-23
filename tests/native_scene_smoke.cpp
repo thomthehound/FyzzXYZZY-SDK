@@ -191,6 +191,92 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Retried native PGS did not restore cached correlation");
     }
+    static void verify_source_gu_manager_lookup_lifecycle() {
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        const Pair pair{floor,box};
+        scene.advance_collision();
+        const EdgeIndex handle=scene.contact_edge_index(pair);
+        if(handle==Scene::invalid_edge || scene.manifolds_.size()!=1 ||
+           scene.manifold_by_edge_.size()<=handle ||
+           scene.manifold_by_edge_[handle].index!=0 ||
+           scene.manifold_by_edge_[handle].generation!=
+               scene.manifold_lookup_generation_)
+            throw std::runtime_error(
+                "Gu source contact publication did not index live manager");
+        const auto* const original_mapping=scene.manifold_by_edge_.data();
+        const auto published_generation=scene.manifold_lookup_generation_;
+        scene.advance_collision();
+        if(scene.manifold_by_edge_.data()!=original_mapping ||
+           scene.manifold_lookup_generation_!=published_generation)
+            throw std::runtime_error(
+                "Quiet source contact publication unnecessarily rebuilt Gu index");
+        scene.step(dt);
+        if(scene.manifold_lookup_generation_!=published_generation ||
+           scene.indexed_managers_.size()!=1 ||
+           scene.indexed_managers_[0]!=0)
+            throw std::runtime_error(
+                "Quiet PGS did not reuse previously published Gu manager lookup");
+        // Loss of physical touch keeps the speculative infinite-plane
+        // manager handle alive, but its old Gu index must be rejected.
+        scene.set_position(box,{0,5,0});
+        scene.advance_collision();
+        if(scene.contact_edge_index(pair)!=handle ||
+           scene.contact_edge_connected(pair) ||
+           !scene.manifolds_.empty() ||
+           scene.manifold_by_edge_[handle].generation==
+               scene.manifold_lookup_generation_)
+            throw std::runtime_error(
+                "Gu index retained a stale manager after accurate touch loss");
+        scene.set_position(box,{0,0.49f,0});
+        scene.advance_collision();
+        if(scene.contact_edge_index(pair)!=handle ||
+           !scene.contact_edge_connected(pair) ||
+           scene.manifolds_.size()!=1 ||
+           scene.manifold_by_edge_[handle].index!=0 ||
+           scene.manifold_by_edge_[handle].generation!=
+               scene.manifold_lookup_generation_)
+            throw std::runtime_error(
+                "Gu touch reentry did not rebind its original EdgeIndex");
+
+        // Stage a new dirty collision/Gu publication, then fail during
+        // real Dy material combination. Failure must rotate the prior
+        // Gu arena and its manager index back together (same pointers).
+        const auto* const retained_map=scene.manifold_by_edge_.data();
+        const auto* const retained_manifold=scene.manifolds_.data();
+        const auto retained_epoch=scene.contact_epoch_;
+        const auto retained_generation=scene.manifold_lookup_generation_;
+        Material overflow{};
+        overflow.static_friction=1.0e30f;
+        overflow.dynamic_friction=1.0e30f;
+        overflow.friction_combine=MaterialCombineMode::Multiply;
+        scene.set_material(floor,overflow);
+        scene.set_material(box,overflow);
+        scene.set_position(box,{0,0.48f,0});
+        bool failed=false;
+        try {scene.step(dt);}
+        catch(const std::overflow_error&) {failed=true;}
+        if(!failed || scene.contact_epoch_!=retained_epoch ||
+           scene.manifold_lookup_generation_!=retained_generation ||
+           scene.manifold_by_edge_.data()!=retained_map ||
+           scene.manifolds_.data()!=retained_manifold ||
+           scene.manifold_by_edge_[handle].generation!=retained_generation)
+            throw std::runtime_error(
+                "Rejected PGS frame lost published Gu manager lookup ownership");
+        scene.set_material(floor,Material{});
+        scene.set_material(box,Material{});
+        scene.step(dt);
+        if(scene.indexed_managers_.size()!=1 ||
+           scene.indexed_managers_[0]!=0 ||
+           scene.manifold_by_edge_[handle].generation!=
+               scene.manifold_lookup_generation_ ||
+           scene.manifold_lookup_generation_==retained_generation)
+            throw std::runtime_error(
+                "Retried source Gu publication did not rebuild usable active mapping");
+    }
     static void verify_source_contact_slop() {
         // This probes the production Gu->Dy constraint stream, rather
         // than using a symmetric floor's final angular velocity as a
@@ -7945,6 +8031,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
