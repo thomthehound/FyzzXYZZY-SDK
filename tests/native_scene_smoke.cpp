@@ -2840,6 +2840,11 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         no_response.max_contact_impulse=0.0f;
         very_light.set_dynamics(left,no_response);
         very_light.step(1.0f/120.0f);
+        const auto left_free=very_light.body_state(left);
+        const auto right_free=very_light.body_state(right);
+        constexpr float dt=1.0f/120.0f;
+        const float free_vy=-9.81f*dt;
+        const float free_y=5.0f+free_vy*dt;
         expect(very_light.frame_index()==1 &&
                very_light.contacts().size()==1 &&
                very_light.contact_edge_connected({left,right}) &&
@@ -2848,9 +2853,13 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                std::all_of(very_light.solved_normal_impulses().begin(),
                            very_light.solved_normal_impulses().end(),
                            [](double value){return value==0.0;}) &&
-               std::isfinite(very_light.body_state(left).position.y) &&
-               std::isfinite(very_light.body_state(right).position.y),
-               "Zero-capped Gu touch unnecessarily required angular inertia");
+               std::abs(left_free.velocity.y-free_vy)<1.0e-5f &&
+               std::abs(right_free.velocity.y-free_vy)<1.0e-5f &&
+               std::abs(left_free.position.y-free_y)<1.0e-5f &&
+               std::abs(right_free.position.y-free_y)<1.0e-5f &&
+               left_free.position.x==0.0f &&
+               right_free.position.x==1.5f,
+               "Zero-capped Gu touch altered or rejected free translation");
         very_light.set_position(right,{5,5,0});
         very_light.set_velocity(left,{1,0,0});
         very_light.step(1.0f/120.0f);
