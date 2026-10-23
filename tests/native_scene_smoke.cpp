@@ -84,6 +84,31 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Correlated friction tangent not orthogonal to header normal");
         }
+        // Reprepare with the first pass's unbroken local anchors. The
+        // source retains their original cached frame normal A while
+        // constructing the CURRENT solver header and tangents from C.
+        const Vec3 original_cached=patch.body0_normal;
+        scene.prepare_constraints(dt);
+        if(!close(scene.friction_patches_[0].body0_normal,
+                  original_cached) ||
+           !close(scene.solver_contact_points_[
+                      manifold.solver_offset].normal,c))
+            throw std::runtime_error(
+                "Source cached friction normal overwrote the current header");
+        const auto& reused=scene.friction_patches_[0];
+        if(reused.anchor_count==0)
+            throw std::runtime_error(
+                "Source cached header probe lost valid strong-friction anchors");
+        for(std::size_t i=0;i<reused.anchor_count*2;++i) {
+            const Vec3 tangent=scene.solver_friction_rows_[
+                reused.row_offset+i].tangent;
+            const float projection=tangent.x*c.x+tangent.y*c.y+
+                                   tangent.z*c.z;
+            if(!std::isfinite(projection) ||
+               std::abs(projection)>1.0e-4f)
+                throw std::runtime_error(
+                    "Reused friction anchors used stale cached normal for tangent");
+        }
     }
 };
 }
