@@ -1358,9 +1358,17 @@ void verify_source_contact_interaction_consumption() {
            scene.active_contact_interaction_count()==1,
            "Rejected Sc pipeline step corrupted interaction activity");
     scene.advance_collision();
+    expect(scene.contact_interaction_active(floor_a) &&
+           !scene.contact_edge_connected(floor_a) &&
+           scene.active_contact_interaction_count()==1,
+           "Gu-only touch loss incorrectly retired the speculative interaction");
+    // A plane has unbounded broadphase coverage. Removing it, not
+    // translating the dynamic box, actually destroys the SAP overlap.
+    scene.remove(floor);
+    scene.advance_collision();
     expect(!scene.contact_interaction_active(floor_a) &&
            scene.active_contact_interaction_count()==0,
-           "Retired SAP contact retained stale Sc interaction activity");
+           "Destroyed source overlap retained stale Sc interaction activity");
 }
 
 void verify_source_active_reference_lifecycle() {
