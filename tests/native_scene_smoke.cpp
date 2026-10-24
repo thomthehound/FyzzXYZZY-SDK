@@ -800,7 +800,8 @@ struct SolverIterationSourceFixture {
     static void verify_active_manager_admission() {
         constexpr float dt=1.0f/120.0f;
         Scene scene;
-        scene.add_static_floor(0.0f);
+        scene.set_contact_notifications(true);
+        const auto floor=scene.add_static_floor(0.0f);
         // Retain a substantial accurate Gu contact history that is
         // entirely dormant. Its managers must not be traversed again
         // for either rigid-body solver admission or Dy sleepCheck.
@@ -888,6 +889,22 @@ struct SolverIterationSourceFixture {
         if(dormant_contacts<resting || !active_force)
             throw std::runtime_error(
                 "Active Gu force writeback lost either the dormant zeroes or the current solve");
+        // Sc's opt-in found-touch and active-manager producers must
+        // publish exactly these three reports, in canonical Gu order.
+        // None of the 48 retained sleeping Gu managers may reappear.
+        const auto events=scene.contact_events();
+        if(events.size()!=3 ||
+           events[0].body0!=floor || events[0].body1!=first ||
+           events[1].body0!=floor || events[1].body1!=second ||
+           events[2].body0!=first || events[2].body1!=second ||
+           scene.contact_report_managers_.size()!=3)
+            throw std::runtime_error(
+                "Sc active contact notification included dormant Gu history or lost original order");
+        for(const auto& event:events)
+            if(event.kind!=ContactEventKind::Found ||
+               event.contact_count==0)
+                throw std::runtime_error(
+                    "Sc active-manager notification omitted a newly touching pair");
         // Even when a live accurate manager has no Dy response rows,
         // Sc retains its contact edge and counted interactions. Only
         // the remaining floor contact should require solver-body data.
