@@ -260,6 +260,13 @@ public:
     std::span<const Pair> found_contacts() const noexcept { return found_contacts_; }
     std::span<const Pair> lost_contacts() const noexcept { return lost_contacts_; }
     std::uint64_t frame_index() const noexcept { return frame_index_; }
+    // The last successfully published solver-result generation. A Gu
+    // collision-only publication invalidates solved reports and resets
+    // this marker; failed steps restore its original value atomically.
+    // Zero means this Scene exposes no completed Dy result at present.
+    std::uint64_t solved_result_frame() const noexcept {
+        return solved_result_frame_;
+    }
     // Read-only solver instrumentation for source constraint partitioning.
     // Counts last-step nonempty conflict-free partition batches; the
     // shared static world row is not a dynamic partition participant.
@@ -944,6 +951,7 @@ private:
         std::vector<std::size_t> indexed_managers;
         std::size_t speculative_count=0, accurate_count=0;
         std::uint64_t topology_revision=0, frame_index=0;
+        std::uint64_t solved_result_frame=0;
         std::uint64_t full_rebuild_count=0;
         std::uint64_t local_split_count=0;
         std::uint64_t graph_checkpoint_count=0;
@@ -1101,6 +1109,9 @@ private:
     std::vector<ContactEventPoint> contact_event_points_;
     std::vector<ContactEventPoint> next_contact_event_points_;
     std::uint64_t frame_index_ = 0;
+    // Scene-owned result visibility marker, separate from Gu collision
+    // progression and written only at the successful solver/fetch join.
+    std::uint64_t solved_result_frame_=0;
     // One source wake-work indicator for authored transitions. A quiet
     // geometry query with no found edges avoids scanning all island
     // slots; active node flags remain on the authoritative actors.
