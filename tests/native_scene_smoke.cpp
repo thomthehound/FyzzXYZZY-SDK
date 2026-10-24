@@ -36,6 +36,14 @@ struct ContactCorrelationSourceFixture {
            scene.manifolds_.size()!=1)
             throw std::runtime_error(
                 "Native legacy-Gu contact cache initial contact admission failed");
+        // Raw Gu normals belong to plane-first geometry. The source
+        // Sc contact manager instead orders the dynamic body first,
+        // irrespective of which actor was admitted first.
+        if(scene.gu_cached_points_[0].normal.y!=-1.0f ||
+           scene.manifolds_[0].points[0].normal.y!=1.0f ||
+           !scene.contact_edges_[scene.manifolds_[0].edge_handle].gu_order_reversed)
+            throw std::runtime_error(
+                "Pxc floor-first Gu cache or source Sc body order mismatch");
         const float source_x=scene.manifolds_[0].points[0].position.x;
         scene.set_position(id,{0.004f,0.5f,0.0f});
         scene.advance_collision(true);
@@ -90,7 +98,9 @@ struct ContactCorrelationSourceFixture {
         if(late_floor.gu_cached_points_.size()!=4 ||
            late_floor.manifolds_.size()!=1 ||
            late_floor.gu_cached_points_[0].normal.y!=-1.0f ||
-           late_floor.manifolds_[0].points[0].normal.y!=1.0f)
+           late_floor.manifolds_[0].points[0].normal.y!=1.0f ||
+           late_floor.contact_edges_[
+               late_floor.manifolds_[0].edge_handle].gu_order_reversed)
             throw std::runtime_error(
                 "Pxc plane-first cache or published Sc flip has incorrect normal");
         const float old_separation=late_floor.manifolds_[0].points[0].separation;
