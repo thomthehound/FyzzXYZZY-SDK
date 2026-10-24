@@ -1095,6 +1095,189 @@ void Scene::publish_pairs() {
     active_edge_handles_.swap(next_edge_handles_);
     ++pair_epoch_;
 }
+std::uint8_t Scene::generate_pcm_plane_box(
+    const Actor& plane, const Actor& box, float contact_distance,
+    PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
+    // GuPCMContactPlaneBox.cpp::pcmContactPlaneBox and
+    // GuPersistentContactManifold.h::refreshContactPoints. The SDK
+    // floor's +Y normal is original PhysX plane-local +X. The cache
+    // stores the source box-local point A and projected plane-local
+    // point B, not legacy Pxc midpoint-reconstructed contacts.
+    // Gu::CalculatePCMBoxMargin uses BOX_MARGIN_RATIO=0.15 and
+    // PxTolerancesScale.length=1; the plane breaking ratio is 0.2.
+    const Vec3 relative{
+        box.position.x-plane.position.x,
+        box.position.y-plane.position.y,
+        box.position.z-plane.position.z};
+    const float margin=std::min(
+        0.15f*std::min({box.half_extents.x,
+                        box.half_extents.y,box.half_extents.z}),0.15f);
+    const float project_break=margin*0.2f;
+    const float project_break_sq=project_break*project_break;
+    const auto sq=[](Vec3 v) {
+        return v.x*v.x+v.y*v.y+v.z*v.z;
+    };
+    const auto diff=[](Vec3 a,Vec3 b) {
+        return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
+    };
+    const auto dot=[](Vec3 a,Vec3 b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
+    };
+    // Source refresh visits backwards and replaces a removed cached
+    // point with the last element. It removes tangentially displaced
+    // anchors even when they remain within the speculative distance.
+    const auto previous_count=cache.count;
+    for(std::size_t i=cache.count;i>0;--i) {
+        auto& point=cache.points[i-1];
+        const Vec3 rotation=rotate(box.orientation,point.box_local);
+        const Vec3 box_in_plane{
+            relative.x+rotation.x,relative.y+rotation.y,
+            relative.z+rotation.z};
+        // Box-local normal A->B is the plane +Y axis in this
+        // specialization; mLocalPointB sits on the plane (y=0).
+        const Vec3 v=diff(box_in_plane,point.plane_local);
+        const float distance=v.y;
+        const Vec3 projected{box_in_plane.x,
+                             box_in_plane.y-distance,box_in_plane.z};
+        const Vec3 tangent=diff(point.plane_local,projected);
+        if(sq(tangent)>project_break_sq)
+            cache.points[i-1]=cache.points[--cache.count];
+        else
+            point.separation=distance;
+    }
+    const float max_delta=cache.initialized
+        ? std::max({std::abs(relative.x-cache.relative_position.x),
+                    std::abs(relative.y-cache.relative_position.y),
+                    std::abs(relative.z-cache.relative_position.z)})
+        : std::numeric_limits<float>::infinity();
+    const Quat& q=box.orientation;
+    const Quat& old=cache.relative_rotation;
+    const float rotation_dot=q.x*old.x+q.y*old.y+q.z*old.z+q.w*old.w;
+    const bool regenerate=!cache.initialized ||
+        cache.count!=previous_count ||
+        max_delta>project_break || rotation_dot<0.99996f;
+    if(regenerate) {
+        // Source plane-box generation emits corners in this precise
+        // sign order (x,y,z), (x,y,-z), (x,-y,z), ..., (-x,-y,-z).
+        // Unlike legacy Gu, the stored second contact position is
+        // projected onto the plane, and each source manifold is reduced
+        // to its four persistent witnesses before Dy sees it.
+        cache.relative_position=relative;
+        cache.relative_rotation=q;
+        cache.initialized=true;
+        cache.count=0;
+        std::array<PcmPlaneContact,8> candidates{};
+        std::size_t count=0;
+        for(unsigned corner=0;corner<8;++corner) {
+            const Vec3 local{
+                (corner&4)?-box.half_extents.x:box.half_extents.x,
+                (corner&2)?-box.half_extents.y:box.half_extents.y,
+                (corner&1)?-box.half_extents.z:box.half_extents.z};
+            const Vec3 r=rotate(q,local);
+            const Vec3 in_plane{relative.x+r.x,relative.y+r.y,
+                                relative.z+r.z};
+            if(in_plane.y>=contact_distance)continue;
+            candidates[count++]={local,
+                {in_plane.x,0.0f,in_plane.z},in_plane.y};
+        }
+        if(count<=4) {
+            for(std::size_t i=0;i<count;++i)
+                cache.points[i]=candidates[i];
+            cache.count=static_cast<std::uint8_t>(count);
+        } else {
+            // GuPersistentContactManifold.cpp::
+            // reduceBatchContactsCluster (four-contact manifold). Keep
+            // source deepest/farthest/segment-extrema ordering and then
+            // cluster residual corners around those four witnesses.
+            std::array<bool,8> chosen{};
+            std::array<std::size_t,4> indices{};
+            std::size_t first=0;
+            for(std::size_t i=1;i<count;++i)
+                if(candidates[i].separation<candidates[first].separation)
+                    first=i;
+            indices[0]=first;
+            chosen[first]=true;
+            std::size_t farthest=0;
+            float max_distance=sq(diff(candidates[0].plane_local,
+                                       candidates[first].plane_local));
+            for(std::size_t i=1;i<count;++i) {
+                const float distance=sq(diff(candidates[i].plane_local,
+                                               candidates[first].plane_local));
+                if(distance>max_distance) {
+                    max_distance=distance;
+                    farthest=i;
+                }
+            }
+            indices[1]=farthest;
+            chosen[farthest]=true;
+            const Vec3 segment=diff(candidates[farthest].plane_local,
+                                    candidates[first].plane_local);
+            Vec3 sideways{-segment.z,0.0f,segment.x};
+            const float norm_sq=sq(sideways);
+            if(norm_sq>0.0f) {
+                const float inv=1.0f/std::sqrt(norm_sq);
+                sideways={sideways.x*inv,0.0f,sideways.z*inv};
+            } else sideways={0.0f,1.0f,0.0f};
+            float largest=-std::numeric_limits<float>::max();
+            float smallest=std::numeric_limits<float>::max();
+            std::size_t third=0,fourth=0;
+            for(std::size_t i=0;i<count;++i) {
+                if(chosen[i])continue;
+                const float d=dot(diff(candidates[i].plane_local,
+                                         candidates[first].plane_local),sideways);
+                if(d>largest){largest=d;third=i;}
+                if(d<smallest){smallest=d;fourth=i;}
+            }
+            indices[2]=third;
+            chosen[third]=true;
+            if(smallest*largest>0.0f) {
+                largest=-std::numeric_limits<float>::max();
+                for(std::size_t i=0;i<count;++i) {
+                    if(chosen[i])continue;
+                    const float d=dot(diff(candidates[i].plane_local,
+                                             candidates[first].plane_local),
+                                      sideways);
+                    if(d>largest){largest=d;fourth=i;}
+                }
+            }
+            indices[3]=fourth;
+            chosen[fourth]=true;
+            for(std::size_t i=0;i<count;++i) {
+                if(chosen[i])continue;
+                float nearest=std::numeric_limits<float>::max();
+                std::size_t slot=0;
+                for(std::size_t j=0;j<4;++j) {
+                    const float d=sq(diff(candidates[i].plane_local,
+                                           candidates[indices[j]].plane_local));
+                    if(d<nearest){nearest=d;slot=j;}
+                }
+                if(candidates[i].separation<
+                   candidates[indices[slot]].separation)
+                    indices[slot]=i;
+            }
+            for(std::size_t k=0;k<4;++k)
+                cache.points[k]=candidates[indices[k]];
+            cache.count=4;
+        }
+    }
+    // Source addManifoldContactsToContactBuffer emits from cached B
+    // positions, not A box vertices, filtering with <= contactDist.
+    std::uint8_t emitted=0;
+    for(std::size_t k=0;k<cache.count;++k) {
+        const auto& pt=cache.points[k];
+        if(pt.separation>contact_distance)continue;
+        if(emitted>=output.size())
+            throw std::logic_error("PCM plane-box output arena too small");
+        const ContactPoint contact{
+            {plane.position.x+pt.plane_local.x,plane.position.y,
+             plane.position.z+pt.plane_local.z},
+            {0.0f,-1.0f,0.0f},pt.separation};
+        if(!finite(contact.position) || !std::isfinite(contact.separation))
+            throw std::overflow_error("PhysX PCM plane-box contact overflow");
+        output[emitted++]=contact;
+    }
+    return emitted;
+}
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
@@ -1165,8 +1348,28 @@ void Scene::update_contacts() {
         cache.contact_distance=contact_distance;
         cache.collision_axis=old?old->collision_axis:manifold.collision_axis;
         manifold.collision_axis=cache.collision_axis;
+        const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair;
         bool cache_hit=false;
-        if(old && old->contact_distance==contact_distance &&
+        if(pcm_plane) {
+            // Persistent PCM cache belongs to the SAME contact-manager
+            // slot as the speculative/accurate island touch flags.
+            // Journal before the first mutation so rejected Gu/PGS
+            // frames and collision-only queries restore both owners.
+            step_checkpoint_.save_edge(*this,edge);
+            const Actor& plane=a.kind==Kind::StaticPlane?a:b;
+            const Actor& box=a.kind==Kind::StaticPlane?b:a;
+            if(box.kind!=Kind::DynamicBox)
+                throw std::logic_error(
+                    "PCM plane-box requires the admitted dynamic box");
+            manifold.count=generate_pcm_plane_box(
+                plane,box,contact_distance,contact_edges_[edge].pcm_plane_box,
+                std::span<ContactPoint>(box_contact_scratch_));
+            next_contact_points_.insert(next_contact_points_.end(),
+                box_contact_scratch_.begin(),
+                box_contact_scratch_.begin()+manifold.count);
+        }
+        if(!pcm_plane && old &&
+           old->contact_distance==contact_distance &&
            old->offset<=gu_cached_points_.size() &&
            old->count<=gu_cached_points_.size()-old->offset) {
             // PxcCacheLocalContacts compares both components of the
@@ -1238,7 +1441,7 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(!cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
+        if(!pcm_plane && !cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
             // Direct source order/geometry from
             // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
             // logical normal is +Y, corresponding to PhysX plane-local
@@ -1302,7 +1505,7 @@ void Scene::update_contacts() {
                     point, normal, depths[corner] + contact_distance});
                 ++manifold.count;
             }
-        } else if(!cache_hit) {
+        } else if(!pcm_plane && !cache_hit) {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
@@ -1318,7 +1521,7 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
         }
-        if(!cache_hit) {
+        if(!pcm_plane && !cache_hit) {
             // PxcCacheLocalContacts caches the RAW source Gu stream on a
             // miss, even for zero-contact overlaps. Source mPairData is
             // retained only when the contact generator actually ran.
@@ -1328,7 +1531,7 @@ void Scene::update_contacts() {
                 next_contact_points_.begin()+cache.offset,
                 next_contact_points_.end());
         }
-        next_gu_cache_records_.push_back(cache);
+        if(!pcm_plane)next_gu_cache_records_.push_back(cache);
         // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
         // The cached points above must retain the raw plane-first Gu
         // normal, so a subsequent cache hit's motion.dot(normal) keeps
