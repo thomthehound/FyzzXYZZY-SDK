@@ -673,17 +673,22 @@ private:
     // Gu::PersistentContactManifold, admitted plane/box specialization.
     // Shape-local anchors belong to the same persistent Sc manager edge
     // as touch/island state. No second cache owner or transient PCM world.
-    struct PcmPlaneContact {
-        Vec3 box_local{}, plane_local{};
+    // Persistent witnesses are expressed in each shape's local space.
+    // Each normal belongs to the second shape's frame, as does depth.
+    struct PcmPersistentContact {
+        Vec3 local_a{}, local_b{}, normal_b{};
         float separation=0.0f;
     };
     struct PcmPlaneBoxCache {
-        std::array<PcmPlaneContact,4> points{};
+        std::array<PcmPersistentContact,4> points{};
         Vec3 relative_position{};
         Quat relative_rotation{};
         std::uint8_t count=0;
         bool initialized=false;
     };
+    static void refresh_pcm_contact_points(
+        PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
+        Quat rotation_a_in_b, float projection_break);
     std::uint8_t generate_pcm_plane_box(
         const Actor& plane, const Actor& box, float contact_distance,
         PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
