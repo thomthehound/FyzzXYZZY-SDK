@@ -110,6 +110,10 @@ struct RigidBodyDynamics {
     std::uint32_t lock_flags=0;
     // PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES. Disabled by default.
     bool gyroscopic_forces_enabled=false;
+    // PxRigidBodyFlag::eRETAIN_ACCELERATIONS: preserve the per-second
+    // force/torque acceleration across active solver frames. Per-step
+    // velocity changes still apply once; sleep discards both streams.
+    bool retain_accelerations=false;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;
 };
