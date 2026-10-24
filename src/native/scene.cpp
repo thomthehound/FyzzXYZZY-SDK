@@ -5386,10 +5386,13 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.authored_activation_pending_=authored_activation_pending;
  }
 
-void Scene::RigidStepJoin::finish_lost_contacts() noexcept {
+void Scene::RigidStepJoin::finish_lost_contacts() {
     // Sc::Scene::processLostContacts3 completes after the lost-touch
     // and third-pass consumers have finished. The source continuation
     // contributes one of mPostSolver's two independent producer edges.
+    if(lost_contacts_joined)
+        throw std::logic_error(
+            "Native ScPipeline completed the lost-contact continuation twice");
     lost_contacts_joined=true;
 }
 void Scene::RigidStepJoin::dispatch_solver_tasks(std::size_t count) {
