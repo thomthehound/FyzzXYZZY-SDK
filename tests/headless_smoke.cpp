@@ -739,6 +739,92 @@ int main() {
                 }
             }
 
+            // Source persistent PCM contact comparison over actual
+            // successive source scene frames. Re-author both body poses
+            // and zero velocities each frame so the two independent
+            // solvers receive identical contact-generation transforms;
+            // PCM refresh, invalidation, loss and reentry are NOT reset.
+            for(bool reversed:{false,true}) {
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                native_options.pcm_plane_box=true;
+                fyzz::WorldOptions source_options{};
+                source_options.execution=fyzz::ExecutionMode::ReferencePhysXCpu;
+                source_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World source_pcm(source_options);
+                const auto admit=[&](fyzz::World& world) {
+                    if(reversed) {
+                        const auto id=world.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                        world.add_static_floor(0);
+                        return id;
+                    }
+                    world.add_static_floor(0);
+                    return world.add_dynamic_box(
+                        {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+                };
+                const auto native_id=admit(native_pcm);
+                const auto source_id=admit(source_pcm);
+                fyzz::RigidBodyDynamics params{};
+                params.gravity_enabled=false;
+                native_pcm.set_body_dynamics(native_id,params);
+                source_pcm.set_body_dynamics(source_id,params);
+                const std::array<fyzz::Vec3,9> positions{{
+                    {0,0.5f,0},{0.004f,0.5f,0},
+                    {0.012f,0.5f,0},{0.05f,0.5f,0},
+                    {0.05f,0.5f,0},{0.051f,0.5f,0},
+                    {0.051f,2.0f,0},{0.052f,0.5f,0},
+                    {0.052f,0.49f,0}
+                }};
+                const std::array<float,9> rotations{{
+                    0,0,0,0,0.12f,0.12f,0.12f,0.12f,0.14f
+                }};
+                for(std::size_t frame=0;frame<positions.size();++frame) {
+                    const float tilt=rotations[frame];
+                    const fyzz::Quat q{0,0,std::sin(tilt*0.5f),
+                                         std::cos(tilt*0.5f)};
+                    native_pcm.set_body_pose(native_id,positions[frame],q);
+                    source_pcm.set_body_pose(source_id,positions[frame],q);
+                    native_pcm.set_body_velocity(native_id,{});
+                    source_pcm.set_body_velocity(source_id,{});
+                    native_pcm.set_body_angular_velocity(native_id,{});
+                    source_pcm.set_body_angular_velocity(source_id,{});
+                    const float dt=frame%2 ? 1.0f/60.0f : 1.0f/120.0f;
+                    native_pcm.step(dt);
+                    source_pcm.step(dt);
+                    const auto got=native_pcm.contact_event_points();
+                    const auto expected=source_pcm.contact_event_points();
+                    if(got.size()!=expected.size())
+                        throw std::runtime_error(
+                            "Multi-frame PCM contact count disagrees with original PhysX");
+                    if(frame==6 && (!got.empty() || !expected.empty()))
+                        throw std::runtime_error(
+                            "PCM cache did not release published contact on touch loss");
+                    if(frame==7 && (got.empty() || expected.empty()))
+                        throw std::runtime_error(
+                            "PCM cache did not regenerate on touch reentry");
+                    for(const auto& p:expected) {
+                        bool matching=false;
+                        for(const auto& n:got) {
+                            const float dx=n.position.x-p.position.x;
+                            const float dy=n.position.y-p.position.y;
+                            const float dz=n.position.z-p.position.z;
+                            if(dx*dx+dy*dy+dz*dz<1.0e-5f &&
+                               std::abs(n.separation-p.separation)<1.0e-3f &&
+                               std::abs(n.normal.y-p.normal.y)<1.0e-4f) {
+                                matching=true;
+                                break;
+                            }
+                        }
+                        if(!matching)
+                            throw std::runtime_error(
+                                "Multi-frame PCM refresh/invalidation differs from original PhysX");
+                    }
+                }
+            }
+
             // ScBodySim::updateForces eRETAIN_ACCELERATIONS conformance:
             // an active body's per-second velocity modifications survive
             // across steps only with that source flag; eVELOCITY_CHANGE
