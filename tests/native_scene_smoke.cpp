@@ -5896,6 +5896,108 @@ void verify_source_gyroscopic_motion() {
            "Native gyroscopic flag had no observable inertia response");
 }
 
+void verify_source_spatial_velocity_mods() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/60.0f;
+    World native(WorldOptions{ExecutionMode::NativeCpu});
+    const auto id=native.add_dynamic_box({0.5f,0.5f,0.5f},{0,10,0},1.0f);
+    RigidBodyDynamics d{};
+    d.gravity_enabled=false;
+    d.angular_damping=0.0f;
+    native.set_body_dynamics(id,d);
+    // Four PhysX force modes share two accumulation lifetimes.
+    native.add_body_force(id,{6,0,0},ForceMode::Force);
+    native.add_body_force(id,{6,0,0},ForceMode::Force);
+    native.add_body_force(id,{0.3f,0,0},ForceMode::Impulse);
+    native.add_body_force(id,{2,0,0},ForceMode::Acceleration);
+    native.add_body_force(id,{0.25f,0,0},ForceMode::VelocityChange);
+    native.add_body_torque(id,{0,0,0.1f},ForceMode::Impulse);
+    native.add_body_torque(id,{0,0,0.2f},ForceMode::Force);
+    native.step(dt);
+    const auto first=native.body_state(id);
+    const float expected=12.0f*dt+0.3f+2.0f*dt+0.25f;
+    expect(std::abs(first.velocity.x-expected)<2.0e-5f,
+           "Native force modes did not combine per-step and per-second motion");
+    expect(first.angular_velocity.z>0.0f,
+           "PhysX angular force/impulse did not reach native integration");
+    native.step(dt);
+    const auto second=native.body_state(id);
+    expect(std::abs(second.velocity.x-first.velocity.x)<1.0e-6f &&
+           std::abs(second.angular_velocity.z-first.angular_velocity.z)<1.0e-6f,
+           "PhysX VelocityMod streams incorrectly persisted past one step");
+    // Each source clear operation retires its own accumulation category.
+    native.add_body_force(id,{600,0,0},ForceMode::Force);
+    native.clear_body_force(id,ForceMode::Acceleration);
+    native.add_body_force(id,{1,0,0},ForceMode::Impulse);
+    native.clear_body_force(id,ForceMode::VelocityChange);
+    native.add_body_torque(id,{0,0,40},ForceMode::Force);
+    native.clear_body_torque(id,ForceMode::Force);
+    native.step(dt);
+    expect(std::abs(native.body_state(id).velocity.x-second.velocity.x)<1.0e-6f,
+           "Clearing matching PhysX velocity-mod categories failed");
+    bool rejected=false,static_rejected=false;
+    try {native.add_body_force(id,{0,0,0},
+            static_cast<ForceMode>(100));}
+    catch(const std::invalid_argument&){rejected=true;}
+    const auto floor=native.add_static_floor(0);
+    try {native.add_body_torque(floor,{0,1,0},ForceMode::Impulse);}
+    catch(const std::logic_error&){static_rejected=true;}
+    expect(rejected && static_rejected,
+           "PhysX force-mode and static-body rejection regressed");
+
+    // An invalid Dy frame cannot consume either per-second forces or
+    // per-step impulses. Replaying with the same smaller dt must match
+    // a separately initialized scene, including angular correction.
+    World retry(WorldOptions{ExecutionMode::NativeCpu});
+    World baseline(WorldOptions{ExecutionMode::NativeCpu});
+    const auto make=[&](World& world) {
+        const auto body=world.add_dynamic_box(
+            {0.3f,0.4f,0.8f},{0,8,0},1.0f);
+        world.set_body_dynamics(body,d);
+        world.add_body_force(body,{0.7f,1.1f,0.3f},ForceMode::Impulse);
+        world.add_body_force(body,{1.5f,0.2f,0.1f},ForceMode::Force);
+        world.add_body_torque(body,{0.02f,0.03f,0.04f},ForceMode::Impulse);
+        world.add_body_torque(body,{0.1f,0.2f,0.3f},ForceMode::Force);
+        return body;
+    };
+    const auto r=make(retry),b=make(baseline);
+    bool failed=false;
+    try {retry.step(std::numeric_limits<float>::max());}
+    catch(const std::exception&) {failed=true;}
+    expect(failed,"Force rollback fixture did not reject overflowing frame");
+    retry.step(dt);
+    baseline.step(dt);
+    const auto a=retry.body_state(r),z=baseline.body_state(b);
+    const auto close=[](Vec3 x,Vec3 y) {
+        return std::abs(x.x-y.x)<1.0e-6f &&
+               std::abs(x.y-y.y)<1.0e-6f &&
+               std::abs(x.z-y.z)<1.0e-6f;
+    };
+    expect(close(a.position,z.position) &&
+           close(a.velocity,z.velocity) &&
+           close(a.angular_velocity,z.angular_velocity),
+           "Rejected solver frame consumed pending ScBodySim force state");
+
+    // Deliver authored force and impulse through real contact PGS,
+    // not merely the no-contact Dy integrator.
+    World contact(WorldOptions{ExecutionMode::NativeCpu});
+    contact.add_static_floor(0);
+    const auto box=contact.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.53f,0},1.0f);
+    for(int frame=0;frame<80;++frame) {
+        if(frame%7==0)
+            contact.add_body_force(box,{0,-1.5f,0},ForceMode::Force);
+        if(frame==20)
+            contact.add_body_force(box,{0.1f,-0.2f,0},ForceMode::Impulse);
+        contact.step(1.0f/120.0f);
+        const auto state=contact.body_state(box);
+        expect(std::isfinite(state.position.y) &&
+               std::isfinite(state.velocity.y) &&
+               std::isfinite(state.angular_velocity.x),
+               "ScBodySim force integration made production PGS nonfinite");
+    }
+}
+
 int run_native_scene_smoke() {
     using fyzz::native::Scene;
     Scene scene, independent;
@@ -8703,6 +8805,7 @@ int run_native_scene_smoke() {
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
     verify_source_gyroscopic_motion();
+    verify_source_spatial_velocity_mods();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
     verify_source_contact_notification_world();

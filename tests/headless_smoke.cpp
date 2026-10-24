@@ -262,6 +262,78 @@ int main() {
                 }
             }
 
+            // NpRigidBodyTemplate::addSpatialForce and ScBodySim::VelocityMod:
+            // test all four force modes against original PhysX CPU with
+            // different inverse masses, torque impulses, clearing,
+            // angular inertia and alternating timesteps.
+            for(float density:{1.0f,4.0f}) {
+                fyzz::World native_force(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_force(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                constexpr fyzz::Vec3 half{0.3f,0.5f,0.8f};
+                const auto n=native_force.add_dynamic_box(
+                    half,{0,7,0},density);
+                const auto p=source_force.add_dynamic_box(
+                    half,{0,7,0},density);
+                fyzz::RigidBodyDynamics d{};
+                d.gravity_enabled=false;
+                d.angular_damping=0.0f;
+                native_force.set_body_dynamics(n,d);
+                source_force.set_body_dynamics(p,d);
+                for(int frame=0;frame<90;++frame) {
+                    auto author=[&](fyzz::World& w,fyzz::BodyId id) {
+                        if(frame%5==0) {
+                            w.add_body_force(id,{0.6f,-0.3f,0.2f},
+                                             fyzz::ForceMode::Force);
+                            w.add_body_torque(id,{0.02f,-0.01f,0.03f},
+                                              fyzz::ForceMode::Force);
+                        }
+                        if(frame==12 || frame==50) {
+                            w.add_body_force(id,{0.12f,0.08f,-0.04f},
+                                             fyzz::ForceMode::Impulse);
+                            w.add_body_torque(id,{0.004f,0.006f,0.008f},
+                                              fyzz::ForceMode::Impulse);
+                        }
+                        if(frame%11==0) {
+                            w.add_body_force(id,{0.015f,0.01f,-0.004f},
+                                             fyzz::ForceMode::VelocityChange);
+                            w.add_body_torque(id,{0.004f,0.002f,0.001f},
+                                              fyzz::ForceMode::Acceleration);
+                        }
+                        if(frame==23) {
+                            w.add_body_force(id,{30,0,0},fyzz::ForceMode::Force);
+                            w.clear_body_force(id,fyzz::ForceMode::Force);
+                            w.add_body_torque(id,{0,0,30},fyzz::ForceMode::Impulse);
+                            w.clear_body_torque(id,fyzz::ForceMode::VelocityChange);
+                        }
+                    };
+                    author(native_force,n);
+                    author(source_force,p);
+                    const float dt=frame%3==0?1.0f/60.0f:1.0f/120.0f;
+                    native_force.step(dt);
+                    source_force.step(dt);
+                    const auto a=native_force.body_state(n);
+                    const auto b=source_force.body_state(p);
+                    const auto delta=[](fyzz::Vec3 x,fyzz::Vec3 y) {
+                        return std::max({std::abs(x.x-y.x),
+                                         std::abs(x.y-y.y),
+                                         std::abs(x.z-y.z)});
+                    };
+                    const float dot=a.orientation.x*b.orientation.x+
+                        a.orientation.y*b.orientation.y+
+                        a.orientation.z*b.orientation.z+
+                        a.orientation.w*b.orientation.w;
+                    if(!std::isfinite(dot) ||
+                       delta(a.position,b.position)>0.025f ||
+                       delta(a.velocity,b.velocity)>0.035f ||
+                       delta(a.angular_velocity,b.angular_velocity)>0.05f ||
+                       std::abs(dot)<0.997f)
+                        throw std::runtime_error(
+                            "Native ScBodySim force modes diverged from PhysX CPU");
+                }
+            }
+
             // Independent reference comparison: unconstrained angular
             // velocity damping, source quaternion orientation and pose.
             // Full contact/angular solver parity is not claimed here.

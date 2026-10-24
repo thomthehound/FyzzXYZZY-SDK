@@ -1522,7 +1522,11 @@ modes already express the corresponding solver-space changes.
 the current timestep at the `ScPipeline::beforeSolver` dependency,
 before damping/clamping and Dy PGS. Default per-frame clearing and
 the existing failure-atomic sparse motion checkpoint cover all four
-velocity-mod channels, without a second force integrator. The source
+velocity-mod channels, without a second force integrator. Native tests
+distinguish per-second and per-step consumption, accumulated/cleared
+categories, rejected-frame replay and coupled contact PGS. Independent
+PhysX CPU tests compare both masses, angular inertia, mixed force modes
+and clear operations over 90 changing-timestep frames. The source
 `eRETAIN_ACCELERATIONS` scene flag is not admitted in this slice.
 
 ## Source gyroscopic-force velocity update
