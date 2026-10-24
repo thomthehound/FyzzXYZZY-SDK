@@ -1053,7 +1053,7 @@ private:
         std::size_t outstanding_solver_tasks=0;
         bool lost_contacts_joined=false;
         bool solver_dispatched=false;
-        void finish_lost_contacts() noexcept;
+        void finish_lost_contacts();
         void dispatch_solver_tasks(std::size_t count);
         void finish_solver_task();
         void require_post_solver() const;
