@@ -60,6 +60,20 @@ struct ContactCorrelationSourceFixture {
                     (first.position.x+0.004f))>1.0e-6f)
             throw std::runtime_error(
                 "PCM authored pose failed Sc manager cache reset");
+        // Idempotent authored poses still reach
+        // Sc::ShapeInteraction::resetManagerCachedState. A normal,
+        // non-forced geometry advance must rebuild that invalidated
+        // manager before returning contact spans.
+        scene.set_position(box,{0.004f,0.5f,0});
+        if(scene.contact_edges_[edge].pcm_plane_box.initialized ||
+           !scene.dirty_)
+            throw std::runtime_error(
+                "Idempotent Sc PCM pose failed manager invalidation");
+        scene.advance_collision();
+        if(!scene.contact_edges_[edge].pcm_plane_box.initialized ||
+           scene.contacts().size()!=1)
+            throw std::runtime_error(
+                "Idempotent Sc PCM pose did not republish Gu contacts");
         // Dy integration instead advances the SAME actor pose without
         // Sc's authored-pose callback. Reproduce that internal handoff
         // in this native-source fixture; the cached B point must remain
