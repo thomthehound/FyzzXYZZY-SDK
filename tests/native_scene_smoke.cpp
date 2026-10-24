@@ -47,17 +47,33 @@ struct ContactCorrelationSourceFixture {
            std::abs(first.separation)>1.0e-5f)
             throw std::runtime_error(
                 "PCM plane contact must project B onto plane, not legacy Gu box vertex");
-        // Same source refresh window: contact B does NOT follow a
-        // tiny lateral box movement. It remains in the plane frame.
+        // Sc authored pose edits reset PxsContactManager's cache,
+        // irrespective of whether the translation is inside the PCM
+        // refresh threshold. Source first contact B moves accordingly.
         scene.set_position(box,{0.004f,0.5f,0});
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           scene.contact_edges_[edge].pcm_plane_box.relative_position.x!=0.0f ||
+           std::abs(scene.contact_edges_[edge].
+                    pcm_plane_box.relative_position.x-0.004f)>1.0e-6f ||
            std::abs(scene.contacts()[0].points[0].position.x-
-                    first.position.x)>1.0e-6f)
+                    (first.position.x+0.004f))>1.0e-6f)
             throw std::runtime_error(
-                "PCM cached local contact B was regenerated instead of refreshed");
+                "PCM authored pose failed Sc manager cache reset");
+        // Dy integration instead advances the SAME actor pose without
+        // Sc's authored-pose callback. Reproduce that internal handoff
+        // in this native-source fixture; the cached B point must remain
+        // anchored in plane coordinates across a small motion.
+        scene.actors_[box].position.x=0.008f;
+        scene.actors_[box].cached_bounds_current=false;
+        scene.dirty_=true;
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           scene.contact_edges_[edge].pcm_plane_box.relative_position.x!=0.004f ||
+           std::abs(scene.contacts()[0].points[0].position.x-
+                    (first.position.x+0.004f))>1.0e-6f)
+            throw std::runtime_error(
+                "Solver-integrated PCM translation did not refresh retained B");
         scene.set_position(box,{0.05f,0.5f,0});
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
@@ -68,11 +84,13 @@ struct ContactCorrelationSourceFixture {
                     (first.position.x+0.05f))>1.0e-5f)
             throw std::runtime_error(
                 "PCM displacement invalidation omitted source regeneration");
-        // Authoring an actual orientation invalidates the cached
-        // normal-frame witness via the source 0.99996 quaternion test.
+        // Internal integrated rotation (not an authored pose reset)
+        // must trigger the actual PCM 0.99996 quaternion invalidation.
         const float theta=0.14f;
-        scene.set_pose(box,{0.05f,0.5f,0},
-                       {0,0,std::sin(theta/2),std::cos(theta/2)});
+        scene.actors_[box].orientation={
+            0,0,std::sin(theta/2),std::cos(theta/2)};
+        scene.actors_[box].cached_bounds_current=false;
+        scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().empty() ||
            scene.contacts()[0].count>4 ||
