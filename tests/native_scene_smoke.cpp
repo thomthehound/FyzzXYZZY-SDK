@@ -21,6 +21,99 @@
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
 struct ContactCorrelationSourceFixture {
+    static void verify_source_pcm_plane_box_lifecycle() {
+        // GuPCMContactPlaneBox::pcmContactPlaneBox + source persistent
+        // refresh/invalidation/reduction execute in the actual Scene
+        // publication path. The same Sc manager EdgeIndex owns its
+        // cache and subsequent Dy constraint rows.
+        Scene scene;
+        scene.set_pcm_plane_box(true);
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 || scene.contacts()[0].count!=4)
+            throw std::runtime_error(
+                "PCM floor contact did not admit four source cached witnesses");
+        const auto edge=scene.contacts()[0].edge_handle;
+        if(!scene.contact_edges_[edge].pcm_plane_box.initialized ||
+           scene.contact_edges_[edge].pcm_plane_box.count!=4 ||
+           !scene.gu_cache_records_.empty())
+            throw std::runtime_error(
+                "PCM manager used independent Gu cache or lost source manifold");
+        const auto first=scene.contacts()[0].points[0];
+        if(std::abs(first.position.y)>1.0e-6f ||
+           first.normal.y!=1.0f ||
+           std::abs(first.separation)>1.0e-5f)
+            throw std::runtime_error(
+                "PCM plane contact must project B onto plane, not legacy Gu box vertex");
+        // Same source refresh window: contact B does NOT follow a
+        // tiny lateral box movement. It remains in the plane frame.
+        scene.set_position(box,{0.004f,0.5f,0});
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].edge_handle!=edge ||
+           scene.contact_edges_[edge].pcm_plane_box.relative_position.x!=0.0f ||
+           std::abs(scene.contacts()[0].points[0].position.x-
+                    first.position.x)>1.0e-6f)
+            throw std::runtime_error(
+                "PCM cached local contact B was regenerated instead of refreshed");
+        scene.set_position(box,{0.05f,0.5f,0});
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].edge_handle!=edge ||
+           std::abs(scene.contact_edges_[edge].pcm_plane_box.relative_position.x-
+                    0.05f)>1.0e-6f ||
+           std::abs(scene.contacts()[0].points[0].position.x-
+                    (first.position.x+0.05f))>1.0e-5f)
+            throw std::runtime_error(
+                "PCM displacement invalidation omitted source regeneration");
+        // Authoring an actual orientation invalidates the cached
+        // normal-frame witness via the source 0.99996 quaternion test.
+        const float theta=0.14f;
+        scene.set_pose(box,{0.05f,0.5f,0},
+                       {0,0,std::sin(theta/2),std::cos(theta/2)});
+        scene.advance_collision(true);
+        if(scene.contacts().empty() ||
+           scene.contacts()[0].count>4 ||
+           std::abs(scene.contact_edges_[edge].
+                    pcm_plane_box.relative_rotation.z)<0.01f)
+            throw std::runtime_error(
+                "PCM plane-box rotation did not rebuild four-point manifold");
+        for(const auto& point:scene.contacts()[0].points)
+            if(std::abs(point.position.y)>1.0e-5f ||
+               point.normal.y!=1.0f)
+                throw std::runtime_error(
+                    "PCM rotated plane-box output lost plane projection");
+        scene.set_position(box,{0.05f,3.0f,0});
+        scene.advance_collision(true);
+        if(!scene.contacts().empty() ||
+           scene.contact_edges_[edge].pcm_plane_box.count!=0)
+            throw std::runtime_error(
+                "PCM persistent manager did not retire separated points");
+        scene.set_position(box,{0.05f,0.5f,0});
+        scene.advance_collision(true);
+        if(scene.contacts().empty() ||
+           scene.contacts()[0].edge_handle!=edge)
+            throw std::runtime_error(
+                "PCM persistent manager did not regenerate after reentry");
+        scene.remove(box);
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=0)
+            throw std::runtime_error(
+                "Destroyed PCM actor retained published touching manager");
+        const auto replacement=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,0.5f,0},1);
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           !scene.contact_edges_[scene.contacts()[0].edge_handle].
+                pcm_plane_box.initialized ||
+           std::abs(scene.contacts()[0].points[0].position.x)<1.0f)
+            throw std::runtime_error(
+                "Reused contact-manager handle retained the old PCM manifold");
+        (void)replacement;
+        (void)floor;
+    }
     static void verify_legacy_gu_contact_cache() {
         // PxcCacheLocalContacts is independent from PCM and
         // DyFrictionCorrelation. A local-contact cache HIT moves raw
@@ -9317,6 +9410,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
