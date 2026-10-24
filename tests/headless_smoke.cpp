@@ -1239,6 +1239,20 @@ int main() {
                                      <<" vel="<<linear_error
                                      <<" angular="<<angular_error
                                      <<" quat="<<orientation_dot
+                                     <<" native_pos=("<<n.position.x<<","<<n.position.y
+                                     <<","<<n.position.z<<")"
+                                     <<" source_pos=("<<p.position.x<<","<<p.position.y
+                                     <<","<<p.position.z<<")"
+                                     <<" native_vel=("<<n.velocity.x<<","<<n.velocity.y
+                                     <<","<<n.velocity.z<<")"
+                                     <<" source_vel=("<<p.velocity.x<<","<<p.velocity.y
+                                     <<","<<p.velocity.z<<")"
+                                     <<" frictionless_vel=("<<q.velocity.x<<","<<q.velocity.y
+                                     <<","<<q.velocity.z<<")"
+                                     <<" native_ang=("<<n.angular_velocity.x<<","
+                                     <<n.angular_velocity.y<<","<<n.angular_velocity.z<<")"
+                                     <<" source_ang=("<<p.angular_velocity.x<<","
+                                     <<p.angular_velocity.y<<","<<p.angular_velocity.z<<")"
                                      <<'\n';
                             throw std::runtime_error(
                                 "Frictional angular coupled PGS diverged from PhysX Gu");
