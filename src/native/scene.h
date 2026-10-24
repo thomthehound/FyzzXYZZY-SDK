@@ -122,6 +122,18 @@ std::uint8_t source_box_box_contacts(
     float contact_distance, std::uint8_t& previous_axis,
     std::span<ContactPoint> output);
 
+// GuPCMContactBoxBox::doBoxBoxGenerateContacts: candidates are local to
+// each participating shape, with normal stored in shape1's frame.
+struct PcmContactCandidate {
+    Vec3 local_a{}, local_b{}, normal_b{};
+    float separation=0.0f;
+};
+bool source_pcm_box_box_candidates(
+    Vec3 half0,Vec3 position0,Quat rotation0,
+    Vec3 half1,Vec3 position1,Quat rotation1,
+    float contact_distance,std::span<PcmContactCandidate> candidates,
+    std::size_t& count);
+
 class Scene final {
 public:
     Scene() = default;
@@ -148,6 +160,14 @@ public:
             throw std::logic_error(
                 "PCM contact mode must be selected before scene admission");
         pcm_plane_box_enabled_=enabled;
+    }
+    // Direct SAT/face-manifold PCM box-box admission, independently
+    // selected while the source GJK/EPA fallback is still outstanding.
+    void set_pcm_box_box(bool enabled) {
+        if(!actors_.empty())
+            throw std::logic_error(
+                "PCM box-box mode must be selected before scene admission");
+        pcm_box_box_enabled_=enabled;
     }
     std::span<const ContactEvent> contact_events() const noexcept {
         return contact_events_;
@@ -683,6 +703,7 @@ private:
         std::array<PcmPersistentContact,4> points{};
         Vec3 relative_position{};
         Quat relative_rotation{};
+        Quat orientation_a{}, orientation_b{};
         std::uint8_t count=0;
         bool initialized=false;
     };
@@ -691,6 +712,9 @@ private:
         Quat rotation_a_in_b, float projection_break);
     std::uint8_t generate_pcm_plane_box(
         const Actor& plane, const Actor& box, float contact_distance,
+        PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
+    std::uint8_t generate_pcm_box_box(
+        const Actor& first, const Actor& second, float contact_distance,
         PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
     struct ContactEdge {
         Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
@@ -705,6 +729,7 @@ private:
         // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
         PcmPlaneBoxCache pcm_plane_box{};
+        PcmPlaneBoxCache pcm_box_box{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
         // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
@@ -1197,6 +1222,7 @@ private:
     bool contact_notifications_=false;
     bool enhanced_determinism_=false;
     bool pcm_plane_box_enabled_=false;
+    bool pcm_box_box_enabled_=false;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
     // Non-owning Gu-manifold indices for this frame's actual report
