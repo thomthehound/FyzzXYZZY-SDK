@@ -4588,7 +4588,11 @@ void Scene::write_back_contacts() {
             result.pair=source.pair;
             result.anchor_count=source.anchor_count;
             result.broken=source.broken;
-            const auto& actor=actors_[source.pair.a];
+            // DyFrictionCorrelation stores body0 anchors in Sc's
+            // source-ordered frame, not the canonical Gu report pair.
+            const BodyId body0=contact_edges_[manifold.edge_handle]
+                .gu_order_reversed ? source.pair.b : source.pair.a;
+            const auto& actor=actors_[body0];
             for (std::size_t k=0;k<source.anchor_count;++k) {
                 const Vec3 local=source.body0_anchors[k];
                 const Vec3 rotated=rotate(actor.orientation,local);
