@@ -1013,7 +1013,7 @@ int main() {
                                  <<r.quiet.angular_velocity.x<<","
                                  <<r.quiet.angular_velocity.y<<","
                                  <<r.quiet.angular_velocity.z<<")"
-                                 <<" moving_sleeping="<<r.moving.sleeping<<'\\n';
+                                 <<" moving_sleeping="<<r.moving.sleeping<<'\n';
                     };
                     report("native",native);
                     report("legacy-Gu",legacy);
