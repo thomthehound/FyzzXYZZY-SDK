@@ -150,7 +150,7 @@ struct ContactCorrelationSourceFixture {
            !scene.gu_cached_points_.empty())
             throw std::runtime_error(
                 "PCM box-box cache leaked into legacy Pxc ownership");
-        const auto first=scene.contacts()[0].points[0];
+        const float original_local_a_x=cache.points[0].local_a.x;
         for(const auto& point:scene.contacts()[0].points) {
             if(std::abs(point.position.y-1.0f)>1e-5f ||
                std::abs(point.separation+0.04f)>1e-5f ||
@@ -183,11 +183,12 @@ struct ContactCorrelationSourceFixture {
            !scene.contact_edges_[edge].pcm_box_box.initialized)
             throw std::runtime_error(
                 "PCM box-box authored-pose reconstruction failed");
-        bool observed_move=false;
-        for(const auto& point:scene.contacts()[0].points)
-            observed_move|=std::abs(point.position.x-first.position.x)>0.01f;
-        if(!observed_move)
-            throw std::runtime_error("PCM authored pose did not update witnesses");
+        if(std::abs(scene.contact_edges_[edge].pcm_box_box.
+                        relative_position.x-0.02f)>1.0e-6f ||
+           std::abs(scene.contact_edges_[edge].pcm_box_box.
+                        points[0].local_a.x-original_local_a_x)<0.01f)
+            throw std::runtime_error(
+                "PCM authored pose failed to rebuild first-shape local witnesses");
         // Native Dy must consume PCM points, not silently run Gu in
         // a disconnected test-only narrowphase.
         scene.step(1.0f/120.0f);
