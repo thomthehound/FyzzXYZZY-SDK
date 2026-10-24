@@ -110,6 +110,87 @@ struct ContactCorrelationSourceFixture {
                     "Reused friction anchors used stale cached normal for tangent");
         }
     }
+    static void verify_post_solver_manager_retirement() {
+        // ScPipeline::destroyManagers schedules the accurate and
+        // speculative third pass, but Pxs contact-manager allocations
+        // are not reusable until the lost-contact continuation has
+        // joined their solver consumer. A serial CPU lowering must
+        // preserve that ownership boundary without a fake task queue.
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        const Pair old_pair{a,b};
+        scene.advance_collision();
+        const auto original=scene.contact_edge_index(old_pair);
+        if(original==Scene::invalid_edge)
+            throw std::runtime_error(
+                "Post-solver retirement fixture failed to admit old overlap");
+        scene.set_position(b,{6,8,0});
+        scene.step_checkpoint_.capture(scene);
+        scene.advance_collision_internal(false,true);
+        scene.third_pass_island_gen();
+        if(scene.retired_edge_handles_.size()!=1 ||
+           scene.retired_edge_handles_[0]!=original ||
+           original>=scene.contact_edges_.size() ||
+           !scene.contact_edges_[original].retiring ||
+           std::find(scene.free_edge_handles_.begin(),
+                     scene.free_edge_handles_.end(),original)!=
+               scene.free_edge_handles_.end())
+            throw std::runtime_error(
+                "Lost manager handle was recycled before source solver/lost-contact join");
+        // Emulate completion of both consumers, then verify the exact
+        // same retirement operation used by Scene::step. A rejected
+        // frame must reverse handle retirement and intrusive history
+        // without introducing a second contact-manager owner.
+        scene.retire_destroyed_contact_edges();
+        if(!scene.retired_edge_handles_.empty() ||
+           scene.free_edge_handles_.empty() ||
+           scene.free_edge_handles_.back()!=original ||
+           scene.contact_edges_[original].live)
+            throw std::runtime_error(
+                "Source post-third-pass manager retirement did not publish");
+        scene.step_checkpoint_.rollback(scene);
+        if(scene.contact_edge_index(old_pair)!=original ||
+           std::find(scene.free_edge_handles_.begin(),
+                     scene.free_edge_handles_.end(),original)!=
+               scene.free_edge_handles_.end())
+            throw std::runtime_error(
+                "Rejected post-solver manager retirement lost published handle identity");
+        // The complete production solve retires only after Dy consumes
+        // this frame; the next collision may then recycle the handle.
+        scene.step(dt);
+        if(scene.contact_edge_index(old_pair)!=Scene::invalid_edge ||
+           scene.free_edge_handles_.empty() ||
+           scene.free_edge_handles_.back()!=original)
+            throw std::runtime_error(
+                "Completed source PGS frame retained a destroyed contact manager");
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        scene.advance_collision();
+        if(scene.contact_edge_index(Pair{a,c})!=original)
+            throw std::runtime_error(
+                "Completed post-solver retirement failed to recycle source manager handle");
+        // A collision-only transaction has no Dy consumer. It still
+        // completes both island passes and retires before publishing.
+        Scene query;
+        const auto x=query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto y=query.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        query.advance_collision();
+        const auto retired=query.contact_edge_index(Pair{x,y});
+        query.set_position(y,{6,8,0});
+        query.advance_collision();
+        if(retired==Scene::invalid_edge ||
+           query.free_edge_handles_.empty() ||
+           query.free_edge_handles_.back()!=retired ||
+           !query.retired_edge_handles_.empty())
+            throw std::runtime_error(
+                "Collision-only island join leaked a destroyed source manager");
+    }
     static void verify_reversible_cache_checkpoint() {
         constexpr float dt=1.0f/120.0f;
         Scene scene;
@@ -8203,6 +8284,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_friction_task_order();
+    fyzz::native::ContactCorrelationSourceFixture::verify_post_solver_manager_retirement();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
