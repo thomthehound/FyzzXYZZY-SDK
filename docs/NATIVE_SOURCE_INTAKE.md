@@ -1179,6 +1179,29 @@ frame in which `IslandSim::wakeIslands` activates them. This removes
 the earlier split wake sequence (old-island wake before gravity, new-touch
 wake after gravity) without a second actor or solver owner.
 
+**Rigid CPU post-solver continuation join:** In
+`ScPipeline.cpp::updateDynamics`, `mProcessLostContactsTask3` and
+`DyDynamics.cpp::createSolverTaskChain`'s `PxsSolverEndTask` continuations
+are independent producers of `mPostSolver`. The lost-contact branch
+includes the speculative/accurate third-pass and Sc interaction activity
+consumer; each solver task chain owns a contiguous group of accurate
+active islands and completes only after those rigid bodies are integrated
+and sleep-checked. The production native CPU `Scene::step` now lowers
+these real dependencies into one frame-local `RigidStepJoin`: it counts
+the existing `solver_tasks_` groups, finishes each group **after**
+integrating its own island range, and gates the final destroyed-manager
+release and completed-result publication on the joined producers.
+Zero-task scenes and mixed contact/free-flight task groups use the same
+join. The join has constant storage, allocates no tasks, creates no
+secondary graph or actor owner, and does not constrain Dy dispatch to
+wait for the independent lost-contact producer. Native regressions check
+reversed producer completion, premature/duplicate completion,
+enhanced-determinism task partitioning, zero-contact island integration,
+and retirement across frames. Original asynchronous `PxBaseTask`
+dispatch, post-integration concurrent-deactivation pose restoration,
+GPU/DMA continuations, non-rigid edge types and full fetch/report task
+ownership remain unimplemented; a serial join does not claim them.
+
 The source-derived active-island handoff is now explicit:
 after third-pass activation/deactivation the synchronous CPU scene
 maintains the accurate graph's `IslandSim::mActiveNodes` and
