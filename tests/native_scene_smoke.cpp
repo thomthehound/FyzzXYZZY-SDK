@@ -215,6 +215,58 @@ struct ContactCorrelationSourceFixture {
                     "Selected cached friction anchor differs from its body-local frames");
         }
     }
+    static void verify_source_sleep_velocity_mod_retirement() {
+        // ScBodySim::deactivate calls setForcesToDefaults and
+        // putToSleep clears the complete VelocityMod. A pending
+        // per-step or per-second contribution cannot survive the
+        // island's authoritative sleep-to-wake boundary.
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        const auto id=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(id,dynamics);
+        bool ready=false;
+        for(unsigned frame=0;frame<90;++frame) {
+            scene.step(dt);
+            if(scene.body_ready_for_sleep(id) &&
+               !scene.body_is_sleeping(id)) {
+                ready=true;
+                break;
+            }
+        }
+        if(!ready)
+            throw std::runtime_error(
+                "Source sleep velocity-mod fixture never reached Dy readiness");
+        // Arrange retained stale writes at the moment the previously
+        // published Dy readiness is consumed by the NEXT island pass.
+        // This probes the deactivation cleanup directly; public
+        // authored force calls correctly clear readiness themselves.
+        auto& actor=scene.actors_[id];
+        actor.pending_linear_velocity_delta={1.0f,0,0};
+        actor.pending_angular_velocity_delta={0,0.7f,0};
+        actor.pending_linear_acceleration={0,2.0f,0};
+        actor.pending_angular_acceleration={0,0,3.0f};
+        scene.step(dt);
+        if(!scene.body_is_sleeping(id) ||
+           actor.pending_linear_velocity_delta.x!=0 ||
+           actor.pending_angular_velocity_delta.y!=0 ||
+           actor.pending_linear_acceleration.y!=0 ||
+           actor.pending_angular_acceleration.z!=0)
+            throw std::runtime_error(
+                "Sc island deactivation retained source velocity modifications");
+        scene.set_velocity(id,{0,0,0});
+        scene.step(dt);
+        const auto state=scene.body_state(id);
+        if(state.sleeping ||
+           std::abs(state.velocity.x)>1e-6f ||
+           std::abs(state.velocity.y)>1e-6f ||
+           std::abs(state.angular_velocity.y)>1e-6f ||
+           std::abs(state.angular_velocity.z)>1e-6f)
+            throw std::runtime_error(
+                "Source awakened rigid body replayed sleeping VelocityMod");
+    }
     static void verify_source_post_solver_continuations() {
         // ScPipeline::updateDynamics wires processLostContactsTask3
         // and all PxsSolverEndTask chains to mPostSolver. No handle
@@ -9161,6 +9213,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
