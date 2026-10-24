@@ -78,19 +78,25 @@ struct ContactCorrelationSourceFixture {
             // displacement, while the cached payload must remain in
             // its original generating frame. Compare both independent
             // arenas with the unmodified legacy-only source run.
-            if(legacy.gu_cache_records_.size()!=2)
-                throw std::runtime_error(
-                    "Mixed PCM fixture lost the legacy source cache control");
-            const auto& source_cache=legacy.gu_cache_records_[1];
-            if(source_cache.pair!=box_pair ||
-               source_cache.count!=m.count ||
-               source_cache.offset+m.count>legacy.gu_cached_points_.size())
+            // The infinite plane also owns a separate legacy Gu
+            // cache for the upper box even when they are too distant
+            // to touch. Locate the box/box manager by its Pair key,
+            // never by an assumed position in the cache stream.
+            const Scene::GuCacheRecord* source_cache=nullptr;
+            for(const auto& entry:legacy.gu_cache_records_)
+                if(entry.pair==box_pair) {
+                    source_cache=&entry;
+                    break;
+                }
+            if(!source_cache ||
+               source_cache->count!=m.count ||
+               source_cache->offset+m.count>legacy.gu_cached_points_.size())
                 throw std::runtime_error(
                     "Legacy Gu source cache control has invalid ownership");
             for(std::size_t i=0;i<m.count;++i) {
                 const auto& raw=mixed.gu_cached_points_[i];
                 const auto& expected=legacy.gu_cached_points_[
-                    source_cache.offset+i];
+                    source_cache->offset+i];
                 if(std::abs(raw.position.x-expected.position.x)>2e-5f ||
                    std::abs(raw.position.y-expected.position.y)>2e-5f ||
                    std::abs(raw.position.z-expected.position.z)>2e-5f ||
