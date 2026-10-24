@@ -4156,10 +4156,41 @@ void Scene::publish_contact_events() {
     // scene: no shadow contact-pair history or global event registry.
     next_contact_events_.clear();
     next_contact_event_points_.clear();
-    next_contact_events_.reserve(manifolds_.size()+lost_contacts_.size());
-    next_contact_event_points_.reserve(contact_points_.size());
+    // Source ScNPhaseCore reports only active touching interactions
+    // (or a newly found touch), not every retained Gu manager in a
+    // sleeping accurate island. Collect the same Dy manager inputs and
+    // all Found touches, then restore canonical Gu-index order before
+    // combining with the independently ordered Lost stream.
+    contact_report_managers_.clear();
+    contact_report_managers_.insert(contact_report_managers_.end(),
+        indexed_managers_.begin(),indexed_managers_.end());
+    for(Pair pair:found_contacts_) {
+        const EdgeIndex edge=contact_edge_index(pair);
+        if(edge==invalid_edge || edge>=manifold_by_edge_.size() ||
+           manifold_by_edge_[edge].generation!=manifold_lookup_generation_ ||
+           manifold_by_edge_[edge].index>=manifolds_.size() ||
+           !(manifolds_[manifold_by_edge_[edge].index].pair==pair))
+            throw std::logic_error(
+                "Sc found touch has no published Gu contact manager");
+        contact_report_managers_.push_back(manifold_by_edge_[edge].index);
+    }
+    std::sort(contact_report_managers_.begin(),
+              contact_report_managers_.end());
+    contact_report_managers_.erase(
+        std::unique(contact_report_managers_.begin(),
+                    contact_report_managers_.end()),
+        contact_report_managers_.end());
+    // Active manager order comes from islands, not Gu. Its original
+    // contact-point windows and the Sc event merge use Gu indices.
+    next_contact_events_.reserve(
+        contact_report_managers_.size()+lost_contacts_.size());
+    std::size_t report_points=0;
+    for(std::size_t index:contact_report_managers_)
+        report_points+=manifolds_[index].count;
+    next_contact_event_points_.reserve(report_points);
     std::size_t lost=0,found=0;
-    for(const auto& manifold:manifolds_) {
+    for(std::size_t index:contact_report_managers_) {
+        const auto& manifold=manifolds_[index];
         while(lost<lost_contacts_.size() &&
               lost_contacts_[lost]<manifold.pair) {
             const Pair pair=lost_contacts_[lost++];
