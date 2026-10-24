@@ -1301,9 +1301,10 @@ void Scene::update_contacts() {
         // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
         // The cached points above must retain the raw plane-first Gu
         // normal, so a subsequent cache hit's motion.dot(normal) keeps
-        // the source separation sign. Only the Sc-oriented published
-        // stream is flipped; no second contact arena or allocation.
-        if(plane_pair && a.kind!=Kind::StaticPlane) {
+        // the source separation sign. ScShapeInteraction orders the
+        // dynamic body before the plane regardless of creation order;
+        // only its published contact stream receives the flip.
+        if(plane_pair) {
             for(std::size_t k=0;k<manifold.count;++k) {
                 Vec3& n=next_contact_points_[manifold.contact_offset+k].normal;
                 n={-n.x,-n.y,-n.z};
@@ -3629,12 +3630,12 @@ void Scene::prepare_constraints(float seconds) {
         // through DyContactPrep. A canonical pair key is only used
         // for Gu arena identity, and must not reorder the two
         // momentum/Jacobian inputs after the source Gu generator.
-        // Plane-box Gu uses its own fixed +Y plane convention.
-        // Box-box managers (static/dynamic or dynamic/dynamic) retain
-        // the ScShapeInteraction source ordering without exception.
-        const bool reversed=contact_edges_[edge].gu_order_reversed &&
-            actor_a.kind!=Kind::StaticPlane &&
-            actor_b.kind!=Kind::StaticPlane;
+        // PxcNpBatch sorts plane-box Gu geometry plane-first and
+        // flips its returned normal back to ScShapeInteraction order.
+        // ScNPhaseCore::shouldSwapBodies puts static shapes SECOND,
+        // even when the floor was created before its dynamic partner.
+        // The persistent source-order flag applies to every shape pair.
+        const bool reversed=contact_edges_[edge].gu_order_reversed;
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
         const auto& a = actors_[id0].kind==Kind::DynamicBox
@@ -4207,9 +4208,7 @@ void Scene::solve_constraints() {
             // Dy descriptors retain Sc's source-oriented body order,
             // including the signs of the contact/friction Jacobians.
             const bool reversed=contact_edges_[
-                manifold.edge_handle].gu_order_reversed &&
-                actors_[manifold.pair.a].kind!=Kind::StaticPlane &&
-                actors_[manifold.pair.b].kind!=Kind::StaticPlane;
+                manifold.edge_handle].gu_order_reversed;
             const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
             const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
             auto& a = actors_[id0].kind == Kind::DynamicBox
@@ -4481,9 +4480,7 @@ void Scene::publish_contact_events() {
             const double normal_force=normal_impulse_writeback_[index];
             impulse+=normal_force;
             Vec3 outward=point.normal;
-            if(contact_edges_[manifold.edge_handle].gu_order_reversed &&
-               first.kind!=Kind::StaticPlane &&
-               second.kind!=Kind::StaticPlane)
+            if(contact_edges_[manifold.edge_handle].gu_order_reversed)
                 outward={-outward.x,-outward.y,-outward.z};
             next_contact_event_points_.push_back({
                 point.position,outward,point.separation,normal_force});
