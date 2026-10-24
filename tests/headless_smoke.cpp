@@ -1235,6 +1235,16 @@ int main() {
                                          <<cp.normal.y<<","<<cp.normal.z
                                          <<") sep="<<cp.separation
                                          <<" impulse="<<evt.normal_impulse;
+                                if(frame>=10 && frame<=13) {
+                                    const auto points=w.contact_event_points();
+                                    for(std::size_t i=0;i<evt.contact_count;++i) {
+                                        const auto& p=points[evt.point_offset+i];
+                                        std::cerr<<" p"<<i<<"=("<<p.position.x<<","
+                                                 <<p.position.y<<","
+                                                 <<p.position.z<<")"
+                                                 <<" J="<<p.normal_impulse;
+                                    }
+                                }
                             }
                             std::cerr<<'\n';
                         };
