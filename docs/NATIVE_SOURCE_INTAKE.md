@@ -1700,8 +1700,19 @@ velocity-mod channels, without a second force integrator. Native tests
 distinguish per-second and per-step consumption, accumulated/cleared
 categories, rejected-frame replay and coupled contact PGS. Independent
 PhysX CPU tests compare both masses, angular inertia, mixed force modes
-and clear operations over 90 changing-timestep frames. The source
-`eRETAIN_ACCELERATIONS` scene flag is not admitted in this slice.
+and clear operations over 90 changing-timestep frames.
+
+`PxRigidBodyFlag::eRETAIN_ACCELERATIONS` now follows the original
+`ScBodySim::updateForces` / `setForcesToDefaults` branch: an active
+rigid body retains per-second linear/angular acceleration modifications
+over consecutive timesteps, while per-step velocity changes are always
+cleared after consumption. The flag is forwarded unchanged to the
+separate original PhysX reference adapter. Both modes clear retained
+per-second modifications upon explicit force/torque clearance, and
+island sleep retires every velocity-mod channel through
+`BodySim::putToSleep`. Native and independent PhysX CPU multi-frame
+regressions check retention, non-retention, one-shot changes and clearing
+without introducing an independent acceleration scheduler.
 
 ## Source gyroscopic-force velocity update
 
