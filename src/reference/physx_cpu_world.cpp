@@ -384,7 +384,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                 orientation.x,orientation.y,orientation.z,orientation.w)
                 .getNormalized();
             if(logical.x!=0.0f || logical.y!=0.0f ||
-               logical.z!=0.0f || logical.w!=1.0f)
+               logical.z!=0.0f || std::abs(logical.w)!=1.0f)
                 throw std::logic_error("Native horizontal floor cannot rotate");
             auto pose=actors[id]->getGlobalPose();
             pose.p=to_physx(position);
