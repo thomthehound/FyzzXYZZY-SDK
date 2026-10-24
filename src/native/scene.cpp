@@ -1034,19 +1034,18 @@ void Scene::publish_pairs() {
             step_checkpoint_.save_handle_lists(*this);
             const Pair pair=pending_pairs_[new_index++];
             const EdgeIndex id=allocate_contact_edge(pair);
-            // Gu's contact-cache collisionData is orientation-dependent.
-            // The broadphase X sweep emits an overlap from the earlier
-            // minimum endpoint to the later endpoint. The sorted pair
-            // key is only an identity: retain the emission direction in
-            // this SAME persistent contact manager (never in a shadow
-            // manifold or standalone source-order registry).
-            if(actors_[pair.a].kind==Kind::DynamicBox &&
-               actors_[pair.b].kind==Kind::DynamicBox) {
-                const auto& a=actors_[pair.a].encoded_bounds;
-                const auto& b=actors_[pair.b].encoded_bounds;
-                contact_edges_[id].gu_order_reversed=
-                    b[0]<a[0] || (b[0]==a[0] && pair.b<pair.a);
-            }
+            // ScNPhaseCore::shouldSwapBodies is the source authority
+            // for the contact manager's persistent oriented shape pair:
+            // static second; two nonkinematic dynamics in descending
+            // ActorID order (the admitted BodyIds track creation order).
+            // Never use broadphase endpoint order or canonical pair
+            // sorting to select Gu's reference/incident box face.
+            const bool a_dynamic=
+                actors_[pair.a].kind==Kind::DynamicBox;
+            const bool b_dynamic=
+                actors_[pair.b].kind==Kind::DynamicBox;
+            contact_edges_[id].gu_order_reversed =
+                (a_dynamic && b_dynamic) || (!a_dynamic && b_dynamic);
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
@@ -1168,12 +1167,11 @@ void Scene::update_contacts() {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
-            // The original Gu reference/incident face and the cached
-            // six-axis separation hint are defined in BP emission order.
-            // Canonical event/edge identity must not silently reverse
-            // the source shape pair when actor IDs and the X sweep
-            // disagree. Flip only the resulting Gu normal back to the
-            // canonical Pair orientation consumed by Dy.
+            // The Gu reference/incident face and cached six-axis hint
+            // use ScNPhaseCore::shouldSwapBodies orientation; the
+            // canonical edge/event key is not that source ordering.
+            // Flip resulting normals back to canonical Pair orientation
+            // before Dy preparation and event publication.
             const bool reversed=contact_edges_[edge].gu_order_reversed;
             const Actor& first=reversed?b:a;
             const Actor& second=reversed?a:b;

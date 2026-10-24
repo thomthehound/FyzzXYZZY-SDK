@@ -660,10 +660,11 @@ private:
         bool connected=false;       // source accurate mConnectedMap bit
         bool retiring=false;        // removeConnection, pending post-third-pass
         bool interaction_active=false; // Sc::InteractionFlag::eIS_ACTIVE
-        // The Gu contact generator's oriented shape pair belongs to the
-        // persistent Sc contact manager. Canonical BodyId ordering is
-        // solely its lookup identity; it is not the original BP pair
-        // emission order and must never select the reference box face.
+        // ScNPhaseCore::shouldSwapBodies decides oriented shape order
+        // before constructing the persistent contact manager. Its
+        // same-type rule puts the higher ActorID first, and its rigid
+        // static rule puts the dynamic participant first. Canonical
+        // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;

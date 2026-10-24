@@ -88,28 +88,32 @@ partition boundaries and normal-force writeback. Reference-enabled
 tests compare the enhanced native and original PhysX CPU scenes over
 varying timesteps.
 
-## Gu contact-manager shape-pair orientation
+## Source ScNPhaseCore contact-pair orientation
 
-Contact-manager identity remains the canonical, sorted BodyId pair,
-but the original Gu reference/incident face selection uses the
-broadphase-emitted **oriented** overlap endpoints. Sorting by BodyId
-before calling `GuContactBoxBox` discarded that ordering: in an
-upper-first actor admission with the supporting lower box earlier in
-the X sweep, native contact points were projected onto the *lower
-box's top face*, while the original legacy-Gu source emitted points
-from the *upper box's bottom face*. This differed on frame 1, before
-any normal force was applied, and by frame 12 produced approximately
-an order-of-magnitude discrepancy in the upper body's angular
-velocity despite near-matching normal impulses.
+`ScNPhaseCore::createShapeInteraction` calls
+`shouldSwapBodies` before it constructs the contact manager. In the
+admitted ordinary-rigid subset, its source rule places the dynamic
+participant before a static one, and two nonkinematic dynamic actors
+in **descending ActorID order**. The SDK's monotonic BodyId admission
+retains that same ordering. The actual Gu reference/incident face and
+collision-axis cache use this source ordering, not sorted BodyIds and
+not the broadphase sweep's temporary endpoint order.
 
-The native Sc contact-manager EdgeIndex now retains the sweep
-direction from pair creation to retirement. Gu's six-axis cache
-remains in that oriented frame across steps; collision normals are
-then mapped back to the canonical pair for the existing Dy
-constraint descriptors and event reporting. This corrects the
-admission boundary without duplicating the contact manager or
-substituting contact geometry. The long-horizon strict PhysX fixture
-remains the independent acceptance authority for the repair.
+The single native contact-manager EdgeIndex now retains the derived
+orientation for its complete overlap lifetime. Gu contact generation
+and cached face-axis selection consume this oriented pair, then
+transform the emitted normal to the canonical BodyId order used
+by the existing Dy descriptor and Sc event streams. No shadow
+collision pipeline or fabricated contact geometry is added.
+
+The independent frictional PhysX fixture exposes why this matters.
+With the upper body created before its lower support, native previously
+chose lower-box face points while source legacy Gu chose upper-box
+points **on the very first, speculative contact frame**. At the first
+solved impact, their comparable normal impulses induced very
+different angular velocities. Correctly ordering Sc's shape pair is
+a necessary source-fidelity repair; the full strict multiframe
+test remains the acceptance authority.
 
 ## N1 coupled frictional-rotation source parity gate
 
