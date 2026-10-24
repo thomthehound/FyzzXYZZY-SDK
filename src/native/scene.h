@@ -139,6 +139,16 @@ public:
     void set_enhanced_determinism(bool enabled) noexcept {
         enhanced_determinism_=enabled;
     }
+    // Explicit partial PCM admission: only plane/box uses
+    // Gu::pcmContactPlaneBox. Box/box remains legacy until its own
+    // PCM generation, GJK/EPA and four-point manifold are ported.
+    // Select before the first actor is created.
+    void set_pcm_plane_box(bool enabled) {
+        if(!actors_.empty())
+            throw std::logic_error(
+                "PCM contact mode must be selected before scene admission");
+        pcm_plane_box_enabled_=enabled;
+    }
     std::span<const ContactEvent> contact_events() const noexcept {
         return contact_events_;
     }
@@ -660,6 +670,23 @@ private:
         std::size_t prev=invalid_instance;
         bool linked=false;
     };
+    // Gu::PersistentContactManifold, admitted plane/box specialization.
+    // Shape-local anchors belong to the same persistent Sc manager edge
+    // as touch/island state. No second cache owner or transient PCM world.
+    struct PcmPlaneContact {
+        Vec3 box_local{}, plane_local{};
+        float separation=0.0f;
+    };
+    struct PcmPlaneBoxCache {
+        std::array<PcmPlaneContact,4> points{};
+        Vec3 relative_position{};
+        Quat relative_rotation{};
+        std::uint8_t count=0;
+        bool initialized=false;
+    };
+    std::uint8_t generate_pcm_plane_box(
+        const Actor& plane, const Actor& box, float contact_distance,
+        PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
     struct ContactEdge {
         Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
         bool live=false;            // allocated by addContactManager
@@ -672,6 +699,7 @@ private:
         // static rule puts the dynamic participant first. Canonical
         // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
+        PcmPlaneBoxCache pcm_plane_box{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
         // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
@@ -1163,6 +1191,7 @@ private:
     // notifications were requested when the World was constructed.
     bool contact_notifications_=false;
     bool enhanced_determinism_=false;
+    bool pcm_plane_box_enabled_=false;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
     // Non-owning Gu-manifold indices for this frame's actual report
