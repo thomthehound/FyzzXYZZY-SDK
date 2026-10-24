@@ -4609,6 +4609,22 @@ void verify_source_retired_bridge_deactivation() {
         const auto floor_edge=retired_bridge.contact_edge_index(floor_pair);
         const auto prior_spec_count=
             retired_bridge.active_speculative_contact_edge_count();
+        if(!independent_sleep) {
+            const auto a=retired_bridge.body_state(sleeping_rod);
+            const auto b=retired_bridge.body_state(active_rod);
+            std::cerr<<"N1CACHE sleep fixture: sleeping="
+                     <<a.sleeping<<" active="<<b.sleeping
+                     <<" speculative="<<retired_bridge.speculative_island_count()
+                     <<" accurate="<<retired_bridge.accurate_island_count()
+                     <<" quiet_vel=("<<a.velocity.x<<","
+                     <<a.velocity.y<<","<<a.velocity.z<<")"
+                     <<" moving_vel=("<<b.velocity.x<<","
+                     <<b.velocity.y<<","<<b.velocity.z<<")"
+                     <<" contacts="<<retired_bridge.contacts().size()
+                     <<" pairs="<<retired_bridge.pairs().size()
+                     <<" floor_active="<<retired_bridge.contact_interaction_active(floor_pair)
+                     <<'\n';
+        }
         expect(independent_sleep &&
                floor_edge!=std::numeric_limits<std::uint32_t>::max() &&
                retired_bridge.speculative_contact_edge_active(floor_pair) &&
