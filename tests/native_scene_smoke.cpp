@@ -21,6 +21,88 @@
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
 struct ContactCorrelationSourceFixture {
+    static void verify_mixed_pcm_legacy_cache_ownership() {
+        // Source PxcNpCacheStreamPair indexes only legacy cached
+        // contacts; Gu's published contact arena also includes PCM.
+        // A preceding PCM plane manager must not displace the cached
+        // box/box points belonging to the subsequent source manager.
+        Scene mixed;
+        mixed.set_pcm_plane_box(true);
+        mixed.add_static_floor(0.0f);
+        const auto lower=mixed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto upper=mixed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1.47f,0},1.0f);
+        Scene legacy;
+        legacy.add_static_floor(0.0f);
+        legacy.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        const auto source_upper=legacy.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1.47f,0},1.0f);
+        const Pair box_pair{lower,upper};
+        const auto box_manager=[](const Scene& scene,Pair pair)
+            ->const ContactManifold& {
+            for(const auto& manager:scene.contacts())
+                if(manager.pair==pair)return manager;
+            throw std::runtime_error(
+                "Mixed source PCM scene lost its legacy box-box manager");
+        };
+        const auto compare=[&] {
+            const auto& m=box_manager(mixed,box_pair);
+            const auto& l=box_manager(legacy,box_pair);
+            if(m.count!=l.count || m.count==0)
+                throw std::runtime_error(
+                    "Mixed PCM scene altered legacy box-box contact count");
+            for(std::size_t i=0;i<m.count;++i) {
+                const auto& a=m.points[i],&b=l.points[i];
+                if(std::abs(a.position.x-b.position.x)>2e-5f ||
+                   std::abs(a.position.y-b.position.y)>2e-5f ||
+                   std::abs(a.position.z-b.position.z)>2e-5f ||
+                   std::abs(a.normal.x-b.normal.x)>2e-5f ||
+                   std::abs(a.normal.y-b.normal.y)>2e-5f ||
+                   std::abs(a.normal.z-b.normal.z)>2e-5f ||
+                   std::abs(a.separation-b.separation)>2e-5f)
+                    throw std::runtime_error(
+                        "PCM plane points contaminated source legacy box-box contact cache");
+            }
+            if(mixed.gu_cache_records_.size()!=1 ||
+               mixed.gu_cache_records_[0].pair!=box_pair ||
+               mixed.gu_cache_records_[0].offset!=0 ||
+               mixed.gu_cache_records_[0].count!=m.count ||
+               mixed.gu_cached_points_.size()!=m.count ||
+               m.contact_offset==mixed.gu_cache_records_[0].offset)
+                throw std::runtime_error(
+                    "PCM and legacy Gu offsets were incorrectly conflated");
+            for(std::size_t i=0;i<m.count;++i) {
+                const auto& a=mixed.gu_cached_points_[i];
+                const auto& b=m.points[i];
+                if(std::abs(a.position.y-b.position.y)>2e-5f ||
+                   std::abs(a.separation-b.separation)>2e-5f)
+                    throw std::runtime_error(
+                        "PCM-published contacts entered a legacy Pxc cache span");
+            }
+        };
+        mixed.advance_collision(true);
+        legacy.advance_collision(true);
+        if(mixed.contacts().size()<2 ||
+           mixed.contacts()[0].pair!=Pair{0,lower})
+            throw std::runtime_error(
+                "PCM floor manager did not precede legacy box-box in Gu stream");
+        compare();
+        // A source Pxc cache HIT must retain the same old points
+        // through a small authored translation of the upper box.
+        mixed.set_position(upper,{0,1.474f,0});
+        legacy.set_position(source_upper,{0,1.474f,0});
+        mixed.advance_collision(true);
+        legacy.advance_collision(true);
+        compare();
+        // Mixed PCM and legacy Gu managers must enter the same Dy
+        // constraint solver and successfully publish the result.
+        mixed.step(1.0f/120.0f);
+        if(mixed.solved_result_frame()!=mixed.frame_index())
+            throw std::runtime_error(
+                "Mixed PCM/legacy Gu managers failed native PGS completion");
+    }
     static void verify_source_pcm_plane_box_lifecycle() {
         // GuPCMContactPlaneBox::pcmContactPlaneBox + source persistent
         // refresh/invalidation/reduction execute in the actual Scene
@@ -9478,6 +9560,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
+    fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
