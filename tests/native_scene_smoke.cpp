@@ -7947,9 +7947,12 @@ int run_native_scene_smoke() {
             const double velocity_after=m==0
                 ? left_after.velocity.x : right_after.velocity.x;
             const double mass=m==0 ? 1.0 : 2.0;
-            expect(std::abs(total_x+
+            // Source Dy applies the reported tangent impulse to
+            // Sc body0. For plane/box, Sc body0 is always the dynamic
+            // actor, independent of the canonical floor-first Pair.
+            expect(std::abs(total_x-
                             mass*(velocity_after-velocity_before))<0.002 &&
-                   (m==0 ? total_x>0.0 : total_x<0.0),
+                   (m==0 ? total_x<0.0 : total_x>0.0),
                    "Source friction anchor writeback disagrees with body impulse");
         }
         friction_report.advance_collision(true);
