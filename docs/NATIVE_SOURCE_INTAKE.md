@@ -1202,6 +1202,39 @@ dispatch, post-integration concurrent-deactivation pose restoration,
 GPU/DMA continuations, non-rigid edge types and full fetch/report task
 ownership remain unimplemented; a serial join does not claim them.
 
+**Rigid `afterIntegration` shape publication and actor deactivation:**
+`ScPipeline::afterIntegration` calls
+`PxsSimulationController::updateScBodyAndShapeSim` after PGS body
+integration. The serial CPU `Scene` now updates encoded Gu box bounds
+from the already integrated pose for each active accurate-island rigid
+node at this stage. The next SAP pass reuses those cached bounds;
+authored pose/contact-offset edits invalidate only the affected actor.
+The actor's current-bounds flag and six encoded endpoints use the
+existing per-body motion rollback record, not an extra shape table or
+a second bounds recomputation per ordinary frame. Native tests cover
+integration-publication, subsequent SAP reuse and authored invalidation.
+`ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
+per-step velocity changes and per-second accelerations in the same
+third-pass island deactivation path; the wake regression rejects replay
+of stale spatial forces. PhysX's concurrent third-pass/PGS variant
+restores deactivated poses from their saved pre-solver transforms inside
+`afterIntegration`; this serial CPU path deactivates before Dy and
+never integrates those nodes, so no speculative pose repair is
+performed. True parallel pose reconciliation and other simulation
+controller callbacks remain separate admission requirements.
+
+**Legacy source friction-anchor replacement:** 
+`DyFrictionCorrelation.cpp::growPatches` selects replacement
+candidates for either cached friction anchor while searching the
+current contact runs. Its upstream writeback loop starts at the
+prior anchor count and can consequently leave a replaced old slot
+unpublished. Native correlation retains the original search and
+cached one-anchor persistence, but records which of the two slots
+were actually changed and transforms those selected world points
+into BOTH source body-local frames. A two-body anchor/Gu-contact
+consistency regression exercises the one-to-two growth case; the
+unmodified retained slot incurs no extra transform work.
+
 The source-derived active-island handoff is now explicit:
 after third-pass activation/deactivation the synchronous CPU scene
 maintains the accurate graph's `IslandSim::mActiveNodes` and
