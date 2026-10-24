@@ -1043,6 +1043,21 @@ private:
         std::size_t constraint_end=0, solver_body_end=0;
         std::uint8_t position_iterations=0, velocity_iterations=0;
     };
+    // CPU lowering of ScPipeline's two producers of mPostSolver:
+    // PxsSolverEndTask for each Dy active-island task chain and
+    // mProcessLostContactsTask3 after the speculative/accurate third
+    // pass. A chain is complete only after its rigid bodies have been
+    // integrated and sleep-checked. This is a frame-local dependency
+    // join, not a second scheduler, a task queue or a persistent owner.
+    struct RigidStepJoin {
+        std::size_t outstanding_solver_tasks=0;
+        bool lost_contacts_joined=false;
+        bool solver_dispatched=false;
+        void finish_lost_contacts() noexcept;
+        void dispatch_solver_tasks(std::size_t count);
+        void finish_solver_task();
+        void require_post_solver() const;
+    };
     std::vector<SolverTask> solver_tasks_;
     struct IndexedManifold {
         std::size_t index=invalid_instance;
