@@ -92,7 +92,8 @@ varying timesteps.
 
 A new native-versus-original-PhysX legacy-Gu fixture compares two
 frictional rigid boxes over a static support, two inverse mass orderings,
-three contact managers, rotated contact normals, and a friction-disabled
+two coupled contact managers (floor/lower and lower/upper), rotated
+contact normals, and a friction-disabled
 PhysX oracle. The normal-only tests previously missed this coupling.
 
 The **first 16 frames** at 240 Hz are included in the normal reference
