@@ -77,6 +77,34 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Pxc zero-contact cache should retain original generating pose");
 
+        // When the floor is created AFTER its dynamic partner,
+        // PxcNpBatch sorts the Gu pair plane-first, caches its raw -Y
+        // contact normal, and only then flips the published Sc contact
+        // normal to +Y. A cached upward movement must INCREASE the
+        // separation; caching the flipped normal reverses that sign.
+        Scene late_floor;
+        const auto late_box=late_floor.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1);
+        late_floor.add_static_floor(0.0f);
+        late_floor.advance_collision(true);
+        if(late_floor.gu_cached_points_.size()!=4 ||
+           late_floor.manifolds_.size()!=1 ||
+           late_floor.gu_cached_points_[0].normal.y!=-1.0f ||
+           late_floor.manifolds_[0].points[0].normal.y!=1.0f)
+            throw std::runtime_error(
+                "Pxc plane-first cache or published Sc flip has incorrect normal");
+        const float old_separation=late_floor.manifolds_[0].points[0].separation;
+        late_floor.set_position(late_box,{0,0.504f,0});
+        late_floor.advance_collision(true);
+        if(late_floor.gu_cache_records_.size()!=1 ||
+           late_floor.gu_cache_records_[0].pose1.position.y!=0.5f ||
+           late_floor.gu_cached_points_[0].normal.y!=-1.0f ||
+           late_floor.manifolds_[0].points[0].normal.y!=1.0f ||
+           std::abs(late_floor.manifolds_[0].points[0].separation-
+               (old_separation+0.004f))>2.0e-5f)
+            throw std::runtime_error(
+                "Pxc plane-second cache hit reversed relative-motion separation");
+
         // Box-box contacts use the source Sc actor-order frame, not a
         // separately ordered cache stream or canonical BodyId geometry.
         Scene stack;
