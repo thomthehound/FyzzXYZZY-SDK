@@ -1153,19 +1153,17 @@ int main() {
             // tangential resistance rather than resting normal contact.
             for(const bool reversed:{false,true}) {
                 fyzz::World native_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                    fyzz::ExecutionMode::NativeCpu,true});
                 fyzz::World source_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
                 fyzz::World source_no_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
                 const fyzz::Vec3 half{0.5f,0.5f,0.5f};
                 fyzz::Material frictional{};
                 frictional.static_friction=0.8f;
                 frictional.dynamic_friction=0.6f;
                 frictional.restitution=0.0f;
-                // Controlled source/SDK diagnostic: suppress reuse of
-                // prior friction anchors while preserving tangent PGS.
-                frictional.disable_strong_friction=true;
+
                 fyzz::Material frictionless=frictional;
                 frictionless.disable_friction=true;
                 const auto initialize=[&](fyzz::World& w,bool friction_on) {
@@ -1265,6 +1263,28 @@ int main() {
                                      <<" source_ang=("<<p.angular_velocity.x<<","
                                      <<p.angular_velocity.y<<","<<p.angular_velocity.z<<")"
                                      <<'\n';
+                            const auto report=[&](const char* name,
+                                                  fyzz::World& w) {
+                                std::cerr<<" "<<name<<" touch:";
+                                for(const auto& event:w.contact_events()) {
+                                    std::cerr<<" ("<<event.body0<<","
+                                             <<event.body1
+                                             <<" count="<<unsigned(event.contact_count)
+                                             <<" impulse="<<event.normal_impulse;
+                                    if(event.contact_count) {
+                                        const auto& pt=w.contact_event_points()[
+                                            event.point_offset];
+                                        std::cerr<<" n=("<<pt.normal.x<<","
+                                                 <<pt.normal.y<<","<<pt.normal.z
+                                                 <<") sep="<<pt.separation;
+                                    }
+                                    std::cerr<<")";
+                                }
+                                std::cerr<<'\n';
+                            };
+                            report("native",native_friction);
+                            report("source",source_friction);
+                            report("source-frictionless",source_no_friction);
                             throw std::runtime_error(
                                 "Frictional angular coupled PGS diverged from PhysX Gu");
                         }
