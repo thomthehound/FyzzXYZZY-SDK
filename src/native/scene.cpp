@@ -1166,6 +1166,207 @@ void Scene::refresh_pcm_contact_points(
             point.separation=distance;
     }
 }
+std::uint8_t Scene::generate_pcm_box_box(
+    const Actor& first, const Actor& second, float contact_distance,
+    PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
+    // GuPCMContactBoxBox.cpp::pcmContactBoxBox, operating on the same
+    // Sc contact-manager edge used for islands, rollback and PGS.
+    // A-to-B relative transform and each contact normal are B-local.
+    const Vec3 delta{
+        first.position.x-second.position.x,
+        first.position.y-second.position.y,
+        first.position.z-second.position.z};
+    const Vec3 relative=rotate_inverse(second.orientation,delta);
+    const Quat inv_b{
+        -second.orientation.x,-second.orientation.y,
+        -second.orientation.z,second.orientation.w};
+    const Quat rotation=multiply(inv_b,first.orientation);
+    const auto margin=[](const Actor& a) {
+        return std::min(0.15f*std::min({
+            a.half_extents.x,a.half_extents.y,a.half_extents.z}),0.15f);
+    };
+    const float min_margin=std::min(margin(first),margin(second));
+    const std::uint8_t initial=cache.count;
+    refresh_pcm_contact_points(cache,relative,rotation,min_margin*0.8f);
+    const bool lost=cache.count!=initial;
+    constexpr std::array<float,5> thresholds{
+        0.5f,0.125f,0.25f,0.375f,0.375f};
+    constexpr std::array<float,5> quaternion_thresholds{
+        0.9998f,0.9999f,0.9999f,0.9999f,0.9999f};
+    const float translation_delta=cache.initialized
+        ? std::max({
+            std::abs(relative.x-cache.relative_position.x),
+            std::abs(relative.y-cache.relative_position.y),
+            std::abs(relative.z-cache.relative_position.z)})
+        : std::numeric_limits<float>::infinity();
+    const auto quaternion_dot=[](Quat a,Quat b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;
+    };
+    const float qa=quaternion_dot(first.orientation,cache.orientation_a);
+    const float qb=quaternion_dot(second.orientation,cache.orientation_b);
+    const float threshold_p=min_margin*thresholds[cache.count];
+    bool regenerate=!cache.initialized || lost ||
+        translation_delta>threshold_p ||
+        qa<quaternion_thresholds[cache.count] ||
+        qb<quaternion_thresholds[cache.count];
+    if(!regenerate) {
+        // GuPersistentContactManifold::invalidate_BoxConvex also
+        // measures rotational travel at the body's bounding radius.
+        // Either excessive arc distance invalidates the manifold.
+        const auto angular_travel=[](float d,Vec3 extents) {
+            const float angle=d<1.0f?std::acos(std::max(-1.0f,d)):0.0f;
+            return angle*std::sqrt(extents.x*extents.x+
+                extents.y*extents.y+extents.z*extents.z);
+        };
+        regenerate=
+            angular_travel(qa,first.half_extents)>threshold_p ||
+            angular_travel(qb,second.half_extents)>threshold_p;
+    }
+    bool direct_generated=false;
+    if(regenerate) {
+        cache.relative_position=relative;
+        cache.relative_rotation=rotation;
+        cache.orientation_a=first.orientation;
+        cache.orientation_b=second.orientation;
+        cache.initialized=true;
+        cache.count=0;
+        std::array<PcmContactCandidate,64> candidates{};
+        std::size_t count=0;
+        const bool overlapping=source_pcm_box_box_candidates(
+            first.half_extents,first.position,first.orientation,
+            second.half_extents,second.position,second.orientation,
+            contact_distance,candidates,count);
+        if(overlapping && count==0)
+            throw std::logic_error(
+                "Native PCM box-box GJK/EPA continuation not yet admitted");
+        if(count<=4) {
+            for(std::size_t i=0;i<count;++i) {
+                const auto& c=candidates[i];
+                cache.points[i]={c.local_a,c.local_b,c.normal_b,c.separation};
+            }
+            cache.count=static_cast<std::uint8_t>(count);
+        } else {
+            // GuPersistentContactManifold.cpp::reduceBatchContacts:
+            // deepest, furthest, transverse extrema, then replace
+            // separated witnesses using the original 0.02 tolerance.
+            std::array<std::uint8_t,64> remaining{};
+            for(std::size_t i=0;i<count;++i)
+                remaining[i]=static_cast<std::uint8_t>(i);
+            auto sq=[](Vec3 v) {
+                return v.x*v.x+v.y*v.y+v.z*v.z;
+            };
+            auto diff=[](Vec3 a,Vec3 b) {
+                return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
+            };
+            auto dot=[](Vec3 a,Vec3 b) {
+                return a.x*b.x+a.y*b.y+a.z*b.z;
+            };
+            std::size_t deepest=0;
+            float min_pen=candidates[0].separation;
+            float max_pen=min_pen;
+            for(std::size_t i=1;i<count;++i) {
+                min_pen=std::max(min_pen,candidates[i].separation);
+                if(candidates[i].separation<max_pen) {
+                    max_pen=candidates[i].separation;
+                    deepest=i;
+                }
+            }
+            std::array<std::uint8_t,4> selected{};
+            selected[0]=static_cast<std::uint8_t>(deepest);
+            std::size_t available=count;
+            remaining[deepest]=remaining[--available];
+            std::size_t best=0;
+            float furthest=-1.0f;
+            for(std::size_t i=0;i<available;++i) {
+                const float distance=sq(diff(
+                    candidates[remaining[i]].local_b,
+                    candidates[selected[0]].local_b));
+                if(distance>furthest){furthest=distance;best=i;}
+            }
+            selected[1]=remaining[best];
+            remaining[best]=remaining[--available];
+            const Vec3 baseline=diff(candidates[selected[1]].local_b,
+                                     candidates[selected[0]].local_b);
+            const Vec3 n=candidates[selected[0]].normal_b;
+            Vec3 transverse=cross(baseline,n);
+            const float transverse_sq=sq(transverse);
+            if(transverse_sq>0.0f) {
+                const float inv=1.0f/std::sqrt(transverse_sq);
+                transverse={transverse.x*inv,transverse.y*inv,
+                            transverse.z*inv};
+            } else transverse=n;
+            float largest=-std::numeric_limits<float>::max();
+            float smallest=std::numeric_limits<float>::max();
+            std::size_t top=0,bottom=0;
+            for(std::size_t i=0;i<available;++i) {
+                const float side=dot(diff(candidates[remaining[i]].local_b,
+                                         candidates[selected[0]].local_b),
+                                     transverse);
+                if(side>largest){largest=side;top=i;}
+                if(side<smallest){smallest=side;bottom=i;}
+            }
+            selected[2]=remaining[top];
+            remaining[top]=remaining[--available];
+            if(bottom==available)bottom=top;
+            if(smallest*largest>0.0f) {
+                largest=-std::numeric_limits<float>::max();
+                for(std::size_t i=0;i<available;++i) {
+                    const float side=dot(diff(candidates[remaining[i]].local_b,
+                                             candidates[selected[0]].local_b),
+                                         transverse);
+                    if(side>largest){largest=side;bottom=i;}
+                }
+            }
+            selected[3]=remaining[bottom];
+            remaining[bottom]=remaining[--available];
+            const float eps=0.02f; // PxTolerancesScale.length = 1
+            if(max_pen<eps && min_pen>eps) {
+                for(std::size_t i=0;i<4;++i) {
+                    float pen=candidates[selected[i]].separation;
+                    if(pen>eps) {
+                        std::size_t candidate=available;
+                        for(std::size_t j=0;j<available;++j) {
+                            const float value=
+                                candidates[remaining[j]].separation;
+                            if(value<pen && value<eps) {
+                                pen=value;
+                                candidate=j;
+                            }
+                        }
+                        if(candidate<available)
+                            std::swap(selected[i],remaining[candidate]);
+                    }
+                }
+            }
+            for(std::size_t i=0;i<4;++i) {
+                const auto& c=candidates[selected[i]];
+                cache.points[i]={c.local_a,c.local_b,c.normal_b,c.separation};
+            }
+            cache.count=4;
+        }
+        direct_generated=count>0;
+    }
+    if(cache.count==0)return 0;
+    const Vec3 normal=rotate(second.orientation,cache.points[0].normal_b);
+    std::uint8_t emitted=0;
+    for(std::size_t i=0;i<cache.count;++i) {
+        const auto& p=cache.points[i];
+        if(!direct_generated && p.separation>contact_distance)continue;
+        if(emitted>=output.size())
+            throw std::logic_error("PCM box-box output arena exhausted");
+        const Vec3 rotated=rotate(second.orientation,p.local_b);
+        const ContactPoint point{{
+            rotated.x+second.position.x,
+            rotated.y+second.position.y,
+            rotated.z+second.position.z},
+            normal,p.separation};
+        if(!finite(point.position) || !finite(point.normal) ||
+           !std::isfinite(point.separation))
+            throw std::overflow_error("PCM box-box contact overflow");
+        output[emitted++]=point;
+    }
+    return emitted;
+}
 std::uint8_t Scene::generate_pcm_plane_box(
     const Actor& plane, const Actor& box, float contact_distance,
     PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
@@ -1406,6 +1607,7 @@ void Scene::update_contacts() {
         cache.collision_axis=old?old->collision_axis:manifold.collision_axis;
         manifold.collision_axis=cache.collision_axis;
         const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair;
+        const bool pcm_box=pcm_box_box_enabled_ && !plane_pair;
         bool cache_hit=false;
         if(pcm_plane) {
             // Persistent PCM cache belongs to the SAME contact-manager
@@ -1425,7 +1627,17 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin()+manifold.count);
         }
-        if(!pcm_plane && old &&
+        if(pcm_box) {
+            step_checkpoint_.save_edge(*this,edge);
+            manifold.count=generate_pcm_box_box(
+                first,second,contact_distance,
+                contact_edges_[edge].pcm_box_box,
+                std::span<ContactPoint>(box_contact_scratch_));
+            next_contact_points_.insert(next_contact_points_.end(),
+                box_contact_scratch_.begin(),
+                box_contact_scratch_.begin()+manifold.count);
+        }
+        if(!pcm_plane && !pcm_box && old &&
            old->contact_distance==contact_distance &&
            old->offset<=gu_cached_points_.size() &&
            old->count<=gu_cached_points_.size()-old->offset) {
@@ -1498,7 +1710,7 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(!pcm_plane && !cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
+        if(!pcm_plane && !pcm_box && !cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
             // Direct source order/geometry from
             // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
             // logical normal is +Y, corresponding to PhysX plane-local
@@ -1562,7 +1774,7 @@ void Scene::update_contacts() {
                     point, normal, depths[corner] + contact_distance});
                 ++manifold.count;
             }
-        } else if(!pcm_plane && !cache_hit) {
+        } else if(!pcm_plane && !pcm_box && !cache_hit) {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
@@ -1578,7 +1790,7 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
         }
-        if(!pcm_plane && !cache_hit) {
+        if(!pcm_plane && !pcm_box && !cache_hit) {
             // PxcCacheLocalContacts caches the RAW source Gu stream on a
             // miss, even for zero-contact overlaps. Source mPairData is
             // retained only when the contact generator actually ran.
@@ -1595,7 +1807,7 @@ void Scene::update_contacts() {
                 next_contact_points_.begin()+manifold.contact_offset+
                     manifold.count);
         }
-        if(!pcm_plane)next_gu_cache_records_.push_back(cache);
+        if(!pcm_plane && !pcm_box)next_gu_cache_records_.push_back(cache);
         // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
         // The cached points above must retain the raw plane-first Gu
         // normal, so a subsequent cache hit's motion.dot(normal) keeps
