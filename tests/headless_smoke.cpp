@@ -1163,6 +1163,9 @@ int main() {
                 frictional.static_friction=0.8f;
                 frictional.dynamic_friction=0.6f;
                 frictional.restitution=0.0f;
+                // Controlled source/SDK diagnostic: suppress reuse of
+                // prior friction anchors while preserving tangent PGS.
+                frictional.disable_strong_friction=true;
                 fyzz::Material frictionless=frictional;
                 frictionless.disable_friction=true;
                 const auto initialize=[&](fyzz::World& w,bool friction_on) {
@@ -1249,6 +1252,14 @@ int main() {
                                      <<","<<p.velocity.z<<")"
                                      <<" frictionless_vel=("<<q.velocity.x<<","<<q.velocity.y
                                      <<","<<q.velocity.z<<")"
+                                     <<" lower_native_vel=("
+                                     <<native_friction.body_state(nl).velocity.x<<","
+                                     <<native_friction.body_state(nl).velocity.y<<","
+                                     <<native_friction.body_state(nl).velocity.z<<")"
+                                     <<" lower_source_vel=("
+                                     <<source_friction.body_state(pl).velocity.x<<","
+                                     <<source_friction.body_state(pl).velocity.y<<","
+                                     <<source_friction.body_state(pl).velocity.z<<")"
                                      <<" native_ang=("<<n.angular_velocity.x<<","
                                      <<n.angular_velocity.y<<","<<n.angular_velocity.z<<")"
                                      <<" source_ang=("<<p.angular_velocity.x<<","
