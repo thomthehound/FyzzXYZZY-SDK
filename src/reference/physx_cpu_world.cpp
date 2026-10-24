@@ -483,6 +483,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         actor->setRigidBodyFlag(
             physx::PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES,
             d.gyroscopic_forces_enabled);
+        actor->setRigidBodyFlag(
+            physx::PxRigidBodyFlag::eRETAIN_ACCELERATIONS,
+            d.retain_accelerations);
     }
 
     void set_body_velocity(BodyId id, Vec3 velocity) override {
