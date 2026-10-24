@@ -713,9 +713,9 @@ struct ContactCorrelationSourceFixture {
             };
             float normal=0.0f,friction=0.0f;
             for(const auto& row:scene.solver_contact_points_)
-                normal=std::max(normal,max_abs(row.rb_x_n_sqrt_inertia));
+                normal=std::max(normal,max_abs(row.ra_x_n_sqrt_inertia));
             for(const auto& row:scene.solver_friction_rows_)
-                friction=std::max(friction,max_abs(row.rb_x_t_sqrt_inertia));
+                friction=std::max(friction,max_abs(row.ra_x_t_sqrt_inertia));
             return std::pair{normal,friction};
         };
         const auto ordinary=probe(0.0f);
