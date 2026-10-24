@@ -18,7 +18,8 @@ std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(
 #endif
 // Implemented by the SDK-owned native scene, with no reference PhysX dependency.
 std::unique_ptr<WorldBackend> create_native_cpu_backend(
-    bool contact_notifications, bool enhanced_determinism);
+    bool contact_notifications, bool enhanced_determinism,
+    bool pcm_plane_box);
 
 namespace {
 void validate_half_extents(Vec3 half_extents) {
@@ -45,6 +46,9 @@ void validate_orientation(Quat q) {
 }
 
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
+    if(options.pcm_plane_box && options.execution!=ExecutionMode::NativeCpu)
+        throw std::invalid_argument(
+            "Partial native PCM plane-box selection requires NativeCpu");
     switch (options.execution) {
     case ExecutionMode::ReferencePhysXCpu:
     case ExecutionMode::ReferencePhysXCpuLegacyGu:
@@ -59,7 +63,8 @@ std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
 #endif
     case ExecutionMode::NativeCpu:
         return create_native_cpu_backend(
-            options.contact_notifications,options.enhanced_determinism);
+            options.contact_notifications,options.enhanced_determinism,
+            options.pcm_plane_box);
     case ExecutionMode::NativePortableGpu:
         throw std::logic_error(
             "Native FyzzXYZZY GPU scene is not yet implemented; "
