@@ -675,6 +675,70 @@ int main() {
             }
 
 
+            // Source PCM plane/box: compare actual contact buffers
+            // produced by GuPCMContactPlaneBox and the partial native
+            // PCM path. This is NOT a legacy-Gu oracle: reference runs
+            // its default eENABLE_PCM scene and native selects its
+            // explicit manager-owned PCM plane/box implementation.
+            for(bool reversed:{false,true}) {
+                for(float tilt:{0.0f,0.12f}) {
+                    fyzz::WorldOptions native_options{};
+                    native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                    native_options.contact_notifications=true;
+                    native_options.pcm_plane_box=true;
+                    fyzz::WorldOptions source_options{};
+                    source_options.execution=fyzz::ExecutionMode::ReferencePhysXCpu;
+                    source_options.contact_notifications=true;
+                    fyzz::World native_pcm(native_options);
+                    fyzz::World source_pcm(source_options);
+                    const auto set_up=[&](fyzz::World& world) {
+                        fyzz::BodyId dynamic_id{};
+                        if(reversed) {
+                            dynamic_id=world.add_dynamic_box(
+                                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                            world.add_static_floor(0.0f);
+                        } else {
+                            world.add_static_floor(0.0f);
+                            dynamic_id=world.add_dynamic_box(
+                                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                        }
+                        world.set_body_pose(dynamic_id,{0,0.5f,0},
+                            {0,0,std::sin(tilt*0.5f),
+                             std::cos(tilt*0.5f)});
+                        fyzz::RigidBodyDynamics d{};
+                        d.gravity_enabled=false;
+                        world.set_body_dynamics(dynamic_id,d);
+                    };
+                    set_up(native_pcm);
+                    set_up(source_pcm);
+                    native_pcm.step(1.0f/120.0f);
+                    source_pcm.step(1.0f/120.0f);
+                    const auto got=native_pcm.contact_event_points();
+                    const auto expected=source_pcm.contact_event_points();
+                    if(got.empty() || expected.empty() ||
+                       got.size()!=expected.size())
+                        throw std::runtime_error(
+                            "Native/source default PCM plane-box contact counts differ");
+                    for(const auto& p:expected) {
+                        bool found=false;
+                        for(const auto& n:got) {
+                            const float dx=n.position.x-p.position.x;
+                            const float dy=n.position.y-p.position.y;
+                            const float dz=n.position.z-p.position.z;
+                            if(dx*dx+dy*dy+dz*dz<1.0e-5f &&
+                               std::abs(n.separation-p.separation)<1.0e-3f &&
+                               std::abs(n.normal.y-p.normal.y)<1.0e-4f) {
+                                found=true;
+                                break;
+                            }
+                        }
+                        if(!found)
+                            throw std::runtime_error(
+                                "Native PCM cached projected point or depth diverges from PhysX PCM");
+                    }
+                }
+            }
+
             // ScBodySim::updateForces eRETAIN_ACCELERATIONS conformance:
             // an active body's per-second velocity modifications survive
             // across steps only with that source flag; eVELOCITY_CHANGE
