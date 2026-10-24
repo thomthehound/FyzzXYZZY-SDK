@@ -49,7 +49,7 @@ std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
     if((options.pcm_plane_box || options.pcm_box_box) &&
        options.execution!=ExecutionMode::NativeCpu)
         throw std::invalid_argument(
-            "Partial native PCM plane-box selection requires NativeCpu");
+            "Native PCM contact selection requires NativeCpu");
     switch (options.execution) {
     case ExecutionMode::ReferencePhysXCpu:
     case ExecutionMode::ReferencePhysXCpuLegacyGu:
