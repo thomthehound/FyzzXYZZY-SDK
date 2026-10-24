@@ -109,6 +109,12 @@ lookup-key optimization from changing the source's friction tangent
 sign and floating-point solve order. No shadow
 collision pipeline or fabricated contact geometry is added.
 
+Both the first speculative Gu contact geometry and the angular velocity
+at the first resolved impact now have independent PhysX source-witness
+assertions that remain active regardless of the long-horizon strict
+flag. These discriminate source actor ordering and contact Jacobians
+where the earlier permissive multi-frame bounds were inadequate.
+
 The independent frictional PhysX fixture exposes why this matters.
 With the upper body created before its lower support, native previously
 chose lower-box face points while source legacy Gu chose upper-box

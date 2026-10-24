@@ -1209,6 +1209,37 @@ int main() {
                     native_friction.step(dt);
                     source_friction.step(dt);
                     source_no_friction.step(dt);
+                    if(reversed && frame==0) {
+                        const auto find_pair=[](fyzz::World& world,
+                                                fyzz::BodyId a,
+                                                fyzz::BodyId b)
+                            -> const fyzz::ContactEvent* {
+                            for(const auto& event:world.contact_events())
+                                if(event.body0==std::min(a,b) &&
+                                   event.body1==std::max(a,b))
+                                    return &event;
+                            return nullptr;
+                        };
+                        const auto ne=find_pair(native_friction,nl,nu);
+                        const auto pe=find_pair(source_friction,pl,pu);
+                        if(!ne || !pe ||
+                           ne->contact_count!=pe->contact_count ||
+                           ne->contact_count<3)
+                            throw std::runtime_error(
+                                "Original Gu speculative contact patch missing");
+                        const auto nc=native_friction.contact_event_points();
+                        const auto pc=source_friction.contact_event_points();
+                        for(std::size_t i=0;i<ne->contact_count;++i) {
+                            const auto& a=nc[ne->point_offset+i];
+                            const auto& b=pc[pe->point_offset+i];
+                            if(std::abs(a.position.x-b.position.x)>0.008f ||
+                               std::abs(a.position.y-b.position.y)>0.008f ||
+                               std::abs(a.position.z-b.position.z)>0.008f)
+                                throw std::runtime_error(
+                                    "Native Gu contact face differs from source "
+                                    "before first PGS impact");
+                        }
+                    }
 #if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
                     if(reversed && frame<25) {
                         const auto line=[&](const char* name,fyzz::World& w,
@@ -1287,6 +1318,17 @@ int main() {
                         const float linear_error=err(n.velocity,p.velocity);
                         const float angular_error=err(n.angular_velocity,
                                                       p.angular_velocity);
+                        // This first resolved impact must match PhysX's
+                        // angular Jacobians, not merely fall inside the
+                        // permissive long-trajectory drift bounds.
+                        if(reversed && frame==11 && ni==nu &&
+                           (position_error>0.005f ||
+                            linear_error>0.03f ||
+                            angular_error>0.03f ||
+                            !std::isfinite(orientation_dot) ||
+                            std::abs(orientation_dot)<0.9999f))
+                            throw std::runtime_error(
+                                "First-impact PhysX angular source witness failed");
                         if(!std::isfinite(orientation_dot) ||
                            !std::isfinite(position_error) ||
                            !std::isfinite(linear_error) ||
