@@ -4218,43 +4218,44 @@ void Scene::write_back_contacts() {
     // not the reordered Dy partition list, owns output offsets. Here the
     // source force buffer is represented by SolverContactPoint::applied_force
     // and the output retains SDK-wide impulses for admitted extreme masses.
-    normal_impulse_writeback_.resize(contact_points_.size());
-    // DyContactPrep::updateFrictionAnchorCountAndPosition pairs each
-    // friction patch with its output's anchorPositions/anchorImpulses.
-    // Preserve the Gu manager's patch offsets even when solver partitions
-    // execute in a different order from the contact-manager stream.
+    // PhysX's Gu force buffer remains indexed by the original contact
+    // arena even though Dy executes island-ordered contact managers.
+    // A single contiguous clear establishes the zero-impulse result for
+    // every dormant or zero-response Gu contact. Do not scan the dormant
+    // contact-manager inventory merely to clear each contact window.
+    normal_impulse_writeback_.assign(contact_points_.size(),0.0);
     friction_impulse_writeback_.resize(friction_patches_.size());
-    for (std::size_t manifold_index=0;
-         manifold_index<manifolds_.size();++manifold_index) {
-        auto& manifold=manifolds_[manifold_index];
-        if(manifold.prepared_friction_epoch!=friction_cache_epoch_ &&
-           (manifold.solver_offset!=0 ||
-            manifold.friction_patch_offset!=0 ||
-            manifold.friction_patch_count!=0 ||
-            manifold.prepared_friction_epoch!=0)) {
-            // An inactive source manager keeps Gu contacts but no live
-            // Dy descriptors. Retire stale offsets ONCE when a manager
-            // becomes dormant, rather than rewriting all dormant slots
-            // and copying their checkpoint metadata every quiet frame.
-            step_checkpoint_.save_manifold_solver_metadata(
-                *this,manifold_index);
-            manifold.solver_offset=0;
-            manifold.friction_patch_offset=0;
-            manifold.friction_patch_count=0;
-            manifold.prepared_friction_epoch=0;
-        }
-        if (manifold.contact_offset > contact_points_.size() ||
-            manifold.count > contact_points_.size()-manifold.contact_offset)
-            throw std::logic_error(
-                "Native Gu contact writeback offset exceeds published stream");
-        if(manifold.friction_patch_count==0) {
-            // No solver rows exist for zero-capped or dormant Gu
-            // contacts. Explicitly zero just their Gu offset window,
-            // preserving subsequent active-manager force indexing.
-            std::fill_n(normal_impulse_writeback_.begin()+
-                            manifold.contact_offset,manifold.count,0.0);
+    // The checkpoint owns the prior successful Dy manager sequence.
+    // Only those managers could still carry exposed Dy offsets when an
+    // accurate island falls asleep without Gu republication. Source
+    // publication that rotated the Gu arena constructs fresh, zeroed
+    // metadata, so unrelated historical indices are skipped safely.
+    for(std::size_t previous:step_checkpoint_.indexed_managers) {
+        if(previous>=manifolds_.size())continue;
+        auto& old=manifolds_[previous];
+        if(old.prepared_friction_epoch==friction_cache_epoch_ ||
+           (old.solver_offset==0 && old.friction_patch_offset==0 &&
+            old.friction_patch_count==0 &&
+            old.prepared_friction_epoch==0))
             continue;
-        }
+        step_checkpoint_.save_manifold_solver_metadata(*this,previous);
+        old.solver_offset=0;
+        old.friction_patch_offset=0;
+        old.friction_patch_count=0;
+        old.prepared_friction_epoch=0;
+    }
+    // Both the original contact-force offsets and patch ownership are
+    // checked only for managers actually admitted to current Dy tasks.
+    // This is O(active contact points + prior active managers) besides
+    // the unavoidable dense Gu output zero-fill.
+    for(std::size_t manifold_index:indexed_managers_) {
+        const auto& manifold=manifolds_[manifold_index];
+        if(manifold.prepared_friction_epoch!=friction_cache_epoch_ ||
+           manifold.contact_offset>contact_points_.size() ||
+           manifold.count>contact_points_.size()-manifold.contact_offset)
+            throw std::logic_error(
+                "Active Dy writeback references invalid Gu contact owner");
+        if(manifold.friction_patch_count==0)continue;
         if(manifold.solver_offset > solver_contact_points_.size() ||
            manifold.count > solver_contact_points_.size()-manifold.solver_offset)
             throw std::logic_error(
