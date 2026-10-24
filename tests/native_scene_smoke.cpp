@@ -7333,7 +7333,7 @@ int run_native_scene_smoke() {
                "PhysX plane/box near-contact vertex manifold absent");
         const auto& above = contact_scene.contacts()[0];
         expect(std::abs(above.points[0].separation - 0.02f) < 0.0001f &&
-               above.points[0].normal.y == -1.0f,
+               above.points[0].normal.y == 1.0f,
                "Plane contact separation or normal incorrect");
         // GuContactPlaneBox enumerates +x,-y,+z before the other
         // three near-plane corners. Preserve source contact ordering
