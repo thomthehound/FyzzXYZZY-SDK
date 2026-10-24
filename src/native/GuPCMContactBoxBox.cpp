@@ -189,7 +189,7 @@ bool source_pcm_box_box_candidates(
     float contact_distance,std::span<PcmContactCandidate> candidates,
     std::size_t& count) {
     const Box a{half0,position0,rotation0},b{half1,position1,rotation1};
-    Generation gen{a,b,candidates};
+    Generation gen{a,b,candidates,0};
     const Vec3 delta=sub(b.position,a.position);
     std::array<float,6> sign{},overlap{};
     constexpr float sat_epsilon=1.0e-6f;
@@ -241,9 +241,7 @@ bool source_pcm_box_box_candidates(
             feature=i;
         }
     const bool flipped=feature>=3;
-    const Box& reference=flipped?b:a;
     const Box& incident=flipped?a:b;
-    const unsigned axis=feature%3;
     const bool nonpositive=sign[feature]<=0.0f;
     Frame frame{};
     Vec3 normal{};
@@ -287,24 +285,13 @@ bool source_pcm_box_box_candidates(
     }
     // GuPCMContactBoxBox::getIncidentPolygon: choose the incident face
     // most aligned with the search axis and emit its four source corners.
-    const Vec3 search=flipped?negate(frame.z):negate(frame.z);
-    // For shape0 reference the source uses -localNormal; for shape1
-    // reference it uses localNormal (which equals -Z). Both are -Z
-    // in the reference frame.
-    unsigned incident_axis=0;
-    float max_dot=std::abs(dot(search,incident.axis[0]));
-    for(unsigned i=1;i<3;++i) {
-        const float v=std::abs(dot(search,incident.axis[i]));
-        if(i==1?(v>=max_dot):(v>=max_dot)) {
-            max_dot=v;
-            incident_axis=i;
-        }
-    }
-    // Tie preference from Gu getIncidentPolygon: X >= Y,Z; Y >= Z.
+    // Both source branches search along reference-frame -Z.
+    // Tie preference: X >= Y,Z; otherwise Y >= Z.
+    const Vec3 search=negate(frame.z);
     const float dx=std::abs(dot(search,incident.axis[0]));
     const float dy=std::abs(dot(search,incident.axis[1]));
     const float dz=std::abs(dot(search,incident.axis[2]));
-    incident_axis=dx>=dy && dx>=dz?0:(dy>=dz?1:2);
+    const unsigned incident_axis=dx>=dy && dx>=dz?0:(dy>=dz?1:2);
     const float facing=dot(search,incident.axis[incident_axis]);
     const float signed_extent=facing>0.0f?
         -extent(incident.half,incident_axis):
