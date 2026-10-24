@@ -172,8 +172,16 @@ back-to-front with swap-last removal, invalidates the manifold at the
 source translation/rotation thresholds, reduces more than four candidates
 using the source deepest/farthest/extrema clustering, and emits contacts
 at the **projected plane-local B positions**, not the legacy-Gu box
-vertices. PCM geometry and source-normal flipping still use the existing
-Sc manager's authoritative contact publication. The existing
+vertices. Crucially, `ScRigidSim::notifyShapesOfTransformChange` calls
+`ShapeInteraction::resetManagerCachedState` on an explicitly authored
+actor pose (including a small or idempotent edit). That clears this
+manager's PCM cache before the next Gu pass. In contrast, the internal
+`DyBodyCoreIntegrator` motion path does **not** invoke authored shape
+notifications: the same PCM contact-manager cache survives and its
+witnesses refresh/invalidate under the original margin/rotation tests.
+Shape-offset edits likewise invalidate affected managers. PCM geometry
+and source-normal flipping still use the existing Sc manager's
+authoritative contact publication. The existing
 `StepCheckpoint::save_edge` journal restores PCM state on rejected
 collision/PGS transactions, and deferred manager retirement resets the
 same cache before a handle is reused. No additional manager registry,
