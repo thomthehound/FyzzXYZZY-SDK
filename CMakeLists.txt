@@ -12,11 +12,11 @@ include(FetchContent)
 # OFF must never fetch or compile the reference PhysX repository.
 option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
   "Build the transitional PhysX CPU reference and source-port conformance fixtures" ON)
-# The long-horizon coupled friction/rotation stress test currently
-# exposes a real native/reference source gap; retain it as an explicit
-# opt-in N1 acceptance gate rather than concealing it behind tolerances.
+# Run the 48-frame coupled friction/rotation source oracle by default.
+# Windows and Linux source-enabled CI explicitly require this gate.
+# PhysX-independent builds never compile or link the reference fixture.
 option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-  "Exercise unresolved 48-frame native/PhysX coupled friction trajectory parity" ON)
+  "Require 48-frame native/PhysX CPU coupled friction trajectory parity" ON)
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.

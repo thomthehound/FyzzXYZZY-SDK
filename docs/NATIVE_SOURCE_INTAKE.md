@@ -161,29 +161,25 @@ two coupled contact managers (floor/lower and lower/upper), rotated
 contact normals, and a friction-disabled
 PhysX oracle. The normal-only tests previously missed this coupling.
 
-The **first 16 frames** at 240 Hz are included in the normal reference
-CI conformance suite. The original **48-frame** mixed-timestep fixture
-remains a reproducible **strict N1 acceptance gate**, enabled by
-`-DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON`. This longer
-test is NOT accepted as passing: on reversed actor admission, the
-frame-20 upper body had native/source vertical velocities of
-approximately 0.051/0.927 m/s. Native Gu reported 3 upper/lower
-contacts at roughly 0.07 normal impulse and 0.00007 m penetration;
-the original PhysX legacy-Gu scene reported 3 contacts at roughly
-1.02 impulse and 0.0163 m penetration. The lower body's static-floor
-contact impulses also differed by roughly 0.21 versus 1.65.
-The separate frictionless source control did not reproduce the spike.
+The full **48-frame** mixed-timestep fixture is the coupled
+friction/rotation acceptance gate in source-enabled Windows and Linux
+CI. `FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON` is both the
+default and an explicit reference-CI configure argument. The original
+per-frame position, linear/angular velocity, and quaternion bounds,
+frame-12 first-impact witness, and independent friction-disabled PhysX
+control remain unchanged. CI additionally runs the source comparison
+verbosely to record the compiled frame horizon for both creation
+orders. Source-free Vulkan/D3D12 jobs never link the PhysX oracle.
 
-Turning off source strong-friction retention in **both** engines
-reproduced the same gap, so a cached-anchor explanation has been
-disproven. The original Gu box-box generator and native source
-translation have identical post-entry algorithm lines, aside from
-contact-buffer type adaptation, so the outstanding investigation
-must compare contact-manager ordering, source geometry/state
-publication, per-iteration PGS integration, and precise floating-point
-behavior before assigning root cause. No tolerance widening or
-substitute solver makes the extended test pass. N1 cannot close with
-this strict gate failing.
+**Historical strict failure:** A previous reversed-actor run diverged
+at frame 20, with native/reference upper-body vertical velocities of
+approximately 0.051/0.927 m/s and mismatched upper/lower and floor/lower
+normal impulses. Turning off strong-friction retention in both engines
+did not eliminate that earlier gap. Preserve this observation as
+diagnostic history; it is not evidence that the current committed
+48-frame oracle still fails. Passing this bounded test does not
+establish the remaining complete shape-interaction, island, packed
+solver ABI, or public fetch/callback N1 requirements.
 
 ## Source task ordering: execution and handoffs
 

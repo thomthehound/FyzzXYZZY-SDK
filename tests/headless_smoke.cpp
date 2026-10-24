@@ -1573,6 +1573,13 @@ int main() {
                 if(source_effect<0.03f || source_rotation<0.01f)
                     throw std::runtime_error(
                         "PhysX friction/rotation oracle fixture lacked response");
+                // Keep the compiled 48-frame acceptance horizon visible
+                // in the reference CI logs; a 16-frame smoke is distinct.
+                std::cout<<"N1 coupled-friction oracle passed"
+                         <<" frames="<<frames
+                         <<" reversed="<<reversed
+                         <<" friction_effect="<<source_effect
+                         <<" angular_response="<<source_rotation<<'\n';
             }
 
             // Coupled PGS conformance: unlike a free two-body impact,
