@@ -164,7 +164,8 @@ struct ContactCorrelationSourceFixture {
                 "ScPipeline postSolver omitted the final Dy task completion");
         join.finish_solver_task();
         join.require_post_solver();
-        if(!rejected([&]{ join.finish_solver_task(); }) ||
+        if(!rejected([&]{ join.finish_lost_contacts(); }) ||
+           !rejected([&]{ join.finish_solver_task(); }) ||
            !rejected([&]{ join.dispatch_solver_tasks(1); }))
             throw std::runtime_error(
                 "ScPipeline postSolver accepted duplicate task completion");
