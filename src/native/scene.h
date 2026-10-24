@@ -1094,6 +1094,10 @@ private:
     bool contact_notifications_=false;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
+    // Non-owning Gu-manifold indices for this frame's actual report
+    // producers (active Dy managers and newly found physical touches).
+    // Sorted by original Gu index before Sc report publication.
+    std::vector<std::size_t> contact_report_managers_;
     std::vector<ContactEventPoint> contact_event_points_;
     std::vector<ContactEventPoint> next_contact_event_points_;
     std::uint64_t frame_index_ = 0;
