@@ -20,6 +20,83 @@
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
 struct ContactCorrelationSourceFixture {
+    static void verify_legacy_gu_contact_cache() {
+        // PxcCacheLocalContacts is independent from PCM and
+        // DyFrictionCorrelation. A local-contact cache HIT moves raw
+        // geometry by the midpoint of the two shape motions; the
+        // original cached generating transforms are not advanced.
+        Scene scene;
+        scene.add_static_floor(0.0f);
+        const auto id=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
+        scene.advance_collision(true);
+        if(scene.gu_cache_records_.size()!=1 ||
+           scene.gu_cache_records_[0].count!=4 ||
+           scene.manifolds_.size()!=1)
+            throw std::runtime_error(
+                "Native legacy-Gu contact cache initial contact admission failed");
+        const float source_x=scene.manifolds_[0].points[0].position.x;
+        scene.set_position(id,{0.004f,0.5f,0.0f});
+        scene.advance_collision(true);
+        if(scene.gu_cache_records_[0].pose1.position.x!=0.0f ||
+           scene.gu_cache_records_[0].count!=4 ||
+           std::abs(scene.manifolds_[0].points[0].position.x-
+               (source_x+0.002f))>3.0e-5f)
+            throw std::runtime_error(
+                "Pxc legacy cache hit replaced original geometry or omitted midpoint update");
+        scene.set_position(id,{0.020f,0.5f,0.0f});
+        scene.advance_collision(true);
+        if(scene.gu_cache_records_[0].pose1.position.x!=0.020f ||
+           std::abs(scene.manifolds_[0].points[0].position.x-
+               (source_x+0.020f))>3.0e-5f)
+            throw std::runtime_error(
+                "Pxc legacy cache did not regenerate contacts at source motion threshold");
+        scene.set_position(id,{0.022f,0.5f,0.0f});
+        scene.advance_collision(true);
+        if(scene.gu_cache_records_[0].pose1.position.x!=0.020f ||
+           std::abs(scene.manifolds_[0].points[0].position.x-
+               (source_x+0.021f))>3.0e-5f)
+            throw std::runtime_error(
+                "Pxc legacy contact reference frame advanced incorrectly on repeated hit");
+        // No-contact overlaps also own source cache records. The
+        // infinite plane participates in BP even far above the floor.
+        Scene separated;
+        separated.add_static_floor(0.0f);
+        const auto distant=separated.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1);
+        separated.advance_collision(true);
+        if(separated.gu_cache_records_.size()!=1 ||
+           separated.gu_cache_records_[0].count!=0)
+            throw std::runtime_error(
+                "Pxc legacy cache lost zero-contact BP overlap");
+        separated.set_position(distant,{0,4.995f,0});
+        separated.advance_collision(true);
+        if(separated.gu_cache_records_[0].pose1.position.y!=5.0f ||
+           separated.gu_cache_records_[0].count!=0)
+            throw std::runtime_error(
+                "Pxc zero-contact cache should retain original generating pose");
+
+        // Box-box contacts use the source Sc actor-order frame, not a
+        // separately ordered cache stream or canonical BodyId geometry.
+        Scene stack;
+        stack.add_dynamic_box({0.5f,0.5f,0.5f},{0,0.5f,0},1);
+        const auto upper=stack.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.10f,1.52f,0.10f},1);
+        stack.advance_collision(true);
+        if(stack.gu_cache_records_.size()!=1 ||
+           stack.gu_cache_records_[0].count==0)
+            throw std::runtime_error(
+                "Pxc box/box cache did not capture speculative Gu contacts");
+        const auto old=stack.gu_cache_records_[0];
+        const auto old_p=stack.manifolds_[0].points[0].position;
+        stack.set_position(upper,{0.103f,1.52f,0.1f});
+        stack.advance_collision(true);
+        if(stack.gu_cache_records_[0].pose0.position.x!=old.pose0.position.x ||
+           std::abs(stack.manifolds_[0].points[0].position.x-
+                    (old_p.x+0.0015f))>3.0e-5f)
+            throw std::runtime_error(
+                "Pxc source-oriented box/box contact cache midpoint mismatch");
+    }
     static void verify_enhanced_determinism_tasks() {
         // Original DyDynamicsContext::updatePostKinematic stops island
         // accumulation after EACH active island under
@@ -8861,6 +8938,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
