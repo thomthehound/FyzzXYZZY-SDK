@@ -5613,11 +5613,17 @@ void Scene::step(float seconds) {
         actor.angular_velocity = angular;
         actor.pending_angular_velocity_delta = {};
         actor.pending_linear_velocity_delta = {};
-        // ScBodySim::setForcesToDefaults clears the default per-second
-        // acceleration stream after each successful consumption.
-        // eRETAIN_ACCELERATIONS is not enabled in this admitted scene.
-        actor.pending_linear_acceleration = {};
-        actor.pending_angular_acceleration = {};
+        // ScBodySim::updateForces calls setForcesToDefaults after
+        // applying per-step velocity and per-second acceleration mods.
+        // PxRigidBodyFlag::eRETAIN_ACCELERATIONS preserves ONLY the
+        // per-second stream for the next active frame; per-step velocity
+        // deltas were consumed and cleared unconditionally above.
+        // Island deactivation separately clears both streams via
+        // BodySim::putToSleep::simStateClearVelMod.
+        if(!d.retain_accelerations) {
+            actor.pending_linear_acceleration = {};
+            actor.pending_angular_acceleration = {};
+        }
         // Source ScPipeline/DySolverControl: do not predict and publish
         // the position before Gu contacts and the biased PGS passes.
         // Its integration requires the saved position-solver motion
