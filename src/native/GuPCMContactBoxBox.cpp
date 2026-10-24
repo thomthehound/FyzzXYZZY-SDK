@@ -49,9 +49,6 @@ float extent(Vec3 v,unsigned index) {
 Vec3 local(Box const& b,Vec3 world) {
     return inverse_rotate(b.rotation,sub(world,b.position));
 }
-Vec3 world(Box const& b,Vec3 point) {
-    return add(b.position,rotate(b.rotation,point));
-}
 struct Frame {
     Vec3 x{}, y{}, z{}, position{};
     Vec3 project(Vec3 w) const {
