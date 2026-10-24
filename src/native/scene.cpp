@@ -6151,9 +6151,11 @@ namespace {
 class NativeCpuWorld final : public WorldBackend {
 public:
     explicit NativeCpuWorld(bool contact_notifications,
-                            bool enhanced_determinism) {
+                            bool enhanced_determinism,
+                            bool pcm_plane_box) {
         scene_.set_contact_notifications(contact_notifications);
         scene_.set_enhanced_determinism(enhanced_determinism);
+        scene_.set_pcm_plane_box(pcm_plane_box);
     }
     std::span<const ContactEvent> contact_events() const override {
         return scene_.contact_events();
@@ -6215,7 +6217,8 @@ private:
 };
 } // namespace
 std::unique_ptr<WorldBackend> create_native_cpu_backend(
-    bool notify, bool enhanced_determinism) {
-    return std::make_unique<NativeCpuWorld>(notify,enhanced_determinism);
+    bool notify, bool enhanced_determinism, bool pcm_plane_box) {
+    return std::make_unique<NativeCpuWorld>(
+        notify,enhanced_determinism,pcm_plane_box);
 }
 } // namespace fyzz
