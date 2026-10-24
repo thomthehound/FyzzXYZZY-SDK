@@ -218,6 +218,62 @@ struct ContactCorrelationSourceFixture {
                     "Selected cached friction anchor differs from its body-local frames");
         }
     }
+    static void verify_source_retained_acceleration_lifecycle() {
+        // ScBodySim::updateForces preserves per-second VelocityMod
+        // entries only with eRETAIN_ACCELERATIONS, while each per-step
+        // velocity change is always consumed exactly once.
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        const auto body=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.linear_damping=0.0f;
+        dynamics.angular_damping=0.0f;
+        dynamics.retain_accelerations=true;
+        scene.set_dynamics(body,dynamics);
+        scene.add_spatial_velocity_mod(body,{1.5f,0,0},
+                                       ForceMode::Acceleration,false);
+        scene.add_spatial_velocity_mod(body,{0,0,0.75f},
+                                       ForceMode::Acceleration,true);
+        scene.add_spatial_velocity_mod(body,{0.2f,0,0},
+                                       ForceMode::VelocityChange,false);
+        for(unsigned i=1;i<=5;++i) {
+            scene.step(dt);
+            const auto state=scene.body_state(body);
+            if(std::abs(state.velocity.x-(0.2f+i*1.5f*dt))>1e-5f ||
+               std::abs(state.angular_velocity.z-i*0.75f*dt)>1e-5f ||
+               scene.actors_[body].pending_linear_acceleration.x!=1.5f ||
+               scene.actors_[body].pending_angular_acceleration.z!=0.75f ||
+               scene.actors_[body].pending_linear_velocity_delta.x!=0.0f)
+                throw std::runtime_error(
+                    "Retained PhysX per-second acceleration or one-shot velocity mod diverged");
+        }
+        scene.clear_spatial_velocity_mod(body,ForceMode::Acceleration,false);
+        scene.clear_spatial_velocity_mod(body,ForceMode::Acceleration,true);
+        const auto previous=scene.body_state(body);
+        scene.step(dt);
+        const auto final=scene.body_state(body);
+        if(std::abs(final.velocity.x-previous.velocity.x)>1e-6f ||
+           std::abs(final.angular_velocity.z-previous.angular_velocity.z)>1e-6f)
+            throw std::runtime_error(
+                "Cleared retained PhysX acceleration continued after the next step");
+
+        Scene default_scene;
+        const auto once=default_scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        auto no_retention=dynamics;
+        no_retention.retain_accelerations=false;
+        default_scene.set_dynamics(once,no_retention);
+        default_scene.add_spatial_velocity_mod(once,{2.0f,0,0},
+                                               ForceMode::Acceleration,false);
+        default_scene.step(dt);
+        default_scene.step(dt);
+        if(std::abs(default_scene.body_state(once).velocity.x-
+                    2.0f*dt)>1e-6f)
+            throw std::runtime_error(
+                "Default source non-retaining acceleration was applied twice");
+    }
     static void verify_after_integration_cached_shape_bounds() {
         // ScPipeline::afterIntegration::updateScBodyAndShapeSim publishes
         // each integrated active body's pose-derived bounds before the
@@ -9265,6 +9321,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
     fyzz::native::ContactCorrelationSourceFixture::verify_after_integration_cached_shape_bounds();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_retained_acceleration_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
