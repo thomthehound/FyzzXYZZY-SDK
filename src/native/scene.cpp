@@ -5265,8 +5265,10 @@ void Scene::step(float seconds) {
                 angular,actor.inverse_inertia_local,
                 actor.orientation,seconds);
         }
-        // The no-contact integration path must publish locked axes too.
-        lock_linear_axes(velocity,d.lock_flags);
+        // DyRigidBodyToSolverBody leaves the solver's pre-integration
+        // linear baseline available to contact preparation. Original
+        // integrateCore locks the motion and final linear writeback,
+        // rather than suppressing contact-relative velocity beforehand.
         lock_angular_axes(angular,d.lock_flags);
         if (!finite(velocity) || !finite(angular))
             throw std::overflow_error("Native CPU unconstrained velocity overflow");
@@ -5321,6 +5323,11 @@ void Scene::step(float seconds) {
             const BodyId id=accurate_island_nodes_[index];
             auto& actor=actors_[id];
             if(actor.sleeping)continue;
+            // integrateCore applies world linear locks *after* the PGS
+            // solve. For no-contact bodies this is also their final
+            // velocity publication; active solver bodies were already
+            // masked by publish_solver_bodies().
+            lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
             Vec3 motion_linear = actor.velocity;
             Vec3 motion_angular = actor.angular_velocity;
             // Scene clock increments in advance_collision_internal; only

@@ -208,6 +208,59 @@ int main() {
                         "PhysX gyroscopic fixture produced no distinct torque");
             }
 
+            // Linear locks are applied at Dy integrateCore rather
+            // than removing the pre-solver contact-relative velocity.
+            // A source-locked supporting dynamic and an unconstrained
+            // upper body must retain coupled PGS response.
+            {
+                fyzz::World native_locked_stack(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_locked_stack(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                const auto nf=native_locked_stack.add_static_floor(0);
+                const auto pf=source_locked_stack.add_static_floor(0);
+                const auto nl=native_locked_stack.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                const auto pl=source_locked_stack.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                const auto nu=native_locked_stack.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,1.52f,0},2.0f);
+                const auto pu=source_locked_stack.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,1.52f,0},2.0f);
+                fyzz::Material m{};
+                m.disable_friction=true;
+                m.restitution=0.0f;
+                for(const auto id:{nf,nl,nu})
+                    native_locked_stack.set_body_material(id,m);
+                for(const auto id:{pf,pl,pu})
+                    source_locked_stack.set_body_material(id,m);
+                fyzz::RigidBodyDynamics locked{};
+                locked.lock_flags=fyzz::LockLinearY;
+                native_locked_stack.set_body_dynamics(nl,locked);
+                source_locked_stack.set_body_dynamics(pl,locked);
+                native_locked_stack.set_body_velocity(nu,{0,-0.2f,0});
+                source_locked_stack.set_body_velocity(pu,{0,-0.2f,0});
+                for(int frame=0;frame<64;++frame) {
+                    const float dt=frame<32?1.0f/120.0f:1.0f/60.0f;
+                    native_locked_stack.step(dt);
+                    source_locked_stack.step(dt);
+                    for(const auto [ni,pi]:{
+                        std::pair{nl,pl},std::pair{nu,pu}}) {
+                        const auto a=native_locked_stack.body_state(ni);
+                        const auto b=source_locked_stack.body_state(pi);
+                        if(!std::isfinite(a.position.y) ||
+                           !std::isfinite(b.position.y) ||
+                           std::abs(a.position.y-b.position.y)>0.05f ||
+                           std::abs(a.velocity.y-b.velocity.y)>0.25f)
+                            throw std::runtime_error(
+                                "Locked dynamic stack diverged from source PGS");
+                    }
+                    if(native_locked_stack.body_state(nl).velocity.y!=0.0f)
+                        throw std::runtime_error(
+                            "Source linear lock failed final PGS writeback");
+                }
+            }
+
             // Independent reference comparison: unconstrained angular
             // velocity damping, source quaternion orientation and pose.
             // Full contact/angular solver parity is not claimed here.
