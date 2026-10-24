@@ -4621,6 +4621,11 @@ void verify_source_retired_bridge_deactivation() {
                      <<a.velocity.y<<","<<a.velocity.z<<")"
                      <<" moving_vel=("<<b.velocity.x<<","
                      <<b.velocity.y<<","<<b.velocity.z<<")"
+                     <<" quiet_angular=("<<a.angular_velocity.x<<","
+                     <<a.angular_velocity.y<<","<<a.angular_velocity.z<<")"
+                     <<" quiet_y="<<a.position.y
+                     <<" wake_counter="<<retired_bridge.body_wake_counter(sleeping_rod)
+                     <<" ready_for_sleep="<<retired_bridge.body_ready_for_sleep(sleeping_rod)
                      <<" contacts="<<retired_bridge.contacts().size()
                      <<" pairs="<<retired_bridge.pairs().size()
                      <<" floor_active="<<retired_bridge.contact_interaction_active(floor_pair)
