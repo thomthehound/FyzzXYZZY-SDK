@@ -215,8 +215,20 @@ bool source_pcm_box_box_candidates(
     // adds contactDistance without dividing by its length.
     for(unsigned i=0;i<3;++i)for(unsigned j=0;j<3;++j) {
         const Vec3 cross_axis=cross(a.axis[i],b.axis[j]);
+        // The source's nine cross-axis projections omit their own
+        // parallel axes: the 1e-6 stabilization belongs only to the
+        // other two half-extents on each body.
+        float ra=0.0f,rb=0.0f;
+        for(unsigned k=0;k<3;++k) {
+            if(k!=i)
+                ra+=(std::abs(dot(cross_axis,a.axis[k]))+
+                     sat_epsilon)*extent(a.half,k);
+            if(k!=j)
+                rb+=(std::abs(dot(cross_axis,b.axis[k]))+
+                     sat_epsilon)*extent(b.half,k);
+        }
         if(std::abs(dot(delta,cross_axis))>
-           radius(a,cross_axis)+radius(b,cross_axis)+contact_distance) {
+           ra+rb+contact_distance) {
             count=0;
             return false;
         }
