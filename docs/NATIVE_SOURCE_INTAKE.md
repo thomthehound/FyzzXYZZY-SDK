@@ -1509,6 +1509,21 @@ mutations, filter edits and batched per-shape/multi-shape callbacks
 remain later N1 admission gates. The new stream is an admitted rigid contact-touch
 subset, not a replacement for the entire PhysX callback machinery.
 
+## Source gyroscopic-force velocity update
+
+The existing actor-owned RigidBodyDynamics now forwards
+PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES into the independent PhysX
+reference scene and applies the original
+DyRigidBodyToSolverBody::copyToSolverBodyData angular-momentum update
+in the native unconstrained/PGS input path. The local inverse-inertia
+tensor and body quaternion remain authoritative; no second solver-body
+or gyroscopic simulation is introduced. Both contact and no-contact
+islands consume one velocity correction per frame, after unconstrained
+velocity clamping and before axis locks. Source-free tests distinguish
+enabled and disabled anisotropic-body motion; reference-enabled tests
+compare the original CPU result and quaternion response across
+changing timesteps.
+
 ## Source rigid dynamic world-axis locks
 
 The existing native Scene accepts the six PxRigidDynamicLockFlag axes

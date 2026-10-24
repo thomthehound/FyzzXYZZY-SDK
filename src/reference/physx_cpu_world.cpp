@@ -470,6 +470,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                                          d.velocity_iterations);
         actor->setRigidDynamicLockFlags(physx::PxRigidDynamicLockFlags(
             static_cast<physx::PxU8>(d.lock_flags)));
+        actor->setRigidBodyFlag(
+            physx::PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES,
+            d.gyroscopic_forces_enabled);
     }
 
     void set_body_velocity(BodyId id, Vec3 velocity) override {

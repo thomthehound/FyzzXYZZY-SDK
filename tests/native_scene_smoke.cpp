@@ -5859,6 +5859,43 @@ void verify_source_rigid_lock_flags() {
     }
 }
 
+void verify_source_gyroscopic_motion() {
+    using namespace fyzz;
+    World enabled(WorldOptions{ExecutionMode::NativeCpu});
+    World disabled(WorldOptions{ExecutionMode::NativeCpu});
+    constexpr Vec3 half{0.3f,0.5f,0.9f};
+    const auto a=enabled.add_dynamic_box(half,{0,10,0},1.0f);
+    const auto b=disabled.add_dynamic_box(half,{0,10,0},1.0f);
+    RigidBodyDynamics d{};
+    d.gravity_enabled=false;
+    d.gyroscopic_forces_enabled=true;
+    enabled.set_body_dynamics(a,d);
+    d.gyroscopic_forces_enabled=false;
+    disabled.set_body_dynamics(b,d);
+    enabled.set_body_angular_velocity(a,{1.2f,1.6f,-1.9f});
+    disabled.set_body_angular_velocity(b,{1.2f,1.6f,-1.9f});
+    float maximum_delta=0.0f;
+    for(int frame=0;frame<128;++frame) {
+        const float dt=frame<64?1.0f/120.0f:1.0f/240.0f;
+        enabled.step(dt);
+        disabled.step(dt);
+        const auto e=enabled.body_state(a);
+        const auto off=disabled.body_state(b);
+        maximum_delta=std::max(maximum_delta,
+            std::abs(e.angular_velocity.x-off.angular_velocity.x));
+        maximum_delta=std::max(maximum_delta,
+            std::abs(e.angular_velocity.y-off.angular_velocity.y));
+        maximum_delta=std::max(maximum_delta,
+            std::abs(e.angular_velocity.z-off.angular_velocity.z));
+        expect(std::isfinite(e.angular_velocity.x) &&
+               std::isfinite(e.angular_velocity.y) &&
+               std::isfinite(e.angular_velocity.z),
+               "Source gyroscopic angular update became nonfinite");
+    }
+    expect(maximum_delta>0.05f,
+           "Native gyroscopic flag had no observable inertia response");
+}
+
 int run_native_scene_smoke() {
     using fyzz::native::Scene;
     Scene scene, independent;
@@ -8665,6 +8702,7 @@ int run_native_scene_smoke() {
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
+    verify_source_gyroscopic_motion();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
     verify_source_contact_notification_world();

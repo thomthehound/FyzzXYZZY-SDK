@@ -99,6 +99,8 @@ struct RigidBodyDynamics {
     bool gravity_enabled=true;
     // PxRigidDynamicLockFlags; zero permits unrestricted rigid motion.
     std::uint32_t lock_flags=0;
+    // PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES. Disabled by default.
+    bool gyroscopic_forces_enabled=false;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;
 };

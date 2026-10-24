@@ -31,6 +31,36 @@ std::uint32_t encode_max(float v) {
 }
 // DyBodyCoreIntegrator::integrateCore locks motion/writeback axes without
 // changing inverse inertia or the response of contact constraints.
+// DyRigidBodyToSolverBody.cpp::copyToSolverBodyData gyroscopic
+// velocity update. Source computes the torque in body-local inertia
+// coordinates, renormalizes angular momentum and rotates the resulting
+// velocity correction back to world space before applying axis locks.
+Vec3 gyroscopic_velocity(Vec3 angular, Vec3 inverse_inertia, Quat pose,
+                         float dt) {
+    const Vec3 inertia{
+        inverse_inertia.x>0.0f?1.0f/inverse_inertia.x:0.0f,
+        inverse_inertia.y>0.0f?1.0f/inverse_inertia.y:0.0f,
+        inverse_inertia.z>0.0f?1.0f/inverse_inertia.z:0.0f};
+    const Vec3 local=rotate_inverse(pose,angular);
+    const Vec3 original{
+        inertia.x*local.x,inertia.y*local.y,inertia.z*local.z};
+    const Vec3 torque=cross(local,original);
+    Vec3 next{original.x-torque.x*dt,
+              original.y-torque.y*dt,
+              original.z-torque.z*dt};
+    const float old_magnitude=std::sqrt(
+        original.x*original.x+original.y*original.y+original.z*original.z);
+    const float new_magnitude=std::sqrt(
+        next.x*next.x+next.y*next.y+next.z*next.z);
+    const float ratio=new_magnitude>0.0f?old_magnitude/new_magnitude:0.0f;
+    next={next.x*ratio,next.y*ratio,next.z*ratio};
+    const Vec3 local_delta{
+        inverse_inertia.x*next.x-local.x,
+        inverse_inertia.y*next.y-local.y,
+        inverse_inertia.z*next.z-local.z};
+    const Vec3 delta=rotate(pose,local_delta);
+    return {angular.x+delta.x,angular.y+delta.y,angular.z+delta.z};
+}
 void lock_linear_axes(Vec3& v,std::uint32_t flags) noexcept {
     if(flags & LockLinearX)v.x=0.0f;
     if(flags & LockLinearY)v.y=0.0f;
@@ -5223,6 +5253,18 @@ void Scene::step(float seconds) {
             angular.z *= factor;
         }
         Vec3 velocity{vx, vy, vz};
+        // DyRigidBodyToSolverBody::copyToSolverBodyData applies the
+        // optional gyroscopic update after speed clamping and before
+        // angular locking. All awake bodies, including no-contact
+        // islands, take this source integration path exactly once.
+        if(d.gyroscopic_forces_enabled) {
+            if(!actor.angular_inertia_available)
+                throw std::logic_error(
+                    "Native gyroscopic motion requires representable inertia");
+            angular=gyroscopic_velocity(
+                angular,actor.inverse_inertia_local,
+                actor.orientation,seconds);
+        }
         // The no-contact integration path must publish locked axes too.
         lock_linear_axes(velocity,d.lock_flags);
         lock_angular_axes(angular,d.lock_flags);

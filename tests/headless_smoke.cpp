@@ -149,6 +149,65 @@ int main() {
                         "Releasing source linear lock did not restore motion");
             }
 
+            // Gyroscopic correction is part of
+            // DyRigidBodyToSolverBody::copyToSolverBodyData, including
+            // bodies with zero contacts. Compare the actual PhysX CPU
+            // eENABLE_GYROSCOPIC_FORCES path over multiple timesteps.
+            {
+                fyzz::World native_gyro(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_gyro(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                fyzz::World source_disabled(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                constexpr fyzz::Vec3 half{0.3f,0.5f,0.9f};
+                const auto n=native_gyro.add_dynamic_box(half,{0,10,0},1.0f);
+                const auto p=source_gyro.add_dynamic_box(half,{0,10,0},1.0f);
+                const auto off=source_disabled.add_dynamic_box(half,{0,10,0},1.0f);
+                fyzz::RigidBodyDynamics d{};
+                d.gravity_enabled=false;
+                d.gyroscopic_forces_enabled=true;
+                native_gyro.set_body_dynamics(n,d);
+                source_gyro.set_body_dynamics(p,d);
+                d.gyroscopic_forces_enabled=false;
+                source_disabled.set_body_dynamics(off,d);
+                for(auto* world:{&native_gyro,&source_gyro,&source_disabled})
+                    world->set_body_angular_velocity(
+                        world==&native_gyro?n:
+                        world==&source_gyro?p:off,
+                        {1.2f,1.6f,-1.9f});
+                float source_effect=0.0f;
+                for(int frame=0;frame<128;++frame) {
+                    const float dt=frame<64?1.0f/120.0f:1.0f/240.0f;
+                    native_gyro.step(dt);
+                    source_gyro.step(dt);
+                    source_disabled.step(dt);
+                    const auto ns=native_gyro.body_state(n);
+                    const auto ps=source_gyro.body_state(p);
+                    const auto os=source_disabled.body_state(off);
+                    const auto max_error=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                        return std::max({std::abs(a.x-b.x),
+                                         std::abs(a.y-b.y),
+                                         std::abs(a.z-b.z)});
+                    };
+                    source_effect=std::max(source_effect,
+                        max_error(ps.angular_velocity,os.angular_velocity));
+                    const float quat_dot=
+                        ns.orientation.x*ps.orientation.x+
+                        ns.orientation.y*ps.orientation.y+
+                        ns.orientation.z*ps.orientation.z+
+                        ns.orientation.w*ps.orientation.w;
+                    if(!std::isfinite(quat_dot) ||
+                       max_error(ns.angular_velocity,ps.angular_velocity)>0.04f ||
+                       std::abs(quat_dot)<0.998f)
+                        throw std::runtime_error(
+                            "Native gyroscopic response diverged from PhysX CPU");
+                }
+                if(source_effect<=0.05f)
+                    throw std::runtime_error(
+                        "PhysX gyroscopic fixture produced no distinct torque");
+            }
+
             // Independent reference comparison: unconstrained angular
             // velocity damping, source quaternion orientation and pose.
             // Full contact/angular solver parity is not claimed here.
