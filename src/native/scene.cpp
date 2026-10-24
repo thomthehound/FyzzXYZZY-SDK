@@ -1132,6 +1132,40 @@ void Scene::publish_pairs() {
     active_edge_handles_.swap(next_edge_handles_);
     ++pair_epoch_;
 }
+void Scene::refresh_pcm_contact_points(
+    PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
+    Quat rotation_a_in_b, float projection_break) {
+    // Refresh every retained witness in the second shape's local frame.
+    // Removing a witness swaps in the last point, preserving the source
+    // cache's update order and its local-normal distance convention.
+    const float breaking_sq=projection_break*projection_break;
+    for(std::size_t i=cache.count;i>0;--i) {
+        auto& point=cache.points[i-1];
+        const Vec3 rotated=rotate(rotation_a_in_b,point.local_a);
+        const Vec3 local_a_in_b{
+            position_a_in_b.x+rotated.x,
+            position_a_in_b.y+rotated.y,
+            position_a_in_b.z+rotated.z};
+        const Vec3 v{
+            local_a_in_b.x-point.local_b.x,
+            local_a_in_b.y-point.local_b.y,
+            local_a_in_b.z-point.local_b.z};
+        const float distance=v.x*point.normal_b.x+
+            v.y*point.normal_b.y+v.z*point.normal_b.z;
+        const Vec3 projected_difference{
+            v.x-point.normal_b.x*distance,
+            v.y-point.normal_b.y*distance,
+            v.z-point.normal_b.z*distance};
+        const float tangential_sq=
+            projected_difference.x*projected_difference.x+
+            projected_difference.y*projected_difference.y+
+            projected_difference.z*projected_difference.z;
+        if(tangential_sq>breaking_sq)
+            cache.points[i-1]=cache.points[--cache.count];
+        else
+            point.separation=distance;
+    }
+}
 std::uint8_t Scene::generate_pcm_plane_box(
     const Actor& plane, const Actor& box, float contact_distance,
     PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
@@ -1150,7 +1184,6 @@ std::uint8_t Scene::generate_pcm_plane_box(
         0.15f*std::min({box.half_extents.x,
                         box.half_extents.y,box.half_extents.z}),0.15f);
     const float project_break=margin*0.2f;
-    const float project_break_sq=project_break*project_break;
     const auto sq=[](Vec3 v) {
         return v.x*v.x+v.y*v.y+v.z*v.z;
     };
@@ -1160,28 +1193,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
     const auto dot=[](Vec3 a,Vec3 b) {
         return a.x*b.x+a.y*b.y+a.z*b.z;
     };
-    // Source refresh visits backwards and replaces a removed cached
-    // point with the last element. It removes tangentially displaced
-    // anchors even when they remain within the speculative distance.
     const auto previous_count=cache.count;
-    for(std::size_t i=cache.count;i>0;--i) {
-        auto& point=cache.points[i-1];
-        const Vec3 rotation=rotate(box.orientation,point.box_local);
-        const Vec3 box_in_plane{
-            relative.x+rotation.x,relative.y+rotation.y,
-            relative.z+rotation.z};
-        // Box-local normal A->B is the plane +Y axis in this
-        // specialization; mLocalPointB sits on the plane (y=0).
-        const Vec3 v=diff(box_in_plane,point.plane_local);
-        const float distance=v.y;
-        const Vec3 projected{box_in_plane.x,
-                             box_in_plane.y-distance,box_in_plane.z};
-        const Vec3 tangent=diff(point.plane_local,projected);
-        if(sq(tangent)>project_break_sq)
-            cache.points[i-1]=cache.points[--cache.count];
-        else
-            point.separation=distance;
-    }
+    refresh_pcm_contact_points(cache,relative,box.orientation,project_break);
     const float max_delta=cache.initialized
         ? std::max({std::abs(relative.x-cache.relative_position.x),
                     std::abs(relative.y-cache.relative_position.y),
@@ -1203,7 +1216,7 @@ std::uint8_t Scene::generate_pcm_plane_box(
         cache.relative_rotation=q;
         cache.initialized=true;
         cache.count=0;
-        std::array<PcmPlaneContact,8> candidates{};
+        std::array<PcmPersistentContact,8> candidates{};
         std::size_t count=0;
         for(unsigned corner=0;corner<8;++corner) {
             const Vec3 local{
@@ -1215,7 +1228,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
                                 relative.z+r.z};
             if(in_plane.y>=contact_distance)continue;
             candidates[count++]={local,
-                {in_plane.x,0.0f,in_plane.z},in_plane.y};
+                {in_plane.x,0.0f,in_plane.z}, {0.0f,1.0f,0.0f},
+                in_plane.y};
         }
         if(count<=4) {
             for(std::size_t i=0;i<count;++i)
@@ -1235,11 +1249,11 @@ std::uint8_t Scene::generate_pcm_plane_box(
             indices[0]=first;
             chosen[first]=true;
             std::size_t farthest=0;
-            float max_distance=sq(diff(candidates[0].plane_local,
-                                       candidates[first].plane_local));
+            float max_distance=sq(diff(candidates[0].local_b,
+                                       candidates[first].local_b));
             for(std::size_t i=1;i<count;++i) {
-                const float distance=sq(diff(candidates[i].plane_local,
-                                               candidates[first].plane_local));
+                const float distance=sq(diff(candidates[i].local_b,
+                                               candidates[first].local_b));
                 if(distance>max_distance) {
                     max_distance=distance;
                     farthest=i;
@@ -1247,8 +1261,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
             }
             indices[1]=farthest;
             chosen[farthest]=true;
-            const Vec3 segment=diff(candidates[farthest].plane_local,
-                                    candidates[first].plane_local);
+            const Vec3 segment=diff(candidates[farthest].local_b,
+                                    candidates[first].local_b);
             Vec3 sideways{-segment.z,0.0f,segment.x};
             const float norm_sq=sq(sideways);
             if(norm_sq>0.0f) {
@@ -1260,8 +1274,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
             std::size_t third=0,fourth=0;
             for(std::size_t i=0;i<count;++i) {
                 if(chosen[i])continue;
-                const float d=dot(diff(candidates[i].plane_local,
-                                         candidates[first].plane_local),sideways);
+                const float d=dot(diff(candidates[i].local_b,
+                                         candidates[first].local_b),sideways);
                 if(d>largest){largest=d;third=i;}
                 if(d<smallest){smallest=d;fourth=i;}
             }
@@ -1271,8 +1285,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
                 largest=-std::numeric_limits<float>::max();
                 for(std::size_t i=0;i<count;++i) {
                     if(chosen[i])continue;
-                    const float d=dot(diff(candidates[i].plane_local,
-                                             candidates[first].plane_local),
+                    const float d=dot(diff(candidates[i].local_b,
+                                             candidates[first].local_b),
                                       sideways);
                     if(d>largest){largest=d;fourth=i;}
                 }
@@ -1282,7 +1296,7 @@ std::uint8_t Scene::generate_pcm_plane_box(
             // Source clusters every remaining contact around the
             // ORIGINAL four geometric witnesses. Replacement changes
             // only the chosen contact index, not the cluster center.
-            std::array<PcmPlaneContact,4> cluster_centers{};
+            std::array<PcmPersistentContact,4> cluster_centers{};
             for(std::size_t k=0;k<4;++k)
                 cluster_centers[k]=candidates[indices[k]];
             for(std::size_t i=0;i<count;++i) {
@@ -1290,8 +1304,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
                 float nearest=std::numeric_limits<float>::max();
                 std::size_t slot=0;
                 for(std::size_t j=0;j<4;++j) {
-                    const float d=sq(diff(candidates[i].plane_local,
-                                           cluster_centers[j].plane_local));
+                    const float d=sq(diff(candidates[i].local_b,
+                                           cluster_centers[j].local_b));
                     if(d<nearest){nearest=d;slot=j;}
                 }
                 if(candidates[i].separation<
@@ -1312,8 +1326,8 @@ std::uint8_t Scene::generate_pcm_plane_box(
         if(emitted>=output.size())
             throw std::logic_error("PCM plane-box output arena too small");
         const ContactPoint contact{
-            {plane.position.x+pt.plane_local.x,plane.position.y,
-             plane.position.z+pt.plane_local.z},
+            {plane.position.x+pt.local_b.x,plane.position.y,
+             plane.position.z+pt.local_b.z},
             {0.0f,-1.0f,0.0f},pt.separation};
         if(!finite(contact.position) || !std::isfinite(contact.separation))
             throw std::overflow_error("PhysX PCM plane-box contact overflow");
