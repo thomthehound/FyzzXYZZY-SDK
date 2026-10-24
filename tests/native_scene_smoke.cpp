@@ -148,19 +148,20 @@ struct ContactCorrelationSourceFixture {
             return false;
         };
         if(!rejected([&]{ join.require_post_solver(); }) ||
-           !rejected([&]{ join.dispatch_solver_tasks(2); }) ||
            !rejected([&]{ join.finish_solver_task(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver accepted an uncompleted producer");
-        join.finish_lost_contacts();
+        // Original PhysX runs the two producer branches independently.
+        // Dispatch and finish one Dy chain BEFORE the lost-touch branch.
         join.dispatch_solver_tasks(2);
-        if(!rejected([&]{ join.require_post_solver(); }))
-            throw std::runtime_error(
-                "ScPipeline postSolver retired a live Dy solver task");
         join.finish_solver_task();
         if(!rejected([&]{ join.require_post_solver(); }))
             throw std::runtime_error(
-                "ScPipeline postSolver omitted the second Dy task completion");
+                "ScPipeline postSolver retired an incomplete lost-touch branch");
+        join.finish_lost_contacts();
+        if(!rejected([&]{ join.require_post_solver(); }))
+            throw std::runtime_error(
+                "ScPipeline postSolver omitted the final Dy task completion");
         join.finish_solver_task();
         join.require_post_solver();
         if(!rejected([&]{ join.finish_solver_task(); }) ||
