@@ -100,10 +100,13 @@ collision-axis cache use this source ordering, not sorted BodyIds and
 not the broadphase sweep's temporary endpoint order.
 
 The single native contact-manager EdgeIndex now retains the derived
-orientation for its complete overlap lifetime. Gu contact generation
-and cached face-axis selection consume this oriented pair, then
-transform the emitted normal to the canonical BodyId order used
-by the existing Dy descriptor and Sc event streams. No shadow
+orientation for its complete overlap lifetime. Gu contact generation,
+cached face-axis selection, **and DyContactPrep/PGS actor and Jacobian
+ordering** consume that same source-oriented pair. Only Sc's outward
+contact-event reporting translates normals back to canonical BodyIds.
+Maintaining one orientation across Gu and Dy prevents a canonical
+lookup-key optimization from changing the source's friction tangent
+sign and floating-point solve order. No shadow
 collision pipeline or fabricated contact geometry is added.
 
 The independent frictional PhysX fixture exposes why this matters.

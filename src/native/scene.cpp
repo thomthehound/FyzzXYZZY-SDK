@@ -1168,10 +1168,9 @@ void Scene::update_contacts() {
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
             // The Gu reference/incident face and cached six-axis hint
-            // use ScNPhaseCore::shouldSwapBodies orientation; the
-            // canonical edge/event key is not that source ordering.
-            // Flip resulting normals back to canonical Pair orientation
-            // before Dy preparation and event publication.
+            // use ScNPhaseCore::shouldSwapBodies orientation. Retain
+            // this SAME frame through Dy contact/friction preparation;
+            // only the outward Sc report translates to canonical IDs.
             const bool reversed=contact_edges_[edge].gu_order_reversed;
             const Actor& first=reversed?b:a;
             const Actor& second=reversed?a:b;
@@ -1179,11 +1178,6 @@ void Scene::update_contacts() {
                 first.half_extents, first.position, first.orientation,
                 second.half_extents, second.position, second.orientation,
                 contact_distance, manifold.collision_axis, box_contact_scratch_);
-            if(reversed)
-                for(std::size_t i=0;i<manifold.count;++i) {
-                    auto& normal=box_contact_scratch_[i].normal;
-                    normal={-normal.x,-normal.y,-normal.z};
-                }
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
@@ -3502,15 +3496,24 @@ void Scene::prepare_constraints(float seconds) {
             // The independently Gu-indexed writeback provides zeros.
             continue;
         }
-        const auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
-            ? solver_rows_[manifold.pair.a].data : world_solver_row_.data;
-        const auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
-            ? solver_rows_[manifold.pair.b].data : world_solver_row_.data;
+        // Preserve ScShapeInteraction's actual ordered actor pair
+        // through DyContactPrep. A canonical pair key is only used
+        // for Gu arena identity, and must not reorder the two
+        // momentum/Jacobian inputs after the source Gu generator.
+        const bool reversed=contact_edges_[edge].gu_order_reversed &&
+            actor_a.kind==Kind::DynamicBox &&
+            actor_b.kind==Kind::DynamicBox;
+        const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
+        const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
+        const auto& a = actors_[id0].kind==Kind::DynamicBox
+            ? solver_rows_[id0].data : world_solver_row_.data;
+        const auto& b = actors_[id1].kind==Kind::DynamicBox
+            ? solver_rows_[id1].data : world_solver_row_.data;
         manifold.solver_offset = solver_contact_points_.size();
         manifold.friction_patch_offset = next_friction_patches_.size();
         manifold.friction_patch_count = 0;
-        const Actor& actor0 = actors_[manifold.pair.a];
-        const Actor& actor1 = actors_[manifold.pair.b];
+        const Actor& actor0 = actors_[id0];
+        const Actor& actor1 = actors_[id1];
         // ScShapeInteraction::initializeLowLevelContactManager stores
         // max(body0.offsetSlop,body1.offsetSlop) in PxcNpWorkUnit.
         const float pair_slop=std::max(
@@ -4069,10 +4072,18 @@ void Scene::solve_constraints() {
             desc<task.constraint_end;++desc) {
             const auto index=ordered_constraints_[desc];
             const auto& manifold = manifolds_[index];
-            auto& a = actors_[manifold.pair.a].kind == Kind::DynamicBox
-                ? solver_rows_[manifold.pair.a] : world_solver_row_;
-            auto& b = actors_[manifold.pair.b].kind == Kind::DynamicBox
-                ? solver_rows_[manifold.pair.b] : world_solver_row_;
+            // Dy descriptors retain Sc's source-oriented body order,
+            // including the signs of the contact/friction Jacobians.
+            const bool reversed=contact_edges_[
+                manifold.edge_handle].gu_order_reversed &&
+                actors_[manifold.pair.a].kind==Kind::DynamicBox &&
+                actors_[manifold.pair.b].kind==Kind::DynamicBox;
+            const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
+            const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
+            auto& a = actors_[id0].kind == Kind::DynamicBox
+                ? solver_rows_[id0] : world_solver_row_;
+            auto& b = actors_[id1].kind == Kind::DynamicBox
+                ? solver_rows_[id1] : world_solver_row_;
             // A zero source maxContactImpulse is omitted by
             // DyContactPrepShared::extractContacts; there is no packed
             // solver header to execute. Gu touch state and its indexed
@@ -4337,8 +4348,13 @@ void Scene::publish_contact_events() {
             const auto& point=contact_points_[index];
             const double normal_force=normal_impulse_writeback_[index];
             impulse+=normal_force;
+            Vec3 outward=point.normal;
+            if(contact_edges_[manifold.edge_handle].gu_order_reversed &&
+               first.kind==Kind::DynamicBox &&
+               second.kind==Kind::DynamicBox)
+                outward={-outward.x,-outward.y,-outward.z};
             next_contact_event_points_.push_back({
-                point.position,point.normal,point.separation,normal_force});
+                point.position,outward,point.separation,normal_force});
         }
         if(!std::isfinite(impulse))
             throw std::overflow_error(
