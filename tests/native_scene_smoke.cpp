@@ -136,6 +136,81 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Pxc source-oriented box/box contact cache midpoint mismatch");
     }
+    static void verify_source_post_solver_continuations() {
+        // ScPipeline::updateDynamics wires processLostContactsTask3
+        // and all PxsSolverEndTask chains to mPostSolver. No handle
+        // retirement/result publication may pass that join while an
+        // island solver chain is still integrating its rigid bodies.
+        Scene::RigidStepJoin join;
+        const auto rejected=[&](auto&& attempt) {
+            try { attempt(); }
+            catch(const std::logic_error&) { return true; }
+            return false;
+        };
+        if(!rejected([&]{ join.require_post_solver(); }) ||
+           !rejected([&]{ join.dispatch_solver_tasks(2); }) ||
+           !rejected([&]{ join.finish_solver_task(); }))
+            throw std::runtime_error(
+                "ScPipeline postSolver accepted an uncompleted producer");
+        join.finish_lost_contacts();
+        join.dispatch_solver_tasks(2);
+        if(!rejected([&]{ join.require_post_solver(); }))
+            throw std::runtime_error(
+                "ScPipeline postSolver retired a live Dy solver task");
+        join.finish_solver_task();
+        if(!rejected([&]{ join.require_post_solver(); }))
+            throw std::runtime_error(
+                "ScPipeline postSolver omitted the second Dy task completion");
+        join.finish_solver_task();
+        join.require_post_solver();
+        if(!rejected([&]{ join.finish_solver_task(); }) ||
+           !rejected([&]{ join.dispatch_solver_tasks(1); }))
+            throw std::runtime_error(
+                "ScPipeline postSolver accepted duplicate task completion");
+        // Source permits zero active solver task chains in an empty
+        // scene, but still requires lost-contact completion and Dy
+        // task dispatch before publishing a finished frame.
+        Scene::RigidStepJoin empty;
+        empty.finish_lost_contacts();
+        empty.dispatch_solver_tasks(0);
+        empty.require_post_solver();
+
+        // Production-path test: enhanced determinism prevents merging
+        // three independently owned active islands into one Dy task.
+        // Two islands have floor contact rows, and a third free-flight
+        // island has no constraints but STILL requires its own solver
+        // task completion after body integration.
+        Scene scene;
+        scene.set_enhanced_determinism(true);
+        scene.add_static_floor(0.0f);
+        const auto left=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{-4,0.5f,0},1.0f);
+        const auto right=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,0.5f,0},1.0f);
+        const auto free=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        scene.step(1.0f/120.0f);
+        if(scene.solver_tasks_.size()!=3 ||
+           scene.solved_result_frame()!=scene.frame_index() ||
+           scene.contacts().size()!=2 ||
+           !(scene.body_state(free).position.y<10.0f) ||
+           !std::isfinite(scene.body_state(left).velocity.y) ||
+           !std::isfinite(scene.body_state(right).velocity.y))
+            throw std::runtime_error(
+                "Real Dy solver task groups did not join after all island integration");
+        for(const auto& task:scene.solver_tasks_)
+            if(task.batch_end-task.first_batch!=1)
+                throw std::runtime_error(
+                    "Source enhanced-determinism task range crossed island ownership");
+        scene.remove(right);
+        scene.step(1.0f/120.0f);
+        if(scene.solved_result_frame()!=scene.frame_index() ||
+           scene.contacts().size()!=1 ||
+           scene.solver_tasks_.size()!=2 ||
+           !std::isfinite(scene.body_state(free).position.y))
+            throw std::runtime_error(
+                "Sc lost-contact retirement or Dy task completion leaked across frames");
+    }
     static void verify_enhanced_determinism_tasks() {
         // Original DyDynamicsContext::updatePostKinematic stops island
         // accumulation after EACH active island under
@@ -9004,6 +9079,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
