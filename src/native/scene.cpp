@@ -355,12 +355,13 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     // Dy::integrateCore never calls this authored-pose path: ordinary
     // solver-integrated motion retains the PCM manifold and refreshes
     // its cached box/plane-local witnesses on the next Gu pass.
-    if(pcm_plane_box_enabled_) {
+    if(pcm_plane_box_enabled_ || pcm_box_box_enabled_) {
         bool invalidated=false;
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
-                edge.pcm_plane_box={};
+                if(pcm_plane_box_enabled_)edge.pcm_plane_box={};
+                if(pcm_box_box_enabled_)edge.pcm_box_box={};
                 invalidated=true;
             }
         }
@@ -570,11 +571,15 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     // only relative transforms would not generate candidates newly
     // admitted by a larger contact distance. Actor edits are explicit,
     // so walk current overlap handles, never historical retired slots.
-    if(pcm_plane_box_enabled_)
+    if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
-            if(edge.pair.a==id || edge.pair.b==id)
-                edge.pcm_plane_box.initialized=false;
+            if(edge.pair.a==id || edge.pair.b==id) {
+                if(pcm_plane_box_enabled_)
+                    edge.pcm_plane_box.initialized=false;
+                if(pcm_box_box_enabled_)
+                    edge.pcm_box_box.initialized=false;
+            }
         }
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
@@ -6428,10 +6433,12 @@ class NativeCpuWorld final : public WorldBackend {
 public:
     explicit NativeCpuWorld(bool contact_notifications,
                             bool enhanced_determinism,
-                            bool pcm_plane_box) {
+                            bool pcm_plane_box,
+                            bool pcm_box_box) {
         scene_.set_contact_notifications(contact_notifications);
         scene_.set_enhanced_determinism(enhanced_determinism);
         scene_.set_pcm_plane_box(pcm_plane_box);
+        scene_.set_pcm_box_box(pcm_box_box);
     }
     std::span<const ContactEvent> contact_events() const override {
         return scene_.contact_events();
@@ -6493,8 +6500,9 @@ private:
 };
 } // namespace
 std::unique_ptr<WorldBackend> create_native_cpu_backend(
-    bool notify, bool enhanced_determinism, bool pcm_plane_box) {
+    bool notify, bool enhanced_determinism,
+    bool pcm_plane_box, bool pcm_box_box) {
     return std::make_unique<NativeCpuWorld>(
-        notify,enhanced_determinism,pcm_plane_box);
+        notify,enhanced_determinism,pcm_plane_box,pcm_box_box);
 }
 } // namespace fyzz
