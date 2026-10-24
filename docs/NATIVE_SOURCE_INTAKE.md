@@ -153,6 +153,53 @@ at the existing atomic publication boundary and are swapped back
 with published manifolds after a rejected step. No new collision
 pipeline or secondary physical contact registry is introduced.
 
+## Source PCM plane/box: contact-manager-owned admission
+
+`GuPCMContactPlaneBox.cpp::pcmContactPlaneBox` is now implemented as an
+**explicit partial PCM mode** (`WorldOptions::pcm_plane_box` on
+`ExecutionMode::NativeCpu`, or `Scene::set_pcm_plane_box` before
+admitting any actor). Its production Gu publication feeds the existing
+Sc touch/island manager and the same active-island Dy PGS normal/friction
+preparation. This is not a second collision engine.
+
+The already allocated source-style contact-manager `EdgeIndex` slot owns
+the plane/box `PersistentContactManifold` specialization: up to four
+box-local A / plane-local B witnesses, their separations, and the cached
+relative transform. The translated generator evaluates the eight
+plane-local box corners in original source order, uses the original
+`CalculatePCMBoxMargin` / 0.2 projection threshold, refreshes witnesses
+back-to-front with swap-last removal, invalidates the manifold at the
+source translation/rotation thresholds, reduces more than four candidates
+using the source deepest/farthest/extrema clustering, and emits contacts
+at the **projected plane-local B positions**, not the legacy-Gu box
+vertices. PCM geometry and source-normal flipping still use the existing
+Sc manager's authoritative contact publication. The existing
+`StepCheckpoint::save_edge` journal restores PCM state on rejected
+collision/PGS transactions, and deferred manager retirement resets the
+same cache before a handle is reused. No additional manager registry,
+scene-wide contact-state duplication or PhysX runtime dependency is
+introduced.
+
+Legacy `GuContactPlaneBox` and its separately owned
+`PxcCacheLocalContacts` stream remain selected in the default native
+mode and tested until **box/box PCM** has its own complete translation.
+The box/box path requires
+`GuPCMContactBoxBox::doBoxBoxGenerateContacts`, four-point manifold
+reduction and GJK/EPA fallback; it is **not** being relabeled PCM or
+silently switched to an approximate fallback. Default
+`ReferencePhysXCpu` continues to run original PhysX PCM,
+`ReferencePhysXCpuLegacyGu` remains the distinct legacy oracle, and
+partial native selection is explicitly refused for non-native execution.
+
+Native production tests check the PCM projected-point difference from
+legacy Gu, small-motion cache refresh, displacement and rotation
+regeneration, deep/contact reduction, lost touch/reentry, and deferred
+manager handle reuse. The reference-enabled harness compares the actual
+native contact report stream to original PCM for both creation orders
+and rotated contacts. Full default-PCM admission, box/box parity,
+manifold warm-start and other shape/CCD pathways remain open in
+issue #114.
+
 ## N1 coupled frictional-rotation source parity gate
 
 A new native-versus-original-PhysX legacy-Gu fixture compares two
