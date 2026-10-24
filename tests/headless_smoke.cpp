@@ -609,8 +609,10 @@ int main() {
                               fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu}) {
                 fyzz::World floor_pose(fyzz::WorldOptions{mode});
                 const auto floor_id = floor_pose.add_static_floor(0.0f);
-                for (float scalar : {0.999f, 1.001f}) {
-                    const float height = scalar < 1.0f ? 0.5f : 0.75f;
+                for (float scalar : {0.999f, 1.001f, -1.0f,
+                                     -0.999f, -1.001f}) {
+                    const float height = std::abs(scalar) < 1.0f
+                        ? 0.5f : 0.75f;
                     floor_pose.set_body_pose(floor_id, {0,height,0},
                                              {0,0,0,scalar});
                     const auto state = floor_pose.body_state(floor_id);
