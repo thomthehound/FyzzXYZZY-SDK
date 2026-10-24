@@ -129,6 +129,99 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Mixed PCM/legacy Gu managers failed native PGS completion");
     }
+    static void verify_source_pcm_box_box_lifecycle() {
+        // PCM box-box SAT uses B-local contacts and four persistent
+        // witnesses, unlike GuContactBoxBox's unreduced raw contact
+        // stream and PxcCacheLocalContacts pose snapshots.
+        Scene scene;
+        scene.set_pcm_box_box(true);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0});
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 || scene.contacts()[0].count!=4)
+            throw std::runtime_error(
+                "Native source PCM face/face must publish four witnesses");
+        const auto edge=scene.contacts()[0].edge_handle;
+        const auto& cache=scene.contact_edges_[edge].pcm_box_box;
+        if(!cache.initialized || cache.count!=4 ||
+           !scene.gu_cache_records_.empty() ||
+           !scene.gu_cached_points_.empty())
+            throw std::runtime_error(
+                "PCM box-box cache leaked into legacy Pxc ownership");
+        const auto first=scene.contacts()[0].points[0];
+        for(const auto& point:scene.contacts()[0].points) {
+            if(std::abs(point.position.y-1.0f)>1e-5f ||
+               std::abs(point.separation+0.04f)>1e-5f ||
+               point.normal.y<0.999f)
+                throw std::runtime_error(
+                    "PCM box-box point lacks B-local incident witness geometry");
+        }
+        // Internal Dy integration refreshes retained witnesses, but
+        // does not invoke authored-pose cache invalidation.
+        const auto saved=cache.relative_position;
+        scene.actors_[dynamic].position.x=0.003f;
+        scene.actors_[dynamic].cached_bounds_current=false;
+        scene.dirty_=true;
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].edge_handle!=edge ||
+           scene.contact_edges_[edge].pcm_box_box.count!=4 ||
+           scene.contact_edges_[edge].pcm_box_box.relative_position.x!=saved.x)
+            throw std::runtime_error(
+                "PCM box-box steady cache was regenerated instead of refreshed");
+        // An authored pose must reset the same manager's PCM geometry
+        // cache; new B witnesses follow the new physical shape pose.
+        scene.set_position(dynamic,{0.02f,1.46f,0});
+        if(scene.contact_edges_[edge].pcm_box_box.initialized)
+            throw std::runtime_error(
+                "Authored PCM box-box pose retained obsolete witnesses");
+        scene.advance_collision(true);
+        if(scene.contacts().size()!=1 ||
+           scene.contacts()[0].count!=4 ||
+           !scene.contact_edges_[edge].pcm_box_box.initialized)
+            throw std::runtime_error(
+                "PCM box-box authored-pose reconstruction failed");
+        bool observed_move=false;
+        for(const auto& point:scene.contacts()[0].points)
+            observed_move|=std::abs(point.position.x-first.position.x)>0.01f;
+        if(!observed_move)
+            throw std::runtime_error("PCM authored pose did not update witnesses");
+        // Native Dy must consume PCM points, not silently run Gu in
+        // a disconnected test-only narrowphase.
+        scene.step(1.0f/120.0f);
+        if(scene.solved_result_frame()!=scene.frame_index())
+            throw std::runtime_error(
+                "PCM box-box source contacts did not complete native Dy PGS");
+        scene.remove(dynamic);
+        scene.advance_collision(true);
+        if(!scene.contacts().empty())
+            throw std::runtime_error(
+                "Retired native PCM box-box manager still publishes contacts");
+        const auto replacement=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+        scene.advance_collision(true);
+        if(replacement==dynamic || scene.contacts().size()!=1 ||
+           scene.contacts()[0].count!=4)
+            throw std::runtime_error(
+                "New box contact manager retained retired PCM witnesses");
+        // Independent direct-contact generator must distinguish face
+        // contact from separated SAT configurations without Gu.
+        std::array<PcmContactCandidate,64> candidates{};
+        std::size_t count=0;
+        if(source_pcm_box_box_candidates(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},{},
+                {0.5f,0.5f,0.5f},{0,1.46f,0},{},
+                0.04f,candidates,count)==false || count!=4)
+            throw std::runtime_error("PCM direct SAT failed face witnesses");
+        if(source_pcm_box_box_candidates(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},{},
+                {0.5f,0.5f,0.5f},{0,5.0f,0},{},
+                0.04f,candidates,count) || count!=0)
+            throw std::runtime_error("PCM SAT accepted separated boxes");
+        (void)fixed;
+    }
     static void verify_source_pcm_plane_box_lifecycle() {
         // Refresh is shared with subsequent convex PCM generation:
         // the signed separation and tangential eviction must be evaluated
@@ -9622,6 +9715,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
