@@ -182,6 +182,16 @@ struct ContactCorrelationSourceFixture {
             const float dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
             return dx*dx+dy*dy+dz*dz<2.5e-7f;
         };
+        const auto rotate_anchor=[](Quat q,Vec3 v) {
+            const Vec3 t{
+                2.0f*(q.y*v.z-q.z*v.y),
+                2.0f*(q.z*v.x-q.x*v.z),
+                2.0f*(q.x*v.y-q.y*v.x)};
+            return Vec3{
+                v.x+q.w*t.x+q.y*t.z-q.z*t.y,
+                v.y+q.w*t.y+q.z*t.x-q.x*t.z,
+                v.z+q.w*t.z+q.x*t.y-q.y*t.x};
+        };
         for(std::size_t k=0;k<2;++k) {
             const auto id=patch.contact_ids[k];
             if(id>=manifold.count)
@@ -190,8 +200,8 @@ struct ContactCorrelationSourceFixture {
             const auto& expected=manifold.points[id].position;
             const Vec3 local0=patch.body0_anchors[k];
             const Vec3 local1=patch.body1_anchors[k];
-            const Vec3 r0=rotate(dynamic.orientation,local0);
-            const Vec3 r1=rotate(ground.orientation,local1);
+            const Vec3 r0=rotate_anchor(dynamic.orientation,local0);
+            const Vec3 r1=rotate_anchor(ground.orientation,local1);
             const Vec3 world0{
                 dynamic.position.x+r0.x,
                 dynamic.position.y+r0.y,
