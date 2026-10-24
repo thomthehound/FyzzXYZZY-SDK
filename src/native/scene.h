@@ -1113,6 +1113,24 @@ private:
     // Spans are assigned after fill, when growth can no longer invalidate them.
     std::vector<ContactPoint> contact_points_;
     std::vector<ContactPoint> next_contact_points_;
+    // PxcCacheLocalContacts: an old contact buffer is retained in its
+    // ORIGINAL generating frame until relative body motion exceeds
+    // the source 1%-of-length / 1%-of-quaternion thresholds. Its points
+    // must not be replaced by the midpoint contacts emitted on a hit.
+    // The source PxcNpCacheStreamPair double buffers these compact
+    // records and their flat byte arena for every active BP pair,
+    // including records with zero contacts.
+    struct CachedPose { Vec3 position{}; Quat orientation{}; };
+    struct GuCacheRecord {
+        Pair pair{};
+        CachedPose pose0{}, pose1{};
+        std::size_t offset=0;
+        std::uint8_t count=0;
+        std::uint8_t collision_axis=0;
+        float contact_distance=0.0f;
+    };
+    std::vector<GuCacheRecord> gu_cache_records_, next_gu_cache_records_;
+    std::vector<ContactPoint> gu_cached_points_, next_gu_cached_points_;
     // PxContactBuffer::MAX_CONTACTS, reused for all box-box candidates.
     std::array<ContactPoint, 255> box_contact_scratch_{};
     std::vector<Pair> found_contacts_;

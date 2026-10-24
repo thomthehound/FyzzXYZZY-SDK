@@ -124,6 +124,35 @@ different angular velocities. Correctly ordering Sc's shape pair is
 a necessary source-fidelity repair; the full strict multiframe
 test remains the acceptance authority.
 
+## Original Pxc legacy narrowphase contact cache
+
+The source-matched rigid scene now lowers `PxcCacheLocalContacts`
+within the single native Gu/Sc contact-manager publication. PhysX
+defaults to enabling the legacy contact cache independently of PCM
+(`PxSceneFlag::eDISABLE_CONTACT_CACHE` is not set by default).
+The source `g_CanUseContactCache` permits plane/box and box/box.
+On a cache miss, the original Gu contact positions, normals and
+separations and both generating shape poses are saved in a flat
+source-owned cache stream. The next frame compares the current
+relative `shape1.inverse * shape0` pose against the original cached
+relative transform, using the source's strict 1% of tolerance length
+and per-quaternion-component thresholds. A hit does **not** replace
+the raw stored contacts or advance their reference transforms:
+it reconstructs each point by transforming the prior contact into
+both old local shape frames, then into both current world frames,
+averaging the two projected points and correcting separation by
+the motion along the cached normal. It also skips Gu generation and
+preserves the old pair-data collision axis. An invalid cache performs
+real Gu generation and replaces the stored source raw points.
+
+This is distinct from both PCM and the DyFrictionCorrelation cached
+anchors. The entire BP pair stream (including zero-contact candidates)
+owns indexed contact-cache records, while two reusable scene arenas
+carry compressed contact point streams. Gu and cache buffers rotate
+at the existing atomic publication boundary and are swapped back
+with published manifolds after a rejected step. No new collision
+pipeline or secondary physical contact registry is introduced.
+
 ## N1 coupled frictional-rotation source parity gate
 
 A new native-versus-original-PhysX legacy-Gu fixture compares two

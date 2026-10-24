@@ -1068,6 +1068,10 @@ void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
+    // Original PxcNpCacheStreamPair retains source-generated geometry,
+    // distinct from this frame's reconstructed midpoint contact output.
+    next_gu_cache_records_.clear();
+    next_gu_cached_points_.clear();
     // Build the Gu-offset lookup alongside this real contact-manager
     // publication; no second O(all Gu manifolds) pass during PGS.
     // Generation stamps invalidate untouched/retired EdgeIndex slots
@@ -1080,6 +1084,7 @@ void Scene::update_contacts() {
     }
     const auto new_lookup_generation=indexed_manifold_generation_;
     std::size_t old_cursor = 0;
+    std::size_t old_cache_cursor=0;
     std::size_t pair_index = 0;
     for (const Pair pair : previous_pairs_) {
         const EdgeIndex edge=active_edge_handles_[pair_index++];
@@ -1101,7 +1106,108 @@ void Scene::update_contacts() {
             manifolds_[old_cursor].pair == pair)
             manifold.collision_axis = manifolds_[old_cursor].collision_axis;
 
-        if (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane) {
+        // PxcNpBatch::discreteNarrowPhase sorts geometry types (plane
+        // before box) independently of ScShapeInteraction actor order.
+        // Gu box/box uses the source-oriented Sc contact manager.
+        const bool plane_pair=a.kind==Kind::StaticPlane ||
+                              b.kind==Kind::StaticPlane;
+        const bool reversed=!plane_pair &&
+            contact_edges_[edge].gu_order_reversed;
+        const Actor& first=plane_pair
+            ? (a.kind==Kind::StaticPlane?a:b)
+            : (reversed?b:a);
+        const Actor& second=plane_pair
+            ? (a.kind==Kind::StaticPlane?b:a)
+            : (reversed?a:b);
+        while(old_cache_cursor<gu_cache_records_.size() &&
+              gu_cache_records_[old_cache_cursor].pair<pair)
+            ++old_cache_cursor;
+        const GuCacheRecord* old=
+            old_cache_cursor<gu_cache_records_.size() &&
+            gu_cache_records_[old_cache_cursor].pair==pair
+            ? &gu_cache_records_[old_cache_cursor] : nullptr;
+        GuCacheRecord cache{};
+        cache.pair=pair;
+        cache.offset=next_gu_cached_points_.size();
+        cache.pose0={first.position,first.orientation};
+        cache.pose1={second.position,second.orientation};
+        cache.contact_distance=contact_distance;
+        cache.collision_axis=old?old->collision_axis:manifold.collision_axis;
+        manifold.collision_axis=cache.collision_axis;
+        bool cache_hit=false;
+        if(old && old->contact_distance==contact_distance &&
+           old->offset<=gu_cached_points_.size() &&
+           old->count<=gu_cached_points_.size()-old->offset) {
+            // PxcCacheLocalContacts compares both components of the
+            // source transforms in the SECOND shape's local frame.
+            const auto relative=[](const CachedPose& p0,
+                                   const CachedPose& p1) {
+                const Vec3 delta{
+                    p0.position.x-p1.position.x,
+                    p0.position.y-p1.position.y,
+                    p0.position.z-p1.position.z};
+                return CachedPose{
+                    rotate_inverse(p1.orientation,delta),
+                    multiply({-p1.orientation.x,-p1.orientation.y,
+                              -p1.orientation.z,p1.orientation.w},
+                             p0.orientation)};
+            };
+            const auto previous=relative(old->pose0,old->pose1);
+            const auto current=relative(cache.pose0,cache.pose1);
+            constexpr float translation_epsilon=0.01f; // 1% PxTolerancesScale.length=1
+            constexpr float quaternion_epsilon=0.01f;
+            const auto in_range=[](float a,float b,float threshold) {
+                return std::abs(a-b)<threshold;
+            };
+            cache_hit=
+                in_range(previous.position.x,current.position.x,translation_epsilon) &&
+                in_range(previous.position.y,current.position.y,translation_epsilon) &&
+                in_range(previous.position.z,current.position.z,translation_epsilon) &&
+                in_range(previous.orientation.x,current.orientation.x,quaternion_epsilon) &&
+                in_range(previous.orientation.y,current.orientation.y,quaternion_epsilon) &&
+                in_range(previous.orientation.z,current.orientation.z,quaternion_epsilon) &&
+                in_range(previous.orientation.w,current.orientation.w,quaternion_epsilon);
+            if(cache_hit) {
+                // The source copies the same original cached byte payload
+                // to the next cache stream. Only the emitted Gu contacts
+                // are updated; cached poses are NOT advanced on a hit.
+                cache.pose0=old->pose0;
+                cache.pose1=old->pose1;
+                cache.count=old->count;
+                for(std::size_t k=0;k<old->count;++k) {
+                    const ContactPoint& prior=gu_cached_points_[old->offset+k];
+                    const auto project=[&](const CachedPose& from,
+                                           const CachedPose& to) {
+                        Vec3 local=rotate_inverse(from.orientation,{
+                            prior.position.x-from.position.x,
+                            prior.position.y-from.position.y,
+                            prior.position.z-from.position.z});
+                        Vec3 v=rotate(to.orientation,local);
+                        return Vec3{v.x+to.position.x,
+                                    v.y+to.position.y,v.z+to.position.z};
+                    };
+                    const Vec3 p0=project(old->pose0,
+                                          {first.position,first.orientation});
+                    const Vec3 p1=project(old->pose1,
+                                          {second.position,second.orientation});
+                    const Vec3 difference{
+                        p0.x-p1.x,p0.y-p1.y,p0.z-p1.z};
+                    const Vec3 n=prior.normal;
+                    const ContactPoint out{{
+                        (p0.x+p1.x)*0.5f,(p0.y+p1.y)*0.5f,
+                        (p0.z+p1.z)*0.5f},n,
+                        prior.separation+
+                            difference.x*n.x+difference.y*n.y+difference.z*n.z};
+                    if(!finite(out.position) ||
+                       !std::isfinite(out.separation))
+                        throw std::overflow_error("Native Pxc cached contact reconstruction overflow");
+                    next_contact_points_.push_back(out);
+                    next_gu_cached_points_.push_back(prior);
+                }
+                manifold.count=old->count;
+            }
+        }
+        if(!cache_hit && (a.kind == Kind::StaticPlane || b.kind == Kind::StaticPlane)) {
             // Direct source order/geometry from
             // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
             // logical normal is +Y, corresponding to PhysX plane-local
@@ -1163,7 +1269,7 @@ void Scene::update_contacts() {
                     point, normal, depths[corner] + contact_distance});
                 ++manifold.count;
             }
-        } else {
+        } else if(!cache_hit) {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
@@ -1171,9 +1277,6 @@ void Scene::update_contacts() {
             // use ScNPhaseCore::shouldSwapBodies orientation. Retain
             // this SAME frame through Dy contact/friction preparation;
             // only the outward Sc report translates to canonical IDs.
-            const bool reversed=contact_edges_[edge].gu_order_reversed;
-            const Actor& first=reversed?b:a;
-            const Actor& second=reversed?a:b;
             manifold.count = source_box_box_contacts(
                 first.half_extents, first.position, first.orientation,
                 second.half_extents, second.position, second.orientation,
@@ -1182,6 +1285,17 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
         }
+        if(!cache_hit) {
+            // PxcCacheLocalContacts caches the RAW source Gu stream on a
+            // miss, even for zero-contact overlaps. Source mPairData is
+            // retained only when the contact generator actually ran.
+            cache.count=manifold.count;
+            cache.collision_axis=manifold.collision_axis;
+            next_gu_cached_points_.insert(next_gu_cached_points_.end(),
+                next_contact_points_.begin()+cache.offset,
+                next_contact_points_.end());
+        }
+        next_gu_cache_records_.push_back(cache);
         if (manifold.count > 0) {
             next_manifold_by_edge_[edge]={
                 next_manifolds_.size(),new_lookup_generation};
@@ -1242,6 +1356,8 @@ void Scene::update_contacts() {
     }
     manifolds_.swap(next_manifolds_);
     contact_points_.swap(next_contact_points_);
+    gu_cache_records_.swap(next_gu_cache_records_);
+    gu_cached_points_.swap(next_gu_cached_points_);
     manifold_by_edge_.swap(next_manifold_by_edge_);
     manifold_lookup_generation_=new_lookup_generation;
     found_contacts_.swap(next_found_contacts_);
@@ -5093,6 +5209,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(scene.contact_epoch_!=contact_epoch) {
         scene.manifolds_.swap(scene.next_manifolds_);
         scene.contact_points_.swap(scene.next_contact_points_);
+        scene.gu_cache_records_.swap(scene.next_gu_cache_records_);
+        scene.gu_cached_points_.swap(scene.next_gu_cached_points_);
         scene.manifold_by_edge_.swap(scene.next_manifold_by_edge_);
         scene.found_contacts_.swap(scene.next_found_contacts_);
         scene.lost_contacts_.swap(scene.next_lost_contacts_);
