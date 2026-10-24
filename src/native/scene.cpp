@@ -2810,7 +2810,15 @@ void Scene::deactivate_ready_islands() noexcept {
             actor.wake_counter=0.0f;
             actor.velocity={};
             actor.angular_velocity={};
+            // ScBodySim::deactivate::setForcesToDefaults and
+            // BodySim::putToSleep::simStateClearVelMod retire BOTH the
+            // per-step velocity changes and per-second accelerations.
+            // Leaving an old linear or angular force on an inactive
+            // body would replay it after IslandSim wakes that body.
+            actor.pending_linear_velocity_delta={};
             actor.pending_angular_velocity_delta={};
+            actor.pending_linear_acceleration={};
+            actor.pending_angular_acceleration={};
             actor.sleep_linear_acc={};
             actor.sleep_angular_acc={};
             // Accurate IslandSim::deactivateNodeInternal visits only
