@@ -349,6 +349,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     erase_shape_friction_history(id);
     actor.position=position;
     actor.orientation=normalized;
+    actor.cached_bounds_current=false;
     // Preserve the established source contact-manager wake handoff:
     // relocating or rotating either endpoint wakes old touching peers
     // before their previous Gu managers can be retired.
@@ -540,6 +541,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     erase_shape_friction_history(id);
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
+    actor.cached_bounds_current=false;
     dirty_=true;
 }
 
@@ -644,12 +646,9 @@ BodyState Scene::body_state(BodyId id) const {
     return {actor.position, actor.velocity,
             actor.orientation, actor.angular_velocity, actor.sleeping};
 }
-void Scene::update_bounds() {
-    // GuBounds expands each shape by its own PxShapeCore contactOffset.
-    endpoints_.clear();
-    for (std::size_t index = 0; index < actors_.size(); ++index) {
-        auto& actor = actors_[index];
-        if (!actor.alive || actor.kind == Kind::StaticPlane) continue;
+void Scene::update_actor_bounds(Actor& actor) {
+    // GuBounds::computeBounds(eBOX) followed by Sc cached-shape
+    // publication. Construct every encoded endpoint before committing.
         const Vec3 p = actor.position, h = actor.half_extents;
         // Source: GuBounds.cpp::computeBounds(eBOX), basisExtentV.
         // The world AABB of a rotated box is the sum of absolute
@@ -678,16 +677,48 @@ void Scene::update_bounds() {
         for (float v : e)
             if (!std::isfinite(v))
                 throw std::overflow_error("Native scene AABB is not finite");
-        for (unsigned axis = 0; axis < 3; ++axis) {
-            actor.encoded_bounds[axis] = encode_min(e[axis]);
-            actor.encoded_bounds[axis+3] = encode_max(e[axis+3]);
+        std::array<std::uint32_t,6> encoded{};
+        for(unsigned axis=0;axis<3;++axis) {
+            encoded[axis]=encode_min(e[axis]);
+            encoded[axis+3]=encode_max(e[axis+3]);
         }
-        endpoints_.push_back({actor.encoded_bounds[0], static_cast<BodyId>(index)});
+        actor.encoded_bounds=encoded;
+        actor.cached_bounds_current=true;
+}
+void Scene::update_bounds() {
+    // Previous ScPipeline::afterIntegration already refreshed each
+    // integrated rigid body's bounds. Authored shape edits invalidate
+    // only their own cache entry, and first-time actors are uncached.
+    endpoints_.clear();
+    for(std::size_t index=0;index<actors_.size();++index) {
+        Actor& actor=actors_[index];
+        if(!actor.alive || actor.kind==Kind::StaticPlane)continue;
+        if(!actor.cached_bounds_current)update_actor_bounds(actor);
+        endpoints_.push_back({actor.encoded_bounds[0],
+                              static_cast<BodyId>(index)});
     }
-    std::sort(endpoints_.begin(), endpoints_.end(),
-        [](Endpoint a, Endpoint b) {
-            return a.min_x < b.min_x || (a.min_x == b.min_x && a.id < b.id);
+    std::sort(endpoints_.begin(),endpoints_.end(),
+        [](Endpoint a,Endpoint b) {
+            return a.min_x<b.min_x ||
+                (a.min_x==b.min_x && a.id<b.id);
         });
+}
+void Scene::after_integration_cached_bounds() {
+    // ScPipeline::afterIntegration::updateScBodyAndShapeSim refreshes
+    // shape bounds from integrated poses. Consume the SAME task-owned
+    // accurate island ranges that Dy integrated, without a scene-wide
+    // actor scan, a duplicate AABB pass, or another shape registry.
+    // Sleep-deactivated islands never entered those task ranges.
+    for(const auto& task:solver_tasks_)
+        for(std::size_t batch=task.first_batch;batch<task.batch_end;++batch) {
+            const auto island=active_accurate_island_batches_[batch];
+            for(std::size_t index=accurate_island_offsets_[island];
+                index<accurate_island_offsets_[island+1];++index) {
+                Actor& body=actors_[accurate_island_nodes_[index]];
+                if(!body.sleeping)
+                    update_actor_bounds(body);
+            }
+        }
 }
 void Scene::update_pairs() {
     pending_pairs_.clear();
@@ -4806,7 +4837,8 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
         body.pending_linear_velocity_delta,body.pending_linear_acceleration,
         body.pending_angular_acceleration,
         body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
-        body.ready_for_sleep,body.sleeping,body.activating});
+        body.ready_for_sleep,body.sleeping,body.activating,
+        body.encoded_bounds,body.cached_bounds_current});
 }
 void Scene::StepCheckpoint::save_manifold_solver_metadata(
     Scene& scene, std::size_t index) {
@@ -5223,6 +5255,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.ready_for_sleep=motion.ready_for_sleep;
             a.sleeping=motion.sleeping;
             a.activating=motion.activating;
+            a.encoded_bounds=motion.encoded_bounds;
+            a.cached_bounds_current=motion.cached_bounds_current;
         }
     }
     // Swap back the exact original arena allocations. This preserves the
@@ -5766,6 +5800,10 @@ void Scene::step(float seconds) {
     // This check gates resource reclamation and completed publication;
     // failed frames roll back the existing single-scene checkpoint.
     join.require_post_solver();
+    // The current Dy motion and island ownership are committed only
+    // after the original Sc afterIntegration shape-cache publication.
+    // Its bounds updates participate in the same motion undo journal.
+    after_integration_cached_bounds();
     retire_destroyed_contact_edges();
     // ScNPhaseCore reports are derived only after final Gu/Dy force
     // writeback, island reconciliation and contact-manager retirement.
