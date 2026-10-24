@@ -1219,9 +1219,11 @@ void Scene::update_contacts() {
             const Actor& box = a.kind == Kind::StaticPlane ? b : a;
             if (box.kind != Kind::DynamicBox)
                 continue;
-            const Vec3 normal = a.kind == Kind::StaticPlane
-                ? Vec3{0.0f, -1.0f, 0.0f}
-                : Vec3{0.0f, 1.0f, 0.0f};
+            // GuContactPlaneBox always emits the plane-first normal.
+            // PxcCacheLocalContacts owns that raw Gu value; the subsequent
+            // PxcNpBatch::flipContacts changes only the published contacts
+            // when Sc's actor order has the box before the plane.
+            const Vec3 normal{0.0f, -1.0f, 0.0f};
             // Identity boxes dominate the admitted floor-contact path.
             // Preserve the source-derived rotated basis only when needed;
             // this avoids three quaternion rotations per plane/box pair.
@@ -1296,6 +1298,17 @@ void Scene::update_contacts() {
                 next_contact_points_.end());
         }
         next_gu_cache_records_.push_back(cache);
+        // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
+        // The cached points above must retain the raw plane-first Gu
+        // normal, so a subsequent cache hit's motion.dot(normal) keeps
+        // the source separation sign. Only the Sc-oriented published
+        // stream is flipped; no second contact arena or allocation.
+        if(plane_pair && a.kind!=Kind::StaticPlane) {
+            for(std::size_t k=0;k<manifold.count;++k) {
+                Vec3& n=next_contact_points_[manifold.contact_offset+k].normal;
+                n={-n.x,-n.y,-n.z};
+            }
+        }
         if (manifold.count > 0) {
             next_manifold_by_edge_[edge]={
                 next_manifolds_.size(),new_lookup_generation};
