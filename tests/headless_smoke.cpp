@@ -1165,6 +1165,9 @@ int main() {
                 frictional.static_friction=0.8f;
                 frictional.dynamic_friction=0.6f;
                 frictional.restitution=0.0f;
+                // N1 diagnostic: exclude prior-frame anchor reuse without
+                // disabling current-frame tangential PGS constraints.
+                frictional.disable_strong_friction=true;
 
                 fyzz::Material frictionless=frictional;
                 frictionless.disable_friction=true;
