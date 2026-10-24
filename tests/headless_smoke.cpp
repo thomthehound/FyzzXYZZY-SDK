@@ -677,6 +677,75 @@ int main() {
             }
 
 
+            // Independent stock PhysX PCM box/box oracle. This
+            // intentionally does not select ReferencePhysXCpuLegacyGu.
+            // Compare native production contact-report points after Dy
+            // publication, not an isolated generator's scratch array.
+            for(bool reverse:{false,true}) {
+                for(float tilt:{0.0f,0.12f}) {
+                    fyzz::WorldOptions native_options{};
+                    native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                    native_options.pcm_box_box=true;
+                    native_options.contact_notifications=true;
+                    fyzz::WorldOptions source_options{};
+                    source_options.execution=fyzz::ExecutionMode::ReferencePhysXCpu;
+                    source_options.contact_notifications=true;
+                    fyzz::World native_pcm(native_options);
+                    fyzz::World source_pcm(source_options);
+                    const auto set_up=[&](fyzz::World& w) {
+                        fyzz::BodyId moving{};
+                        if(reverse) {
+                            moving=w.add_dynamic_box(
+                                {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+                            w.add_static_box(
+                                {0.5f,0.5f,0.5f},{0,0.5f,0});
+                        } else {
+                            w.add_static_box(
+                                {0.5f,0.5f,0.5f},{0,0.5f,0});
+                            moving=w.add_dynamic_box(
+                                {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+                        }
+                        w.set_body_pose(moving,{0,1.46f,0},
+                            {0,0,std::sin(tilt*0.5f),
+                                 std::cos(tilt*0.5f)});
+                        fyzz::RigidBodyDynamics dynamics{};
+                        dynamics.gravity_enabled=false;
+                        w.set_body_dynamics(moving,dynamics);
+                    };
+                    set_up(native_pcm);
+                    set_up(source_pcm);
+                    native_pcm.step(1.0f/120.0f);
+                    source_pcm.step(1.0f/120.0f);
+                    const auto native_points=native_pcm.contact_event_points();
+                    const auto source_points=source_pcm.contact_event_points();
+                    if(native_points.empty() ||
+                       native_points.size()!=source_points.size())
+                        throw std::runtime_error(
+                            "Native/source PCM box-box face contact count mismatch");
+                    for(const auto& original:source_points) {
+                        bool matched=false;
+                        for(const auto& ported:native_points) {
+                            const float dx=ported.position.x-original.position.x;
+                            const float dy=ported.position.y-original.position.y;
+                            const float dz=ported.position.z-original.position.z;
+                            const float ndot=
+                                ported.normal.x*original.normal.x+
+                                ported.normal.y*original.normal.y+
+                                ported.normal.z*original.normal.z;
+                            if(dx*dx+dy*dy+dz*dz<2e-4f &&
+                               ndot>0.999f &&
+                               std::abs(ported.separation-original.separation)<2e-3f) {
+                                matched=true;
+                                break;
+                            }
+                        }
+                        if(!matched)
+                            throw std::runtime_error(
+                                "Native PCM box-box witness or separation differs from source");
+                    }
+                }
+            }
+
             // Source PCM plane/box: compare actual contact buffers
             // produced by GuPCMContactPlaneBox and the partial native
             // PCM path. This is NOT a legacy-Gu oracle: reference runs
