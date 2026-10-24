@@ -186,7 +186,8 @@ void World::set_body_dynamics(BodyId id, RigidBodyDynamics d) {
            std::numeric_limits<float>::max() ||
        d.max_angular_velocity*d.max_angular_velocity >
            std::numeric_limits<float>::max() ||
-       d.position_iterations==0)
+       d.position_iterations==0 ||
+       (d.lock_flags & ~rigid_body_lock_mask)!=0)
         throw std::invalid_argument(
             "Source rigid dynamics inputs/iteration counts invalid");
     impl_->set_body_dynamics(id,d);

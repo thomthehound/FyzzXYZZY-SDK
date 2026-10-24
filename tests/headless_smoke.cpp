@@ -89,6 +89,66 @@ int main() {
                 throw std::runtime_error("Reference static velocity edit was admitted");
 
 
+            // Compare original PhysX axis locks with native PGS
+            // integration under gravity, torque and changing timesteps.
+            {
+                fyzz::World native_locks(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_locks(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
+                const fyzz::Vec3 half{0.35f,0.45f,0.6f};
+                const auto nl=native_locks.add_dynamic_box(half,{0,8,0},1.0f);
+                const auto pl=source_locks.add_dynamic_box(half,{0,8,0},1.0f);
+                fyzz::RigidBodyDynamics d{};
+                d.lock_flags=fyzz::LockLinearY | fyzz::LockAngularZ;
+                native_locks.set_body_dynamics(nl,d);
+                source_locks.set_body_dynamics(pl,d);
+                native_locks.set_body_velocity(nl,{0.7f,2.0f,-0.4f});
+                source_locks.set_body_velocity(pl,{0.7f,2.0f,-0.4f});
+                native_locks.set_body_angular_velocity(nl,{0.8f,-1.1f,3.0f});
+                source_locks.set_body_angular_velocity(pl,{0.8f,-1.1f,3.0f});
+                const float start_y=native_locks.body_state(nl).position.y;
+                for(int frame=0;frame<96;++frame) {
+                    if(frame==32) {
+                        native_locks.apply_body_torque_impulse(nl,{0.1f,0.2f,0.15f});
+                        source_locks.apply_body_torque_impulse(pl,{0.1f,0.2f,0.15f});
+                    }
+                    if(frame==64) {
+                        d.lock_flags=0;
+                        native_locks.set_body_dynamics(nl,d);
+                        source_locks.set_body_dynamics(pl,d);
+                    }
+                    const float dt=frame<48?1.0f/120.0f:1.0f/60.0f;
+                    native_locks.step(dt);
+                    source_locks.step(dt);
+                    const auto n=native_locks.body_state(nl);
+                    const auto p=source_locks.body_state(pl);
+                    const auto error=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                        return std::max({std::abs(a.x-b.x),
+                                         std::abs(a.y-b.y),
+                                         std::abs(a.z-b.z)});
+                    };
+                    const float quat_dot=n.orientation.x*p.orientation.x+
+                        n.orientation.y*p.orientation.y+
+                        n.orientation.z*p.orientation.z+
+                        n.orientation.w*p.orientation.w;
+                    if(!std::isfinite(quat_dot) ||
+                       error(n.position,p.position)>0.015f ||
+                       error(n.velocity,p.velocity)>0.035f ||
+                       error(n.angular_velocity,p.angular_velocity)>0.035f ||
+                       std::abs(quat_dot)<0.998f ||
+                       (frame<64 &&
+                        (std::abs(n.position.y-start_y)>1.0e-6f ||
+                         n.velocity.y!=0.0f ||
+                         n.angular_velocity.z!=0.0f)))
+                        throw std::runtime_error(
+                            "Native locked-body motion diverged from PhysX CPU");
+                }
+                if(native_locks.body_state(nl).position.y>=start_y-0.01f)
+                    throw std::runtime_error(
+                        "Releasing source linear lock did not restore motion");
+            }
+
             // Independent reference comparison: unconstrained angular
             // velocity damping, source quaternion orientation and pose.
             // Full contact/angular solver parity is not claimed here.

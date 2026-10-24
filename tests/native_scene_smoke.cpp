@@ -5806,6 +5806,59 @@ void verify_native_rigid_integration_and_island_lifecycle() {
 
 }
 
+void verify_source_rigid_lock_flags() {
+    using namespace fyzz;
+    World native(WorldOptions{ExecutionMode::NativeCpu});
+    const auto id=native.add_dynamic_box({0.35f,0.45f,0.6f},{0,5,0},1.0f);
+    RigidBodyDynamics d{};
+    d.lock_flags=LockLinearY | LockAngularZ;
+    native.set_body_dynamics(id,d);
+    native.set_body_velocity(id,{0.7f,2.0f,-0.4f});
+    native.set_body_angular_velocity(id,{0.8f,-1.1f,3.0f});
+    const auto start=native.body_state(id);
+    for(int frame=0;frame<96;++frame) {
+        native.step(frame<48?1.0f/120.0f:1.0f/60.0f);
+        const auto state=native.body_state(id);
+        expect(std::abs(state.position.y-start.position.y)<1.0e-6f &&
+               state.velocity.y==0.0f &&
+               state.angular_velocity.z==0.0f,
+               "Source locks failed in native unconstrained integration");
+    }
+    const auto locked=native.body_state(id);
+    expect(locked.position.x>start.position.x+0.1f &&
+           std::abs(locked.angular_velocity.x)>0.01f,
+           "Source locks incorrectly suppressed unlocked motion");
+    auto invalid=d;
+    invalid.lock_flags=0x40u;
+    bool rejected=false;
+    try {native.set_body_dynamics(id,invalid);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    expect(rejected,"Undefined PhysX rigid lock flag was admitted");
+    native.step(1.0f/120.0f);
+    expect(native.body_state(id).velocity.y==0.0f,
+           "Rejected lock edit mutated the active body");
+    d.lock_flags=0;
+    native.set_body_dynamics(id,d);
+    native.step(1.0f/120.0f);
+    expect(native.body_state(id).position.y<locked.position.y,
+           "Releasing source linear lock did not restore gravity");
+    World contact(WorldOptions{ExecutionMode::NativeCpu});
+    contact.add_static_floor(0.0f);
+    const auto body=contact.add_dynamic_box({0.5f,0.5f,0.5f},
+                                            {0,0.54f,0},1.0f);
+    d.lock_flags=LockAngularX | LockAngularY | LockAngularZ;
+    contact.set_body_dynamics(body,d);
+    contact.set_body_velocity(body,{0.45f,-0.3f,0});
+    for(int frame=0;frame<64;++frame) {
+        contact.step(1.0f/120.0f);
+        const auto state=contact.body_state(body);
+        expect(state.angular_velocity.x==0.0f &&
+               state.angular_velocity.y==0.0f &&
+               state.angular_velocity.z==0.0f,
+               "Locked angular axes were bypassed by production PGS");
+    }
+}
+
 int run_native_scene_smoke() {
     using fyzz::native::Scene;
     Scene scene, independent;
@@ -8611,6 +8664,7 @@ int run_native_scene_smoke() {
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
+    verify_source_rigid_lock_flags();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
     verify_source_contact_notification_world();

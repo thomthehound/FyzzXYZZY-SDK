@@ -1509,6 +1509,19 @@ mutations, filter edits and batched per-shape/multi-shape callbacks
 remain later N1 admission gates. The new stream is an admitted rigid contact-touch
 subset, not a replacement for the entire PhysX callback machinery.
 
+## Source rigid dynamic world-axis locks
+
+The existing native Scene accepts the six PxRigidDynamicLockFlag axes
+through actor-owned RigidBodyDynamics. Following
+DyRigidBodyToSolverBody::copyToSolverBodyData, locked angular baseline
+velocity is suppressed without changing the world inverse-inertia
+tensor. DyBodyCoreIntegrator::integrateCore suppresses locked linear
+motion and solver-space angular components before pose and final-velocity
+publication. Original contact Jacobians retain their inertia response.
+Native smoke covers no-contact motion, production PGS, flag rejection
+and lock release; reference-enabled smoke compares original PhysX CPU
+under changing timesteps, torque impulses and lock transitions.
+
 ## Initial integrated acceptance boundary: real CPU PGS
 
 A PR may be large. It must connect a **whole source execution slice**

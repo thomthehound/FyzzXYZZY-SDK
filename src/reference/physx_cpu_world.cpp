@@ -468,6 +468,8 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
                             !d.gravity_enabled);
         actor->setSolverIterationCounts(d.position_iterations,
                                          d.velocity_iterations);
+        actor->setRigidDynamicLockFlags(physx::PxRigidDynamicLockFlags(
+            static_cast<physx::PxU8>(d.lock_flags)));
     }
 
     void set_body_velocity(BodyId id, Vec3 velocity) override {

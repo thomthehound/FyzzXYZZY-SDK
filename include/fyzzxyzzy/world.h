@@ -65,6 +65,20 @@ struct Material {
     bool disable_strong_friction=false;
 };
 
+// PhysX PxRigidDynamicLockFlag bit positions. World-axis locks apply
+// during the source solver-body integration/writeback, not to inertia.
+enum RigidBodyLockFlag : std::uint32_t {
+    LockLinearX  = 1u << 0,
+    LockLinearY  = 1u << 1,
+    LockLinearZ  = 1u << 2,
+    LockAngularX = 1u << 3,
+    LockAngularY = 1u << 4,
+    LockAngularZ = 1u << 5,
+};
+constexpr std::uint32_t rigid_body_lock_mask =
+    LockLinearX | LockLinearY | LockLinearZ |
+    LockAngularX | LockAngularY | LockAngularZ;
+
 // ScBodyCore/PxsBodyCore::solverIterationCounts and
 // DyDynamics::preIntegrationParallel rigid-body inputs. These values
 // belong to each dynamic body, not to a second scene/global solver.
@@ -83,6 +97,8 @@ struct RigidBodyDynamics {
     // maximum of the two body coefficients when preparing Dy constraints.
     float contact_slop_coefficient=0.0f;
     bool gravity_enabled=true;
+    // PxRigidDynamicLockFlags; zero permits unrestricted rigid motion.
+    std::uint32_t lock_flags=0;
     std::uint8_t position_iterations=4;
     std::uint8_t velocity_iterations=1;
 };

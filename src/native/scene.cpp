@@ -29,6 +29,18 @@ std::uint32_t encode_min(float v) {
 std::uint32_t encode_max(float v) {
     return (((encode_float(v) >> 4) + 1u) << 4) | 4u;
 }
+// DyBodyCoreIntegrator::integrateCore locks motion/writeback axes without
+// changing inverse inertia or the response of contact constraints.
+void lock_linear_axes(Vec3& v,std::uint32_t flags) noexcept {
+    if(flags & LockLinearX)v.x=0.0f;
+    if(flags & LockLinearY)v.y=0.0f;
+    if(flags & LockLinearZ)v.z=0.0f;
+}
+void lock_angular_axes(Vec3& v,std::uint32_t flags) noexcept {
+    if(flags & LockAngularX)v.x=0.0f;
+    if(flags & LockAngularY)v.y=0.0f;
+    if(flags & LockAngularZ)v.z=0.0f;
+}
 bool finite(Vec3 v) {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
@@ -505,7 +517,8 @@ void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
        d.max_linear_velocity<0 || d.max_angular_velocity<0 ||
        !std::isfinite(d.max_linear_velocity*d.max_linear_velocity) ||
        !std::isfinite(d.max_angular_velocity*d.max_angular_velocity) ||
-       d.position_iterations==0)
+       d.position_iterations==0 ||
+       (d.lock_flags & ~rigid_body_lock_mask)!=0)
         throw std::invalid_argument("Native PxsBodyCore dynamics invalid");
     actor.dynamics=d;
 }
@@ -2980,6 +2993,10 @@ void Scene::prepare_solver_bodies() {
             row.data.orientation=actor.orientation;
             row.data.linear_velocity=actor.velocity;
             row.data.angular_velocity=actor.angular_velocity;
+            // DyRigidBodyToSolverBody::copyToSolverBodyData masks
+            // angular baseline motion but retains sqrtInvInertia columns.
+            lock_angular_axes(row.data.angular_velocity,
+                              actor.dynamics.lock_flags);
             row.data.inverse_mass=actor.inverse_mass;
             // The provisional translation-only mass admission does not
             // authorize a rotation-locked rigid contact. PhysX requires
@@ -4484,14 +4501,18 @@ void Scene::publish_solver_bodies() {
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
         const auto& row = solver_rows_[id];
         const Vec3& d = row.solver.linear_velocity_delta;
-        const Vec3 linear{
+        Vec3 linear{
             row.data.linear_velocity.x+d.x,
             row.data.linear_velocity.y+d.y,
             row.data.linear_velocity.z+d.z};
+        lock_linear_axes(linear,actor.dynamics.lock_flags);
         // DyBodyCoreIntegrator::integrateCore publishes angular solver
         // state through the *world* square-root inverse inertia tensor,
         // rather than treating PxSolverBody::angularState as angular velocity.
-        const Vec3& angular_state = row.solver.angular_state;
+        Vec3 angular_state=row.solver.angular_state;
+        // integrateCore masks solver-space angular components before
+        // multiplication by the world sqrt-inverse-inertia tensor.
+        lock_angular_axes(angular_state,actor.dynamics.lock_flags);
         const auto& i = row.data.sqrt_inverse_inertia;
         const Vec3 angular{
             row.data.angular_velocity.x + i[0].x*angular_state.x +
@@ -5201,7 +5222,10 @@ void Scene::step(float seconds) {
             angular.y *= factor;
             angular.z *= factor;
         }
-        const Vec3 velocity{vx, vy, vz};
+        Vec3 velocity{vx, vy, vz};
+        // The no-contact integration path must publish locked axes too.
+        lock_linear_axes(velocity,d.lock_flags);
+        lock_angular_axes(angular,d.lock_flags);
         if (!finite(velocity) || !finite(angular))
             throw std::overflow_error("Native CPU unconstrained velocity overflow");
         step_checkpoint_.save_motion(*this,accurate_island_nodes_[index]);
@@ -5269,7 +5293,8 @@ void Scene::step(float seconds) {
                     row.data.linear_velocity.y + delta.y,
                     row.data.linear_velocity.z + delta.z};
                 const auto& i = row.data.sqrt_inverse_inertia;
-                const Vec3& angular_delta = row.motion_angular_state;
+                Vec3 angular_delta=row.motion_angular_state;
+                lock_angular_axes(angular_delta,actor.dynamics.lock_flags);
                 motion_angular = {
                     row.data.angular_velocity.x + i[0].x*angular_delta.x +
                         i[1].x*angular_delta.y + i[2].x*angular_delta.z,
@@ -5278,6 +5303,9 @@ void Scene::step(float seconds) {
                     row.data.angular_velocity.z + i[0].z*angular_delta.x +
                         i[1].z*angular_delta.y + i[2].z*angular_delta.z};
             }
+            // integrateCore also locks position-phase motion separately
+            // from the final unbiased velocity publication.
+            lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
             const Vec3 p{
                 static_cast<float>(static_cast<double>(actor.position.x) +
                                    static_cast<double>(motion_linear.x)*seconds),
