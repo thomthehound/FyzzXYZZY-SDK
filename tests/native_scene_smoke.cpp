@@ -1522,6 +1522,204 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
+void verify_source_multiframe_completion() {
+    using namespace fyzz;
+    using fyzz::native::Scene;
+    constexpr float dt=1.0f/120.0f;
+    // A Gu collision clock is not the scene's completed Dy/fetch clock.
+    // The marker must survive a failed solve with the actual previously
+    // published result buffers and become invalid on a collision-only
+    // query, even when that query does not change contact geometry.
+    {
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        if(scene.solved_result_frame()!=0)
+            throw std::runtime_error(
+                "Scene exposed a completed source solver result before its first step");
+        scene.step(dt);
+        const auto committed=scene.solved_result_frame();
+        if(committed==0 || committed!=scene.frame_index() ||
+           scene.solved_normal_impulses().empty())
+            throw std::runtime_error(
+                "Dy result was published before solver and Gu force writeback completed");
+        const auto* const forces=scene.solved_normal_impulses().data();
+        const std::vector<double> old_forces(
+            scene.solved_normal_impulses().begin(),
+            scene.solved_normal_impulses().end());
+        Material invalid{};
+        invalid.static_friction=1.0e30f;
+        invalid.dynamic_friction=1.0e30f;
+        invalid.friction_combine=MaterialCombineMode::Multiply;
+        scene.set_material(floor,invalid);
+        scene.set_material(box,invalid);
+        bool rejected=false;
+        try { scene.step(dt); }
+        catch(const std::overflow_error&) { rejected=true; }
+        if(!rejected || scene.frame_index()!=committed ||
+           scene.solved_result_frame()!=committed ||
+           scene.solved_normal_impulses().data()!=forces ||
+           scene.solved_normal_impulses().size()!=old_forces.size() ||
+           !std::equal(old_forces.begin(),old_forces.end(),
+                       scene.solved_normal_impulses().begin()))
+            throw std::runtime_error(
+                "Rejected Dy step advanced completed-result generation or replaced its force storage");
+        scene.set_material(floor,Material{});
+        scene.set_material(box,Material{});
+        scene.advance_collision();
+        if(scene.solved_result_frame()!=0 ||
+           !scene.solved_normal_impulses().empty())
+            throw std::runtime_error(
+                "Gu-only collision incorrectly retained the completed solver result");
+        scene.step(dt);
+        if(scene.solved_result_frame()!=scene.frame_index() ||
+           scene.solved_result_frame()<=committed)
+            throw std::runtime_error(
+                "Native Dy completion did not republish after collision-only invalidation");
+    }
+
+    // Multi-frame free-body comparison against the ORIGINAL PhysX CPU
+    // implementation. Disparate masses, rotations, damping and changing
+    // dt all pass through the real public World backend. No Gu contact
+    // is possible; drift here belongs to body integration, not PCM.
+    const auto freeflight=[](ExecutionMode mode) {
+        World world(WorldOptions{mode});
+        const auto first=world.add_dynamic_box(
+            {0.4f,0.7f,0.3f},{-6,25,0},0.75f);
+        const auto second=world.add_dynamic_box(
+            {0.8f,0.3f,0.6f},{6,28,0},3.5f);
+        RigidBodyDynamics a{},b{};
+        a.linear_damping=0.12f;
+        a.angular_damping=0.09f;
+        b.linear_damping=0.025f;
+        b.angular_damping=0.16f;
+        a.position_iterations=5;
+        b.position_iterations=8;
+        world.set_body_dynamics(first,a);
+        world.set_body_dynamics(second,b);
+        world.set_body_velocity(first,{0.85f,-0.4f,0.15f});
+        world.set_body_velocity(second,{-0.35f,0.2f,-0.8f});
+        world.set_body_angular_velocity(first,{0.4f,0.9f,-0.2f});
+        world.set_body_angular_velocity(second,{0.6f,-0.3f,0.7f});
+        std::vector<std::array<BodyState,2>> frames;
+        frames.reserve(96);
+        for(unsigned i=0;i<96;++i) {
+            const float timestep=i%3==0?1.0f/90.0f:
+                (i%3==1?1.0f/240.0f:1.0f/120.0f);
+            world.step(timestep);
+            const std::array<BodyState,2> state{
+                world.body_state(first),world.body_state(second)};
+            for(const auto& body:state) {
+                const auto finite=[](Vec3 v) {
+                    return std::isfinite(v.x) &&
+                           std::isfinite(v.y) && std::isfinite(v.z);
+                };
+                const auto& q=body.orientation;
+                const float q2=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
+                if(!finite(body.position) || !finite(body.velocity) ||
+                   !finite(body.angular_velocity) ||
+                   !std::isfinite(q2) || std::abs(q2-1.0f)>0.01f ||
+                   body.sleeping)
+                    throw std::runtime_error(
+                        "Multiframe PhysX integration lost a live rigid-body state");
+            }
+            frames.push_back(state);
+        }
+        return frames;
+    };
+    const auto native=freeflight(ExecutionMode::NativeCpu);
+
+    // More than one frame of actual contact lifetime, with alternating
+    // timesteps and repeated Found/Persists/Lost transitions. Zero
+    // contact response deliberately isolates Gu/Sc publication ordering
+    // from the still separately gated strict PGS impulse parity.
+    const auto contact_timeline=[](ExecutionMode mode) {
+        WorldOptions opts{mode};
+        opts.contact_notifications=true;
+        World world(opts);
+        const auto floor=world.add_static_floor(0.0f);
+        const auto box=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.max_contact_impulse=0.0f;
+        world.set_body_dynamics(box,dynamics);
+        std::vector<int> events;
+        events.reserve(40);
+        for(unsigned cycle=0;cycle<10;++cycle) {
+            for(unsigned phase=0;phase<4;++phase) {
+                if(phase==0)world.set_body_position(box,{0,0.49f,0});
+                if(phase==2)world.set_body_position(box,{0,4,0});
+                world.step((cycle+phase)%2?1.0f/120.0f:1.0f/240.0f);
+                const auto reports=world.contact_events();
+                if(reports.size()>1 ||
+                   (!reports.empty() &&
+                    (reports[0].body0!=floor || reports[0].body1!=box)))
+                    throw std::runtime_error(
+                        "Sc multiframe touch lifecycle reported an unrelated contact");
+                const int kind=reports.empty()?-1:
+                    static_cast<int>(reports[0].kind);
+                const int expected=phase==0
+                    ?static_cast<int>(ContactEventKind::Found)
+                    :phase==1?static_cast<int>(ContactEventKind::Persists)
+                    :phase==2?static_cast<int>(ContactEventKind::Lost):-1;
+                if(kind!=expected ||
+                   (!reports.empty() && phase!=2 &&
+                    (reports[0].contact_count==0 ||
+                     reports[0].normal_impulse!=0.0)))
+                    throw std::runtime_error(
+                        "Sc multiframe zero-response touch or fetch order diverged at cycle "+
+                        std::to_string(cycle)+", phase "+
+                        std::to_string(phase));
+                events.push_back(kind);
+            }
+        }
+        return events;
+    };
+    const auto native_events=contact_timeline(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto reference=freeflight(ExecutionMode::ReferencePhysXCpuLegacyGu);
+    for(std::size_t frame=0;frame<native.size();++frame)
+    for(std::size_t body=0;body<2;++body) {
+        const auto& a=native[frame][body];
+        const auto& b=reference[frame][body];
+        const auto delta=[](Vec3 x,Vec3 y) {
+            return std::max({
+                std::abs(x.x-y.x),std::abs(x.y-y.y),
+                std::abs(x.z-y.z)});
+        };
+        const float location_error=delta(a.position,b.position);
+        const float velocity_error=delta(a.velocity,b.velocity);
+        const float angular_error=delta(a.angular_velocity,b.angular_velocity);
+        const auto& q=a.orientation;
+        const auto& p=b.orientation;
+        const float q_dot=std::abs(
+            q.x*p.x+q.y*p.y+q.z*p.z+q.w*p.w);
+        if(location_error>0.004f || velocity_error>0.004f ||
+           angular_error>0.004f || !std::isfinite(q_dot) ||
+           1.0f-q_dot>0.003f)
+            throw std::runtime_error(
+                "Multiframe native/PhysX CPU free-flight state diverged on frame "+
+                std::to_string(frame)+", actor "+std::to_string(body)+
+                " (pos "+std::to_string(location_error)+
+                ", vel "+std::to_string(velocity_error)+
+                ", angular "+std::to_string(angular_error)+
+                ", quaternion "+std::to_string(q_dot)+")");
+    }
+    for(const auto mode:{ExecutionMode::ReferencePhysXCpuLegacyGu,
+                         ExecutionMode::ReferencePhysXCpu}) {
+        const auto source=contact_timeline(mode);
+        if(source!=native_events)
+            throw std::runtime_error(
+                "Original PhysX and native Sc touch lifecycles diverged across 40 frames");
+    }
+#else
+    (void)native;
+    (void)native_events;
+#endif
+}
+
 void verify_source_pose_authoring() {
     constexpr float dt=1.0f/120.0f;
     constexpr float sine=0.38268343236f;
@@ -8350,6 +8548,7 @@ int run_native_scene_smoke() {
     verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
+    verify_source_multiframe_completion();
     verify_source_pose_authoring();
     verify_source_zero_velocity_iteration_request();
     verify_source_reverse_active_island_sleep_retirement();
