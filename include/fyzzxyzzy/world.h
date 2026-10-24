@@ -79,6 +79,12 @@ constexpr std::uint32_t rigid_body_lock_mask =
     LockLinearX | LockLinearY | LockLinearZ |
     LockAngularX | LockAngularY | LockAngularZ;
 
+// PhysX PxForceMode: per-second acceleration and per-step velocity
+// changes are separately accumulated by ScBodySim::VelocityMod.
+enum class ForceMode : std::uint8_t {
+    Force, Impulse, Acceleration, VelocityChange
+};
+
 // ScBodyCore/PxsBodyCore::solverIterationCounts and
 // DyDynamics::preIntegrationParallel rigid-body inputs. These values
 // belong to each dynamic body, not to a second scene/global solver.
@@ -181,6 +187,18 @@ public:
     virtual void apply_body_torque_impulse(BodyId, Vec3) {
         throw std::logic_error("This backend cannot apply a torque impulse");
     }
+    virtual void add_body_force(BodyId, Vec3, ForceMode) {
+        throw std::logic_error("This backend cannot apply a rigid force");
+    }
+    virtual void add_body_torque(BodyId, Vec3, ForceMode) {
+        throw std::logic_error("This backend cannot apply a rigid torque");
+    }
+    virtual void clear_body_force(BodyId, ForceMode) {
+        throw std::logic_error("This backend cannot clear a rigid force");
+    }
+    virtual void clear_body_torque(BodyId, ForceMode) {
+        throw std::logic_error("This backend cannot clear a rigid torque");
+    }
     virtual void set_body_material(BodyId, Material) {
         throw std::logic_error("This backend cannot author rigid material");
     }
@@ -222,6 +240,15 @@ public:
     // Impulse is angular momentum in world coordinates (N*m*s).
     // Matches PxRigidDynamic::addTorque(..., PxForceMode::eIMPULSE).
     void apply_body_torque_impulse(BodyId id, Vec3 impulse);
+    // ScBodySim::VelocityMod per-second and per-step spatial changes.
+    // Source eFORCE/eIMPULSE use inverse mass/inertia; eACCELERATION
+    // and eVELOCITY_CHANGE supply the velocity modifications directly.
+    void add_body_force(BodyId id, Vec3 force,
+                        ForceMode mode=ForceMode::Force);
+    void add_body_torque(BodyId id, Vec3 torque,
+                         ForceMode mode=ForceMode::Force);
+    void clear_body_force(BodyId id, ForceMode mode=ForceMode::Force);
+    void clear_body_torque(BodyId id, ForceMode mode=ForceMode::Force);
     void set_body_material(BodyId id, Material material);
     // PhysX PxShape::setContactOffset / setRestOffset: both in metres.
     // Contact offset must be nonnegative and greater than rest offset.

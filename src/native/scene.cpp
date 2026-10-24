@@ -448,35 +448,54 @@ void Scene::set_angular_velocity(BodyId id, Vec3 velocity) {
     actor.sleeping=false;
 }
 void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
-    if (!finite(impulse))
-        throw std::invalid_argument("Native torque impulse must be finite");
-    auto& actor = require(id);
-    if (actor.kind != Kind::DynamicBox)
-        throw std::logic_error("Static actors cannot receive torque impulses");
-    if (!actor.angular_inertia_available)
+    add_spatial_velocity_mod(id,impulse,ForceMode::Impulse,true);
+}
+void Scene::add_spatial_velocity_mod(BodyId id, Vec3 value,
+                                     ForceMode mode, bool angular) {
+    if(!finite(value))
+        throw std::invalid_argument("Native spatial force must be finite");
+    auto& actor=require(id);
+    if(actor.kind!=Kind::DynamicBox)
+        throw std::logic_error("Static actors cannot receive spatial forces");
+    if(angular && !actor.angular_inertia_available)
         throw std::logic_error(
-            "Angular impulse requires representable PhysX inverse inertia");
-
-    // NpRigidBodyTemplate::setSpatialForce(eIMPULSE):
-    // world angular delta = global inverse inertia tensor * torque.
-    // The equivalent local principal-axes transform avoids an extra
-    // matrix allocation: R * diag(invI) * R^T * worldImpulse.
-    const Vec3 local = rotate_inverse(actor.orientation, impulse);
-    const Vec3 delta = rotate(actor.orientation, {
-        local.x * actor.inverse_inertia_local.x,
-        local.y * actor.inverse_inertia_local.y,
-        local.z * actor.inverse_inertia_local.z});
-    const Vec3 pending = {
-        actor.pending_angular_velocity_delta.x + delta.x,
-        actor.pending_angular_velocity_delta.y + delta.y,
-        actor.pending_angular_velocity_delta.z + delta.z};
-    if (!finite(delta) || !finite(pending))
-        throw std::overflow_error("Native world-space torque impulse overflow");
+            "Angular velocity modification requires representable inertia");
+    // NpRigidBodyTemplate::addSpatialForce converts eFORCE/eIMPULSE
+    // with world inverse mass/inertia. eACCELERATION and
+    // eVELOCITY_CHANGE are already the respective velocity changes.
+    const bool per_second=
+        mode==ForceMode::Force || mode==ForceMode::Acceleration;
+    if(mode!=ForceMode::Force && mode!=ForceMode::Impulse &&
+       mode!=ForceMode::Acceleration && mode!=ForceMode::VelocityChange)
+        throw std::invalid_argument("Unknown PhysX force mode");
+    Vec3 converted=value;
+    if(mode==ForceMode::Force || mode==ForceMode::Impulse) {
+        if(angular) {
+            const Vec3 local=rotate_inverse(actor.orientation,value);
+            converted=rotate(actor.orientation,{
+                local.x*actor.inverse_inertia_local.x,
+                local.y*actor.inverse_inertia_local.y,
+                local.z*actor.inverse_inertia_local.z});
+        } else {
+            converted={value.x*actor.inverse_mass,
+                       value.y*actor.inverse_mass,
+                       value.z*actor.inverse_mass};
+        }
+    }
+    Vec3& destination=angular
+        ? (per_second ? actor.pending_angular_acceleration
+                      : actor.pending_angular_velocity_delta)
+        : (per_second ? actor.pending_linear_acceleration
+                      : actor.pending_linear_velocity_delta);
+    const Vec3 total{destination.x+converted.x,
+                     destination.y+converted.y,
+                     destination.z+converted.z};
+    if(!finite(converted) || !finite(total))
+        throw std::overflow_error("Native spatial velocity modification overflow");
+    // Source BodySim::notifyDirtySpatialAcceleration/Velocity wakes
+    // the existing actor/island without replacing solver ownership.
     if(actor.sleeping && !actor.activating)queue_node_activation(id);
-    actor.pending_angular_velocity_delta = pending;
-    // NpRigidDynamic::wakeUpInternalNoKinematicTest preserves the
-    // accumulated Dy sleep filter of an already active actor. Only
-    // genuine sleep-to-wake transitions begin with a cleared filter.
+    destination=total;
     if(actor.sleeping) {
         actor.activating=true;
         authored_activation_pending_=true;
@@ -486,6 +505,23 @@ void Scene::apply_torque_impulse(BodyId id, Vec3 impulse) {
     actor.wake_counter=std::max(actor.wake_counter,0.4f);
     actor.ready_for_sleep=false;
     actor.sleeping=false;
+}
+void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
+                                       bool angular) {
+    auto& actor=require(id);
+    if(actor.kind!=Kind::DynamicBox)
+        throw std::logic_error("Static actors have no spatial force state");
+    if(mode!=ForceMode::Force && mode!=ForceMode::Impulse &&
+       mode!=ForceMode::Acceleration && mode!=ForceMode::VelocityChange)
+        throw std::invalid_argument("Unknown PhysX force mode");
+    const bool per_second=
+        mode==ForceMode::Force || mode==ForceMode::Acceleration;
+    Vec3& destination=angular
+        ? (per_second ? actor.pending_angular_acceleration
+                      : actor.pending_angular_velocity_delta)
+        : (per_second ? actor.pending_linear_acceleration
+                      : actor.pending_linear_velocity_delta);
+    destination={};
 }
 void Scene::set_shape_offsets(BodyId id, float contact_offset,
                               float rest_offset) {
@@ -4569,6 +4605,8 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
     // neither a speculative wake nor source deactivation can allocate.
     motions.push_back({id,body.position,body.velocity,body.angular_velocity,
         body.orientation,body.pending_angular_velocity_delta,
+        body.pending_linear_velocity_delta,body.pending_linear_acceleration,
+        body.pending_angular_acceleration,
         body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
         body.ready_for_sleep,body.sleeping,body.activating});
 }
@@ -4978,6 +5016,9 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.angular_velocity=motion.angular_velocity;
             a.orientation=motion.orientation;
             a.pending_angular_velocity_delta=motion.pending_angular_velocity_delta;
+            a.pending_linear_velocity_delta=motion.pending_linear_velocity_delta;
+            a.pending_linear_acceleration=motion.pending_linear_acceleration;
+            a.pending_angular_acceleration=motion.pending_angular_acceleration;
             a.wake_counter=motion.wake_counter;
             a.sleep_linear_acc=motion.sleep_linear_acc;
             a.sleep_angular_acc=motion.sleep_angular_acc;
@@ -5212,20 +5253,33 @@ void Scene::step(float seconds) {
         index<accurate_island_offsets_[island+1];++index) {
         auto& actor=actors_[accurate_island_nodes_[index]];
         if(actor.sleeping)continue;
-        float vx = actor.velocity.x;
         const auto& d=actor.dynamics;
-        float vy = actor.velocity.y +
+        // ScBodySim::updateForces runs at ScPipeline::beforeSolver:
+        // per-step velocity + per-second acceleration*dt are applied
+        // before Dy::bodyCoreComputeUnconstrainedVelocity damping.
+        const Vec3 pre_linear{
+            actor.velocity.x+actor.pending_linear_velocity_delta.x+
+                actor.pending_linear_acceleration.x*seconds,
+            actor.velocity.y+actor.pending_linear_velocity_delta.y+
+                actor.pending_linear_acceleration.y*seconds,
+            actor.velocity.z+actor.pending_linear_velocity_delta.z+
+                actor.pending_linear_acceleration.z*seconds};
+        float vx=pre_linear.x;
+        float vy=pre_linear.y+
             (d.gravity_enabled ? gravity*seconds : 0.0f);
-        float vz = actor.velocity.z;
+        float vz=pre_linear.z;
         const float lin_mult = std::max(
             1.0f - d.linear_damping*seconds,0.0f);
         vx *= lin_mult; vy *= lin_mult; vz *= lin_mult;
         // Per-step angular velocity modification is accumulated on the
         // actor and consumed exactly once, as in ScBodySim::VelocityMod.
         Vec3 angular{
-            actor.angular_velocity.x + actor.pending_angular_velocity_delta.x,
-            actor.angular_velocity.y + actor.pending_angular_velocity_delta.y,
-            actor.angular_velocity.z + actor.pending_angular_velocity_delta.z};
+            actor.angular_velocity.x+actor.pending_angular_velocity_delta.x+
+                actor.pending_angular_acceleration.x*seconds,
+            actor.angular_velocity.y+actor.pending_angular_velocity_delta.y+
+                actor.pending_angular_acceleration.y*seconds,
+            actor.angular_velocity.z+actor.pending_angular_velocity_delta.z+
+                actor.pending_angular_acceleration.z*seconds};
         if (!finite(angular))
             throw std::overflow_error("Native angular impulse accumulation overflow");
         const float ang_mult = std::max(
@@ -5276,6 +5330,12 @@ void Scene::step(float seconds) {
         actor.velocity = velocity;
         actor.angular_velocity = angular;
         actor.pending_angular_velocity_delta = {};
+        actor.pending_linear_velocity_delta = {};
+        // ScBodySim::setForcesToDefaults clears the default per-second
+        // acceleration stream after each successful consumption.
+        // eRETAIN_ACCELERATIONS is not enabled in this admitted scene.
+        actor.pending_linear_acceleration = {};
+        actor.pending_angular_acceleration = {};
         // Source ScPipeline/DySolverControl: do not predict and publish
         // the position before Gu contacts and the biased PGS passes.
         // Its integration requires the saved position-solver motion
@@ -5616,6 +5676,18 @@ public:
     }
     void apply_body_torque_impulse(BodyId id, Vec3 impulse) override {
         scene_.apply_torque_impulse(id, impulse);
+    }
+    void add_body_force(BodyId id, Vec3 value, ForceMode mode) override {
+        scene_.add_spatial_velocity_mod(id,value,mode,false);
+    }
+    void add_body_torque(BodyId id, Vec3 value, ForceMode mode) override {
+        scene_.add_spatial_velocity_mod(id,value,mode,true);
+    }
+    void clear_body_force(BodyId id, ForceMode mode) override {
+        scene_.clear_spatial_velocity_mod(id,mode,false);
+    }
+    void clear_body_torque(BodyId id, ForceMode mode) override {
+        scene_.clear_spatial_velocity_mod(id,mode,true);
     }
     void set_body_material(BodyId id, Material material) override {
         scene_.set_material(id,material);

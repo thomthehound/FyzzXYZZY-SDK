@@ -140,8 +140,29 @@ void World::set_body_angular_velocity(BodyId id, Vec3 velocity) {
     impl_->set_body_angular_velocity(id, velocity);
 }
 void World::apply_body_torque_impulse(BodyId id, Vec3 impulse) {
-    validate_position(impulse);
-    impl_->apply_body_torque_impulse(id, impulse);
+    add_body_torque(id,impulse,ForceMode::Impulse);
+}
+void World::add_body_force(BodyId id, Vec3 value, ForceMode mode) {
+    validate_position(value);
+    if(static_cast<unsigned>(mode)>3)
+        throw std::invalid_argument("Unknown PhysX force mode");
+    impl_->add_body_force(id,value,mode);
+}
+void World::add_body_torque(BodyId id, Vec3 value, ForceMode mode) {
+    validate_position(value);
+    if(static_cast<unsigned>(mode)>3)
+        throw std::invalid_argument("Unknown PhysX torque mode");
+    impl_->add_body_torque(id,value,mode);
+}
+void World::clear_body_force(BodyId id, ForceMode mode) {
+    if(static_cast<unsigned>(mode)>3)
+        throw std::invalid_argument("Unknown PhysX force mode");
+    impl_->clear_body_force(id,mode);
+}
+void World::clear_body_torque(BodyId id, ForceMode mode) {
+    if(static_cast<unsigned>(mode)>3)
+        throw std::invalid_argument("Unknown PhysX torque mode");
+    impl_->clear_body_torque(id,mode);
 }
 void World::set_body_material(BodyId id, Material material) {
     if (!std::isfinite(material.static_friction) ||

@@ -494,12 +494,36 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     }
 
     void apply_body_torque_impulse(BodyId id, Vec3 impulse) override {
-        if (id >= actors.size() || !actors[id])
+        add_body_torque(id,impulse,ForceMode::Impulse);
+    }
+    static physx::PxForceMode::Enum physx_force_mode(ForceMode mode) {
+        switch(mode) {
+        case ForceMode::Force:return physx::PxForceMode::eFORCE;
+        case ForceMode::Impulse:return physx::PxForceMode::eIMPULSE;
+        case ForceMode::Acceleration:return physx::PxForceMode::eACCELERATION;
+        case ForceMode::VelocityChange:return physx::PxForceMode::eVELOCITY_CHANGE;
+        }
+        throw std::invalid_argument("Unknown PhysX force mode");
+    }
+    physx::PxRigidDynamic* dynamic_actor(BodyId id) const {
+        if(id>=actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
-        auto* dynamic = actors[id]->is<physx::PxRigidDynamic>();
-        if (!dynamic)
-            throw std::logic_error("Static actors cannot receive torque impulses");
-        dynamic->addTorque(to_physx(impulse), physx::PxForceMode::eIMPULSE);
+        auto* dynamic=actors[id]->is<physx::PxRigidDynamic>();
+        if(!dynamic)
+            throw std::logic_error("Static actors cannot receive spatial force changes");
+        return dynamic;
+    }
+    void add_body_force(BodyId id, Vec3 value, ForceMode mode) override {
+        dynamic_actor(id)->addForce(to_physx(value),physx_force_mode(mode));
+    }
+    void add_body_torque(BodyId id, Vec3 value, ForceMode mode) override {
+        dynamic_actor(id)->addTorque(to_physx(value),physx_force_mode(mode));
+    }
+    void clear_body_force(BodyId id, ForceMode mode) override {
+        dynamic_actor(id)->clearForce(physx_force_mode(mode));
+    }
+    void clear_body_torque(BodyId id, ForceMode mode) override {
+        dynamic_actor(id)->clearTorque(physx_force_mode(mode));
     }
 
     BodyState body_state(BodyId id) const override {

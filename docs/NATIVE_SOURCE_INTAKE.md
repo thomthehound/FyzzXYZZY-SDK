@@ -1509,6 +1509,22 @@ mutations, filter edits and batched per-shape/multi-shape callbacks
 remain later N1 admission gates. The new stream is an admitted rigid contact-touch
 subset, not a replacement for the entire PhysX callback machinery.
 
+## Source ScBodySim spatial force and impulse lifecycle
+
+The single production native Scene now owns all four PhysX
+`PxForceMode` forms through the actor-owned VelocityMod state:
+per-step linear/angular velocity deltas, and per-second
+linear/angular accelerations. `NpRigidBodyTemplate::addSpatialForce`
+converts authored forces and impulses using the actor's inverse mass
+or rotated inverse-inertia tensor; acceleration and velocity-change
+modes already express the corresponding solver-space changes.
+`ScBodySim::updateForces` lowers the per-second accumulation by
+the current timestep at the `ScPipeline::beforeSolver` dependency,
+before damping/clamping and Dy PGS. Default per-frame clearing and
+the existing failure-atomic sparse motion checkpoint cover all four
+velocity-mod channels, without a second force integrator. The source
+`eRETAIN_ACCELERATIONS` scene flag is not admitted in this slice.
+
 ## Source gyroscopic-force velocity update
 
 The existing actor-owned RigidBodyDynamics now forwards

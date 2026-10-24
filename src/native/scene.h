@@ -148,6 +148,9 @@ public:
     void set_velocity(BodyId id, Vec3 velocity);
     void set_angular_velocity(BodyId id, Vec3 velocity);
     void apply_torque_impulse(BodyId id, Vec3 impulse);
+    void add_spatial_velocity_mod(BodyId id, Vec3 value,
+                                  ForceMode mode, bool angular);
+    void clear_spatial_velocity_mod(BodyId id, ForceMode mode, bool angular);
     // A finite contact-report threshold opts a dynamic body into the
     // source's low-level force-threshold stream. Default PX_MAX_REAL
     // disables it. Units are force; evaluation uses impulse > force*dt.
@@ -466,6 +469,9 @@ private:
         // PhysX ScBodySim::VelocityMod's per-step angular delta; consumed
         // by the existing scene clock, not a second force owner.
         Vec3 pending_angular_velocity_delta{};
+        Vec3 pending_linear_velocity_delta{};
+        Vec3 pending_linear_acceleration{};
+        Vec3 pending_angular_acceleration{};
         // ScBodyCore::BodyCore initializes the PxsBodyCore wake counter
         // to 20 * 0.02 seconds; Dy::sleepCheck accumulates unscaled
         // motion energies until this source counter expires.
@@ -866,6 +872,9 @@ private:
             Vec3 position{}, velocity{}, angular_velocity{};
             Quat orientation{};
             Vec3 pending_angular_velocity_delta{};
+            Vec3 pending_linear_velocity_delta{};
+            Vec3 pending_linear_acceleration{};
+            Vec3 pending_angular_acceleration{};
             float wake_counter=0.4f;
             Vec3 sleep_linear_acc{}, sleep_angular_acc{};
             bool ready_for_sleep=false;
