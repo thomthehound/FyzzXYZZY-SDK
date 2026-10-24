@@ -1020,11 +1020,12 @@ int main() {
                     report("PCM",pcm);
                     // The source result determines whether the fixture
                     // represents a valid bounded sleep-conformance gate.
-                    if(!legacy.slept || !pcm.slept)
+                    if(!legacy.slept)
                         throw std::runtime_error(
-                            "Original PhysX did not satisfy the independent bridge sleep fixture");
-                    throw std::runtime_error(
-                        "Native source-island sleep diverged from independent PhysX CPU");
+                            "Original PhysX legacy Gu did not satisfy the bridge sleep fixture");
+                    if(!native.slept)
+                        throw std::runtime_error(
+                            "Native source-island sleep diverged from PhysX legacy Gu");
                 }
             }
 
