@@ -529,6 +529,23 @@ persistent friction history and island/threshold bookkeeping. Immutable
 shape geometry and actor materials are not cloned; there is no second
 simulation or solver.
 
+**Destroyed contact-manager completion join:** `ScPipeline.cpp::destroyManagers`
+forks speculative and accurate `thirdPassIslandGen` work and
+`processLostContacts3` joins it to the scene's solver completion.
+The admitted rigid native scene now preserves a destroyed manager's
+retiring `EdgeIndex` allocation through accurate/speculative island
+repair **and through Dy contact preparation, solve, writeback and
+body integration**. Its serial completion edge returns that handle
+to the free pool only after all those consumers have finished and
+before the successful frame publishes Sc contact events. This is
+the source lifetime dependency; it is not a replacement task
+scheduler or an assertion of parallel CPU execution. For a standalone
+`advance_collision`, no Dy consumer exists, so post-third-pass
+retirement completes inside its collision transaction. Both paths
+journal the original handle allocation and intrusive edge metadata
+for rollback. Tests check the handle before/after the join, failed
+transactions, reuse after completion, and combined lost-touch and
+force-threshold Lost reports without replay.
 **Remaining copy cost:** native steps now journal only mutated
 dynamic-body motion, while the source's retained friction anchors
 and previous exceeded-threshold streams use reversible scene-owned
