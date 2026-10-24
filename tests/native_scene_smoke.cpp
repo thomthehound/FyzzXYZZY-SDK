@@ -7939,8 +7939,10 @@ int run_native_scene_smoke() {
                        std::isfinite(impulse.z) &&
                        std::isfinite(position.x) &&
                        std::isfinite(position.y) &&
+                       std::abs(position.x-(m==0 ? -5.0 : 5.0))<0.6 &&
+                       std::abs(position.y)<0.1 &&
                        std::abs(impulse.y)<0.001,
-                       "Source friction two-axis impulse was not finite/tangential");
+                       "Source friction impulse or body0 anchor position mismatch");
                 total_x+=impulse.x;
             }
             const double velocity_before=m==0 ? 0.015 : -0.025;
