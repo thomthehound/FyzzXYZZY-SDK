@@ -350,12 +350,20 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     // Dy::integrateCore never calls this authored-pose path: ordinary
     // solver-integrated motion retains the PCM manifold and refreshes
     // its cached box/plane-local witnesses on the next Gu pass.
-    if(pcm_plane_box_enabled_)
+    if(pcm_plane_box_enabled_) {
+        bool invalidated=false;
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
-            if(edge.pair.a==id || edge.pair.b==id)
+            if(edge.pair.a==id || edge.pair.b==id) {
                 edge.pcm_plane_box={};
+                invalidated=true;
+            }
         }
+        // A source ShapeInteraction cache reset requires a fresh
+        // narrowphase publication even for an idempotent authored pose,
+        // including geometry-only advance_collision(false) queries.
+        if(invalidated)dirty_=true;
+    }
     if(!changing_pose)return;
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
