@@ -136,6 +136,75 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Pxc source-oriented box/box contact cache midpoint mismatch");
     }
+    static void verify_replaced_cached_friction_anchor() {
+        // DyFrictionCorrelation::growPatches can replace anchor zero
+        // while growing an existing one-anchor patch to two. Both
+        // body-local frames must follow the actual selected contact IDs
+        // or the friction Jacobians use different lever arms.
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        const auto floor=scene.add_static_floor(0.0f);
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        scene.step(dt);
+        if(scene.manifolds_.size()!=1 ||
+           scene.friction_patches_.size()!=1 ||
+           scene.friction_patches_[0].anchor_count!=2)
+            throw std::runtime_error(
+                "Friction replacement fixture lacks the initial floor patch");
+        auto& old=scene.friction_patches_[0];
+        old.anchor_count=1;
+        old.broken=false;
+        old.contact_ids.fill(0xffff);
+        // Source body0 is the dynamic box, not the canonical first
+        // actor (floor). Seed a valid center anchor equidistant from
+        // the four corners to require search replacement of slot 0.
+        const auto before=scene.body_state(box);
+        old.body0_anchors[0]={0,-0.5f,0};
+        old.body1_anchors[0]={
+            before.position.x,before.position.y-0.5f,
+            before.position.z};
+        scene.step(dt);
+        if(scene.friction_patches_.size()!=1 ||
+           scene.friction_patches_[0].anchor_count!=2 ||
+           scene.manifolds_.size()!=1)
+            throw std::runtime_error(
+                "Cached one-anchor friction patch did not grow to two");
+        const auto& patch=scene.friction_patches_[0];
+        const auto& manifold=scene.manifolds_[0];
+        if(patch.contact_ids[0]==0xffff ||
+           patch.contact_ids[1]==0xffff)
+            throw std::runtime_error(
+                "Cached friction anchor search did not replace the retained slot");
+        const auto& dynamic=scene.actors_[box];
+        const auto& ground=scene.actors_[floor];
+        const auto close=[](Vec3 a,Vec3 b) {
+            const float dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
+            return dx*dx+dy*dy+dz*dz<2.5e-7f;
+        };
+        for(std::size_t k=0;k<2;++k) {
+            const auto id=patch.contact_ids[k];
+            if(id>=manifold.count)
+                throw std::runtime_error(
+                    "Cached friction anchor selected an invalid Gu contact");
+            const auto& expected=manifold.points[id].position;
+            const Vec3 local0=patch.body0_anchors[k];
+            const Vec3 local1=patch.body1_anchors[k];
+            const Vec3 r0=rotate(dynamic.orientation,local0);
+            const Vec3 r1=rotate(ground.orientation,local1);
+            const Vec3 world0{
+                dynamic.position.x+r0.x,
+                dynamic.position.y+r0.y,
+                dynamic.position.z+r0.z};
+            const Vec3 world1{
+                ground.position.x+r1.x,
+                ground.position.y+r1.y,
+                ground.position.z+r1.z};
+            if(!close(world0,expected) || !close(world1,expected))
+                throw std::runtime_error(
+                    "Selected cached friction anchor differs from its body-local frames");
+        }
+    }
     static void verify_source_post_solver_continuations() {
         // ScPipeline::updateDynamics wires processLostContactsTask3
         // and all PxsSolverEndTask chains to mPostSolver. No handle
@@ -9081,6 +9150,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
+    fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
