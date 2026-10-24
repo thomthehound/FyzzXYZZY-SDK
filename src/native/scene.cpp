@@ -315,10 +315,15 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         normalized=actor.orientation;
     // The admitted plane's world normal is fixed to +Y; rotated
     // planes require the still-unported general plane pose geometry.
-    if(actor.kind==Kind::StaticPlane &&
-       (normalized.x!=0.0f || normalized.y!=0.0f ||
-        normalized.z!=0.0f || normalized.w!=1.0f))
-        throw std::logic_error("Native horizontal floor cannot rotate");
+    if(actor.kind==Kind::StaticPlane) {
+        if(normalized.x!=0.0f || normalized.y!=0.0f ||
+           normalized.z!=0.0f || std::abs(normalized.w)!=1.0f)
+            throw std::logic_error("Native horizontal floor cannot rotate");
+        // q and -q encode the same rotation. Retain the fixed plane's
+        // canonical logical identity instead of treating a sign flip
+        // as an authored rotation or a cache discontinuity.
+        normalized={0.0f,0.0f,0.0f,1.0f};
+    }
     const bool changing_pose=
         actor.position.x!=position.x ||
         actor.position.y!=position.y || actor.position.z!=position.z ||
