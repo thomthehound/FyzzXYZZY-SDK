@@ -191,6 +191,55 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Collision-only island join leaked a destroyed source manager");
     }
+    static void verify_post_solver_lost_report_join() {
+        // Exercise the single production frame joining original
+        // Sc lost-touch events, Dy force-threshold loss, island-edge
+        // retirement and completed-frame publication. The lost manager
+        // must not outlive a successful step or leak its prior force
+        // into a later report.
+        constexpr float dt=1.0f/120.0f;
+        Scene scene;
+        scene.set_contact_notifications(true);
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        const Pair pair{a,b};
+        scene.set_contact_report_threshold(a,0.0f);
+        scene.set_contact_report_threshold(b,0.0f);
+        scene.set_velocity(b,{-2,0,0});
+        scene.step(dt);
+        const auto handle=scene.contact_edge_index(pair);
+        if(handle==Scene::invalid_edge ||
+           scene.contact_events().size()!=1 ||
+           scene.contact_events()[0].kind!=ContactEventKind::Found ||
+           scene.force_threshold_changes().size()!=1 ||
+           scene.force_threshold_changes()[0].change!=
+               ForceThresholdChange::Found)
+            throw std::runtime_error(
+                "Source completion join fixture lacks touching force/report history");
+        scene.set_position(b,{6,8,0});
+        const auto published_frame=scene.frame_index();
+        scene.step(dt);
+        if(scene.frame_index()!=published_frame+1 ||
+           scene.contact_edge_index(pair)!=Scene::invalid_edge ||
+           scene.contact_events().size()!=1 ||
+           scene.contact_events()[0].kind!=ContactEventKind::Lost ||
+           scene.contact_events()[0].normal_impulse!=0.0 ||
+           scene.force_threshold_changes().size()!=1 ||
+           scene.force_threshold_changes()[0].change!=
+               ForceThresholdChange::Lost ||
+           std::find(scene.free_edge_handles_.begin(),
+                     scene.free_edge_handles_.end(),handle)==
+               scene.free_edge_handles_.end())
+            throw std::runtime_error(
+                "Source completion join lost a report or retained its manager handle");
+        scene.step(dt);
+        if(!scene.contact_events().empty() ||
+           !scene.force_threshold_changes().empty())
+            throw std::runtime_error(
+                "Completed lost-contact reports replayed on the next frame");
+    }
     static void verify_reversible_cache_checkpoint() {
         constexpr float dt=1.0f/120.0f;
         Scene scene;
@@ -8285,6 +8334,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_friction_task_order();
     fyzz::native::ContactCorrelationSourceFixture::verify_post_solver_manager_retirement();
+    fyzz::native::ContactCorrelationSourceFixture::verify_post_solver_lost_report_join();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
