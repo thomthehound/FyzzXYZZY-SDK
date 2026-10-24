@@ -862,6 +862,32 @@ struct SolverIterationSourceFixture {
                 throw std::runtime_error(
                     "Dormant Gu manager leaked into active PGS task chain");
         }
+        // The dense original Gu force-buffer remains entirely indexed
+        // by contact generation. Every dormant historical manager must
+        // contribute zero force without being visited by source Dy
+        // writeback or acquiring fresh solver descriptors.
+        const auto forces=scene.solved_normal_impulses();
+        bool active_force=false;
+        std::size_t dormant_contacts=0;
+        for(const auto& manager:scene.manifolds_) {
+            for(std::size_t j=0;j<manager.count;++j) {
+                const std::size_t index=manager.contact_offset+j;
+                if(index>=forces.size())
+                    throw std::runtime_error(
+                        "Gu writeback omitted its original dense contact slot");
+                if(manager.pair.b<first) {
+                    ++dormant_contacts;
+                    if(forces[index]!=0.0 ||
+                       manager.friction_patch_count!=0 ||
+                       manager.prepared_friction_epoch!=0)
+                        throw std::runtime_error(
+                            "Dormant Gu contact retained previous Dy response");
+                } else if(forces[index]>0.0)active_force=true;
+            }
+        }
+        if(dormant_contacts<resting || !active_force)
+            throw std::runtime_error(
+                "Active Gu force writeback lost either the dormant zeroes or the current solve");
         // Even when a live accurate manager has no Dy response rows,
         // Sc retains its contact edge and counted interactions. Only
         // the remaining floor contact should require solver-body data.
