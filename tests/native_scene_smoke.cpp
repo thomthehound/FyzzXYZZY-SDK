@@ -73,13 +73,33 @@ struct ContactCorrelationSourceFixture {
                m.contact_offset==mixed.gu_cache_records_[0].offset)
                 throw std::runtime_error(
                     "PCM and legacy Gu offsets were incorrectly conflated");
+            // PxcCacheLocalContacts retains RAW source contacts on a
+            // hit. Published contacts may move by half the relative
+            // displacement, while the cached payload must remain in
+            // its original generating frame. Compare both independent
+            // arenas with the unmodified legacy-only source run.
+            if(legacy.gu_cache_records_.size()!=2)
+                throw std::runtime_error(
+                    "Mixed PCM fixture lost the legacy source cache control");
+            const auto& source_cache=legacy.gu_cache_records_[1];
+            if(source_cache.pair!=box_pair ||
+               source_cache.count!=m.count ||
+               source_cache.offset+m.count>legacy.gu_cached_points_.size())
+                throw std::runtime_error(
+                    "Legacy Gu source cache control has invalid ownership");
             for(std::size_t i=0;i<m.count;++i) {
-                const auto& a=mixed.gu_cached_points_[i];
-                const auto& b=m.points[i];
-                if(std::abs(a.position.y-b.position.y)>2e-5f ||
-                   std::abs(a.separation-b.separation)>2e-5f)
+                const auto& raw=mixed.gu_cached_points_[i];
+                const auto& expected=legacy.gu_cached_points_[
+                    source_cache.offset+i];
+                if(std::abs(raw.position.x-expected.position.x)>2e-5f ||
+                   std::abs(raw.position.y-expected.position.y)>2e-5f ||
+                   std::abs(raw.position.z-expected.position.z)>2e-5f ||
+                   std::abs(raw.normal.x-expected.normal.x)>2e-5f ||
+                   std::abs(raw.normal.y-expected.normal.y)>2e-5f ||
+                   std::abs(raw.normal.z-expected.normal.z)>2e-5f ||
+                   std::abs(raw.separation-expected.separation)>2e-5f)
                     throw std::runtime_error(
-                        "PCM-published contacts entered a legacy Pxc cache span");
+                        "PCM contact stream displaced or mutated a legacy Pxc cache span");
             }
         };
         mixed.advance_collision(true);
