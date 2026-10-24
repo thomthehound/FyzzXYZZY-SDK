@@ -130,6 +130,28 @@ struct ContactCorrelationSourceFixture {
                 "Mixed PCM/legacy Gu managers failed native PGS completion");
     }
     static void verify_source_pcm_plane_box_lifecycle() {
+        // Refresh is shared with subsequent convex PCM generation:
+        // the signed separation and tangential eviction must be evaluated
+        // in B-local coordinates using the stored B-local normal.
+        {
+            Scene::PcmPlaneBoxCache cache;
+            cache.count=2;
+            cache.points[0]={{1.0f,0.0f,0.0f},
+                             {0.0f,1.0f,0.0f},
+                             {1.0f,0.0f,0.0f},0.0f};
+            cache.points[1]={{0.0f,0.0f,0.0f},
+                             {2.0f,0.0f,0.0f},
+                             {0.0f,0.0f,1.0f},0.0f};
+            const float root_half=std::sqrt(0.5f);
+            Scene::refresh_pcm_contact_points(
+                cache,{0.1f,0.0f,0.0f},
+                {0.0f,0.0f,root_half,root_half},0.1f);
+            if(cache.count!=1 ||
+               std::abs(cache.points[0].separation-0.1f)>1.0e-5f ||
+               cache.points[0].normal_b.x!=1.0f)
+                throw std::runtime_error(
+                    "PCM local-normal refresh or tangential eviction diverged");
+        }
         // GuPCMContactPlaneBox::pcmContactPlaneBox + source persistent
         // refresh/invalidation/reduction execute in the actual Scene
         // publication path. The same Sc manager EdgeIndex owns its
