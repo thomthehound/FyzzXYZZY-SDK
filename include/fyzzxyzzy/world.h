@@ -52,6 +52,9 @@ struct WorldOptions {
     // GuPCMContactBoxBox/SAT/GJK/EPA source translation. Defaults OFF
     // to keep existing legacy-Gu regression baselines comparable.
     bool pcm_plane_box = false;
+    // Opt-in native PCM box/box face manifold. The separate GJK/EPA
+    // continuation is not yet admitted and cannot fall back to legacy.
+    bool pcm_box_box = false;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX
