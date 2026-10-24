@@ -1206,6 +1206,42 @@ int main() {
                     native_friction.step(dt);
                     source_friction.step(dt);
                     source_no_friction.step(dt);
+#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
+                    if(reversed && frame<25) {
+                        const auto line=[&](const char* name,fyzz::World& w,
+                                            fyzz::BodyId lower,fyzz::BodyId upper) {
+                            const auto lo=w.body_state(lower);
+                            const auto up=w.body_state(upper);
+                            std::cerr<<"N1TRACE frame="<<frame+1
+                                     <<" "<<name
+                                     <<" lower_y="<<lo.position.y
+                                     <<" lower_v=("<<lo.velocity.x<<","<<lo.velocity.y
+                                     <<","<<lo.velocity.z<<")"
+                                     <<" upper_p=("<<up.position.x<<","
+                                     <<up.position.y<<","<<up.position.z<<")"
+                                     <<" upper_v=("<<up.velocity.x<<","
+                                     <<up.velocity.y<<","<<up.velocity.z<<")"
+                                     <<" upper_w=("<<up.angular_velocity.x<<","
+                                     <<up.angular_velocity.y<<","
+                                     <<up.angular_velocity.z<<")"
+                                     <<" q=("<<up.orientation.x<<","
+                                     <<up.orientation.y<<","<<up.orientation.z
+                                     <<","<<up.orientation.w<<")";
+                            for(const auto& evt:w.contact_events()) {
+                                if(evt.contact_count==0)continue;
+                                const auto& cp=w.contact_event_points()[evt.point_offset];
+                                std::cerr<<" contact("<<evt.body0<<","<<evt.body1
+                                         <<") n=("<<cp.normal.x<<","
+                                         <<cp.normal.y<<","<<cp.normal.z
+                                         <<") sep="<<cp.separation
+                                         <<" impulse="<<evt.normal_impulse;
+                            }
+                            std::cerr<<'\n';
+                        };
+                        line("native",native_friction,nl,nu);
+                        line("physx",source_friction,pl,pu);
+                    }
+#endif
                     const auto horizontal_delta=[](fyzz::Vec3 a,
                                                    fyzz::Vec3 b) {
                         return std::max(std::abs(a.x-b.x),std::abs(a.z-b.z));

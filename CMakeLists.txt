@@ -16,7 +16,7 @@ option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
 # exposes a real native/reference source gap; retain it as an explicit
 # opt-in N1 acceptance gate rather than concealing it behind tolerances.
 option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-  "Exercise unresolved 48-frame native/PhysX coupled friction trajectory parity" OFF)
+  "Exercise unresolved 48-frame native/PhysX coupled friction trajectory parity" ON)
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
