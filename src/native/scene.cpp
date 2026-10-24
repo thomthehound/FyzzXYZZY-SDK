@@ -5439,10 +5439,12 @@ void Scene::step(float seconds) {
     step_checkpoint_.capture(*this);
     RigidStepJoin join;
     try {
-    // ScPipeline: contact publication and both island passes must
-    // finish before Dy::bodyCoreComputeUnconstrainedVelocity. This
-    // shared IslandSim wake stage admits all newly activated rigid
-    // members in the same frame; collision-only publications use it too.
+    // ScPipeline: the Gu second pass and shared IslandSim wake stage
+    // must publish the rigid solver inputs before Dy starts. The lost-
+    // contact third pass may overlap Dy in the original parallel CPU
+    // pipeline; our serial lowering runs it first so afterIntegration
+    // does not need concurrent-deactivation pose repair. The two task
+    // producer branches still join independently at postSolver.
     // IslandSim::wakeIslands snapshots the existing active prefix before
     // activation. Preserve the same boundary when source contact
     // publication subsequently rebuilds island handles.
