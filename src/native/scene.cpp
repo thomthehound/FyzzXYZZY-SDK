@@ -3500,9 +3500,12 @@ void Scene::prepare_constraints(float seconds) {
         // through DyContactPrep. A canonical pair key is only used
         // for Gu arena identity, and must not reorder the two
         // momentum/Jacobian inputs after the source Gu generator.
+        // Plane-box Gu uses its own fixed +Y plane convention.
+        // Box-box managers (static/dynamic or dynamic/dynamic) retain
+        // the ScShapeInteraction source ordering without exception.
         const bool reversed=contact_edges_[edge].gu_order_reversed &&
-            actor_a.kind==Kind::DynamicBox &&
-            actor_b.kind==Kind::DynamicBox;
+            actor_a.kind!=Kind::StaticPlane &&
+            actor_b.kind!=Kind::StaticPlane;
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
         const auto& a = actors_[id0].kind==Kind::DynamicBox
@@ -4076,8 +4079,8 @@ void Scene::solve_constraints() {
             // including the signs of the contact/friction Jacobians.
             const bool reversed=contact_edges_[
                 manifold.edge_handle].gu_order_reversed &&
-                actors_[manifold.pair.a].kind==Kind::DynamicBox &&
-                actors_[manifold.pair.b].kind==Kind::DynamicBox;
+                actors_[manifold.pair.a].kind!=Kind::StaticPlane &&
+                actors_[manifold.pair.b].kind!=Kind::StaticPlane;
             const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
             const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
             auto& a = actors_[id0].kind == Kind::DynamicBox
@@ -4350,8 +4353,8 @@ void Scene::publish_contact_events() {
             impulse+=normal_force;
             Vec3 outward=point.normal;
             if(contact_edges_[manifold.edge_handle].gu_order_reversed &&
-               first.kind==Kind::DynamicBox &&
-               second.kind==Kind::DynamicBox)
+               first.kind!=Kind::StaticPlane &&
+               second.kind!=Kind::StaticPlane)
                 outward={-outward.x,-outward.y,-outward.z};
             next_contact_event_points_.push_back({
                 point.position,outward,point.separation,normal_force});

@@ -7273,9 +7273,9 @@ int run_native_scene_smoke() {
                has(box_scene.found_contacts(), fixed, moveable),
                "Axis-aligned box contact manifold absent");
         const auto& manifold = box_scene.contacts()[0];
-        expect(manifold.points[0].normal.x == -1.0f &&
+        expect(manifold.points[0].normal.x == 1.0f &&
                std::abs(manifold.points[0].separation + 0.5f) < 0.0001f,
-               "Box contact normal or signed penetration incorrect");
+               "Source-ordered box contact normal or signed penetration incorrect");
         box_scene.set_position(moveable, {2.03f,0,0});
         box_scene.advance_collision();
         expect(box_scene.contacts().size() == 1 &&
@@ -7325,7 +7325,7 @@ int run_native_scene_smoke() {
                box_scene.lost_contacts().empty() &&
                box_scene.contacts().size() == 1 &&
                box_scene.contacts()[0].count > 0 &&
-               box_scene.contacts()[0].points[0].normal.y == -1.0f &&
+               box_scene.contacts()[0].points[0].normal.y == 1.0f &&
                box_scene.contacts()[0].points[0].separation > 0.029f,
                "Source single-axis proximity or persistent-touch semantics drifted");
     }
