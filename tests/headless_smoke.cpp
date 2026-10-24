@@ -1144,6 +1144,112 @@ int main() {
                         "PhysX off-center contact fixture produced no angular response");
             }
 
+            // Source-Gu frictional rigid PGS: normal-only comparisons
+            // cannot validate the correlated two-tangent friction rows.
+            // The offset upper box makes floor and inter-body friction
+            // transfer linear and angular momentum in one accurate island.
+            // Compare BOTH mass orderings and retain a separate friction-
+            // disabled oracle to prove the fixture actually excites
+            // tangential resistance rather than resting normal contact.
+            for(const bool reversed:{false,true}) {
+                fyzz::World native_friction(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_friction(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                fyzz::World source_no_friction(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                fyzz::Material frictional{};
+                frictional.static_friction=0.8f;
+                frictional.dynamic_friction=0.6f;
+                frictional.restitution=0.0f;
+                fyzz::Material frictionless=frictional;
+                frictionless.disable_friction=true;
+                const auto initialize=[&](fyzz::World& w,bool friction_on) {
+                    const auto floor=w.add_static_floor(0);
+                    fyzz::BodyId lower=0,upper=0;
+                    const auto create_lower=[&] {
+                        lower=w.add_dynamic_box(half,{0,0.50f,0},
+                                                reversed?4.0f:1.0f);
+                    };
+                    const auto create_upper=[&] {
+                        upper=w.add_dynamic_box(half,{0.12f,1.52f,0.11f},
+                                                reversed?1.0f:4.0f);
+                    };
+                    if(reversed){create_upper();create_lower();}
+                    else{create_lower();create_upper();}
+                    for(const auto id:{floor,lower,upper})
+                        w.set_body_material(id,
+                            friction_on?frictional:frictionless);
+                    w.set_body_velocity(upper,{0.65f,-0.15f,0.28f});
+                    w.set_body_velocity(lower,{-0.15f,0,0});
+                    return std::pair{lower,upper};
+                };
+                const auto [nl,nu]=initialize(native_friction,true);
+                const auto [pl,pu]=initialize(source_friction,true);
+                const auto [ql,qu]=initialize(source_no_friction,false);
+                float source_effect=0.0f,source_rotation=0.0f;
+                for(int frame=0;frame<48;++frame) {
+                    const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
+                    native_friction.step(dt);
+                    source_friction.step(dt);
+                    source_no_friction.step(dt);
+                    const auto horizontal_delta=[](fyzz::Vec3 a,
+                                                   fyzz::Vec3 b) {
+                        return std::max(std::abs(a.x-b.x),std::abs(a.z-b.z));
+                    };
+                    for(const auto [ni,pi,qi,label]:
+                        {std::tuple{nl,pl,ql,"lower"},
+                         std::tuple{nu,pu,qu,"upper"}}) {
+                        const auto n=native_friction.body_state(ni);
+                        const auto p=source_friction.body_state(pi);
+                        const auto q=source_no_friction.body_state(qi);
+                        const auto err=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                            return std::max({std::abs(a.x-b.x),
+                                             std::abs(a.y-b.y),
+                                             std::abs(a.z-b.z)});
+                        };
+                        const float orientation_dot=
+                            n.orientation.x*p.orientation.x+
+                            n.orientation.y*p.orientation.y+
+                            n.orientation.z*p.orientation.z+
+                            n.orientation.w*p.orientation.w;
+                        source_effect=std::max(source_effect,
+                            horizontal_delta(p.velocity,q.velocity));
+                        source_rotation=std::max(source_rotation,
+                            std::max(std::abs(p.angular_velocity.x),
+                                     std::abs(p.angular_velocity.z)));
+                        const float position_error=err(n.position,p.position);
+                        const float linear_error=err(n.velocity,p.velocity);
+                        const float angular_error=err(n.angular_velocity,
+                                                      p.angular_velocity);
+                        if(!std::isfinite(orientation_dot) ||
+                           !std::isfinite(position_error) ||
+                           !std::isfinite(linear_error) ||
+                           !std::isfinite(angular_error) ||
+                           position_error>0.14f ||
+                           linear_error>0.45f ||
+                           angular_error>0.85f ||
+                           std::abs(orientation_dot)<0.975f) {
+                            std::cerr<<"Native/PhysX frictional stack"
+                                     <<" frame="<<frame+1
+                                     <<" reversed="<<reversed
+                                     <<" actor="<<label
+                                     <<" pos="<<position_error
+                                     <<" vel="<<linear_error
+                                     <<" angular="<<angular_error
+                                     <<" quat="<<orientation_dot
+                                     <<'\n';
+                            throw std::runtime_error(
+                                "Frictional angular coupled PGS diverged from PhysX Gu");
+                        }
+                    }
+                }
+                if(source_effect<0.03f || source_rotation<0.01f)
+                    throw std::runtime_error(
+                        "PhysX friction/rotation oracle fixture lacked response");
+            }
+
             // Coupled PGS conformance: unlike a free two-body impact,
             // the upper dynamic contact and lower static-world contact
             // must both be solved in the same source accurate island.
