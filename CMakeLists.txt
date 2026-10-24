@@ -134,6 +134,10 @@ endif()
 if(BUILD_TESTING AND FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
+  # Strict source regression may compare public PhysX output with the
+  # production native Gu helper using identical input transforms.
+  target_include_directories(fyzzxyzzy_headless_smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_compile_definitions(fyzzxyzzy_headless_smoke PRIVATE
     FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=$<BOOL:${FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE}>)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)

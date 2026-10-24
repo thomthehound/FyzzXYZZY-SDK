@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/world.h"
+#include "native/scene.h"
 
 #include <algorithm>
 #include <array>
@@ -1165,9 +1166,7 @@ int main() {
                 frictional.static_friction=0.8f;
                 frictional.dynamic_friction=0.6f;
                 frictional.restitution=0.0f;
-                // N1 diagnostic: exclude prior-frame anchor reuse without
-                // disabling current-frame tangential PGS constraints.
-                frictional.disable_strong_friction=true;
+
 
                 fyzz::Material frictionless=frictional;
                 frictionless.disable_friction=true;
@@ -1206,6 +1205,42 @@ int main() {
 #endif
                 for(int frame=0;frame<frames;++frame) {
                     const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
+#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
+                    if(reversed && (frame==11 || frame==12)) {
+                        const auto probe=[&](const char* name,
+                            fyzz::World& w,fyzz::BodyId bottom,fyzz::BodyId top) {
+                            const auto lo=w.body_state(bottom);
+                            const auto up=w.body_state(top);
+                            std::cerr<<"N1GU frame="<<frame+1<<" "<<name
+                                     <<" lower_p=("<<lo.position.x<<","
+                                     <<lo.position.y<<","<<lo.position.z<<")"
+                                     <<" upper_p=("<<up.position.x<<","
+                                     <<up.position.y<<","<<up.position.z<<")\n";
+                            for(unsigned initial=0;initial<=6;++initial) {
+                                std::array<fyzz::native::ContactPoint,255> points{};
+                                std::uint8_t axis=static_cast<std::uint8_t>(initial);
+                                const auto count=fyzz::native::source_box_box_contacts(
+                                    half,lo.position,lo.orientation,
+                                    half,up.position,up.orientation,
+                                    0.04f,axis,points);
+                                if(!count)continue;
+                                const auto& cp=points[0];
+                                std::cerr<<"N1GU "<<name
+                                         <<" before="<<initial
+                                         <<" after="<<unsigned(axis)
+                                         <<" n=("<<cp.normal.x<<","
+                                         <<cp.normal.y<<","<<cp.normal.z<<")"
+                                         <<" p0=("<<cp.position.x<<","
+                                         <<cp.position.y<<","
+                                         <<cp.position.z<<")"
+                                         <<" sep="<<cp.separation
+                                         <<" count="<<unsigned(count)<<"\n";
+                            }
+                        };
+                        probe("native",native_friction,nl,nu);
+                        probe("physx",source_friction,pl,pu);
+                    }
+#endif
                     native_friction.step(dt);
                     source_friction.step(dt);
                     source_no_friction.step(dt);
