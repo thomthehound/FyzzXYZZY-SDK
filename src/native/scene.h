@@ -490,6 +490,10 @@ private:
         // publication. Active nodes do not reawaken peers every frame.
         bool activating=false;
         std::array<std::uint32_t, 6> encoded_bounds{};
+        // ScPipeline::afterIntegration publishes a transform-derived
+        // shape AABB after each active rigid body's pose integration.
+        // The following broadphase consumes it without recomputation.
+        bool cached_bounds_current=false;
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
     // PxSolverDefs.h::PxSolverBody/PxSolverBodyData. These are
@@ -593,7 +597,9 @@ private:
     const Actor& require(BodyId id) const;
     // Shared Gu collision progression, independent of Dy solver execution.
     void advance_collision_internal(bool force_update, bool checkpointed);
+    void update_actor_bounds(Actor& actor);
     void update_bounds();
+    void after_integration_cached_bounds();
     void update_pairs();
     void publish_pairs();
     void update_contacts();
@@ -892,6 +898,8 @@ private:
             bool ready_for_sleep=false;
             bool sleeping=false;
             bool activating=false;
+            std::array<std::uint32_t,6> encoded_bounds{};
+            bool cached_bounds_current=false;
         };
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
