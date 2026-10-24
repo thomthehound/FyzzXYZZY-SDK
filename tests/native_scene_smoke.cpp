@@ -176,7 +176,10 @@ struct ContactCorrelationSourceFixture {
            patch.contact_ids[1]==0xffff)
             throw std::runtime_error(
                 "Cached friction anchor search did not replace the retained slot");
-        const auto& dynamic=scene.actors_[box];
+        // DyContactPrep freezes its contact/anchor transforms BEFORE
+        // integration. The externally published body_state here is
+        // post-integration, so use the saved pre-solve transform when
+        // reconstructing the body0 local anchor against Gu contacts.
         const auto& ground=scene.actors_[floor];
         const auto close=[](Vec3 a,Vec3 b) {
             const float dx=a.x-b.x,dy=a.y-b.y,dz=a.z-b.z;
@@ -200,12 +203,12 @@ struct ContactCorrelationSourceFixture {
             const auto& expected=manifold.points[id].position;
             const Vec3 local0=patch.body0_anchors[k];
             const Vec3 local1=patch.body1_anchors[k];
-            const Vec3 r0=rotate_anchor(dynamic.orientation,local0);
+            const Vec3 r0=rotate_anchor(before.orientation,local0);
             const Vec3 r1=rotate_anchor(ground.orientation,local1);
             const Vec3 world0{
-                dynamic.position.x+r0.x,
-                dynamic.position.y+r0.y,
-                dynamic.position.z+r0.z};
+                before.position.x+r0.x,
+                before.position.y+r0.y,
+                before.position.z+r0.z};
             const Vec3 world1{
                 ground.position.x+r1.x,
                 ground.position.y+r1.y,
