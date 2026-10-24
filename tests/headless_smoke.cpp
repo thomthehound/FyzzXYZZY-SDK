@@ -796,9 +796,15 @@ int main() {
                     source_pcm.step(dt);
                     const auto got=native_pcm.contact_event_points();
                     const auto expected=source_pcm.contact_event_points();
-                    if(got.size()!=expected.size())
+                    if(got.size()!=expected.size()) {
+                        std::cerr<<"PCM source multi-frame count"
+                                 <<" frame="<<frame
+                                 <<" reversed="<<reversed
+                                 <<" native="<<got.size()
+                                 <<" reference="<<expected.size()<<'\n';
                         throw std::runtime_error(
                             "Multi-frame PCM contact count disagrees with original PhysX");
+                    }
                     if(frame==6 && (!got.empty() || !expected.empty()))
                         throw std::runtime_error(
                             "PCM cache did not release published contact on touch loss");
@@ -818,9 +824,24 @@ int main() {
                                 break;
                             }
                         }
-                        if(!matching)
+                        if(!matching) {
+                            std::cerr<<"PCM source multi-frame point"
+                                     <<" frame="<<frame
+                                     <<" reversed="<<reversed
+                                     <<" expected=("<<p.position.x<<","
+                                     <<p.position.y<<","<<p.position.z
+                                     <<"; n="<<p.normal.x<<","<<p.normal.y<<","
+                                     <<p.normal.z<<"; separation="<<p.separation
+                                     <<") native_count="<<got.size()<<'\n';
+                            for(const auto& n:got)
+                                std::cerr<<"  native=("<<n.position.x<<","
+                                         <<n.position.y<<","<<n.position.z
+                                         <<"; n="<<n.normal.x<<","<<n.normal.y<<","
+                                         <<n.normal.z<<"; separation="<<n.separation
+                                         <<")\n";
                             throw std::runtime_error(
                                 "Multi-frame PCM refresh/invalidation differs from original PhysX");
+                        }
                     }
                 }
             }
