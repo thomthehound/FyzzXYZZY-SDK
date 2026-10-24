@@ -948,6 +948,86 @@ int main() {
                           << " at_frame=" << max_velocity_frame << '\n';
             }
 
+            // Source-oracle counterpart to the speculative-only bridge
+            // retirement fixture in native_scene_smoke. The two rods
+            // share a broadphase island but have separate physical contact
+            // islands. Their creation order places the floor after both
+            // dynamic actors, exercising both Gu body order and sleeping.
+            // Preserve the same authored pose/velocity sequence across all
+            // three engines before comparing the sleep transition.
+            {
+                struct BridgeResult {
+                    bool slept = false;
+                    int first_sleep_frame = -1;
+                    fyzz::BodyState quiet{};
+                    fyzz::BodyState moving{};
+                };
+                const auto run_bridge = [](fyzz::ExecutionMode mode) {
+                    fyzz::World world(fyzz::WorldOptions{mode});
+                    const fyzz::Vec3 half{2.0f,0.1f,0.2f};
+                    const auto quiet=world.add_dynamic_box(
+                        half,{0,10,0},1.0f);
+                    const auto moving=world.add_dynamic_box(
+                        half,{0,10,5},1.0f);
+                    for(const auto id:{quiet,moving}) {
+                        world.set_body_velocity(id,{0,9.81f,0});
+                        world.set_body_angular_velocity(id,{0,0.83f,0});
+                    }
+                    world.step(1.0f);
+                    for(const auto id:{quiet,moving}) {
+                        world.set_body_angular_velocity(id,{});
+                        world.set_body_velocity(id,{});
+                    }
+                    world.set_body_position(quiet,{0,0.1f,0});
+                    world.set_body_position(moving,{0.6f,0.1f,0.6f});
+                    world.add_static_floor(0.0f);
+                    BridgeResult result{};
+                    for(int frame=0;frame<160;++frame) {
+                        world.set_body_velocity(moving,{0,0,0.25f});
+                        world.step(1.0f/120.0f);
+                        const auto a=world.body_state(quiet);
+                        const auto b=world.body_state(moving);
+                        if(a.sleeping && !b.sleeping) {
+                            result.slept=true;
+                            result.first_sleep_frame=frame+1;
+                            break;
+                        }
+                    }
+                    result.quiet=world.body_state(quiet);
+                    result.moving=world.body_state(moving);
+                    return result;
+                };
+                const auto native=run_bridge(fyzz::ExecutionMode::NativeCpu);
+                const auto legacy=run_bridge(
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu);
+                const auto pcm=run_bridge(
+                    fyzz::ExecutionMode::ReferencePhysXCpu);
+                if(!native.slept || !legacy.slept || !pcm.slept) {
+                    const auto report=[](const char* name,const BridgeResult& r) {
+                        std::cerr<<"Bridge independent-sleep oracle "<<name
+                                 <<" slept="<<r.slept
+                                 <<" frame="<<r.first_sleep_frame
+                                 <<" quiet_velocity=("<<r.quiet.velocity.x<<","
+                                 <<r.quiet.velocity.y<<","<<r.quiet.velocity.z
+                                 <<") quiet_angular=("
+                                 <<r.quiet.angular_velocity.x<<","
+                                 <<r.quiet.angular_velocity.y<<","
+                                 <<r.quiet.angular_velocity.z<<")"
+                                 <<" moving_sleeping="<<r.moving.sleeping<<'\\n';
+                    };
+                    report("native",native);
+                    report("legacy-Gu",legacy);
+                    report("PCM",pcm);
+                    // The source result determines whether the fixture
+                    // represents a valid bounded sleep-conformance gate.
+                    if(!legacy.slept || !pcm.slept)
+                        throw std::runtime_error(
+                            "Original PhysX did not satisfy the independent bridge sleep fixture");
+                    throw std::runtime_error(
+                        "Native source-island sleep diverged from independent PhysX CPU");
+                }
+            }
+
             // Reference PhysX CPU 6DOF PGS cross-check: unequal-mass
             // dynamic collision, both creation orders, and a timestep
             // change while both bodies share the same accurate island.
