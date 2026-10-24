@@ -1579,6 +1579,75 @@ void verify_source_multiframe_completion() {
                 "Native Dy completion did not republish after collision-only invalidation");
     }
 
+    // ScPipeline::afterIntegration restores integrated poses ONLY when
+    // island generation can deactivate a body concurrently with Dy.
+    // The admitted serial CPU path completes third-pass deactivation
+    // before Dy body admission: the exact equivalent is zero integration
+    // on the deactivation frame, followed by an explicit wake handoff.
+    {
+        Scene serial;
+        const auto floor=serial.add_static_floor(0.0f);
+        const auto sleeper=serial.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+        Material no_friction{};
+        no_friction.static_friction=0.0f;
+        no_friction.dynamic_friction=0.0f;
+        no_friction.restitution=0.0f;
+        serial.set_material(floor,no_friction);
+        serial.set_material(sleeper,no_friction);
+        bool deactivated=false;
+        for(int frame=0;frame<600;++frame) {
+            const bool previously_ready=serial.body_ready_for_sleep(sleeper);
+            const BodyState before=serial.body_state(sleeper);
+            serial.step(dt);
+            if(!serial.body_is_sleeping(sleeper))continue;
+            const auto after=serial.body_state(sleeper);
+            const auto& deactivations=serial.deactivating_accurate_nodes();
+            if(!previously_ready ||
+               after.position.x!=before.position.x ||
+               after.position.y!=before.position.y ||
+               after.position.z!=before.position.z ||
+               after.orientation.x!=before.orientation.x ||
+               after.orientation.y!=before.orientation.y ||
+               after.orientation.z!=before.orientation.z ||
+               after.orientation.w!=before.orientation.w ||
+               after.velocity.x!=0.0f || after.velocity.y!=0.0f ||
+               after.velocity.z!=0.0f ||
+               after.angular_velocity.x!=0.0f ||
+               after.angular_velocity.y!=0.0f ||
+               after.angular_velocity.z!=0.0f ||
+               !serial.active_accurate_nodes().empty() ||
+               !serial.indexed_contact_manager_order().empty() ||
+               deactivations.size()!=1 || deactivations[0]!=sleeper ||
+               serial.solved_result_frame()!=serial.frame_index())
+                throw std::runtime_error(
+                    "Serial Dy integration moved a rigid body deactivated by the previous island third pass");
+            deactivated=true;
+            break;
+        }
+        if(!deactivated)
+            throw std::runtime_error(
+                "Multiframe serial source deactivation did not reach a completed sleep publication");
+        const BodyState sleeping=serial.body_state(sleeper);
+        serial.step(dt);
+        const auto dormant=serial.body_state(sleeper);
+        if(!dormant.sleeping ||
+           dormant.position.y!=sleeping.position.y ||
+           !serial.active_accurate_nodes().empty() ||
+           !serial.deactivating_accurate_nodes().empty())
+            throw std::runtime_error(
+                "Next completed frame re-integrated a dormant source rigid body");
+        serial.set_velocity(sleeper,{2.0f,0.0f,0.0f});
+        serial.step(dt);
+        if(serial.body_is_sleeping(sleeper) ||
+           serial.active_accurate_nodes().size()!=1 ||
+           serial.body_state(sleeper).position.x<=
+               sleeping.position.x+0.005f ||
+           serial.solved_result_frame()!=serial.frame_index())
+            throw std::runtime_error(
+                "Authoritative source wake did not readmit sleeping rigid body to Dy");
+    }
+
     // Multi-frame free-body comparison against the ORIGINAL PhysX CPU
     // implementation. Disparate masses, rotations, damping and changing
     // dt all pass through the real public World backend. No Gu contact
