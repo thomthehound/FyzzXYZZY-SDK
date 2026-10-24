@@ -2593,6 +2593,7 @@ void verify_source_pose_authoring() {
     for(const auto mode:{fyzz::ExecutionMode::NativeCpu
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
                          ,fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu
+                         ,fyzz::ExecutionMode::ReferencePhysXCpu
 #endif
         }) {
         fyzz::World world(fyzz::WorldOptions{mode});
@@ -2630,7 +2631,21 @@ void verify_source_pose_authoring() {
         if(!plane_rejected)
             throw std::runtime_error(
                 "Fixed horizontal floor admitted unsupported rotation");
-        world.set_body_pose(floor,{0,0,0},{});
+        world.set_body_pose(floor,{0,0.25f,0},{0,0,0,-1.0f});
+        const auto signed_floor=world.body_state(floor);
+        if(signed_floor.position.y!=0.25f ||
+           signed_floor.orientation.x!=0.0f ||
+           signed_floor.orientation.y!=0.0f ||
+           signed_floor.orientation.z!=0.0f ||
+           signed_floor.orientation.w!=1.0f)
+            throw std::runtime_error(
+                "Signed-equivalent floor identity changed its logical pose");
+        world.set_body_pose(floor,{0,0,0},{0,0,0,-1.001f});
+        const auto restored_floor=world.body_state(floor);
+        if(restored_floor.position.y!=0.0f ||
+           restored_floor.orientation.w!=1.0f)
+            throw std::runtime_error(
+                "Sane signed floor pose failed canonical restoration");
         world.step(dt);
         if(!std::isfinite(world.body_state(box).position.y) ||
            std::abs(world.body_state(box).orientation.y-rotated.y)>5.0e-4f)
