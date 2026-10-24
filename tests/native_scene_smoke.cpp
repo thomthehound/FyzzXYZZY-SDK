@@ -20,6 +20,78 @@
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
 struct ContactCorrelationSourceFixture {
+    static void verify_enhanced_determinism_tasks() {
+        // Original DyDynamicsContext::updatePostKinematic stops island
+        // accumulation after EACH active island under
+        // PxSceneFlag::eENABLE_ENHANCED_DETERMINISM. The default groups
+        // these four islands until the 128-body threshold. Independently
+        // authored solver iteration counts must never leak across
+        // isolated enhanced-determinism task chains.
+        const auto prepare=[](bool enhanced) {
+            Scene scene;
+            scene.set_enhanced_determinism(enhanced);
+            scene.add_static_floor(0.0f);
+            const std::array<std::pair<std::uint8_t,std::uint8_t>,4> counts{{
+                {4,1},{9,3},{2,0},{6,2}}};
+            for(std::size_t i=0;i<counts.size();++i) {
+                const auto id=scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},
+                    {static_cast<float>(i)*3.0f,i==3?8.0f:0.5f,0},1.0f);
+                RigidBodyDynamics dynamics{};
+                dynamics.position_iterations=counts[i].first;
+                dynamics.velocity_iterations=counts[i].second;
+                scene.set_dynamics(id,dynamics);
+            }
+            scene.step(1.0f/120.0f);
+            if(scene.indexed_managers_.size()!=3 ||
+               scene.solver_tasks_.size()!=(enhanced?4u:1u) ||
+               scene.solver_partition_count()!=(enhanced?3u:1u))
+                throw std::runtime_error(
+                    "Enhanced PhysX accurate-island task grouping mismatched source");
+            if(!enhanced) {
+                const auto& task=scene.solver_tasks_.front();
+                if(task.position_iterations!=9 ||
+                   task.velocity_iterations!=3 ||
+                   task.batch_end!=4 ||
+                   task.manager_end!=3)
+                    throw std::runtime_error(
+                        "Default Dy task failed to merge island iteration maxima");
+            } else {
+                std::array<std::pair<std::uint8_t,std::uint8_t>,4> actual{};
+                std::size_t previous_managers=0;
+                std::size_t zero_contact_tasks=0;
+                for(std::size_t i=0;i<actual.size();++i) {
+                    const auto& task=scene.solver_tasks_[i];
+                    if(task.batch_end!=i+1 || task.first_batch!=i)
+                        throw std::runtime_error(
+                            "Enhanced Dy task chain crossed source island boundary");
+                    actual[i]={task.position_iterations,task.velocity_iterations};
+                    if(task.manager_end==previous_managers)
+                        ++zero_contact_tasks;
+                    previous_managers=task.manager_end;
+                }
+                auto expected=counts;
+                std::sort(expected.begin(),expected.end());
+                std::sort(actual.begin(),actual.end());
+                if(actual!=expected || zero_contact_tasks!=1)
+                    throw std::runtime_error(
+                        "Enhanced Dy task iterations or no-contact integration lost");
+            }
+            // Task-local solve changes no public Gu publication or
+            // per-contact writeback layout across the source flag.
+            const auto normals=scene.solved_normal_impulses();
+            for(const auto& manifold:scene.contacts()) {
+                double total=0.0;
+                for(std::size_t k=0;k<manifold.count;++k)
+                    total+=normals[manifold.contact_offset+k];
+                if(!std::isfinite(total) || total<=0.0)
+                    throw std::runtime_error(
+                        "Enhanced Dy group dropped its solved Gu contact forces");
+            }
+        };
+        prepare(false);
+        prepare(true);
+    }
     static void verify() {
         Scene scene;
         scene.add_static_floor(0.0f);
@@ -8789,6 +8861,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_friction_task_order();

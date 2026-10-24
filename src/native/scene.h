@@ -133,6 +133,12 @@ public:
     void set_contact_notifications(bool enabled) noexcept {
         contact_notifications_=enabled;
     }
+    // Configured at scene creation, before any native actors are admitted.
+    // PhysX DyDynamicsContext::updatePostKinematic keeps each active
+    // accurate island in its own solver task when this flag is enabled.
+    void set_enhanced_determinism(bool enabled) noexcept {
+        enhanced_determinism_=enabled;
+    }
     std::span<const ContactEvent> contact_events() const noexcept {
         return contact_events_;
     }
@@ -1109,6 +1115,7 @@ private:
     // Source ScNPhaseCore touch events are emitted only if contact
     // notifications were requested when the World was constructed.
     bool contact_notifications_=false;
+    bool enhanced_determinism_=false;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
     // Non-owning Gu-manifold indices for this frame's actual report

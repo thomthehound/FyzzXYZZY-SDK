@@ -43,6 +43,9 @@ struct WorldOptions {
     // PxPairFlag eNOTIFY_TOUCH_{FOUND,PERSISTS,LOST} plus
     // eNOTIFY_CONTACT_POINTS. Disabled for original default filter policy.
     bool contact_notifications = false;
+    // PxSceneFlag::eENABLE_ENHANCED_DETERMINISM. Preserves separate
+    // accurate-island Dy solver task groups rather than batching them.
+    bool enhanced_determinism = false;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX

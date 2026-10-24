@@ -334,6 +334,55 @@ int main() {
                 }
             }
 
+            // Original PxScene enhanced determinism suppresses
+            // cross-island batching. Verify native and source PGS keep
+            // independent rigid contacts and per-body iteration counts
+            // admitted across alternating timesteps.
+            {
+                fyzz::World native_ed(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu,false,true});
+                fyzz::World source_ed(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,false,true});
+                const auto f0=native_ed.add_static_floor(0.0f);
+                const auto f1=source_ed.add_static_floor(0.0f);
+                fyzz::Material nonfriction{};
+                nonfriction.disable_friction=true;
+                nonfriction.restitution=0.0f;
+                native_ed.set_body_material(f0,nonfriction);
+                source_ed.set_body_material(f1,nonfriction);
+                std::array<fyzz::BodyId,3> native_ids{},source_ids{};
+                for(std::size_t i=0;i<native_ids.size();++i) {
+                    const fyzz::Vec3 p{static_cast<float>(i)*4.0f,
+                        0.52f+0.01f*static_cast<float>(i),0};
+                    native_ids[i]=native_ed.add_dynamic_box(
+                        {0.5f,0.5f,0.5f},p,1.0f+static_cast<float>(i));
+                    source_ids[i]=source_ed.add_dynamic_box(
+                        {0.5f,0.5f,0.5f},p,1.0f+static_cast<float>(i));
+                    native_ed.set_body_material(native_ids[i],nonfriction);
+                    source_ed.set_body_material(source_ids[i],nonfriction);
+                    fyzz::RigidBodyDynamics dyn{};
+                    dyn.position_iterations=static_cast<std::uint8_t>(3+2*i);
+                    dyn.velocity_iterations=static_cast<std::uint8_t>(i);
+                    native_ed.set_body_dynamics(native_ids[i],dyn);
+                    source_ed.set_body_dynamics(source_ids[i],dyn);
+                }
+                for(int frame=0;frame<72;++frame) {
+                    const float dt=frame%4==0?1.0f/60.0f:1.0f/120.0f;
+                    native_ed.step(dt);
+                    source_ed.step(dt);
+                    for(std::size_t i=0;i<native_ids.size();++i) {
+                        const auto a=native_ed.body_state(native_ids[i]);
+                        const auto b=source_ed.body_state(source_ids[i]);
+                        if(!std::isfinite(a.position.y) ||
+                           !std::isfinite(a.velocity.y) ||
+                           std::abs(a.position.y-b.position.y)>0.06f ||
+                           std::abs(a.velocity.y-b.velocity.y)>0.2f)
+                            throw std::runtime_error(
+                                "Enhanced native Dy island diverged from PhysX CPU");
+                    }
+                }
+            }
+
             // Independent reference comparison: unconstrained angular
             // velocity damping, source quaternion orientation and pose.
             // Full contact/angular solver parity is not claimed here.

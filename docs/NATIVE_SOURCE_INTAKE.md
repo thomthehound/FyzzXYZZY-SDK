@@ -67,6 +67,27 @@ contracts, retaining source attribution. Neither rewriting the mathematics
 from memory nor a hard-coded equivalent-looking "demo solver" satisfies
 this contract.
 
+## Enhanced-determinism Dy task admission
+
+`PxSceneFlag::eENABLE_ENHANCED_DETERMINISM` is now an opt-in
+`WorldOptions` input forwarded to both the original independent PhysX
+CPU scene and the native scene. Its specifically source-derived
+`DyDynamicsContext::updatePostKinematic` effect is to terminate each
+solver task chain after one accurate active island, bypassing the default
+128-rigid-body / minimum-one-contact batching rule. The existing
+`SolverTask` partition, iteration-count and solver-body offset
+boundaries are reused; no second scheduler is created. The original
+`createFinalizeConstraints` sets `maxBatchSize=1` for the flag,
+which is already the native implementation's scalar per-manager
+contact-descriptor treatment. This is **the admitted CPU rigid-subset
+scheduling branch**, not a claim that every other PhysX
+enhanced-determinism feature or packed SIMD ABI is complete.
+Source-free tests separate four differently configured islands,
+including a no-contact island, and verify iteration maxima,
+partition boundaries and normal-force writeback. Reference-enabled
+tests compare the enhanced native and original PhysX CPU scenes over
+varying timesteps.
+
 ## Source task ordering: execution and handoffs
 
 Read `ScPipeline.cpp` as a dependency graph, **not** a flat function list.

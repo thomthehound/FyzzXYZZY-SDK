@@ -3200,8 +3200,13 @@ void Scene::partition_constraints() {
                solver_preparation_generation_)
                 ++prepared_solver_bodies;
         }
-        if(task_body_count>=source_solver_batch_size &&
-           task_constraint_count>=1) {
+        // DyDynamicsContext::updatePostKinematic breaks after EVERY
+        // accurate island with eENABLE_ENHANCED_DETERMINISM; the
+        // regular path retains source 128-body/min-one-contact batching.
+        // Non-contact islands must also form their own task chains.
+        if(enhanced_determinism_ ||
+           (task_body_count>=source_solver_batch_size &&
+            task_constraint_count>=1)) {
             solver_tasks_.push_back({task_first_batch,batch_index+1,
                 indexed_managers_.size(),0,0,prepared_solver_bodies,
                 task_pos_iters,task_vel_iters});
@@ -5641,8 +5646,10 @@ namespace fyzz {
 namespace {
 class NativeCpuWorld final : public WorldBackend {
 public:
-    explicit NativeCpuWorld(bool contact_notifications) {
+    explicit NativeCpuWorld(bool contact_notifications,
+                            bool enhanced_determinism) {
         scene_.set_contact_notifications(contact_notifications);
+        scene_.set_enhanced_determinism(enhanced_determinism);
     }
     std::span<const ContactEvent> contact_events() const override {
         return scene_.contact_events();
@@ -5703,7 +5710,8 @@ private:
     native::Scene scene_;
 };
 } // namespace
-std::unique_ptr<WorldBackend> create_native_cpu_backend(bool notify) {
-    return std::make_unique<NativeCpuWorld>(notify);
+std::unique_ptr<WorldBackend> create_native_cpu_backend(
+    bool notify, bool enhanced_determinism) {
+    return std::make_unique<NativeCpuWorld>(notify,enhanced_determinism);
 }
 } // namespace fyzz

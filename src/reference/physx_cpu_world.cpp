@@ -117,6 +117,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     };
     std::vector<RetiredActorToken> retired_actor_tokens;
     bool contact_notifications=false;
+    bool enhanced_determinism=false;
     std::vector<ContactEvent> published_contact_events;
     std::vector<ContactEvent> pending_contact_events;
     std::vector<ContactEventPoint> published_contact_points;
@@ -237,6 +238,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         // rather than silently changing the default reference behavior.
         if (legacy_gu)
             descriptor.flags &= ~physx::PxSceneFlag::eENABLE_PCM;
+        if (enhanced_determinism)
+            descriptor.flags |=
+                physx::PxSceneFlag::eENABLE_ENHANCED_DETERMINISM;
         // The CPU execution mode is explicit. Do not ever request eGPU
         // here: pinned ScScene.cpp converts eGPU to CPU eABP when the
         // CUDA GPU factory is unavailable, making the request look valid.
@@ -258,6 +262,11 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             throw std::runtime_error(
                 "PhysX scene admitted the wrong PCM contact mode");
         }
+        if (scene->getFlags().isSet(
+                physx::PxSceneFlag::eENABLE_ENHANCED_DETERMINISM)
+            != enhanced_determinism)
+            throw std::runtime_error(
+                "PhysX scene admitted the wrong enhanced-determinism mode");
 
         material = runtime->physics->createMaterial(0.5f, 0.5f, 0.2f);
         if (!material) {
@@ -287,8 +296,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 
     ~PhysXCpuWorld() override { cleanup(); }
 
-    explicit PhysXCpuWorld(bool legacy_gu,bool notify)
-        :contact_notifications(notify) {
+    explicit PhysXCpuWorld(bool legacy_gu,bool notify,
+                          bool enhanced)
+        :contact_notifications(notify),enhanced_determinism(enhanced) {
         try {
             initialize(legacy_gu);
         } catch (...) {
@@ -579,8 +589,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 // The reference CPU engine is isolated from FyzzXYZZY's native World
 // implementation. This factory must not be used by the native GPU path.
 std::unique_ptr<WorldBackend> create_reference_physx_cpu_backend(
-    bool legacy_gu,bool notify) {
-    return std::make_unique<PhysXCpuWorld>(legacy_gu,notify);
+    bool legacy_gu,bool notify,bool enhanced_determinism) {
+    return std::make_unique<PhysXCpuWorld>(
+        legacy_gu,notify,enhanced_determinism);
 }
 
 } // namespace fyzz
