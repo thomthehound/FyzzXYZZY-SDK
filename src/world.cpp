@@ -140,7 +140,8 @@ void World::set_body_angular_velocity(BodyId id, Vec3 velocity) {
     impl_->set_body_angular_velocity(id, velocity);
 }
 void World::apply_body_torque_impulse(BodyId id, Vec3 impulse) {
-    add_body_torque(id,impulse,ForceMode::Impulse);
+    validate_position(impulse);
+    impl_->apply_body_torque_impulse(id,impulse);
 }
 void World::add_body_force(BodyId id, Vec3 value, ForceMode mode) {
     validate_position(value);
