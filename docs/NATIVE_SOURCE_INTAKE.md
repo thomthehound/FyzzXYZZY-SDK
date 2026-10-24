@@ -404,14 +404,26 @@ continuations allow it:
    island manager's `getNodesToDeactivate` and can restore the
    previous pose and zero velocities of bodies the solver
    integrated concurrently but the island logic deactivated.
-   This reconciliation is relevant to correct next-frame state
-   and must not be discarded in a native implementation.
+   The current serial CPU lowering completes third-pass deactivation
+   **before** admitting Dy solver bodies. Those deactivated nodes
+   therefore cannot integrate in that frame, satisfying the observable
+   state transition without running a redundant pose rollback.
+   When solver and island execution overlap, the original
+   `afterIntegration` compensation and its dependency join must
+   be reinstated and verified against that actual overlap.
 
-Acceptance regression for this connection: multi-frame dynamic
-bodies crossing sleep/wake thresholds, contact loss and
-destroyed-manager retirement must preserve active state, event
-ordering, and stable next-frame island membership versus PhysX CPU.
-This is a **test requirement**, not presently implemented parity.
+The admitted serial CPU regression now verifies the precise
+ready-on-prior-frame → island-deactivation → no-Dy-integration
+transition, unchanged pose and zero motion, dormant next-frame state,
+and an authored wake re-entering Dy. Separate 96-frame native-versus-
+original-PhysX CPU free-flight comparisons cover changing timesteps,
+unequal mass, rotation and damping; 40-frame Sc contact lifecycles
+compare Found/Persists/Lost publication against both original reference
+modes. The numerical free-flight test uses explicit positional,
+velocity, angular-velocity and orientation tolerances: this is a
+bounded, reference-backed conformance subset, **not** proof of
+strict multi-frame contact/PGS trajectory parity, concurrent task
+refcount equivalence or complete public `fetchResults` semantics.
 
 ### Backend admission cases that must not be conflated
 
@@ -528,6 +540,18 @@ The capacity-reusing checkpoint saves only *mutable dynamic motion*
 persistent friction history and island/threshold bookkeeping. Immutable
 shape geometry and actor materials are not cloned; there is no second
 simulation or solver.
+
+**Completed Dy result publication:** Scene's solver result generation
+is distinct from its Gu collision clock. Gu-only advancement invalidates
+the current solver-result generation without pretending to have run a
+solver/fetch transaction. A normal rigid PGS step publishes the new
+generation only after integration, the destroyed-manager consumer
+join and Sc contact-event preparation. If any source preparation, solve,
+writeback or event stage rejects the step, the existing scene-owned
+checkpoint restores the exact previous completed-result generation,
+motion and result allocations. This is a truthful synchronous
+publication boundary for the admitted native CPU path, not the full
+asynchronous `NpScene::fetchResults` callback or GPU task API.
 
 **Destroyed contact-manager completion join:** `ScPipeline.cpp::destroyManagers`
 forks speculative and accurate `thirdPassIslandGen` work and

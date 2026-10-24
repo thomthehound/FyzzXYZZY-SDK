@@ -67,8 +67,9 @@ Quat multiply(Quat a, Quat b) {
 }
 Quat integrate_quaternion(Quat pose, Vec3 angular, float dt) {
     // Direct translation of DyBodyCoreIntegrator.h::integrateCore's
-    // closed-form post-solver quaternion step for zero solver angular
-    // delta. Rotational contact response remains unavailable to the provisional PGS.
+    // closed-form post-solver quaternion step. The input already
+    // includes position-iteration angular motion from the source PGS
+    // contact Jacobians when the body participated in a constraint.
     float w = angular.x*angular.x + angular.y*angular.y +
               angular.z*angular.z;
     if (w != 0.0f) {
