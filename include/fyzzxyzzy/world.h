@@ -46,6 +46,12 @@ struct WorldOptions {
     // PxSceneFlag::eENABLE_ENHANCED_DETERMINISM. Preserves separate
     // accurate-island Dy solver task groups rather than batching them.
     bool enhanced_determinism = false;
+    // Partial source PCM admission. Only native plane/box uses
+    // GuPCMContactPlaneBox and its persistent manager-owned cache;
+    // box/box retains the explicit legacy generator pending the full
+    // GuPCMContactBoxBox/SAT/GJK/EPA source translation. Defaults OFF
+    // to keep existing legacy-Gu regression baselines comparable.
+    bool pcm_plane_box = false;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX
