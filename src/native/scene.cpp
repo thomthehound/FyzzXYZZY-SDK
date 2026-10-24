@@ -539,6 +539,17 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
     erase_shape_friction_history(id);
+    // ScShapeCore shape-parameter edits invalidate the native PCM
+    // witnesses for this shape's active contact managers. Refreshing
+    // only relative transforms would not generate candidates newly
+    // admitted by a larger contact distance. Actor edits are explicit,
+    // so walk current overlap handles, never historical retired slots.
+    if(pcm_plane_box_enabled_)
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            auto& edge=contact_edges_[edge_id];
+            if(edge.pair.a==id || edge.pair.b==id)
+                edge.pcm_plane_box.initialized=false;
+        }
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
     actor.cached_bounds_current=false;
@@ -1242,13 +1253,19 @@ std::uint8_t Scene::generate_pcm_plane_box(
             }
             indices[3]=fourth;
             chosen[fourth]=true;
+            // Source clusters every remaining contact around the
+            // ORIGINAL four geometric witnesses. Replacement changes
+            // only the chosen contact index, not the cluster center.
+            std::array<PcmPlaneContact,4> cluster_centers{};
+            for(std::size_t k=0;k<4;++k)
+                cluster_centers[k]=candidates[indices[k]];
             for(std::size_t i=0;i<count;++i) {
                 if(chosen[i])continue;
                 float nearest=std::numeric_limits<float>::max();
                 std::size_t slot=0;
                 for(std::size_t j=0;j<4;++j) {
                     const float d=sq(diff(candidates[i].plane_local,
-                                           candidates[indices[j]].plane_local));
+                                           cluster_centers[j].plane_local));
                     if(d<nearest){nearest=d;slot=j;}
                 }
                 if(candidates[i].separation<
