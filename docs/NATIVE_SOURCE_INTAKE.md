@@ -88,6 +88,29 @@ partition boundaries and normal-force writeback. Reference-enabled
 tests compare the enhanced native and original PhysX CPU scenes over
 varying timesteps.
 
+## Gu contact-manager shape-pair orientation
+
+Contact-manager identity remains the canonical, sorted BodyId pair,
+but the original Gu reference/incident face selection uses the
+broadphase-emitted **oriented** overlap endpoints. Sorting by BodyId
+before calling `GuContactBoxBox` discarded that ordering: in an
+upper-first actor admission with the supporting lower box earlier in
+the X sweep, native contact points were projected onto the *lower
+box's top face*, while the original legacy-Gu source emitted points
+from the *upper box's bottom face*. This differed on frame 1, before
+any normal force was applied, and by frame 12 produced approximately
+an order-of-magnitude discrepancy in the upper body's angular
+velocity despite near-matching normal impulses.
+
+The native Sc contact-manager EdgeIndex now retains the sweep
+direction from pair creation to retirement. Gu's six-axis cache
+remains in that oriented frame across steps; collision normals are
+then mapped back to the canonical pair for the existing Dy
+constraint descriptors and event reporting. This corrects the
+admission boundary without duplicating the contact manager or
+substituting contact geometry. The long-horizon strict PhysX fixture
+remains the independent acceptance authority for the repair.
+
 ## N1 coupled frictional-rotation source parity gate
 
 A new native-versus-original-PhysX legacy-Gu fixture compares two

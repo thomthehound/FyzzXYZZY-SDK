@@ -1034,6 +1034,19 @@ void Scene::publish_pairs() {
             step_checkpoint_.save_handle_lists(*this);
             const Pair pair=pending_pairs_[new_index++];
             const EdgeIndex id=allocate_contact_edge(pair);
+            // Gu's contact-cache collisionData is orientation-dependent.
+            // The broadphase X sweep emits an overlap from the earlier
+            // minimum endpoint to the later endpoint. The sorted pair
+            // key is only an identity: retain the emission direction in
+            // this SAME persistent contact manager (never in a shadow
+            // manifold or standalone source-order registry).
+            if(actors_[pair.a].kind==Kind::DynamicBox &&
+               actors_[pair.b].kind==Kind::DynamicBox) {
+                const auto& a=actors_[pair.a].encoded_bounds;
+                const auto& b=actors_[pair.b].encoded_bounds;
+                contact_edges_[id].gu_order_reversed=
+                    b[0]<a[0] || (b[0]==a[0] && pair.b<pair.a);
+            }
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
@@ -1155,10 +1168,24 @@ void Scene::update_contacts() {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
+            // The original Gu reference/incident face and the cached
+            // six-axis separation hint are defined in BP emission order.
+            // Canonical event/edge identity must not silently reverse
+            // the source shape pair when actor IDs and the X sweep
+            // disagree. Flip only the resulting Gu normal back to the
+            // canonical Pair orientation consumed by Dy.
+            const bool reversed=contact_edges_[edge].gu_order_reversed;
+            const Actor& first=reversed?b:a;
+            const Actor& second=reversed?a:b;
             manifold.count = source_box_box_contacts(
-                a.half_extents, a.position, a.orientation,
-                b.half_extents, b.position, b.orientation,
+                first.half_extents, first.position, first.orientation,
+                second.half_extents, second.position, second.orientation,
                 contact_distance, manifold.collision_axis, box_contact_scratch_);
+            if(reversed)
+                for(std::size_t i=0;i<manifold.count;++i) {
+                    auto& normal=box_contact_scratch_[i].normal;
+                    normal={-normal.x,-normal.y,-normal.z};
+                }
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
