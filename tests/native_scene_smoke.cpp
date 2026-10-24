@@ -215,6 +215,53 @@ struct ContactCorrelationSourceFixture {
                     "Selected cached friction anchor differs from its body-local frames");
         }
     }
+    static void verify_after_integration_cached_shape_bounds() {
+        // ScPipeline::afterIntegration::updateScBodyAndShapeSim publishes
+        // each integrated active body's pose-derived bounds before the
+        // frame completes. The next SAP update must consume those bounds
+        // rather than recomputing a stale pre-integration transform.
+        Scene scene;
+        const auto box=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        scene.advance_collision(true);
+        const auto before=scene.actors_[box].encoded_bounds;
+        if(!scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "Sc initial Gu bounds were not cached for rigid actor");
+        scene.step(1.0f/60.0f);
+        const auto integrated=scene.actors_[box].encoded_bounds;
+        if(!scene.actors_[box].cached_bounds_current ||
+           integrated==before ||
+           scene.solved_result_frame()!=scene.frame_index())
+            throw std::runtime_error(
+                "Sc afterIntegration did not publish integrated shape bounds");
+        scene.advance_collision(true);
+        if(scene.actors_[box].encoded_bounds!=integrated ||
+           !scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "SAP recomputed or changed an already published integrated AABB");
+        // Explicit shape pose and contact-offset edits invalidate the
+        // cache, without requiring a separate shape/bounds owner.
+        scene.set_position(box,{0,8,0});
+        if(scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "Authored shape pose failed to invalidate Sc cached bounds");
+        scene.advance_collision(true);
+        const auto moved=scene.actors_[box].encoded_bounds;
+        if(moved==integrated ||
+           !scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "Gu broadphase ignored an authored shape relocation");
+        scene.set_shape_offsets(box,0.15f,0.0f);
+        if(scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "Authored contact offset failed to invalidate Sc shape bounds");
+        scene.advance_collision(true);
+        if(scene.actors_[box].encoded_bounds==moved ||
+           !scene.actors_[box].cached_bounds_current)
+            throw std::runtime_error(
+                "Gu cached bounds omitted the new shape contact offset");
+    }
     static void verify_source_sleep_velocity_mod_retirement() {
         // ScBodySim::deactivate calls setForcesToDefaults and
         // putToSleep clears the complete VelocityMod. A pending
@@ -9214,6 +9261,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
+    fyzz::native::ContactCorrelationSourceFixture::verify_after_integration_cached_shape_bounds();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
