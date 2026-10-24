@@ -4050,6 +4050,12 @@ void Scene::prepare_constraints(float seconds) {
                 if(!keep_pair)patch.anchor_count=0;
             }
             std::array<Vec3,2> anchors{};
+            // DyFrictionCorrelation::growPatches selects replacement
+            // anchors as well as newly appended ones. A retained slot
+            // must remain untouched unless the search replaces it.
+            // The upstream j=oldCount publication misses replacements
+            // of slot zero after a cached one-anchor patch grows.
+            std::array<bool,2> changed{};
             std::uint8_t count=patch.anchor_count;
             if(!keep_pair) {
                 if(count==1)
@@ -4073,12 +4079,14 @@ void Scene::prepare_constraints(float seconds) {
                         if(count==0) {
                             patch.contact_ids[0]=static_cast<std::uint16_t>(j);
                             anchors[0]=w;
+                            changed[0]=true;
                             ++count;
                         } else if(count==1) {
                             const float d=squared_length(sub(w,anchors[0]));
                             if(d>1.0e-8f) {
                                 patch.contact_ids[1]=static_cast<std::uint16_t>(j);
                                 anchors[1]=w;
+                                changed[1]=true;
                                 point_dist_sq=d;
                                 ++count;
                             }
@@ -4088,16 +4096,19 @@ void Scene::prepare_constraints(float seconds) {
                             if(d0>d1 && d0>point_dist_sq) {
                                 patch.contact_ids[1]=static_cast<std::uint16_t>(j);
                                 anchors[1]=w;
+                                changed[1]=true;
                                 point_dist_sq=d0;
                             } else if(d1>=d0 && d1>point_dist_sq) {
                                 patch.contact_ids[0]=static_cast<std::uint16_t>(j);
                                 anchors[0]=w;
+                                changed[0]=true;
                                 point_dist_sq=d1;
                             }
                         }
                     }
                 }
-                for(std::size_t k=patch.anchor_count;k<count;++k) {
+                for(std::size_t k=0;k<count;++k) {
+                    if(!changed[k])continue;
                     patch.body0_anchors[k]=local_point(actor0,anchors[k]);
                     patch.body1_anchors[k]=local_point(actor1,anchors[k]);
                 }
