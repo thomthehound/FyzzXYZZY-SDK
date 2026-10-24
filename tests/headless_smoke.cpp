@@ -1217,6 +1217,9 @@ int main() {
                                      <<" lower_y="<<lo.position.y
                                      <<" lower_v=("<<lo.velocity.x<<","<<lo.velocity.y
                                      <<","<<lo.velocity.z<<")"
+                                     <<" lower_q=("<<lo.orientation.x<<","
+                                     <<lo.orientation.y<<","<<lo.orientation.z
+                                     <<","<<lo.orientation.w<<")"
                                      <<" upper_p=("<<up.position.x<<","
                                      <<up.position.y<<","<<up.position.z<<")"
                                      <<" upper_v=("<<up.velocity.x<<","
@@ -1235,7 +1238,7 @@ int main() {
                                          <<cp.normal.y<<","<<cp.normal.z
                                          <<") sep="<<cp.separation
                                          <<" impulse="<<evt.normal_impulse;
-                                if(frame>=10 && frame<=13) {
+                                if(frame<=13) {
                                     const auto points=w.contact_event_points();
                                     for(std::size_t i=0;i<evt.contact_count;++i) {
                                         const auto& p=points[evt.point_offset+i];
