@@ -113,6 +113,41 @@ struct ContactCorrelationSourceFixture {
                 "Reused contact-manager handle retained the old PCM manifold");
         (void)replacement;
         (void)floor;
+
+        // All eight corners are accepted under deep penetration,
+        // then the original four-witness clustering must reduce the
+        // point cache BEFORE Sc/PGS and contact reports consume it.
+        Scene deep;
+        deep.set_pcm_plane_box(true);
+        deep.add_static_floor(0);
+        const auto buried=deep.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,-0.6f,0},1);
+        deep.advance_collision(true);
+        if(deep.contacts().size()!=1 ||
+           deep.contacts()[0].count!=4 ||
+           deep.contact_edges_[deep.contacts()[0].edge_handle].
+               pcm_plane_box.count!=4)
+            throw std::runtime_error(
+                "PCM plane-box failed source eight-corner four-witness reduction");
+        for(const auto& point:deep.contacts()[0].points)
+            if(std::abs(point.position.y)>1.0e-6f ||
+               point.normal.y!=1.0f ||
+               point.separation>=0)
+                throw std::runtime_error(
+                    "PCM deep contacts must be projected onto the plane");
+        // A shape contact-offset change must invalidate cached PCM
+        // generation even if the relative transform did not move.
+        const auto deep_edge=deep.contacts()[0].edge_handle;
+        deep.set_shape_offsets(buried,0.2f,0.0f);
+        if(deep.contact_edges_[deep_edge].pcm_plane_box.initialized)
+            throw std::runtime_error(
+                "Authored PCM shape distance retained stale candidate set");
+        deep.advance_collision(true);
+        if(deep.contacts().size()!=1 ||
+           deep.contacts()[0].count!=4 ||
+           !deep.contact_edges_[deep_edge].pcm_plane_box.initialized)
+            throw std::runtime_error(
+                "PCM edited shape distance did not regenerate manifold");
     }
     static void verify_legacy_gu_contact_cache() {
         // PxcCacheLocalContacts is independent from PCM and
