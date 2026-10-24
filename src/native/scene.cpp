@@ -5386,6 +5386,39 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.authored_activation_pending_=authored_activation_pending;
  }
 
+void Scene::RigidStepJoin::finish_lost_contacts() noexcept {
+    // Sc::Scene::processLostContacts3 completes after the lost-touch
+    // and third-pass consumers have finished. The source continuation
+    // contributes one of mPostSolver's two independent producer edges.
+    lost_contacts_joined=true;
+}
+void Scene::RigidStepJoin::dispatch_solver_tasks(std::size_t count) {
+    if(!lost_contacts_joined || solver_dispatched)
+        throw std::logic_error(
+            "Native ScPipeline launched Dy before the lost-contact third pass");
+    // DynamicsContext::updatePostKinematic schedules one
+    // PxsSolverEndTask per active-island solver task chain. An empty
+    // island graph legitimately schedules zero chains.
+    solver_dispatched=true;
+    outstanding_solver_tasks=count;
+}
+void Scene::RigidStepJoin::finish_solver_task() {
+    if(!solver_dispatched || !outstanding_solver_tasks)
+        throw std::logic_error(
+            "Native Dy solver end task completed without a live continuation");
+    --outstanding_solver_tasks;
+}
+void Scene::RigidStepJoin::require_post_solver() const {
+    // ScPipeline::updateDynamics wires mProcessLostContactsTask3 and
+    // every PxsSolverEndTask into mPostSolver. A manager handle cannot
+    // be reclaimed, and no completed result can be published, before
+    // both producers have joined.
+    if(!lost_contacts_joined || !solver_dispatched ||
+       outstanding_solver_tasks)
+        throw std::logic_error(
+            "Native ScPipeline postSolver reached before producer completion");
+}
+
 void Scene::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
@@ -5398,6 +5431,7 @@ void Scene::step(float seconds) {
     // contacts, island nodes, body motion or result streams. Snapshot only
     // authoritative state; all per-step Dy work buffers remain reusable.
     step_checkpoint_.capture(*this);
+    RigidStepJoin join;
     try {
     // ScPipeline: contact publication and both island passes must
     // finish before Dy::bodyCoreComputeUnconstrainedVelocity. This
@@ -5426,6 +5460,12 @@ void Scene::step(float seconds) {
     // ordinary awake frames do not need this second traversal.
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();
+    // mProcessLostContactsTask3's admitted rigid dependencies are now
+    // complete: Gu lost-touch publication, both island passes, wake,
+    // third-pass sleep, and Sc interaction-state consumption.
+    // PhysX can overlap this branch with Dy; serial CPU execution
+    // resolves it first without changing the dependency edge.
+    join.finish_lost_contacts();
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
     prepare_active_accurate_island_batches();
@@ -5525,6 +5565,10 @@ void Scene::step(float seconds) {
     }
     prepare_solver_bodies();
     partition_constraints();
+    // Dispatch is over the ACTUAL Dy::updatePostKinematic task-group
+    // descriptors, including groups without contact rows. No task
+    // allocations or second island registry are introduced.
+    join.dispatch_solver_tasks(solver_tasks_.size());
     prepare_constraints(seconds);
     solve_constraints();
     write_back_contacts();
@@ -5558,7 +5602,14 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    for(std::size_t island:active_accurate_island_batches_) {
+    for(const auto& task:solver_tasks_) {
+        // PxsSolverEndTask owns integration and Dy::sleepCheck for its
+        // contiguous range of accurate active islands, not just PGS.
+        // The task contributes to postSolver only after every rigid
+        // node in that same range has finished its integration.
+        for(std::size_t batch=task.first_batch;
+            batch<task.batch_end;++batch) {
+        const auto island=active_accurate_island_batches_[batch];
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
@@ -5676,15 +5727,18 @@ void Scene::step(float seconds) {
             }
             dirty_ = true;
         }
+        }
+        join.finish_solver_task();
     }
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.
-    // The source post-third-pass/lost-contact join cannot retire the
-    // manager allocations until Dy has consumed the frame's island
-    // and contact descriptors. This serial CPU lowering performs the
-    // release at the same consumer-completion boundary, after integration
-    // and before publicly publishing contact reports.
+    // The source mPostSolver continuation joins both actual producers:
+    // processLostContactsTask3 / PostThirdPassTask and every
+    // PxsSolverEndTask (including its integration and sleepCheck).
+    // This check gates resource reclamation and completed publication;
+    // failed frames roll back the existing single-scene checkpoint.
+    join.require_post_solver();
     retire_destroyed_contact_edges();
     // ScNPhaseCore reports are derived only after final Gu/Dy force
     // writeback, island reconciliation and contact-manager retirement.
