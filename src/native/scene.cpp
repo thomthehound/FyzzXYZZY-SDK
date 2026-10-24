@@ -343,6 +343,19 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         actor.ready_for_sleep=false;
         actor.sleeping=false;
     }
+    // ScRigidSim::notifyShapesOfTransformChange calls
+    // ShapeInteraction::resetManagerCachedState for every existing
+    // overlap interaction. That invalidates PxsContactManager's PCM
+    // geometry cache even for a small (or idempotent) authored pose.
+    // Dy::integrateCore never calls this authored-pose path: ordinary
+    // solver-integrated motion retains the PCM manifold and refreshes
+    // its cached box/plane-local witnesses on the next Gu pass.
+    if(pcm_plane_box_enabled_)
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            auto& edge=contact_edges_[edge_id];
+            if(edge.pair.a==id || edge.pair.b==id)
+                edge.pcm_plane_box={};
+        }
     if(!changing_pose)return;
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
