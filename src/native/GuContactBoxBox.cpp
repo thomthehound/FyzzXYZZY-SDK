@@ -73,12 +73,17 @@ struct PxMat34 {
 // Equivalent to PxQuat's rotation matrix columns. Input orientations are
 // scene-owned normalized unit quaternions.
 PxMat34 boxTransform(Vec3 position, Quat q) {
-    const PxReal xx=q.x*q.x, yy=q.y*q.y, zz=q.z*q.z;
-    const PxReal xy=q.x*q.y, xz=q.x*q.z, yz=q.y*q.z;
-    const PxReal wx=q.w*q.x, wy=q.w*q.y, wz=q.w*q.z;
-    return {{{1.0f-2.0f*(yy+zz),2.0f*(xy+wz),2.0f*(xz-wy)},
-             {2.0f*(xy-wz),1.0f-2.0f*(xx+zz),2.0f*(yz+wx)},
-             {2.0f*(xz+wy),2.0f*(yz-wx),1.0f-2.0f*(xx+yy)}},
+    // PxMat33T::PxMat33T(const PxQuatT&) in foundation/PxMat33.h.
+    // Preserve the source's add/multiply/subtract sequence exactly:
+    // 1-yy-zz is not the same PxReal rounding as 1-2*(yy+zz).
+    // Those last bits can choose a different Gu box face near a SAT tie.
+    const PxReal x2=q.x+q.x, y2=q.y+q.y, z2=q.z+q.z;
+    const PxReal xx=x2*q.x, yy=y2*q.y, zz=z2*q.z;
+    const PxReal xy=x2*q.y, xz=x2*q.z, xw=x2*q.w;
+    const PxReal yz=y2*q.z, yw=y2*q.w, zw=z2*q.w;
+    return {{{1.0f-yy-zz,xy+zw,xz-yw},
+             {xy-zw,1.0f-xx-zz,yz+xw},
+             {xz+yw,yz-xw,1.0f-xx-yy}},
             {position.x,position.y,position.z}};
 }
 struct PxContactBuffer {
