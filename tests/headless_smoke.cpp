@@ -675,6 +675,65 @@ int main() {
             }
 
 
+            // ScBodySim::updateForces eRETAIN_ACCELERATIONS conformance:
+            // an active body's per-second velocity modifications survive
+            // across steps only with that source flag; eVELOCITY_CHANGE
+            // never repeats. Compare actual multi-frame PhysX CPU states,
+            // including the frame after explicit force/torque clearance.
+            for(const bool retained:{false,true}) {
+                fyzz::World native_forces(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World source_forces(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
+                const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                const auto nid=native_forces.add_dynamic_box(
+                    half,{0,10,0},1.0f);
+                const auto sid=source_forces.add_dynamic_box(
+                    half,{0,10,0},1.0f);
+                fyzz::RigidBodyDynamics d{};
+                d.gravity_enabled=false;
+                d.linear_damping=0.0f;
+                d.angular_damping=0.0f;
+                d.retain_accelerations=retained;
+                native_forces.set_body_dynamics(nid,d);
+                source_forces.set_body_dynamics(sid,d);
+                for(auto* world:{&native_forces,&source_forces}) {
+                    const auto id=world==&native_forces?nid:sid;
+                    world->add_body_force(id,{1.5f,0,0},
+                                          fyzz::ForceMode::Acceleration);
+                    world->add_body_torque(id,{0,0,0.75f},
+                                           fyzz::ForceMode::Acceleration);
+                    world->add_body_force(id,{0.2f,0,0},
+                                          fyzz::ForceMode::VelocityChange);
+                }
+                constexpr float h=1.0f/120.0f;
+                for(unsigned frame=0;frame<8;++frame) {
+                    if(frame==5) {
+                        for(auto* world:{&native_forces,&source_forces}) {
+                            const auto id=world==&native_forces?nid:sid;
+                            world->clear_body_force(id,fyzz::ForceMode::Acceleration);
+                            world->clear_body_torque(id,fyzz::ForceMode::Acceleration);
+                        }
+                    }
+                    native_forces.step(h);
+                    source_forces.step(h);
+                    const auto a=native_forces.body_state(nid);
+                    const auto b=source_forces.body_state(sid);
+                    if(std::abs(a.velocity.x-b.velocity.x)>0.002f ||
+                       std::abs(a.angular_velocity.z-b.angular_velocity.z)>0.002f ||
+                       std::abs(a.position.x-b.position.x)>0.002f)
+                        throw std::runtime_error(
+                            "Native retained-acceleration lifecycle disagrees with PhysX CPU");
+                    if(retained && frame==4 && a.velocity.x<0.24f)
+                        throw std::runtime_error(
+                            "Retaining rigid-body acceleration was not applied on successive frames");
+                    if(!retained && frame==4 &&
+                       std::abs(a.velocity.x-(0.2f+1.5f*h))>1e-4f)
+                        throw std::runtime_error(
+                            "Non-retaining rigid-body acceleration was incorrectly repeated");
+                }
+            }
+
             // Compare an actually integrated native scene against its
             // independent PhysX CPU oracle. Tolerances cover different
             // contact solvers; they do not excuse falling through the floor.
