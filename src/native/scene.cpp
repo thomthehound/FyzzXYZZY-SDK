@@ -1565,9 +1565,16 @@ void Scene::update_contacts() {
             // retained only when the contact generator actually ran.
             cache.count=manifold.count;
             cache.collision_axis=manifold.collision_axis;
+            // The Gu contact arena and the legacy Pxc cache arena
+            // have distinct ownership and offsets once PCM pairs are
+            // admitted. Cached source points come from THIS manager's
+            // output window, not cache.offset (which indexes only
+            // legacy cached points and omits preceding PCM contacts).
+            // Dy still indexes the full Gu stream by contact_offset.
             next_gu_cached_points_.insert(next_gu_cached_points_.end(),
-                next_contact_points_.begin()+cache.offset,
-                next_contact_points_.end());
+                next_contact_points_.begin()+manifold.contact_offset,
+                next_contact_points_.begin()+manifold.contact_offset+
+                    manifold.count);
         }
         if(!pcm_plane)next_gu_cache_records_.push_back(cache);
         // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
