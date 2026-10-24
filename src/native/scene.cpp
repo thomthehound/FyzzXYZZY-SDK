@@ -5393,9 +5393,12 @@ void Scene::RigidStepJoin::finish_lost_contacts() noexcept {
     lost_contacts_joined=true;
 }
 void Scene::RigidStepJoin::dispatch_solver_tasks(std::size_t count) {
-    if(!lost_contacts_joined || solver_dispatched)
+    // Source producer branches are independent: the numerical Dy tasks
+    // may run concurrently with third-pass lost-contact cleanup. The
+    // dependency is on mPostSolver, never on starting Dy itself.
+    if(solver_dispatched)
         throw std::logic_error(
-            "Native ScPipeline launched Dy before the lost-contact third pass");
+            "Native ScPipeline dispatched the same Dy task chains twice");
     // DynamicsContext::updatePostKinematic schedules one
     // PxsSolverEndTask per active-island solver task chain. An empty
     // island graph legitimately schedules zero chains.
