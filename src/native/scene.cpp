@@ -4779,6 +4779,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     dirty_route_checks=scene.island_dirty_route_checks_;
     fast_route_hits=scene.island_fast_route_hits_;
     frame_index=scene.frame_index_;
+    solved_result_frame=scene.solved_result_frame_;
     pair_epoch=scene.pair_epoch_;
     contact_epoch=scene.contact_epoch_;
     manifold_lookup_generation=scene.manifold_lookup_generation_;
@@ -5104,6 +5105,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.island_dirty_route_checks_=dirty_route_checks;
     scene.island_fast_route_hits_=fast_route_hits;
     scene.frame_index_=frame_index;
+    scene.solved_result_frame_=solved_result_frame;
     scene.active_contact_interaction_count_=initial_active_interactions;
     scene.island_topology_dirty_=topology_dirty;
     scene.dirty_=dirty;
@@ -5368,6 +5370,11 @@ void Scene::step(float seconds) {
     // ScNPhaseCore reports are derived only after final Gu/Dy force
     // writeback, island reconciliation and contact-manager retirement.
     publish_contact_events();
+    // This is the last publication edge. The frame is now observed as
+    // a completed Dy result rather than merely a Gu collision step.
+    // A failed stage above leaves it unpublished; rollback restores the
+    // previously completed result generation and all its buffers.
+    solved_result_frame_=frame_index_;
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
@@ -5452,6 +5459,10 @@ void Scene::advance_collision_internal(
     // solved force-buffer values against an unsolved contact stream.
     normal_impulse_writeback_.clear();
     friction_impulse_writeback_.clear();
+    // A collision-only advance is NOT equivalent to a completed
+    // simulate/fetch. The next successful Scene::step can publish this
+    // generation again, after its dependent solver stages finish.
+    solved_result_frame_=0;
     // This clears only the exposed reports; prior exceeded-force state
     // must survive collision queries until the next simulation step.
     threshold_changes_.clear();
