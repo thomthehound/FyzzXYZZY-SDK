@@ -2512,7 +2512,10 @@ void Scene::third_pass_island_gen() {
     // Rebuild candidates from the first pass must survive until the
     // third-pass deactivation decision, alongside local lost-edge splits.
     update_island_connectivity(true);
-    retire_destroyed_contact_edges();
+    // Keep retired contact-manager handles allocated until the source
+    // lost-contact/third-pass join reaches its consumer-completion edge.
+    // The frame's Dy and Sc stages can still hold those manager handles
+    // after island route repair. Do not return them to the free list here.
     // The source dirty map is consumed by the third-pass repair. No
     // duplicate route work should spill into an unchanged next frame.
     for(BodyId node:speculative_dirty_nodes_)
@@ -5356,8 +5359,14 @@ void Scene::step(float seconds) {
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.
+    // The source post-third-pass/lost-contact join cannot retire the
+    // manager allocations until Dy has consumed the frame's island
+    // and contact descriptors. This serial CPU lowering performs the
+    // release at the same consumer-completion boundary, after integration
+    // and before publicly publishing contact reports.
+    retire_destroyed_contact_edges();
     // ScNPhaseCore reports are derived only after final Gu/Dy force
-    // writeback and all body/island integration has succeeded.
+    // writeback, island reconciliation and contact-manager retirement.
     publish_contact_events();
     // Solver and lost-edge producers have both completed before this
     // successful step returns its published body and contact results.
@@ -5412,6 +5421,10 @@ void Scene::advance_collision(bool force_update) {
             speculative_islands_.active_nodes.size();
         advance_collision_internal(force_update,true);
         third_pass_island_gen();
+        // A collision-only publication has no Dy consumers. The two
+        // island repair passes have already joined, so handle retirement
+        // may complete inside the failure-atomic collision transaction.
+        retire_destroyed_contact_edges();
     } catch (...) {
         step_checkpoint_.rollback(*this);
         throw;
