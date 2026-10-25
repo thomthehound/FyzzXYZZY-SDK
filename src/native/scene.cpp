@@ -4550,13 +4550,11 @@ void Scene::partition_constraints() {
     //
     // The source assigns conflict-free dynamic/dynamic constraints from
     // successive 32-bit partition masks; overflow starts a new wave.
-    // A dynamic/static contact is then placed after that dynamic body's
-    // last dynamic/dynamic partition, one static edge per partition.
+    // Each dynamic/static or dynamic/kinematic descriptor follows its
+    // dynamic body's final dynamic/dynamic partition.
     constexpr std::size_t partition_bits = 32;
-    // Retry-safe generation labels avoid writing an unassigned
-    // sentinel to every retained dormant Gu manager on each PGS step.
-    // Only active source descriptors are partitioned. A quiet dormant
-    // Gu inventory is never scanned or cleared.
+    // Only active source descriptors are partitioned. Quiet dormant
+    // Gu history is neither rescanned nor cleared.
     constraint_descriptors_.clear();
     constraint_partitions_.clear();
     ordered_constraints_.clear();
@@ -5616,250 +5614,250 @@ void Scene::solve_constraints() {
             desc<task.constraint_end;++desc) {
             const auto descriptor=ordered_constraints_[desc];
             if(descriptor.distance) {
-            const std::size_t index=descriptor.index;
-            auto& row=distance_rows_[index];
-            auto& a=actors_[row.a].kind==Kind::StaticBox ||
-                    actors_[row.a].kind==Kind::StaticPlane
-                ? world_solver_row_:solver_rows_[row.a];
-            auto& b=actors_[row.b].kind==Kind::StaticBox ||
-                    actors_[row.b].kind==Kind::StaticPlane
-                ? world_solver_row_:solver_rows_[row.b];
-            const double normal_delta=
-                static_cast<double>(row.axis.x)*
-                    (a.solver.linear_velocity_delta.x-
-                     b.solver.linear_velocity_delta.x)+
-                static_cast<double>(row.axis.y)*
-                    (a.solver.linear_velocity_delta.y-
-                     b.solver.linear_velocity_delta.y)+
-                static_cast<double>(row.axis.z)*
-                    (a.solver.linear_velocity_delta.z-
-                     b.solver.linear_velocity_delta.z)+
-                dot(row.angular_a,a.solver.angular_state)-
-                dot(row.angular_b,b.solver.angular_state);
-            const double constant=iter<position_iterations
-                ? row.constant:row.unbiased_constant;
-            const double next=std::clamp(
-                row.applied_force+
-                normal_delta*row.velocity_multiplier+constant,
-                -max_float,max_float);
-            const double impulse=next-row.applied_force;
-            const double ia=impulse*row.inverse_mass_a;
-            const double ib=impulse*row.inverse_mass_b;
-            const Vec3 va=a.solver.linear_velocity_delta;
-            const Vec3 vb=b.solver.linear_velocity_delta;
-            const Vec3 aa=a.solver.angular_state,ab=b.solver.angular_state;
-            const std::array<double,12> candidate{
-                va.x+ia*row.axis.x,va.y+ia*row.axis.y,
-                va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
-                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z,
-                aa.x+impulse*row.angular_a.x,
-                aa.y+impulse*row.angular_a.y,
-                aa.z+impulse*row.angular_a.z,
-                ab.x-impulse*row.angular_b.x,
-                ab.y-impulse*row.angular_b.y,
-                ab.z-impulse*row.angular_b.z};
-            std::array<float,12> applied{};
-            for(std::size_t k=0;k<candidate.size();++k) {
-                if(!std::isfinite(candidate[k]) ||
-                   std::abs(candidate[k])>max_float)
-                    throw std::overflow_error("Source 1D solver velocity overflow");
-                applied[k]=static_cast<float>(candidate[k]);
-            }
-            a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
-            b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
-            a.solver.angular_state={applied[6],applied[7],applied[8]};
-            b.solver.angular_state={applied[9],applied[10],applied[11]};
-            row.applied_force=next;
+                const std::size_t index=descriptor.index;
+                auto& row=distance_rows_[index];
+                auto& a=actors_[row.a].kind==Kind::StaticBox ||
+                        actors_[row.a].kind==Kind::StaticPlane
+                    ? world_solver_row_:solver_rows_[row.a];
+                auto& b=actors_[row.b].kind==Kind::StaticBox ||
+                        actors_[row.b].kind==Kind::StaticPlane
+                    ? world_solver_row_:solver_rows_[row.b];
+                const double normal_delta=
+                    static_cast<double>(row.axis.x)*
+                        (a.solver.linear_velocity_delta.x-
+                         b.solver.linear_velocity_delta.x)+
+                    static_cast<double>(row.axis.y)*
+                        (a.solver.linear_velocity_delta.y-
+                         b.solver.linear_velocity_delta.y)+
+                    static_cast<double>(row.axis.z)*
+                        (a.solver.linear_velocity_delta.z-
+                         b.solver.linear_velocity_delta.z)+
+                    dot(row.angular_a,a.solver.angular_state)-
+                    dot(row.angular_b,b.solver.angular_state);
+                const double constant=iter<position_iterations
+                    ? row.constant:row.unbiased_constant;
+                const double next=std::clamp(
+                    row.applied_force+
+                    normal_delta*row.velocity_multiplier+constant,
+                    -max_float,max_float);
+                const double impulse=next-row.applied_force;
+                const double ia=impulse*row.inverse_mass_a;
+                const double ib=impulse*row.inverse_mass_b;
+                const Vec3 va=a.solver.linear_velocity_delta;
+                const Vec3 vb=b.solver.linear_velocity_delta;
+                const Vec3 aa=a.solver.angular_state,ab=b.solver.angular_state;
+                const std::array<double,12> candidate{
+                    va.x+ia*row.axis.x,va.y+ia*row.axis.y,
+                    va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
+                    vb.y-ib*row.axis.y,vb.z-ib*row.axis.z,
+                    aa.x+impulse*row.angular_a.x,
+                    aa.y+impulse*row.angular_a.y,
+                    aa.z+impulse*row.angular_a.z,
+                    ab.x-impulse*row.angular_b.x,
+                    ab.y-impulse*row.angular_b.y,
+                    ab.z-impulse*row.angular_b.z};
+                std::array<float,12> applied{};
+                for(std::size_t k=0;k<candidate.size();++k) {
+                    if(!std::isfinite(candidate[k]) ||
+                       std::abs(candidate[k])>max_float)
+                        throw std::overflow_error("Source 1D solver velocity overflow");
+                    applied[k]=static_cast<float>(candidate[k]);
+                }
+                a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
+                b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
+                a.solver.angular_state={applied[6],applied[7],applied[8]};
+                b.solver.angular_state={applied[9],applied[10],applied[11]};
+                row.applied_force=next;
             } else {
-            // Each contact descriptor retains its source friction-patch
-            // order: all normal rows followed immediately by tangent rows.
-            // Gu force-buffer offsets are independent of this permutation.
-            const auto index=descriptor.index;
-            const auto& manifold = manifolds_[index];
-            // Dy descriptors retain Sc's source-oriented body order,
-            // including the signs of the contact/friction Jacobians.
-            const bool reversed=island_edges_[
-                manifold.edge_handle].gu_order_reversed;
-            const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
-            const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
-            auto& a = rigid_node(actors_[id0].kind)
-                ? solver_rows_[id0] : world_solver_row_;
-            auto& b = rigid_node(actors_[id1].kind)
-                ? solver_rows_[id1] : world_solver_row_;
-            // A zero source maxContactImpulse is omitted by
-            // DyContactPrepShared::extractContacts; there is no packed
-            // solver header to execute. Gu touch state and its indexed
-            // zero force-buffer slots remain owned by this Scene.
-            if(manifold.friction_patch_count==0)
-                continue;
-            std::size_t order_cursor=manifold.solver_offset;
-            for(std::size_t p=manifold.friction_patch_offset;
-                p<manifold.friction_patch_offset+
-                  manifold.friction_patch_count;++p) {
-                auto& patch=friction_patches_[p];
-                double normal_impulse=0.0;
-                for(std::size_t i=0;i<patch.contact_count;++i) {
-                // DyContactPrep concatenates this patch's reversed
-                // contact-run list, then writes Gu-indexed force slots.
-                auto& row=solver_contact_points_[
-                    solver_contact_order_[order_cursor++]];
-                const Vec3 n = row.normal;
-                const Vec3 va{
-                    a.solver.linear_velocity_delta.x,
-                    a.solver.linear_velocity_delta.y,
-                    a.solver.linear_velocity_delta.z};
-                const Vec3 vb{
-                    b.solver.linear_velocity_delta.x,
-                    b.solver.linear_velocity_delta.y,
-                    b.solver.linear_velocity_delta.z};
-                // PxSolverBody holds only velocity deltas; pre-solver
-                // velocity is already included in row.biased_error.
-                const float normal_velocity = dot(n,va)-dot(n,vb) +
-                    dot(a.solver.angular_state,row.ra_x_n_sqrt_inertia) -
-                    dot(b.solver.angular_state,row.rb_x_n_sqrt_inertia);
-                const double error = iter < position_iterations
-                    ? row.biased_error : row.unbiased_error;
-                const double delta_candidate = std::max(
-                    -static_cast<double>(normal_velocity) *
-                        row.velocity_multiplier + error,
-                    -row.applied_force);
-                // DySolverConstraintsShared::solveDynamicContacts
-                // caps EACH normal row's accumulated impulse, not
-                // the manager total and not the body velocity delta.
-                // DySolverConstraintsShared multiplies the old force
-                // by impulseMultiplier for every compliant PGS solve.
-                // Noncompliant rows retain a multiplier of exactly 1.
-                const double next_impulse=std::min(row.max_impulse,
-                    row.impulse_multiplier*row.applied_force+delta_candidate);
-                const double delta = next_impulse-row.applied_force;
-                const double da = delta*a.data.inverse_mass;
-                const double db = delta*b.data.inverse_mass;
-                const std::array<double,12> results{
-                    static_cast<double>(va.x)+n.x*da,
-                    static_cast<double>(va.y)+n.y*da,
-                    static_cast<double>(va.z)+n.z*da,
-                    static_cast<double>(vb.x)-n.x*db,
-                    static_cast<double>(vb.y)-n.y*db,
-                    static_cast<double>(vb.z)-n.z*db,
-                    static_cast<double>(a.solver.angular_state.x)+row.ra_x_n_sqrt_inertia.x*delta,
-                    static_cast<double>(a.solver.angular_state.y)+row.ra_x_n_sqrt_inertia.y*delta,
-                    static_cast<double>(a.solver.angular_state.z)+row.ra_x_n_sqrt_inertia.z*delta,
-                    static_cast<double>(b.solver.angular_state.x)-row.rb_x_n_sqrt_inertia.x*delta,
-                    static_cast<double>(b.solver.angular_state.y)-row.rb_x_n_sqrt_inertia.y*delta,
-                    static_cast<double>(b.solver.angular_state.z)-row.rb_x_n_sqrt_inertia.z*delta};
-                std::array<float,12> commit{};
-                for (std::size_t k=0;k<results.size();++k) {
-                    if (!std::isfinite(results[k]) ||
-                        std::abs(results[k]) > max_float)
-                        throw std::overflow_error(
-                            "Native Dy contact velocity delta exceeds float range");
-                    commit[k] = static_cast<float>(results[k]);
-                }
-                a.solver.linear_velocity_delta = {commit[0],commit[1],commit[2]};
-                b.solver.linear_velocity_delta = {commit[3],commit[4],commit[5]};
-                a.solver.angular_state = {commit[6],commit[7],commit[8]};
-                b.solver.angular_state = {commit[9],commit[10],commit[11]};
-                row.applied_force = next_impulse;
-                normal_impulse+=next_impulse;
-                }
-                // DySolverConstraints::solveContact and _BStatic walk
-                // one packed SolverContactHeader at a time: each
-                // header solves its normal rows before friction rows.
-                // The per-patch impulse sum is already available from
-                // the current normal pass; no repeated O(patches*points)
-                // scan of other contact groups is necessary.
-                // DySolverControl.cpp selects friction on the LAST
-                // THREE position iterations, regardless of this task's
-                // maximum position iteration count. The default 4+1
-                // skips its first position pass, while 1+N must solve
-                // friction on its only position pass. Velocity passes
-                // retain the enabled friction state from conclude.
-                if ((iter>=position_iterations ||
-                     position_iterations-iter<=3) &&
-                    patch.anchor_count) {
-                    const double coefficient=patch.anchor_count==2
-                        ? 0.5 : 1.0;
-                    const double max_static=
-                        patch.static_friction*coefficient*normal_impulse;
-                    const double max_dynamic=
-                        patch.dynamic_friction*coefficient*normal_impulse;
-                    // DySolverConstraints.cpp::solveContact and
-                    // solveContact_BStatic create a fresh local 'broken'
-                    // value on EVERY solve call. Only the final
-                    // writeBackIteration publishes it to the friction
-                    // patch's cached broken byte. Position-pass
-                    // saturation must not invalidate an anchor that has
-                    // converged during the unbiased velocity pass.
-                    bool broken_this_iteration=false;
-                    for (std::size_t k=patch.row_offset;
-                         k<patch.row_offset+patch.anchor_count*2; ++k) {
-                        auto& fr=solver_friction_rows_[k];
-                        const Vec3 n=fr.tangent;
-                        const Vec3 va=a.solver.linear_velocity_delta;
-                        const Vec3 vb=b.solver.linear_velocity_delta;
-                        const float tangent_delta=
-                            dot(n,va)-dot(n,vb)+
-                            dot(a.solver.angular_state,fr.ra_x_t_sqrt_inertia)-
-                            dot(b.solver.angular_state,fr.rb_x_t_sqrt_inertia);
-                        // concludeContact zeroes friction bias on the
-                        // final position pass, before motion-velocity
-                        // publication and the final velocity iteration.
-                        const double bias=iter < position_iterations
-                            ? fr.bias : 0.0;
-                        const double candidate=fr.applied_force+
-                            (fr.target_velocity-bias-tangent_delta)*
-                                fr.velocity_multiplier;
-                        const bool clamped=std::abs(candidate)>max_static;
-                        // Preserve the source's signed FMin/FMax
-                        // expression without invoking std::clamp on
-                        // negative, unordered compliant patch bounds.
-                        const double next=source_contact_friction_limit(
-                            candidate,max_dynamic,clamped);
-                        const double delta=next-fr.applied_force;
-                        const double da=delta*a.data.inverse_mass;
-                        const double db=delta*b.data.inverse_mass;
-                        const auto& j0=fr.ra_x_t_sqrt_inertia;
-                        const auto& j1=fr.rb_x_t_sqrt_inertia;
-                        const std::array<double,12> results{
-                            static_cast<double>(va.x)+n.x*da,
-                            static_cast<double>(va.y)+n.y*da,
-                            static_cast<double>(va.z)+n.z*da,
-                            static_cast<double>(vb.x)-n.x*db,
-                            static_cast<double>(vb.y)-n.y*db,
-                            static_cast<double>(vb.z)-n.z*db,
-                            static_cast<double>(a.solver.angular_state.x)+j0.x*delta,
-                            static_cast<double>(a.solver.angular_state.y)+j0.y*delta,
-                            static_cast<double>(a.solver.angular_state.z)+j0.z*delta,
-                            static_cast<double>(b.solver.angular_state.x)-j1.x*delta,
-                            static_cast<double>(b.solver.angular_state.y)-j1.y*delta,
-                            static_cast<double>(b.solver.angular_state.z)-j1.z*delta};
-                        std::array<float,12> commit{};
-                        for (std::size_t v=0;v<results.size();++v) {
-                            if (!std::isfinite(results[v]) ||
-                                std::abs(results[v]) > max_float)
-                                throw std::overflow_error(
-                                    "Native Dy friction velocity delta exceeds float range");
-                            commit[v]=static_cast<float>(results[v]);
-                        }
-                        a.solver.linear_velocity_delta={
-                            commit[0],commit[1],commit[2]};
-                        b.solver.linear_velocity_delta={
-                            commit[3],commit[4],commit[5]};
-                        a.solver.angular_state={
-                            commit[6],commit[7],commit[8]};
-                        b.solver.angular_state={
-                            commit[9],commit[10],commit[11]};
-                        fr.applied_force=next;
-                        broken_this_iteration |= clamped;
+                // Each contact descriptor retains its source friction-patch
+                // order: all normal rows followed immediately by tangent rows.
+                // Gu force-buffer offsets are independent of this permutation.
+                const auto index=descriptor.index;
+                const auto& manifold = manifolds_[index];
+                // Dy descriptors retain Sc's source-oriented body order,
+                // including the signs of the contact/friction Jacobians.
+                const bool reversed=island_edges_[
+                    manifold.edge_handle].gu_order_reversed;
+                const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
+                const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
+                auto& a = rigid_node(actors_[id0].kind)
+                    ? solver_rows_[id0] : world_solver_row_;
+                auto& b = rigid_node(actors_[id1].kind)
+                    ? solver_rows_[id1] : world_solver_row_;
+                // A zero source maxContactImpulse is omitted by
+                // DyContactPrepShared::extractContacts; there is no packed
+                // solver header to execute. Gu touch state and its indexed
+                // zero force-buffer slots remain owned by this Scene.
+                if(manifold.friction_patch_count==0)
+                    continue;
+                std::size_t order_cursor=manifold.solver_offset;
+                for(std::size_t p=manifold.friction_patch_offset;
+                    p<manifold.friction_patch_offset+
+                      manifold.friction_patch_count;++p) {
+                    auto& patch=friction_patches_[p];
+                    double normal_impulse=0.0;
+                    for(std::size_t i=0;i<patch.contact_count;++i) {
+                    // DyContactPrep concatenates this patch's reversed
+                    // contact-run list, then writes Gu-indexed force slots.
+                    auto& row=solver_contact_points_[
+                        solver_contact_order_[order_cursor++]];
+                    const Vec3 n = row.normal;
+                    const Vec3 va{
+                        a.solver.linear_velocity_delta.x,
+                        a.solver.linear_velocity_delta.y,
+                        a.solver.linear_velocity_delta.z};
+                    const Vec3 vb{
+                        b.solver.linear_velocity_delta.x,
+                        b.solver.linear_velocity_delta.y,
+                        b.solver.linear_velocity_delta.z};
+                    // PxSolverBody holds only velocity deltas; pre-solver
+                    // velocity is already included in row.biased_error.
+                    const float normal_velocity = dot(n,va)-dot(n,vb) +
+                        dot(a.solver.angular_state,row.ra_x_n_sqrt_inertia) -
+                        dot(b.solver.angular_state,row.rb_x_n_sqrt_inertia);
+                    const double error = iter < position_iterations
+                        ? row.biased_error : row.unbiased_error;
+                    const double delta_candidate = std::max(
+                        -static_cast<double>(normal_velocity) *
+                            row.velocity_multiplier + error,
+                        -row.applied_force);
+                    // DySolverConstraintsShared::solveDynamicContacts
+                    // caps EACH normal row's accumulated impulse, not
+                    // the manager total and not the body velocity delta.
+                    // DySolverConstraintsShared multiplies the old force
+                    // by impulseMultiplier for every compliant PGS solve.
+                    // Noncompliant rows retain a multiplier of exactly 1.
+                    const double next_impulse=std::min(row.max_impulse,
+                        row.impulse_multiplier*row.applied_force+delta_candidate);
+                    const double delta = next_impulse-row.applied_force;
+                    const double da = delta*a.data.inverse_mass;
+                    const double db = delta*b.data.inverse_mass;
+                    const std::array<double,12> results{
+                        static_cast<double>(va.x)+n.x*da,
+                        static_cast<double>(va.y)+n.y*da,
+                        static_cast<double>(va.z)+n.z*da,
+                        static_cast<double>(vb.x)-n.x*db,
+                        static_cast<double>(vb.y)-n.y*db,
+                        static_cast<double>(vb.z)-n.z*db,
+                        static_cast<double>(a.solver.angular_state.x)+row.ra_x_n_sqrt_inertia.x*delta,
+                        static_cast<double>(a.solver.angular_state.y)+row.ra_x_n_sqrt_inertia.y*delta,
+                        static_cast<double>(a.solver.angular_state.z)+row.ra_x_n_sqrt_inertia.z*delta,
+                        static_cast<double>(b.solver.angular_state.x)-row.rb_x_n_sqrt_inertia.x*delta,
+                        static_cast<double>(b.solver.angular_state.y)-row.rb_x_n_sqrt_inertia.y*delta,
+                        static_cast<double>(b.solver.angular_state.z)-row.rb_x_n_sqrt_inertia.z*delta};
+                    std::array<float,12> commit{};
+                    for (std::size_t k=0;k<results.size();++k) {
+                        if (!std::isfinite(results[k]) ||
+                            std::abs(results[k]) > max_float)
+                            throw std::overflow_error(
+                                "Native Dy contact velocity delta exceeds float range");
+                        commit[k] = static_cast<float>(results[k]);
                     }
-                    if (iter + 1 ==
-                        position_iterations + velocity_iterations)
-                        patch.broken=broken_this_iteration;
+                    a.solver.linear_velocity_delta = {commit[0],commit[1],commit[2]};
+                    b.solver.linear_velocity_delta = {commit[3],commit[4],commit[5]};
+                    a.solver.angular_state = {commit[6],commit[7],commit[8]};
+                    b.solver.angular_state = {commit[9],commit[10],commit[11]};
+                    row.applied_force = next_impulse;
+                    normal_impulse+=next_impulse;
+                    }
+                    // DySolverConstraints::solveContact and _BStatic walk
+                    // one packed SolverContactHeader at a time: each
+                    // header solves its normal rows before friction rows.
+                    // The per-patch impulse sum is already available from
+                    // the current normal pass; no repeated O(patches*points)
+                    // scan of other contact groups is necessary.
+                    // DySolverControl.cpp selects friction on the LAST
+                    // THREE position iterations, regardless of this task's
+                    // maximum position iteration count. The default 4+1
+                    // skips its first position pass, while 1+N must solve
+                    // friction on its only position pass. Velocity passes
+                    // retain the enabled friction state from conclude.
+                    if ((iter>=position_iterations ||
+                         position_iterations-iter<=3) &&
+                        patch.anchor_count) {
+                        const double coefficient=patch.anchor_count==2
+                            ? 0.5 : 1.0;
+                        const double max_static=
+                            patch.static_friction*coefficient*normal_impulse;
+                        const double max_dynamic=
+                            patch.dynamic_friction*coefficient*normal_impulse;
+                        // DySolverConstraints.cpp::solveContact and
+                        // solveContact_BStatic create a fresh local 'broken'
+                        // value on EVERY solve call. Only the final
+                        // writeBackIteration publishes it to the friction
+                        // patch's cached broken byte. Position-pass
+                        // saturation must not invalidate an anchor that has
+                        // converged during the unbiased velocity pass.
+                        bool broken_this_iteration=false;
+                        for (std::size_t k=patch.row_offset;
+                             k<patch.row_offset+patch.anchor_count*2; ++k) {
+                            auto& fr=solver_friction_rows_[k];
+                            const Vec3 n=fr.tangent;
+                            const Vec3 va=a.solver.linear_velocity_delta;
+                            const Vec3 vb=b.solver.linear_velocity_delta;
+                            const float tangent_delta=
+                                dot(n,va)-dot(n,vb)+
+                                dot(a.solver.angular_state,fr.ra_x_t_sqrt_inertia)-
+                                dot(b.solver.angular_state,fr.rb_x_t_sqrt_inertia);
+                            // concludeContact zeroes friction bias on the
+                            // final position pass, before motion-velocity
+                            // publication and the final velocity iteration.
+                            const double bias=iter < position_iterations
+                                ? fr.bias : 0.0;
+                            const double candidate=fr.applied_force+
+                                (fr.target_velocity-bias-tangent_delta)*
+                                    fr.velocity_multiplier;
+                            const bool clamped=std::abs(candidate)>max_static;
+                            // Preserve the source's signed FMin/FMax
+                            // expression without invoking std::clamp on
+                            // negative, unordered compliant patch bounds.
+                            const double next=source_contact_friction_limit(
+                                candidate,max_dynamic,clamped);
+                            const double delta=next-fr.applied_force;
+                            const double da=delta*a.data.inverse_mass;
+                            const double db=delta*b.data.inverse_mass;
+                            const auto& j0=fr.ra_x_t_sqrt_inertia;
+                            const auto& j1=fr.rb_x_t_sqrt_inertia;
+                            const std::array<double,12> results{
+                                static_cast<double>(va.x)+n.x*da,
+                                static_cast<double>(va.y)+n.y*da,
+                                static_cast<double>(va.z)+n.z*da,
+                                static_cast<double>(vb.x)-n.x*db,
+                                static_cast<double>(vb.y)-n.y*db,
+                                static_cast<double>(vb.z)-n.z*db,
+                                static_cast<double>(a.solver.angular_state.x)+j0.x*delta,
+                                static_cast<double>(a.solver.angular_state.y)+j0.y*delta,
+                                static_cast<double>(a.solver.angular_state.z)+j0.z*delta,
+                                static_cast<double>(b.solver.angular_state.x)-j1.x*delta,
+                                static_cast<double>(b.solver.angular_state.y)-j1.y*delta,
+                                static_cast<double>(b.solver.angular_state.z)-j1.z*delta};
+                            std::array<float,12> commit{};
+                            for (std::size_t v=0;v<results.size();++v) {
+                                if (!std::isfinite(results[v]) ||
+                                    std::abs(results[v]) > max_float)
+                                    throw std::overflow_error(
+                                        "Native Dy friction velocity delta exceeds float range");
+                                commit[v]=static_cast<float>(results[v]);
+                            }
+                            a.solver.linear_velocity_delta={
+                                commit[0],commit[1],commit[2]};
+                            b.solver.linear_velocity_delta={
+                                commit[3],commit[4],commit[5]};
+                            a.solver.angular_state={
+                                commit[6],commit[7],commit[8]};
+                            b.solver.angular_state={
+                                commit[9],commit[10],commit[11]};
+                            fr.applied_force=next;
+                            broken_this_iteration |= clamped;
+                        }
+                        if (iter + 1 ==
+                            position_iterations + velocity_iterations)
+                            patch.broken=broken_this_iteration;
+                    }
                 }
-            }
-            if(order_cursor!=manifold.solver_offset+manifold.count)
-                throw std::logic_error(
-                    "Native source contact solver patch stream truncated");
+                if(order_cursor!=manifold.solver_offset+manifold.count)
+                    throw std::logic_error(
+                        "Native source contact solver patch stream truncated");
             }
         }
         if (iter + 1 == position_iterations) {

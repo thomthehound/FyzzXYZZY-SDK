@@ -232,6 +232,52 @@ struct ConstraintIslandSourceFixture {
                     "Joint did not execute with admitted floor contacts");
         }
     }
+    static void verify_mixed_partition_overflow_waves() {
+        // Thirty-five dynamic 1D edges share one solver body, crossing
+        // the 32-bit partition-mask boundary. The floor manager must be
+        // reserved AFTER the final dynamic wave, not in partition zero.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        scene.add_static_floor(0.0f);
+        const auto root=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0.0f;
+        d.angular_damping=0.0f;
+        scene.set_dynamics(root,d);
+        constexpr unsigned spokes=35;
+        for(unsigned i=0;i<spokes;++i) {
+            const float x=4.0f+3.0f*static_cast<float>(i);
+            const auto other=scene.add_dynamic_box(
+                {0.2f,0.2f,0.2f},{x,4.0f,0.0f},1.0f);
+            scene.set_dynamics(other,d);
+            const float dy=4.0f-0.49f;
+            scene.add_distance_constraint(root,other,
+                std::sqrt(x*x+dy*dy));
+        }
+        scene.step(1.0f/120.0f);
+        if(scene.indexed_distance_constraints_.size()!=spokes ||
+           scene.indexed_managers_.size()!=1 ||
+           scene.distance_rows_.size()!=spokes ||
+           scene.constraint_descriptors_.size()!=spokes+1 ||
+           scene.ordered_constraints_.size()!=spokes+1 ||
+           scene.solver_partition_count()!=spokes+1 ||
+           scene.solver_tasks_.size()!=1 ||
+           scene.solver_tasks_[0].constraint_end!=spokes+1 ||
+           scene.solver_rows_[root].solver.max_dynamic_partition!=spokes ||
+           scene.solver_rows_[root].solver.static_constraint_count!=1)
+            throw std::runtime_error(
+                "Mixed source partition failed 32-mask overflow or static reservation");
+        for(std::size_t i=0;i<spokes;++i)
+            if(scene.constraint_partitions_[i]!=i ||
+               !scene.ordered_constraints_[i].distance)
+                throw std::runtime_error(
+                    "Dynamic 1D descriptor overflow lost source partition order");
+        if(scene.constraint_partitions_[spokes]!=spokes ||
+           scene.ordered_constraints_[spokes].distance)
+            throw std::runtime_error(
+                "Floor contact was scheduled before the final 1D partition");
+    }
     static void verify_prepublication_constraint_retirement() {
         // An admitted ScConstraintSim has connected EdgeInstances but
         // no accurate IslandSim list member until first/second pass.
@@ -11203,6 +11249,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
     fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_joint_contact_partitions();
+    fyzz::native::ConstraintIslandSourceFixture::verify_mixed_partition_overflow_waves();
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
 #endif

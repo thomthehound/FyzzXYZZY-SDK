@@ -1598,8 +1598,10 @@ deltas through the existing PGS state and motion integration. Native
 and original `PxDistanceJoint` regression cases compare off-center
 anchor angular response, including a moving kinematic endpoint and
 the subsequent postSolver target-pose handoff, without a second solver. Remaining
-constraint breadth includes unified contact/1D descriptor partitions,
-writeback, springs, limits and extended/articulation responses.
+constraint breadth now includes source task-local conflict partitioning of
+rigid 1D distance-joint and contact-manager descriptors through one Dy PGS
+solve stream. Remaining breadth includes additional joint types, full 1D
+writeback, springs, limits and articulation responses.
 
 **Public constraint lifecycle:** The admitted center-anchored,
 equal-limit 1D distance row is now available through
