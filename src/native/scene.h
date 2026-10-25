@@ -643,6 +643,11 @@ private:
     struct Endpoint {
         std::uint32_t value=0;
         BodyId id=0;
+        // PhysX SapBox1D::mMinMax gives direct index access to a
+        // volume's min/max endpoint in every axis. Store the ordinal
+        // in the compact live SapVolume registry, not the retired
+        // BodyId high-water arena.
+        std::uint32_t volume_slot=0;
         bool is_max=false;
     };
     // BpBroadPhaseSap::mBoxBoundsMinMax retained for source mUpdated
@@ -651,6 +656,7 @@ private:
     struct SapVolume {
         BodyId id=0;
         std::array<std::uint32_t,6> published_bounds{};
+        std::array<std::array<std::uint32_t,2>,3> endpoint_positions{};
     };
     BodyId add(Actor actor);
     Actor& require(BodyId id);
@@ -1226,6 +1232,9 @@ private:
     bool broadphase_full_pair_update_=true;
     std::size_t broadphase_incremental_pair_update_count_=0;
     std::vector<BodyId> broadphase_updated_ids_;
+    // mUpdated's compact indices into the scene-owned SapBox1D
+    // registry. Prevent six complete endpoint scans for one mover.
+    std::vector<std::uint32_t> broadphase_updated_volume_slots_;
     std::vector<Pair> broadphase_candidate_deltas_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
