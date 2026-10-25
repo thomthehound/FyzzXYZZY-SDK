@@ -2475,6 +2475,7 @@ int main() {
                     double max_contact_impulse_error=0.0;
                     int max_contact_impulse_frame=0;
                     std::size_t unmatched_source_contact_events=0;
+                    std::size_t unmatched_native_contact_events=0;
                     std::size_t mismatched_contact_counts=0;
                     // The early contact/impulse window is an enforced
                     // regression. The extended source-parity acceptance
@@ -2540,7 +2541,8 @@ int main() {
                                 native_events.begin(),native_events.end(),
                                 [&](const fyzz::ContactEvent& event) {
                                     return event.body0==source_event.body0 &&
-                                           event.body1==source_event.body1;
+                                           event.body1==source_event.body1 &&
+                                           event.kind==source_event.kind;
                                 });
                             if(matching==native_events.end()) {
                                 ++unmatched_source_contact_events;
@@ -2555,6 +2557,16 @@ int main() {
                                 max_contact_impulse_error=impulse_error;
                                 max_contact_impulse_frame=frame+1;
                             }
+                        }
+                        for(const auto& native_event:native_events) {
+                            const auto source_events=source_friction.contact_events();
+                            if(std::find_if(source_events.begin(),source_events.end(),
+                                [&](const fyzz::ContactEvent& event) {
+                                    return event.body0==native_event.body0 &&
+                                           event.body1==native_event.body1 &&
+                                           event.kind==native_event.kind;
+                                })==source_events.end())
+                                ++unmatched_native_contact_events;
                         }
                         if(!use_pcm && reversed && frame==0) {
                             const auto find_pair=[](fyzz::World& world,
@@ -2789,6 +2801,8 @@ int main() {
                              <<" max_contact_impulse_frame="<<max_contact_impulse_frame
                              <<" unmatched_source_contact_events="
                              <<unmatched_source_contact_events
+                             <<" unmatched_native_contact_events="
+                             <<unmatched_native_contact_events
                              <<" mismatched_contact_counts="
                              <<mismatched_contact_counts
                              <<'\n';
