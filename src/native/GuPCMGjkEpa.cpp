@@ -353,7 +353,8 @@ bool epa(const BoxPair& pair,
 bool source_pcm_box_box_gjk_epa(
     Vec3 half0,Vec3 position0,Quat rotation0,
     Vec3 half1,Vec3 position1,Quat rotation1,
-    float contact_distance,PcmContactCandidate& contact) {
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart) {
     // The second shape is the common GJK/EPA coordinate frame.
     const Vec3 relative=inverse_rotate(rotation1,
                                       sub(position0,position1));
@@ -377,37 +378,63 @@ bool source_pcm_box_box_gjk_epa(
     constexpr float progress_factor=1.0f-0.000225f;
     std::array<Support,4> simplex{};
     int count=0;
+    if(warmstart)*warmstart={};
+    const auto store=[&] {
+        if(!warmstart)return;
+        warmstart->count=static_cast<std::uint8_t>(count);
+        for(int i=0;i<count;++i) {
+            warmstart->a[i]=simplex[i].ai;
+            warmstart->b[i]=simplex[i].bi;
+        }
+    };
     Vec3 closest=length2(relative)>0.0f?relative:Vec3{1,0,0};
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        if(dist<=epsilon)
+        if(dist<=epsilon) {
+            store();
             return epa(pair,simplex,count,contact);
+        }
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
-        if(projection>contact_distance)
+        if(projection>contact_distance) {
+            store();
             return false; // GJK_NON_INTERSECT
+        }
         if(count>0 && projection>dist*progress_factor) {
             const Closest current=closest_simplex(simplex,count);
+            store();
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
         }
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
-               support.bi==simplex[i].bi)
+               support.bi==simplex[i].bi) {
+                store();
                 return false; // GJK_DEGENERATE
-        if(count==4)return epa(pair,simplex,count,contact);
+            }
+        if(count==4) {
+            store();
+            return epa(pair,simplex,count,contact);
+        }
         simplex[count++]=support;
         const Closest next=closest_simplex(simplex,count);
-        if(!next.mask)return false;
+        if(!next.mask) {
+            store();
+            return false;
+        }
         closest=next.point;
         const float next_dist=std::sqrt(next.dist2);
         compact(simplex,count,next);
-        if(next_dist<=epsilon)
+        if(next_dist<=epsilon) {
+            store();
             return epa(pair,simplex,count,contact);
-        if(next_dist>=previous)
+        }
+        if(next_dist>=previous) {
+            store();
             return false; // GJK_DEGENERATE
+        }
         previous=next_dist;
     }
     return false;
