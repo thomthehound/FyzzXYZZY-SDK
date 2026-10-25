@@ -134,6 +134,14 @@ bool source_pcm_box_box_candidates(
     float contact_distance,std::span<PcmContactCandidate> candidates,
     std::size_t& count);
 
+// GJK and EPA continuation for the source PCM box/box zero-face case.
+// This returns only contacts accepted by the original GJK/EPA states;
+// it never substitutes legacy Gu geometry.
+bool source_pcm_box_box_gjk_epa(
+    Vec3 half0,Vec3 position0,Quat rotation0,
+    Vec3 half1,Vec3 position1,Quat rotation1,
+    float contact_distance,PcmContactCandidate& contact);
+
 class Scene final {
 public:
     Scene() = default;
