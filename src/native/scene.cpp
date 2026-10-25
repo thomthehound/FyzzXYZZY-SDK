@@ -562,6 +562,10 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
        !std::isfinite(magnitude) ||
        std::abs(magnitude-1.0f)>=1.0e-2f)
         throw std::invalid_argument("Native kinematic target is not sane");
+    // Source active kinematic target publication is a per-actor edit.
+    // Preflight allocations before changing the target/wake state.
+    speculative_islands_.activating_nodes.reserve(actors_.size());
+    accurate_islands_.activating_nodes.reserve(actors_.size());
     if(!actor.kinematic_tracked)
         active_kinematic_targets_.push_back(id);
     actor.kinematic_tracked=true;
@@ -573,14 +577,18 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     actor.kinematic_settling=false;
     actor.sleeping=false;
     actor.wake_counter=0.4f;
-    // Target motion wakes previously touching dynamic partners through
-    // the existing Sc interaction/IslandSim activation stream.
-    speculative_islands_.activating_nodes.reserve(actors_.size());
-    accurate_islands_.activating_nodes.reserve(actors_.size());
-    for(const auto& manifold:manifolds_) {
-        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
-        const BodyId other=manifold.pair.a==id
-            ? manifold.pair.b:manifold.pair.a;
+    // ScShapeInteraction::resetManagerCachedState has the same
+    // authoritative EdgeIndex and intrusive accurate endpoint list.
+    // Traverse only this body's touching neighbors (degree), rather
+    // than rescanning all Gu managers for each animated kinematic.
+    if(id>=accurate_node_first_.size())return;
+    for(std::size_t instance=accurate_node_first_[id];
+        instance!=invalid_instance;) {
+        const auto& edge=contact_edges_[instance/2];
+        const auto& link=edge.accurate[instance&1u];
+        instance=link.next;
+        if(!edge.live || !edge.connected || edge.retiring)continue;
+        const BodyId other=edge.pair.a==id?edge.pair.b:edge.pair.a;
         auto& partner=actors_[other];
         if(!partner.alive || partner.kind!=Kind::DynamicBox ||
            (!partner.sleeping && !partner.ready_for_sleep))continue;
