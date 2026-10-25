@@ -896,6 +896,123 @@ int main() {
                     }
                 }
 
+            // Multiple contact-patch geometries on the SAME persistent
+            // manager. This intentionally changes face clipping, corner
+            // occupancy and the source four-point contact reduction
+            // while the default PCM reference independently runs PGS.
+            for(const bool reversed:{false,true}) {
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                fyzz::WorldOptions reference_options{};
+                reference_options.execution=
+                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                reference_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World reference_pcm(reference_options);
+                constexpr fyzz::Vec3 support_half{0.65f,0.45f,0.55f};
+                constexpr fyzz::Vec3 sliding_half{0.43f,0.31f,0.42f};
+                constexpr fyzz::Vec3 support_at{0,0.45f,0};
+                fyzz::BodyId moving_native=0,moving_reference=0;
+                const auto admit=[&](fyzz::World& world) {
+                    fyzz::BodyId moving=0;
+                    if(reversed) {
+                        moving=world.add_dynamic_box(
+                            sliding_half,{0,1.20f,0},1.0f);
+                        world.add_static_box(support_half,support_at);
+                    } else {
+                        world.add_static_box(support_half,support_at);
+                        moving=world.add_dynamic_box(
+                            sliding_half,{0,1.20f,0},1.0f);
+                    }
+                    fyzz::RigidBodyDynamics no_gravity{};
+                    no_gravity.gravity_enabled=false;
+                    world.set_body_dynamics(moving,no_gravity);
+                    return moving;
+                };
+                moving_native=admit(native_pcm);
+                moving_reference=admit(reference_pcm);
+                unsigned total_contacts=0;
+                std::array<bool,5> seen_counts{};
+                for(unsigned frame=0;frame<36;++frame) {
+                    const float lateral_x=0.14f*(static_cast<int>(frame%7)-3);
+                    const float lateral_z=0.13f*(static_cast<int>(frame%5)-2);
+                    const float elevation=1.20f+
+                        0.012f*(static_cast<int>(frame%4)-1);
+                    const fyzz::Vec3 position{
+                        lateral_x,elevation,lateral_z};
+                    const float tilt_y=
+                        0.07f*(static_cast<int>(frame%5)-2);
+                    const float tilt_z=
+                        0.065f*(static_cast<int>(frame%7)-3);
+                    const float sy=std::sin(tilt_y*0.5f);
+                    const float cy=std::cos(tilt_y*0.5f);
+                    const float sz=std::sin(tilt_z*0.5f);
+                    const float cz=std::cos(tilt_z*0.5f);
+                    const fyzz::Quat orientation{
+                        sy*sz,sy*cz,cy*sz,cy*cz};
+                    native_pcm.set_body_pose(
+                        moving_native,position,orientation);
+                    reference_pcm.set_body_pose(
+                        moving_reference,position,orientation);
+                    native_pcm.set_body_velocity(moving_native,{});
+                    reference_pcm.set_body_velocity(moving_reference,{});
+                    native_pcm.set_body_angular_velocity(moving_native,{});
+                    reference_pcm.set_body_angular_velocity(
+                        moving_reference,{});
+                    const float dt=frame%3==0?
+                        1.0f/60.0f:1.0f/120.0f;
+                    native_pcm.step(dt);
+                    reference_pcm.step(dt);
+                    const auto actual=native_pcm.contact_event_points();
+                    const auto expected=reference_pcm.contact_event_points();
+                    if(actual.size()!=expected.size() ||
+                       expected.size()>4) {
+                        std::cerr<<"PCM sliding box frame="<<frame
+                                 <<" reversed="<<reversed
+                                 <<" native="<<actual.size()
+                                 <<" reference="<<expected.size()<<'\n';
+                        throw std::runtime_error(
+                            "Persistent PCM clipping/reduction count diverged");
+                    }
+                    seen_counts[expected.size()]=true;
+                    total_contacts+=static_cast<unsigned>(expected.size());
+                    for(const auto& target:expected) {
+                        bool matched=false;
+                        for(const auto& point:actual) {
+                            const float dx=point.position.x-target.position.x;
+                            const float dy=point.position.y-target.position.y;
+                            const float dz=point.position.z-target.position.z;
+                            const float alignment=
+                                point.normal.x*target.normal.x+
+                                point.normal.y*target.normal.y+
+                                point.normal.z*target.normal.z;
+                            if(dx*dx+dy*dy+dz*dz<5e-5f &&
+                               alignment>0.999f &&
+                               std::abs(point.separation-
+                                        target.separation)<1e-3f) {
+                                matched=true;
+                                break;
+                            }
+                        }
+                        if(!matched) {
+                            std::cerr<<"PCM sliding box witness frame="
+                                     <<frame<<" reversed="<<reversed
+                                     <<" native="<<actual.size()
+                                     <<" reference="<<expected.size()<<'\n';
+                            throw std::runtime_error(
+                                "Persistent PCM sliding witness diverged from PhysX");
+                        }
+                    }
+                }
+                unsigned distinct=0;
+                for(bool observed:seen_counts)
+                    distinct+=observed?1u:0u;
+                if(total_contacts==0 || distinct<2)
+                    throw std::runtime_error(
+                        "PCM sliding fixture failed to vary its contact patch");
+            }
+
             // Persistent box/box PCM compared to the independent
             // eENABLE_PCM reference across changing contact regions,
             // authored translations/rotations, loss/reentry and timestep.
