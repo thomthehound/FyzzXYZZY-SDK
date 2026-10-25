@@ -168,6 +168,70 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Native 1D distance row survived source edge retirement");
     }
+    static void verify_mixed_joint_contact_partitions() {
+        // The two floor managers and the 1D edge share one active island.
+        // The dynamic/dynamic joint must conflict with both floor rows.
+        for(bool reversed:{false,true}) {
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+            scene.add_static_floor(0.0f);
+            const Vec3 left{-1.0f,0.49f,0.0f};
+            const Vec3 right{1.0f,0.49f,0.0f};
+            const auto a=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},reversed?right:left,1.0f);
+            const auto b=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},reversed?left:right,1.0f);
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            d.linear_damping=0.0f;
+            d.angular_damping=0.0f;
+            scene.set_dynamics(a,d);
+            scene.set_dynamics(b,d);
+            scene.add_distance_constraint(a,b,1.5f);
+            scene.step(1.0f/120.0f);
+            if(scene.indexed_managers_.size()!=2 ||
+               scene.indexed_distance_constraints_.size()!=1 ||
+               scene.constraint_descriptors_.size()!=3 ||
+               scene.ordered_constraints_.size()!=3 ||
+               scene.solver_partition_count()!=2 ||
+               scene.solver_tasks_.size()!=1 ||
+               scene.solver_tasks_[0].constraint_end!=3 ||
+               !scene.ordered_constraints_[0].distance ||
+               scene.distance_rows_.size()!=1)
+                throw std::runtime_error(
+                    "Source 1D and contact rows did not share conflict partitions");
+            std::size_t joints=0,contacts=0;
+            for(const auto& descriptor:scene.ordered_constraints_)
+                if(descriptor.distance)++joints;
+                else ++contacts;
+            if(joints!=1 || contacts!=2)
+                throw std::runtime_error(
+                    "Mixed source partition lost a live descriptor");
+            for(std::size_t i=0;i<scene.constraint_descriptors_.size();++i) {
+                const auto& one=scene.constraint_descriptors_[i];
+                const Pair p=one.distance
+                    ? scene.island_edges_[scene.indexed_distance_constraints_[one.index]].pair
+                    : scene.manifolds_[one.index].pair;
+                for(std::size_t j=i+1;
+                    j<scene.constraint_descriptors_.size();++j) {
+                    if(scene.constraint_partitions_[i]!=
+                       scene.constraint_partitions_[j])continue;
+                    const auto& two=scene.constraint_descriptors_[j];
+                    const Pair q=two.distance
+                        ? scene.island_edges_[scene.indexed_distance_constraints_[two.index]].pair
+                        : scene.manifolds_[two.index].pair;
+                    for(BodyId id:{a,b})
+                        if((p.a==id || p.b==id) &&
+                           (q.a==id || q.b==id))
+                            throw std::runtime_error(
+                                "Contact and 1D edge share dynamic body in same partition");
+                }
+            }
+            if(!(std::abs(scene.body_state(a).position.x-
+                          scene.body_state(b).position.x)<2.0f))
+                throw std::runtime_error(
+                    "Joint did not execute with admitted floor contacts");
+        }
+    }
     static void verify_prepublication_constraint_retirement() {
         // An admitted ScConstraintSim has connected EdgeInstances but
         // no accurate IslandSim list member until first/second pass.
@@ -11148,6 +11212,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
     fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
+    fyzz::native::ConstraintIslandSourceFixture::verify_mixed_joint_contact_partitions();
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
 #endif

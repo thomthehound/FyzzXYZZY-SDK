@@ -4544,11 +4544,9 @@ void Scene::prepare_solver_bodies() {
 }
 
 void Scene::partition_constraints() {
-    // DyConstraintPartition.cpp::partitionContactConstraints, rigid-body
-    // classification, and the source's static-contact reservation rule.
-    // Contact managers are indivisible descriptors; their per-point normal
-    // and friction rows execute together in the original owner. This
-    // serial dispatch does not invent parallel task execution or islands.
+    // DyConstraintPartition.cpp rigid-body classification and source
+    // static-contact reservation across both 1D and contact descriptors.
+    // Contact patches remain indivisible; no new solver or island owner.
     //
     // The source assigns conflict-free dynamic/dynamic constraints from
     // successive 32-bit partition masks; overflow starts a new wave.
@@ -4557,14 +4555,10 @@ void Scene::partition_constraints() {
     constexpr std::size_t partition_bits = 32;
     // Retry-safe generation labels avoid writing an unassigned
     // sentinel to every retained dormant Gu manager on each PGS step.
-    constraint_partitions_.resize(manifolds_.size());
-    constraint_partition_stamps_.resize(manifolds_.size(),0);
-    if(++constraint_partition_generation_==0) {
-        std::fill(constraint_partition_stamps_.begin(),
-                  constraint_partition_stamps_.end(),0);
-        constraint_partition_generation_=1;
-    }
-    const auto partition_generation=constraint_partition_generation_;
+    // Only active source descriptors are partitioned. A quiet dormant
+    // Gu inventory is never scanned or cleared.
+    constraint_descriptors_.clear();
+    constraint_partitions_.clear();
     ordered_constraints_.clear();
     partition_ends_.clear();
     partition_cursors_.clear();
@@ -4694,14 +4688,31 @@ void Scene::partition_constraints() {
     // CPU lowering; the original source can execute these chains in
     // parallel, but none may share a solver body across task groups.
     std::size_t manager_begin=0;
+    std::size_t distance_begin=0;
     std::size_t partition_base=0;
     pending_dynamic_constraints_.clear();
     for(auto& task:solver_tasks_) {
         const std::size_t manager_end=task.manager_end;
+        const std::size_t descriptor_begin=constraint_descriptors_.size();
+        // Source setupDescTask queues 1D edges before contact managers
+        // in each active-island task chain; both enter the SAME body
+        // conflict allocator and stable partition scatter.
+        for(std::size_t j=distance_begin;j<task.distance_end;++j)
+            constraint_descriptors_.push_back({j,true});
+        for(std::size_t j=manager_begin;j<manager_end;++j)
+            constraint_descriptors_.push_back({indexed_managers_[j],false});
+        const auto pair_of=[&](std::size_t index) {
+            const auto& descriptor=constraint_descriptors_[index];
+            return descriptor.distance
+                ? island_edges_[indexed_distance_constraints_[descriptor.index]].pair
+                : manifolds_[descriptor.index].pair;
+        };
+        constraint_partitions_.resize(constraint_descriptors_.size(),
+                                      invalid_instance);
         pending_dynamic_constraints_.clear();
-        for(std::size_t j=manager_begin;j<manager_end;++j) {
-            const std::size_t i=indexed_managers_[j];
-            const Pair pair=manifolds_[i].pair;
+        for(std::size_t i=descriptor_begin;
+            i<constraint_descriptors_.size();++i) {
+            const Pair pair=pair_of(i);
             if(actors_[pair.a].kind==Kind::DynamicBox &&
                actors_[pair.b].kind==Kind::DynamicBox &&
                !actors_[pair.a].sleeping && !actors_[pair.b].sleeping)
@@ -4716,14 +4727,14 @@ void Scene::partition_constraints() {
             // islands and by source task-group count.
             if(wave)
                 for(std::size_t i:pending_dynamic_constraints_) {
-                    const Pair pair=manifolds_[i].pair;
+                    const Pair pair=pair_of(i);
                     solver_rows_[pair.a].solver.partition_mask=0;
                     solver_rows_[pair.b].solver.partition_mask=0;
                 }
             std::size_t overflow_count=0;
             for(std::size_t k=0;k<pending_dynamic_constraints_.size();++k) {
                 const std::size_t i=pending_dynamic_constraints_[k];
-                const Pair pair=manifolds_[i].pair;
+                const Pair pair=pair_of(i);
                 auto& a=solver_rows_[pair.a].solver;
                 auto& b=solver_rows_[pair.b].solver;
                 const std::uint32_t available=~(a.partition_mask |
@@ -4748,7 +4759,6 @@ void Scene::partition_constraints() {
                 const std::size_t global_partition=
                     partition_base+local_partition;
                 constraint_partitions_[i]=global_partition;
-                constraint_partition_stamps_[i]=partition_generation;
                 next_partition_base=std::max(next_partition_base,
                                              global_partition+1);
             }
@@ -4762,11 +4772,10 @@ void Scene::partition_constraints() {
                     "Native source constraint partition index overflow");
         }
 
-        for(std::size_t j=manager_begin;j<manager_end;++j) {
-            const std::size_t i=indexed_managers_[j];
-            if(constraint_partition_stamps_[i]==partition_generation)
-                continue;
-            const Pair pair=manifolds_[i].pair;
+        for(std::size_t i=descriptor_begin;
+            i<constraint_descriptors_.size();++i) {
+            if(constraint_partitions_[i]!=invalid_instance)continue;
+            const Pair pair=pair_of(i);
             const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
             const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
             if((dynamic_a && actors_[pair.a].sleeping) ||
@@ -4784,23 +4793,22 @@ void Scene::partition_constraints() {
             const std::size_t global_partition=
                 partition_base+local_partition;
             constraint_partitions_[i]=global_partition;
-            constraint_partition_stamps_[i]=partition_generation;
             next_partition_base=std::max(next_partition_base,
                                          global_partition+1);
         }
         partition_base=next_partition_base;
         task.partition_end=partition_base;
         manager_begin=manager_end;
+        distance_begin=task.distance_end;
     }
 
-    // The source accumulates counts into ordered descriptor offsets, then
-    // stable-writes each descriptor by partition. This preserves the
-    // input contact-manager order *within* each non-conflicting batch.
+    // Prefix-count and stable-scatter the unified descriptor sequence.
+    // Source 1D rows precede contacts within each conflict-free batch;
+    // source Gu contact offsets remain unaffected by this permutation.
     std::size_t count=0;
-    for (std::size_t i:indexed_managers_) {
-        if(constraint_partition_stamps_[i]!=partition_generation)
-            continue;
+    for(std::size_t i=0;i<constraint_descriptors_.size();++i) {
         const std::size_t p=constraint_partitions_[i];
+        if(p==invalid_instance)continue;
         if (p>=partition_ends_.size()) partition_ends_.resize(p+1,0);
         ++partition_ends_[p];
         ++count;
@@ -4817,11 +4825,11 @@ void Scene::partition_constraints() {
     for (std::size_t p=0;p<partition_cursors_.size();++p)
         partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
     ordered_constraints_.resize(count);
-    for (std::size_t i:indexed_managers_) {
-        if(constraint_partition_stamps_[i]==partition_generation) {
-            const std::size_t partition=constraint_partitions_[i];
-            ordered_constraints_[partition_cursors_[partition]++]=i;
-        }
+    for(std::size_t i=0;i<constraint_descriptors_.size();++i) {
+        const std::size_t partition=constraint_partitions_[i];
+        if(partition!=invalid_instance)
+            ordered_constraints_[partition_cursors_[partition]++]=
+                constraint_descriptors_[i];
     }
 }
 
@@ -5592,7 +5600,6 @@ void Scene::solve_constraints() {
     };
     std::size_t task_constraint_begin=0;
     std::size_t task_solver_begin=0;
-    std::size_t task_distance_begin=0;
     for(const auto& task:solver_tasks_) {
     const unsigned position_iterations=task.position_iterations;
     // DySolverControl::solveV_Blocks executes max(requested, 1):
@@ -5603,14 +5610,13 @@ void Scene::solve_constraints() {
         task.velocity_iterations,1u);
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
-        // DyDynamics::setupDescTask emits 1D joint descriptors before
-        // contacts; preserve their solve order within the current
-        // serial task lowering. Unified conflict partitioning across
-        // both edge types remains a separate admission gate.
-        // The source solve1D recurrence uses the same solver deltas
-        // and position/velocity pass constants as contact PGS.
-        for(std::size_t index=task_distance_begin;
-            index<task.distance_end;++index) {
+        // Unified conflict partitions order both source 1D and contact
+        // descriptors through this same PGS position/velocity pass.
+        for(std::size_t desc=task_constraint_begin;
+            desc<task.constraint_end;++desc) {
+            const auto descriptor=ordered_constraints_[desc];
+            if(descriptor.distance) {
+            const std::size_t index=descriptor.index;
             auto& row=distance_rows_[index];
             auto& a=actors_[row.a].kind==Kind::StaticBox ||
                     actors_[row.a].kind==Kind::StaticPlane
@@ -5664,16 +5670,11 @@ void Scene::solve_constraints() {
             a.solver.angular_state={applied[6],applied[7],applied[8]};
             b.solver.angular_state={applied[9],applied[10],applied[11]};
             row.applied_force=next;
-        }
-        // DyConstraintPartition's ordered descriptors, rather than
-        // raw broadphase pair order, govern every position/velocity pass.
-        // Within each descriptor, PhysX consumes the correlated
-        // friction patches in source order: each patch's normal rows
-        // followed immediately by its friction rows. Gu force-buffer
-        // offsets remain independent from this solver permutation.
-        for(std::size_t desc=task_constraint_begin;
-            desc<task.constraint_end;++desc) {
-            const auto index=ordered_constraints_[desc];
+            } else {
+            // Each contact descriptor retains its source friction-patch
+            // order: all normal rows followed immediately by tangent rows.
+            // Gu force-buffer offsets are independent of this permutation.
+            const auto index=descriptor.index;
             const auto& manifold = manifolds_[index];
             // Dy descriptors retain Sc's source-oriented body order,
             // including the signs of the contact/friction Jacobians.
@@ -5859,6 +5860,7 @@ void Scene::solve_constraints() {
             if(order_cursor!=manifold.solver_offset+manifold.count)
                 throw std::logic_error(
                     "Native source contact solver patch stream truncated");
+            }
         }
         if (iter + 1 == position_iterations) {
             // DySolverControl.cpp::saveMotionVelocities occurs immediately
@@ -5875,7 +5877,6 @@ void Scene::solve_constraints() {
     }
     task_constraint_begin=task.constraint_end;
     task_solver_begin=task.solver_body_end;
-    task_distance_begin=task.distance_end;
     }
 }
 void Scene::publish_contact_events() {

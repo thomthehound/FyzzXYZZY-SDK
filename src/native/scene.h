@@ -250,8 +250,8 @@ public:
     // per-point normal/angular Dy contact rows in its original clock.
     // Per-point normal and friction anchors, contact partitions, final
     // normal/friction writeback and low-level threshold streams are active.
-    // Joints, CCD, heterogeneous materials, shape-interaction callbacks
-    // and complete island/task execution remain N1 acceptance gates.
+    // Additional joint families, CCD, heterogeneous materials, shape
+    // callbacks and complete island/task execution remain N1 gates.
     void step(float seconds);
     std::span<const Pair> pairs() const noexcept { return previous_pairs_; }
     std::span<const Pair> found_pairs() const noexcept { return found_; }
@@ -1188,18 +1188,16 @@ private:
     std::vector<ThresholdPair> threshold_previous_;
     std::uint64_t threshold_cache_epoch_=0;
     std::vector<ForceThresholdReport> threshold_changes_;
-    // DyConstraintPartition::partitionContactConstraints writes ordered
-    // contact-manager descriptors grouped by body-conflict-free partition.
-    // Indices reference authoritative manifolds, not copied constraints.
-    // Source counts/prefix offsets and scratch remain allocation-reused.
+    // Active source 1D and contact-manager descriptors share one
+    // body-conflict partition stream, without duplicating solver rows
+    // or introducing an alternate graph owner.
+    struct ConstraintDescriptor {
+        std::size_t index=0;
+        bool distance=false;
+    };
+    std::vector<ConstraintDescriptor> constraint_descriptors_;
     std::vector<std::size_t> constraint_partitions_;
-    // Partition membership is valid for precisely one source task
-    // dispatch. Stamp only active Gu manager slots so dormant retained
-    // manifolds do not cost an O(all contacts) sentinel reset each step.
-    std::vector<std::uint64_t> constraint_partition_stamps_;
-    std::uint64_t constraint_partition_generation_=0;
-    // Source overflow descriptor array, compacted in place each 32-bit
-    // partition wave; previously assigned managers are never rescanned.
+    // Reusable unassigned descriptor list for each 32-bit mask wave.
     std::vector<std::size_t> pending_dynamic_constraints_;
     // DyDynamicsBase::iterateIslandsIslandEdges source-indexed manager
     // sequence, expressed as indices into the authoritative Gu manifolds.
@@ -1276,7 +1274,7 @@ private:
     std::vector<IndexedManifold> next_manifold_by_edge_;
     std::uint64_t indexed_manifold_generation_=0;
     std::uint64_t manifold_lookup_generation_=0;
-    std::vector<std::size_t> ordered_constraints_;
+    std::vector<ConstraintDescriptor> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
     // Correlation and friction constraint streams retain capacity across
