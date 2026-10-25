@@ -2477,10 +2477,9 @@ int main() {
                     std::size_t unmatched_source_contact_events=0;
                     std::size_t unmatched_native_contact_events=0;
                     std::size_t mismatched_contact_counts=0;
-                    // The early contact/impulse window is an enforced
-                    // regression. The extended source-parity acceptance
-                    // scenario is retained intact and explicitly selectable
-                    // while its observed N1 discrepancy is being repaired.
+                    // Exercise early impact and the full 48-frame coupled
+                    // trajectory under strict independent source parity.
+                    // The optional 16-frame mode retains quick diagnostics.
 
 #if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
                     constexpr int frames=48;
@@ -2699,9 +2698,9 @@ int main() {
                                 maximum_orientation_angle=orientation_angle;
                                 max_orientation_frame=frame+1;
                             }
-                            // This first resolved impact must match PhysX's
-                            // angular Jacobians, not merely fall inside the
-                            // permissive long-trajectory drift bounds.
+                            // This first resolved impact has an independent
+                            // angular-Jacobian witness in addition to the
+                            // enforced full-trajectory error envelope.
                             if(reversed && frame==11 && ni==nu &&
                                (position_error>0.005f ||
                                 linear_error>0.03f ||
