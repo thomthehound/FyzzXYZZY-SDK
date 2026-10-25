@@ -1295,11 +1295,25 @@ arena: admission registers one live proxy; retirement withdraws it,
 while IDs and state of retired actors remain intact. Bounds publication
 and infinite-plane candidate discovery iterate live members and
 simulation-enabled box endpoints, not the historical actor-ID high
-watermark. CPU x-endpoints are still resorted per dirty publication;
-incremental SAP endpoint movement and CPU-GPU performance parity
-remain separate performance work. Native tests cover integration
-publication, SAP reuse, authored invalidation, high-churn retirement,
-plane-pair candidates and simulation-shape re-admission.
+watermark. The source SAP x-min projection is retained in sorted
+encoded-key/BodyId order: source volume admission, retirement and shape
+refiltering trigger a full membership rebuild; ordinary frames update
+the existing keys in place and repair local inversions by bounded
+insertion shifts. A broad teleport or high permutation count falls
+back to the same exact-key full sort before pair publication. A
+rejected collision or solver transaction invalidates this derived
+projection for a subsequent rebuild, without adding a dense endpoint
+snapshot to the per-frame checkpoint. The other two SAP axes and
+source incremental *pair-set* maintenance are not yet translated;
+x-sweep pair discovery and y/z AABB filtering still run every dirty
+collision publication. Full CPU-GPU performance parity remains
+unproven. Native tests cover integration publication, unchanged
+endpoints, local ordering swaps, far-teleport fallback, SAP reuse,
+authored invalidation, high-churn retirement, plane-pair candidates
+and simulation-shape re-admission. The optional native SAP benchmark
+prints uncalibrated CPU timing and update counters for stationary,
+local-motion, teleport and retired-history cases; CI timing is
+diagnostic and never substitutes for a source-parity gate.
 `ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
 per-step velocity changes and per-second accelerations in the same
 third-pass island deactivation path; the wake regression rejects replay
