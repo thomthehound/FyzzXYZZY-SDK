@@ -207,6 +207,14 @@ public:
     std::size_t broadphase_registered_actor_count() const noexcept {
         return live_actor_ids_.size();
     }
+    // BpBroadPhaseSap endpoint-motion diagnostics, derived from the
+    // authoritative scene-owned endpoint list.
+    std::size_t broadphase_endpoint_full_sort_count() const noexcept {
+        return broadphase_endpoint_full_sort_count_;
+    }
+    std::size_t broadphase_endpoint_local_shift_count() const noexcept {
+        return broadphase_endpoint_local_shift_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1190,7 +1198,13 @@ private:
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
     std::vector<BodyId> live_actor_ids_;
+    // BpBroadPhaseSap ordered x-min endpoint projection. Retain the
+    // previous sorted order across frames and update it incrementally
+    // unless the source volume membership changes.
     std::vector<Endpoint> endpoints_;
+    bool broadphase_endpoint_membership_dirty_=true;
+    std::size_t broadphase_endpoint_full_sort_count_=0;
+    std::size_t broadphase_endpoint_local_shift_count_=0;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
