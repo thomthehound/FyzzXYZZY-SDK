@@ -1706,8 +1706,12 @@ int main() {
             // disabled oracle to prove the fixture actually excites
             // tangential resistance rather than resting normal contact.
             for(const bool reversed:{false,true}) {
-                fyzz::World native_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu,true});
+                fyzz::WorldOptions native_gu_options{};
+                native_gu_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_gu_options.contact_notifications=true;
+                native_gu_options.pcm_plane_box=false;
+                native_gu_options.pcm_box_box=false;
+                fyzz::World native_friction(native_gu_options);
                 fyzz::World source_friction(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
                 fyzz::World source_no_friction(fyzz::WorldOptions{
