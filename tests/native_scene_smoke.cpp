@@ -23,6 +23,46 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
+    static void verify_kinematic_target_source_reference_parity() {
+        // ScKinematics.cpp calculates target velocity at dt and moves
+        // the body only in postSolver; compare the public production
+        // native actor to an actual PxRigidDynamic with eKINEMATIC.
+        const auto run=[](ExecutionMode mode) {
+            World world(WorldOptions{mode});
+            const auto id=world.add_dynamic_box(
+                {0.25f,0.5f,0.4f},{0,6,0},1.0f);
+            world.set_body_kinematic(id,true);
+            const Quat q{0,0,std::sin(0.1f),std::cos(0.1f)};
+            world.set_body_kinematic_target(id,{0.4f,6.1f,0},q);
+            world.step(1.0f/120.0f);
+            const BodyState first=world.body_state(id);
+            world.step(1.0f/120.0f);
+            const BodyState settled=world.body_state(id);
+            return std::pair{first,settled};
+        };
+        const auto [native_first,native_settled]=run(ExecutionMode::NativeCpu);
+        if(std::abs(native_first.position.x-0.4f)>1e-6f ||
+           std::abs(native_first.velocity.x-48.0f)>1e-4f ||
+           std::abs(native_first.angular_velocity.z-24.0f)>1e-3f ||
+           native_settled.velocity.x!=0.0f ||
+           native_settled.angular_velocity.z!=0.0f)
+            throw std::runtime_error(
+                "Native Sc kinematic target velocity/pose diverged from source");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+        const auto [source_first,source_settled]=run(
+            ExecutionMode::ReferencePhysXCpu);
+        if(std::abs(native_first.position.x-source_first.position.x)>1e-5f ||
+           std::abs(native_first.position.y-source_first.position.y)>1e-5f ||
+           std::abs(native_first.orientation.z-source_first.orientation.z)>1e-5f ||
+           std::abs(native_first.velocity.x-source_first.velocity.x)>1e-3f ||
+           std::abs(native_first.angular_velocity.z-
+                    source_first.angular_velocity.z)>1e-3f ||
+           std::abs(native_settled.velocity.x-
+                    source_settled.velocity.x)>1e-4f)
+            throw std::runtime_error(
+                "Sc kinematic target differs from independent PhysX CPU");
+#endif
+    }
     static void verify_moving_kinematic_target_through_source_solver() {
         constexpr float dt=1.0f/120.0f;
         Scene scene{};
@@ -10557,6 +10597,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_node_is_not_a_solver_island();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
