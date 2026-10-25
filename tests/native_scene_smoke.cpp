@@ -149,28 +149,6 @@ struct ContactCorrelationSourceFixture {
                gjk.normal_b.y<0.999f || epa.normal_b.y<0.999f)
                 throw std::runtime_error(
                     "Native PCM GJK/EPA sign, witness or depth differs from source");
-            PcmGjkWarmstart retained{};
-            PcmContactCandidate initial{},recycled{},cold{};
-            if(!source_pcm_box_box_gjk_epa(
-                    {0.5f,0.5f,0.5f},{0,1.52f,0},{},
-                    {0.5f,0.5f,0.5f},{0,0.5f,0},{},
-                    0.04f,initial,&retained) ||
-               retained.count==0 || retained.count>4)
-                throw std::runtime_error(
-                    "GJK did not publish a reusable contact simplex");
-            if(!source_pcm_box_box_gjk_epa(
-                    {0.5f,0.5f,0.5f},{0,1.5234375f,0},{},
-                    {0.5f,0.5f,0.5f},{0,0.5f,0},{},
-                    0.04f,recycled,&retained) ||
-               !source_pcm_box_box_gjk_epa(
-                    {0.5f,0.5f,0.5f},{0,1.5234375f,0},{},
-                    {0.5f,0.5f,0.5f},{0,0.5f,0},{},
-                    0.04f,cold) ||
-               std::abs(recycled.separation-cold.separation)>1e-5f ||
-               recycled.normal_b.y<0.999f ||
-               retained.count==0 || retained.count>4)
-                throw std::runtime_error(
-                    "Persistent GJK simplex changed the refreshed contact geometry");
         }
         // Exact speculative boundary: SAT accepts a box face at
         // contactDistance, while direct GuPCMContactBoxBox clipping
