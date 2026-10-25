@@ -185,7 +185,7 @@ Facet make_facet(const std::array<Support,64>& vertices,
 // this reproduces the valid back-to-back initial facet pair.
 bool initialize_epa(const BoxPair& pair,
                     std::array<Support,64>& vertices,
-                    int& count,std::array<Facet,256>& facets,
+                    int& count,std::array<Facet,64>& facets,
                     int& facet_count) {
     if(count<=0 || count>4)return false;
     if(count==1) {
