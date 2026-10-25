@@ -46,12 +46,11 @@ struct WorldOptions {
     // PxSceneFlag::eENABLE_ENHANCED_DETERMINISM. Preserves separate
     // accurate-island Dy solver task groups rather than batching them.
     bool enhanced_determinism = false;
-    // Explicit native PCM plane/box contacts with a persistent
-    // scene-owned manifold. Defaults off for legacy-Gu regressions.
-    bool pcm_plane_box = false;
-    // Opt-in native PCM box/box face manifold. The separate GJK/EPA
-    // continuation is not yet admitted and cannot fall back to legacy.
-    bool pcm_box_box = false;
+    // NativeCPU uses scene-owned PCM manifolds for the admitted plane/box
+    // and box/box pairs. Explicit false is reserved for independent
+    // diagnostic legacy-Gu comparisons; reference modes ignore these.
+    bool pcm_plane_box = true;
+    bool pcm_box_box = true;
 };
 
 // Provider-neutral noncompliant contact material, matching PhysX
