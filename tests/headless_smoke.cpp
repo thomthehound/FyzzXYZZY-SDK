@@ -795,7 +795,7 @@ int main() {
                      expected[0].separation<0.0025f)) {
                     std::cerr<<"PCM rotated edge-gap reversed="<<reversed
                              <<" native="<<got.size()
-                             <<" source="<<expected.size()<<'\\n';
+                             <<" source="<<expected.size()<<'\n';
                     throw std::runtime_error(
                         "Rotated PCM near-margin GJK witness missing");
                 }
