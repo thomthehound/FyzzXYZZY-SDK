@@ -3,23 +3,25 @@
 
 # CPU SDK build and test
 
-The transitional CPU **reference backend** uses unmodified PhysX CPU through the
-`FyzzXYZZY::ReferencePhysXCpu` library. The public `FyzzXYZZY::Core` implementation compiles without PhysX headers, but still links the reference backend for default CPU execution until the native CPU scene passes its acceptance gate. CUDA is disabled. The independent native scene and portable GPU runtimes are [separate migration milestones](NATIVE_ENGINE_MIGRATION.md).
+The optional CPU **reference backend** uses PhysX CPU through
+`FyzzXYZZY::ReferencePhysXCpu`. `FyzzXYZZY::Core` provides an independent
+native CPU rigid scene by default. Reference execution must be explicitly
+selected and requires `FYZZXYZZY_ENABLE_PHYSX_SOURCE=ON`. CUDA is disabled.
+Native GPU execution remains a separate migration milestone.
 
 
 ## Reference-free native build (intermediate ownership proof)
 
-Set `FYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF` to configure the native core and
-standalone compute backend without `FetchContent`, source headers, linking,
-or source packaging from the PhysX fork. It is **not yet a functional physics
-scene**: without the reference CPU solver, the public `World` factory rejects
-reference requests, and native GPU admission remains fail-closed until N1–N3.
-This mode is useful for proving the SDK can be built without owning a foreign
-PhysX runtime and for testing Vulkan/D3D12 buffer/queue functionality.
+Set `FYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF` to build the native core and
+standalone compute backend without a reference-runtime dependency.
+The default `World` runs the admitted independent CPU rigid simulation;
+explicit reference requests and native GPU execution remain unavailable
+without their corresponding backends.
 
-The default is ON for transitional CPU/Godot compatibility and existing SAP
-port conformance fixtures. The source-import debt remains until N4; turning
-the flag OFF does not magically complete native CPU or GPU simulation.
+The source option defaults to `ON` when `BUILD_TESTING=ON`, so source
+conformance fixtures remain available. It defaults to `OFF` for production
+builds with `BUILD_TESTING=OFF`. The admitted CPU rigid subset does not
+imply complete CPU shape coverage or native GPU simulation.
 
 Linux (Vulkan SDK installed):
 
