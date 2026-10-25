@@ -1242,8 +1242,11 @@ private:
     // notifications were requested when the World was constructed.
     bool contact_notifications_=false;
     bool enhanced_determinism_=false;
-    bool pcm_plane_box_enabled_=false;
-    bool pcm_box_box_enabled_=false;
+    // Match the production World default: supported primitive pairs use
+    // persistent PCM contact managers. Legacy Gu requires explicit
+    // diagnostic selection before admitting actors.
+    bool pcm_plane_box_enabled_=true;
+    bool pcm_box_box_enabled_=true;
     std::vector<ContactEvent> contact_events_;
     std::vector<ContactEvent> next_contact_events_;
     // Non-owning Gu-manifold indices for this frame's actual report
