@@ -303,6 +303,65 @@ struct ConstraintIslandSourceFixture {
                     "Prepublication constraint retirement leaked island ownership");
         }
     }
+    static void verify_constraint_sleep_deactivation_generations() {
+        // Real ScConstraintSim and Dy PGS work through sleepCheck into
+        // the following IslandSim third pass. Its typed eCONSTRAINT
+        // deactivation output must be exactly one publication, never a
+        // persistent list of historic sleep events.
+        Scene scene{};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,6,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,6,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0.0f;
+        d.angular_damping=0.0f;
+        scene.set_dynamics(a,d);
+        scene.set_dynamics(b,d);
+        const auto edge=scene.add_distance_constraint(a,b,3.0f);
+        constexpr float dt=1.0f/120.0f;
+        bool saw_retirement=false;
+        for(unsigned frame=0;frame<128;++frame) {
+            scene.step(dt);
+            const auto& accurate=scene.accurate_islands_;
+            const auto& speculative=scene.speculative_islands_;
+            if(!accurate.deactivating_constraint_edges.empty() ||
+               !speculative.deactivating_constraint_edges.empty()) {
+                if(saw_retirement ||
+                   accurate.deactivating_constraint_edges.size()!=1 ||
+                   speculative.deactivating_constraint_edges.size()!=1 ||
+                   accurate.deactivating_constraint_edges[0]!=edge ||
+                   speculative.deactivating_constraint_edges[0]!=edge ||
+                   accurate.active_constraint_edge_count!=0 ||
+                   speculative.active_constraint_edge_count!=0 ||
+                   !scene.body_is_sleeping(a) || !scene.body_is_sleeping(b))
+                    throw std::runtime_error(
+                        "Source typed constraint third-pass deactivation duplicated");
+                saw_retirement=true;
+            }
+        }
+        if(!saw_retirement ||
+           !scene.accurate_islands_.deactivating_constraint_edges.empty() ||
+           !scene.speculative_islands_.deactivating_constraint_edges.empty() ||
+           scene.solved_result_frame()!=scene.frame_index())
+            throw std::runtime_error(
+                "Source constraint deactivation history outlived its third pass");
+        // NpRigidDynamic::setGlobalPose autowakes even at an identical
+        // pose; IslandSim must reactivate both bodies connected by the
+        // still-live source 1D edge, without replaying old retirements.
+        const auto pose=scene.body_state(a);
+        scene.set_pose(a,pose.position,pose.orientation);
+        scene.step(dt);
+        if(scene.body_is_sleeping(a) || scene.body_is_sleeping(b) ||
+           scene.accurate_islands_.active_constraint_edge_count!=1 ||
+           scene.speculative_islands_.active_constraint_edge_count!=1 ||
+           !scene.accurate_islands_.deactivating_constraint_edges.empty() ||
+           !scene.speculative_islands_.deactivating_constraint_edges.empty() ||
+           scene.solved_result_frame()!=scene.frame_index())
+            throw std::runtime_error(
+                "Source waking constraint island retained stale deactivation");
+    }
     static void verify_typed_constraint_edge_lifetime() {
         // eCONSTRAINT and eCONTACT_MANAGER use the same EdgeIndex pool,
         // but each accurate island maintains a separate type list.
@@ -11255,6 +11314,7 @@ int run_native_scene_smoke() {
 #endif
     fyzz::native::ConstraintIslandSourceFixture::verify_prepublication_constraint_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
+    fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();

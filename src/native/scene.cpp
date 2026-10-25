@@ -4007,6 +4007,11 @@ void Scene::deactivate_ready_islands() noexcept {
     accurate_islands_.nodes_to_deactivate.clear();
     speculative_islands_.deactivating_edges.clear();
     accurate_islands_.deactivating_edges.clear();
+    // Both EdgeType streams are frame-local third-pass publications.
+    // A previous constraint deactivation must not survive a quiet
+    // following pass or contaminate a later wake/sleep generation.
+    speculative_islands_.deactivating_constraint_edges.clear();
+    accurate_islands_.deactivating_constraint_edges.clear();
     // PhysX uses accurate-island deactivations for rigid-body state in
     // ScPipeline::afterIntegration. The speculative third-pass list
     // controls contact interaction activity, not rigid sleep admission.
