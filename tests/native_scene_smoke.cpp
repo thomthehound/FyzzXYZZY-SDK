@@ -154,28 +154,48 @@ struct ContactCorrelationSourceFixture {
         // PCM path must invoke GJK/EPA instead of direct face clipping.
         // This is intentionally geometric, not a mock contact injection.
         {
-            constexpr Vec3 moving_half{0.6f,0.2f,0.3f};
-            constexpr Vec3 fixed_half{0.5f,0.5f,0.5f};
+            constexpr std::array<Vec3,4> moving_shapes{{
+                {0.6f,0.2f,0.3f},{1.15f,0.13f,0.13f},
+                {0.25f,0.55f,0.35f},{0.7f,0.6f,0.1f}}};
+            constexpr std::array<Vec3,4> fixed_shapes{{
+                {0.5f,0.5f,0.5f},{0.9f,0.14f,0.14f},
+                {0.5f,0.5f,0.5f},{0.6f,0.18f,0.45f}}};
             constexpr float distance=0.04f;
             std::array<PcmContactCandidate,64> direct{};
             bool verified=false;
-            for(float angle:{0.33f,0.61f,0.91f}) {
-                const Quat moving_rotation{
-                    0,0,std::sin(angle*0.5f),std::cos(angle*0.5f)};
-                for(float x:{0.55f,0.8f,1.0f})
-                    for(float y:{0.55f,0.8f,1.0f})
-                        for(float z:{0.0f,0.27f,0.51f}) {
+            int sat_zero=0;
+            for(std::size_t variant=0;variant<moving_shapes.size() &&
+                    !verified;++variant) {
+                const auto moving_half=moving_shapes[variant];
+                const auto fixed_half=fixed_shapes[variant];
+                const float fs=std::sin(0.29f),fc=std::cos(0.29f);
+                const Quat fixed_rotation=variant==0?Quat{}:
+                    variant==1?Quat{0,fs,0,fc}:
+                    variant==2?Quat{0,0,fs,fc}:Quat{fs,0,0,fc};
+                for(float angle:{0.33f,0.61f,0.91f,1.19f}) {
+                    const float si=std::sin(angle*0.5f);
+                    const float co=std::cos(angle*0.5f);
+                    const Quat moving_rotation=variant==0?
+                        Quat{0,0,si,co}:variant==1?
+                        Quat{si,0,0,co}:variant==2?
+                        Quat{si*0.70710678118f,si*0.70710678118f,0,co}:
+                        Quat{si*0.57735026919f,si*0.57735026919f,
+                             si*0.57735026919f,co};
+                    for(float x:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
+                        for(float y:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
+                            for(float z:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f}) {
                             const Vec3 moving_at{x,y,z};
                             std::size_t count=0;
                             if(!source_pcm_box_box_candidates(
                                     moving_half,moving_at,moving_rotation,
-                                    fixed_half,{0,0,0},{},
+                                    fixed_half,{0,0,0},fixed_rotation,
                                     distance,direct,count) || count!=0)
                                 continue;
+                            ++sat_zero;
                             PcmContactCandidate fallback{};
                             if(!source_pcm_box_box_gjk_epa(
                                     moving_half,moving_at,moving_rotation,
-                                    fixed_half,{0,0,0},{},
+                                    fixed_half,{0,0,0},fixed_rotation,
                                     distance,fallback))
                                 continue;
                             if(!std::isfinite(fallback.separation) ||
@@ -187,7 +207,9 @@ struct ContactCorrelationSourceFixture {
                                     "PCM GJK/EPA emitted an invalid contact");
                             Scene actual;
                             actual.set_pcm_box_box(true);
-                            actual.add_static_box(fixed_half,{0,0,0});
+                            const auto fixed=actual.add_static_box(
+                                fixed_half,{0,0,0});
+                            actual.set_pose(fixed,{0,0,0},fixed_rotation);
                             const auto moving=actual.add_dynamic_box(
                                 moving_half,moving_at,1.0f);
                             actual.set_pose(moving,moving_at,moving_rotation);
@@ -203,11 +225,13 @@ struct ContactCorrelationSourceFixture {
                             verified=true;
                             break;
                         }
-                if(verified)break;
+                    if(verified)break;
+                }
             }
             if(!verified)
                 throw std::runtime_error(
-                    "PCM fixture failed to exercise a genuine GJK/EPA path");
+                    "PCM fixture found "+std::to_string(sat_zero)+
+                    " SAT-positive zero-face candidates, but no usable GJK/EPA contact");
         }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
