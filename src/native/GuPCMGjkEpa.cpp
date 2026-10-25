@@ -164,6 +164,7 @@ struct Facet {
     Vec3 normal{};
     float distance=0.0f;
     bool valid=false;
+    bool in_heap=true; // source addFacet queues only <= current upper bound
 };
 // GuEPAFacet::isValid2 retains the signed distance and input winding.
 // The source EPA accepts a negative plane distance when an initial
@@ -281,7 +282,8 @@ bool epa(const BoxPair& pair,
         int closest=-1;
         float distance=std::numeric_limits<float>::max();
         for(int i=0;i<facet_count;++i)
-            if(facets[i].valid && facets[i].distance<distance) {
+            if(facets[i].valid && facets[i].in_heap &&
+               facets[i].distance<distance) {
                 closest=i;
                 distance=facets[i].distance;
             }
@@ -342,8 +344,11 @@ bool epa(const BoxPair& pair,
         if(boundary_count>available_slots)return false;
         for(int i=0;i<boundary_count;++i) {
             const auto e=boundary[i];
-            const Facet f=make_facet(vertices,e.from,e.to,new_index);
+            Facet f=make_facet(vertices,e.from,e.to,new_index);
             if(!f.valid)return false;
+            // GuEPA.cpp::addFacet accepts triangles outside the
+            // current upper bound as topology, but not heap entries.
+            f.in_heap=f.distance<=upper_bound;
             int slot=-1;
             for(int j=0;j<facet_count;++j)
                 if(!facets[j].valid) {
