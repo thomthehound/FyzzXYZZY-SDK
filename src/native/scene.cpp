@@ -6170,13 +6170,21 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.authored_activation_pending_=authored_activation_pending;
  }
 
+void Scene::RigidStepJoin::finish_third_pass() {
+    // PostThirdPassIslandGenTask is an explicit dependency of the
+    // processLostContacts3 continuation, independent of Dy solve tasks.
+    if(third_pass_joined)
+        throw std::logic_error(
+            "Native ScPipeline completed postThirdPassIslandGen twice");
+    third_pass_joined=true;
+}
 void Scene::RigidStepJoin::finish_lost_contacts() {
     // Sc::Scene::processLostContacts3 completes after the lost-touch
     // and third-pass consumers have finished. The source continuation
     // contributes one of mPostSolver's two independent producer edges.
-    if(lost_contacts_joined)
+    if(!third_pass_joined || lost_contacts_joined)
         throw std::logic_error(
-            "Native ScPipeline completed the lost-contact continuation twice");
+            "Native ScPipeline completed lost contacts before third pass or twice");
     lost_contacts_joined=true;
 }
 void Scene::RigidStepJoin::dispatch_solver_tasks(std::size_t count) {
@@ -6203,10 +6211,32 @@ void Scene::RigidStepJoin::require_post_solver() const {
     // every PxsSolverEndTask into mPostSolver. A manager handle cannot
     // be reclaimed, and no completed result can be published, before
     // both producers have joined.
-    if(!lost_contacts_joined || !solver_dispatched ||
-       outstanding_solver_tasks)
+    if(!third_pass_joined || !lost_contacts_joined ||
+       !solver_dispatched || outstanding_solver_tasks)
         throw std::logic_error(
             "Native ScPipeline postSolver reached before producer completion");
+}
+void Scene::RigidStepJoin::finish_post_solver() {
+    require_post_solver();
+    if(post_solver_completed)
+        throw std::logic_error("Native ScPipeline completed postSolver twice");
+    post_solver_completed=true;
+}
+void Scene::RigidStepJoin::finish_after_integration() {
+    // afterIntegration depends on postSolver, and publishes completed
+    // transform/bounds state only after all PxsSolverEndTask joins.
+    if(!post_solver_completed || after_integration_completed)
+        throw std::logic_error(
+            "Native afterIntegration ran before postSolver or twice");
+    after_integration_completed=true;
+}
+void Scene::RigidStepJoin::publish_results() {
+    // Sc final result visibility comes after afterIntegration and
+    // manager retirement, never from an individual island task.
+    if(!after_integration_completed || results_published)
+        throw std::logic_error(
+            "Native ScPipeline published before afterIntegration or twice");
+    results_published=true;
 }
 
 void Scene::step(float seconds) {
@@ -6259,6 +6289,7 @@ void Scene::step(float seconds) {
     // third-pass sleep, and Sc interaction-state consumption.
     // PhysX can overlap this branch with Dy; serial CPU execution
     // resolves it first without changing the dependency edge.
+    join.finish_third_pass();
     join.finish_lost_contacts();
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
@@ -6538,15 +6569,17 @@ void Scene::step(float seconds) {
     // PxsSolverEndTask (including its integration and sleepCheck).
     // This check gates resource reclamation and completed publication;
     // failed frames roll back the existing single-scene checkpoint.
-    join.require_post_solver();
+    join.finish_post_solver();
     // The current Dy motion and island ownership are committed only
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
     after_integration_cached_bounds();
     retire_destroyed_contact_edges();
+    join.finish_after_integration();
     // ScNPhaseCore reports are derived only after final Gu/Dy force
     // writeback, island reconciliation and contact-manager retirement.
     publish_contact_events();
+    join.publish_results();
     // This is the last publication edge. The frame is now observed as
     // a completed Dy result rather than merely a Gu collision step.
     // A failed stage above leaves it unpublished; rollback restores the

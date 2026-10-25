@@ -1407,7 +1407,11 @@ struct ContactCorrelationSourceFixture {
             return false;
         };
         if(!rejected([&]{ join.require_post_solver(); }) ||
-           !rejected([&]{ join.finish_solver_task(); }))
+           !rejected([&]{ join.finish_solver_task(); }) ||
+           !rejected([&]{ join.finish_lost_contacts(); }) ||
+           !rejected([&]{ join.finish_post_solver(); }) ||
+           !rejected([&]{ join.finish_after_integration(); }) ||
+           !rejected([&]{ join.publish_results(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver accepted an uncompleted producer");
         // Original PhysX runs the two producer branches independently.
@@ -1417,13 +1421,20 @@ struct ContactCorrelationSourceFixture {
         if(!rejected([&]{ join.require_post_solver(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver retired an incomplete lost-touch branch");
+        join.finish_third_pass();
         join.finish_lost_contacts();
-        if(!rejected([&]{ join.require_post_solver(); }))
+        if(!rejected([&]{ join.require_post_solver(); }) ||
+           !rejected([&]{ join.finish_third_pass(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver omitted the final Dy task completion");
         join.finish_solver_task();
-        join.require_post_solver();
-        if(!rejected([&]{ join.finish_lost_contacts(); }) ||
+        join.finish_post_solver();
+        join.finish_after_integration();
+        join.publish_results();
+        if(!rejected([&]{ join.finish_after_integration(); }) ||
+           !rejected([&]{ join.publish_results(); }) ||
+           !rejected([&]{ join.finish_post_solver(); }) ||
+           !rejected([&]{ join.finish_lost_contacts(); }) ||
            !rejected([&]{ join.finish_solver_task(); }) ||
            !rejected([&]{ join.dispatch_solver_tasks(1); }))
             throw std::runtime_error(
@@ -1432,9 +1443,16 @@ struct ContactCorrelationSourceFixture {
         // scene, but still requires lost-contact completion and Dy
         // task dispatch before publishing a finished frame.
         Scene::RigidStepJoin empty;
-        empty.finish_lost_contacts();
         empty.dispatch_solver_tasks(0);
-        empty.require_post_solver();
+        if(!rejected([&]{ empty.finish_lost_contacts(); }) ||
+           !rejected([&]{ empty.finish_post_solver(); }))
+            throw std::runtime_error(
+                "Empty source task stream bypassed third-pass completion");
+        empty.finish_third_pass();
+        empty.finish_lost_contacts();
+        empty.finish_post_solver();
+        empty.finish_after_integration();
+        empty.publish_results();
 
         // Production-path test: enhanced determinism prevents merging
         // three independently owned active islands into one Dy task.

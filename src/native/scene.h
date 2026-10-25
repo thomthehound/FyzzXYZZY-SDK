@@ -1125,12 +1125,20 @@ private:
     // join, not a second scheduler, a task queue or a persistent owner.
     struct RigidStepJoin {
         std::size_t outstanding_solver_tasks=0;
+        bool third_pass_joined=false;
         bool lost_contacts_joined=false;
         bool solver_dispatched=false;
+        bool post_solver_completed=false;
+        bool after_integration_completed=false;
+        bool results_published=false;
+        void finish_third_pass();
         void finish_lost_contacts();
         void dispatch_solver_tasks(std::size_t count);
         void finish_solver_task();
         void require_post_solver() const;
+        void finish_post_solver();
+        void finish_after_integration();
+        void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
     struct IndexedManifold {
