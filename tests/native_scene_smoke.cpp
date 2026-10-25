@@ -88,6 +88,105 @@ struct SourceSapEndpointFixture {
             }
         }
     }
+    static void verify_crossing_stress() {
+        // Independent final-state oracle derived directly from source
+        // BpIntegerAABB encoded bounds, rather than invoking the SAP
+        // candidate generator under test. Rotate and move several
+        // source volumes at once, forcing sparse crossing events,
+        // multi-axis changes, and full-update fallback in one test.
+        Scene scene;
+        std::vector<BodyId> statics,dynamics;
+        for(int i=0;i<12;++i)
+            statics.push_back(scene.add_static_box(
+                {0.35f+0.08f*float(i%3),0.4f,0.35f},
+                {float((i%4)-2)*2.0f,float(i/4-1)*2.0f,0}));
+        for(int i=0;i<9;++i)
+            dynamics.push_back(scene.add_dynamic_box(
+                {0.32f+0.06f*float(i%4),0.4f,0.35f},
+                {float((i%3)-1)*1.6f,float(i/3-1)*1.6f,0},1.0f));
+        const BodyId floor=scene.add_static_floor(-5.0f);
+        scene.advance_collision();
+        std::vector<Pair> previous;
+        const auto verify_pairs=[&]() {
+            std::vector<Pair> expected;
+            for(std::size_t i=0;i<scene.actors_.size();++i) {
+                const auto& a=scene.actors_[i];
+                if(!a.alive || !a.simulation_shape_enabled)continue;
+                for(std::size_t j=i+1;j<scene.actors_.size();++j) {
+                    const auto& c=scene.actors_[j];
+                    if(!c.alive || !c.simulation_shape_enabled ||
+                       (a.kind!=Scene::Kind::DynamicBox &&
+                        c.kind!=Scene::Kind::DynamicBox))continue;
+                    if(a.kind!=Scene::Kind::StaticPlane &&
+                       c.kind!=Scene::Kind::StaticPlane) {
+                        const auto& aa=a.encoded_bounds;
+                        const auto& bb=c.encoded_bounds;
+                        if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                           aa[1]>bb[4] || bb[1]>aa[4] ||
+                           aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    }
+                    expected.push_back({
+                        static_cast<BodyId>(i),static_cast<BodyId>(j)});
+                }
+            }
+            std::sort(expected.begin(),expected.end());
+            const auto actual=scene.pairs();
+            if(!std::equal(actual.begin(),actual.end(),
+                           expected.begin(),expected.end()))
+                throw std::runtime_error(
+                    "Three-axis source crossing pairs differ from encoded AABB oracle");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto created=scene.found_pairs();
+            const auto removed=scene.lost_pairs();
+            if(!std::equal(created.begin(),created.end(),
+                           found.begin(),found.end()) ||
+               !std::equal(removed.begin(),removed.end(),
+                           lost.begin(),lost.end()))
+                throw std::runtime_error(
+                    "Three-axis source crossing Found/Lost differs from encoded AABB oracle");
+            previous=std::move(expected);
+        };
+        verify_pairs();
+        const auto initial_crosses=
+            scene.broadphase_endpoint_crossing_count();
+        for(int frame=0;frame<104;++frame) {
+            for(int i=0;i<9;++i) {
+                if(frame%13!=0 && (frame+3*i)%9!=0)continue;
+                const float x=float((frame*7+i*11)%21-10)*0.57f;
+                const float y=float((frame*5+i*13)%17-8)*0.55f;
+                const float z=float((frame*3+i*7)%9-4)*0.34f;
+                const float a=float((frame*3+i*5)%17-8)*0.1f;
+                const fyzz::Quat q{0,0,std::sin(a),std::cos(a)};
+                scene.set_pose(dynamics[static_cast<std::size_t>(i)],
+                               {x,y,z},q);
+            }
+            if(frame%19==0) {
+                const auto id=statics[3];
+                scene.set_position(id,{float(frame%5-2)*0.65f,0,0});
+            }
+            if(frame==29 || frame==37)
+                scene.set_shape_simulation_enabled(
+                    dynamics[5],frame==37);
+            if(frame==48 || frame==53)
+                scene.set_shape_simulation_enabled(
+                    floor,frame==53);
+            if(frame==71)scene.remove(statics[10]);
+            if(frame==72)scene.add_static_box(
+                {0.5f,0.5f,0.5f},{0,0,0});
+            scene.advance_collision();
+            check(scene);
+            verify_pairs();
+        }
+        if(scene.broadphase_endpoint_crossing_count()==initial_crosses)
+            throw std::runtime_error(
+                "Three-axis SAP stress oracle lacked source endpoint crossings");
+    }
     static void verify() {
         Scene scene;
         const auto a=scene.add_static_box(
@@ -10855,6 +10954,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::SourceSapEndpointFixture::verify();
+    fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
