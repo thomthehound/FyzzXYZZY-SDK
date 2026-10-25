@@ -5265,18 +5265,22 @@ void verify_sparse_broadphase_volume_lifetime() {
             return contact.pair==Pair{floor,touching} && contact.count>0;
         });
     expect(floor_contact!=scene.contacts().end() &&
-           scene.contact_edge_connected({floor,separated}) &&
-           !scene.contact_edge_connected({static_box,separated}),
+           scene.contact_edge_index({floor,separated})!=
+               std::numeric_limits<std::uint32_t>::max() &&
+           scene.contact_edge_index({static_box,separated})==
+               std::numeric_limits<std::uint32_t>::max(),
            "Source SAP lost plane candidates or admitted separated boxes");
 
     scene.set_shape_simulation_enabled(separated,false);
     scene.advance_collision();
-    expect(!scene.contact_edge_connected({floor,separated}) &&
+    expect(scene.contact_edge_index({floor,separated})==
+               std::numeric_limits<std::uint32_t>::max() &&
            scene.broadphase_registered_actor_count()==4,
            "Disabled shape retained a source SAP pair or lost actor identity");
     scene.set_shape_simulation_enabled(separated,true);
     scene.advance_collision();
-    expect(scene.contact_edge_connected({floor,separated}),
+    expect(scene.contact_edge_index({floor,separated})!=
+               std::numeric_limits<std::uint32_t>::max(),
            "Re-enabled shape failed source SAP re-admission");
 
     scene.remove(touching);
