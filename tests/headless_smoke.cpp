@@ -2472,6 +2472,10 @@ int main() {
                     int max_linear_frame=0;
                     int max_angular_frame=0;
                     int max_orientation_frame=0;
+                    double max_contact_impulse_error=0.0;
+                    int max_contact_impulse_frame=0;
+                    std::size_t unmatched_source_contact_events=0;
+                    std::size_t mismatched_contact_counts=0;
                     // The early contact/impulse window is an enforced
                     // regression. The extended source-parity acceptance
                     // scenario is retained intact and explicitly selectable
@@ -2526,6 +2530,32 @@ int main() {
                         native_friction.step(dt);
                         source_friction.step(dt);
                         source_no_friction.step(dt);
+                        // Compare source manager force publication independently
+                        // of body trajectories. A missing event cannot masquerade
+                        // as a zero impulse; report it separately.
+                        const auto native_events=native_friction.contact_events();
+                        for(const auto& source_event:
+                            source_friction.contact_events()) {
+                            const auto matching=std::find_if(
+                                native_events.begin(),native_events.end(),
+                                [&](const fyzz::ContactEvent& event) {
+                                    return event.body0==source_event.body0 &&
+                                           event.body1==source_event.body1;
+                                });
+                            if(matching==native_events.end()) {
+                                ++unmatched_source_contact_events;
+                                continue;
+                            }
+                            mismatched_contact_counts+=
+                                matching->contact_count!=source_event.contact_count;
+                            const double impulse_error=std::abs(
+                                static_cast<double>(matching->normal_impulse)-
+                                static_cast<double>(source_event.normal_impulse));
+                            if(impulse_error>max_contact_impulse_error) {
+                                max_contact_impulse_error=impulse_error;
+                                max_contact_impulse_frame=frame+1;
+                            }
+                        }
                         if(!use_pcm && reversed && frame==0) {
                             const auto find_pair=[](fyzz::World& world,
                                                     fyzz::BodyId a,
@@ -2755,6 +2785,12 @@ int main() {
                              <<" max_orientation_angle_rad="
                              <<maximum_orientation_angle
                              <<" max_orientation_frame="<<max_orientation_frame
+                             <<" max_contact_impulse_error="<<max_contact_impulse_error
+                             <<" max_contact_impulse_frame="<<max_contact_impulse_frame
+                             <<" unmatched_source_contact_events="
+                             <<unmatched_source_contact_events
+                             <<" mismatched_contact_counts="
+                             <<mismatched_contact_counts
                              <<'\n';
                 }
             }
