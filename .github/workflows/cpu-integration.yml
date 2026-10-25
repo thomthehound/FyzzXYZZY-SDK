@@ -369,7 +369,19 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build-audit-asan -R 'fyzzxyzzy_native_(scene|boundary)_smoke' --output-on-failure -V
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build-audit-asan -R 'fyzzxyzzy_native_(scene|boundary)_smoke' --output-on-failure -V
+          outcome=$?
+          if [ "$outcome" -ne 0 ]; then
+            if command -v gdb >/dev/null 2>&1; then
+              gdb -batch -ex run -ex 'thread apply all bt 30' --args build-audit-asan/fyzzxyzzy_native_boundary_smoke || true
+            else
+              echo 'gdb unavailable'
+            fi
+          fi
+          exit "$outcome"
 
   native-no-physx-linux:
     name: Independent SDK / Vulkan without PhysX
