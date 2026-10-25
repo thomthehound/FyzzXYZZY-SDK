@@ -20,6 +20,103 @@
 // exact normal, so a purely geometric fixture would miss the source
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
+// PhysX BpBroadPhaseSap::mEndPointValues/mEndPointDatas contains
+// two endpoints per admitted box on each axis. Verify the actual
+// scene-owned 3-axis database, not only a coincidentally correct pair
+// set produced by a separate sweep.
+struct SourceSapEndpointFixture {
+    static void check(Scene& scene) {
+        const auto& actors=scene.actors_;
+        std::vector<std::array<unsigned,2>> counts(actors.size());
+        std::size_t admitted=0;
+        for(const auto& actor:actors)
+            if(actor.alive && actor.simulation_shape_enabled &&
+               actor.kind!=Scene::Kind::StaticPlane)
+                ++admitted;
+        if(scene.sap_volumes_.size()!=admitted)
+            throw std::runtime_error(
+                "Source SAP previous-bounds registry diverged from live boxes");
+        for(const auto& volume:scene.sap_volumes_)
+            if(!actors[volume.id].alive ||
+               !actors[volume.id].simulation_shape_enabled ||
+               volume.published_bounds!=actors[volume.id].encoded_bounds)
+                throw std::runtime_error(
+                    "Source SAP AABB witness not owned by live box");
+        for(unsigned axis=0;axis<3;++axis) {
+            const auto& endpoints=scene.sap_axis_endpoints_[axis];
+            if(endpoints.size()!=admitted*2)
+                throw std::runtime_error(
+                    "Source SAP axis missing min/max endpoints");
+            for(std::size_t index=0;index<endpoints.size();++index) {
+                const auto& ep=endpoints[index];
+                if(ep.id>=actors.size() ||
+                   !actors[ep.id].alive ||
+                   !actors[ep.id].simulation_shape_enabled ||
+                   actors[ep.id].kind==Scene::Kind::StaticPlane ||
+                   ep.value!=actors[ep.id].encoded_bounds[
+                       axis+(ep.is_max?3:0)])
+                    throw std::runtime_error(
+                        "Source SAP axis endpoint differs from encoded AABB");
+                if(index>0) {
+                    const auto& prev=endpoints[index-1];
+                    const bool wrong_key=prev.value>ep.value;
+                    const bool wrong_type=prev.value==ep.value &&
+                        prev.is_max && !ep.is_max;
+                    const bool wrong_id=prev.value==ep.value &&
+                        prev.is_max==ep.is_max && prev.id>=ep.id;
+                    if(wrong_key || wrong_type || wrong_id)
+                        throw std::runtime_error(
+                            "Source SAP min/max endpoint order broken");
+                }
+                ++counts[ep.id][ep.is_max?1:0];
+            }
+            for(std::size_t id=0;id<actors.size();++id) {
+                const auto& actor=actors[id];
+                const unsigned expected=
+                    actor.alive && actor.simulation_shape_enabled &&
+                    actor.kind!=Scene::Kind::StaticPlane ? 1u:0u;
+                if(counts[id][0]!=expected* (axis+1) ||
+                   counts[id][1]!=expected* (axis+1))
+                    throw std::runtime_error(
+                        "Source SAP min/max owner multiplicity diverged");
+            }
+        }
+    }
+    static void verify() {
+        Scene scene;
+        const auto a=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0,0});
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,0,0},1.0f);
+        const auto plane=scene.add_static_floor(0.0f);
+        scene.advance_collision();
+        check(scene); // equal encoded min/max keys across two boxes
+        const auto initial_sorts=scene.broadphase_endpoint_full_sort_count();
+        scene.set_position(c,{4,0.7f,-0.7f});
+        scene.advance_collision();
+        check(scene);
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts)
+            throw std::runtime_error(
+                "Small Y/Z AABB edits unnecessarily rebuilt full source SAP");
+        scene.set_position(c,{0,0,0});
+        scene.advance_collision();
+        check(scene);
+        scene.set_shape_simulation_enabled(b,false);
+        scene.advance_collision();
+        check(scene);
+        scene.set_shape_simulation_enabled(b,true);
+        scene.advance_collision();
+        check(scene);
+        scene.remove(a);
+        scene.advance_collision();
+        check(scene);
+        scene.remove(plane);
+        scene.advance_collision();
+        check(scene);
+    }
+};
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
@@ -10695,6 +10792,7 @@ int run_native_scene_smoke() {
     verify_source_mixed_split_and_sleep_order();
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
+    fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
