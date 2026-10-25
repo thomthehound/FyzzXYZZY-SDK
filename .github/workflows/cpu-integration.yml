@@ -154,6 +154,7 @@ jobs:
           # Production/distribution configurations must also reject toolchains
           # lacking C++23 std::expected when BUILD_TESTING=OFF.
           cmake -S FyzzXYZZY-SDK -B offline-production -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DFYZZXYZZY_BUILD_GODOT=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          grep -F 'FYZZXYZZY_ENABLE_PHYSX_SOURCE:BOOL=OFF' offline-production/CMakeCache.txt
 
       - name: Godot headless acceptance
         shell: bash
