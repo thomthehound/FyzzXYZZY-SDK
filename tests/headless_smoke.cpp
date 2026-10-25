@@ -930,6 +930,32 @@ int main() {
                        native_points.size()!=source_points.size())
                         throw std::runtime_error(
                             "Native/source PCM box-box face contact count mismatch");
+                    // A setwise witness match cannot establish the source
+                    // manifold order actually consumed by Dy friction and
+                    // per-contact impulse writeback. Compare the first
+                    // contact stream in its original index order as well.
+                    for(std::size_t i=0;i<source_points.size();++i) {
+                        const auto& a=native_points[i];
+                        const auto& b=source_points[i];
+                        const float dx=a.position.x-b.position.x;
+                        const float dy=a.position.y-b.position.y;
+                        const float dz=a.position.z-b.position.z;
+                        const float align=a.normal.x*b.normal.x+
+                            a.normal.y*b.normal.y+a.normal.z*b.normal.z;
+                        if(dx*dx+dy*dy+dz*dz>=2e-4f ||
+                           align<=0.999f ||
+                           std::abs(a.separation-b.separation)>=2e-3f) {
+                            std::cerr<<"PCM ordered box-box contact index="
+                                     <<i<<" reversed="<<reverse
+                                     <<" tilt="<<tilt<<" native=("
+                                     <<a.position.x<<","<<a.position.y<<","
+                                     <<a.position.z<<") source=("
+                                     <<b.position.x<<","<<b.position.y<<","
+                                     <<b.position.z<<")\n";
+                            throw std::runtime_error(
+                                "Default PCM box-box contact order differs from source");
+                        }
+                    }
                     for(const auto& original:source_points) {
                         bool matched=false;
                         for(const auto& ported:native_points) {
@@ -1489,6 +1515,26 @@ int main() {
                        got.size()!=expected.size())
                         throw std::runtime_error(
                             "Native/source default PCM plane-box contact counts differ");
+                    for(std::size_t i=0;i<expected.size();++i) {
+                        const auto& a=got[i];
+                        const auto& b=expected[i];
+                        const float dx=a.position.x-b.position.x;
+                        const float dy=a.position.y-b.position.y;
+                        const float dz=a.position.z-b.position.z;
+                        if(dx*dx+dy*dy+dz*dz>=1e-5f ||
+                           std::abs(a.separation-b.separation)>=1e-3f ||
+                           std::abs(a.normal.y-b.normal.y)>=1e-4f) {
+                            std::cerr<<"PCM ordered plane-box contact index="
+                                     <<i<<" reversed="<<reversed
+                                     <<" tilt="<<tilt<<" native=("
+                                     <<a.position.x<<","<<a.position.y<<","
+                                     <<a.position.z<<") source=("
+                                     <<b.position.x<<","<<b.position.y<<","
+                                     <<b.position.z<<")\n";
+                            throw std::runtime_error(
+                                "Default PCM plane-box contact order differs from source");
+                        }
+                    }
                     for(const auto& p:expected) {
                         bool found=false;
                         for(const auto& n:got) {
