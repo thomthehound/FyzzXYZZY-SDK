@@ -1303,14 +1303,24 @@ insertion shifts. A broad teleport or high permutation count falls
 back to the same exact-key full sort before pair publication. A
 rejected collision or solver transaction invalidates this derived
 projection for a subsequent rebuild, without adding a dense endpoint
-snapshot to the per-frame checkpoint. The other two SAP axes and
-source incremental *pair-set* maintenance are not yet translated;
-x-sweep pair discovery and y/z AABB filtering still run every dirty
-collision publication. Full CPU-GPU performance parity remains
-unproven. Native tests cover integration publication, unchanged
+snapshot to the per-frame checkpoint. Each endpoint also retains its
+last published three-axis integer-encoded AABB. Only volumes whose
+encoded bounds changed enter the source-style `mUpdated` worklist.
+For `mUpdatedSize*5 < mBoxesSize` (the upstream threshold), the
+pair stream retains untouched `previous_pairs_` and regenerates
+candidate pairs incident to updated volumes using exact encoded
+x/y/z overlap and shape-kind filtering; an ordered merge preserves
+contact-manager handles and precise Found/Lost publication. Structural
+edits and larger update sets still use the complete SAP sweep.
+Infinite-plane candidates remain attached to all enabled dynamics.
+This is an incremental **three-axis pair-test** translation, not yet
+PhysX's full three-axis min/max endpoint-crossing algorithm or
+its pair-manager hash implementation. Full CPU-GPU performance parity
+remains unproven. Native tests cover integration publication, unchanged
 endpoints, local ordering swaps, far-teleport fallback, SAP reuse,
-authored invalidation, high-churn retirement, plane-pair candidates
-and simulation-shape re-admission. The optional native SAP benchmark
+authored invalidation, high-churn retirement, plane-pair candidates,
+simulation-shape re-admission, and 76 frames of independent exact
+candidate-set and Found/Lost delta checks across x/y/z movement. The optional native SAP benchmark
 prints uncalibrated CPU timing and update counters for stationary,
 local-motion, teleport and retired-history cases; CI timing is
 diagnostic and never substitutes for a source-parity gate.
