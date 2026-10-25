@@ -70,11 +70,29 @@ func _initialize() -> void:
         return
 
     var initial_y: float = physics_world.get_body_position(box_id).y
+    var saw_found := false
+    var saw_persists := false
     for frame in range(180):
         if not physics_world.step(1.0 / 60.0):
             printerr("FyzzXYZZY step failed at frame ", frame)
             quit(1)
             return
+        for index in range(physics_world.get_contact_event_count()):
+            if physics_world.get_contact_event_body0(index) != floor_id or (
+                physics_world.get_contact_event_body1(index) != box_id
+            ):
+                continue
+            var kind: int = physics_world.get_contact_event_kind(index)
+            if kind == 0:
+                saw_found = physics_world.get_contact_event_point_count(index) > 0
+                saw_found = saw_found and is_finite(
+                    physics_world.get_contact_event_normal_impulse(index))
+            elif kind == 1:
+                saw_persists = true
+    if not saw_found or not saw_persists:
+        printerr("Native Godot completed-frame contact Found/Persists missing")
+        quit(1)
+        return
 
     var final_position: Vector3 = physics_world.get_body_position(box_id)
     var final_velocity: Vector3 = physics_world.get_body_velocity(box_id)
@@ -87,6 +105,23 @@ func _initialize() -> void:
         not is_finite(final_velocity.y) or abs(final_velocity.y) > 1.0
     ):
         printerr("FyzzXYZZY Godot contact/settling acceptance failed")
+        quit(1)
+        return
+
+    if not physics_world.set_body_pose(
+        box_id, Vector3(0.0, 2.0, 0.0), Quaternion.IDENTITY
+    ) or not physics_world.step(1.0 / 120.0):
+        printerr("Native Godot contact separation failed")
+        quit(1)
+        return
+    var saw_lost := false
+    for index in range(physics_world.get_contact_event_count()):
+        if physics_world.get_contact_event_body0(index) == floor_id and (
+            physics_world.get_contact_event_body1(index) == box_id
+        ) and physics_world.get_contact_event_kind(index) == 2:
+            saw_lost = physics_world.get_contact_event_point_count(index) == 0
+    if not saw_lost:
+        printerr("Native Godot completed-frame Lost contact missing")
         quit(1)
         return
 

@@ -1857,11 +1857,16 @@ CPU PGS admission, require these jointly:
   be finalized once the native scene has the full state/API.
 
 The Godot GDExtension now selects `ExecutionMode::NativeCpu`
-explicitly without changing the standalone SDK's transitional
-default. The headless runtime exercises real scene-owned plane/box
-support, authored rigid orientation and angular velocity, rotational
-integration, actor retirement and continued simulation, on both
-Windows and Linux. It cannot silently pass by constructing the
+explicitly with contact notifications enabled, without changing the
+standalone SDK's transitional default. Its event index API reads the
+existing completed-step Scene-owned `World::contact_events()` span,
+including canonical body IDs, Found/Persists/Lost classification,
+Gu point counts and final Dy normal-impulse totals. No separate
+contact history is maintained by the adapter. The headless runtime
+exercises plane/box support, actual per-step contact transitions,
+authored rigid orientation and angular velocity, rotational
+integration, actor retirement and continued simulation on Windows
+and Linux. It cannot silently pass by constructing the
 independent reference scene. Broader geometry, filtering, constraints,
 callbacks and GPU scheduling remain separately scoped.
 

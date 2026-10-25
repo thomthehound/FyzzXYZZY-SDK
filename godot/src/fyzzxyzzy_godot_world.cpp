@@ -29,6 +29,12 @@ godot::Quaternion to_godot(fyzz::Quat value) {
     return {value.x,value.y,value.z,value.w};
 }
 
+std::size_t checked_event_index(int64_t index,std::size_t count) {
+    if(index<0 || static_cast<std::uint64_t>(index)>=count)
+        throw std::out_of_range("Invalid completed-frame contact event index");
+    return static_cast<std::size_t>(index);
+}
+
 fyzz::BodyId checked_body_id(int64_t id) {
     if (id < 0 || id > static_cast<int64_t>(std::numeric_limits<fyzz::BodyId>::max())) {
         throw std::out_of_range("Invalid FyzzXYZZY body ID");
@@ -44,7 +50,7 @@ void report_failure(const std::exception& error) {
 
 FyzzXYZZYGodotWorld::FyzzXYZZYGodotWorld()
     : world_(std::make_unique<fyzz::World>(
-          fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu})) {}
+          fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu,true})) {}
 
 void FyzzXYZZYGodotWorld::_bind_methods() {
     godot::ClassDB::bind_method(
@@ -65,6 +71,24 @@ void FyzzXYZZYGodotWorld::_bind_methods() {
     godot::ClassDB::bind_method(
         godot::D_METHOD("get_body_velocity", "id"),
         &FyzzXYZZYGodotWorld::get_body_velocity);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_count"),
+        &FyzzXYZZYGodotWorld::get_contact_event_count);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_kind", "index"),
+        &FyzzXYZZYGodotWorld::get_contact_event_kind);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_body0", "index"),
+        &FyzzXYZZYGodotWorld::get_contact_event_body0);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_body1", "index"),
+        &FyzzXYZZYGodotWorld::get_contact_event_body1);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_point_count", "index"),
+        &FyzzXYZZYGodotWorld::get_contact_event_point_count);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_contact_event_normal_impulse", "index"),
+        &FyzzXYZZYGodotWorld::get_contact_event_normal_impulse);
     godot::ClassDB::bind_method(
         godot::D_METHOD("get_body_orientation", "id"),
         &FyzzXYZZYGodotWorld::get_body_orientation);
@@ -140,6 +164,56 @@ godot::Vector3 FyzzXYZZYGodotWorld::get_body_velocity(int64_t id) const {
     } catch (const std::exception& error) {
         report_failure(error);
         return {};
+    }
+}
+
+int64_t FyzzXYZZYGodotWorld::get_contact_event_count() const {
+    return static_cast<int64_t>(world_->contact_events().size());
+}
+int64_t FyzzXYZZYGodotWorld::get_contact_event_kind(int64_t index) const {
+    try {
+        const auto events=world_->contact_events();
+        return static_cast<int64_t>(
+            events[checked_event_index(index,events.size())].kind);
+    } catch(const std::exception& error) {
+        report_failure(error);
+        return -1;
+    }
+}
+int64_t FyzzXYZZYGodotWorld::get_contact_event_body0(int64_t index) const {
+    try {
+        const auto events=world_->contact_events();
+        return events[checked_event_index(index,events.size())].body0;
+    } catch(const std::exception& error) {
+        report_failure(error);
+        return -1;
+    }
+}
+int64_t FyzzXYZZYGodotWorld::get_contact_event_body1(int64_t index) const {
+    try {
+        const auto events=world_->contact_events();
+        return events[checked_event_index(index,events.size())].body1;
+    } catch(const std::exception& error) {
+        report_failure(error);
+        return -1;
+    }
+}
+int64_t FyzzXYZZYGodotWorld::get_contact_event_point_count(int64_t index) const {
+    try {
+        const auto events=world_->contact_events();
+        return events[checked_event_index(index,events.size())].contact_count;
+    } catch(const std::exception& error) {
+        report_failure(error);
+        return -1;
+    }
+}
+double FyzzXYZZYGodotWorld::get_contact_event_normal_impulse(int64_t index) const {
+    try {
+        const auto events=world_->contact_events();
+        return events[checked_event_index(index,events.size())].normal_impulse;
+    } catch(const std::exception& error) {
+        report_failure(error);
+        return 0.0;
     }
 }
 
