@@ -188,7 +188,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Native PCM boundary GJK witness not published");
             const auto edge=actual.contacts()[0].edge_handle;
-            if(actual.contact_edges_[edge].pcm_box_box.warmstart.count==0)
+            if(actual.contact_edges_[edge].pcm_cache.warmstart.count==0)
                 throw std::runtime_error(
                     "GJK simplex ownership lost on native contact manager");
             actual.step(1.0f/120.0f);
@@ -210,7 +210,7 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Native source PCM face/face must publish four witnesses");
         const auto edge=scene.contacts()[0].edge_handle;
-        const auto& cache=scene.contact_edges_[edge].pcm_box_box;
+        const auto& cache=scene.contact_edges_[edge].pcm_cache;
         if(!cache.initialized || cache.count!=4 ||
            !scene.gu_cache_records_.empty() ||
            !scene.gu_cached_points_.empty())
@@ -233,25 +233,25 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           scene.contact_edges_[edge].pcm_box_box.count!=4 ||
-           scene.contact_edges_[edge].pcm_box_box.relative_position.x!=saved.x)
+           scene.contact_edges_[edge].pcm_cache.count!=4 ||
+           scene.contact_edges_[edge].pcm_cache.relative_position.x!=saved.x)
             throw std::runtime_error(
                 "PCM box-box steady cache was regenerated instead of refreshed");
         // An authored pose must reset the same manager's PCM geometry
         // cache; new B witnesses follow the new physical shape pose.
         scene.set_position(dynamic,{0.02f,1.46f,0});
-        if(scene.contact_edges_[edge].pcm_box_box.initialized)
+        if(scene.contact_edges_[edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "Authored PCM box-box pose retained obsolete witnesses");
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].count!=4 ||
-           !scene.contact_edges_[edge].pcm_box_box.initialized)
+           !scene.contact_edges_[edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "PCM box-box authored-pose reconstruction failed");
-        if(std::abs(scene.contact_edges_[edge].pcm_box_box.
+        if(std::abs(scene.contact_edges_[edge].pcm_cache.
                         relative_position.x-0.02f)>1.0e-6f ||
-           std::abs(scene.contact_edges_[edge].pcm_box_box.
+           std::abs(scene.contact_edges_[edge].pcm_cache.
                         points[0].local_a.x-original_local_a_x)<0.01f)
             throw std::runtime_error(
                 "PCM authored pose failed to rebuild first-shape local witnesses");
@@ -326,8 +326,8 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "PCM floor contact did not admit four source cached witnesses");
         const auto edge=scene.contacts()[0].edge_handle;
-        if(!scene.contact_edges_[edge].pcm_plane_box.initialized ||
-           scene.contact_edges_[edge].pcm_plane_box.count!=4 ||
+        if(!scene.contact_edges_[edge].pcm_cache.initialized ||
+           scene.contact_edges_[edge].pcm_cache.count!=4 ||
            !scene.gu_cache_records_.empty())
             throw std::runtime_error(
                 "PCM manager used independent Gu cache or lost source manifold");
@@ -355,12 +355,12 @@ struct ContactCorrelationSourceFixture {
         // non-forced geometry advance must rebuild that invalidated
         // manager before returning contact spans.
         scene.set_position(box,{0.004f,0.5f,0});
-        if(scene.contact_edges_[edge].pcm_plane_box.initialized ||
+        if(scene.contact_edges_[edge].pcm_cache.initialized ||
            !scene.dirty_)
             throw std::runtime_error(
                 "Idempotent Sc PCM pose failed manager invalidation");
         scene.advance_collision();
-        if(!scene.contact_edges_[edge].pcm_plane_box.initialized ||
+        if(!scene.contact_edges_[edge].pcm_cache.initialized ||
            scene.contacts().size()!=1)
             throw std::runtime_error(
                 "Idempotent Sc PCM pose did not republish Gu contacts");
@@ -373,7 +373,7 @@ struct ContactCorrelationSourceFixture {
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
-           scene.contact_edges_[edge].pcm_plane_box.relative_position.x!=0.004f ||
+           scene.contact_edges_[edge].pcm_cache.relative_position.x!=0.004f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.004f))>1.0e-6f)
             throw std::runtime_error(
@@ -382,7 +382,7 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           std::abs(scene.contact_edges_[edge].pcm_plane_box.relative_position.x-
+           std::abs(scene.contact_edges_[edge].pcm_cache.relative_position.x-
                     0.05f)>1.0e-6f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.05f))>1.0e-5f)
@@ -410,7 +410,7 @@ struct ContactCorrelationSourceFixture {
         scene.set_position(box,{0.05f,3.0f,0});
         scene.advance_collision(true);
         if(!scene.contacts().empty() ||
-           scene.contact_edges_[edge].pcm_plane_box.count!=0)
+           scene.contact_edges_[edge].pcm_cache.count!=0)
             throw std::runtime_error(
                 "PCM persistent manager did not retire separated points");
         scene.set_position(box,{0.05f,0.5f,0});
@@ -461,13 +461,13 @@ struct ContactCorrelationSourceFixture {
         // generation even if the relative transform did not move.
         const auto deep_edge=deep.contacts()[0].edge_handle;
         deep.set_shape_offsets(buried,0.2f,0.0f);
-        if(deep.contact_edges_[deep_edge].pcm_plane_box.initialized)
+        if(deep.contact_edges_[deep_edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "Authored PCM shape distance retained stale candidate set");
         deep.advance_collision(true);
         if(deep.contacts().size()!=1 ||
            deep.contacts()[0].count!=4 ||
-           !deep.contact_edges_[deep_edge].pcm_plane_box.initialized)
+           !deep.contact_edges_[deep_edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "PCM edited shape distance did not regenerate manifold");
     }
