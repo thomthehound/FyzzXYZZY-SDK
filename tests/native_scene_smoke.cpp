@@ -5470,6 +5470,12 @@ void verify_source_sap_endpoint_crossing_deltas() {
         {0.5f,0.5f,0.5f},{0,0,0});
     const auto moving=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+    // PhysX only selects batchUpdateFewUpdates when
+    // mUpdatedSize * 5 < mBoxesSize. Populate inert distant boxes
+    // so changing one live box actually exercises that source path.
+    for(int i=0;i<8;++i)
+        scene.add_static_box({0.5f,0.5f,0.5f},
+                             {20.0f+float(i)*4.0f,20.0f,20.0f});
     const Pair pair{fixed,moving};
     scene.advance_collision();
     expect(scene.pairs().size()==1 && scene.pairs().front()==pair,
