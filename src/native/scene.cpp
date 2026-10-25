@@ -585,6 +585,9 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     refresh_kinematic_node(id,true);
     actor.kinematic_settling=false;
     actor.sleeping=false;
+    // IslandSim::processLostEdges must recognize target-driven
+    // kinematics as active until their target has been integrated.
+    actor.ready_for_sleep=false;
     actor.wake_counter=0.4f;
     // ScShapeInteraction::resetManagerCachedState has the same
     // authoritative EdgeIndex and intrusive accurate endpoint list.
@@ -970,6 +973,10 @@ void Scene::publish_kinematic_targets() {
         dirty_=true;
         body.kinematic_target_pending=false;
         body.kinematic_settling=true;
+        // The pose has now reached its target. Its settling update
+        // publishes zero velocity next frame; it must not keep a
+        // stationary, referenced kinematic awake indefinitely.
+        body.ready_for_sleep=true;
     }
 }
 void Scene::after_integration_cached_bounds() {
@@ -4019,12 +4026,48 @@ void Scene::deactivate_ready_islands() noexcept {
     // after wakeIslands has published the active-index changes. A long-
     // sleeping scene must not revisit every dormant historical handle
     // on each solver frame, nor reverse the source deactivation order.
+    // PxsIslandSim::processLostEdges clears mIslandAwake on the current
+    // active-island set, then marks every island touched by an ACTIVE
+    // kinematic before considering rigid-node readiness. Kinematics have
+    // invalid island IDs but real graph edge instances. Mark only their
+    // connected rigid owners, using the graph's existing reusable visited
+    // slots rather than scanning every dormant actor or copying an island.
+    auto& graph=accurate_islands_;
+    if(++graph.active_island_visit_stamp==0) {
+        std::fill(graph.active_island_seen.begin(),
+                  graph.active_island_seen.end(),0);
+        graph.active_island_visit_stamp=1;
+    }
+    const auto kinematic_awake_stamp=graph.active_island_visit_stamp;
+    for(BodyId kinematic:graph.active_kinematic_nodes) {
+        const Actor& body=actors_[kinematic];
+        if(!body.alive || body.kind!=Kind::KinematicBox ||
+           body.ready_for_sleep)continue;
+        for(std::size_t index=accurate_node_first_[kinematic];
+            index!=invalid_instance;) {
+            const EdgeIndex edge_id=static_cast<EdgeIndex>(index/2);
+            const auto& edge=island_edges_[edge_id];
+            const auto& instance=edge.accurate[index&1u];
+            index=instance.next;
+            if(!edge.live || edge.retiring || !edge.connected ||
+               !(edge.accurate_state&1u))continue;
+            const BodyId other=edge.pair.a==kinematic
+                ? edge.pair.b:edge.pair.a;
+            if(other>=graph.node_island.size() ||
+               actors_[other].kind!=Kind::DynamicBox)continue;
+            const auto owner=graph.node_island[other];
+            if(owner!=IslandGraph::invalid)
+                graph.active_island_seen[owner]=kinematic_awake_stamp;
+        }
+    }
     for(std::size_t index=accurate_islands_.active_islands.size();
         index>0;--index) {
         const auto handle=accurate_islands_.active_islands[index-1];
         if(handle>=accurate_islands_.islands.size())continue;
         const auto& island=accurate_islands_.islands[handle];
-        if(!island.live)continue;
+        if(!island.live ||
+           graph.active_island_seen[handle]==kinematic_awake_stamp)
+            continue;
         bool ready=true;
         bool has_active_node=false;
         for(BodyId node=island.root;node!=invalid;

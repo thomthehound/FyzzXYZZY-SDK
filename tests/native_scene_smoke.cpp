@@ -462,6 +462,54 @@ struct ConstraintIslandSourceFixture {
                     "Constraint actor retirement retained an orphan island edge");
         }
     }
+    static void verify_active_kinematic_guards_rigid_island_sleep() {
+        // PhysX marks islands touched by an active kinematic before
+        // testing already-published Dy sleep readiness. A kinematic
+        // constraint has no island ID; its connected dynamic member
+        // identifies an entire rigid island, including an indirect peer.
+        Scene scene{};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,7,0},1.0f);
+        const auto k=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{6,7,0},1.0f);
+        scene.set_kinematic(k,true);
+        scene.add_distance_constraint(a,b,3.0f);
+        scene.add_distance_constraint(b,k,3.0f);
+        scene.advance_collision(true);
+        if(scene.accurate_island_count()!=1 ||
+           scene.accurate_island_id(k)!=Scene::IslandGraph::invalid ||
+           scene.accurate_island_id(a)!=scene.accurate_island_id(b) ||
+           scene.active_accurate_kinematics().size()!=1)
+            throw std::runtime_error(
+                "Source kinematic sleep fixture has no connected rigid island");
+        // Model a previously published sleepCheck readiness result.
+        // Active kinematic authoring is a separate Sc stage; the third
+        // pass must not retire the island merely because those flags
+        // still report readiness.
+        scene.set_kinematic_target(k,{6.1f,7,0},{});
+        scene.actors_[a].ready_for_sleep=true;
+        scene.actors_[b].ready_for_sleep=true;
+        scene.deactivate_ready_islands();
+        if(scene.body_is_sleeping(a) || scene.body_is_sleeping(b) ||
+           !scene.accurate_islands_.nodes_to_deactivate.empty() ||
+           scene.accurate_islands_.active_constraint_edge_count!=2 ||
+           !scene.accurate_islands_.deactivating_constraint_edges.empty())
+            throw std::runtime_error(
+                "Active kinematic failed to preserve connected rigid island");
+        // Once its authored target is consumed, the kinematic is
+        // settling, not actively moving. Source readiness may now
+        // deactivate the same island without losing the constraint.
+        scene.actors_[k].kinematic_target_pending=false;
+        scene.actors_[k].ready_for_sleep=true;
+        scene.deactivate_ready_islands();
+        if(!scene.body_is_sleeping(a) || !scene.body_is_sleeping(b) ||
+           scene.accurate_islands_.active_constraint_edge_count!=0 ||
+           scene.accurate_islands_.deactivating_constraint_edges.size()!=2)
+            throw std::runtime_error(
+                "Settled kinematic retained an unwarranted island wake veto");
+    }
     static void verify_graph_owned_kinematic_active_references() {
         Scene scene{};
         const auto a=scene.add_dynamic_box(
@@ -11317,6 +11365,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
+    fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
