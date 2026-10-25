@@ -1295,17 +1295,22 @@ arena: admission registers one live proxy; retirement withdraws it,
 while IDs and state of retired actors remain intact. Bounds publication
 and infinite-plane candidate discovery iterate live members and
 simulation-enabled box endpoints, not the historical actor-ID high
-watermark. The source SAP x-min projection is retained in sorted
-encoded-key/BodyId order: source volume admission, retirement and shape
-refiltering trigger a full membership rebuild; ordinary frames update
-the existing keys in place and repair local inversions by bounded
-insertion shifts. A broad teleport or high permutation count falls
-back to the same exact-key full sort before pair publication. A
-rejected collision or solver transaction invalidates this derived
-projection for a subsequent rebuild, without adding a dense endpoint
-snapshot to the per-frame checkpoint. Each endpoint also retains its
-last published three-axis integer-encoded AABB. Only volumes whose
-encoded bounds changed enter the source-style `mUpdated` worklist.
+watermark. The source SAP keeps three sorted
+`BpBroadPhaseSap::mEndPointValues/mEndPointDatas` arrays, each containing
+both min and max integer-encoded endpoints per live volume. One compact
+`SapBox1D::mMinMax`-style map stores their direct positions on each
+axis. Source volume admission, retirement and shape refiltering rebuild
+the six endpoint lists. Ordinary movement identifies volumes with
+changed encoded bounds and shifts just their six indexed endpoints,
+repairing moved index entries as each crosses its neighbors. A broad
+teleport or high permutation count falls back to full source-key
+sorting and remapping; unchanged axes incur no full scan. A rejected
+collision or solver transaction invalidates this derived state for
+a subsequent rebuild without adding a dense endpoint snapshot to
+the per-frame checkpoint. Each live volume retains exactly one
+last-published three-axis integer-encoded AABB in the same working
+set. Only volumes whose encoded bounds changed enter the source-style
+`mUpdated` worklist.
 For `mUpdatedSize*5 < mBoxesSize` (the upstream threshold), the
 pair stream retains untouched `previous_pairs_` and regenerates
 candidate pairs incident to updated volumes using exact encoded
@@ -1313,14 +1318,18 @@ x/y/z overlap and shape-kind filtering; an ordered merge preserves
 contact-manager handles and precise Found/Lost publication. Structural
 edits and larger update sets still use the complete SAP sweep.
 Infinite-plane candidates remain attached to all enabled dynamics.
-This is an incremental **three-axis pair-test** translation, not yet
-PhysX's full three-axis min/max endpoint-crossing algorithm or
-its pair-manager hash implementation. Full CPU-GPU performance parity
-remains unproven. Native tests cover integration publication, unchanged
-endpoints, local ordering swaps, far-teleport fallback, SAP reuse,
-authored invalidation, high-churn retirement, plane-pair candidates,
-simulation-shape re-admission, and 76 frames of independent exact
-candidate-set and Found/Lost delta checks across x/y/z movement. The optional native SAP benchmark
+The source **three-axis min/max endpoint state and indexed
+sparse-update motion** are now represented, but incremental candidate
+pair generation still recomputes exact AABB overlaps incident to updated
+volumes instead of emitting pairs solely from the original
+`batchUpdateFewUpdates` endpoint-crossing events. The original source
+pair-manager hash implementation is also not yet translated. Full
+CPU-GPU performance parity remains unproven. Native tests cover direct
+min/max endpoint and index-map invariants, integration publication,
+unchanged endpoints, local ordering swaps, far-teleport fallback,
+SAP reuse, authored invalidation, high-churn retirement, plane-pair
+candidates, simulation-shape re-admission, and 76 frames of independent
+exact candidate-set and Found/Lost delta checks across x/y/z movement. The optional native SAP benchmark
 prints uncalibrated CPU timing and update counters for stationary,
 local-motion, teleport and retired-history cases; CI timing is
 diagnostic and never substitutes for a source-parity gate.
