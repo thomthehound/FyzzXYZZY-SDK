@@ -294,7 +294,7 @@ struct ContactCorrelationSourceFixture {
         // the signed separation and tangential eviction must be evaluated
         // in B-local coordinates using the stored B-local normal.
         {
-            Scene::PcmPlaneBoxCache cache;
+            Scene::PcmManifoldCache cache;
             cache.count=2;
             cache.points[0]={{1.0f,0.0f,0.0f},
                              {0.0f,1.0f,0.0f},
