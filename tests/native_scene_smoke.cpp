@@ -165,7 +165,7 @@ struct ContactCorrelationSourceFixture {
         {
             Scene scene;
             scene.add_static_floor(0.0f);
-            scene.add_dynamic_box(
+            const auto moving=scene.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
             scene.advance_collision(true);
             if(scene.contacts().size()!=1 ||
@@ -176,10 +176,42 @@ struct ContactCorrelationSourceFixture {
                    pcm_cache.initialized)
                 throw std::runtime_error(
                     "Default native scene did not admit plane-box PCM");
+            const auto manager=scene.contacts()[0].edge_handle;
             scene.step(1.0f/120.0f);
             if(scene.solved_result_frame()!=scene.frame_index())
                 throw std::runtime_error(
                     "Default plane-box PCM did not reach native Dy");
+            // Friction-anchor correlation, sleeping island retirement and
+            // explicit wake must preserve this very PCM-owned manager.
+            // They may not switch silently to the Gu cache once the
+            // first set of contacts has reached Dy.
+            bool correlated=false;
+            bool slept=false;
+            for(int frame=0;frame<480;++frame) {
+                scene.step(1.0f/120.0f);
+                for(const auto& patch:scene.solved_friction_patches())
+                    if(patch.anchor_count>0)correlated=true;
+                if(scene.body_is_sleeping(moving)) {
+                    slept=true;
+                    break;
+                }
+            }
+            if(!correlated || !slept ||
+               !scene.contact_edges_[manager].pcm_cache.initialized ||
+               !scene.gu_cache_records_.empty())
+                throw std::runtime_error(
+                    "Default PCM contact lost friction anchors or sleep lifecycle");
+            scene.set_velocity(moving,{0.12f,0,0});
+            if(scene.body_is_sleeping(moving))
+                throw std::runtime_error(
+                    "Default PCM scene failed authored velocity wake");
+            scene.step(1.0f/120.0f);
+            if(scene.body_is_sleeping(moving) ||
+               scene.solved_result_frame()!=scene.frame_index() ||
+               !scene.contact_edges_[manager].pcm_cache.initialized ||
+               !scene.gu_cache_records_.empty())
+                throw std::runtime_error(
+                    "Default PCM wake did not reactivate the same Sc/Dy manager");
         }
         {
             Scene scene;
