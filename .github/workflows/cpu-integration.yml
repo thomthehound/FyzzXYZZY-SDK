@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - audit/faithful-perf-conformance-20261025
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -343,6 +344,73 @@ jobs:
             throw "Godot editor acceptance runtime marker missing"
           }
 
+
+  audit-perf-ab:
+    name: Paired native SAP performance audit
+    if: github.ref == 'refs/heads/audit/faithful-perf-conformance-20261025'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build matched CPU SAP benchmarks
+        shell: bash
+        run: |
+          git worktree add --detach ../sap-baseline ee3b91cb3b4ec0862af8830870b6ae55c131d2e1
+          python - <<'PY'
+          from pathlib import Path
+          current = Path('tests/native_sap_benchmark.cpp').read_text()
+          current = current.replace(
+              'scene.broadphase_activity_pocket_count()', 'std::size_t{0}')
+          current = current.replace(
+              'scene.broadphase_activity_pocket_endpoint_count()', 'std::size_t{0}')
+          Path('../sap-baseline/tests/native_sap_benchmark.cpp').write_text(current)
+          PY
+          common=(
+            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF
+            -DFYZZXYZZY_BUILD_GODOT=OFF
+            -DFYZZXYZZY_BUILD_VULKAN=OFF
+            -DFYZZXYZZY_BUILD_D3D12=OFF
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          )
+          cmake -S ../sap-baseline -B ../sap-baseline-build "${common[@]}"
+          cmake -S . -B build-sap-audit "${common[@]}"
+          cmake --build ../sap-baseline-build --target fyzzxyzzy_native_sap_benchmark --parallel 4
+          cmake --build build-sap-audit --target fyzzxyzzy_native_sap_benchmark --parallel 4
+      - name: Measure matched workloads on one runner
+        shell: bash
+        run: |
+          for trial in 1 2 3 4 5 6 7; do
+            if (( trial % 2 )); then
+              ../sap-baseline-build/fyzzxyzzy_native_sap_benchmark >> old.txt
+              build-sap-audit/fyzzxyzzy_native_sap_benchmark >> new.txt
+            else
+              build-sap-audit/fyzzxyzzy_native_sap_benchmark >> new.txt
+              ../sap-baseline-build/fyzzxyzzy_native_sap_benchmark >> old.txt
+            fi
+          done
+          python - <<'PY'
+          from statistics import median
+          def measure(path):
+              result = {}
+              for line in open(path):
+                  if not line.startswith('native_sap mode='):
+                      continue
+                  fields = dict(word.split('=', 1) for word in line.split()
+                                if '=' in word)
+                  result.setdefault(fields['mode'], []).append(
+                      float(fields['median_us_per_query']))
+              return result
+          old, new = measure('old.txt'), measure('new.txt')
+          print('Paired SAP query medians; same runner, matched CPU release builds')
+          for mode in old:
+              prior, current = median(old[mode]), median(new[mode])
+              print(f'{mode:20s} baseline={prior:9.3f} us '
+                    f'current={current:9.3f} us ratio={prior/current:6.2f}x')
+          print('Note: these include collision-query work, not SAP-only time.')
+          PY
 
   native-no-physx-linux:
     name: Independent SDK / Vulkan without PhysX
