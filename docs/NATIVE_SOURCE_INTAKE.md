@@ -46,20 +46,20 @@ by the source-derived GPU/AABB integration in
 | `lowleveldynamics/src/DySolverControl.cpp` | Position iterations, velocity iterations, special conclude/writeback pass, friction iteration policy and threshold streams | Preserve distinct solver passes, writeback timing and the no-contacts integration case |
 | `lowleveldynamics/src/DyTGSContactPrep.cpp`, `DyTGS.h` | Alternate TGS constraint preparation and step solver | **Separate later integration**. Do not claim TGS parity from a PGS port or quietly synthesize TGS behavior |
 
-**Contact-generator admission.** The current native box-box and plane-box
-paths translate original non-PCM `GuContactBoxBox` and `GuContactPlaneBox`.
-PhysX enables `PxSceneFlag::eENABLE_PCM` by default, selecting a different
-contact-generator family. `ExecutionMode::ReferencePhysXCpu` preserves
-that default; `ReferencePhysXCpuLegacyGu` explicitly selects the original
-non-PCM reference generator for like-for-like Gu/PGS conformance fixtures.
-Passing the latter does not establish default PCM contact/cache/point-selection
-parity. PCM support requires its own source translation and independent tests.
-Track that near-term N1 follow-on in [issue #114](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/114);
-it blocks any assertion of default native contact parity and precedes N2
-native GPU scene admission. The reference adapter verifies the *actual*
-`PxScene::getFlags()` contact mode on creation, so accidentally converting
-the stock oracle into legacy-Gu mode is an immediate runtime error.
-
+**Contact-generator admission.** The production
+`ExecutionMode::NativeCpu` now selects PCM contact generation for the
+admitted plane/box and box/box pairs. Both use the existing
+`Scene` contact-manager ownership, cache lifecycle and PGS preparation.
+The independent `ReferencePhysXCpu` oracle retains original PhysX
+`PxSceneFlag::eENABLE_PCM`; `ReferencePhysXCpuLegacyGu` selects
+original non-PCM Gu for separately retained legacy conformance.
+Native `WorldOptions::pcm_plane_box=false` and
+`pcm_box_box=false` are explicit diagnostic selections rather than
+production fallbacks. PCM admission is limited to these primitive pairs:
+other shape classes, CCD and contact modification are not implied by
+this translation. Issue #114 remains the source-conformance acceptance
+ledger until the required cross-platform multiframe comparisons are
+complete.
 These paths identify the **initial source intake surface**. They do **not**
 authorize compiling all of PhysX into the native SDK. Extract/translate
 needed code together with its genuine input, output, allocation and lifetime
@@ -153,60 +153,54 @@ at the existing atomic publication boundary and are swapped back
 with published manifolds after a rejected step. No new collision
 pipeline or secondary physical contact registry is introduced.
 
-## Source PCM plane/box: contact-manager-owned admission
+## Source PCM primitive contact-manager admission
 
-`GuPCMContactPlaneBox.cpp::pcmContactPlaneBox` is now implemented as an
-**explicit partial PCM mode** (`WorldOptions::pcm_plane_box` on
-`ExecutionMode::NativeCpu`, or `Scene::set_pcm_plane_box` before
-admitting any actor). Its production Gu publication feeds the existing
-Sc touch/island manager and the same active-island Dy PGS normal/friction
-preparation. This is not a second collision engine.
+`GuPCMContactPlaneBox::pcmContactPlaneBox` and
+`GuPCMContactBoxBox::pcmContactBoxBox` execute through the same native
+narrowphase publication and active-island PGS solver. The source-style
+`EdgeIndex` contact manager owns a single `PcmManifoldCache`, shared
+exclusively by its geometry-pair specialization; no separate PCM world,
+independent broadphase or PhysX runtime is involved.
 
-The already allocated source-style contact-manager `EdgeIndex` slot owns
-the plane/box `PersistentContactManifold` specialization: up to four
-box-local A / plane-local B witnesses, their separations, and the cached
-relative transform. The translated generator evaluates the eight
-plane-local box corners in original source order, uses the original
-`CalculatePCMBoxMargin` / 0.2 projection threshold, refreshes witnesses
-back-to-front with swap-last removal, invalidates the manifold at the
-source translation/rotation thresholds, reduces more than four candidates
-using the source deepest/farthest/extrema clustering, and emits contacts
-at the **projected plane-local B positions**, not the legacy-Gu box
-vertices. Crucially, `ScRigidSim::notifyShapesOfTransformChange` calls
-`ShapeInteraction::resetManagerCachedState` on an explicitly authored
-actor pose (including a small or idempotent edit). That clears this
-manager's PCM cache before the next Gu pass. In contrast, the internal
-`DyBodyCoreIntegrator` motion path does **not** invoke authored shape
-notifications: the same PCM contact-manager cache survives and its
-witnesses refresh/invalidate under the original margin/rotation tests.
-Shape-offset edits likewise invalidate affected managers. PCM geometry
-and source-normal flipping still use the existing Sc manager's
-authoritative contact publication. The existing
-`StepCheckpoint::save_edge` journal restores PCM state on rejected
-collision/PGS transactions, and deferred manager retirement resets the
-same cache before a handle is reused. No additional manager registry,
-scene-wide contact-state duplication or PhysX runtime dependency is
-introduced.
+For plane/box, eight box-local candidates use the source plane-relative
+transform, contact-distance test and original corner order. Cached
+box-local/plane-local witnesses refresh in reverse with swap-last
+eviction, using the source projection threshold and manifold
+invalidation. Excess contacts reduce to four persistent witnesses,
+and emitted positions are projected onto the plane rather than copied
+from the legacy box vertices.
 
-Legacy `GuContactPlaneBox` and its separately owned
-`PxcCacheLocalContacts` stream remain selected in the default native
-mode and tested until **box/box PCM** has its own complete translation.
-The box/box path requires
-`GuPCMContactBoxBox::doBoxBoxGenerateContacts`, four-point manifold
-reduction and GJK/EPA fallback; it is **not** being relabeled PCM or
-silently switched to an approximate fallback. Default
-`ReferencePhysXCpu` continues to run original PhysX PCM,
-`ReferencePhysXCpuLegacyGu` remains the distinct legacy oracle, and
-partial native selection is explicitly refused for non-native execution.
+For box/box, native generation performs the fifteen original SAT
+separation tests, source-selected reference face and incident polygon
+clipping. Shape-local witnesses retain their B-local normal and depth;
+the four-contact reduction retains spatial coverage and deepest
+contacts. When SAT accepts a pair without generating face witnesses,
+support-mapped GJK and EPA provide the remaining separation or
+penetration contact, using bounded native working sets and retained
+support-index simplex state. The existing PGS constraint preparation
+consumes these PCM points directly, including normal and friction
+correlation, threshold publication and contact callbacks. The PCM
+stream is not diverted through `PxcCacheLocalContacts` or the
+legacy Gu generator.
 
-Native production tests check the PCM projected-point difference from
-legacy Gu, small-motion cache refresh, displacement and rotation
-regeneration, deep/contact reduction, lost touch/reentry, and deferred
-manager handle reuse. The reference-enabled harness compares the actual
-native contact report stream to original PCM for both creation orders
-and rotated contacts. Full default-PCM admission, box/box parity,
-manifold warm-start and other shape/CCD pathways remain open in
-issue #114.
+Explicit authored pose and shape-offset edits reset the owning
+manager's PCM cache; ordinary integrated motion refreshes and
+invalidates its retained witnesses without treating motion as an
+authored edit. `StepCheckpoint::save_edge` journals the same manager
+on geometry mutation, preserving failure-atomic rollback and source
+retirement/reuse ownership. The shared four-contact cache avoids
+duplicating a full plane and box manifold in every manager.
+
+Native regression coverage includes direct PCM face witnesses,
+GJK/EPA depth and normal conventions, an exact SAT-to-GJK speculative
+contact-distance boundary, cache refresh and authored invalidation,
+lost touch/reentry, manager retirement, and actual PGS completion.
+Reference-enabled tests compare native emitted contact points against
+independent stock PCM for plane/box and box/box. The source default
+is not satisfied by legacy-Gu mode. Multiframe coupled-dynamics
+trajectory parity, all supported edge/corner regimes, and the
+reference-enabled Linux/Windows acceptance suites remain independent
+requirements before Issue #114 can close.
 
 ## N1 coupled frictional-rotation source parity gate
 
