@@ -780,6 +780,7 @@ void Scene::update_bounds() {
     };
     broadphase_updated_ids_.clear();
     broadphase_updated_volume_slots_.clear();
+    broadphase_crossed_pairs_.clear();
     broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
     try {
         if(broadphase_endpoint_membership_dirty_) {
@@ -847,6 +848,22 @@ void Scene::update_bounds() {
         const std::size_t budget=sparse
             ? std::numeric_limits<std::size_t>::max()
             : std::max<std::size_t>(16,sap_volumes_.size()/4);
+        // BpBroadPhaseSap emits overlap start/stop candidates only
+        // when a minimum crosses another volume's maximum (or the
+        // reverse). Do not emit same-kind crossings: they cannot
+        // change the 1D overlap state.
+        const crossing=[&](const Endpoint& moving,
+                           const Endpoint& neighbor) {
+            if(!sparse || moving.id==neighbor.id ||
+               moving.is_max==neighbor.is_max)return;
+            const Actor& a=actors_[moving.id];
+            const Actor& other=actors_[neighbor.id];
+            if(a.kind!=Kind::DynamicBox &&
+               other.kind!=Kind::DynamicBox)return;
+            broadphase_crossed_pairs_.push_back(
+                ordered_pair(moving.id,neighbor.id));
+            ++broadphase_endpoint_crossing_count_;
+        };
         std::size_t total_shifts=0;
         bool full_sort=false;
         for(unsigned axis=0;axis<3;++axis) {
@@ -863,6 +880,7 @@ void Scene::update_bounds() {
                         axis+(side?3:0)];
                     if(i && less(moving,endpoints[i-1])) {
                         do {
+                            crossing(moving,endpoints[i-1]);
                             endpoints[i]=endpoints[i-1];
                             const auto& moved=endpoints[i];
                             sap_volumes_[moved.volume_slot].
@@ -879,6 +897,7 @@ void Scene::update_bounds() {
                     } else {
                         while(i+1<endpoints.size() &&
                               less(endpoints[i+1],moving)) {
+                            crossing(moving,endpoints[i+1]);
                             endpoints[i]=endpoints[i+1];
                             const auto& moved=endpoints[i];
                             sap_volumes_[moved.volume_slot].
@@ -959,62 +978,52 @@ void Scene::update_pairs() {
                                   previous_pairs_.end());
             return;
         }
-        std::sort(broadphase_updated_ids_.begin(),
-                  broadphase_updated_ids_.end());
-        const auto touched=[&](BodyId id) {
-            return std::binary_search(broadphase_updated_ids_.begin(),
-                                      broadphase_updated_ids_.end(),id);
-        };
-        broadphase_candidate_deltas_.clear();
-        for(BodyId id:broadphase_updated_ids_) {
-            const auto& actor=actors_[id];
-            const auto& a=actor.encoded_bounds;
-            // BpBroadPhaseSap::batchUpdateFewUpdates tests the two
-            // opposite axes on each candidate touched by moving
-            // endpoints. The x-min ordering bounds the candidate scan;
-            // a candidate with an earlier min still needs its max test.
-            for(const Endpoint& ep:sap_axis_endpoints_[0]) {
-                if(ep.value>a[3])break;
-                if(ep.is_max || ep.id==id)continue;
-                const auto& other=actors_[ep.id];
-                if(actor.kind!=Kind::DynamicBox &&
-                   other.kind!=Kind::DynamicBox)continue;
-                const auto& b=other.encoded_bounds;
-                if(a[0]>b[3] || b[0]>a[3] ||
-                   a[1]>b[4] || b[1]>a[4] ||
-                   a[2]>b[5] || b[2]>a[5])continue;
-                broadphase_candidate_deltas_.push_back(
-                    ordered_pair(id,ep.id));
-            }
-            // Infinite planes have no bounded SAP endpoint. Retain
-            // their source candidate semantics for changed dynamics.
-            if(actor.kind==Kind::DynamicBox)
-                for(BodyId plane:live_actor_ids_)
-                    if(actors_[plane].kind==Kind::StaticPlane &&
-                       actors_[plane].simulation_shape_enabled)
-                        broadphase_candidate_deltas_.push_back(
-                            ordered_pair(id,plane));
+        // BpBroadPhaseSap::batchUpdateFewUpdates: the three source
+        // endpoint axes contribute transient pair-start/pair-stop
+        // candidates at every cross-type endpoint crossing. Multiple
+        // axes can report the same pair. Reconcile each distinct pair
+        // once against the final encoded three-axis AABBs, then let
+        // Sc's existing authoritative pair-manager diff publish its
+        // exact Found/Lost edges.
+        auto& crossed=broadphase_crossed_pairs_;
+        std::sort(crossed.begin(),crossed.end());
+        crossed.erase(std::unique(crossed.begin(),crossed.end()),
+                      crossed.end());
+        if(crossed.empty()) {
+            pending_pairs_.assign(previous_pairs_.begin(),
+                                  previous_pairs_.end());
+            return;
         }
-        std::sort(broadphase_candidate_deltas_.begin(),
-                  broadphase_candidate_deltas_.end());
-        broadphase_candidate_deltas_.erase(
-            std::unique(broadphase_candidate_deltas_.begin(),
-                        broadphase_candidate_deltas_.end()),
-            broadphase_candidate_deltas_.end());
+        broadphase_candidate_deltas_.clear();
+        for(Pair pair:crossed) {
+            const Actor& a=actors_[pair.a];
+            const Actor& b=actors_[pair.b];
+            if(a.kind!=Kind::DynamicBox &&
+               b.kind!=Kind::DynamicBox)continue;
+            const auto& aa=a.encoded_bounds;
+            const auto& bb=b.encoded_bounds;
+            if(aa[0]>bb[3] || bb[0]>aa[3] ||
+               aa[1]>bb[4] || bb[1]>aa[4] ||
+               aa[2]>bb[5] || bb[2]>aa[5])continue;
+            broadphase_candidate_deltas_.push_back(pair);
+        }
+        // crossed and candidate_deltas are already in source pair-key
+        // order: filtering a sorted crossing stream preserves order.
         pending_pairs_.reserve(
             previous_pairs_.size()+broadphase_candidate_deltas_.size());
-        // Merge the old source pair stream after removing entries
-        // incident to mUpdated. No secondary persistent pair set, and
-        // unchanged managers retain their original handles/ordering.
+        // Preserve every published pair except the distinct
+        // endpoint-crossing candidates. In particular, an updated
+        // body's old contact manager survives unchanged when its
+        // motion never crosses the corresponding min/max boundary.
         std::size_t old_index=0,new_index=0;
-        const auto skip_touched=[&] {
+        const auto skip_crossed=[&] {
             while(old_index<previous_pairs_.size() &&
-                  (touched(previous_pairs_[old_index].a) ||
-                   touched(previous_pairs_[old_index].b)))
+                  std::binary_search(crossed.begin(),crossed.end(),
+                                     previous_pairs_[old_index]))
                 ++old_index;
         };
         for(;;) {
-            skip_touched();
+            skip_crossed();
             if(old_index==previous_pairs_.size() &&
                new_index==broadphase_candidate_deltas_.size())break;
             if(old_index==previous_pairs_.size() ||
