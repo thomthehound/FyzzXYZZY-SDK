@@ -745,6 +745,63 @@ int main() {
                         "Native GJK fallback contact differs from source default PCM");
             }
 
+            // An actual separated edge/edge pair: no SAT face witness,
+            // a positive Minkowski gap smaller than the source 5% box
+            // minimum-margin tolerance, and an ordinary 0.04 contact
+            // offset. Do not satisfy this with the legacy Gu oracle.
+            for(bool reversed:{false,true}) {
+                constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                constexpr fyzz::Vec3 at{
+                    1.0009765625f,1.0009765625f,0.0f};
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                fyzz::WorldOptions source_options{};
+                source_options.execution=
+                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                source_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World reference_pcm(source_options);
+                const auto author=[&](fyzz::World& world) {
+                    fyzz::BodyId moving=0;
+                    if(reversed) {
+                        moving=world.add_dynamic_box(half,at,1.0f);
+                        world.add_static_box(half,{0,0,0});
+                    } else {
+                        world.add_static_box(half,{0,0,0});
+                        moving=world.add_dynamic_box(half,at,1.0f);
+                    }
+                    fyzz::RigidBodyDynamics no_gravity{};
+                    no_gravity.gravity_enabled=false;
+                    world.set_body_dynamics(moving,no_gravity);
+                };
+                author(native_pcm);
+                author(reference_pcm);
+                native_pcm.step(1.0f/120.0f);
+                reference_pcm.step(1.0f/120.0f);
+                const auto got=native_pcm.contact_event_points();
+                const auto src=reference_pcm.contact_event_points();
+                if(got.size()!=1 || src.size()!=1) {
+                    std::cerr<<"PCM edge/edge default source reversed="
+                             <<reversed<<" native="<<got.size()
+                             <<" reference="<<src.size()<<'\n';
+                    throw std::runtime_error(
+                        "Default PhysX PCM edge/edge speculative witness missing");
+                }
+                const auto& a=got[0];
+                const auto& b=src[0];
+                const float ndot=a.normal.x*b.normal.x+
+                    a.normal.y*b.normal.y+a.normal.z*b.normal.z;
+                const float dx=a.position.x-b.position.x;
+                const float dy=a.position.y-b.position.y;
+                const float dz=a.position.z-b.position.z;
+                if(ndot<0.999f ||
+                   std::abs(a.separation-b.separation)>2e-4f ||
+                   dx*dx+dy*dy+dz*dz>1.0e-4f)
+                    throw std::runtime_error(
+                        "Native sub-margin edge/edge witness disagrees with stock PCM");
+            }
+
             // Independent stock PhysX PCM box/box oracle. This
             // intentionally does not select ReferencePhysXCpuLegacyGu.
             // Compare native production contact-report points after Dy
