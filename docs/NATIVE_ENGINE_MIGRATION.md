@@ -13,7 +13,7 @@ The original PhysX scheduler and GPU host pipeline **must be ported**, not ignor
 
 | Area | Current state | Destination |
 | --- | --- | --- |
-| `World` public API | Core facade; default reference PhysX CPU | Provider-neutral native scene facade, reference adapter removable |
+| `World` public API | Core facade; native CPU default, explicit reference selection | Provider-neutral native scene facade, reference adapter removable |
 | PhysX CPU scene | External PhysX source built for CPU and current Godot acceptance | Optional reference/test backend (build flag `FYZZXYZZY_ENABLE_PHYSX_SOURCE`); native CPU solver/narrowphase imported or ported into engine |
 | Portable Vulkan/D3D12 compute | Native buffer/dispatch/submission backends, stage fixtures | Device-scoped runtime serving native scene jobs |
 | PhysX GPU heap and CUDA-style address lowering | Source-derived internal code in SDK | Scene/device-owned allocations and deferred retirement, with no duplicate GPU buffer owner |
