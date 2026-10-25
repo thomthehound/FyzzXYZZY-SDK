@@ -1337,6 +1337,8 @@ std::uint8_t Scene::generate_pcm_box_box(
             angular_travel(qb,second.half_extents)>threshold_p;
     }
     bool direct_generated=false;
+    bool gjk_generated=false;
+    Vec3 gjk_normal_b{};
     if(regenerate) {
         cache.relative_position=relative;
         cache.relative_rotation=rotation;
@@ -1357,6 +1359,11 @@ std::uint8_t Scene::generate_pcm_box_box(
                     second.half_extents,second.position,second.orientation,
                     contact_distance,candidate,&cache.warmstart))
                 return 0;
+            // GJK output normal applies to the entire manifold in
+            // GuPCMContactBoxBox::pcmContactBoxBox, even when an older
+            // retained point occupies the first slot.
+            gjk_generated=true;
+            gjk_normal_b=candidate.normal_b;
             const PcmPersistentContact witness{
                 candidate.local_a,candidate.local_b,
                 candidate.normal_b,candidate.separation};
@@ -1495,7 +1502,32 @@ std::uint8_t Scene::generate_pcm_box_box(
         direct_generated=count>0;
     }
     if(cache.count==0)return 0;
-    const Vec3 normal=rotate(second.orientation,cache.points[0].normal_b);
+    // Direct face generation uses the first manifold normal. A newly
+    // generated GJK witness uses GjkOutput.normal. Quiet refresh takes
+    // getWorldNormal: the normalized sum of every retained local B
+    // normal, not an arbitrary point's normal.
+    Vec3 normal_b{};
+    if(gjk_generated)
+        normal_b=gjk_normal_b;
+    else if(direct_generated)
+        normal_b=cache.points[0].normal_b;
+    else
+        for(std::size_t i=0;i<cache.count;++i) {
+            const auto& n=cache.points[i].normal_b;
+            normal_b.x+=n.x;
+            normal_b.y+=n.y;
+            normal_b.z+=n.z;
+        }
+    const float normal_sq=normal_b.x*normal_b.x+
+        normal_b.y*normal_b.y+normal_b.z*normal_b.z;
+    if(!(normal_sq>0.0f) || !std::isfinite(normal_sq))
+        throw std::overflow_error("PCM box-box manifold normal invalid");
+    const float inverse_length=1.0f/std::sqrt(normal_sq);
+    const Vec3 normalized{
+        normal_b.x*inverse_length,
+        normal_b.y*inverse_length,
+        normal_b.z*inverse_length};
+    const Vec3 normal=rotate(second.orientation,normalized);
     std::uint8_t emitted=0;
     for(std::size_t i=0;i<cache.count;++i) {
         const auto& p=cache.points[i];
