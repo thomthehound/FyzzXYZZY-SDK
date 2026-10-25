@@ -50,9 +50,12 @@ including reference-free configurations. It records CPU query time and
 the scene-owned full-sort/local-shift and incremental-pair-update
 counters for unchanged AABBs, adjacent-key motion, repeated genuine
 contact-manager transitions, wide teleports and scenes with many retired
-BodyIds. Candidate-pair generation is based on changed volume AABBs;
-the original PhysX three-axis endpoint-crossing machinery remains a
-separate porting task. The profiler does not change regression or
+BodyIds. Sparse candidate pairs originate from PhysX-style
+three-axis min/max endpoint crossings, with orthogonal overlap tests
+and preservation of prior pairs requiring Lost publication. The
+original hashed `SapPairManager` and activity-pocket batch-update
+representation remain separate source-port tasks. The profiler also
+records min/max crossing candidates; it does not change regression or
 source-conformance acceptance criteria.
 
 Linux (after configuring `build-native` above):
