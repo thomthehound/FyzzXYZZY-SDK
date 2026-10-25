@@ -1481,14 +1481,28 @@ std::uint8_t Scene::generate_pcm_box_box(
             first.half_extents,first.position,first.orientation,
             second.half_extents,second.position,second.orientation,
             contact_distance,candidates,count);
-        if(!overlapping)return 0;
+        if(!overlapping) {
+            // A failed regeneration cannot retain refreshed witnesses:
+            // the new transform has no source PCM contact to publish.
+            cache.count=0;
+            cache.warmstart={};
+            return 0;
+        }
         if(count==0) {
             PcmContactCandidate candidate{};
             if(!source_pcm_box_box_gjk_epa(
                     first.half_extents,first.position,first.orientation,
                     second.half_extents,second.position,second.orientation,
-                    contact_distance,candidate,&cache.warmstart))
+                    contact_distance,candidate,&cache.warmstart)) {
+                // Gu did not publish a contact at this transform. Retaining
+                // refreshed old points would make the next quiet pass
+                // replay stale witnesses without running GJK/EPA.
+                // Retain the empty manifold's relative pose so an
+                // unchanged separation can use the ordinary PCM cache.
+                cache.count=0;
+                cache.warmstart={};
                 return 0;
+            }
             // GJK output normal applies to the entire manifold in
             // GuPCMContactBoxBox::pcmContactBoxBox, even when an older
             // retained point occupies the first slot.
