@@ -1526,6 +1526,15 @@ rigid-node active lists and persistent island handles are real source
 lowerings, but a correctly published graph does **not** establish full
 source island lifetime or task semantics.
 
+**Source wake/lost-edge dependency:** The admitted serial scene now
+executes speculative and accurate `wakeIslands` before third-pass
+lost-edge repair, matching source first/second/third-pass ordering.
+A pending wake propagates through the old island before the edge
+disconnect causes split migration. Collision-only publications retain
+sparse actor-motion rollback records for these early wakes; unchanged
+actors incur no motion copies. A dormant two-body regression requires
+the original wake propagation when the same publication loses its link.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`

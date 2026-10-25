@@ -23,6 +23,57 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
+    static void verify_wake_before_lost_edge_split() {
+        // A queued wake propagates through the pre-split island during
+        // source first/second-pass wakeIslands; third-pass route repair
+        // must not isolate a still-sleeping former contact partner first.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto lower=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        const auto upper=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,11,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        scene.set_dynamics(lower,dynamics);
+        scene.set_dynamics(upper,dynamics);
+        bool slept=false;
+        for(int frame=0;frame<240;++frame) {
+            scene.step(1.0f/120.0f);
+            if(scene.body_is_sleeping(lower) &&
+               scene.body_is_sleeping(upper)) {
+                slept=true;
+                break;
+            }
+        }
+        const Pair link{lower,upper};
+        if(!slept ||
+           scene.contact_edge_index(link)==
+               std::numeric_limits<std::uint32_t>::max() ||
+           scene.accurate_island_count()!=1)
+            throw std::runtime_error(
+                "Source wake/split test lacks a dormant linked island");
+        scene.set_velocity(upper,{0,0.25f,0});
+        if(!scene.body_is_sleeping(lower) ||
+           scene.body_is_sleeping(upper))
+            throw std::runtime_error(
+                "Source wake/split test lacks a queued island activation");
+        // Simulate an already-integrated transform entering the next
+        // Gu update. set_pose would separately wake cached Gu partners
+        // during authoring, obscuring this island ordering requirement.
+        auto& moved=scene.actors_[upper];
+        moved.position.x=4.0f;
+        moved.cached_bounds_current=false;
+        scene.dirty_=true;
+        scene.advance_collision(true);
+        if(scene.body_is_sleeping(lower) ||
+           scene.body_is_sleeping(upper) ||
+           scene.accurate_island_count()!=2 ||
+           std::find(scene.lost_contacts().begin(),
+                     scene.lost_contacts().end(),link)==
+               scene.lost_contacts().end())
+            throw std::runtime_error(
+                "Source lost-edge repair split before waking the old island");
+    }
     static void verify_mixed_pcm_legacy_cache_ownership() {
         // Source PxcNpCacheStreamPair indexes only legacy cached
         // contacts; Gu's published contact arena also includes PCM.
@@ -10239,6 +10290,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();

@@ -5519,7 +5519,7 @@ void Scene::publish_solver_bodies() {
     }
 }
 void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
-    if(!includes_solver_state || !scene.activity_checkpoint_active_)return;
+    if(!scene.activity_checkpoint_active_)return;
     if(scene.motion_undo_generations_[id]==scene.motion_undo_generation_)
         return;
     const Actor& body=scene.actors_[id];
@@ -5659,10 +5659,11 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     motions.clear();
-    if(capture_solver_state) {
-        // Activation can reach actors outside the previous active list.
-        // Reserve before entering the noexcept island publication, then
-        // journal each mutated dynamic body at most once this frame.
+    {
+        // Source wakeIslands can change actor state on collision-only
+        // publications before third-pass lost-edge repair. Save only
+        // actually changed bodies, not a dense copy on every query.
+        // Reserve before entering the noexcept island publication.
         if(++scene.motion_undo_generation_==0) {
             std::fill(scene.motion_undo_generations_.begin(),
                       scene.motion_undo_generations_.end(),0);
@@ -5933,7 +5934,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // Swaps cannot allocate or fail with the standard vector allocator.
     // In particular, pending angular impulses and the authoritative
     // previous-frame friction/threshold streams survive failed solves.
-    if(includes_solver_state) {
+    {
         for(const Motion& motion:motions) {
             auto& a=scene.actors_[motion.id];
             a.position=motion.position;
@@ -6201,8 +6202,10 @@ void Scene::step(float seconds) {
     speculative_islands_.initial_active_node_count=
         speculative_islands_.active_nodes.size();
     advance_collision_internal(false,true);
-    third_pass_island_gen();
+    // The source first/second-pass wakeIslands handoffs precede
+    // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
+    third_pass_island_gen();
     // Source wakeIslands publishes active island membership BEFORE
     // processLostEdges tests sleep readiness. Reconcile once even when
     // no island is ready, so the deactivation pass touches active roots
@@ -6566,6 +6569,10 @@ void Scene::advance_collision(bool force_update) {
         speculative_islands_.initial_active_node_count=
             speculative_islands_.active_nodes.size();
         advance_collision_internal(force_update,true);
+        // First/second-pass wakeIslands must see the old connected
+        // island before third-pass lost-edge repair can split it.
+        // Sparse motion journals restore these wakes if repair fails.
+        activate_published_islands();
         third_pass_island_gen();
         // A collision-only publication has no Dy consumers. The two
         // island repair passes have already joined, so handle retirement
@@ -6579,7 +6586,6 @@ void Scene::advance_collision(bool force_update) {
     // actors after the collision transaction has successfully committed.
     // Geometry-only checkpoints intentionally do not copy actor motion.
     activity_checkpoint_active_=false;
-    activate_published_islands();
     synchronize_active_island_nodes(true);
     deactivate_ready_islands();
     consume_contact_interaction_activity();
