@@ -259,6 +259,47 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Scene PCM manager lost sub-margin speculative contact");
         }
+        // Two unit boxes diagonally separated by an exact binary
+        // fraction share no projected reference/incident face region.
+        // The closest witnesses lie on parallel Z edges, separated by
+        // sqrt(2)*0.0009765625: below BoxV's 0.0025 EPA threshold,
+        // yet strictly greater than zero. SAT admits speculation; the
+        // native manager must retain one GJK edge/edge witness.
+        {
+            constexpr Vec3 half{0.5f,0.5f,0.5f};
+            constexpr float axis_gap=0.0009765625f;
+            constexpr Vec3 moving_at{
+                1.0009765625f,1.0009765625f,0};
+            constexpr float contact_distance=0.04f;
+            std::array<PcmContactCandidate,64> faces{};
+            std::size_t count=0;
+            if(!source_pcm_box_box_candidates(
+                    half,moving_at,{},half,{0,0,0},{},
+                    contact_distance,faces,count) || count!=0)
+                throw std::runtime_error(
+                    "PCM edge/edge fixture did not bypass incident faces");
+            PcmContactCandidate witness{};
+            if(!source_pcm_box_box_gjk_epa(
+                    half,moving_at,{},half,{0,0,0},{},
+                    contact_distance,witness) ||
+               std::abs(witness.separation-
+                   axis_gap*1.4142135623730951f)>2e-4f ||
+               witness.normal_b.x<0.69f ||
+               witness.normal_b.y<0.69f)
+                throw std::runtime_error(
+                    "PCM edge/edge small positive gap lost to EPA");
+            Scene scene;
+            scene.set_pcm_box_box(true);
+            scene.add_static_box(half,{0,0,0});
+            scene.add_dynamic_box(half,moving_at,1.0f);
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               scene.contacts()[0].count!=1 ||
+               std::abs(scene.contacts()[0].points[0].separation-
+                   witness.separation)>2e-4f)
+                throw std::runtime_error(
+                    "Production Sc PCM edge/edge contact disappeared");
+        }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
