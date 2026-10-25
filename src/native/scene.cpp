@@ -1537,6 +1537,11 @@ void Scene::retire_destroyed_contact_edges() {
     retired_edge_handles_.clear();
 }
 void Scene::publish_pairs() {
+    // Actor admission must grow both intrusive-head arrays even if source
+    // SAP produces no new pairs. A quiet overlap publication can still
+    // precede island-node admission for a newly created body.
+    speculative_node_first_.resize(actors_.size(),invalid_instance);
+    accurate_node_first_.resize(actors_.size(),invalid_instance);
     if(!broadphase_pair_membership_changed_) {
         // Real geometry work still feeds Gu, but an unchanged BP overlap
         // set must not copy or rotate persistent Sc EdgeIndex storage.
@@ -1556,8 +1561,6 @@ void Scene::publish_pairs() {
     next_edge_handles_.reserve(pending_pairs_.size());
     // Grow before linking any edge. List insertion/removal then has no
     // allocation, including in the source edge-retirement continuation.
-    speculative_node_first_.resize(actors_.size(),invalid_instance);
-    accurate_node_first_.resize(actors_.size(),invalid_instance);
     std::size_t old_index=0,new_index=0;
     while(old_index<previous_pairs_.size() ||
           new_index<pending_pairs_.size()) {
