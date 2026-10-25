@@ -362,6 +362,51 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Source waking constraint island retained stale deactivation");
     }
+    static void verify_island_node_type_counts() {
+        // Island ownership retains per-type counts independently from
+        // the aggregate size used for source merge/route decisions.
+        // No non-rigid type is faked with a rigid Actor or solver row.
+        Scene scene{};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,7,0},1.0f);
+        const auto k=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8,7,0},1.0f);
+        scene.set_kinematic(k,true);
+        scene.advance_collision();
+        const auto check=[&](std::size_t expected) {
+            for(const auto* graph:
+                {&scene.speculative_islands_,&scene.accurate_islands_}) {
+                const auto owner=graph->node_island[a];
+                if(owner==Scene::IslandGraph::invalid ||
+                   owner>=graph->islands.size())
+                    throw std::runtime_error("Rigid node has no source island");
+                const auto& island=graph->islands[owner];
+                if(!island.live || island.count!=expected ||
+                   island.node_type_counts[Scene::rigid_node_type_index]!=
+                       expected ||
+                   graph->node_island[k]!=Scene::IslandGraph::invalid)
+                    throw std::runtime_error(
+                        "Typed island aggregate/rigid ownership diverged");
+                for(std::size_t type=1;
+                    type<Scene::island_node_type_count;++type)
+                    if(island.node_type_counts[type]!=0)
+                        throw std::runtime_error(
+                            "Rigid island fabricated non-rigid node ownership");
+            }
+        };
+        check(1);
+        const auto edge=scene.add_distance_constraint(a,b,4.0f);
+        scene.advance_collision();
+        check(2);
+        scene.remove_constraint_edge(edge);
+        scene.advance_collision();
+        check(1);
+        scene.remove(b);
+        scene.advance_collision();
+        check(1);
+    }
     static void verify_typed_constraint_edge_lifetime() {
         // eCONSTRAINT and eCONTACT_MANAGER use the same EdgeIndex pool,
         // but each accurate island maintains a separate type list.
@@ -11415,6 +11460,7 @@ int run_native_scene_smoke() {
 #endif
     fyzz::native::ConstraintIslandSourceFixture::verify_prepublication_constraint_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
+    fyzz::native::ConstraintIslandSourceFixture::verify_island_node_type_counts();
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();

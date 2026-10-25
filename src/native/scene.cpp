@@ -2840,6 +2840,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             if(after!=invalid)graph.node_prev[after]=before;
             else graph.islands[owner].tail=before;
             --graph.islands[owner].count;
+            --graph.islands[owner].node_type_counts[rigid_node_type_index];
             const auto count=graph.node_static_touches[node];
             static_touches+=count;
             graph.islands[owner].static_touches-=count;
@@ -2851,6 +2852,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
         island.root=seed;
         island.tail=island_split_members_.back();
         island.count=island_split_members_.size();
+        island.node_type_counts[rigid_node_type_index]=island.count;
         island.static_touches=static_touches;
         // PhysX processLostEdges creates an active detached island when
         // the original island was active. Preserve this event order now,
@@ -3065,6 +3067,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         graph.node_next[winner.tail]=loser.root;
         winner.tail=loser.tail;
         winner.count+=loser.count;
+        for(std::size_t type=0;type<island_node_type_count;++type)
+            winner.node_type_counts[type]+=loser.node_type_counts[type];
         winner.static_touches+=loser.static_touches;
         if(&graph==&accurate_islands_) {
             // IslandSim::mergeEdges concatenates each source edge-type
@@ -3148,11 +3152,13 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 handle=graph.free_handles.back();
                 graph.free_handles.pop_back();
                 graph.islands[handle]={id,id,1,true};
+                graph.islands[handle].node_type_counts[rigid_node_type_index]=1;
             } else {
                 if(graph.islands.size()>=Graph::invalid)
                     throw std::overflow_error("Source island handles exhausted");
                 handle=static_cast<Graph::IslandId>(graph.islands.size());
                 graph.islands.push_back({id,id,1,true});
+                graph.islands.back().node_type_counts[rigid_node_type_index]=1;
             }
             graph.node_island[id]=handle;
             graph.node_next[id]=invalid;
@@ -3369,6 +3375,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             island.root=root;
             island.tail=root;
             island.count=members.size();
+            island.node_type_counts[rigid_node_type_index]=island.count;
             island.static_touches=static_touches;
             island.live=true;
             next.node_island[root]=handle;
@@ -4690,6 +4697,13 @@ void Scene::partition_constraints() {
         const BodyId root=accurate_island_nodes_[offset];
         const auto handle=accurate_islands_.node_island[root];
         const auto& island=accurate_islands_.islands[handle];
+        // The current Dy rigid PGS lowering consumes only registered
+        // rigid body nodes. A non-rigid node may belong to this island
+        // once its owning solver path is installed, but must never be
+        // accidentally lowered as a PxSolverBody by this path.
+        if(island.node_type_counts[rigid_node_type_index]!=island.count)
+            throw std::logic_error(
+                "Non-rigid island node requires its own solver admission");
         std::size_t count=0;
         for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
             edge=island_edges_[edge].island_next) {

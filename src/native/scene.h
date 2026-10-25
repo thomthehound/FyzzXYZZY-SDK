@@ -515,6 +515,18 @@ private:
     enum class Kind : std::uint8_t {
         StaticBox, DynamicBox, StaticPlane, KinematicBox
     };
+    // Node::NodeType is independent of actor kind. Kinematics retain
+    // rigid node identity but no island assignment. Other node classes
+    // require their own non-rigid simulation owners, not rigid Actor
+    // records or arbitrary PGS solver-body substitutions.
+    enum class IslandNodeType : std::uint8_t {
+        RigidBody, Articulation, DeformableSurface, DeformableVolume,
+        ParticleSystem, Count
+    };
+    static constexpr std::size_t island_node_type_count=
+        static_cast<std::size_t>(IslandNodeType::Count);
+    static constexpr std::size_t rigid_node_type_index=
+        static_cast<std::size_t>(IslandNodeType::RigidBody);
     // Kinematics are rigid-body nodes with valid EdgeInstances but
     // INVALID island IDs. Only ordinary dynamic boxes enter Dy PGS.
     static constexpr bool rigid_node(Kind kind) noexcept {
@@ -871,6 +883,10 @@ private:
             std::size_t constraint_count=0;
             // mActiveIndex, invalid outside the source mActiveIslands list.
             std::size_t active_index=invalid_instance;
+            // Per-node-type membership, distinct from the aggregate
+            // island size used by source merge/split heuristics. A new
+            // node category must never be admitted as a rigid body.
+            std::array<std::size_t,island_node_type_count> node_type_counts{};
         };
         std::vector<Island> islands;
         std::vector<IslandId> active_islands;
