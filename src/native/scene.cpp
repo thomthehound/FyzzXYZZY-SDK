@@ -760,74 +760,100 @@ void Scene::update_actor_bounds(Actor& actor) {
         actor.cached_bounds_current=true;
 }
 void Scene::update_bounds() {
-    // BpAABBManager/ScPipeline preserve volume membership independently
-    // of the fixed BodyId arena. Rebuild the x-min projection only when
-    // admission, retirement or shape refiltering changes membership.
-    // Otherwise reuse the prior source SAP endpoint order and update
-    // only its cached AABB keys.
+    // BpBroadPhaseSap::batchCreate/mBoxBoundsMinMax:
+    // physical min/max endpoints are retained on every axis; live
+    // actor membership is still owned by BpAABBManager's scene proxy
+    // list, not by the stable BodyId high-water mark.
     const auto less=[](Endpoint a,Endpoint b) {
-        return a.min_x<b.min_x ||
-            (a.min_x==b.min_x && a.id<b.id);
+        if(a.value!=b.value)return a.value<b.value;
+        // Source encoded min and max have different low bits.
+        // The deterministic fallback for equal encoded keys does
+        // not change the broadphase inclusive-overlap predicate.
+        if(a.is_max!=b.is_max)return !a.is_max;
+        return a.id<b.id;
     };
     broadphase_updated_ids_.clear();
     broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
     try {
         if(broadphase_endpoint_membership_dirty_) {
-            endpoints_.clear();
-            endpoints_.reserve(live_actor_ids_.size());
+            sap_volumes_.clear();
+            sap_volumes_.reserve(live_actor_ids_.size());
+            for(auto& axis:sap_axis_endpoints_) {
+                axis.clear();
+                axis.reserve(live_actor_ids_.size()*2);
+            }
             for(BodyId id:live_actor_ids_) {
                 Actor& actor=actors_[id];
                 if(!actor.simulation_shape_enabled ||
                    actor.kind==Kind::StaticPlane)continue;
                 if(!actor.cached_bounds_current)
                     update_actor_bounds(actor);
-                endpoints_.push_back({
-                    actor.encoded_bounds[0],id,actor.encoded_bounds});
+                const auto& bounds=actor.encoded_bounds;
+                sap_volumes_.push_back({id,bounds});
+                for(unsigned axis=0;axis<3;++axis) {
+                    sap_axis_endpoints_[axis].push_back({
+                        bounds[axis],id,false});
+                    sap_axis_endpoints_[axis].push_back({
+                        bounds[axis+3],id,true});
+                }
             }
-            std::sort(endpoints_.begin(),endpoints_.end(),less);
+            for(auto& axis:sap_axis_endpoints_)
+                std::sort(axis.begin(),axis.end(),less);
             ++broadphase_endpoint_full_sort_count_;
             broadphase_endpoint_membership_dirty_=false;
             return;
         }
-        for(Endpoint& ep:endpoints_) {
-            Actor& actor=actors_[ep.id];
+        // The source mUpdated handles are derived from actual encoded
+        // bounds changes, not an authored-pose bit on an unchanged AABB.
+        for(SapVolume& volume:sap_volumes_) {
+            Actor& actor=actors_[volume.id];
             if(!actor.cached_bounds_current)
                 update_actor_bounds(actor);
-            if(ep.published_bounds!=actor.encoded_bounds) {
-                broadphase_updated_ids_.push_back(ep.id);
-                ep.published_bounds=actor.encoded_bounds;
+            if(volume.published_bounds!=actor.encoded_bounds) {
+                broadphase_updated_ids_.push_back(volume.id);
+                volume.published_bounds=actor.encoded_bounds;
             }
-            ep.min_x=actor.encoded_bounds[0];
         }
-        // BpBroadPhaseSap performs insertion-like endpoint shifts
-        // when shapes move locally. The exact encoded-key/BodyId
-        // ordering is unchanged. Bound the total shift work to avoid
-        // quadratic behavior on teleports or broadly shuffled scenes:
-        // that case uses std::sort on this same scene-owned array.
+        if(broadphase_updated_ids_.empty())return;
+
+        // Source BroadPhaseSap::batchUpdate performs local endpoint
+        // shifts with a bounded fallback for broadly reordered data.
+        // Update both min and max endpoints on all three axes.
         const std::size_t budget=std::max<std::size_t>(
-            16,endpoints_.size()/4);
+            16,sap_volumes_.size()/4);
         std::size_t shifts=0;
-        for(std::size_t i=1;i<endpoints_.size();++i) {
-            Endpoint moving=endpoints_[i];
-            std::size_t j=i;
-            while(j>0 && less(moving,endpoints_[j-1])) {
-                endpoints_[j]=endpoints_[j-1];
-                --j;
-                ++shifts;
-                if(shifts>budget)break;
+        bool full_sort=false;
+        for(unsigned axis=0;axis<3;++axis) {
+            auto& endpoints=sap_axis_endpoints_[axis];
+            for(Endpoint& ep:endpoints) {
+                const Actor& actor=actors_[ep.id];
+                ep.value=actor.encoded_bounds[axis+(ep.is_max?3:0)];
             }
-            endpoints_[j]=moving;
-            if(shifts>budget) {
-                std::sort(endpoints_.begin(),endpoints_.end(),less);
-                ++broadphase_endpoint_full_sort_count_;
-                break;
+            std::size_t axis_shifts=0;
+            for(std::size_t i=1;i<endpoints.size();++i) {
+                Endpoint moving=endpoints[i];
+                std::size_t j=i;
+                while(j>0 && less(moving,endpoints[j-1])) {
+                    endpoints[j]=endpoints[j-1];
+                    --j;
+                    ++axis_shifts;
+                    if(axis_shifts>budget)break;
+                }
+                endpoints[j]=moving;
+                if(axis_shifts>budget) {
+                    std::sort(endpoints.begin(),endpoints.end(),less);
+                    full_sort=true;
+                    break;
+                }
             }
+            shifts+=axis_shifts;
         }
+        if(full_sort)++broadphase_endpoint_full_sort_count_;
         broadphase_endpoint_local_shift_count_+=shifts;
     } catch (...) {
-        // AABB encode or vector growth may throw. The published
-        // collision/pair arenas are restored by StepCheckpoint; this
-        // private projection must rebuild from the rolled-back bodies.
+        // AABB encoding or reserved endpoint allocation can fail.
+        // The source-owned pair/contact checkpoint restores the last
+        // published view; rebuild derived axes on the next publication.
         broadphase_endpoint_membership_dirty_=true;
         throw;
     }
@@ -861,7 +887,7 @@ void Scene::update_pairs() {
     // Large changes or source BpAABBManager membership edits use the
     // original complete x-axis SAP sweep, never an approximate pair.
     const bool few_updates=!broadphase_full_pair_update_ &&
-        broadphase_updated_ids_.size()*5<endpoints_.size();
+        broadphase_updated_ids_.size()*5<sap_volumes_.size();
     if(few_updates) {
         ++broadphase_incremental_pair_update_count_;
         if(broadphase_updated_ids_.empty()) {
@@ -883,9 +909,9 @@ void Scene::update_pairs() {
             // opposite axes on each candidate touched by moving
             // endpoints. The x-min ordering bounds the candidate scan;
             // a candidate with an earlier min still needs its max test.
-            for(const Endpoint& ep:endpoints_) {
-                if(ep.min_x>a[3])break;
-                if(ep.id==id)continue;
+            for(const Endpoint& ep:sap_axis_endpoints_[0]) {
+                if(ep.value>a[3])break;
+                if(ep.is_max || ep.id==id)continue;
                 const auto& other=actors_[ep.id];
                 if(actor.kind!=Kind::DynamicBox &&
                    other.kind!=Kind::DynamicBox)continue;
@@ -946,17 +972,19 @@ void Scene::update_pairs() {
     }
 
     active_.clear();
-    // Complete SAP path for structural or widely distributed changes.
-    // Preserve source exact encoded inclusive overlap and sorted pairs.
-    for(Endpoint ep:endpoints_) {
-        const auto& actor=actors_[ep.id];
+    // Source BpBroadPhaseSap walks sorted x-min/x-max endpoints.
+    // On min, pairs are tested against still-active boxes on y/z;
+    // on max, that box leaves the active interval. The ordering is
+    // stable and the same encoded integer bounds are used by Gu.
+    for(const Endpoint ep:sap_axis_endpoints_[0]) {
+        if(ep.is_max) {
+            std::erase(active_,ep.id);
+            continue;
+        }
+        const Actor& actor=actors_[ep.id];
         const auto& a=actor.encoded_bounds;
-        active_.erase(std::remove_if(active_.begin(),active_.end(),
-            [&](BodyId id) {
-                return actors_[id].encoded_bounds[3]<ep.min_x;
-            }),active_.end());
         for(BodyId other_id:active_) {
-            const auto& other=actors_[other_id];
+            const Actor& other=actors_[other_id];
             if(actor.kind!=Kind::DynamicBox &&
                other.kind!=Kind::DynamicBox)continue;
             const auto& b=other.encoded_bounds;
@@ -966,15 +994,15 @@ void Scene::update_pairs() {
         }
         active_.push_back(ep.id);
     }
-    // The infinite plane is only a broadphase candidate. The actual
-    // Gu narrowphase remains the sole authority for contact.
+    // Infinite source planes have no finite endpoint and therefore
+    // remain separate candidate broadphase shapes, as before.
     for(BodyId plane:live_actor_ids_) {
-        const auto& actor=actors_[plane];
+        const Actor& actor=actors_[plane];
         if(!actor.simulation_shape_enabled ||
            actor.kind!=Kind::StaticPlane)continue;
-        for(Endpoint ep:endpoints_)
-            if(actors_[ep.id].kind==Kind::DynamicBox)
-                pending_pairs_.push_back(ordered_pair(plane,ep.id));
+        for(const SapVolume& volume:sap_volumes_)
+            if(actors_[volume.id].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(ordered_pair(plane,volume.id));
     }
     std::sort(pending_pairs_.begin(),pending_pairs_.end());
     pending_pairs_.erase(
