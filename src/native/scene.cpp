@@ -360,8 +360,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
-                if(pcm_plane_box_enabled_)edge.pcm_plane_box={};
-                if(pcm_box_box_enabled_)edge.pcm_box_box={};
+                edge.pcm_cache={};
                 invalidated=true;
             }
         }
@@ -575,8 +574,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
-                if(pcm_plane_box_enabled_)edge.pcm_plane_box={};
-                if(pcm_box_box_enabled_)edge.pcm_box_box={};
+                edge.pcm_cache={};
             }
         }
     actor.contact_offset=contact_offset;
@@ -1136,7 +1134,7 @@ void Scene::publish_pairs() {
     ++pair_epoch_;
 }
 void Scene::reduce_pcm_box_five(
-    PcmPlaneBoxCache& cache,const PcmPersistentContact& new_contact) {
+    PcmManifoldCache& cache,const PcmPersistentContact& new_contact) {
     // GuPersistentContactManifold.cpp::reduceContactsForPCM. The fifth
     // witness enters a four-contact cache without discarding its spatial
     // coverage or ignoring the previous points' depth ordering.
@@ -1249,7 +1247,7 @@ void Scene::reduce_pcm_box_five(
         cache.points[replace]=candidates[unselected];
 }
 void Scene::refresh_pcm_contact_points(
-    PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
+    PcmManifoldCache& cache, Vec3 position_a_in_b,
     Quat rotation_a_in_b, float projection_break) {
     // Refresh every retained witness in the second shape's local frame.
     // Removing a witness swaps in the last point, preserving the source
@@ -1284,7 +1282,7 @@ void Scene::refresh_pcm_contact_points(
 }
 std::uint8_t Scene::generate_pcm_box_box(
     const Actor& first, const Actor& second, float contact_distance,
-    PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
+    PcmManifoldCache& cache, std::span<ContactPoint> output) {
     // GuPCMContactBoxBox.cpp::pcmContactBoxBox, operating on the same
     // Sc contact-manager edge used for islands, rollback and PGS.
     // A-to-B relative transform and each contact normal are B-local.
@@ -1519,7 +1517,7 @@ std::uint8_t Scene::generate_pcm_box_box(
 }
 std::uint8_t Scene::generate_pcm_plane_box(
     const Actor& plane, const Actor& box, float contact_distance,
-    PcmPlaneBoxCache& cache, std::span<ContactPoint> output) {
+    PcmManifoldCache& cache, std::span<ContactPoint> output) {
     // GuPCMContactPlaneBox.cpp::pcmContactPlaneBox and
     // GuPersistentContactManifold.h::refreshContactPoints. The SDK
     // floor's +Y normal is original PhysX plane-local +X. The cache
@@ -1771,7 +1769,7 @@ void Scene::update_contacts() {
                 throw std::logic_error(
                     "PCM plane-box requires the admitted dynamic box");
             manifold.count=generate_pcm_plane_box(
-                plane,box,contact_distance,contact_edges_[edge].pcm_plane_box,
+                plane,box,contact_distance,contact_edges_[edge].pcm_cache,
                 std::span<ContactPoint>(box_contact_scratch_));
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
@@ -1781,7 +1779,7 @@ void Scene::update_contacts() {
             step_checkpoint_.save_edge(*this,edge);
             manifold.count=generate_pcm_box_box(
                 first,second,contact_distance,
-                contact_edges_[edge].pcm_box_box,
+                contact_edges_[edge].pcm_cache,
                 std::span<ContactPoint>(box_contact_scratch_));
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
