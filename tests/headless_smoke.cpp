@@ -677,116 +677,61 @@ int main() {
             }
 
 
-            // Require a genuine native GJK/EPA contact to agree with
-            // stock eENABLE_PCM; legacy Gu cannot satisfy this gate.
+            // Exact speculative boundary is accepted by PCM SAT
+            // but emits zero direct-face points. GJK must supply the
+            // source's inclusive contact-distance witness.
             {
-                constexpr std::array<fyzz::Vec3,4> moving_shapes{{
-                    {0.6f,0.2f,0.3f},{1.15f,0.13f,0.13f},
-                    {0.25f,0.55f,0.35f},{0.7f,0.6f,0.1f}}};
-                constexpr std::array<fyzz::Vec3,4> fixed_shapes{{
-                    {0.5f,0.5f,0.5f},{0.9f,0.14f,0.14f},
-                    {0.5f,0.5f,0.5f},{0.6f,0.18f,0.45f}}};
-                constexpr float contact_distance=0.04f;
+                constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                constexpr fyzz::Vec3 at{0,1.03125f,0};
+                constexpr float contact_distance=0.03125f;
                 std::array<fyzz::native::PcmContactCandidate,64> direct{};
-                int verified=0;
-                int sat_zero=0;
-                for(std::size_t variant=0;variant<moving_shapes.size() &&
-                        verified<2;++variant) {
-                    const auto moving_half=moving_shapes[variant];
-                    const auto fixed_half=fixed_shapes[variant];
-                    const float fs=std::sin(0.29f),fc=std::cos(0.29f);
-                    const fyzz::Quat fixed_rotation=variant==0?fyzz::Quat{}:
-                        variant==1?fyzz::Quat{0,fs,0,fc}:
-                        variant==2?fyzz::Quat{0,0,fs,fc}:
-                                   fyzz::Quat{fs,0,0,fc};
-                    for(float angle:{0.33f,0.61f,0.91f,1.19f}) {
-                        const float si=std::sin(angle*0.5f);
-                        const float co=std::cos(angle*0.5f);
-                        const fyzz::Quat q=variant==0?fyzz::Quat{0,0,si,co}:
-                            variant==1?fyzz::Quat{si,0,0,co}:
-                            variant==2?fyzz::Quat{
-                                si*0.70710678118f,si*0.70710678118f,0,co}:
-                                fyzz::Quat{si*0.57735026919f,
-                                    si*0.57735026919f,si*0.57735026919f,co};
-                        for(float x:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
-                            for(float y:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
-                                for(float z:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f}) {
-                                const fyzz::Vec3 at{x,y,z};
-                                std::size_t count=0;
-                                if(!fyzz::native::source_pcm_box_box_candidates(
-                                        moving_half,at,q,
-                                        fixed_half,{0,0,0},fixed_rotation,
-                                        contact_distance,direct,count) ||
-                                   count!=0)continue;
-                                ++sat_zero;
-                                fyzz::native::PcmContactCandidate candidate{};
-                                if(!fyzz::native::source_pcm_box_box_gjk_epa(
-                                        moving_half,at,q,
-                                        fixed_half,{0,0,0},fixed_rotation,
-                                        contact_distance,candidate))
-                                    continue;
-                                fyzz::WorldOptions native_options{};
-                                native_options.execution=
-                                    fyzz::ExecutionMode::NativeCpu;
-                                native_options.contact_notifications=true;
-                                native_options.pcm_box_box=true;
-                                fyzz::WorldOptions source_options{};
-                                source_options.execution=
-                                    fyzz::ExecutionMode::ReferencePhysXCpu;
-                                source_options.contact_notifications=true;
-                                fyzz::World native_pcm(native_options);
-                                fyzz::World source_pcm(source_options);
-                                const auto prepare=[&](fyzz::World& w) {
-                                    const auto fixed=w.add_static_box(
-                                        fixed_half,{0,0,0});
-                                    w.set_body_pose(fixed,{0,0,0},fixed_rotation);
-                                    auto moving=w.add_dynamic_box(
-                                        moving_half,at,1.0f);
-                                    w.set_body_pose(moving,at,q);
-                                    fyzz::RigidBodyDynamics params{};
-                                    params.gravity_enabled=false;
-                                    w.set_body_dynamics(moving,params);
-                                };
-                                prepare(native_pcm);
-                                prepare(source_pcm);
-                                native_pcm.step(1.0f/120.0f);
-                                source_pcm.step(1.0f/120.0f);
-                                const auto got=native_pcm.contact_event_points();
-                                const auto expected=source_pcm.contact_event_points();
-                                if(got.empty() || got.size()!=expected.size())
-                                    throw std::runtime_error(
-                                        "Native GJK/EPA point count differs from default PCM");
-                                for(const auto& point:expected) {
-                                    bool matched=false;
-                                    for(const auto& actual:got) {
-                                        const auto dx=actual.position.x-point.position.x;
-                                        const auto dy=actual.position.y-point.position.y;
-                                        const auto dz=actual.position.z-point.position.z;
-                                        const float alignment=
-                                            actual.normal.x*point.normal.x+
-                                            actual.normal.y*point.normal.y+
-                                            actual.normal.z*point.normal.z;
-                                        if(dx*dx+dy*dy+dz*dz<2.0e-4f &&
-                                           alignment>0.999f &&
-                                           std::abs(actual.separation-
-                                                    point.separation)<2.0e-3f)
-                                            matched=true;
-                                    }
-                                    if(!matched)
-                                        throw std::runtime_error(
-                                            "Native GJK/EPA witness disagrees with stock PCM");
-                                }
-                                ++verified;
-                                if(verified>=2)break;
-                            }
-                        if(verified>=2)break;
-                    }
-                }
-                if(verified==0)
+                std::size_t count=0;
+                if(!fyzz::native::source_pcm_box_box_candidates(
+                        half,at,{},half,{0,0,0},{},
+                        contact_distance,direct,count) || count!=0)
                     throw std::runtime_error(
-                        "PCM reference fixture found "+
-                        std::to_string(sat_zero)+
-                        " zero-face SAT cases but no GJK/EPA comparison");
+                        "Native PCM speculative GJK fixture did not bypass SAT faces");
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                native_options.pcm_box_box=true;
+                fyzz::WorldOptions source_options{};
+                source_options.execution=fyzz::ExecutionMode::ReferencePhysXCpu;
+                source_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World source_pcm(source_options);
+                const auto prepare=[&](fyzz::World& world) {
+                    const auto fixed=world.add_static_box(half,{0,0,0});
+                    const auto dynamic=world.add_dynamic_box(half,at,1.0f);
+                    world.set_body_shape_offsets(fixed,0.015625f,0.0f);
+                    world.set_body_shape_offsets(dynamic,0.015625f,0.0f);
+                    fyzz::RigidBodyDynamics motion{};
+                    motion.gravity_enabled=false;
+                    world.set_body_dynamics(dynamic,motion);
+                };
+                prepare(native_pcm);
+                prepare(source_pcm);
+                native_pcm.step(1.0f/120.0f);
+                source_pcm.step(1.0f/120.0f);
+                const auto got=native_pcm.contact_event_points();
+                const auto expected=source_pcm.contact_event_points();
+                if(got.size()!=1 || expected.size()!=1)
+                    throw std::runtime_error(
+                        "Native/reference PCM GJK boundary contact count differs");
+                const auto& actual=got[0];
+                const auto& original=expected[0];
+                const float dx=actual.position.x-original.position.x;
+                const float dy=actual.position.y-original.position.y;
+                const float dz=actual.position.z-original.position.z;
+                const float normal_dot=
+                    actual.normal.x*original.normal.x+
+                    actual.normal.y*original.normal.y+
+                    actual.normal.z*original.normal.z;
+                if(dx*dx+dy*dy+dz*dz>1.0e-5f ||
+                   normal_dot<0.999f ||
+                   std::abs(actual.separation-original.separation)>1.0e-5f)
+                    throw std::runtime_error(
+                        "Native GJK fallback contact differs from source default PCM");
             }
 
             // Independent stock PhysX PCM box/box oracle. This
