@@ -1133,6 +1133,134 @@ void Scene::publish_pairs() {
     active_edge_handles_.swap(next_edge_handles_);
     ++pair_epoch_;
 }
+void Scene::reduce_pcm_box_batch(
+    PcmManifoldCache& cache,
+    std::span<const PcmContactCandidate> contacts,
+    float tolerance_length) {
+    // GuPersistentContactManifold.cpp::reduceBatchContacts.
+    // Preserve source candidate swap-last removal, signed transverse
+    // extrema and 2%-of-tolerance-depth post-processing. In particular,
+    // choosing the point farthest from a segment is NOT interchangeable
+    // with source's signed third/fourth-point selection.
+    if(contacts.size()<=4 || contacts.size()>64)
+        throw std::logic_error("PCM box-box batch reduction requires 5-64 points");
+    std::array<std::uint8_t,64> available{};
+    for(std::size_t i=0;i<contacts.size();++i)
+        available[i]=static_cast<std::uint8_t>(i);
+    std::size_t remaining=contacts.size();
+    std::array<std::uint8_t,4> selected{};
+    const auto subtract=[](Vec3 a,Vec3 b) {
+        return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
+    };
+    const auto dot=[](Vec3 a,Vec3 b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
+    };
+    const auto squared=[&](Vec3 v) {return dot(v,v);};
+    float deepest_depth=contacts[0].separation;
+    float shallowest_depth=deepest_depth;
+    std::size_t deepest=0;
+    for(std::size_t i=1;i<remaining;++i) {
+        const float depth=contacts[i].separation;
+        shallowest_depth=std::max(shallowest_depth,depth);
+        if(deepest_depth>depth) {
+            deepest_depth=depth;
+            deepest=i;
+        }
+    }
+    selected[0]=static_cast<std::uint8_t>(deepest);
+    available[deepest]=available[--remaining];
+    std::size_t furthest_position=0;
+    float farthest_squared=squared(subtract(
+        contacts[available[0]].local_b,
+        contacts[selected[0]].local_b));
+    for(std::size_t i=1;i<remaining;++i) {
+        const float value=squared(subtract(
+            contacts[available[i]].local_b,
+            contacts[selected[0]].local_b));
+        if(value>farthest_squared) {
+            farthest_squared=value;
+            furthest_position=i;
+        }
+    }
+    selected[1]=available[furthest_position];
+    available[furthest_position]=available[--remaining];
+    const Vec3 baseline=subtract(
+        contacts[selected[1]].local_b,
+        contacts[selected[0]].local_b);
+    Vec3 transverse=cross(baseline,contacts[selected[0]].normal_b);
+    const float transverse_squared=squared(transverse);
+    if(transverse_squared>0.0f) {
+        const float inv=1.0f/std::sqrt(transverse_squared);
+        transverse={transverse.x*inv,transverse.y*inv,transverse.z*inv};
+    } else
+        transverse=contacts[selected[0]].normal_b;
+    float greatest=-std::numeric_limits<float>::max();
+    float least=std::numeric_limits<float>::max();
+    std::size_t greatest_position=0;
+    std::size_t least_position=0;
+    for(std::size_t i=0;i<remaining;++i) {
+        const float side=dot(
+            subtract(contacts[available[i]].local_b,
+                     contacts[selected[0]].local_b),
+            transverse);
+        if(side>greatest) {
+            greatest=side;
+            greatest_position=i;
+        }
+        if(side<least) {
+            least=side;
+            least_position=i;
+        }
+    }
+    selected[2]=available[greatest_position];
+    available[greatest_position]=available[--remaining];
+    if(least_position==remaining)
+        least_position=greatest_position;
+    // This source branch deliberately selects the maximum remaining
+    // signed side again when the extrema lie on the same side.
+    if(least*greatest>0.0f) {
+        greatest=-std::numeric_limits<float>::max();
+        for(std::size_t i=0;i<remaining;++i) {
+            const float side=dot(
+                subtract(contacts[available[i]].local_b,
+                         contacts[selected[0]].local_b),
+                transverse);
+            if(side>greatest) {
+                greatest=side;
+                least_position=i;
+            }
+        }
+    }
+    selected[3]=available[least_position];
+    available[least_position]=available[--remaining];
+    const float threshold=tolerance_length*0.02f;
+    if(deepest_depth<threshold && shallowest_depth>threshold) {
+        for(std::size_t i=0;i<selected.size();++i) {
+            float depth=contacts[selected[i]].separation;
+            if(depth>threshold) {
+                std::size_t replacement=remaining;
+                for(std::size_t j=0;j<remaining;++j) {
+                    const float candidate_depth=
+                        contacts[available[j]].separation;
+                    if(depth>candidate_depth &&
+                       threshold>candidate_depth) {
+                        depth=candidate_depth;
+                        replacement=j;
+                    }
+                }
+                if(replacement<remaining)
+                    std::swap(selected[i],available[replacement]);
+            }
+        }
+    }
+    for(std::size_t i=0;i<4;++i) {
+        const auto& c=contacts[selected[i]];
+        cache.points[i]={
+            c.local_a,c.local_b,c.normal_b,c.separation};
+    }
+    cache.count=4;
+}
+
 void Scene::reduce_pcm_box_five(
     PcmManifoldCache& cache,const PcmPersistentContact& new_contact) {
     // GuPersistentContactManifold.cpp::reduceContactsForPCM. The fifth
@@ -1402,104 +1530,10 @@ std::uint8_t Scene::generate_pcm_box_box(
             }
             cache.count=static_cast<std::uint8_t>(count);
         } else {
-            cache.count=0;
-            // GuPersistentContactManifold.cpp::reduceBatchContacts:
-            // deepest, furthest, transverse extrema, then replace
-            // separated witnesses using the original 0.02 tolerance.
-            std::array<std::uint8_t,64> remaining{};
-            for(std::size_t i=0;i<count;++i)
-                remaining[i]=static_cast<std::uint8_t>(i);
-            auto sq=[](Vec3 v) {
-                return v.x*v.x+v.y*v.y+v.z*v.z;
-            };
-            auto diff=[](Vec3 a,Vec3 b) {
-                return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
-            };
-            auto dot=[](Vec3 a,Vec3 b) {
-                return a.x*b.x+a.y*b.y+a.z*b.z;
-            };
-            std::size_t deepest=0;
-            float min_pen=candidates[0].separation;
-            float max_pen=min_pen;
-            for(std::size_t i=1;i<count;++i) {
-                min_pen=std::max(min_pen,candidates[i].separation);
-                if(candidates[i].separation<max_pen) {
-                    max_pen=candidates[i].separation;
-                    deepest=i;
-                }
-            }
-            std::array<std::uint8_t,4> selected{};
-            selected[0]=static_cast<std::uint8_t>(deepest);
-            std::size_t available=count;
-            remaining[deepest]=remaining[--available];
-            std::size_t best=0;
-            float furthest=-1.0f;
-            for(std::size_t i=0;i<available;++i) {
-                const float distance=sq(diff(
-                    candidates[remaining[i]].local_b,
-                    candidates[selected[0]].local_b));
-                if(distance>furthest){furthest=distance;best=i;}
-            }
-            selected[1]=remaining[best];
-            remaining[best]=remaining[--available];
-            const Vec3 baseline=diff(candidates[selected[1]].local_b,
-                                     candidates[selected[0]].local_b);
-            const Vec3 n=candidates[selected[0]].normal_b;
-            Vec3 transverse=cross(baseline,n);
-            const float transverse_sq=sq(transverse);
-            if(transverse_sq>0.0f) {
-                const float inv=1.0f/std::sqrt(transverse_sq);
-                transverse={transverse.x*inv,transverse.y*inv,
-                            transverse.z*inv};
-            } else transverse=n;
-            float largest=-std::numeric_limits<float>::max();
-            float smallest=std::numeric_limits<float>::max();
-            std::size_t top=0,bottom=0;
-            for(std::size_t i=0;i<available;++i) {
-                const float side=dot(diff(candidates[remaining[i]].local_b,
-                                         candidates[selected[0]].local_b),
-                                     transverse);
-                if(side>largest){largest=side;top=i;}
-                if(side<smallest){smallest=side;bottom=i;}
-            }
-            selected[2]=remaining[top];
-            remaining[top]=remaining[--available];
-            if(bottom==available)bottom=top;
-            if(smallest*largest>0.0f) {
-                largest=-std::numeric_limits<float>::max();
-                for(std::size_t i=0;i<available;++i) {
-                    const float side=dot(diff(candidates[remaining[i]].local_b,
-                                             candidates[selected[0]].local_b),
-                                         transverse);
-                    if(side>largest){largest=side;bottom=i;}
-                }
-            }
-            selected[3]=remaining[bottom];
-            remaining[bottom]=remaining[--available];
-            const float eps=0.02f; // PxTolerancesScale.length = 1
-            if(max_pen<eps && min_pen>eps) {
-                for(std::size_t i=0;i<4;++i) {
-                    float pen=candidates[selected[i]].separation;
-                    if(pen>eps) {
-                        std::size_t candidate=available;
-                        for(std::size_t j=0;j<available;++j) {
-                            const float value=
-                                candidates[remaining[j]].separation;
-                            if(value<pen && value<eps) {
-                                pen=value;
-                                candidate=j;
-                            }
-                        }
-                        if(candidate<available)
-                            std::swap(selected[i],remaining[candidate]);
-                    }
-                }
-            }
-            for(std::size_t i=0;i<4;++i) {
-                const auto& c=candidates[selected[i]];
-                cache.points[i]={c.local_a,c.local_b,c.normal_b,c.separation};
-            }
-            cache.count=4;
+            reduce_pcm_box_batch(cache,
+                std::span<const PcmContactCandidate>{
+                    candidates.data(),count},
+                1.0f); // source PxTolerancesScale.length
         }
         direct_generated=count>0;
     }
