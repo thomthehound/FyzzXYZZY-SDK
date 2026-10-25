@@ -803,6 +803,118 @@ int main() {
                 }
             }
 
+            // Persistent box/box PCM compared to the independent
+            // eENABLE_PCM reference across changing contact regions,
+            // authored translations/rotations, loss/reentry and timestep.
+            // World pose authoring resets each manager cache in both
+            // implementations; internal-refresh continuity is exercised
+            // separately by the native Scene fixture.
+            for(const bool reversed:{false,true}) {
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                fyzz::WorldOptions reference_options{};
+                reference_options.execution=
+                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                reference_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World source_pcm(reference_options);
+                const auto admit=[](fyzz::World& world,bool reversed) {
+                    fyzz::BodyId moving;
+                    if(reversed) {
+                        moving=world.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+                        world.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
+                    } else {
+                        world.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
+                        moving=world.add_dynamic_box(
+                            {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+                    }
+                    fyzz::RigidBodyDynamics no_gravity{};
+                    no_gravity.gravity_enabled=false;
+                    world.set_body_dynamics(moving,no_gravity);
+                    return moving;
+                };
+                const auto n=admit(native_pcm,reversed);
+                const auto p=admit(source_pcm,reversed);
+                const std::array<fyzz::Vec3,10> positions{{
+                    {0,1.46f,0},{0.004f,1.46f,0},
+                    {0.015f,1.49f,0},{0.03f,1.44f,0},
+                    {0.03f,1.44f,0},{0.09f,1.48f,0},
+                    {0.09f,3.0f,0},{0.09f,1.46f,0},
+                    {0.02f,1.40f,0},{0.0f,1.46f,0}
+                }};
+                const std::array<float,10> tilt{{
+                    0,0,0.03f,0.03f,0.13f,0.13f,0.13f,
+                    0.13f,0.24f,0.0f
+                }};
+                for(std::size_t frame=0;frame<positions.size();++frame) {
+                    const fyzz::Quat orientation{
+                        0,0,std::sin(tilt[frame]*0.5f),
+                        std::cos(tilt[frame]*0.5f)};
+                    for(auto* world:{&native_pcm,&source_pcm}) {
+                        const auto id=world==&native_pcm?n:p;
+                        world->set_body_pose(id,positions[frame],orientation);
+                        world->set_body_velocity(id,{});
+                        world->set_body_angular_velocity(id,{});
+                    }
+                    const float dt=frame%2?1.0f/60.0f:1.0f/120.0f;
+                    native_pcm.step(dt);
+                    source_pcm.step(dt);
+                    const auto got=native_pcm.contact_event_points();
+                    const auto expected=source_pcm.contact_event_points();
+                    if(got.size()!=expected.size()) {
+                        std::cerr<<"PCM box-box frame="<<frame
+                                 <<" reversed="<<reversed
+                                 <<" native="<<got.size()
+                                 <<" source="<<expected.size()<<'\n';
+                        throw std::runtime_error(
+                            "Multiframe native box-box PCM contact count differs");
+                    }
+                    if(frame==6 && !got.empty())
+                        throw std::runtime_error(
+                            "PCM box-box retained points across contact loss");
+                    if(frame==7 && got.empty())
+                        throw std::runtime_error(
+                            "PCM box-box did not regenerate on contact reentry");
+                    for(const auto& reference_point:expected) {
+                        bool matched=false;
+                        for(const auto& actual:got) {
+                            const float dx=actual.position.x-
+                                reference_point.position.x;
+                            const float dy=actual.position.y-
+                                reference_point.position.y;
+                            const float dz=actual.position.z-
+                                reference_point.position.z;
+                            const float normal_dot=
+                                actual.normal.x*reference_point.normal.x+
+                                actual.normal.y*reference_point.normal.y+
+                                actual.normal.z*reference_point.normal.z;
+                            if(dx*dx+dy*dy+dz*dz<1.0e-5f &&
+                               std::abs(actual.separation-
+                                   reference_point.separation)<1.0e-3f &&
+                               normal_dot>0.999f) {
+                                matched=true;
+                                break;
+                            }
+                        }
+                        if(!matched) {
+                            std::cerr<<"PCM box-box frame="<<frame
+                                     <<" reversed="<<reversed
+                                     <<" target position=("
+                                     <<reference_point.position.x<<","
+                                     <<reference_point.position.y<<","
+                                     <<reference_point.position.z
+                                     <<") separation="
+                                     <<reference_point.separation
+                                     <<" native_count="<<got.size()<<'\n';
+                            throw std::runtime_error(
+                                "Multiframe PCM box-box witness disagrees with default PhysX");
+                        }
+                    }
+                }
+            }
+
             // Source PCM plane/box: compare actual contact buffers
             // produced by GuPCMContactPlaneBox and the partial native
             // PCM path. This is NOT a legacy-Gu oracle: reference runs
