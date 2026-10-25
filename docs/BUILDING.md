@@ -43,6 +43,34 @@ cmake --build build-native --config Release --parallel 4
 ctest --test-dir build-native -C Release --output-on-failure
 ```
 
+## Native CPU SAP profiling
+
+The `fyzzxyzzy_native_sap_benchmark` target is available in test builds,
+including reference-free configurations. It records CPU query time and
+the scene-owned full-sort/local-shift counters for unchanged AABBs,
+adjacent-key motion, wide teleports and scenes with many retired BodyIds.
+It does not change the regression or source-conformance acceptance criteria.
+
+Linux (after configuring `build-native` above):
+
+```sh
+cmake --build build-native --target fyzzxyzzy_native_sap_benchmark
+./build-native/fyzzxyzzy_native_sap_benchmark
+```
+
+Windows (after configuring `build-native` above):
+
+```powershell
+cmake --build build-native --config Release --target fyzzxyzzy_native_sap_benchmark
+.\\build-native\\Release\\fyzzxyzzy_native_sap_benchmark.exe
+```
+
+A benchmark row measures the full native collision-only query, including
+source pair and Gu publication; it is not a GPU kernel timer or a pure
+endpoint-sort timer. Compare matching scenarios and optimized builds on
+the same hardware and toolchain. CI runner timings are diagnostic only,
+never pass/fail performance thresholds.
+
 ## C++ toolchain requirement
 
 FyzzXYZZY-owned native libraries, test executables and the Godot GDExtension
