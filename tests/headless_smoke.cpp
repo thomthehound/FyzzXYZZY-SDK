@@ -2461,6 +2461,17 @@ int main() {
                     const auto [pl,pu]=initialize(source_friction,true);
                     const auto [ql,qu]=initialize(source_no_friction,false);
                     float source_effect=0.0f,source_rotation=0.0f;
+                    // Report the complete native/reference trajectory
+                    // envelope rather than allowing the gate thresholds
+                    // alone to stand in for measured numerical agreement.
+                    float max_position_error=0.0f;
+                    float max_linear_error=0.0f;
+                    float max_angular_error=0.0f;
+                    float maximum_orientation_angle=0.0f;
+                    int max_position_frame=0;
+                    int max_linear_frame=0;
+                    int max_angular_frame=0;
+                    int max_orientation_frame=0;
                     // The early contact/impulse window is an enforced
                     // regression. The extended source-parity acceptance
                     // scenario is retained intact and explicitly selectable
@@ -2626,6 +2637,26 @@ int main() {
                             const float linear_error=err(n.velocity,p.velocity);
                             const float angular_error=err(n.angular_velocity,
                                                           p.angular_velocity);
+                            const float alignment=std::clamp(
+                                std::abs(orientation_dot),0.0f,1.0f);
+                            const float orientation_angle=
+                                2.0f*std::acos(alignment);
+                            if(position_error>max_position_error) {
+                                max_position_error=position_error;
+                                max_position_frame=frame+1;
+                            }
+                            if(linear_error>max_linear_error) {
+                                max_linear_error=linear_error;
+                                max_linear_frame=frame+1;
+                            }
+                            if(angular_error>max_angular_error) {
+                                max_angular_error=angular_error;
+                                max_angular_frame=frame+1;
+                            }
+                            if(orientation_angle>maximum_orientation_angle) {
+                                maximum_orientation_angle=orientation_angle;
+                                max_orientation_frame=frame+1;
+                            }
                             // This first resolved impact must match PhysX's
                             // angular Jacobians, not merely fall inside the
                             // permissive long-trajectory drift bounds.
@@ -2714,7 +2745,17 @@ int main() {
                              <<" reversed="<<reversed
                              <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
                              <<" friction_effect="<<source_effect
-                             <<" angular_response="<<source_rotation<<'\n';
+                             <<" angular_response="<<source_rotation
+                             <<" max_position_error="<<max_position_error
+                             <<" max_position_frame="<<max_position_frame
+                             <<" max_linear_error="<<max_linear_error
+                             <<" max_linear_frame="<<max_linear_frame
+                             <<" max_angular_error="<<max_angular_error
+                             <<" max_angular_frame="<<max_angular_frame
+                             <<" max_orientation_angle_rad="
+                             <<maximum_orientation_angle
+                             <<" max_orientation_frame="<<max_orientation_frame
+                             <<'\n';
                 }
             }
 
