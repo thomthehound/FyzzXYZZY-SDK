@@ -402,16 +402,16 @@ bool source_pcm_box_box_gjk_epa(
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        // GuGJKPenetration.h enters EPA when the reduced simplex is
-        // within 10% of BoxV::minMargin; source EPA then expands
-        // one-, two- and three-point simplices with signed facets.
-        // Geometric separation alone does not license replacing that
-        // source EPA witness with GJK's positive closest-point result.
-        if(count>0 && dist<=epsilon) {
-            store();
-            return epa(pair,simplex,count,contact);
+        // Check the support plane before accepting a near-origin
+        // simplex for EPA: a small positive edge gap is not overlap.
+        // A zero-length simplex still needs EPA's penetration branch.
+        if(dist<=0.0f) {
+            if(count>0) {
+                store();
+                return epa(pair,simplex,count,contact);
+            }
+            return false;
         }
-        if(dist<=0.0f)return false;
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
@@ -430,6 +430,15 @@ bool source_pcm_box_box_gjk_epa(
             store();
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
+        }
+
+        // Once the separating plane check has failed, proximity to
+        // the Minkowski origin can legitimately enter source EPA.
+        // Do not send a separated simplex to EPA merely because its
+        // gap falls below the margin tolerance.
+        if(count>0 && dist<=epsilon) {
+            store();
+            return epa(pair,simplex,count,contact);
         }
 
         for(int i=0;i<count;++i)
