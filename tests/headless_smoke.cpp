@@ -16,6 +16,19 @@
 #include <tuple>
 #include <utility>
 
+namespace {
+fyzz::WorldOptions native_legacy_gu_options(
+    bool notifications=false,bool enhanced_determinism=false) {
+    fyzz::WorldOptions options{};
+    options.execution=fyzz::ExecutionMode::NativeCpu;
+    options.contact_notifications=notifications;
+    options.enhanced_determinism=enhanced_determinism;
+    options.pcm_plane_box=false;
+    options.pcm_box_box=false;
+    return options;
+}
+}
+
 int main() {
     try {
         {
@@ -216,8 +229,7 @@ int main() {
             // A source-locked supporting dynamic and an unconstrained
             // upper body must retain coupled PGS response.
             {
-                fyzz::World native_locked_stack(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World native_locked_stack(native_legacy_gu_options());
                 fyzz::World source_locked_stack(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
                 const auto nf=native_locked_stack.add_static_floor(0);
@@ -341,8 +353,7 @@ int main() {
             // independent rigid contacts and per-body iteration counts
             // admitted across alternating timesteps.
             {
-                fyzz::World native_ed(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu,false,true});
+                fyzz::World native_ed(native_legacy_gu_options(false,true));
                 fyzz::World source_ed(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,false,true});
                 const auto f0=native_ed.add_static_floor(0.0f);
@@ -1601,8 +1612,7 @@ int main() {
             // production scene with the independent PhysX legacy-Gu PGS
             // backend across creation orders and changing timesteps.
             for(const bool reversed:{false,true}) {
-                fyzz::World native_offcenter(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World native_offcenter(native_legacy_gu_options());
                 fyzz::World source_offcenter(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
                 constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
@@ -1706,12 +1716,7 @@ int main() {
             // disabled oracle to prove the fixture actually excites
             // tangential resistance rather than resting normal contact.
             for(const bool reversed:{false,true}) {
-                fyzz::WorldOptions native_gu_options{};
-                native_gu_options.execution=fyzz::ExecutionMode::NativeCpu;
-                native_gu_options.contact_notifications=true;
-                native_gu_options.pcm_plane_box=false;
-                native_gu_options.pcm_box_box=false;
-                fyzz::World native_friction(native_gu_options);
+                fyzz::World native_friction(native_legacy_gu_options(true));
                 fyzz::World source_friction(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
                 fyzz::World source_no_friction(fyzz::WorldOptions{
@@ -2144,8 +2149,7 @@ int main() {
             // A dynamic body introduced against a sleeping contact island
             // must wake its peer on that same frame in both implementations.
             {
-                fyzz::World native_join(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World native_join(native_legacy_gu_options());
                 fyzz::World reference_join(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
                 // The reference scene uses the same original PhysX
@@ -2197,8 +2201,7 @@ int main() {
             // non-PCM generator and the real Dy PGS solver. The source
             // must itself produce a nontrivial bias correction.
             for(const bool reversed : {false,true}) {
-                fyzz::World native_bias(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::NativeCpu});
+                fyzz::World native_bias(native_legacy_gu_options());
                 fyzz::World source_bias(fyzz::WorldOptions{
                     fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu});
                 fyzz::BodyId nl=0,nr=0,pl=0,pr=0;
