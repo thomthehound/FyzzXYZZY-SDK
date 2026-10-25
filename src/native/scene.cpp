@@ -769,6 +769,8 @@ void Scene::update_bounds() {
         return a.min_x<b.min_x ||
             (a.min_x==b.min_x && a.id<b.id);
     };
+    broadphase_updated_ids_.clear();
+    broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
     try {
         if(broadphase_endpoint_membership_dirty_) {
             endpoints_.clear();
@@ -779,7 +781,8 @@ void Scene::update_bounds() {
                    actor.kind==Kind::StaticPlane)continue;
                 if(!actor.cached_bounds_current)
                     update_actor_bounds(actor);
-                endpoints_.push_back({actor.encoded_bounds[0],id});
+                endpoints_.push_back({
+                    actor.encoded_bounds[0],id,actor.encoded_bounds});
             }
             std::sort(endpoints_.begin(),endpoints_.end(),less);
             ++broadphase_endpoint_full_sort_count_;
@@ -790,6 +793,10 @@ void Scene::update_bounds() {
             Actor& actor=actors_[ep.id];
             if(!actor.cached_bounds_current)
                 update_actor_bounds(actor);
+            if(ep.published_bounds!=actor.encoded_bounds) {
+                broadphase_updated_ids_.push_back(ep.id);
+                ep.published_bounds=actor.encoded_bounds;
+            }
             ep.min_x=actor.encoded_bounds[0];
         }
         // BpBroadPhaseSap performs insertion-like endpoint shifts
@@ -844,42 +851,135 @@ void Scene::after_integration_cached_bounds() {
 }
 void Scene::update_pairs() {
     pending_pairs_.clear();
+    // BpBroadPhaseSap::batchUpdateFewUpdates operates on mUpdated
+    // handles, rather than sweeping every surviving pair. The scene's
+    // existing previous_pairs_ / contact-manager EdgeIndex stream remains
+    // authoritative. For modest movement, retain unaffected pairs and
+    // regenerate exactly those incident to updated source volumes.
+    //
+    // Source uses (mUpdatedSize * 5 < mBoxesSize) to select this path.
+    // Large changes or source BpAABBManager membership edits use the
+    // original complete x-axis SAP sweep, never an approximate pair.
+    const bool few_updates=!broadphase_full_pair_update_ &&
+        broadphase_updated_ids_.size()*5<endpoints_.size();
+    if(few_updates) {
+        ++broadphase_incremental_pair_update_count_;
+        if(broadphase_updated_ids_.empty()) {
+            pending_pairs_.assign(previous_pairs_.begin(),
+                                  previous_pairs_.end());
+            return;
+        }
+        std::sort(broadphase_updated_ids_.begin(),
+                  broadphase_updated_ids_.end());
+        const auto touched=[&](BodyId id) {
+            return std::binary_search(broadphase_updated_ids_.begin(),
+                                      broadphase_updated_ids_.end(),id);
+        };
+        broadphase_candidate_deltas_.clear();
+        for(BodyId id:broadphase_updated_ids_) {
+            const auto& actor=actors_[id];
+            const auto& a=actor.encoded_bounds;
+            // BpBroadPhaseSap::batchUpdateFewUpdates tests the two
+            // opposite axes on each candidate touched by moving
+            // endpoints. The x-min ordering bounds the candidate scan;
+            // a candidate with an earlier min still needs its max test.
+            for(const Endpoint& ep:endpoints_) {
+                if(ep.min_x>a[3])break;
+                if(ep.id==id)continue;
+                const auto& other=actors_[ep.id];
+                if(actor.kind!=Kind::DynamicBox &&
+                   other.kind!=Kind::DynamicBox)continue;
+                const auto& b=other.encoded_bounds;
+                if(a[0]>b[3] || b[0]>a[3] ||
+                   a[1]>b[4] || b[1]>a[4] ||
+                   a[2]>b[5] || b[2]>a[5])continue;
+                broadphase_candidate_deltas_.push_back(
+                    ordered_pair(id,ep.id));
+            }
+            // Infinite planes have no bounded SAP endpoint. Retain
+            // their source candidate semantics for changed dynamics.
+            if(actor.kind==Kind::DynamicBox)
+                for(BodyId plane:live_actor_ids_)
+                    if(actors_[plane].kind==Kind::StaticPlane &&
+                       actors_[plane].simulation_shape_enabled)
+                        broadphase_candidate_deltas_.push_back(
+                            ordered_pair(id,plane));
+        }
+        std::sort(broadphase_candidate_deltas_.begin(),
+                  broadphase_candidate_deltas_.end());
+        broadphase_candidate_deltas_.erase(
+            std::unique(broadphase_candidate_deltas_.begin(),
+                        broadphase_candidate_deltas_.end()),
+            broadphase_candidate_deltas_.end());
+        pending_pairs_.reserve(
+            previous_pairs_.size()+broadphase_candidate_deltas_.size());
+        // Merge the old source pair stream after removing entries
+        // incident to mUpdated. No secondary persistent pair set, and
+        // unchanged managers retain their original handles/ordering.
+        std::size_t old_index=0,new_index=0;
+        const auto skip_touched=[&] {
+            while(old_index<previous_pairs_.size() &&
+                  (touched(previous_pairs_[old_index].a) ||
+                   touched(previous_pairs_[old_index].b)))
+                ++old_index;
+        };
+        for(;;) {
+            skip_touched();
+            if(old_index==previous_pairs_.size() &&
+               new_index==broadphase_candidate_deltas_.size())break;
+            if(old_index==previous_pairs_.size() ||
+               (new_index<broadphase_candidate_deltas_.size() &&
+                broadphase_candidate_deltas_[new_index]<
+                    previous_pairs_[old_index])) {
+                pending_pairs_.push_back(
+                    broadphase_candidate_deltas_[new_index++]);
+            } else if(new_index==broadphase_candidate_deltas_.size() ||
+                      previous_pairs_[old_index]<
+                          broadphase_candidate_deltas_[new_index]) {
+                pending_pairs_.push_back(previous_pairs_[old_index++]);
+            } else {
+                pending_pairs_.push_back(previous_pairs_[old_index++]);
+                ++new_index;
+            }
+        }
+        return;
+    }
+
     active_.clear();
-    // Source-corresponding SAP: x-axis sweep and integer y/z overlap.
-    // Retain ordered pair history across frames; exclude static/static.
-    for (Endpoint ep : endpoints_) {
-        const auto& actor = actors_[ep.id];
-        const auto& a = actor.encoded_bounds;
-        active_.erase(std::remove_if(active_.begin(), active_.end(),
-            [&](BodyId id) { return actors_[id].encoded_bounds[3] < ep.min_x; }),
-            active_.end());
-        for (BodyId other_id : active_) {
-            const auto& other = actors_[other_id];
-            if (actor.kind != Kind::DynamicBox && other.kind != Kind::DynamicBox)
-                continue;
-            const auto& b = other.encoded_bounds;
-            if (a[1] > b[4] || b[1] > a[4] ||
-                a[2] > b[5] || b[2] > a[5]) continue;
-            pending_pairs_.push_back(ordered_pair(ep.id, other_id));
+    // Complete SAP path for structural or widely distributed changes.
+    // Preserve source exact encoded inclusive overlap and sorted pairs.
+    for(Endpoint ep:endpoints_) {
+        const auto& actor=actors_[ep.id];
+        const auto& a=actor.encoded_bounds;
+        active_.erase(std::remove_if(active_.begin(),active_.end(),
+            [&](BodyId id) {
+                return actors_[id].encoded_bounds[3]<ep.min_x;
+            }),active_.end());
+        for(BodyId other_id:active_) {
+            const auto& other=actors_[other_id];
+            if(actor.kind!=Kind::DynamicBox &&
+               other.kind!=Kind::DynamicBox)continue;
+            const auto& b=other.encoded_bounds;
+            if(a[1]>b[4] || b[1]>a[4] ||
+               a[2]>b[5] || b[2]>a[5])continue;
+            pending_pairs_.push_back(ordered_pair(ep.id,other_id));
         }
         active_.push_back(ep.id);
     }
-    // The infinite plane is only a *candidate* broadphase shape, not a
-    // resolved contact. Native narrowphase must reject noncontact candidates.
-    // Iterate only registered source volumes: never rescan historical
-    // retired BodyIds for every plane. The sorted endpoints are precisely
-    // the active simulation-enabled non-plane shapes.
+    // The infinite plane is only a broadphase candidate. The actual
+    // Gu narrowphase remains the sole authority for contact.
     for(BodyId plane:live_actor_ids_) {
-        const Actor& actor=actors_[plane];
+        const auto& actor=actors_[plane];
         if(!actor.simulation_shape_enabled ||
            actor.kind!=Kind::StaticPlane)continue;
-        for(Endpoint endpoint:endpoints_)
-            if(actors_[endpoint.id].kind==Kind::DynamicBox)
-                pending_pairs_.push_back(ordered_pair(plane,endpoint.id));
+        for(Endpoint ep:endpoints_)
+            if(actors_[ep.id].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(ordered_pair(plane,ep.id));
     }
-    std::sort(pending_pairs_.begin(), pending_pairs_.end());
-    pending_pairs_.erase(std::unique(pending_pairs_.begin(), pending_pairs_.end()),
-                         pending_pairs_.end());
+    std::sort(pending_pairs_.begin(),pending_pairs_.end());
+    pending_pairs_.erase(
+        std::unique(pending_pairs_.begin(),pending_pairs_.end()),
+        pending_pairs_.end());
 }
 std::uint32_t Scene::contact_edge_index(Pair pair) const noexcept {
     const auto it=std::lower_bound(previous_pairs_.begin(),
