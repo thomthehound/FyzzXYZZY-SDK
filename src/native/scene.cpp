@@ -550,6 +550,24 @@ void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
                       : actor.pending_linear_velocity_delta);
     destination={};
 }
+void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
+    auto& actor=require(id);
+    if(actor.simulation_shape_enabled==enabled)return;
+    // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
+    // Retire the previous contact history on this source flag change.
+    // The following SAP publication is the authority for edge loss,
+    // and must preserve the actor/solver body across the refilter.
+    erase_shape_friction_history(id);
+    if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            auto& edge=contact_edges_[edge_id];
+            if(edge.pair.a==id || edge.pair.b==id)
+                edge.pcm_cache={};
+        }
+    actor.simulation_shape_enabled=enabled;
+    dirty_=true;
+}
+
 void Scene::set_shape_offsets(BodyId id, float contact_offset,
                               float rest_offset) {
     // NpShape::setContactOffset and setRestOffset require finite values,
@@ -730,7 +748,8 @@ void Scene::update_bounds() {
     endpoints_.clear();
     for(std::size_t index=0;index<actors_.size();++index) {
         Actor& actor=actors_[index];
-        if(!actor.alive || actor.kind==Kind::StaticPlane)continue;
+        if(!actor.alive || !actor.simulation_shape_enabled ||
+           actor.kind==Kind::StaticPlane)continue;
         if(!actor.cached_bounds_current)update_actor_bounds(actor);
         endpoints_.push_back({actor.encoded_bounds[0],
                               static_cast<BodyId>(index)});
@@ -783,9 +802,11 @@ void Scene::update_pairs() {
     // The infinite plane is only a *candidate* broadphase shape, not a
     // resolved contact. Native narrowphase must reject noncontact candidates.
     for (std::size_t i = 0; i < actors_.size(); ++i) {
-        if (!actors_[i].alive || actors_[i].kind != Kind::StaticPlane) continue;
+        if (!actors_[i].alive || !actors_[i].simulation_shape_enabled ||
+            actors_[i].kind != Kind::StaticPlane) continue;
         for (std::size_t j = 0; j < actors_.size(); ++j) {
-            if (actors_[j].alive && actors_[j].kind == Kind::DynamicBox)
+            if (actors_[j].alive && actors_[j].simulation_shape_enabled &&
+                actors_[j].kind == Kind::DynamicBox)
                 pending_pairs_.push_back(ordered_pair(
                     static_cast<BodyId>(i), static_cast<BodyId>(j)));
         }
@@ -6728,6 +6749,9 @@ public:
     void set_body_shape_offsets(BodyId id, float contact_offset,
                                 float rest_offset) override {
         scene_.set_shape_offsets(id,contact_offset,rest_offset);
+    }
+    void set_body_simulation_shape_enabled(BodyId id, bool enabled) override {
+        scene_.set_shape_simulation_enabled(id,enabled);
     }
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics) override {
         scene_.set_dynamics(id,dynamics);

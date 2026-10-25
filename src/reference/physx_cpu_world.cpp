@@ -412,6 +412,15 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         actors[id] = nullptr;
     }
 
+    void set_body_simulation_shape_enabled(BodyId id, bool enabled) override {
+        if(id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        physx::PxShape* shape=nullptr;
+        if(actors[id]->getShapes(&shape,1)!=1 || !shape)
+            throw std::logic_error("Reference rigid actor lacks single shape");
+        shape->setFlag(physx::PxShapeFlag::eSIMULATION_SHAPE,enabled);
+    }
+
     void set_body_shape_offsets(BodyId id, float contact_offset,
                                 float rest_offset) override {
         if(id>=actors.size() || !actors[id])

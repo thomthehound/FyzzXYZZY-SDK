@@ -246,6 +246,9 @@ public:
         throw std::logic_error("This backend cannot author rigid contact threshold");
     }
     // PxShape's contact and rest distances belong to the existing actor shape.
+    virtual void set_body_simulation_shape_enabled(BodyId, bool) {
+        throw std::logic_error("This backend cannot author shape simulation flags");
+    }
     virtual void set_body_shape_offsets(BodyId, float, float) {
         throw std::logic_error("This backend cannot author shape offsets");
     }
@@ -302,6 +305,10 @@ public:
     // PhysX PxShape::setContactOffset / setRestOffset: both in metres.
     // Contact offset must be nonnegative and greater than rest offset.
     void set_body_shape_offsets(BodyId id, float contact_offset, float rest_offset);
+    // PxShapeFlag::eSIMULATION_SHAPE on the existing single actor shape.
+    // A disabled shape leaves the rigid actor in the scene, but withdraws
+    // its collision candidate, contacts and island contact-manager edges.
+    void set_body_simulation_shape_enabled(BodyId id, bool enabled);
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics);
 
 private:

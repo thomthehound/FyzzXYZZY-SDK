@@ -197,6 +197,10 @@ void World::set_body_contact_report_threshold(BodyId id, float force) {
     impl_->set_body_contact_report_threshold(id,force);
 }
 
+void World::set_body_simulation_shape_enabled(BodyId id, bool enabled) {
+    impl_->set_body_simulation_shape_enabled(id,enabled);
+}
+
 void World::set_body_shape_offsets(BodyId id, float contact_offset,
                                    float rest_offset) {
     if (!std::isfinite(contact_offset) || !std::isfinite(rest_offset) ||

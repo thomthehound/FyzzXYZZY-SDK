@@ -193,6 +193,9 @@ public:
     // A material change is consumed by next native contact preparation.
     void set_material(BodyId id, Material material);
     void set_shape_offsets(BodyId id, float contact_offset, float rest_offset);
+    // ScShapeSim::onFlagChange withdraws/admit the existing shape
+    // without removing the rigid actor or introducing another owner.
+    void set_shape_simulation_enabled(BodyId id, bool enabled);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
@@ -491,6 +494,7 @@ private:
         // PxShapeCore owns both distances for the sole admitted shape.
         float contact_offset=0.02f;
         float rest_offset=0.0f;
+        bool simulation_shape_enabled=true;
         RigidBodyDynamics dynamics{};
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.

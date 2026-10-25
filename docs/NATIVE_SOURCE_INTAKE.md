@@ -1550,6 +1550,23 @@ parent/rank representation **has already been retired** in favor of
 source-style graph-owned island handles and node chains. These
 remaining responsibilities still prevent N1 completion.
 
+## Simulation-shape filtering and source manager lifetime
+
+The admitted one-shape-per-actor Scene implements
+`PxShapeFlag::eSIMULATION_SHAPE` on its existing actor-owned shape.
+Disabling the simulation flag removes the shape from the next SAP
+candidate publication (including the otherwise infinite floor), rather
+than deleting or deactivating its rigid actor. The same Sc contact-manager
+retirement path publishes overlap/touch loss, disconnects the existing
+speculative/accurate island edges and releases the manager after its
+consumers finish. Re-enabling the flag admits the shape through regular
+SAP, narrowphase, islands and PGS; both the actor state and BodyId survive.
+The independent PhysX CPU adapter forwards the flag to the sole PxShape.
+Reference-enabled and reference-free tests exercise the native lifecycle;
+source-enabled tests also compare contact response with original PhysX.
+Collision groups, custom filter shaders, triggers and multi-shape actors
+are not admitted by this single-shape flag subset.
+
 ## Shape offsets and contact-slop source correspondence
 
 The admitted one-shape-per-actor native Scene now owns the shape's

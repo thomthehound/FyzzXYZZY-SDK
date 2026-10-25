@@ -3610,6 +3610,83 @@ void verify_source_compliant_world_parity() {
             "Compliant material incorrectly disabled free-flight integration");
 }
 
+void verify_source_simulation_shape_flag_lifecycle() {
+    using namespace fyzz;
+    constexpr float dt=1.0f/120.0f;
+    const auto probe=[](ExecutionMode mode) {
+        WorldOptions options{mode};
+        options.contact_notifications=true;
+        World world(options);
+        const auto floor=world.add_static_floor(0);
+        const auto body=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        world.set_body_dynamics(body,dynamics);
+        world.step(dt);
+        if(world.contact_events().size()!=1 ||
+           world.contact_events()[0].kind!=ContactEventKind::Found)
+            throw std::runtime_error(
+                "Source shape flag fixture failed initial Sc contact admission");
+        world.set_body_simulation_shape_enabled(floor,false);
+        world.set_body_velocity(body,{0,-0.2f,0});
+        world.step(dt);
+        if(world.body_state(body).velocity.y>-0.18f)
+            throw std::runtime_error(
+                "Disabled source simulation shape continued solver contact");
+        // Sc filtering/retirement differs from an authored actor remove.
+        // Both actors and their stable BodyIds must remain available.
+        if(!std::isfinite(world.body_state(floor).position.y) ||
+           !std::isfinite(world.body_state(body).position.y))
+            throw std::runtime_error(
+                "Shape flag edit retired its owning rigid actor");
+        world.set_body_simulation_shape_enabled(floor,true);
+        world.step(dt);
+        if(world.body_state(body).velocity.y<=-0.18f)
+            throw std::runtime_error(
+                "Restored source simulation shape failed contact response");
+        world.set_body_simulation_shape_enabled(body,false);
+        world.step(dt);
+        world.set_body_simulation_shape_enabled(body,true);
+        world.step(dt);
+        if(!std::isfinite(world.body_state(body).velocity.y))
+            throw std::runtime_error(
+                "Repeated source simulation shape admission corrupted Dy");
+    };
+    probe(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    probe(ExecutionMode::ReferencePhysXCpu);
+#endif
+
+    // Native Sc must retain one actor, remove the former manager,
+    // and admit a newly filtered pair with no orphaned EdgeInstance.
+    native::Scene scene{};
+    const auto floor=scene.add_static_floor(0);
+    const auto body=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
+    const native::Pair key{floor,body};
+    scene.advance_collision(true);
+    const auto prior=scene.contact_edge_index(key);
+    if(prior==std::numeric_limits<std::uint32_t>::max() ||
+       scene.contacts().size()!=1)
+        throw std::runtime_error(
+            "Native shape filter lacked its original contact manager");
+    scene.set_shape_simulation_enabled(floor,false);
+    scene.advance_collision(true);
+    if(!scene.pairs().empty() || !scene.contacts().empty() ||
+       !has(scene.lost_pairs(),floor,body) ||
+       scene.contact_edge_index(key)!=std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error(
+            "Shape flag suppression failed source SAP and Sc retirement");
+    scene.set_shape_simulation_enabled(floor,true);
+    scene.advance_collision(true);
+    if(scene.contacts().size()!=1 ||
+       !has(scene.found_pairs(),floor,body) ||
+       scene.contact_edge_index(key)==std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error(
+            "Shape reenable did not admit a source contact manager");
+}
+
 void verify_source_contact_notification_world() {
     using namespace fyzz;
     constexpr float dt=1.0f/120.0f;
@@ -10387,6 +10464,7 @@ int run_native_scene_smoke() {
     verify_source_spatial_velocity_mods();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
+    verify_source_simulation_shape_flag_lifecycle();
     verify_source_contact_notification_world();
     verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
