@@ -38,6 +38,7 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error("Constraint fixture started connected");
 
         const auto edge=scene.add_constraint_edge(a,b);
+        const auto parallel=scene.add_constraint_edge(a,b);
         scene.advance_collision();
         if(scene.accurate_island_count()!=1 ||
            scene.speculative_island_count()!=1 ||
@@ -50,8 +51,10 @@ struct ConstraintIslandSourceFixture {
                 "Typed source constraint edge failed island admission");
         const auto owner=scene.accurate_island_id(a);
         const auto& island=scene.accurate_islands_.islands[owner];
-        if(island.contact_count!=0 || island.constraint_count!=1 ||
-           island.first_constraint!=edge || island.last_constraint!=edge)
+        if(island.contact_count!=0 || island.constraint_count!=2 ||
+           island.first_constraint!=edge ||
+           island.last_constraint!=parallel ||
+           scene.island_edges_[parallel].island_prev!=edge)
             throw std::runtime_error(
                 "Source eCONSTRAINT contaminated contact-manager array");
         bool rejected_unsolved=false;
@@ -63,23 +66,53 @@ struct ConstraintIslandSourceFixture {
 
         scene.remove_constraint_edge(edge);
         scene.advance_collision();
+        if(scene.accurate_island_count()!=1 ||
+           scene.speculative_island_count()!=1 ||
+           scene.active_constraint_handles_.size()!=1 ||
+           !scene.island_edges_[parallel].live)
+            throw std::runtime_error(
+                "Parallel source constraint removal severed surviving route");
+        scene.remove_constraint_edge(parallel);
+        scene.advance_collision();
         if(scene.accurate_island_count()!=2 ||
            scene.speculative_island_count()!=2 ||
            scene.accurate_island_id(a)==scene.accurate_island_id(b) ||
            !scene.active_constraint_handles_.empty() ||
-           scene.island_edges_[edge].live)
+           scene.island_edges_[edge].live ||
+           scene.island_edges_[parallel].live)
             throw std::runtime_error(
                 "Constraint edge retirement retained a stale island bridge");
         scene.set_position(b,{0,6,0});
         scene.advance_collision();
         const auto contact=scene.contact_edge_index({a,b});
-        if(contact!=edge || contact>=scene.island_edges_.size() ||
+        if((contact!=edge && contact!=parallel) ||
+           contact>=scene.island_edges_.size() ||
            scene.island_edges_[contact].type!=
                Scene::IslandEdgeType::ContactManager ||
            scene.contacts().empty())
             throw std::runtime_error(
                 "Shared EdgeIndex reuse confused constraint and contact owners");
     }
+        // Actor retirement must withdraw every incident eCONSTRAINT
+        // connection before its node index can be reused by island repair.
+        {
+            Scene owned;
+            const auto x=owned.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+            const auto y=owned.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{5,5,0},1.0f);
+            owned.advance_collision();
+            owned.add_constraint_edge(x,y);
+            owned.add_constraint_edge(x,y);
+            owned.advance_collision();
+            owned.remove(y);
+            owned.advance_collision();
+            if(!owned.active_constraint_handles_.empty() ||
+               owned.accurate_island_count()!=1 ||
+               owned.speculative_island_count()!=1)
+                throw std::runtime_error(
+                    "Constraint actor retirement retained an orphan island edge");
+        }
 };
 
 struct ContactCorrelationSourceFixture {

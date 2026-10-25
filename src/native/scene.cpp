@@ -817,6 +817,22 @@ void Scene::remove(BodyId id) {
         partner.sleep_linear_acc={};
         partner.sleep_angular_acc={};
     }
+    // ScConstraintInteraction retires every edge incident to an actor
+    // before the island node can be invalidated. The same shared handle
+    // pool and edge-instance disconnect path handles explicit deletion.
+    std::size_t incident=0;
+    for(EdgeIndex edge:active_constraint_handles_) {
+        const Pair pair=island_edges_[edge].pair;
+        incident+=(pair.a==id || pair.b==id);
+    }
+    retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
+    for(std::size_t cursor=0;cursor<active_constraint_handles_.size();) {
+        const EdgeIndex edge=active_constraint_handles_[cursor];
+        const Pair pair=island_edges_[edge].pair;
+        if(pair.a==id || pair.b==id)
+            remove_constraint_edge(edge);
+        else ++cursor;
+    }
     actor.alive = false;
     if(dynamic_node)--live_dynamic_count_;
     if(actor.kinematic_tracked) {
@@ -1301,9 +1317,8 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     // EdgeIndex comes from the SAME HandleManager pool as Gu managers;
     // both IslandSim graphs use the same paired endpoint slots.
     const Pair pair=ordered_pair(a,b);
-    for(EdgeIndex id:active_constraint_handles_)
-        if(island_edges_[id].live && island_edges_[id].pair==pair)
-            throw std::logic_error("Constraint edge already exists");
+    // PhysX admits multiple independent PxConstraint objects between
+    // the same two nodes. They share endpoints, not EdgeIndex identity.
     active_constraint_handles_.reserve(active_constraint_handles_.size()+1);
     speculative_node_first_.resize(actors_.size(),invalid_instance);
     accurate_node_first_.resize(actors_.size(),invalid_instance);
