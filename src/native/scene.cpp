@@ -1137,6 +1137,119 @@ void Scene::publish_pairs() {
     active_edge_handles_.swap(next_edge_handles_);
     ++pair_epoch_;
 }
+void Scene::reduce_pcm_box_five(
+    PcmPlaneBoxCache& cache,const PcmPersistentContact& new_contact) {
+    // GuPersistentContactManifold.cpp::reduceContactsForPCM. The fifth
+    // witness enters a four-contact cache without discarding its spatial
+    // coverage or ignoring the previous points' depth ordering.
+    std::array<PcmPersistentContact,5> candidates{};
+    for(int i=0;i<4;++i)candidates[i]=cache.points[i];
+    candidates[4]=new_contact;
+    std::array<bool,5> chosen{};
+    std::array<int,4> selected{};
+    const auto diff=[](Vec3 a,Vec3 b) {
+        return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
+    };
+    const auto dot=[](Vec3 a,Vec3 b) {
+        return a.x*b.x+a.y*b.y+a.z*b.z;
+    };
+    const auto sq=[&](Vec3 a) {return dot(a,a);};
+    const auto segment_sq=[&](Vec3 point,Vec3 a,Vec3 b) {
+        const Vec3 ab=diff(b,a),ap=diff(point,a);
+        const float denominator=sq(ab);
+        const float t=denominator==0.0f
+            ?0.0f:std::clamp(dot(ap,ab)/denominator,0.0f,1.0f);
+        const Vec3 delta{ap.x-t*ab.x,ap.y-t*ab.y,ap.z-t*ab.z};
+        return sq(delta);
+    };
+    const auto triangle_sq=[&](Vec3 p,Vec3 a,Vec3 b,Vec3 c) {
+        // Source distancePointTriangleSquaredLocal: Voronoi regions
+        // of A/B/C, AB/BC/AC and the projected face interior.
+        const Vec3 ab=diff(b,a),ac=diff(c,a),bc=diff(c,b);
+        const Vec3 ap=diff(p,a),bp=diff(p,b),cp=diff(p,c);
+        const float d1=dot(ab,ap),d2=dot(ac,ap);
+        const float d3=dot(ab,bp),d4=dot(ac,bp);
+        const float d5=dot(ab,cp),d6=dot(ac,cp);
+        if(d1<0.0f && d2<0.0f)return sq(ap);
+        if(d3>=0.0f && d3>=d4)return sq(bp);
+        if(d6>=0.0f && d6>=d5)return sq(cp);
+        const float vc=d1*d4-d3*d2;
+        if(vc<0.0f && d1>=0.0f && d3<0.0f)
+            return segment_sq(p,a,b);
+        const float va=d3*d6-d5*d4;
+        if(va<0.0f && d4>=d3 && d5>=d6)
+            return segment_sq(p,b,c);
+        const float vb=d5*d2-d1*d6;
+        if(vb<0.0f && d2>=0.0f && d6<0.0f)
+            return segment_sq(p,a,c);
+        const Vec3 n{
+            ab.y*ac.z-ab.z*ac.y,
+            ab.z*ac.x-ab.x*ac.z,
+            ab.x*ac.y-ab.y*ac.x};
+        const float denominator=sq(n);
+        if(denominator==0.0f)return 0.0f;
+        const float projection=dot(n,ap);
+        return projection*projection/denominator;
+    };
+    int deepest=4;
+    for(int i=0;i<4;++i)
+        if(candidates[i].separation<candidates[deepest].separation)
+            deepest=i;
+    selected[0]=deepest;
+    chosen[deepest]=true;
+    int farthest=0;
+    float largest=sq(diff(candidates[0].local_b,
+                          candidates[deepest].local_b));
+    for(int i=1;i<5;++i)if(!chosen[i]) {
+        const float value=sq(diff(candidates[i].local_b,
+                                  candidates[deepest].local_b));
+        if(value>largest){largest=value;farthest=i;}
+    }
+    selected[1]=farthest;
+    chosen[farthest]=true;
+    largest=-std::numeric_limits<float>::max();
+    int third=0;
+    for(int i=0;i<5;++i)if(!chosen[i]) {
+        const float value=segment_sq(
+            candidates[i].local_b,candidates[deepest].local_b,
+            candidates[farthest].local_b);
+        if(value>largest){largest=value;third=i;}
+    }
+    selected[2]=third;
+    chosen[third]=true;
+    largest=-std::numeric_limits<float>::max();
+    int fourth=third;
+    for(int i=0;i<5;++i)if(!chosen[i]) {
+        const float value=triangle_sq(
+            candidates[i].local_b,candidates[selected[0]].local_b,
+            candidates[selected[1]].local_b,
+            candidates[selected[2]].local_b);
+        if(value>largest){largest=value;fourth=i;}
+    }
+    if(chosen[fourth]) {
+        cache.count=3;
+        for(int i=0;i<3;++i)cache.points[i]=candidates[selected[i]];
+        return;
+    }
+    selected[3]=fourth;
+    chosen[fourth]=true;
+    for(int i=0;i<4;++i)cache.points[i]=candidates[selected[i]];
+    cache.count=4;
+    int unselected=-1;
+    for(int i=0;i<5;++i)
+        if(!chosen[i]){unselected=i;break;}
+    if(unselected<0)return;
+    float closest=std::numeric_limits<float>::max();
+    int replace=0;
+    for(int i=0;i<4;++i) {
+        const float distance=sq(diff(cache.points[i].local_a,
+                                     candidates[unselected].local_a));
+        if(distance<closest){closest=distance;replace=i;}
+    }
+    if(candidates[unselected].separation<
+       cache.points[replace].separation)
+        cache.points[replace]=candidates[unselected];
+}
 void Scene::refresh_pcm_contact_points(
     PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
     Quat rotation_a_in_b, float projection_break) {
@@ -1273,19 +1386,8 @@ std::uint8_t Scene::generate_pcm_box_box(
             if(!replaced) {
                 if(cache.count<4)
                     cache.points[cache.count++]=witness;
-                else {
-                    // GuPersistentContactManifold::reduceContactsForPCM:
-                    // preserve a deep new witness when the cache fills.
-                    // The four-point selection is performed on local-B
-                    // geometry; the same source manager owns its history.
-                    std::size_t shallowest=0;
-                    for(std::size_t i=1;i<4;++i)
-                        if(cache.points[i].separation>
-                           cache.points[shallowest].separation)
-                            shallowest=i;
-                    if(witness.separation<cache.points[shallowest].separation)
-                        cache.points[shallowest]=witness;
-                }
+                else
+                    reduce_pcm_box_five(cache,witness);
             }
         } else if(count<=4) {
             cache.count=0;
