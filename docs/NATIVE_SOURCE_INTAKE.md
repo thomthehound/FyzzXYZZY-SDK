@@ -1541,6 +1541,19 @@ sparse actor-motion rollback records for these early wakes; unchanged
 actors incur no motion copies. A dormant two-body regression requires
 the original wake propagation when the same publication loses its link.
 
+**Kinematic node admission:** A rigid box may now switch its
+`PxRigidBodyFlag::eKINEMATIC` state through the same World/Scene
+actor identity, without creating a second body owner. The native
+IslandSim-style graph excludes kinematic actors from rigid dynamic
+island membership and Dy integration while preserving their Gu box
+geometry and live contact-manager endpoints. The independent reference
+backend authors the source `PxRigidBodyFlag`. Native conformance
+exercises dynamic-to-kinematic and reverse membership transitions,
+stable rigid IDs and stationary kinematic contact response. Kinematic
+target velocities/pose integration, active-reference kinematic lists,
+kinematic-kinematic contacts under nondefault filtering, articulation
+nodes and typed constraint edges remain unported.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`

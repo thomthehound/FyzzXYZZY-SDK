@@ -23,6 +23,47 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
+    static void verify_kinematic_node_is_not_a_solver_island() {
+        // The same PxRigidDynamic survives its eKINEMATIC transition,
+        // but PxsIslandSim invalidates its rigid island membership.
+        // A contacting ordinary dynamic still enters Dy contact solving.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.8f,8,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        scene.set_dynamics(a,d);
+        scene.set_dynamics(b,d);
+        scene.step(1.0f/120.0f);
+        if(scene.accurate_island_count()!=1)
+            throw std::runtime_error(
+                "Kinematic transition fixture lacks connected rigid island");
+        scene.set_kinematic(b,true);
+        const auto kin_pose=scene.body_state(b).position;
+        scene.step(1.0f/120.0f);
+        if(scene.actors_[b].kind!=Scene::Kind::KinematicBox ||
+           scene.accurate_islands_.node_island[b]!=
+               Scene::IslandGraph::invalid ||
+           scene.accurate_island_count()!=1 ||
+           scene.contacts().empty() ||
+           scene.solver_tasks_.empty() ||
+           scene.body_state(b).position.x!=kin_pose.x ||
+           scene.body_state(b).position.y!=kin_pose.y ||
+           scene.body_state(b).position.z!=kin_pose.z)
+            throw std::runtime_error(
+                "Kinematic rigid node leaked into Dy island/integration");
+
+        scene.set_kinematic(b,false);
+        scene.step(1.0f/120.0f);
+        if(scene.actors_[b].kind!=Scene::Kind::DynamicBox ||
+           scene.accurate_islands_.node_island[b]==
+               Scene::IslandGraph::invalid ||
+           scene.accurate_island_count()!=1)
+            throw std::runtime_error(
+                "Dynamic transition failed to readmit prior rigid node");
+    }
     static void verify_wake_before_lost_edge_split() {
         // A queued wake propagates through the pre-split island during
         // source first/second-pass wakeIslands; third-pass route repair
@@ -10477,6 +10518,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_node_is_not_a_solver_island();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
