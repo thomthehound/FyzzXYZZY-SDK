@@ -66,100 +66,171 @@ struct BoxPair {
         return inverse_rotate(relative,sub(point_in_b,a_in_b));
     }
 };
-// Dense (<=3) pivoted affine solve for simplex barycentric coordinates.
-// The source GJKCPairDoSimplex selects the nearest Voronoi feature; the
-// subset solve performs the same constrained closest-origin problem.
-bool solve(int n,float a[3][4],float result[3]) {
-    // The Gram matrix carries squared lengths. An absolute pivot cutoff
-    // would reject the same valid simplex when the boxes are small.
-    float matrix_scale=0.0f;
-    for(int i=0;i<n;++i)
-        matrix_scale=std::max(matrix_scale,std::abs(a[i][i]));
-    if(!(matrix_scale>0.0f) || !std::isfinite(matrix_scale))
-        return false;
-    const float pivot_tolerance=
-        std::numeric_limits<float>::epsilon()*matrix_scale;
-    for(int col=0;col<n;++col) {
-        int pivot=col;
-        for(int row=col+1;row<n;++row)
-            if(std::abs(a[row][col])>std::abs(a[pivot][col]))pivot=row;
-        if(!(std::abs(a[pivot][col])>pivot_tolerance))
-            return false;
-        for(int j=col;j<=n;++j)
-            std::swap(a[col][j],a[pivot][j]);
-        const float div=a[col][col];
-        for(int j=col;j<=n;++j)a[col][j]/=div;
-        for(int row=0;row<n;++row)if(row!=col) {
-            const float factor=a[row][col];
-            for(int j=col;j<=n;++j)
-                a[row][j]-=factor*a[col][j];
-        }
-    }
-    for(int i=0;i<n;++i)result[i]=a[i][n];
-    return true;
-}
+// GuGJKSimplex.h::GJKCPairDoSimplex chooses Voronoi regions with
+// specialized segment/triangle tests and the four tetrahedron faces.
+// Do not enumerate all simplex subsets and solve Gram matrices here:
+// that changes degenerate-feature tie order and costs considerably more
+// than the original PhysX GJK inner loop.
 struct Closest {
     Vec3 point{},a{},b{};
     std::array<float,4> weights{};
+    std::array<int,4> order{};
+    int count=0;
     unsigned mask=0;
     float dist2=std::numeric_limits<float>::max();
 };
-Closest closest_simplex(const std::array<Support,4>& simplex,int count) {
+Closest make_closest(const std::array<Support,4>& simplex,
+                     std::array<int,4> selected,int count,
+                     std::array<float,4> weights) {
+    Closest result;
+    result.order=selected;
+    result.count=count;
+    result.weights=weights;
+    for(int j=0;j<count;++j) {
+        const int i=selected[j];
+        result.mask|=1u<<i;
+        result.point=add(result.point,mul(simplex[i].q,weights[i]));
+        result.a=add(result.a,mul(simplex[i].a,weights[i]));
+        result.b=add(result.b,mul(simplex[i].b,weights[i]));
+    }
+    result.dist2=length2(result.point);
+    return result;
+}
+Closest closest_segment(const std::array<Support,4>& simplex,
+                        int a,int b) {
+    const Vec3 p=simplex[a].q,q=simplex[b].q;
+    const Vec3 ab=sub(q,p);
+    const float denom=dot(ab,ab);
+    // GuGJKSimplex.h::closestPtPointSegment collapses only a truly
+    // degenerate segment; an endpoint Voronoi witness can still retain
+    // two support points in the source simplex.
+    if(denom<=std::numeric_limits<float>::epsilon())
+        return make_closest(simplex,{a,0,0,0},1,
+                            [a]{std::array<float,4> w{};w[a]=1;return w;}());
+    const float t=std::clamp(-dot(p,ab)/denom,0.0f,1.0f);
+    std::array<float,4> w{};
+    w[a]=1.0f-t;
+    w[b]=t;
+    return make_closest(simplex,{a,b,0,0},2,w);
+}
+Closest closest_triangle(const std::array<Support,4>& simplex,
+                         int ia,int ib,int ic,bool allow_degenerate=true) {
+    const Vec3 a=simplex[ia].q,b=simplex[ib].q,c=simplex[ic].q;
+    const Vec3 ab=sub(b,a),ac=sub(c,a);
+    const Vec3 n=cross(ab,ac);
+    const float nn=length2(n);
+    // Original closestPtPointTriangle uses PX_EPS_REAL^2, while its
+    // tetrahedron face chooser delegates directly to barycentric regions.
+    constexpr float eps=std::numeric_limits<float>::epsilon();
+    if(allow_degenerate && nn<=eps*eps)
+        return closest_segment(simplex,ia,ib);
+    if(nn==0.0f)return {};
+    const float va=dot(n,cross(b,c));
+    const float vb=dot(n,cross(c,a));
+    const float vc=dot(n,cross(a,b));
+    const auto one=[&](int i) {
+        std::array<float,4> w{};w[i]=1.0f;
+        return make_closest(simplex,{i,0,0,0},1,w);
+    };
+    const auto edge=[&](int i,int j,float t) {
+        std::array<float,4> w{};w[i]=1.0f-t;w[j]=t;
+        return make_closest(simplex,{i,j,0,0},2,w);
+    };
+    if(va>=0.0f && vb>=0.0f && vc>=0.0f) {
+        // Face projection onto the source n=AB x AC plane.
+        std::array<float,4> w{};
+        w[ia]=va/nn;w[ib]=vb/nn;w[ic]=vc/nn;
+        Closest face=make_closest(simplex,{ia,ib,ic,0},3,w);
+        face.point=mul(n,dot(n,a)/nn);
+        face.dist2=length2(face.point);
+        return face;
+    }
+    const Vec3 ap=neg(a),bp=neg(b),cp=neg(c);
+    const float d1=dot(ab,ap),d2=dot(ac,ap);
+    const float d3=dot(ab,bp),d4=dot(ac,bp);
+    const float d5=dot(ab,cp),d6=dot(ac,cp);
+    // Preserve GuGJKSimplex.h's region precedence: AB, BC, AC,
+    // vertex A, vertex B, and finally vertex C.
+    if(vc<=0.0f && d1>=0.0f && d3<=0.0f) {
+        const float denom=d1-d3;
+        return edge(ia,ib,std::abs(denom)>eps?d1/denom:0.0f);
+    }
+    if(va<=0.0f && d4>=d3 && d5>=d6) {
+        const float num=d4-d3,denom=num+d5-d6;
+        return edge(ib,ic,std::abs(denom)>eps?num/denom:0.0f);
+    }
+    if(vb<=0.0f && d2>=0.0f && d6<=0.0f) {
+        const float denom=d2-d6;
+        return edge(ia,ic,std::abs(denom)>eps?d2/denom:0.0f);
+    }
+    if(d1<=0.0f && d2<=0.0f)return one(ia);
+    if(d3>=0.0f && d3>=d4)return one(ib);
+    return one(ic);
+}
+Closest closest_tetrahedron(const std::array<Support,4>& simplex) {
+    const Vec3 a=simplex[0].q,b=simplex[1].q;
+    const Vec3 c=simplex[2].q,d=simplex[3].q;
+    const Vec3 ab=sub(b,a),ac=sub(c,a),ad=sub(d,a);
+    const Vec3 n=cross(ab,ac);
+    const float n2=length2(n);
+    // GuGJKSimplex.cpp's tetrahedron degeneracy check is a
+    // normalized signed point-to-plane distance with a 1e-4 cutoff.
+    if(n2>0.0f &&
+       std::abs(dot(n,sub(d,a))/std::sqrt(n2))<1.0e-4f)
+        return closest_triangle(simplex,0,1,2);
+    const Vec3 v0=n,v1=cross(ac,ad),v2=cross(ad,ab);
+    const Vec3 v3=cross(sub(d,b),sub(c,b));
+    const std::array<bool,4> outside{{
+        dot(v0,a)*dot(v0,d)>=0.0f,
+        dot(v1,a)*dot(v1,b)>=0.0f,
+        dot(v2,a)*dot(v2,c)>=0.0f,
+        dot(v3,b)*dot(v3,a)>=0.0f
+    }};
+    if(!outside[0] && !outside[1] &&
+       !outside[2] && !outside[3]) {
+        // Source leaves the full tetrahedron untouched when its
+        // Minkowski simplex encloses the origin; EPA owns penetration.
+        std::array<float,4> w{{0.25f,0.25f,0.25f,0.25f}};
+        Closest inside=make_closest(simplex,{0,1,2,3},4,w);
+        inside.point={};inside.dist2=0.0f;
+        return inside;
+    }
+    constexpr std::array<std::array<int,3>,4> faces{{
+        {{0,1,2}},{{0,2,3}},{{0,3,1}},{{1,3,2}}
+    }};
     Closest best;
-    for(unsigned mask=1;mask<(1u<<count);++mask) {
-        int ids[4]{},n=0;
-        for(int i=0;i<count;++i)
-            if(mask&(1u<<i))ids[n++]=i;
-        std::array<float,4> weights{};
-        weights[ids[0]]=1.0f;
-        if(n>1) {
-            const Vec3 base=simplex[ids[0]].q;
-            Vec3 directions[3]{};
-            float matrix[3][4]{};
-            for(int i=1;i<n;++i)
-                directions[i-1]=sub(simplex[ids[i]].q,base);
-            for(int i=1;i<n;++i) {
-                for(int j=1;j<n;++j)
-                    matrix[i-1][j-1]=dot(directions[i-1],
-                                         directions[j-1]);
-                matrix[i-1][n-1]=-dot(directions[i-1],base);
-            }
-            float coefficients[3]{};
-            if(!solve(n-1,matrix,coefficients))continue;
-            for(int i=1;i<n;++i) {
-                weights[ids[i]]=coefficients[i-1];
-                weights[ids[0]]-=coefficients[i-1];
-            }
-        }
-        bool feasible=true;
-        for(int i=0;i<n;++i)
-            if(weights[ids[i]]< -1.0e-5f)feasible=false;
-        if(!feasible)continue;
-        Vec3 q{},pa{},pb{};
-        for(int i=0;i<count;++i) {
-            q=add(q,mul(simplex[i].q,weights[i]));
-            pa=add(pa,mul(simplex[i].a,weights[i]));
-            pb=add(pb,mul(simplex[i].b,weights[i]));
-        }
-        const float d=length2(q);
-        if(d<best.dist2) {
-            best={q,pa,pb,weights,mask,d};
-        }
+    for(int i=0;i<4;++i)if(outside[i]) {
+        const auto face=faces[i];
+        const Closest candidate=closest_triangle(
+            simplex,face[0],face[1],face[2],false);
+        // getClosestPtPointTriangle selects strictly smaller distances;
+        // ties retain the preceding source face in original order.
+        if(candidate.mask && candidate.dist2<best.dist2)
+            best=candidate;
     }
     return best;
 }
-void compact(std::array<Support,4>& simplex,int& count,
-             const Closest& closest) {
-    int write=0;
-    for(int read=0;read<count;++read)
-        if((closest.mask&(1u<<read)) &&
-           closest.weights[read]>1.0e-6f)
-            simplex[write++]=simplex[read];
-    if(write==0 && count>0) {
-        simplex[0]=simplex[0];
-        write=1;
+Closest closest_simplex(const std::array<Support,4>& simplex,int count) {
+    switch(count) {
+    case 1: {
+        std::array<float,4> w{{1.0f,0.0f,0.0f,0.0f}};
+        return make_closest(simplex,{0,0,0,0},1,w);
     }
-    count=write;
+    case 2: return closest_segment(simplex,0,1);
+    case 3: return closest_triangle(simplex,0,1,2);
+    case 4: return closest_tetrahedron(simplex);
+    default: return {};
+    }
+}
+void compact(std::array<Support,4>& simplex,int& count,
+             const Closest& nearest) {
+    // Preserve the exact source feature order, including zero-weight
+    // endpoints retained by its nondegenerate segment routine.
+    std::array<Support,4> next{};
+    for(int i=0;i<nearest.count;++i)
+        next[i]=simplex[nearest.order[i]];
+    for(int i=0;i<nearest.count;++i)simplex[i]=next[i];
+    count=nearest.count;
 }
 bool contact_from_gjk(const BoxPair& pair,Closest const& nearest,
                       PcmContactCandidate& output) {
