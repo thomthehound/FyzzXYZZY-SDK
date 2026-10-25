@@ -3058,7 +3058,8 @@ int main() {
                         "Source island did not resume PhysX-equivalent motion after wake");
             }
 
-            fyzz::World world;
+            fyzz::World world(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
             world.add_static_box({5.0f, 0.5f, 5.0f}, {0.0f, -0.5f, 0.0f});
             const fyzz::BodyId box = world.add_dynamic_box(
                 {0.25f, 0.25f, 0.25f}, {0.0f, 2.0f, 0.0f}, 1.0f);
@@ -3082,9 +3083,10 @@ int main() {
                 std::cerr << "Rigid-body fall/contact smoke test failed\n";
                 return 1;
             }
-            // The provider-neutral floor API must also work with the default
-            // PhysX backend, independently of the optional Vulkan target.
-            fyzz::World floor_world;
+            // The provider-neutral floor API must also work with the explicit
+            // PhysX reference, independently of the optional Vulkan target.
+            fyzz::World floor_world(fyzz::WorldOptions{
+                fyzz::ExecutionMode::ReferencePhysXCpu});
             floor_world.add_static_floor(0.0f);
             const auto plane_box = floor_world.add_dynamic_box(
                 {0.25f, 0.25f, 0.25f}, {0.0f, 1.5f, 0.0f}, 1.0f);
@@ -3104,7 +3106,8 @@ int main() {
             }
             // The runtime must survive destruction of one of several live scenes.
             {
-                fyzz::World temporary;
+                fyzz::World temporary(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::ReferencePhysXCpu});
                 temporary.add_static_floor(-1.0f);
                 const auto temporary_body = temporary.add_dynamic_box(
                     {0.2f, 0.2f, 0.2f}, {0.0f, 3.0f, 0.0f}, 1.0f);
@@ -3130,7 +3133,8 @@ int main() {
 
         // Creating a new world must also work after the last previous user
         // releases the process-level foundation/physics singleton.
-        fyzz::World reinitialized;
+        fyzz::World reinitialized(fyzz::WorldOptions{
+            fyzz::ExecutionMode::ReferencePhysXCpu});
         reinitialized.add_static_floor(0.0f);
         const auto renewed = reinitialized.add_dynamic_box(
             {0.25f, 0.25f, 0.25f}, {0.0f, 1.0f, 0.0f}, 1.0f);
