@@ -57,6 +57,12 @@ struct SourceSapEndpointFixture {
                        axis+(ep.is_max?3:0)])
                     throw std::runtime_error(
                         "Source SAP axis endpoint differs from encoded AABB");
+                if(ep.volume_slot>=scene.sap_volumes_.size() ||
+                   scene.sap_volumes_[ep.volume_slot].id!=ep.id ||
+                   scene.sap_volumes_[ep.volume_slot].
+                       endpoint_positions[axis][ep.is_max?1u:0u]!=index)
+                    throw std::runtime_error(
+                        "PhysX SapBox1D min/max index mapping is stale");
                 if(index>0) {
                     const auto& prev=endpoints[index-1];
                     const bool wrong_key=prev.value>ep.value;
