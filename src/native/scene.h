@@ -637,12 +637,18 @@ private:
         double target_velocity = 0.0;
         double applied_force = 0.0;
     };
+    // BpBroadPhaseSap::mEndPointValues/mEndPointDatas: both min
+    // and max for each of three axes, with the original encoded keys.
     struct Endpoint {
-        std::uint32_t min_x = 0;
-        BodyId id = 0;
-        // Source BpBroadPhaseSap compares the previous mBoxBoundsMinMax
-        // against updated AABBs, on all three integer-encoded axes.
-        // This per-volume projection is not an independent actor owner.
+        std::uint32_t value=0;
+        BodyId id=0;
+        bool is_max=false;
+    };
+    // BpBroadPhaseSap::mBoxBoundsMinMax retained for source mUpdated
+    // detection. Each live box has one owner, independent of its six
+    // axis endpoint entries.
+    struct SapVolume {
+        BodyId id=0;
         std::array<std::uint32_t,6> published_bounds{};
     };
     BodyId add(Actor actor);
@@ -1205,10 +1211,11 @@ private:
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
     std::vector<BodyId> live_actor_ids_;
-    // BpBroadPhaseSap ordered x-min endpoint projection. Retain the
-    // previous sorted order across frames and update it incrementally
-    // unless the source volume membership changes.
-    std::vector<Endpoint> endpoints_;
+    // BpBroadPhaseSap's 3 axes of sorted min/max endpoint keys.
+    // No second broadphase owner: volumes_ holds prior AABB witnesses,
+    // and live_actor_ids_ remains the authoritative volume membership.
+    std::array<std::vector<Endpoint>,3> sap_axis_endpoints_;
+    std::vector<SapVolume> sap_volumes_;
     bool broadphase_endpoint_membership_dirty_=true;
     std::size_t broadphase_endpoint_full_sort_count_=0;
     std::size_t broadphase_endpoint_local_shift_count_=0;
