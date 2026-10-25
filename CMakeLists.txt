@@ -11,7 +11,7 @@ include(FetchContent)
 # prerequisite for the native SDK core or standalone GPU compute runtimes.
 # OFF must never fetch or compile the reference PhysX repository.
 option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
-  "Build the transitional PhysX CPU reference and source-port conformance fixtures" ON)
+  "Build the transitional PhysX CPU reference and source-port conformance fixtures" ${BUILD_TESTING})
 # Run the 48-frame coupled friction/rotation source oracle by default.
 # Windows and Linux source-enabled CI explicitly require this gate.
 # PhysX-independent builds never compile or link the reference fixture.
