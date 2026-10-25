@@ -1856,6 +1856,15 @@ CPU PGS admission, require these jointly:
   runtime cost before claiming full integration. Godot acceptance can
   be finalized once the native scene has the full state/API.
 
+The Godot GDExtension now selects `ExecutionMode::NativeCpu`
+explicitly without changing the standalone SDK's transitional
+default. The headless runtime exercises real scene-owned plane/box
+support, authored rigid orientation and angular velocity, rotational
+integration, actor retirement and continued simulation, on both
+Windows and Linux. It cannot silently pass by constructing the
+independent reference scene. Broader geometry, filtering, constraints,
+callbacks and GPU scheduling remain separately scoped.
+
 **Do not mark N1 complete** solely upon this first rigid-body PGS slice:
 exact narrowphase breadth, collision filtering, CCD, articulations,
 TGS, GPU scheduling and Godot consumption remain separately auditable
