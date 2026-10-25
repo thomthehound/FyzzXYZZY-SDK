@@ -70,11 +70,21 @@ struct BoxPair {
 // The source GJKCPairDoSimplex selects the nearest Voronoi feature; the
 // subset solve performs the same constrained closest-origin problem.
 bool solve(int n,float a[3][4],float result[3]) {
+    // The Gram matrix carries squared lengths. An absolute pivot cutoff
+    // would reject the same valid simplex when the boxes are small.
+    float matrix_scale=0.0f;
+    for(int i=0;i<n;++i)
+        matrix_scale=std::max(matrix_scale,std::abs(a[i][i]));
+    if(!(matrix_scale>0.0f) || !std::isfinite(matrix_scale))
+        return false;
+    const float pivot_tolerance=
+        std::numeric_limits<float>::epsilon()*matrix_scale;
     for(int col=0;col<n;++col) {
         int pivot=col;
         for(int row=col+1;row<n;++row)
             if(std::abs(a[row][col])>std::abs(a[pivot][col]))pivot=row;
-        if(std::abs(a[pivot][col])<1.0e-12f)return false;
+        if(!(std::abs(a[pivot][col])>pivot_tolerance))
+            return false;
         for(int j=col;j<=n;++j)
             std::swap(a[col][j],a[pivot][j]);
         const float div=a[col][col];
@@ -173,9 +183,16 @@ struct Facet {
 Facet make_facet(const std::array<Support,64>& vertices,
                  int i,int j,int k) {
     const Vec3 a=vertices[i].q,b=vertices[j].q,c=vertices[k].q;
-    Vec3 n=cross(sub(b,a),sub(c,a));
+    const Vec3 e0=sub(b,a),e1=sub(c,a);
+    Vec3 n=cross(e0,e1);
     const float norm2=length2(n);
-    if(!(norm2>std::numeric_limits<float>::epsilon()))return {};
+    // Cross-product length squared has units of length^4. Test the
+    // relative triangle area instead of rejecting every small facet
+    // with a fixed float-epsilon area cutoff.
+    const float edge_product=length2(e0)*length2(e1);
+    if(!(edge_product>0.0f) || !std::isfinite(edge_product) ||
+       !(norm2>std::numeric_limits<float>::epsilon()*edge_product))
+        return {};
     n=mul(n,1.0f/std::sqrt(norm2));
     return {i,j,k,n,dot(n,a),true};
 }
@@ -243,7 +260,10 @@ bool contact_from_facet(const BoxPair& pair,
     const Vec3 e0=sub(q.q,p.q),e1=sub(r.q,p.q);
     const float a=dot(e0,e0),b=dot(e0,e1),c=dot(e1,e1);
     const float denominator=a*c-b*b;
-    if(denominator<=1.0e-16f)return false;
+    // The barycentric Gram determinant also scales as length^4.
+    // Reject near-collinear facets by relative area, not world units.
+    if(!(denominator>std::numeric_limits<float>::epsilon()*a*c))
+        return false;
     const float x=-dot(p.q,e0),y=-dot(p.q,e1);
     const float u=(x*c-y*b)/denominator;
     const float v=(y*a-x*b)/denominator;
