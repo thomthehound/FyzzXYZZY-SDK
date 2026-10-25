@@ -1184,12 +1184,15 @@ int main() {
                 constexpr float contact_distance=0.04f;
                 std::array<fyzz::native::PcmContactCandidate,64> raw{};
                 unsigned reduced_cases=0;
-                for(float theta:{0.13f,0.27f,0.41f})
-                    for(float x:{0.0f,0.11f,0.22f,0.33f})
+                // Yaw rotates the incident horizontal face within
+                // the reference face, producing eight clipped-edge
+                // candidates rather than the <=4 typical of Z tilt.
+                for(float theta:{0.27f,0.41f,0.59f})
+                    for(float x:{0.0f,0.11f,0.22f})
                         for(float z:{0.0f,0.10f,0.21f}) {
                             const fyzz::Vec3 above{x,1.43f,z};
                             const fyzz::Quat rotation{
-                                0,0,std::sin(theta*0.5f),
+                                0,std::sin(theta*0.5f),0,
                                     std::cos(theta*0.5f)};
                             std::size_t candidate_count=0;
                             if(!fyzz::native::source_pcm_box_box_candidates(
