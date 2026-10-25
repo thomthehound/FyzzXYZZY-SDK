@@ -852,16 +852,38 @@ void Scene::update_bounds() {
         // when a minimum crosses another volume's maximum (or the
         // reverse). Do not emit same-kind crossings: they cannot
         // change the 1D overlap state.
-        const auto crossing=[&](const Endpoint& moving,
-                           const Endpoint& neighbor) {
+        const auto crossing=[&](unsigned axis,
+                                 const Endpoint& moving,
+                                 const Endpoint& neighbor) {
             if(!sparse || moving.id==neighbor.id ||
                moving.is_max==neighbor.is_max)return;
             const Actor& a=actors_[moving.id];
             const Actor& other=actors_[neighbor.id];
             if(a.kind!=Kind::DynamicBox &&
                other.kind!=Kind::DynamicBox)return;
-            broadphase_crossed_pairs_.push_back(
-                ordered_pair(moving.id,neighbor.id));
+            const Pair pair=ordered_pair(moving.id,neighbor.id);
+            // BpBroadPhaseSap::batchUpdateFewUpdates calls
+            // Intersect2D_Handle on the other two axes before
+            // emitting a potential creation. A previously published
+            // pair must also survive this filter when a crossing
+            // signifies removal after simultaneous multi-axis
+            // movement; otherwise a Lost edge could be suppressed.
+            const auto& aa=a.encoded_bounds;
+            const auto& bb=other.encoded_bounds;
+            bool other_axes_overlap=true;
+            for(unsigned other_axis=0;other_axis<3;++other_axis) {
+                if(other_axis==axis)continue;
+                if(aa[other_axis]>bb[other_axis+3] ||
+                   bb[other_axis]>aa[other_axis+3]) {
+                    other_axes_overlap=false;
+                    break;
+                }
+            }
+            if(!other_axes_overlap &&
+               !std::binary_search(previous_pairs_.begin(),
+                                   previous_pairs_.end(),pair))
+                return;
+            broadphase_crossed_pairs_.push_back(pair);
             ++broadphase_endpoint_crossing_count_;
         };
         std::size_t total_shifts=0;
@@ -880,7 +902,7 @@ void Scene::update_bounds() {
                         axis+(side?3:0)];
                     if(i && less(moving,endpoints[i-1])) {
                         do {
-                            crossing(moving,endpoints[i-1]);
+                            crossing(axis,moving,endpoints[i-1]);
                             endpoints[i]=endpoints[i-1];
                             const auto& moved=endpoints[i];
                             sap_volumes_[moved.volume_slot].
@@ -897,7 +919,7 @@ void Scene::update_bounds() {
                     } else {
                         while(i+1<endpoints.size() &&
                               less(endpoints[i+1],moving)) {
-                            crossing(moving,endpoints[i+1]);
+                            crossing(axis,moving,endpoints[i+1]);
                             endpoints[i]=endpoints[i+1];
                             const auto& moved=endpoints[i];
                             sap_volumes_[moved.volume_slot].
