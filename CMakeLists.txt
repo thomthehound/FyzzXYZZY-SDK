@@ -112,7 +112,8 @@ add_library(fyzzxyzzy_core STATIC
   src/world.cpp
   src/native/scene.cpp
   src/native/GuContactBoxBox.cpp
-  src/native/GuPCMContactBoxBox.cpp)
+  src/native/GuPCMContactBoxBox.cpp
+  src/native/GuPCMGjkEpa.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_core PUBLIC
