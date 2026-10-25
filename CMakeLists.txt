@@ -161,6 +161,14 @@ if(BUILD_TESTING)
   target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE FyzzXYZZY::Core)
   add_test(NAME fyzzxyzzy_native_scene_smoke
     COMMAND fyzzxyzzy_native_scene_smoke)
+
+  # Explicit performance probe, built but not folded into the correctness
+  # tests. Runners report measurements without fragile timing gates.
+  add_executable(fyzzxyzzy_native_sap_benchmark
+    tests/native_sap_benchmark.cpp)
+  target_include_directories(fyzzxyzzy_native_sap_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_native_sap_benchmark PRIVATE FyzzXYZZY::Core)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into
