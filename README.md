@@ -15,9 +15,9 @@ applications and other host engines.
 
 The SDK provides a source-derived native CPU rigid scene for admitted box
 and plane contacts, PCM narrowphase, rigid PGS and island lifecycle.
-The standalone `World` constructor retains the transitional CPU reference
-default until the N4 migration boundary; select `ExecutionMode::NativeCpu`
-to use the independent engine. The Godot 4.7 GDExtension selects NativeCpu
+The standalone `World` constructor selects `ExecutionMode::NativeCpu`
+by default. The CPU reference remains available by explicit selection in
+source-enabled builds. The Godot 4.7 GDExtension selects NativeCpu
 explicitly and exercises its rigid scene in headless acceptance.
 The portable GPU physics scene remains unimplemented.
 Linux and Windows builds are covered by GitHub Actions.
