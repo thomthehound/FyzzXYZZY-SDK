@@ -265,7 +265,9 @@ bool epa(const BoxPair& pair,
     std::array<Support,64> vertices{};
     int vertices_count=simplex_count;
     for(int i=0;i<simplex_count;++i)vertices[i]=simplex[i];
-    std::array<Facet,256> facets{};
+    // GuEPAFacet.h: MaxFacets=64, MaxEdges=32,
+    // MaxSupportPoints=64. Retired facets return to the fixed ID pool.
+    std::array<Facet,64> facets{};
     int facet_count=0;
     if(!initialize_epa(
             pair,vertices,vertices_count,facets,facet_count))
@@ -273,7 +275,8 @@ bool epa(const BoxPair& pair,
     const float epsilon=0.1f*std::min(
         box_min_margin(pair.ha),box_min_margin(pair.hb));
     struct Edge {int from,to;};
-    std::array<Edge,768> boundary{};
+    std::array<Edge,32> boundary{};
+    float upper_bound=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<60;++iteration) {
         int closest=-1;
         float distance=std::numeric_limits<float>::max();
@@ -290,6 +293,7 @@ bool epa(const BoxPair& pair,
         if(std::abs(projection-distance)<=epsilon)
             return contact_from_facet(pair,vertices,selected,output);
         if(vertices_count==64)return false;
+        upper_bound=std::min(upper_bound,projection);
         bool duplicate=false;
         for(int i=0;i<vertices_count;++i)
             if(vertices[i].ai==new_point.ai &&
@@ -305,7 +309,9 @@ bool epa(const BoxPair& pair,
         for(int i=0;i<facet_count;++i) {
             Facet& f=facets[i];
             if(!f.valid)continue;
-            if(dot(f.normal,sub(new_point.q,vertices[f.i].q))<=1.0e-7f)
+            // GuEPAFacet::silhouette only retains facets whose signed
+            // point-to-plane distance is strictly negative.
+            if(dot(f.normal,sub(new_point.q,vertices[f.i].q))<0.0f)
                 continue;
             f.valid=false;
             for(const Edge e:std::array<Edge,3>{{
@@ -327,15 +333,25 @@ bool epa(const BoxPair& pair,
             }
         }
         if(boundary_count==0)return false;
-        // New triangles link the silhouette boundary to the current
-        // support vertex; obsolete facets are retired in place.
-        if(facet_count+boundary_count>static_cast<int>(facets.size()))
-            return false;
+        // EPAFacetManager returns obsolete facet IDs to its pool
+        // before new horizon triangles are admitted. This preserves
+        // the source's 64-slot fixed working set across iterations.
+        int available_slots=static_cast<int>(facets.size())-facet_count;
+        for(int i=0;i<facet_count;++i)
+            available_slots+=!facets[i].valid;
+        if(boundary_count>available_slots)return false;
         for(int i=0;i<boundary_count;++i) {
             const auto e=boundary[i];
             const Facet f=make_facet(vertices,e.from,e.to,new_index);
             if(!f.valid)return false;
-            facets[facet_count++]=f;
+            int slot=-1;
+            for(int j=0;j<facet_count;++j)
+                if(!facets[j].valid) {
+                    slot=j;
+                    break;
+                }
+            if(slot<0)slot=facet_count++;
+            facets[slot]=f;
         }
     }
     return false;
