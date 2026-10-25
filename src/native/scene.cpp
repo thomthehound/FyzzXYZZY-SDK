@@ -1345,6 +1345,8 @@ std::uint8_t Scene::generate_pcm_box_box(
         cache.orientation_a=first.orientation;
         cache.orientation_b=second.orientation;
         cache.initialized=true;
+        if(pcm_candidate_scratch_.size()!=64)
+            pcm_candidate_scratch_.resize(64);
         auto& candidates=pcm_candidate_scratch_;
         std::size_t count=0;
         const bool overlapping=source_pcm_box_box_candidates(
