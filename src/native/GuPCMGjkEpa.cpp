@@ -458,15 +458,12 @@ bool source_pcm_box_box_gjk_epa(
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
                support.bi==simplex[i].bi) {
-                // Reusing an extreme vertex closes the support search.
-                // If its plane still separates the shapes, the current
-                // closest witnesses are an admissible speculative pair.
-                const Closest current=closest_simplex(simplex,count);
+                // Repeating an extreme support vertex cannot advance
+                // the simplex. Source GJK's non-improving-distance
+                // status is GJK_DEGENERATE, not GJK_CONTACT; the PCM
+                // box-box caller does not publish that status.
                 store();
-                return projection>0.0f && current.mask &&
-                    current.dist2>0.0f &&
-                    current.dist2<=contact_distance*contact_distance &&
-                    contact_from_gjk(pair,current,contact);
+                return false;
             }
         if(count==4) {
             store();
@@ -482,15 +479,12 @@ bool source_pcm_box_box_gjk_epa(
         const float next_dist=std::sqrt(next.dist2);
         compact(simplex,count,next);
         if(next_dist>=previous) {
-            // A non-improving closest-point iteration cannot justify an
-            // EPA overlap when a positive support plane proves a gap.
-            // Use the converged simplex witness only within the actual
-            // contact-distance envelope.
+            // GuGJKPenetration returns GJK_DEGENERATE when its simplex
+            // distance fails to decrease. In the admitted box/box
+            // caller only GJK_CONTACT and EPA_CONTACT produce witnesses.
+            // A positive projected gap does not override that status.
             store();
-            return projection>0.0f && next.mask &&
-                next.dist2>0.0f &&
-                next.dist2<=contact_distance*contact_distance &&
-                contact_from_gjk(pair,next,contact);
+            return false;
         }
         previous=next_dist;
     }
