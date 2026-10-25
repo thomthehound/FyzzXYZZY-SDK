@@ -5441,6 +5441,57 @@ void Scene::solve_constraints() {
         task.velocity_iterations,1u);
     for (unsigned iter = 0;
          iter < position_iterations + velocity_iterations; ++iter) {
+        // DyDynamics::setupDescTask emits 1D joint descriptors before
+        // contacts; preserve their solve order within the current
+        // serial task lowering. Unified conflict partitioning across
+        // both edge types remains a separate admission gate.
+        // The source solve1D recurrence uses the same solver deltas
+        // and position/velocity pass constants as contact PGS.
+        for(std::size_t index=task_distance_begin;
+            index<task.distance_end;++index) {
+            auto& row=distance_rows_[index];
+            auto& a=actors_[row.a].kind==Kind::StaticBox ||
+                    actors_[row.a].kind==Kind::StaticPlane
+                ? world_solver_row_:solver_rows_[row.a];
+            auto& b=actors_[row.b].kind==Kind::StaticBox ||
+                    actors_[row.b].kind==Kind::StaticPlane
+                ? world_solver_row_:solver_rows_[row.b];
+            const double normal_delta=
+                static_cast<double>(row.axis.x)*
+                    (a.solver.linear_velocity_delta.x-
+                     b.solver.linear_velocity_delta.x)+
+                static_cast<double>(row.axis.y)*
+                    (a.solver.linear_velocity_delta.y-
+                     b.solver.linear_velocity_delta.y)+
+                static_cast<double>(row.axis.z)*
+                    (a.solver.linear_velocity_delta.z-
+                     b.solver.linear_velocity_delta.z);
+            const double constant=iter<position_iterations
+                ? row.constant:row.unbiased_constant;
+            const double next=std::clamp(
+                row.applied_force+
+                normal_delta*row.velocity_multiplier+constant,
+                -max_float,max_float);
+            const double impulse=next-row.applied_force;
+            const double ia=impulse*row.inverse_mass_a;
+            const double ib=impulse*row.inverse_mass_b;
+            const Vec3 va=a.solver.linear_velocity_delta;
+            const Vec3 vb=b.solver.linear_velocity_delta;
+            const std::array<double,6> candidate{
+                va.x+ia*row.axis.x,va.y+ia*row.axis.y,
+                va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
+                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z};
+            std::array<float,6> applied{};
+            for(std::size_t k=0;k<candidate.size();++k) {
+                if(!std::isfinite(candidate[k]) ||
+                   std::abs(candidate[k])>max_float)
+                    throw std::overflow_error("Source 1D solver velocity overflow");
+                applied[k]=static_cast<float>(candidate[k]);
+            }
+            a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
+            b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
+            row.applied_force=next;
+        }
         // DyConstraintPartition's ordered descriptors, rather than
         // raw broadphase pair order, govern every position/velocity pass.
         // Within each descriptor, PhysX consumes the correlated
@@ -5635,56 +5686,6 @@ void Scene::solve_constraints() {
             if(order_cursor!=manifold.solver_offset+manifold.count)
                 throw std::logic_error(
                     "Native source contact solver patch stream truncated");
-        }
-        // The admitted one-row center-anchor joint uses the original
-        // DySolverConstraints::solve1D recurrence on the same Dy solver
-        // delta state. No independent spring/position correction owner.
-        // The serial CPU lowering places typed 1D descriptors after
-        // contacts; unified source partition ordering remains a gate.
-        for(std::size_t index=task_distance_begin;
-            index<task.distance_end;++index) {
-            auto& row=distance_rows_[index];
-            auto& a=actors_[row.a].kind==Kind::StaticBox ||
-                    actors_[row.a].kind==Kind::StaticPlane
-                ? world_solver_row_:solver_rows_[row.a];
-            auto& b=actors_[row.b].kind==Kind::StaticBox ||
-                    actors_[row.b].kind==Kind::StaticPlane
-                ? world_solver_row_:solver_rows_[row.b];
-            const double normal_delta=
-                static_cast<double>(row.axis.x)*
-                    (a.solver.linear_velocity_delta.x-
-                     b.solver.linear_velocity_delta.x)+
-                static_cast<double>(row.axis.y)*
-                    (a.solver.linear_velocity_delta.y-
-                     b.solver.linear_velocity_delta.y)+
-                static_cast<double>(row.axis.z)*
-                    (a.solver.linear_velocity_delta.z-
-                     b.solver.linear_velocity_delta.z);
-            const double constant=iter<position_iterations
-                ? row.constant:row.unbiased_constant;
-            const double next=std::clamp(
-                row.applied_force+
-                normal_delta*row.velocity_multiplier+constant,
-                -max_float,max_float);
-            const double impulse=next-row.applied_force;
-            const double ia=impulse*row.inverse_mass_a;
-            const double ib=impulse*row.inverse_mass_b;
-            const Vec3 va=a.solver.linear_velocity_delta;
-            const Vec3 vb=b.solver.linear_velocity_delta;
-            const std::array<double,6> candidate{
-                va.x+ia*row.axis.x,va.y+ia*row.axis.y,
-                va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
-                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z};
-            std::array<float,6> applied{};
-            for(std::size_t k=0;k<candidate.size();++k) {
-                if(!std::isfinite(candidate[k]) ||
-                   std::abs(candidate[k])>max_float)
-                    throw std::overflow_error("Source 1D solver velocity overflow");
-                applied[k]=static_cast<float>(candidate[k]);
-            }
-            a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
-            b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
-            row.applied_force=next;
         }
         if (iter + 1 == position_iterations) {
             // DySolverControl.cpp::saveMotionVelocities occurs immediately
