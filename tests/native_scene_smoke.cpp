@@ -293,6 +293,41 @@ struct ConstraintIslandSourceFixture {
                     "Constraint actor retirement retained an orphan island edge");
         }
     }
+    static void verify_graph_owned_kinematic_active_references() {
+        Scene scene{};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const auto k=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,5,0},1.0f);
+        scene.set_kinematic(k,true);
+        if(!scene.active_accurate_kinematics().empty())
+            throw std::runtime_error(
+                "Unreferenced stationary kinematic started active");
+        const auto edge=scene.add_distance_constraint(a,k,2.0f);
+        scene.advance_collision(true);
+        if(scene.active_accurate_kinematics().size()!=1 ||
+           scene.active_speculative_kinematics().size()!=1 ||
+           scene.active_accurate_kinematics()[0]!=k ||
+           scene.accurate_islands_.active_kinematic_index[k]!=0 ||
+           scene.accurate_island_id(k)!=Scene::IslandGraph::invalid)
+            throw std::runtime_error(
+                "Constraint omitted active kinematic island reference");
+        scene.remove_constraint_edge(edge);
+        scene.advance_collision(true);
+        if(!scene.active_accurate_kinematics().empty() ||
+           !scene.active_speculative_kinematics().empty())
+            throw std::runtime_error(
+                "Retired constraint retained kinematic reference");
+        scene.set_kinematic_target(k,{3.25f,5,0},{});
+        scene.step(1.0f/120.0f);
+        if(scene.active_accurate_kinematics().size()!=1)
+            throw std::runtime_error(
+                "Target-driven kinematic omitted from source active list");
+        scene.step(1.0f/120.0f);
+        if(!scene.active_accurate_kinematics().empty())
+            throw std::runtime_error(
+                "Settled kinematic retained source active membership");
+    }
     static void verify_kinematic_endpoint_not_static_world() {
         Scene scene;
         const auto dynamic=scene.add_dynamic_box(
@@ -11020,6 +11055,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_prepublication_constraint_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
+    fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();

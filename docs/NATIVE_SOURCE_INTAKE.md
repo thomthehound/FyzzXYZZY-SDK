@@ -1610,6 +1610,14 @@ rejects before graph mutation. Source-enabled conformance checks
 completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
 
+**Kinematic active-island reference publication:** Speculative and
+accurate IslandSim graphs now keep separate indexed active-kinematic
+lists in addition to their dynamic rigid solver-node streams.
+Typed edge references and target/settling state update those lists
+incrementally. Source swap-last retirement, explicit type changes,
+structural rebuild and checkpoint rollback preserve their membership
+without a shadow body graph or hot-path historical-actor scan.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`

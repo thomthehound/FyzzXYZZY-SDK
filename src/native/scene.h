@@ -474,6 +474,13 @@ public:
     std::span<const BodyId> deactivating_accurate_nodes() const noexcept {
         return accurate_islands_.nodes_to_deactivate;
     }
+    // Separate source IslandSim::mActiveKinematicNodes lists.
+    std::span<const BodyId> active_speculative_kinematics() const noexcept {
+        return speculative_islands_.active_kinematic_nodes;
+    }
+    std::span<const BodyId> active_accurate_kinematics() const noexcept {
+        return accurate_islands_.active_kinematic_nodes;
+    }
     // Source IslandSim::getDeactivatingEdges(eCONTACT_MANAGER).
     // Each graph owns its separate edge-lifetime publication; indices
     // reference the one scene-owned contact manager slot arena.
@@ -698,6 +705,7 @@ private:
     // consumption for rigid eCONTACT_MANAGER, using source edge outputs.
     void consume_contact_interaction_activity() noexcept;
     void clear_activated_edges(bool checkpointed) noexcept;
+    void refresh_kinematic_node(BodyId id, bool accurate) noexcept;
     void activate_contact_edge(std::uint32_t id, bool accurate) noexcept;
     void deactivate_contact_edge(std::uint32_t id, bool accurate,
                                  bool publish) noexcept;
@@ -881,6 +889,10 @@ private:
         // The node IDs are references into actors_, not copied bodies.
         std::vector<BodyId> active_nodes;
         std::vector<std::size_t> active_node_index;
+        // Kinematics remain outside the rigid active-node/PGS ranges.
+        // Their indexed activity derives from live references or targets.
+        std::vector<BodyId> active_kinematic_nodes;
+        std::vector<std::size_t> active_kinematic_index;
         // IslandSim::mInitialActiveNodeCount[eRIGID_BODY_TYPE] splits
         // the original active prefix from the wakeIslands additions.
         // markInactive may shrink this prefix by relocating its tail.

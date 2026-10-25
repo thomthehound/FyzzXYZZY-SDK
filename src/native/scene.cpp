@@ -189,6 +189,13 @@ BodyId Scene::add(Actor actor) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
+    // Edge publications are noexcept: preallocate one kinematic slot
+    // for every possible actor before making this admission visible.
+    for(auto* graph:{&speculative_islands_,&accurate_islands_}) {
+        graph->active_kinematic_nodes.reserve(actors_.size()+1);
+        graph->active_kinematic_index.resize(
+            actors_.size()+1,invalid_instance);
+    }
     actor.alive = true;
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     actors_.push_back(actor);
@@ -574,6 +581,8 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     actor.kinematic_target_orientation={
         orientation.x/magnitude,orientation.y/magnitude,
         orientation.z/magnitude,orientation.w/magnitude};
+    refresh_kinematic_node(id,false);
+    refresh_kinematic_node(id,true);
     actor.kinematic_settling=false;
     actor.sleeping=false;
     actor.wake_counter=0.4f;
@@ -669,6 +678,8 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         actor.sleep_angular_acc={};
         authored_activation_pending_=true;
     }
+    refresh_kinematic_node(id,false);
+    refresh_kinematic_node(id,true);
     // Full node-type remapping is restricted to this explicit edit.
     // Quiet frames retain persistent source island handles.
     island_topology_dirty_=true;
@@ -834,6 +845,8 @@ void Scene::remove(BodyId id) {
         else ++cursor;
     }
     actor.alive = false;
+    refresh_kinematic_node(id,false);
+    refresh_kinematic_node(id,true);
     if(dynamic_node)--live_dynamic_count_;
     if(actor.kinematic_tracked) {
         std::erase(active_kinematic_targets_,id);
@@ -3162,6 +3175,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // for no-throw deactivation after a geometry-only publication.
         next.active_node_index.assign(actors_.size(),invalid_instance);
         next.active_nodes.reserve(actors_.size());
+        next.active_kinematic_index.assign(actors_.size(),invalid_instance);
+        next.active_kinematic_nodes.reserve(actors_.size());
         next.active_islands.reserve(actors_.size());
         next.activating_nodes=graph.activating_nodes;
         next.activating_nodes.reserve(actors_.size());
@@ -3176,6 +3191,23 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // membership, determine each node's active references.
         next.active_reference_counts=graph.active_reference_counts;
         next.active_reference_counts.resize(actors_.size(),0);
+        // Only structural rebuilds scan actor IDs. Preserve prior
+        // mActiveKinematicNodes order, admitting new referenced targets.
+        const auto add_active_kinematic=[&](BodyId id) {
+            if(id>=actors_.size() || !actors_[id].alive ||
+               actors_[id].kind!=Kind::KinematicBox ||
+               next.active_kinematic_index[id]!=invalid_instance)return;
+            const auto& actor=actors_[id];
+            if(!next.active_reference_counts[id] &&
+               !actor.kinematic_target_pending &&
+               !actor.kinematic_settling)return;
+            next.active_kinematic_index[id]=next.active_kinematic_nodes.size();
+            next.active_kinematic_nodes.push_back(id);
+        };
+        for(BodyId id:graph.active_kinematic_nodes)
+            add_active_kinematic(id);
+        for(std::size_t i=0;i<actors_.size();++i)
+            add_active_kinematic(static_cast<BodyId>(i));
         next.activated_edges.reserve(island_edges_.size());
         next.deactivating_edges.reserve(island_edges_.size());
         next.activated_constraint_edges.reserve(island_edges_.size());
@@ -3659,6 +3691,26 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     island_topology_dirty_=false;
     ++island_topology_revision_;
 }
+void Scene::refresh_kinematic_node(BodyId id,bool accurate) noexcept {
+    auto& graph=accurate?accurate_islands_:speculative_islands_;
+    if(id>=graph.active_kinematic_index.size())return;
+    const auto& body=actors_[id];
+    const bool active=body.alive && body.kind==Kind::KinematicBox &&
+        ((id<graph.active_reference_counts.size() &&
+          graph.active_reference_counts[id]!=0) ||
+         body.kinematic_target_pending || body.kinematic_settling);
+    const auto old=graph.active_kinematic_index[id];
+    if(active && old==invalid_instance) {
+        graph.active_kinematic_index[id]=graph.active_kinematic_nodes.size();
+        graph.active_kinematic_nodes.push_back(id);
+    } else if(!active && old!=invalid_instance) {
+        const BodyId last=graph.active_kinematic_nodes.back();
+        graph.active_kinematic_nodes[old]=last;
+        graph.active_kinematic_index[last]=old;
+        graph.active_kinematic_nodes.pop_back();
+        graph.active_kinematic_index[id]=invalid_instance;
+    }
+}
 // PxsIslandSim.cpp::markEdgeActive/removeEdgeFromActivatingList:
 // the shared EdgeIndex has independent activity in the two IslandSims.
 void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
@@ -3694,6 +3746,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
        rigid_node(actors_[edge.pair.b].kind)) {
         ++graph.active_reference_counts[edge.pair.a];
         ++graph.active_reference_counts[edge.pair.b];
+        refresh_kinematic_node(edge.pair.a,accurate);
+        refresh_kinematic_node(edge.pair.b,accurate);
     }
 }
 void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
@@ -3731,6 +3785,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
            rigid_node(actors_[edge.pair.b].kind)) {
             --graph.active_reference_counts[edge.pair.a];
             --graph.active_reference_counts[edge.pair.b];
+            refresh_kinematic_node(edge.pair.a,accurate);
+            refresh_kinematic_node(edge.pair.b,accurate);
         }
         if(publish) {
             if(edge.type==IslandEdgeType::Constraint)
@@ -6374,6 +6430,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     const auto copy_active=[](IslandGraph& saved,const IslandGraph& live) {
         saved.active_nodes.assign(live.active_nodes.begin(),
                                    live.active_nodes.end());
+        saved.active_kinematic_nodes.assign(
+            live.active_kinematic_nodes.begin(),
+            live.active_kinematic_nodes.end());
         saved.active_node_index.assign(live.active_node_index.begin(),
                                         live.active_node_index.end());
         saved.active_islands.assign(live.active_islands.begin(),
@@ -6399,6 +6458,12 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Capacity is reused over successive frames, including failed steps.
     speculative_islands.active_nodes.reserve(scene.actors_.size());
     accurate_islands.active_nodes.reserve(scene.actors_.size());
+    // Keep noexcept edge/reference transitions preallocated after
+    // capture; kinematic membership itself is not a second actor owner.
+    scene.speculative_islands_.active_kinematic_nodes.reserve(
+        scene.actors_.size());
+    scene.accurate_islands_.active_kinematic_nodes.reserve(
+        scene.actors_.size());
     // A copied vector's capacity is only its current count. Both
     // source mActiveIslands owners must retain full no-throw wake
     // capacity after checkpoint publication or rejected rollback.
@@ -6779,6 +6844,18 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         initial_speculative_references);
     scene.accurate_islands_.active_reference_counts.resize(
         initial_accurate_references);
+    // Restore the pre-publication kinematic permutation with O(active
+    // kinematic) work only on rejected transactions.
+    const auto restore_kinematics=[](IslandGraph& graph,IslandGraph& saved) {
+        for(BodyId id:graph.active_kinematic_nodes)
+            if(id<graph.active_kinematic_index.size())
+                graph.active_kinematic_index[id]=invalid_instance;
+        graph.active_kinematic_nodes.swap(saved.active_kinematic_nodes);
+        for(std::size_t i=0;i<graph.active_kinematic_nodes.size();++i)
+            graph.active_kinematic_index[graph.active_kinematic_nodes[i]]=i;
+    };
+    restore_kinematics(scene.speculative_islands_,speculative_islands);
+    restore_kinematics(scene.accurate_islands_,accurate_islands);
     if(graph_ownership_saved) {
         scene.accurate_island_nodes_.swap(accurate_nodes);
         scene.accurate_island_offsets_.swap(accurate_offsets);
@@ -7241,6 +7318,8 @@ void Scene::step(float seconds) {
             return false;
         }
         body.kinematic_tracked=false;
+        refresh_kinematic_node(id,false);
+        refresh_kinematic_node(id,true);
         return true;
     });
     // This is the last publication edge. The frame is now observed as
