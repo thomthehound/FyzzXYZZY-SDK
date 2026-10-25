@@ -197,6 +197,13 @@ void World::set_body_contact_report_threshold(BodyId id, float force) {
     impl_->set_body_contact_report_threshold(id,force);
 }
 
+void World::set_body_kinematic_target(BodyId id, Vec3 position,
+                                      Quat orientation) {
+    validate_position(position);
+    validate_orientation(orientation);
+    impl_->set_body_kinematic_target(id,position,orientation);
+}
+
 void World::set_body_kinematic(BodyId id, bool enabled) {
     impl_->set_body_kinematic(id,enabled);
 }

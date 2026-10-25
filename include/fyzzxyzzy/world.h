@@ -246,6 +246,9 @@ public:
         throw std::logic_error("This backend cannot author rigid contact threshold");
     }
     // PxShape's contact and rest distances belong to the existing actor shape.
+    virtual void set_body_kinematic_target(BodyId, Vec3, Quat) {
+        throw std::logic_error("This backend cannot author kinematic targets");
+    }
     virtual void set_body_kinematic(BodyId, bool) {
         throw std::logic_error("This backend has no kinematic rigid nodes");
     }
@@ -315,6 +318,8 @@ public:
     // eKINEMATIC flag transition for a rigid box. No kinematic-target
     // animation is admitted by this authoring call.
     void set_body_kinematic(BodyId id, bool enabled);
+    // ScBodySim::calculateKinematicVelocity / updateKinematicPose.
+    void set_body_kinematic_target(BodyId id, Vec3 position, Quat orientation);
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics);
 
 private:

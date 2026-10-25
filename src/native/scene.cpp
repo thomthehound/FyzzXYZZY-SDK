@@ -550,6 +550,31 @@ void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
                       : actor.pending_linear_velocity_delta);
     destination={};
 }
+void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
+    auto& actor=require(id);
+    if(actor.kind!=Kind::KinematicBox)
+        throw std::logic_error(
+            "Source kinematic target requires eKINEMATIC rigid body");
+    const float magnitude=std::sqrt(
+        orientation.x*orientation.x+orientation.y*orientation.y+
+        orientation.z*orientation.z+orientation.w*orientation.w);
+    if(!finite(position) || !finite(orientation) ||
+       !std::isfinite(magnitude) ||
+       std::abs(magnitude-1.0f)>=1.0e-2f)
+        throw std::invalid_argument("Native kinematic target is not sane");
+    if(!actor.kinematic_tracked)
+        active_kinematic_targets_.push_back(id);
+    actor.kinematic_tracked=true;
+    actor.kinematic_target_pending=true;
+    actor.kinematic_target_position=position;
+    actor.kinematic_target_orientation={
+        orientation.x/magnitude,orientation.y/magnitude,
+        orientation.z/magnitude,orientation.w/magnitude};
+    actor.kinematic_settling=false;
+    actor.sleeping=false;
+    actor.wake_counter=0.4f;
+}
+
 void Scene::set_kinematic(BodyId id,bool enabled) {
     auto& actor=require(id);
     if(!rigid_node(actor.kind))
@@ -585,6 +610,12 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         partner.sleep_linear_acc={};
         partner.sleep_angular_acc={};
         authored_activation_pending_=true;
+    }
+    if(!enabled && actor.kinematic_tracked) {
+        std::erase(active_kinematic_targets_,id);
+        actor.kinematic_tracked=false;
+        actor.kinematic_target_pending=false;
+        actor.kinematic_settling=false;
     }
     if(enabled) {
         actor.kind=Kind::KinematicBox;
@@ -760,6 +791,10 @@ void Scene::remove(BodyId id) {
     }
     actor.alive = false;
     if(dynamic_node)--live_dynamic_count_;
+    if(actor.kinematic_tracked) {
+        std::erase(active_kinematic_targets_,id);
+        actor.kinematic_tracked=false;
+    }
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
 }
@@ -826,12 +861,73 @@ void Scene::update_bounds() {
                 (a.min_x==b.min_x && a.id<b.id);
         });
 }
+void Scene::calculate_kinematic_velocities(float inverse_dt) {
+    // ScKinematics.cpp::BodySim::calculateKinematicVelocity. The pose
+    // stays at its old value until postSolver, but Dy must see the
+    // target-derived velocity when solving a moving kinematic contact.
+    for(BodyId id:active_kinematic_targets_) {
+        Actor& body=actors_[id];
+        if(!body.alive || body.kind!=Kind::KinematicBox)continue;
+        step_checkpoint_.save_motion(*this,id);
+        if(!body.kinematic_target_pending) {
+            body.velocity={};
+            body.angular_velocity={};
+            continue;
+        }
+        const Vec3 target=body.kinematic_target_position;
+        body.velocity={
+            (target.x-body.position.x)*inverse_dt,
+            (target.y-body.position.y)*inverse_dt,
+            (target.z-body.position.z)*inverse_dt};
+        const Quat q=body.kinematic_target_orientation;
+        const Quat old=body.orientation;
+        Quat relative=multiply(q,Quat{-old.x,-old.y,-old.z,old.w});
+        if(relative.w<0)
+            relative={-relative.x,-relative.y,-relative.z,-relative.w};
+        const float length=std::sqrt(relative.x*relative.x+
+                                     relative.y*relative.y+
+                                     relative.z*relative.z);
+        if(length>0) {
+            const float angle=2.0f*std::atan2(length,relative.w);
+            const float scale=angle*inverse_dt/length;
+            body.angular_velocity={relative.x*scale,
+                                   relative.y*scale,
+                                   relative.z*scale};
+        } else body.angular_velocity={};
+        if(!finite(body.velocity) || !finite(body.angular_velocity))
+            throw std::overflow_error("Source kinematic target velocity overflow");
+    }
+}
+void Scene::publish_kinematic_targets() {
+    // ScPipeline::postSolver invokes integrateKinematicPose after Dy
+    // solver completion. The new pose enters afterIntegration bounds
+    // publication, while this frame's Gu contacts used the old pose.
+    for(BodyId id:active_kinematic_targets_) {
+        Actor& body=actors_[id];
+        if(!body.alive || body.kind!=Kind::KinematicBox ||
+           !body.kinematic_target_pending)continue;
+        step_checkpoint_.save_motion(*this,id);
+        body.position=body.kinematic_target_position;
+        body.orientation=body.kinematic_target_orientation;
+        body.cached_bounds_current=false;
+        body.kinematic_target_pending=false;
+        body.kinematic_settling=true;
+    }
+}
 void Scene::after_integration_cached_bounds() {
     // ScPipeline::afterIntegration::updateScBodyAndShapeSim refreshes
     // shape bounds from integrated poses. Consume the SAME task-owned
     // accurate island ranges that Dy integrated, without a scene-wide
     // actor scan, a duplicate AABB pass, or another shape registry.
     // Sleep-deactivated islands never entered those task ranges.
+    // Kinematic target poses are published by postSolver, outside Dy
+    // island node batches, but their source shape bounds must update.
+    for(BodyId id:active_kinematic_targets_) {
+        auto& actor=actors_[id];
+        if(actor.alive && actor.kind==Kind::KinematicBox &&
+           !actor.cached_bounds_current)
+            update_actor_bounds(actor);
+    }
     for(const auto& task:solver_tasks_)
         for(std::size_t batch=task.first_batch;batch<task.batch_end;++batch) {
             const auto island=active_accurate_island_batches_[batch];
@@ -3966,6 +4062,19 @@ void Scene::prepare_solver_bodies() {
     // free-flight actors stay on the existing source body integrator.
     // This is the sole scene-owned transient solver state.
     solver_rows_.resize(actors_.size());
+    // Kinematic nodes have no Dy island membership, but moving targets
+    // supply source pre-solver velocities as infinite-mass row inputs.
+    // Their solver deltas remain zero, never entering rigid writeback.
+    for(BodyId id:active_kinematic_targets_) {
+        const Actor& body=actors_[id];
+        if(!body.alive || body.kind!=Kind::KinematicBox)continue;
+        auto& row=solver_rows_[id];
+        row={};
+        row.data.position=body.position;
+        row.data.orientation=body.orientation;
+        row.data.linear_velocity=body.velocity;
+        row.data.angular_velocity=body.angular_velocity;
+    }
     // Keep a distinct monotonic generation: StepCheckpoint rolls back
     // frame_index_, but rejected solver rows remain in reusable storage.
     // Reusing a frame index would otherwise reactivate stale contact rows
@@ -5624,7 +5733,7 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
     if(scene.motion_undo_generations_[id]==scene.motion_undo_generation_)
         return;
     const Actor& body=scene.actors_[id];
-    if(!body.alive || body.kind!=Kind::DynamicBox)return;
+    if(!body.alive || !rigid_node(body.kind))return;
     scene.motion_undo_generations_[id]=scene.motion_undo_generation_;
     // capture() already reserved one record for each live dynamic body;
     // neither a speculative wake nor source deactivation can allocate.
@@ -5634,6 +5743,7 @@ void Scene::StepCheckpoint::save_motion(Scene& scene, BodyId id) noexcept {
         body.pending_angular_acceleration,
         body.wake_counter,body.sleep_linear_acc,body.sleep_angular_acc,
         body.ready_for_sleep,body.sleeping,body.activating,
+        body.kinematic_target_pending,body.kinematic_settling,
         body.encoded_bounds,body.cached_bounds_current});
 }
 void Scene::StepCheckpoint::save_manifold_solver_metadata(
@@ -5771,7 +5881,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
             scene.motion_undo_generation_=1;
         }
         scene.motion_undo_generations_.resize(scene.actors_.size(),0);
-        motions.reserve(scene.live_dynamic_count_);
+        motions.reserve(scene.live_dynamic_count_+
+                        scene.active_kinematic_targets_.size());
     }
     // Source EdgeInstance writes are journaled only when the contact
     // manager graph actually changes. Snapshotting the slot watermark
@@ -6052,6 +6163,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
             a.ready_for_sleep=motion.ready_for_sleep;
             a.sleeping=motion.sleeping;
             a.activating=motion.activating;
+            a.kinematic_target_pending=motion.kinematic_target_pending;
+            a.kinematic_settling=motion.kinematic_settling;
             a.encoded_bounds=motion.encoded_bounds;
             a.cached_bounds_current=motion.cached_bounds_current;
         }
@@ -6361,6 +6474,7 @@ void Scene::step(float seconds) {
     // resolves it first without changing the dependency edge.
     join.finish_third_pass();
     join.finish_lost_contacts();
+    calculate_kinematic_velocities(1.0f/seconds);
     // Dy::DynamicsContext takes the accurate *active* island ranges,
     // not every actor or every dormant island in the full graph.
     prepare_active_accurate_island_batches();
@@ -6648,6 +6762,7 @@ void Scene::step(float seconds) {
     // This check gates resource reclamation and completed publication;
     // failed frames roll back the existing single-scene checkpoint.
     join.finish_post_solver();
+    publish_kinematic_targets();
     // The current Dy motion and island ownership are committed only
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
@@ -6658,6 +6773,18 @@ void Scene::step(float seconds) {
     // writeback, island reconciliation and contact-manager retirement.
     publish_contact_events();
     join.publish_results();
+    // Source BF_KINEMATIC_SETTLING consumes one subsequent zero-motion
+    // update; prune those no longer target-driven only after commit.
+    std::erase_if(active_kinematic_targets_,[&](BodyId id) {
+        auto& body=actors_[id];
+        if(body.kinematic_target_pending)return false;
+        if(body.kinematic_settling) {
+            body.kinematic_settling=false;
+            return false;
+        }
+        body.kinematic_tracked=false;
+        return true;
+    });
     // This is the last publication edge. The frame is now observed as
     // a completed Dy result rather than merely a Gu collision step.
     // A failed stage above leaves it unpublished; rollback restores the
@@ -6866,6 +6993,9 @@ public:
     }
     void set_body_kinematic(BodyId id, bool enabled) override {
         scene_.set_kinematic(id,enabled);
+    }
+    void set_body_kinematic_target(BodyId id, Vec3 pos, Quat q) override {
+        scene_.set_kinematic_target(id,pos,q);
     }
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics) override {
         scene_.set_dynamics(id,dynamics);

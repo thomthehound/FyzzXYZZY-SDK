@@ -412,6 +412,17 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         actors[id] = nullptr;
     }
 
+    void set_body_kinematic_target(BodyId id, Vec3 pos, Quat q) override {
+        if(id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* body=actors[id]->is<physx::PxRigidDynamic>();
+        if(!body || !body->getRigidBodyFlags().isSet(
+                physx::PxRigidBodyFlag::eKINEMATIC))
+            throw std::logic_error("Kinematic target requires eKINEMATIC");
+        body->setKinematicTarget(physx::PxTransform(
+            to_physx(pos),physx::PxQuat(q.x,q.y,q.z,q.w)));
+    }
+
     void set_body_kinematic(BodyId id, bool enabled) override {
         if(id>=actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");

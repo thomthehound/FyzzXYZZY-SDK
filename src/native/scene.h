@@ -197,6 +197,7 @@ public:
     // without removing the rigid actor or introducing another owner.
     void set_shape_simulation_enabled(BodyId id, bool enabled);
     void set_kinematic(BodyId id, bool enabled);
+    void set_kinematic_target(BodyId id, Vec3 position, Quat orientation);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
@@ -503,6 +504,14 @@ private:
         float contact_offset=0.02f;
         float rest_offset=0.0f;
         bool simulation_shape_enabled=true;
+        // ScBodySim::BF_KINEMATIC_MOVED and its authored target pose.
+        // Target velocity is computed when dt becomes known, then the
+        // target pose is published in postSolver (not before Gu).
+        bool kinematic_target_pending=false;
+        bool kinematic_settling=false;
+        bool kinematic_tracked=false;
+        Vec3 kinematic_target_position{};
+        Quat kinematic_target_orientation{};
         RigidBodyDynamics dynamics{};
         // PhysX PxMassProperties + ScBodyCore inverse inertia for a box
         // about its mass center, in actor-local principal axes.
@@ -640,6 +649,8 @@ private:
     void update_actor_bounds(Actor& actor);
     void update_bounds();
     void after_integration_cached_bounds();
+    void calculate_kinematic_velocities(float inverse_dt);
+    void publish_kinematic_targets();
     void update_pairs();
     void publish_pairs();
     void update_contacts();
@@ -839,6 +850,10 @@ private:
     // Bound the noexcept motion journal by living rigid actors rather
     // than the historical BodyId watermark that includes retired actors.
     std::size_t live_dynamic_count_=0;
+    // This is a sparse active-kinematic *reference stream* into actors_,
+    // not another body registry. Includes one settling frame to zero
+    // source kinematic velocities after the target was published.
+    std::vector<BodyId> active_kinematic_targets_;
     // Dy::DynamicsContext::iterateIslandsNodes consumes the accurate
     // active-island node sequence. These are existing actor identifiers,
     // not a duplicated actor or solver-body registry.
@@ -972,6 +987,8 @@ private:
             bool ready_for_sleep=false;
             bool sleeping=false;
             bool activating=false;
+            bool kinematic_target_pending=false;
+            bool kinematic_settling=false;
             std::array<std::uint32_t,6> encoded_bounds{};
             bool cached_bounds_current=false;
         };
