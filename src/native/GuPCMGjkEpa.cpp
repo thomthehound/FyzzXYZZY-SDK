@@ -381,10 +381,16 @@ bool source_pcm_box_box_gjk_epa(
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        if(dist<=0.0f) {
+        // GuGJKPenetration.h enters EPA when the reduced simplex is
+        // within 10% of BoxV::minMargin; source EPA then expands
+        // one-, two- and three-point simplices with signed facets.
+        // Geometric separation alone does not license replacing that
+        // source EPA witness with GJK's positive closest-point result.
+        if(count>0 && dist<=epsilon) {
             store();
             return epa(pair,simplex,count,contact);
         }
+        if(dist<=0.0f)return false;
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
@@ -404,22 +410,7 @@ bool source_pcm_box_box_gjk_epa(
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
         }
-        // PhysX EPA expands a segment/triangle simplex directly. Our
-        // bounded tetrahedral EPA requires the origin to be enclosed.
-        // A distance below eps is only a proximity test: a rotated
-        // edge/edge pair can still have a positive supporting gap.
-        // Continue the GJK distance search until its closest point is
-        // numerically at the origin instead of treating eps as overlap.
-        const float origin_tolerance=
-            std::numeric_limits<float>::epsilon()*
-            std::max(1.0f,std::max({
-                pair.ha.x,pair.ha.y,pair.ha.z,
-                pair.hb.x,pair.hb.y,pair.hb.z}));
-        if(dist<=epsilon && dist<=origin_tolerance &&
-           projection<=0.0f) {
-            store();
-            return epa(pair,simplex,count,contact);
-        }
+
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
                support.bi==simplex[i].bi) {
@@ -446,9 +437,6 @@ bool source_pcm_box_box_gjk_epa(
         closest=next.point;
         const float next_dist=std::sqrt(next.dist2);
         compact(simplex,count,next);
-        // Do not send a small positive closest distance directly to
-        // EPA. The next support projection must distinguish a genuine
-        // origin-enclosing Minkowski simplex from a separated pair.
         if(next_dist>=previous) {
             // A non-improving closest-point iteration cannot justify an
             // EPA overlap when a positive support plane proves a gap.
