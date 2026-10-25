@@ -196,6 +196,7 @@ public:
     // ScShapeSim::onFlagChange withdraws/admit the existing shape
     // without removing the rigid actor or introducing another owner.
     void set_shape_simulation_enabled(BodyId id, bool enabled);
+    void set_kinematic(BodyId id, bool enabled);
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
@@ -478,7 +479,14 @@ private:
     // simulation operations or a second friction-correlation path.
     friend struct ContactCorrelationSourceFixture;
     friend struct SolverIterationSourceFixture;
-    enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
+    enum class Kind : std::uint8_t {
+        StaticBox, DynamicBox, StaticPlane, KinematicBox
+    };
+    // Kinematics are rigid-body nodes with valid EdgeInstances but
+    // INVALID island IDs. Only ordinary dynamic boxes enter Dy PGS.
+    static constexpr bool rigid_node(Kind kind) noexcept {
+        return kind==Kind::DynamicBox || kind==Kind::KinematicBox;
+    }
     struct Actor {
         Kind kind = Kind::StaticBox;
         bool alive = false;

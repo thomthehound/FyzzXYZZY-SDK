@@ -246,6 +246,9 @@ public:
         throw std::logic_error("This backend cannot author rigid contact threshold");
     }
     // PxShape's contact and rest distances belong to the existing actor shape.
+    virtual void set_body_kinematic(BodyId, bool) {
+        throw std::logic_error("This backend has no kinematic rigid nodes");
+    }
     virtual void set_body_simulation_shape_enabled(BodyId, bool) {
         throw std::logic_error("This backend cannot author shape simulation flags");
     }
@@ -309,6 +312,9 @@ public:
     // A disabled shape leaves the rigid actor in the scene, but withdraws
     // its collision candidate, contacts and island contact-manager edges.
     void set_body_simulation_shape_enabled(BodyId id, bool enabled);
+    // eKINEMATIC flag transition for a rigid box. No kinematic-target
+    // animation is admitted by this authoring call.
+    void set_body_kinematic(BodyId id, bool enabled);
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics);
 
 private:

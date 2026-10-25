@@ -197,6 +197,10 @@ void World::set_body_contact_report_threshold(BodyId id, float force) {
     impl_->set_body_contact_report_threshold(id,force);
 }
 
+void World::set_body_kinematic(BodyId id, bool enabled) {
+    impl_->set_body_kinematic(id,enabled);
+}
+
 void World::set_body_simulation_shape_enabled(BodyId id, bool enabled) {
     impl_->set_body_simulation_shape_enabled(id,enabled);
 }

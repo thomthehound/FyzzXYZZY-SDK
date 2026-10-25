@@ -550,6 +550,72 @@ void Scene::clear_spatial_velocity_mod(BodyId id, ForceMode mode,
                       : actor.pending_linear_velocity_delta);
     destination={};
 }
+void Scene::set_kinematic(BodyId id,bool enabled) {
+    auto& actor=require(id);
+    if(!rigid_node(actor.kind))
+        throw std::logic_error("Kinematic flag requires a rigid box");
+    if((actor.kind==Kind::KinematicBox)==enabled)return;
+
+    // Source ScBodySim::setKinematic removes the node from its rigid
+    // island without destroying the PxRigidDynamic or its shape. Reserve
+    // wake publications before mutating actor type or graph ownership.
+    speculative_islands_.activating_nodes.reserve(actors_.size());
+    accurate_islands_.activating_nodes.reserve(actors_.size());
+    // No target has been authored: the kinematic body has no external
+    // motion and is not eligible for Dy solver-body integration.
+    erase_shape_friction_history(id);
+    for(EdgeIndex edge_id:active_edge_handles_) {
+        auto& edge=contact_edges_[edge_id];
+        if(edge.pair.a==id || edge.pair.b==id)edge.pcm_cache={};
+    }
+    // A mode change refilters the existing shape interactions and wakes
+    // formerly touching dynamic partners as in Sc interaction dirtying.
+    for(const auto& manifold:manifolds_) {
+        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
+        const BodyId other=manifold.pair.a==id
+            ? manifold.pair.b:manifold.pair.a;
+        auto& partner=actors_[other];
+        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+           (!partner.sleeping && !partner.ready_for_sleep))continue;
+        if(!partner.activating)queue_node_activation(other);
+        partner.activating=true;
+        partner.sleeping=false;
+        partner.ready_for_sleep=false;
+        partner.wake_counter=std::max(partner.wake_counter,0.4f);
+        partner.sleep_linear_acc={};
+        partner.sleep_angular_acc={};
+        authored_activation_pending_=true;
+    }
+    if(enabled) {
+        actor.kind=Kind::KinematicBox;
+        --live_dynamic_count_;
+        actor.velocity={};
+        actor.angular_velocity={};
+        actor.pending_linear_velocity_delta={};
+        actor.pending_angular_velocity_delta={};
+        actor.pending_linear_acceleration={};
+        actor.pending_angular_acceleration={};
+        actor.activating=false;
+        actor.sleeping=true;
+        actor.ready_for_sleep=true;
+    } else {
+        actor.kind=Kind::DynamicBox;
+        ++live_dynamic_count_;
+        queue_node_activation(id);
+        actor.activating=true;
+        actor.sleeping=false;
+        actor.ready_for_sleep=false;
+        actor.wake_counter=0.4f;
+        actor.sleep_linear_acc={};
+        actor.sleep_angular_acc={};
+        authored_activation_pending_=true;
+    }
+    // Full node-type remapping is restricted to this explicit edit.
+    // Quiet frames retain persistent source island handles.
+    island_topology_dirty_=true;
+    dirty_=true;
+}
+
 void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     auto& actor=require(id);
     if(actor.simulation_shape_enabled==enabled)return;
@@ -897,7 +963,7 @@ void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
     for(std::size_t side=0;side<2;++side) {
         const BodyId node=side==0?edge.pair.a:edge.pair.b;
         // The PhysX static world endpoint has no dynamic island node.
-        if(actors_[node].kind!=Kind::DynamicBox)continue;
+        if(!rigid_node(actors_[node].kind))continue;
         auto& link=(accurate?edge.accurate:edge.speculative)[side];
         if(link.linked)continue;
         const std::size_t index=static_cast<std::size_t>(id)*2+side;
@@ -1131,9 +1197,9 @@ void Scene::publish_pairs() {
             // Never use broadphase endpoint order or canonical pair
             // sorting to select Gu's reference/incident box face.
             const bool a_dynamic=
-                actors_[pair.a].kind==Kind::DynamicBox;
+                rigid_node(actors_[pair.a].kind);
             const bool b_dynamic=
-                actors_[pair.b].kind==Kind::DynamicBox;
+                rigid_node(actors_[pair.b].kind);
             contact_edges_[id].gu_order_reversed =
                 (a_dynamic && b_dynamic) || (!a_dynamic && b_dynamic);
             link_contact_edge(id,false);
@@ -6797,6 +6863,9 @@ public:
     }
     void set_body_simulation_shape_enabled(BodyId id, bool enabled) override {
         scene_.set_shape_simulation_enabled(id,enabled);
+    }
+    void set_body_kinematic(BodyId id, bool enabled) override {
+        scene_.set_kinematic(id,enabled);
     }
     void set_body_dynamics(BodyId id, RigidBodyDynamics dynamics) override {
         scene_.set_dynamics(id,dynamics);
