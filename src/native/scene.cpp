@@ -1161,7 +1161,7 @@ void Scene::reduce_pcm_box_five(
     const auto triangle_sq=[&](Vec3 p,Vec3 a,Vec3 b,Vec3 c) {
         // Source distancePointTriangleSquaredLocal: Voronoi regions
         // of A/B/C, AB/BC/AC and the projected face interior.
-        const Vec3 ab=diff(b,a),ac=diff(c,a),bc=diff(c,b);
+        const Vec3 ab=diff(b,a),ac=diff(c,a);
         const Vec3 ap=diff(p,a),bp=diff(p,b),cp=diff(p,c);
         const float d1=dot(ab,ap),d2=dot(ac,ap);
         const float d3=dot(ab,bp),d4=dot(ac,bp);
