@@ -1250,6 +1250,37 @@ private:
     std::vector<std::uint32_t> sap_active_dynamic_slots_;
     std::vector<std::uint32_t> sap_active_static_slots_;
     std::vector<std::uint32_t> sap_active_positions_;
+
+    // Bp SAP pair ownership is distinct from the Sc contact-manager edge
+    // stream. Dense packed pairs, chained hash buckets and source pair-state
+    // bits retain overlap identity across sparse endpoint updates.
+    struct SapPairManager {
+        static constexpr std::uint32_t invalid=
+            std::numeric_limits<std::uint32_t>::max();
+        enum : std::uint8_t {
+            in_array=1, removed=2, newly_created=4, unknown=8
+        };
+        std::vector<Pair> active_pairs;
+        std::vector<std::uint8_t> states;
+        std::vector<std::uint32_t> next;
+        std::vector<std::uint32_t> hash_table;
+        std::vector<std::uint32_t> touched;
+        std::vector<Pair> actual_deleted;
+        static std::uint32_t hash(Pair pair) noexcept;
+        std::uint32_t find(Pair pair) const noexcept;
+        void rehash(std::size_t buckets);
+        void add(Pair pair);
+        void remove(Pair pair);
+        void begin_full();
+        void finish(std::vector<Pair>& created,std::vector<Pair>& deleted);
+        void remove_index(std::uint32_t index) noexcept;
+        void reset() noexcept;
+        void seed(std::span<const Pair> pairs);
+    };
+    SapPairManager sap_pairs_;
+    bool sap_pair_registry_dirty_=true;
+    bool broadphase_pair_membership_changed_=true;
+    std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
     // Publish swaps are reversible without copying the source-owned

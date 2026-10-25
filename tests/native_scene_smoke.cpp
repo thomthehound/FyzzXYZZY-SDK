@@ -88,6 +88,35 @@ struct SourceSapEndpointFixture {
             }
         }
     }
+    static void check_pair_registry(const Scene& scene) {
+        if(scene.sap_pair_registry_dirty_)
+            throw std::runtime_error(
+                "SAP hash not synchronized with completed publication");
+        std::vector<Pair> expected;
+        for(const auto pair:scene.pairs())
+            if(scene.actors_[pair.a].kind!=Scene::Kind::StaticPlane &&
+               scene.actors_[pair.b].kind!=Scene::Kind::StaticPlane)
+                expected.push_back(pair);
+        auto actual=scene.sap_pairs_.active_pairs;
+        std::sort(actual.begin(),actual.end());
+        if(actual!=expected)
+            throw std::runtime_error(
+                "Hashed SAP pair ownership differs from Sc edge publication");
+        for(std::size_t i=0;i<expected.size();++i) {
+            const auto index=scene.sap_pairs_.find(expected[i]);
+            if(index==Scene::SapPairManager::invalid ||
+               scene.sap_pairs_.states[index]!=0)
+                throw std::runtime_error(
+                    "SAP persistent pair missing or retains transient state");
+        }
+        if(!scene.sap_pairs_.touched.empty())
+            throw std::runtime_error(
+                "SAP pair manager retained an uncommitted activity entry");
+        for(std::size_t i=0;i<scene.sap_pairs_.active_pairs.size();++i)
+            if(scene.sap_pairs_.find(scene.sap_pairs_.active_pairs[i])!=i)
+                throw std::runtime_error(
+                    "SAP compacted pair hash chain has stale slot index");
+    }
     static void verify_crossing_stress() {
         // Independent final-state oracle derived directly from source
         // BpIntegerAABB encoded bounds, rather than invoking the SAP
@@ -131,6 +160,7 @@ struct SourceSapEndpointFixture {
             }
             std::sort(expected.begin(),expected.end());
             const auto actual=scene.pairs();
+            check_pair_registry(scene);
             if(!std::equal(actual.begin(),actual.end(),
                            expected.begin(),expected.end()))
                 throw std::runtime_error(
@@ -203,6 +233,7 @@ struct SourceSapEndpointFixture {
             scene.set_shape_simulation_enabled(toggle,frame%2!=0);
             scene.advance_collision();
             check(scene);
+            check_pair_registry(scene);
             if(!scene.pairs().empty() ||
                !scene.found_pairs().empty() ||
                !scene.lost_pairs().empty())
@@ -247,6 +278,7 @@ struct SourceSapEndpointFixture {
                 ? Vec3{0,0,0}:Vec3{7,7,7});
             scene.advance_collision();
             check(scene);
+            check_pair_registry(scene);
             const auto published=scene.pairs();
             if(published.size()!=count+(overlapping?count+1:0) ||
                !std::is_sorted(published.begin(),published.end()))
