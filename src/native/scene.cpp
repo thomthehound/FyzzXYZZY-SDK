@@ -7378,10 +7378,10 @@ public:
     }
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {
-        return scene_.add_distance_constraint(a,b,distance);
+        return scene_.create_center_distance_constraint(a,b,distance);
     }
     void remove_constraint(ConstraintId id) override {
-        scene_.remove_constraint_edge(id);
+        scene_.retire_center_distance_constraint(id);
     }
     void step(float seconds) override { scene_.step(seconds); }
     BodyState body_state(BodyId id) const override { return scene_.body_state(id); }

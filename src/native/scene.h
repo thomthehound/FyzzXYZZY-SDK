@@ -198,6 +198,15 @@ public:
     void set_shape_simulation_enabled(BodyId id, bool enabled);
     void set_kinematic(BodyId id, bool enabled);
     void set_kinematic_target(BodyId id, Vec3 position, Quat orientation);
+    // Admitted ScConstraintSim hard 1D center-anchor lifecycle. General
+    // graph edge admission remains private to the source island manager.
+    ConstraintId create_center_distance_constraint(
+        BodyId a, BodyId b, float distance) {
+        return add_distance_constraint(a,b,distance);
+    }
+    void retire_center_distance_constraint(ConstraintId id) {
+        remove_constraint_edge(id);
+    }
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
