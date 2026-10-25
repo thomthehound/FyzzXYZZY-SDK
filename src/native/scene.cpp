@@ -1234,23 +1234,68 @@ std::uint8_t Scene::generate_pcm_box_box(
         cache.orientation_a=first.orientation;
         cache.orientation_b=second.orientation;
         cache.initialized=true;
-        cache.count=0;
         std::array<PcmContactCandidate,64> candidates{};
         std::size_t count=0;
         const bool overlapping=source_pcm_box_box_candidates(
             first.half_extents,first.position,first.orientation,
             second.half_extents,second.position,second.orientation,
             contact_distance,candidates,count);
-        if(overlapping && count==0)
-            throw std::logic_error(
-                "Native PCM box-box GJK/EPA continuation not yet admitted");
-        if(count<=4) {
+        if(!overlapping)return 0;
+        if(count==0) {
+            PcmContactCandidate candidate{};
+            if(!source_pcm_box_box_gjk_epa(
+                    first.half_extents,first.position,first.orientation,
+                    second.half_extents,second.position,second.orientation,
+                    contact_distance,candidate))
+                return 0;
+            const PcmPersistentContact witness{
+                candidate.local_a,candidate.local_b,
+                candidate.normal_b,candidate.separation};
+            const float replace_break=min_margin*0.05f;
+            const float replace_sq=replace_break*replace_break;
+            const auto sq=[](Vec3 v) {
+                return v.x*v.x+v.y*v.y+v.z*v.z;
+            };
+            const auto diff=[](Vec3 a,Vec3 b) {
+                return Vec3{a.x-b.x,a.y-b.y,a.z-b.z};
+            };
+            bool replaced=false;
+            for(std::size_t i=0;i<cache.count;++i) {
+                const auto& old=cache.points[i];
+                if(std::min(sq(diff(old.local_a,witness.local_a)),
+                            sq(diff(old.local_b,witness.local_b)))<
+                   replace_sq) {
+                    cache.points[i]=witness;
+                    replaced=true;
+                    break;
+                }
+            }
+            if(!replaced) {
+                if(cache.count<4)
+                    cache.points[cache.count++]=witness;
+                else {
+                    // GuPersistentContactManifold::reduceContactsForPCM:
+                    // preserve a deep new witness when the cache fills.
+                    // The four-point selection is performed on local-B
+                    // geometry; the same source manager owns its history.
+                    std::size_t shallowest=0;
+                    for(std::size_t i=1;i<4;++i)
+                        if(cache.points[i].separation>
+                           cache.points[shallowest].separation)
+                            shallowest=i;
+                    if(witness.separation<cache.points[shallowest].separation)
+                        cache.points[shallowest]=witness;
+                }
+            }
+        } else if(count<=4) {
+            cache.count=0;
             for(std::size_t i=0;i<count;++i) {
                 const auto& c=candidates[i];
                 cache.points[i]={c.local_a,c.local_b,c.normal_b,c.separation};
             }
             cache.count=static_cast<std::uint8_t>(count);
         } else {
+            cache.count=0;
             // GuPersistentContactManifold.cpp::reduceBatchContacts:
             // deepest, furthest, transverse extrema, then replace
             // separated witnesses using the original 0.02 tolerance.
