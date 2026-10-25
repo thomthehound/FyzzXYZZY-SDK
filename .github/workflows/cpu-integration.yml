@@ -344,6 +344,33 @@ jobs:
             throw "Godot editor acceptance runtime marker missing"
           }
 
+
+  audit-sanitizer:
+    name: Native SAP ASan/UBSan diagnosis
+    if: github.ref == 'refs/heads/audit/faithful-perf-conformance-20261025'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure native sanitizer suite
+        run: >-
+          cmake -S . -B build-audit-asan -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+          -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF
+          -DFYZZXYZZY_BUILD_GODOT=OFF
+          -DFYZZXYZZY_BUILD_VULKAN=OFF
+          -DFYZZXYZZY_BUILD_D3D12=OFF
+          -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build native SAP tests
+        run: cmake --build build-audit-asan --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_native_boundary_smoke --parallel 4
+      - name: Run sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-audit-asan -R 'fyzzxyzzy_native_(scene|boundary)_smoke' --output-on-failure -V
+
   native-no-physx-linux:
     name: Independent SDK / Vulkan without PhysX
     runs-on: ubuntu-26.04
