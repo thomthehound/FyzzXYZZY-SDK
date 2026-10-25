@@ -298,8 +298,8 @@ struct SourceSapEndpointFixture {
         std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
         for(unsigned frame=0;frame<48;++frame) {
             for(std::size_t i=0;i<moving.size();++i) {
-                const float x=float((frame*3+i*11)%13-6)*0.23f;
-                const float y=float((frame*7+i*3)%17-8)*0.19f;
+                const float x=float(int((frame*3+i*11)%13)-6)*0.23f;
+                const float y=float(int((frame*7+i*3)%17)-8)*0.19f;
                 scene.set_position(moving[i],
                     {float(i%12)*2.0f+x,
                      float(i/12)*2.0f+y,0});
