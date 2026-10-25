@@ -5609,6 +5609,28 @@ void verify_source_sap_endpoint_crossing_deltas() {
     }
     expect(scene.broadphase_endpoint_crossing_count()>crosses,
            "Source SAP never recorded min/max crossing candidates");
+    // The same movement can cross min/max endpoints on X and Y.
+    // Both final orthogonal projections are disjoint, yet the
+    // previously published pair must still receive one Lost event.
+    scene.set_position(moving,{4.0f,4.0f,0});
+    scene.advance_collision();
+    expect(scene.pairs().empty() &&
+           scene.lost_pairs().size()==1 &&
+           scene.lost_pairs().front()==pair,
+           "Source SAP orthogonal crossing filter suppressed existing Lost pair");
+    scene.set_position(moving,{0,0,0});
+    scene.advance_collision();
+    expect(scene.found_pairs().size()==1 &&
+           scene.found_pairs().front()==pair,
+           "Source SAP orthogonal crossing filter suppressed pair re-admission");
+    scene.set_position(moving,{4.0f,20.0f,0});
+    scene.advance_collision();
+    const auto before_distant=scene.broadphase_endpoint_crossing_count();
+    scene.set_position(moving,{-4.0f,20.0f,0});
+    scene.advance_collision();
+    expect(scene.pairs().empty() &&
+           scene.broadphase_endpoint_crossing_count()==before_distant,
+           "Source SAP emitted irrelevant crossing pairs with no orthogonal overlap");
 }
 
 // Independent oracle for the complete integer SAP pair stream. The
