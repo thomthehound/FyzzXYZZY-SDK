@@ -150,88 +150,51 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Native PCM GJK/EPA sign, witness or depth differs from source");
         }
-        // Find a genuine SAT-positive/zero-face case so the production
-        // PCM path must invoke GJK/EPA instead of direct face clipping.
-        // This is intentionally geometric, not a mock contact injection.
+        // Exact speculative boundary: SAT accepts a box face at
+        // contactDistance, while direct GuPCMContactBoxBox clipping
+        // requires separation strictly below that distance. GJK
+        // must publish the resulting contact at the inclusive limit.
         {
-            constexpr std::array<Vec3,4> moving_shapes{{
-                {0.6f,0.2f,0.3f},{1.15f,0.13f,0.13f},
-                {0.25f,0.55f,0.35f},{0.7f,0.6f,0.1f}}};
-            constexpr std::array<Vec3,4> fixed_shapes{{
-                {0.5f,0.5f,0.5f},{0.9f,0.14f,0.14f},
-                {0.5f,0.5f,0.5f},{0.6f,0.18f,0.45f}}};
-            constexpr float distance=0.04f;
+            constexpr Vec3 half{0.5f,0.5f,0.5f};
+            constexpr float contact_distance=0.03125f;
+            constexpr Vec3 at{0,1.03125f,0};
             std::array<PcmContactCandidate,64> direct{};
-            bool verified=false;
-            int sat_zero=0;
-            for(std::size_t variant=0;variant<moving_shapes.size() &&
-                    !verified;++variant) {
-                const auto moving_half=moving_shapes[variant];
-                const auto fixed_half=fixed_shapes[variant];
-                const float fs=std::sin(0.29f),fc=std::cos(0.29f);
-                const Quat fixed_rotation=variant==0?Quat{}:
-                    variant==1?Quat{0,fs,0,fc}:
-                    variant==2?Quat{0,0,fs,fc}:Quat{fs,0,0,fc};
-                for(float angle:{0.33f,0.61f,0.91f,1.19f}) {
-                    const float si=std::sin(angle*0.5f);
-                    const float co=std::cos(angle*0.5f);
-                    const Quat moving_rotation=variant==0?
-                        Quat{0,0,si,co}:variant==1?
-                        Quat{si,0,0,co}:variant==2?
-                        Quat{si*0.70710678118f,si*0.70710678118f,0,co}:
-                        Quat{si*0.57735026919f,si*0.57735026919f,
-                             si*0.57735026919f,co};
-                    for(float x:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
-                        for(float y:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f})
-                            for(float z:{-0.95f,-0.55f,0.25f,0.55f,0.95f,1.35f}) {
-                            const Vec3 moving_at{x,y,z};
-                            std::size_t count=0;
-                            if(!source_pcm_box_box_candidates(
-                                    moving_half,moving_at,moving_rotation,
-                                    fixed_half,{0,0,0},fixed_rotation,
-                                    distance,direct,count) || count!=0)
-                                continue;
-                            ++sat_zero;
-                            PcmContactCandidate fallback{};
-                            if(!source_pcm_box_box_gjk_epa(
-                                    moving_half,moving_at,moving_rotation,
-                                    fixed_half,{0,0,0},fixed_rotation,
-                                    distance,fallback))
-                                continue;
-                            if(!std::isfinite(fallback.separation) ||
-                               fallback.separation>distance ||
-                               std::abs(fallback.normal_b.x)+
-                               std::abs(fallback.normal_b.y)+
-                               std::abs(fallback.normal_b.z)<0.5f)
-                                throw std::runtime_error(
-                                    "PCM GJK/EPA emitted an invalid contact");
-                            Scene actual;
-                            actual.set_pcm_box_box(true);
-                            const auto fixed=actual.add_static_box(
-                                fixed_half,{0,0,0});
-                            actual.set_pose(fixed,{0,0,0},fixed_rotation);
-                            const auto moving=actual.add_dynamic_box(
-                                moving_half,moving_at,1.0f);
-                            actual.set_pose(moving,moving_at,moving_rotation);
-                            actual.advance_collision(true);
-                            if(actual.contacts().size()!=1 ||
-                               actual.contacts()[0].count==0)
-                                throw std::runtime_error(
-                                    "Production PCM did not publish GJK/EPA contact");
-                            actual.step(1.0f/120.0f);
-                            if(actual.solved_result_frame()!=actual.frame_index())
-                                throw std::runtime_error(
-                                    "GJK/EPA witness was not solved by native PGS");
-                            verified=true;
-                            break;
-                        }
-                    if(verified)break;
-                }
-            }
-            if(!verified)
+            std::size_t count=0;
+            if(!source_pcm_box_box_candidates(
+                    half,at,{},half,{0,0,0},{},
+                    contact_distance,direct,count) || count!=0)
                 throw std::runtime_error(
-                    "PCM fixture found "+std::to_string(sat_zero)+
-                    " SAT-positive zero-face candidates, but no usable GJK/EPA contact");
+                    "PCM speculative boundary did not require GJK continuation");
+            PcmContactCandidate fallback{};
+            PcmGjkWarmstart simplex{};
+            if(!source_pcm_box_box_gjk_epa(
+                    half,at,{},half,{0,0,0},{},
+                    contact_distance,fallback,&simplex) ||
+               std::abs(fallback.separation-contact_distance)>1.0e-6f ||
+               fallback.normal_b.y<0.999f || simplex.count==0)
+                throw std::runtime_error(
+                    "Native PCM GJK speculative boundary or warm-start differs");
+            Scene actual;
+            actual.set_pcm_box_box(true);
+            const auto fixed=actual.add_static_box(half,{0,0,0});
+            const auto moving=actual.add_dynamic_box(half,at,1.0f);
+            actual.set_shape_offsets(fixed,0.015625f,0.0f);
+            actual.set_shape_offsets(moving,0.015625f,0.0f);
+            actual.advance_collision(true);
+            if(actual.contacts().size()!=1 ||
+               actual.contacts()[0].count!=1 ||
+               std::abs(actual.contacts()[0].points[0].separation-
+                        contact_distance)>1.0e-6f)
+                throw std::runtime_error(
+                    "Native PCM boundary GJK witness not published");
+            const auto edge=actual.contacts()[0].edge_handle;
+            if(actual.contact_edges_[edge].pcm_box_box.warmstart.count==0)
+                throw std::runtime_error(
+                    "GJK simplex ownership lost on native contact manager");
+            actual.step(1.0f/120.0f);
+            if(actual.solved_result_frame()!=actual.frame_index())
+                throw std::runtime_error(
+                    "GJK boundary witness did not complete native PGS");
         }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
