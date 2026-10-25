@@ -783,6 +783,10 @@ private:
         // ScConstraintSim owns authored 1D data; this edge stores
         // only the typed graph-to-constraint index.
         EdgeIndex constraint_id=invalid_edge;
+        // Source IG::Edge::eINSERTED is distinct from the accurate
+        // mConnectedMap bit. New Sc constraints can be destroyed before
+        // the first island pass ever appends their edge to an island.
+        bool indexed_accurate=false;
         PcmManifoldCache pcm_cache{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;

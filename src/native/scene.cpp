@@ -1150,7 +1150,7 @@ void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
     auto& last=constraint?island.last_constraint:island.last_contact;
     auto& count=constraint?island.constraint_count:island.contact_count;
     if(!island.live || !island_edges_[id].connected ||
-       first==id ||
+       island_edges_[id].indexed_accurate || first==id ||
        island_edges_[id].island_prev!=invalid_edge ||
        island_edges_[id].island_next!=invalid_edge)
         throw std::logic_error("Invalid PhysX accurate island edge insertion");
@@ -1163,6 +1163,7 @@ void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
     island_edges_[id].island_prev=last;
     island_edges_[id].island_next=invalid_edge;
     last=id;
+    island_edges_[id].indexed_accurate=true;
     ++count;
 }
 // PxsIslandSim.cpp::removeEdgeFromIsland with
@@ -1170,6 +1171,10 @@ void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
 // final array element. Rewire the final EdgeIndex into that slot in O(1).
 // Retaining stable order here would be *different* from PhysX.
 void Scene::remove_accurate_island_edge(EdgeIndex id) {
+    // setEdgeConnected does not imply addEdgeToIsland has executed.
+    // A constraint authored and retired before the next island pass
+    // has EdgeInstances but no island-list slot to remove.
+    if(!island_edges_[id].indexed_accurate)return;
     const Pair pair=island_edges_[id].pair;
     const BodyId node=actors_[pair.a].kind==Kind::DynamicBox
         ? pair.a:pair.b;
@@ -1216,6 +1221,7 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     }
     island_edges_[id].island_prev=invalid_edge;
     island_edges_[id].island_next=invalid_edge;
+    island_edges_[id].indexed_accurate=false;
     --count;
 }
 void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
@@ -3534,6 +3540,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 step_checkpoint_.save_edge(*this,item.edge);
                 island_edges_[item.edge].island_prev=invalid_edge;
                 island_edges_[item.edge].island_next=invalid_edge;
+                // The graph-owned island list was moved; the same
+                // source slot must be reinserted into its new owner.
+                island_edges_[item.edge].indexed_accurate=false;
             }
             for(const auto& item:retained)
                 append_accurate_island_edge(item.edge,item.owner);
@@ -3578,9 +3587,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                     if(dynamic_node(node)) {
                         auto& owner=accurate_islands_.islands[
                             accurate_islands_.node_island[node]];
-                        if(owner.first_constraint!=id &&
-                           island_edges_[id].island_prev==invalid_edge &&
-                           island_edges_[id].island_next==invalid_edge)
+                        if(!island_edges_[id].indexed_accurate)
                             append_accurate_island_edge(
                                 id,accurate_islands_.node_island[node]);
                     }

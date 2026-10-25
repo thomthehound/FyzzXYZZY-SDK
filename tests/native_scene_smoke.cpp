@@ -168,6 +168,31 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Native 1D distance row survived source edge retirement");
     }
+    static void verify_prepublication_constraint_retirement() {
+        // An admitted ScConstraintSim has connected EdgeInstances but
+        // no accurate IslandSim list member until first/second pass.
+        // Releasing it (or its actor) before any publication is legal.
+        for(bool remove_actor:{false,true}) {
+            Scene scene{};
+            const auto a=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+            const auto b=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{5,5,0},1.0f);
+            const auto handle=scene.add_distance_constraint(a,b,1.0f);
+            if(!scene.island_edges_[handle].connected ||
+               scene.island_edges_[handle].indexed_accurate)
+                throw std::runtime_error(
+                    "Source prepublication constraint edge state incorrect");
+            if(remove_actor)scene.remove(b);
+            else scene.remove_constraint_edge(handle);
+            scene.advance_collision(true);
+            if(!scene.active_constraint_handles_.empty() ||
+               scene.accurate_island_count()!=(remove_actor?1:2) ||
+               scene.speculative_island_count()!=(remove_actor?1:2))
+                throw std::runtime_error(
+                    "Prepublication constraint retirement leaked island ownership");
+        }
+    }
     static void verify_typed_constraint_edge_lifetime() {
         // eCONSTRAINT and eCONTACT_MANAGER use the same EdgeIndex pool,
         // but each accurate island maintains a separate type list.
@@ -10954,6 +10979,7 @@ int run_native_scene_smoke() {
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
 #endif
+    fyzz::native::ConstraintIslandSourceFixture::verify_prepublication_constraint_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
