@@ -124,7 +124,9 @@ struct RigidBodyDynamics {
 };
 
 using BodyId = std::uint32_t;
-using ConstraintId = std::uint32_t;
+// World-visible identity includes a generation. Native IslandSim
+// EdgeIndex and ScConstraintSim's recycled IDTracker slot are private.
+using ConstraintId = std::uint64_t;
 
 // DyThresholdTable / PxsForceThresholdTask reports changes in the
 // exceeded normal-force stream after source solver writeback. Dynamic

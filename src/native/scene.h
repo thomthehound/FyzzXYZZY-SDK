@@ -202,10 +202,20 @@ public:
     // graph edge admission remains private to the source island manager.
     ConstraintId create_center_distance_constraint(
         BodyId a, BodyId b, float distance) {
-        return add_distance_constraint(a,b,distance);
+        const EdgeIndex edge=add_distance_constraint(a,b,distance);
+        const EdgeIndex index=island_edges_[edge].constraint_id;
+        const auto& record=constraint_records_[index];
+        return (static_cast<ConstraintId>(record.generation)<<32)|index;
     }
     void retire_center_distance_constraint(ConstraintId id) {
-        remove_constraint_edge(id);
+        const EdgeIndex index=static_cast<EdgeIndex>(id);
+        const std::uint32_t generation=static_cast<std::uint32_t>(id>>32);
+        if(index>=constraint_records_.size() || !generation)
+            throw std::out_of_range("Unknown or expired distance constraint");
+        const auto& record=constraint_records_[index];
+        if(!record.live || record.generation!=generation)
+            throw std::out_of_range("Unknown or expired distance constraint");
+        remove_constraint_edge(record.edge);
     }
     // Source ScBodyCore per-rigid body unconstrained Dy inputs; no
     // separate solver owner or scene-global parameter shadow.
@@ -798,6 +808,9 @@ private:
         EdgeIndex edge=invalid_edge;
         float distance_length=0.0f;
         bool live=false;
+        // Public world IDs encode this generation with the existing
+        // recycled ScConstraintSim slot, not its reusable EdgeIndex.
+        std::uint32_t generation=0;
     };
     std::vector<ConstraintRecord> constraint_records_;
     std::vector<EdgeIndex> free_constraint_ids_;

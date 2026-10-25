@@ -1334,6 +1334,12 @@ Scene::EdgeIndex Scene::add_distance_constraint(
     if(constraint_records_.size()>=invalid_edge &&
        free_constraint_ids_.empty())
         throw std::overflow_error("Sc constraint identifier exhausted");
+    // Exhausted generation spaces must reject before graph admission.
+    // A stale World constraint token can never free a recycled edge.
+    if(!free_constraint_ids_.empty() &&
+       constraint_records_[free_constraint_ids_.back()].generation==
+           std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("Sc constraint slot generations exhausted");
     // Reserve the source constraint owner before mutating the graph;
     // the remaining POD append/recycled-ID assignment cannot throw.
     if(free_constraint_ids_.empty())
@@ -1343,11 +1349,13 @@ Scene::EdgeIndex Scene::add_distance_constraint(
     EdgeIndex id;
     if(free_constraint_ids_.empty()) {
         id=static_cast<EdgeIndex>(constraint_records_.size());
-        constraint_records_.push_back({edge,length,true});
+        constraint_records_.push_back({edge,length,true,1});
     } else {
         id=free_constraint_ids_.back();
         free_constraint_ids_.pop_back();
-        constraint_records_[id]={edge,length,true};
+        const std::uint32_t generation=
+            constraint_records_[id].generation+1;
+        constraint_records_[id]={edge,length,true,generation};
     }
     island_edges_[edge].constraint_id=id;
     return edge;
@@ -1426,7 +1434,11 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
         auto& record=constraint_records_[constraint_id];
         if(!record.live || record.edge!=id)
             throw std::logic_error("Source constraint owner/index mismatch");
-        record={};
+        // Retain the slot generation across IDTracker recycling.
+        // The next admitted World token will have a different identity.
+        record.edge=invalid_edge;
+        record.distance_length=0.0f;
+        record.live=false;
         free_constraint_ids_.push_back(constraint_id);
         island_edges_[id].constraint_id=invalid_edge;
     }

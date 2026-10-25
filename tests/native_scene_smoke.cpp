@@ -4089,6 +4089,15 @@ void verify_public_center_distance_constraint_lifecycle() {
         // Destruction of an incident body must also retire source
         // ScConstraintSim/PxDistanceJoint ownership.
         const auto second_id=world.add_center_distance_constraint(a,b,2.0f);
+        if(second_id==id)
+            throw std::runtime_error(
+                "Recycled ScConstraintSim reused a public constraint token");
+        stale=false;
+        try {world.remove_constraint(id);}
+        catch(const std::out_of_range&){stale=true;}
+        if(!stale)
+            throw std::runtime_error(
+                "Stale public constraint ID removed a replacement");
         world.remove_body(b);
         stale=false;
         try {world.remove_constraint(second_id);}

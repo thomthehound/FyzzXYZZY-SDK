@@ -1598,9 +1598,12 @@ equal-limit 1D distance row is now available through
 `World::remove_constraint`. Native execution owns the existing typed
 IslandSim EdgeIndex and Sc constraint record; the independent reference
 owns an actual `PxDistanceJoint` using the same source min/max/zero
-tolerance contract. Both retire joints with their incident actor,
-and source-enabled conformance checks completed-frame rigid motion
-through these public APIs. Extended joint flags, general anchors and
+tolerance contract. Both retire joints with their incident actor.
+The native public token contains the recycled ScConstraintSim slot and
+a generation, so a stale ID cannot remove an unrelated constraint after
+the underlying IslandSim EdgeIndex is reused. Generation exhaustion
+rejects before graph mutation. Source-enabled conformance checks
+completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
 
 **Unported source responsibilities:** complete source `PxNodeIndex`
