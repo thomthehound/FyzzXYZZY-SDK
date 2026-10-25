@@ -5293,6 +5293,65 @@ void verify_sparse_broadphase_volume_lifetime() {
            "Source SAP live registry changed after solver publication");
 }
 
+// Source SAP endpoints are retained between frames, shift locally for
+// small x-axis motions, and fall back to an ordered full sort when many
+// adjacent keys must cross. Candidate pairs must match for all paths.
+void verify_incremental_sap_endpoint_order() {
+    using namespace fyzz::native;
+    Scene scene;
+    std::vector<BodyId> fixed;
+    for(int i=0;i<40;++i)
+        fixed.push_back(scene.add_static_box(
+            {0.5f,0.5f,0.5f},{4.0f+float(i)*4.0f,0,0}));
+    const BodyId moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{-3.0f,0,0},1.0f);
+    scene.advance_collision();
+    const auto initial_sorts=scene.broadphase_endpoint_full_sort_count();
+    const auto initial_shifts=scene.broadphase_endpoint_local_shift_count();
+    expect(initial_sorts==1 && scene.pairs().empty(),
+           "Source SAP admission did not build the first ordered endpoint set");
+
+    scene.advance_collision(true);
+    expect(scene.broadphase_endpoint_full_sort_count()==initial_sorts &&
+           scene.broadphase_endpoint_local_shift_count()==initial_shifts,
+           "Unchanged source SAP endpoints were unnecessarily re-sorted");
+
+    scene.set_position(moving,{4.0f,0,0});
+    scene.advance_collision();
+    expect(scene.broadphase_endpoint_full_sort_count()==initial_sorts &&
+           scene.broadphase_endpoint_local_shift_count()>initial_shifts &&
+           scene.pairs().size()==1 &&
+           scene.pairs().front()==Pair{fixed[0],moving},
+           "Local source SAP insertion movement changed overlap candidates");
+
+    scene.set_position(moving,{200.0f,0,0});
+    scene.advance_collision();
+    const auto fallback_sorts=scene.broadphase_endpoint_full_sort_count();
+    expect(fallback_sorts==initial_sorts+1 &&
+           scene.pairs().empty(),
+           "Far-teleport SAP endpoint update skipped bounded sort fallback");
+
+    scene.set_shape_simulation_enabled(moving,false);
+    scene.advance_collision();
+    expect(scene.broadphase_endpoint_full_sort_count()==fallback_sorts+1 &&
+           scene.pairs().empty(),
+           "Source SAP disablement skipped structural endpoint rebuilding");
+
+    scene.set_position(moving,{4.0f,0,0});
+    scene.set_shape_simulation_enabled(moving,true);
+    scene.advance_collision();
+    expect(scene.broadphase_endpoint_full_sort_count()==fallback_sorts+2 &&
+           scene.pairs().size()==1 &&
+           scene.pairs().front()==Pair{fixed[0],moving},
+           "Source SAP re-admission lost ordered candidates");
+
+    scene.remove(fixed[0]);
+    scene.advance_collision();
+    expect(scene.broadphase_endpoint_full_sort_count()==fallback_sorts+3 &&
+           scene.pairs().empty(),
+           "Retired source SAP endpoint survived a structural rebuild");
+}
+
 void verify_sparse_motion_checkpoint() {
     using namespace fyzz;
     using namespace fyzz::native;
@@ -10543,6 +10602,7 @@ int run_native_scene_smoke() {
     verify_source_activity_rollback();
     verify_sparse_motion_checkpoint();
     verify_sparse_broadphase_volume_lifetime();
+    verify_incremental_sap_endpoint_order();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
