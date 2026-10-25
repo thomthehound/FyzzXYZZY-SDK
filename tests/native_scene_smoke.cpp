@@ -229,14 +229,21 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Rotated sub-margin speculative contact did not enter GJK");
             PcmContactCandidate separated{};
-            if(!source_pcm_box_box_gjk_epa(
-                    half,moving_at,yaw,half,{0,0,0},{},
-                    gap,separated) ||
-               !std::isfinite(separated.separation) ||
+            const bool admitted=source_pcm_box_box_gjk_epa(
+                half,moving_at,yaw,half,{0,0,0},{},
+                gap,separated);
+            if(!admitted || !std::isfinite(separated.separation) ||
                std::abs(separated.separation-gap)>1e-5f ||
-               separated.normal_b.y<0.999f)
+               separated.normal_b.y<0.999f) {
+                std::cerr<<"sub-margin GJK admitted="<<admitted
+                         <<" separation="<<separated.separation
+                         <<" target="<<gap
+                         <<" normal=("<<separated.normal_b.x<<","
+                         <<separated.normal_b.y<<","
+                         <<separated.normal_b.z<<")\n";
                 throw std::runtime_error(
                     "Sub-margin positive GJK gap was lost to EPA");
+            }
             Scene scene;
             scene.set_pcm_box_box(true);
             const auto fixed=scene.add_static_box(half,{0,0,0});
