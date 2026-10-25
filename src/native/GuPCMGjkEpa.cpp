@@ -411,15 +411,33 @@ bool source_pcm_box_box_gjk_epa(
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
         }
-        if(dist<=epsilon && projection<=0.0f) {
+        // PhysX EPA expands a segment/triangle simplex directly. Our
+        // bounded tetrahedral EPA requires the origin to be enclosed.
+        // A distance below eps is only a proximity test: a rotated
+        // edge/edge pair can still have a positive supporting gap.
+        // Continue the GJK distance search until its closest point is
+        // numerically at the origin instead of treating eps as overlap.
+        const float origin_tolerance=
+            std::numeric_limits<float>::epsilon()*
+            std::max(1.0f,std::max({
+                pair.ha.x,pair.ha.y,pair.ha.z,
+                pair.hb.x,pair.hb.y,pair.hb.z}));
+        if(dist<=origin_tolerance && projection<=0.0f) {
             store();
             return epa(pair,simplex,count,contact);
         }
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
                support.bi==simplex[i].bi) {
+                // Reusing an extreme vertex closes the support search.
+                // If its plane still separates the shapes, the current
+                // closest witnesses are an admissible speculative pair.
+                const Closest current=closest_simplex(simplex,count);
                 store();
-                return false; // GJK_DEGENERATE
+                return projection>0.0f && current.mask &&
+                    current.dist2>0.0f &&
+                    current.dist2<=contact_distance*contact_distance &&
+                    contact_from_gjk(pair,current,contact);
             }
         if(count==4) {
             store();
@@ -438,8 +456,15 @@ bool source_pcm_box_box_gjk_epa(
         // EPA. The next support projection must distinguish a genuine
         // origin-enclosing Minkowski simplex from a separated pair.
         if(next_dist>=previous) {
+            // A non-improving closest-point iteration cannot justify an
+            // EPA overlap when a positive support plane proves a gap.
+            // Use the converged simplex witness only within the actual
+            // contact-distance envelope.
             store();
-            return false; // GJK_DEGENERATE
+            return projection>0.0f && next.mask &&
+                next.dist2>0.0f &&
+                next.dist2<=contact_distance*contact_distance &&
+                contact_from_gjk(pair,next,contact);
         }
         previous=next_dist;
     }
