@@ -1302,9 +1302,11 @@ both min and max integer-encoded endpoints per live volume. One compact
 axis. Source volume admission, retirement and shape refiltering rebuild
 the six endpoint lists. Ordinary movement identifies volumes with
 changed encoded bounds and shifts just their six indexed endpoints,
-repairing moved index entries as each crosses its neighbors. A broad
-teleport or high permutation count falls back to full source-key
-sorting and remapping; unchanged axes incur no full scan. A rejected
+repairing moved index entries as each crosses its neighbors. Source's
+`mUpdatedSize*5 < mBoxesSize` sparse-update branch retains endpoint
+shifts even for a lone body teleporting across many neighbors; only
+large update sets fall back to bounded full source-key sorting and
+remapping. Unchanged axes incur no full scan. A rejected
 collision or solver transaction invalidates this derived state for
 a subsequent rebuild without adding a dense endpoint snapshot to
 the per-frame checkpoint. Each live volume retains exactly one
