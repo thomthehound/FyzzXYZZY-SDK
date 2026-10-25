@@ -128,6 +128,10 @@ struct ContactCorrelationSourceFixture {
            scene.accurate_island_count()!=1 ||
            scene.contacts().empty() ||
            scene.solver_tasks_.empty() ||
+           b>=scene.speculative_islands_.active_reference_counts.size() ||
+           b>=scene.accurate_islands_.active_reference_counts.size() ||
+           scene.speculative_islands_.active_reference_counts[b]==0 ||
+           scene.accurate_islands_.active_reference_counts[b]==0 ||
            scene.body_state(b).position.x!=kin_pose.x ||
            scene.body_state(b).position.y!=kin_pose.y ||
            scene.body_state(b).position.z!=kin_pose.z)
