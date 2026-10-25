@@ -42,29 +42,20 @@ struct BoxPair {
     Quat qa{},qb{},relative{};
     // Original BoxV supportLocal chooses positive only for > 0.
     // The index encodes the support corner, not an arbitrary witness.
-    Support from_indices(std::uint8_t ai,std::uint8_t bi) const {
-        const auto vertex=[](Vec3 e,std::uint8_t index) {
-            return Vec3{(index&1u)?e.x:-e.x,
-                        (index&2u)?e.y:-e.y,
-                        (index&4u)?e.z:-e.z};
-        };
-        Support s;
-        s.ai=ai;
-        s.bi=bi;
-        s.a=add(a_in_b,rotate(relative,vertex(ha,ai)));
-        s.b=vertex(hb,bi);
-        s.q=sub(s.a,s.b);
-        return s;
-    }
     Support support(Vec3 direction) const {
         const Vec3 dir_a=inverse_rotate(relative,direction);
-        const auto mask=[](Vec3 direction) {
-            return static_cast<std::uint8_t>(
-                (direction.x>0.0f?1u:0u) |
-                (direction.y>0.0f?2u:0u) |
-                (direction.z>0.0f?4u:0u));
+        const auto vertex=[](Vec3 e,Vec3 d,std::uint8_t& index) {
+            const bool x=d.x>0.0f,y=d.y>0.0f,z=d.z>0.0f;
+            index=static_cast<std::uint8_t>(
+                (x?1:0)|(y?2:0)|(z?4:0));
+            return Vec3{x?e.x:-e.x,y?e.y:-e.y,z?e.z:-e.z};
         };
-        return from_indices(mask(dir_a),mask(neg(direction)));
+        Support s;
+        const Vec3 pa=vertex(ha,dir_a,s.ai);
+        s.b=vertex(hb,neg(direction),s.bi);
+        s.a=add(a_in_b,rotate(relative,pa));
+        s.q=sub(s.a,s.b);
+        return s;
     }
     Vec3 local_a(Vec3 point_in_b) const {
         return inverse_rotate(relative,sub(point_in_b,a_in_b));
@@ -384,28 +375,7 @@ bool source_pcm_box_box_gjk_epa(
     constexpr float progress_factor=1.0f-0.000225f;
     std::array<Support,4> simplex{};
     int count=0;
-    Vec3 closest=length2(relative)>0.0f?relative:Vec3{1,0,0};
-    float previous=std::numeric_limits<float>::max();
-    if(warmstart && warmstart->count<=4) {
-        bool valid=true;
-        for(int i=0;i<warmstart->count;++i) {
-            const auto ai=warmstart->a[i],bi=warmstart->b[i];
-            if(ai>=8 || bi>=8) {valid=false;break;}
-            for(int j=0;j<i;++j)
-                if(simplex[j].ai==ai && simplex[j].bi==bi)
-                    valid=false;
-            if(!valid)break;
-            simplex[count++]=pair.from_indices(ai,bi);
-        }
-        if(valid && count>0) {
-            const Closest initial=closest_simplex(simplex,count);
-            if(initial.mask && std::isfinite(initial.dist2)) {
-                closest=initial.point;
-                previous=std::sqrt(initial.dist2);
-                compact(simplex,count,initial);
-            } else count=0;
-        } else count=0;
-    }
+    if(warmstart)*warmstart={};
     const auto store=[&] {
         if(!warmstart)return;
         warmstart->count=static_cast<std::uint8_t>(count);
@@ -414,6 +384,8 @@ bool source_pcm_box_box_gjk_epa(
             warmstart->b[i]=simplex[i].bi;
         }
     };
+    Vec3 closest=length2(relative)>0.0f?relative:Vec3{1,0,0};
+    float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
         if(dist<=epsilon) {
