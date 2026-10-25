@@ -1314,27 +1314,30 @@ last-published three-axis integer-encoded AABB in the same working
 set. Only volumes whose encoded bounds changed enter the source-style
 `mUpdated` worklist.
 For `mUpdatedSize*5 < mBoxesSize` (the upstream threshold), the
-pair stream retains untouched `previous_pairs_` and regenerates
-candidate pairs incident to updated volumes using exact encoded
-x/y/z overlap and shape-kind filtering; an ordered merge preserves
-contact-manager handles and precise Found/Lost publication. Structural
-edits and larger update sets still use the complete SAP sweep.
-Infinite-plane candidates remain attached to all enabled dynamics.
-The source **three-axis min/max endpoint state and indexed
-sparse-update motion** are now represented, but incremental candidate
-pair generation still recomputes exact AABB overlaps incident to updated
-volumes instead of emitting pairs solely from the original
-`batchUpdateFewUpdates` endpoint-crossing events. The original source
-pair-manager hash implementation is also not yet translated. Full
-CPU-GPU performance parity remains unproven. Native tests cover direct
-min/max endpoint and index-map invariants, integration publication,
-unchanged endpoints, local ordering swaps, far-teleport fallback,
-SAP reuse, authored invalidation, high-churn retirement, plane-pair
-candidates, simulation-shape re-admission, and 76 frames of independent
-exact candidate-set and Found/Lost delta checks across x/y/z movement. The optional native SAP benchmark
-prints uncalibrated CPU timing and update counters for stationary,
-local-motion, teleport and retired-history cases; CI timing is
-diagnostic and never substitutes for a source-parity gate.
+source-style `batchUpdateFewUpdates` endpoint shifts now emit pair
+change candidates whenever a minimum passes another volume's maximum
+or a maximum passes another minimum, across all three axes.
+Those candidates are ordered/deduplicated, checked against the *final*
+three-axis encoded bounds, and merged with existing `previous_pairs_`
+while leaving uncrossed pairs and their contact-manager handles intact.
+Sc's existing Found/Lost and edge-publication lifecycle remains the
+sole pair owner; source infinite-plane candidates are unchanged.
+Structural edits and larger update sets still use the complete SAP
+sweep. The full PhysX activity-pocket batch-update implementation and
+original hashed `BpsSapPairManager` remain separate translation work.
+The current crossing-event capture is faithful to which endpoint
+relationships can create/destroy overlaps, but its event buffering and
+final pair-stream merge are not byte-for-byte upstream pair-manager code.
+Full CPU-GPU performance parity remains unproven. Native tests verify
+three-axis endpoint/index invariants, sparse teleport crossings, stable
+contact-manager pairs with no crossing, exact per-axis Found/Lost
+transitions, and 76 frames of independent three-axis candidate/event
+checks including large-update fallback, plane membership, shape
+re-admission and retirement. The native SAP benchmark records actual
+min/max crossing counts, pair transitions and collision-only CPU
+query times for unchanged geometry, local motion, contacting motion,
+teleports and retired-history workloads; CI wall-clock measurements are
+diagnostic and never a substitute for exact source-conformance tests.
 `ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
 per-step velocity changes and per-second accelerations in the same
 third-pass island deactivation path; the wake regression rejects replay
