@@ -4314,19 +4314,6 @@ void Scene::prepare_solver_bodies() {
     // free-flight actors stay on the existing source body integrator.
     // This is the sole scene-owned transient solver state.
     solver_rows_.resize(actors_.size());
-    // Kinematic nodes have no Dy island membership, but moving targets
-    // supply source pre-solver velocities as infinite-mass row inputs.
-    // Their solver deltas remain zero, never entering rigid writeback.
-    for(BodyId id:active_kinematic_targets_) {
-        const Actor& body=actors_[id];
-        if(!body.alive || body.kind!=Kind::KinematicBox)continue;
-        auto& row=solver_rows_[id];
-        row={};
-        row.data.position=body.position;
-        row.data.orientation=body.orientation;
-        row.data.linear_velocity=body.velocity;
-        row.data.angular_velocity=body.angular_velocity;
-    }
     // Keep a distinct monotonic generation: StepCheckpoint rolls back
     // frame_index_, but rejected solver rows remain in reusable storage.
     // Reusing a frame index would otherwise reactivate stale contact rows
@@ -4337,6 +4324,28 @@ void Scene::prepare_solver_bodies() {
     }
     solver_active_ids_.clear();
     world_solver_row_ = {};
+    // Kinematic rigid nodes are not accurate-island solver bodies,
+    // but all active contacts/1D constraints referencing them need a
+    // current-frame, infinite-mass SolverBodyData row. A settled target
+    // may have left active_kinematic_targets_ while its edge remains
+    // active. Stamp each participant once using existing indexed
+    // island lists; never scan every historical actor.
+    const auto prepare_kinematic=[&](BodyId id) {
+        const Actor& body=actors_[id];
+        if(body.kind!=Kind::KinematicBox || !body.alive)return;
+        auto& row=solver_rows_[id];
+        if(row.prepared_generation==solver_preparation_generation_)return;
+        row={};
+        row.prepared_generation=solver_preparation_generation_;
+        row.data.position=body.position;
+        row.data.orientation=body.orientation;
+        row.data.linear_velocity=body.velocity;
+        row.data.angular_velocity=body.angular_velocity;
+        // A kinematic participates in Jacobian velocity without any
+        // inverse mass, angular response or Dy writeback ownership.
+    };
+    for(BodyId id:active_kinematic_targets_)
+        prepare_kinematic(id);
     // DyDynamicsContext::iterateIslandsIslandEdges gives pre-integration
     // the accurate ACTIVE islands' ordered contact-manager EdgeIndices.
     // Consume the same intrusive stream as setupDescTask: retained Gu
@@ -4359,6 +4368,8 @@ void Scene::prepare_solver_bodies() {
                 throw std::logic_error(
                     "PhysX active island contains an inactive contact manager");
             const Pair pair=manager.pair;
+            prepare_kinematic(pair.a);
+            prepare_kinematic(pair.b);
             const Actor& first=actors_[pair.a];
             const Actor& second=actors_[pair.b];
             if(std::min(first.dynamics.max_contact_impulse,
@@ -4384,11 +4395,13 @@ void Scene::prepare_solver_bodies() {
             if(!joint.live || !joint.connected ||
                joint.constraint_id==invalid_edge)
                 throw std::logic_error("Source 1D constraint is not admitted");
-            for(BodyId id:{joint.pair.a,joint.pair.b})
+            for(BodyId id:{joint.pair.a,joint.pair.b}) {
+                prepare_kinematic(id);
                 if(actors_[id].kind==Kind::DynamicBox &&
                    !actors_[id].sleeping)
                     solver_rows_[id].prepared_generation=
                         solver_preparation_generation_;
+            }
         }
         if(visited!=island.constraint_count)
             throw std::logic_error("Source 1D constraint island list truncated");

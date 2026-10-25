@@ -353,6 +353,43 @@ struct ContactCorrelationSourceFixture {
                 "Sc kinematic target differs from independent PhysX CPU");
 #endif
     }
+    static void verify_settled_kinematic_contact_solver_input() {
+        constexpr float dt=1.0f/120.0f;
+        Scene scene{};
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto kinematic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.95f,8,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.linear_damping=0.0f;
+        dynamics.angular_damping=0.0f;
+        scene.set_dynamics(dynamic,dynamics);
+        scene.set_dynamics(kinematic,dynamics);
+        scene.set_kinematic(kinematic,true);
+        scene.set_kinematic_target(kinematic,{0.95f,8,0},{});
+        scene.step(dt);
+        scene.step(dt);
+        if(!scene.active_kinematic_targets_.empty() ||
+           scene.accurate_island_count()!=1)
+            throw std::runtime_error(
+                "Settled kinematic contact fixture lacked active island");
+        // A previous solver epoch's row is untrusted scratch, whether
+        // it came from a target or a frame later rejected by the journal.
+        auto& stale=scene.solver_rows_[kinematic];
+        stale.solver.linear_velocity_delta={80,12,0};
+        stale.solver.angular_state={4,3,2};
+        stale.data.inverse_mass=9;
+        scene.step(dt);
+        const auto& row=scene.solver_rows_[kinematic];
+        if(row.prepared_generation!=scene.solver_preparation_generation_ ||
+           row.data.inverse_mass!=0.0f ||
+           row.solver.linear_velocity_delta.x!=0.0f ||
+           row.solver.angular_state.x!=0.0f ||
+           !std::isfinite(scene.body_state(dynamic).velocity.x))
+            throw std::runtime_error(
+                "Settled kinematic contact reused old solver-body state");
+    }
     static void verify_moving_kinematic_target_through_source_solver() {
         constexpr float dt=1.0f/120.0f;
         Scene scene{};
@@ -10969,6 +11006,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
+    fyzz::native::ContactCorrelationSourceFixture::verify_settled_kinematic_contact_solver_input();
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_node_is_not_a_solver_island();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();

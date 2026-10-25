@@ -1565,6 +1565,10 @@ target-less frame clears the kinematic velocity. Sparse active target
 indices and source motion rollback preserve frame ownership without
 a scan of every historical rigid ID. Dynamic interaction wake and
 steady-state retirement are tested on the native production Scene.
+All active contact/1D constraint descriptors now prepare kinematic
+endpoints as zero-response solver rows even after the target list has
+settled; generation stamps prevent stale scratch deltas from affecting
+later dynamic contacts without scanning dormant actors.
 
 **Typed island-edge admission:** The source EdgeIndex pool and its paired
 speculative/accurate EdgeInstances now admit distinct
