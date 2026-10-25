@@ -885,6 +885,74 @@ int main() {
                 }
             }
 
+
+            // Small-scale rotated GJK/EPA witnesses must agree with the
+            // independent default PCM scene, not just with a geometrically
+            // scaled native run. Both shapes and contact offsets scale.
+            for(bool reversed:{false,true}) {
+                constexpr float scale=0.01f;
+                constexpr fyzz::Vec3 half{
+                    0.5f*scale,0.5f*scale,0.5f*scale};
+                constexpr fyzz::Vec3 at{
+                    0.892f*scale,1.091f*scale,0.0f};
+                constexpr float contact_offset=0.02f*scale;
+                const fyzz::Quat rotated{
+                    0,0,std::sin(0.1f),std::cos(0.1f)};
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                fyzz::WorldOptions reference_options{};
+                reference_options.execution=
+                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                reference_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World reference_pcm(reference_options);
+                const auto author=[&](fyzz::World& world) {
+                    fyzz::BodyId moving{},fixed{};
+                    if(reversed) {
+                        moving=world.add_dynamic_box(half,at,1.0f);
+                        fixed=world.add_static_box(half,{0,0,0});
+                    } else {
+                        fixed=world.add_static_box(half,{0,0,0});
+                        moving=world.add_dynamic_box(half,at,1.0f);
+                    }
+                    world.set_shape_offsets(fixed,contact_offset,0.0f);
+                    world.set_shape_offsets(moving,contact_offset,0.0f);
+                    world.set_body_pose(moving,at,rotated);
+                    fyzz::RigidBodyDynamics dynamics{};
+                    dynamics.gravity_enabled=false;
+                    world.set_body_dynamics(moving,dynamics);
+                };
+                author(native_pcm);
+                author(reference_pcm);
+                native_pcm.step(1.0f/120.0f);
+                reference_pcm.step(1.0f/120.0f);
+                const auto actual=native_pcm.contact_event_points();
+                const auto expected=reference_pcm.contact_event_points();
+                if(actual.size()!=1 || expected.size()!=1)
+                    throw std::runtime_error(
+                        "Small-scale PCM GJK/EPA witness count differs from PhysX");
+                const auto& a=actual[0];
+                const auto& b=expected[0];
+                const float nx=a.normal.x*b.normal.x+
+                    a.normal.y*b.normal.y+a.normal.z*b.normal.z;
+                const float dx=a.position.x-b.position.x;
+                const float dy=a.position.y-b.position.y;
+                const float dz=a.position.z-b.position.z;
+                if(nx<0.995f ||
+                   std::abs(a.separation-b.separation)>5.0e-6f ||
+                   dx*dx+dy*dy+dz*dz>1.0e-8f) {
+                    std::cerr<<"Scaled PCM source witness reversed="
+                             <<reversed<<" normal_dot="<<nx
+                             <<" native_sep="<<a.separation
+                             <<" reference_sep="<<b.separation
+                             <<" position_dist2="<<(dx*dx+dy*dy+dz*dz)
+                             <<'\\n';
+                    throw std::runtime_error(
+                        "Small-scale PCM GJK/EPA witness diverged from PhysX");
+                }
+            }
+
             // Independent stock PhysX PCM box/box oracle. This
             // intentionally does not select ReferencePhysXCpuLegacyGu.
             // Compare native production contact-report points after Dy
@@ -2281,301 +2349,300 @@ int main() {
             // disabled oracle to prove the fixture actually excites
             // tangential resistance rather than resting normal contact.
             for(const bool use_pcm:{false,true}) {
-            for(const bool reversed:{false,true}) {
-                fyzz::WorldOptions native_options=use_pcm
-                    ? fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu,true}
-                    : native_legacy_gu_options(true);
-                fyzz::World native_friction(native_options);
-                fyzz::World source_friction(fyzz::WorldOptions{
-                    use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
-                            : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
-                    true});
-                fyzz::World source_no_friction(fyzz::WorldOptions{
-                    use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
-                            : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
-                    true});
-                const fyzz::Vec3 half{0.5f,0.5f,0.5f};
-                fyzz::Material frictional{};
-                frictional.static_friction=0.8f;
-                frictional.dynamic_friction=0.6f;
-                frictional.restitution=0.0f;
+                for(const bool reversed:{false,true}) {
+                    fyzz::WorldOptions native_options=use_pcm
+                        ? fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu,true}
+                        : native_legacy_gu_options(true);
+                    fyzz::World native_friction(native_options);
+                    fyzz::World source_friction(fyzz::WorldOptions{
+                        use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
+                                : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
+                        true});
+                    fyzz::World source_no_friction(fyzz::WorldOptions{
+                        use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
+                                : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
+                        true});
+                    const fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                    fyzz::Material frictional{};
+                    frictional.static_friction=0.8f;
+                    frictional.dynamic_friction=0.6f;
+                    frictional.restitution=0.0f;
 
+                    fyzz::Material frictionless=frictional;
+                    frictionless.disable_friction=true;
+                    const auto initialize=[&](fyzz::World& w,bool friction_on) {
+                        const auto floor=w.add_static_floor(0);
+                        fyzz::BodyId lower=0,upper=0;
+                        const auto create_lower=[&] {
+                            lower=w.add_dynamic_box(half,{0,0.50f,0},
+                                                    reversed?4.0f:1.0f);
+                        };
+                        const auto create_upper=[&] {
+                            upper=w.add_dynamic_box(half,{0.12f,1.52f,0.11f},
+                                                    reversed?1.0f:4.0f);
+                        };
+                        if(reversed){create_upper();create_lower();}
+                        else{create_lower();create_upper();}
+                        for(const auto id:{floor,lower,upper})
+                            w.set_body_material(id,
+                                friction_on?frictional:frictionless);
+                        w.set_body_velocity(upper,{0.65f,-0.15f,0.28f});
+                        w.set_body_velocity(lower,{-0.15f,0,0});
+                        return std::pair{lower,upper};
+                    };
+                    const auto [nl,nu]=initialize(native_friction,true);
+                    const auto [pl,pu]=initialize(source_friction,true);
+                    const auto [ql,qu]=initialize(source_no_friction,false);
+                    float source_effect=0.0f,source_rotation=0.0f;
+                    // The early contact/impulse window is an enforced
+                    // regression. The extended source-parity acceptance
+                    // scenario is retained intact and explicitly selectable
+                    // while its observed N1 discrepancy is being repaired.
 
-                fyzz::Material frictionless=frictional;
-                frictionless.disable_friction=true;
-                const auto initialize=[&](fyzz::World& w,bool friction_on) {
-                    const auto floor=w.add_static_floor(0);
-                    fyzz::BodyId lower=0,upper=0;
-                    const auto create_lower=[&] {
-                        lower=w.add_dynamic_box(half,{0,0.50f,0},
-                                                reversed?4.0f:1.0f);
-                    };
-                    const auto create_upper=[&] {
-                        upper=w.add_dynamic_box(half,{0.12f,1.52f,0.11f},
-                                                reversed?1.0f:4.0f);
-                    };
-                    if(reversed){create_upper();create_lower();}
-                    else{create_lower();create_upper();}
-                    for(const auto id:{floor,lower,upper})
-                        w.set_body_material(id,
-                            friction_on?frictional:frictionless);
-                    w.set_body_velocity(upper,{0.65f,-0.15f,0.28f});
-                    w.set_body_velocity(lower,{-0.15f,0,0});
-                    return std::pair{lower,upper};
-                };
-                const auto [nl,nu]=initialize(native_friction,true);
-                const auto [pl,pu]=initialize(source_friction,true);
-                const auto [ql,qu]=initialize(source_no_friction,false);
-                float source_effect=0.0f,source_rotation=0.0f;
-                // The early contact/impulse window is an enforced
-                // regression. The extended source-parity acceptance
-                // scenario is retained intact and explicitly selectable
-                // while its observed N1 discrepancy is being repaired.
-#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                constexpr int frames=48;
-#else
-                constexpr int frames=16;
-#endif
-                for(int frame=0;frame<frames;++frame) {
-                    const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
-#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                    if(!use_pcm && reversed && (frame==11 || frame==12)) {
-                        const auto probe=[&](const char* name,
-                            fyzz::World& w,fyzz::BodyId bottom,fyzz::BodyId top) {
-                            const auto lo=w.body_state(bottom);
-                            const auto up=w.body_state(top);
-                            std::cerr<<"N1GU frame="<<frame+1<<" "<<name
-                                     <<" lower_p=("<<lo.position.x<<","
-                                     <<lo.position.y<<","<<lo.position.z<<")"
-                                     <<" upper_p=("<<up.position.x<<","
-                                     <<up.position.y<<","<<up.position.z<<")\n";
-                            for(unsigned initial=0;initial<=6;++initial) {
-                                std::array<fyzz::native::ContactPoint,255> points{};
-                                std::uint8_t axis=static_cast<std::uint8_t>(initial);
-                                const auto count=fyzz::native::source_box_box_contacts(
-                                    half,lo.position,lo.orientation,
-                                    half,up.position,up.orientation,
-                                    0.04f,axis,points);
-                                if(!count)continue;
-                                const auto& cp=points[0];
-                                std::cerr<<"N1GU "<<name
-                                         <<" before="<<initial
-                                         <<" after="<<unsigned(axis)
-                                         <<" n=("<<cp.normal.x<<","
-                                         <<cp.normal.y<<","<<cp.normal.z<<")"
-                                         <<" p0=("<<cp.position.x<<","
-                                         <<cp.position.y<<","
-                                         <<cp.position.z<<")"
-                                         <<" sep="<<cp.separation
-                                         <<" count="<<unsigned(count)<<"\n";
-                            }
-                        };
-                        probe("native",native_friction,nl,nu);
-                        probe("physx",source_friction,pl,pu);
-                    }
-#endif
-                    native_friction.step(dt);
-                    source_friction.step(dt);
-                    source_no_friction.step(dt);
-                    if(!use_pcm && reversed && frame==0) {
-                        const auto find_pair=[](fyzz::World& world,
-                                                fyzz::BodyId a,
-                                                fyzz::BodyId b)
-                            -> const fyzz::ContactEvent* {
-                            for(const auto& event:world.contact_events())
-                                if(event.body0==std::min(a,b) &&
-                                   event.body1==std::max(a,b))
-                                    return &event;
-                            return nullptr;
-                        };
-                        const auto ne=find_pair(native_friction,nl,nu);
-                        const auto pe=find_pair(source_friction,pl,pu);
-                        if(!ne || !pe ||
-                           ne->contact_count!=pe->contact_count ||
-                           ne->contact_count<3)
-                            throw std::runtime_error(
-                                "Original Gu speculative contact patch missing");
-                        const auto nc=native_friction.contact_event_points();
-                        const auto pc=source_friction.contact_event_points();
-                        for(std::size_t i=0;i<ne->contact_count;++i) {
-                            const auto& a=nc[ne->point_offset+i];
-                            const auto& b=pc[pe->point_offset+i];
-                            if(std::abs(a.position.x-b.position.x)>0.008f ||
-                               std::abs(a.position.y-b.position.y)>0.008f ||
-                               std::abs(a.position.z-b.position.z)>0.008f)
-                                throw std::runtime_error(
-                                    "Native Gu contact face differs from source "
-                                    "before first PGS impact");
-                        }
-                    }
-#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                    if(!use_pcm && reversed && frame<25) {
-                        const auto line=[&](const char* name,fyzz::World& w,
-                                            fyzz::BodyId lower,fyzz::BodyId upper) {
-                            const auto lo=w.body_state(lower);
-                            const auto up=w.body_state(upper);
-                            std::cerr<<"N1TRACE frame="<<frame+1
-                                     <<" "<<name
-                                     <<" lower_y="<<lo.position.y
-                                     <<" lower_v=("<<lo.velocity.x<<","<<lo.velocity.y
-                                     <<","<<lo.velocity.z<<")"
-                                     <<" lower_q=("<<lo.orientation.x<<","
-                                     <<lo.orientation.y<<","<<lo.orientation.z
-                                     <<","<<lo.orientation.w<<")"
-                                     <<" upper_p=("<<up.position.x<<","
-                                     <<up.position.y<<","<<up.position.z<<")"
-                                     <<" upper_v=("<<up.velocity.x<<","
-                                     <<up.velocity.y<<","<<up.velocity.z<<")"
-                                     <<" upper_w=("<<up.angular_velocity.x<<","
-                                     <<up.angular_velocity.y<<","
-                                     <<up.angular_velocity.z<<")"
-                                     <<" q=("<<up.orientation.x<<","
-                                     <<up.orientation.y<<","<<up.orientation.z
-                                     <<","<<up.orientation.w<<")";
-                            for(const auto& evt:w.contact_events()) {
-                                if(evt.contact_count==0)continue;
-                                const auto& cp=w.contact_event_points()[evt.point_offset];
-                                std::cerr<<" contact("<<evt.body0<<","<<evt.body1
-                                         <<") n=("<<cp.normal.x<<","
-                                         <<cp.normal.y<<","<<cp.normal.z
-                                         <<") sep="<<cp.separation
-                                         <<" impulse="<<evt.normal_impulse;
-                                if(frame<=13) {
-                                    const auto points=w.contact_event_points();
-                                    for(std::size_t i=0;i<evt.contact_count;++i) {
-                                        const auto& p=points[evt.point_offset+i];
-                                        std::cerr<<" p"<<i<<"=("<<p.position.x<<","
-                                                 <<p.position.y<<","
-                                                 <<p.position.z<<")"
-                                                 <<" J="<<p.normal_impulse;
-                                    }
+                    constexpr int frames=48;
+
+                    constexpr int frames=16;
+
+                    for(int frame=0;frame<frames;++frame) {
+                        const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
+
+                        if(!use_pcm && reversed && (frame==11 || frame==12)) {
+                            const auto probe=[&](const char* name,
+                                fyzz::World& w,fyzz::BodyId bottom,fyzz::BodyId top) {
+                                const auto lo=w.body_state(bottom);
+                                const auto up=w.body_state(top);
+                                std::cerr<<"N1GU frame="<<frame+1<<" "<<name
+                                         <<" lower_p=("<<lo.position.x<<","
+                                         <<lo.position.y<<","<<lo.position.z<<")"
+                                         <<" upper_p=("<<up.position.x<<","
+                                         <<up.position.y<<","<<up.position.z<<")\n";
+                                for(unsigned initial=0;initial<=6;++initial) {
+                                    std::array<fyzz::native::ContactPoint,255> points{};
+                                    std::uint8_t axis=static_cast<std::uint8_t>(initial);
+                                    const auto count=fyzz::native::source_box_box_contacts(
+                                        half,lo.position,lo.orientation,
+                                        half,up.position,up.orientation,
+                                        0.04f,axis,points);
+                                    if(!count)continue;
+                                    const auto& cp=points[0];
+                                    std::cerr<<"N1GU "<<name
+                                             <<" before="<<initial
+                                             <<" after="<<unsigned(axis)
+                                             <<" n=("<<cp.normal.x<<","
+                                             <<cp.normal.y<<","<<cp.normal.z<<")"
+                                             <<" p0=("<<cp.position.x<<","
+                                             <<cp.position.y<<","
+                                             <<cp.position.z<<")"
+                                             <<" sep="<<cp.separation
+                                             <<" count="<<unsigned(count)<<"\n";
                                 }
+                            };
+                            probe("native",native_friction,nl,nu);
+                            probe("physx",source_friction,pl,pu);
+                        }
+
+                        native_friction.step(dt);
+                        source_friction.step(dt);
+                        source_no_friction.step(dt);
+                        if(!use_pcm && reversed && frame==0) {
+                            const auto find_pair=[](fyzz::World& world,
+                                                    fyzz::BodyId a,
+                                                    fyzz::BodyId b)
+                                -> const fyzz::ContactEvent* {
+                                for(const auto& event:world.contact_events())
+                                    if(event.body0==std::min(a,b) &&
+                                       event.body1==std::max(a,b))
+                                        return &event;
+                                return nullptr;
+                            };
+                            const auto ne=find_pair(native_friction,nl,nu);
+                            const auto pe=find_pair(source_friction,pl,pu);
+                            if(!ne || !pe ||
+                               ne->contact_count!=pe->contact_count ||
+                               ne->contact_count<3)
+                                throw std::runtime_error(
+                                    "Original Gu speculative contact patch missing");
+                            const auto nc=native_friction.contact_event_points();
+                            const auto pc=source_friction.contact_event_points();
+                            for(std::size_t i=0;i<ne->contact_count;++i) {
+                                const auto& a=nc[ne->point_offset+i];
+                                const auto& b=pc[pe->point_offset+i];
+                                if(std::abs(a.position.x-b.position.x)>0.008f ||
+                                   std::abs(a.position.y-b.position.y)>0.008f ||
+                                   std::abs(a.position.z-b.position.z)>0.008f)
+                                    throw std::runtime_error(
+                                        "Native Gu contact face differs from source "
+                                        "before first PGS impact");
                             }
-                            std::cerr<<'\n';
-                        };
-                        line("native",native_friction,nl,nu);
-                        line("physx",source_friction,pl,pu);
-                    }
-#endif
-                    const auto horizontal_delta=[](fyzz::Vec3 a,
-                                                   fyzz::Vec3 b) {
-                        return std::max(std::abs(a.x-b.x),std::abs(a.z-b.z));
-                    };
-                    for(const auto [ni,pi,qi,label]:
-                        {std::tuple{nl,pl,ql,"lower"},
-                         std::tuple{nu,pu,qu,"upper"}}) {
-                        const auto n=native_friction.body_state(ni);
-                        const auto p=source_friction.body_state(pi);
-                        const auto q=source_no_friction.body_state(qi);
-                        const auto err=[](fyzz::Vec3 a,fyzz::Vec3 b) {
-                            return std::max({std::abs(a.x-b.x),
-                                             std::abs(a.y-b.y),
-                                             std::abs(a.z-b.z)});
-                        };
-                        const float orientation_dot=
-                            n.orientation.x*p.orientation.x+
-                            n.orientation.y*p.orientation.y+
-                            n.orientation.z*p.orientation.z+
-                            n.orientation.w*p.orientation.w;
-                        source_effect=std::max(source_effect,
-                            horizontal_delta(p.velocity,q.velocity));
-                        source_rotation=std::max(source_rotation,
-                            std::max(std::abs(p.angular_velocity.x),
-                                     std::abs(p.angular_velocity.z)));
-                        const float position_error=err(n.position,p.position);
-                        const float linear_error=err(n.velocity,p.velocity);
-                        const float angular_error=err(n.angular_velocity,
-                                                      p.angular_velocity);
-                        // This first resolved impact must match PhysX's
-                        // angular Jacobians, not merely fall inside the
-                        // permissive long-trajectory drift bounds.
-                        if(reversed && frame==11 && ni==nu &&
-                           (position_error>0.005f ||
-                            linear_error>0.03f ||
-                            angular_error>0.03f ||
-                            !std::isfinite(orientation_dot) ||
-                            std::abs(orientation_dot)<0.9999f))
-                            throw std::runtime_error(
-                                "First-impact PhysX angular source witness failed");
-                        if(!std::isfinite(orientation_dot) ||
-                           !std::isfinite(position_error) ||
-                           !std::isfinite(linear_error) ||
-                           !std::isfinite(angular_error) ||
-                           position_error>0.14f ||
-                           linear_error>0.45f ||
-                           angular_error>0.85f ||
-                           std::abs(orientation_dot)<0.975f) {
-                            std::cerr<<"Native/PhysX frictional stack"
-                                     <<" frame="<<frame+1
-                                     <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
-                                     <<" reversed="<<reversed
-                                     <<" actor="<<label
-                                     <<" pos="<<position_error
-                                     <<" vel="<<linear_error
-                                     <<" angular="<<angular_error
-                                     <<" quat="<<orientation_dot
-                                     <<" native_pos=("<<n.position.x<<","<<n.position.y
-                                     <<","<<n.position.z<<")"
-                                     <<" source_pos=("<<p.position.x<<","<<p.position.y
-                                     <<","<<p.position.z<<")"
-                                     <<" native_vel=("<<n.velocity.x<<","<<n.velocity.y
-                                     <<","<<n.velocity.z<<")"
-                                     <<" source_vel=("<<p.velocity.x<<","<<p.velocity.y
-                                     <<","<<p.velocity.z<<")"
-                                     <<" frictionless_vel=("<<q.velocity.x<<","<<q.velocity.y
-                                     <<","<<q.velocity.z<<")"
-                                     <<" lower_native_vel=("
-                                     <<native_friction.body_state(nl).velocity.x<<","
-                                     <<native_friction.body_state(nl).velocity.y<<","
-                                     <<native_friction.body_state(nl).velocity.z<<")"
-                                     <<" lower_source_vel=("
-                                     <<source_friction.body_state(pl).velocity.x<<","
-                                     <<source_friction.body_state(pl).velocity.y<<","
-                                     <<source_friction.body_state(pl).velocity.z<<")"
-                                     <<" native_ang=("<<n.angular_velocity.x<<","
-                                     <<n.angular_velocity.y<<","<<n.angular_velocity.z<<")"
-                                     <<" source_ang=("<<p.angular_velocity.x<<","
-                                     <<p.angular_velocity.y<<","<<p.angular_velocity.z<<")"
-                                     <<'\n';
-                            const auto report=[&](const char* name,
-                                                  fyzz::World& w) {
-                                std::cerr<<" "<<name<<" touch:";
-                                for(const auto& event:w.contact_events()) {
-                                    std::cerr<<" ("<<event.body0<<","
-                                             <<event.body1
-                                             <<" count="<<unsigned(event.contact_count)
-                                             <<" impulse="<<event.normal_impulse;
-                                    if(event.contact_count) {
-                                        const auto& pt=w.contact_event_points()[
-                                            event.point_offset];
-                                        std::cerr<<" n=("<<pt.normal.x<<","
-                                                 <<pt.normal.y<<","<<pt.normal.z
-                                                 <<") sep="<<pt.separation;
+                        }
+
+                        if(!use_pcm && reversed && frame<25) {
+                            const auto line=[&](const char* name,fyzz::World& w,
+                                                fyzz::BodyId lower,fyzz::BodyId upper) {
+                                const auto lo=w.body_state(lower);
+                                const auto up=w.body_state(upper);
+                                std::cerr<<"N1TRACE frame="<<frame+1
+                                         <<" "<<name
+                                         <<" lower_y="<<lo.position.y
+                                         <<" lower_v=("<<lo.velocity.x<<","<<lo.velocity.y
+                                         <<","<<lo.velocity.z<<")"
+                                         <<" lower_q=("<<lo.orientation.x<<","
+                                         <<lo.orientation.y<<","<<lo.orientation.z
+                                         <<","<<lo.orientation.w<<")"
+                                         <<" upper_p=("<<up.position.x<<","
+                                         <<up.position.y<<","<<up.position.z<<")"
+                                         <<" upper_v=("<<up.velocity.x<<","
+                                         <<up.velocity.y<<","<<up.velocity.z<<")"
+                                         <<" upper_w=("<<up.angular_velocity.x<<","
+                                         <<up.angular_velocity.y<<","
+                                         <<up.angular_velocity.z<<")"
+                                         <<" q=("<<up.orientation.x<<","
+                                         <<up.orientation.y<<","<<up.orientation.z
+                                         <<","<<up.orientation.w<<")";
+                                for(const auto& evt:w.contact_events()) {
+                                    if(evt.contact_count==0)continue;
+                                    const auto& cp=w.contact_event_points()[evt.point_offset];
+                                    std::cerr<<" contact("<<evt.body0<<","<<evt.body1
+                                             <<") n=("<<cp.normal.x<<","
+                                             <<cp.normal.y<<","<<cp.normal.z
+                                             <<") sep="<<cp.separation
+                                             <<" impulse="<<evt.normal_impulse;
+                                    if(frame<=13) {
+                                        const auto points=w.contact_event_points();
+                                        for(std::size_t i=0;i<evt.contact_count;++i) {
+                                            const auto& p=points[evt.point_offset+i];
+                                            std::cerr<<" p"<<i<<"=("<<p.position.x<<","
+                                                     <<p.position.y<<","
+                                                     <<p.position.z<<")"
+                                                     <<" J="<<p.normal_impulse;
+                                        }
                                     }
-                                    std::cerr<<")";
                                 }
                                 std::cerr<<'\n';
                             };
-                            report("native",native_friction);
-                            report("source",source_friction);
-                            report("source-frictionless",source_no_friction);
-                            throw std::runtime_error(
-                                "Frictional angular coupled PGS diverged from PhysX Gu");
+                            line("native",native_friction,nl,nu);
+                            line("physx",source_friction,pl,pu);
+                        }
+
+                        const auto horizontal_delta=[](fyzz::Vec3 a,
+                                                       fyzz::Vec3 b) {
+                            return std::max(std::abs(a.x-b.x),std::abs(a.z-b.z));
+                        };
+                        for(const auto [ni,pi,qi,label]:
+                            {std::tuple{nl,pl,ql,"lower"},
+                             std::tuple{nu,pu,qu,"upper"}}) {
+                            const auto n=native_friction.body_state(ni);
+                            const auto p=source_friction.body_state(pi);
+                            const auto q=source_no_friction.body_state(qi);
+                            const auto err=[](fyzz::Vec3 a,fyzz::Vec3 b) {
+                                return std::max({std::abs(a.x-b.x),
+                                                 std::abs(a.y-b.y),
+                                                 std::abs(a.z-b.z)});
+                            };
+                            const float orientation_dot=
+                                n.orientation.x*p.orientation.x+
+                                n.orientation.y*p.orientation.y+
+                                n.orientation.z*p.orientation.z+
+                                n.orientation.w*p.orientation.w;
+                            source_effect=std::max(source_effect,
+                                horizontal_delta(p.velocity,q.velocity));
+                            source_rotation=std::max(source_rotation,
+                                std::max(std::abs(p.angular_velocity.x),
+                                         std::abs(p.angular_velocity.z)));
+                            const float position_error=err(n.position,p.position);
+                            const float linear_error=err(n.velocity,p.velocity);
+                            const float angular_error=err(n.angular_velocity,
+                                                          p.angular_velocity);
+                            // This first resolved impact must match PhysX's
+                            // angular Jacobians, not merely fall inside the
+                            // permissive long-trajectory drift bounds.
+                            if(reversed && frame==11 && ni==nu &&
+                               (position_error>0.005f ||
+                                linear_error>0.03f ||
+                                angular_error>0.03f ||
+                                !std::isfinite(orientation_dot) ||
+                                std::abs(orientation_dot)<0.9999f))
+                                throw std::runtime_error(
+                                    "First-impact PhysX angular source witness failed");
+                            if(!std::isfinite(orientation_dot) ||
+                               !std::isfinite(position_error) ||
+                               !std::isfinite(linear_error) ||
+                               !std::isfinite(angular_error) ||
+                               position_error>0.14f ||
+                               linear_error>0.45f ||
+                               angular_error>0.85f ||
+                               std::abs(orientation_dot)<0.975f) {
+                                std::cerr<<"Native/PhysX frictional stack"
+                                         <<" frame="<<frame+1
+                                         <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
+                                         <<" reversed="<<reversed
+                                         <<" actor="<<label
+                                         <<" pos="<<position_error
+                                         <<" vel="<<linear_error
+                                         <<" angular="<<angular_error
+                                         <<" quat="<<orientation_dot
+                                         <<" native_pos=("<<n.position.x<<","<<n.position.y
+                                         <<","<<n.position.z<<")"
+                                         <<" source_pos=("<<p.position.x<<","<<p.position.y
+                                         <<","<<p.position.z<<")"
+                                         <<" native_vel=("<<n.velocity.x<<","<<n.velocity.y
+                                         <<","<<n.velocity.z<<")"
+                                         <<" source_vel=("<<p.velocity.x<<","<<p.velocity.y
+                                         <<","<<p.velocity.z<<")"
+                                         <<" frictionless_vel=("<<q.velocity.x<<","<<q.velocity.y
+                                         <<","<<q.velocity.z<<")"
+                                         <<" lower_native_vel=("
+                                         <<native_friction.body_state(nl).velocity.x<<","
+                                         <<native_friction.body_state(nl).velocity.y<<","
+                                         <<native_friction.body_state(nl).velocity.z<<")"
+                                         <<" lower_source_vel=("
+                                         <<source_friction.body_state(pl).velocity.x<<","
+                                         <<source_friction.body_state(pl).velocity.y<<","
+                                         <<source_friction.body_state(pl).velocity.z<<")"
+                                         <<" native_ang=("<<n.angular_velocity.x<<","
+                                         <<n.angular_velocity.y<<","<<n.angular_velocity.z<<")"
+                                         <<" source_ang=("<<p.angular_velocity.x<<","
+                                         <<p.angular_velocity.y<<","<<p.angular_velocity.z<<")"
+                                         <<'\n';
+                                const auto report=[&](const char* name,
+                                                      fyzz::World& w) {
+                                    std::cerr<<" "<<name<<" touch:";
+                                    for(const auto& event:w.contact_events()) {
+                                        std::cerr<<" ("<<event.body0<<","
+                                                 <<event.body1
+                                                 <<" count="<<unsigned(event.contact_count)
+                                                 <<" impulse="<<event.normal_impulse;
+                                        if(event.contact_count) {
+                                            const auto& pt=w.contact_event_points()[
+                                                event.point_offset];
+                                            std::cerr<<" n=("<<pt.normal.x<<","
+                                                     <<pt.normal.y<<","<<pt.normal.z
+                                                     <<") sep="<<pt.separation;
+                                        }
+                                        std::cerr<<")";
+                                    }
+                                    std::cerr<<'\n';
+                                };
+                                report("native",native_friction);
+                                report("source",source_friction);
+                                report("source-frictionless",source_no_friction);
+                                throw std::runtime_error(
+                                    "Frictional angular coupled PGS diverged from PhysX Gu");
+                            }
                         }
                     }
+                    if(source_effect<0.03f || source_rotation<0.01f)
+                        throw std::runtime_error(
+                            "PhysX friction/rotation oracle fixture lacked response");
+                    // Keep the compiled 48-frame acceptance horizon visible
+                    // in the reference CI logs; a 16-frame smoke is distinct.
+                    std::cout<<"N1 coupled-friction oracle passed"
+                             <<" frames="<<frames
+                             <<" reversed="<<reversed
+                             <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
+                             <<" friction_effect="<<source_effect
+                             <<" angular_response="<<source_rotation<<'\n';
                 }
-                if(source_effect<0.03f || source_rotation<0.01f)
-                    throw std::runtime_error(
-                        "PhysX friction/rotation oracle fixture lacked response");
-                // Keep the compiled 48-frame acceptance horizon visible
-                // in the reference CI logs; a 16-frame smoke is distinct.
-                std::cout<<"N1 coupled-friction oracle passed"
-                         <<" frames="<<frames
-                         <<" reversed="<<reversed
-                         <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
-                         <<" friction_effect="<<source_effect
-                         <<" angular_response="<<source_rotation<<'\n';
-            }
             }
 
             // Coupled PGS conformance: unlike a free two-body impact,
