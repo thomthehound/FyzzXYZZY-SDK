@@ -3674,14 +3674,16 @@ void verify_source_simulation_shape_flag_lifecycle() {
     scene.set_shape_simulation_enabled(floor,false);
     scene.advance_collision(true);
     if(!scene.pairs().empty() || !scene.contacts().empty() ||
-       !has(scene.lost_pairs(),floor,body) ||
+       std::find(scene.lost_pairs().begin(),scene.lost_pairs().end(),key)==
+           scene.lost_pairs().end() ||
        scene.contact_edge_index(key)!=std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error(
             "Shape flag suppression failed source SAP and Sc retirement");
     scene.set_shape_simulation_enabled(floor,true);
     scene.advance_collision(true);
     if(scene.contacts().size()!=1 ||
-       !has(scene.found_pairs(),floor,body) ||
+       std::find(scene.found_pairs().begin(),scene.found_pairs().end(),key)==
+           scene.found_pairs().end() ||
        scene.contact_edge_index(key)==std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error(
             "Shape reenable did not admit a source contact manager");
