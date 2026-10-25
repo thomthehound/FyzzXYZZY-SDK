@@ -495,6 +495,7 @@ private:
     // simulation operations or a second friction-correlation path.
     friend struct ContactCorrelationSourceFixture;
     friend struct SolverIterationSourceFixture;
+    friend struct SourceSapEndpointFixture;
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
     struct Actor {
         Kind kind = Kind::StaticBox;
