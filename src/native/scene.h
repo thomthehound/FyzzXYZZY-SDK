@@ -718,6 +718,8 @@ private:
     static void refresh_pcm_contact_points(
         PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
         Quat rotation_a_in_b, float projection_break);
+    static void reduce_pcm_box_five(
+        PcmPlaneBoxCache& cache, const PcmPersistentContact& new_contact);
     std::uint8_t generate_pcm_plane_box(
         const Actor& plane, const Actor& box, float contact_distance,
         PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
