@@ -1463,6 +1463,23 @@ struct ContactCorrelationSourceFixture {
         empty.finish_after_integration();
         empty.publish_results();
 
+        // Real Scene task IDs remain safe across uint32 stamp rollover;
+        // a completed old generation cannot mask a current completion.
+        {
+            Scene rollover{Scene::ContactGenerator::DiagnosticLegacyGu};
+            rollover.add_dynamic_box({0.5f,0.5f,0.5f},{0,8,0},1.0f);
+            rollover.solver_task_completion_generation_=
+                std::numeric_limits<std::uint32_t>::max();
+            rollover.solver_task_completion_stamps_.assign(1,1);
+            rollover.step(1.0f/120.0f);
+            if(rollover.solver_task_completion_generation_!=1 ||
+               rollover.solver_tasks_.size()!=1 ||
+               rollover.solver_task_completion_stamps_[0]!=1 ||
+               rollover.solved_result_frame()!=rollover.frame_index())
+                throw std::runtime_error(
+                    "PxsSolverEndTask generation rollover blocked source publication");
+        }
+
         // Production-path test: enhanced determinism prevents merging
         // three independently owned active islands into one Dy task.
         // Two islands have floor contact rows, and a third free-flight

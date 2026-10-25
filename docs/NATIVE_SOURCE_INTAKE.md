@@ -1256,15 +1256,21 @@ includes the speculative/accurate third-pass and Sc interaction activity
 consumer; each solver task chain owns a contiguous group of accurate
 active islands and completes only after those rigid bodies are integrated
 and sleep-checked. The production native CPU `Scene::step` now lowers
-these real dependencies into one frame-local `RigidStepJoin`: it counts
-the existing `solver_tasks_` groups, finishes each group **after**
-integrating its own island range, and gates the final destroyed-manager
-release and completed-result publication on the joined producers.
+these real dependencies into one frame-local `RigidStepJoin`.
+The post-third-pass and lost-contact continuations are distinct
+completion dependencies. Every `PxsSolverEndTask` completes by its actual
+indexed task-chain identity, not by decrementing an anonymous count:
+duplicate completion of one task cannot mask an unfinished island
+chain. Reusable generation stamps avoid per-frame clearing/allocation,
+including wraparound. The join then requires `postSolver`,
+`afterIntegration`, and completed event publication in source order,
+with destroyed-manager release gated behind all solver chains.
 Zero-task scenes and mixed contact/free-flight task groups use the same
-join. The join has constant storage, allocates no tasks, creates no
-secondary graph or actor owner, and does not constrain Dy dispatch to
-wait for the independent lost-contact producer. Native regressions check
-reversed producer completion, premature/duplicate completion,
+join. Per-chain completion storage scales with active Dy tasks and
+retains capacity across steps. No secondary graph or actor owner is
+created, and Dy dispatch need not wait for the independent lost-contact
+producer. Native regressions check reversed producer completion,
+missing/duplicate chain identity, generation rollover,
 enhanced-determinism task partitioning, zero-contact island integration,
 and retirement across frames. Original asynchronous `PxBaseTask`
 dispatch, post-integration concurrent-deactivation pose restoration,
