@@ -33,9 +33,6 @@ Vec3 rotate(Quat q,Vec3 v) {
 Vec3 inverse_rotate(Quat q,Vec3 v) {
     return rotate({-q.x,-q.y,-q.z,q.w},v);
 }
-float coordinate(Vec3 v,int i) {
-    return i==0?v.x:(i==1?v.y:v.z);
-}
 struct Support {
     Vec3 a{},b{},q{};
     std::uint8_t ai=0,bi=0;
