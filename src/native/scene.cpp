@@ -1343,7 +1343,7 @@ std::uint8_t Scene::generate_pcm_box_box(
         cache.orientation_a=first.orientation;
         cache.orientation_b=second.orientation;
         cache.initialized=true;
-        std::array<PcmContactCandidate,64> candidates{};
+        auto& candidates=pcm_candidate_scratch_;
         std::size_t count=0;
         const bool overlapping=source_pcm_box_box_candidates(
             first.half_extents,first.position,first.orientation,
