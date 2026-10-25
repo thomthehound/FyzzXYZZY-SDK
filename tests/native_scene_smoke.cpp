@@ -174,9 +174,18 @@ struct ContactCorrelationSourceFixture {
             if(!near || !deep ||
                std::abs(gjk.separation-0.02f)>2e-3f ||
                std::abs(epa.separation+0.04f)>2e-3f ||
-               gjk.normal_b.y<0.999f || epa.normal_b.y<0.999f)
+               gjk.normal_b.y<0.999f || epa.normal_b.y<0.999f) {
+                std::cerr<<"PCM primitive GJK/EPA near="<<near
+                         <<" sep="<<gjk.separation
+                         <<" normal=("<<gjk.normal_b.x<<","
+                         <<gjk.normal_b.y<<","<<gjk.normal_b.z<<")"
+                         <<" deep="<<deep
+                         <<" sep="<<epa.separation
+                         <<" normal=("<<epa.normal_b.x<<","
+                         <<epa.normal_b.y<<","<<epa.normal_b.z<<")\n";
                 throw std::runtime_error(
                     "Native PCM GJK/EPA sign, witness or depth differs from source");
+            }
         }
         // Exact speculative boundary: SAT accepts a box face at
         // contactDistance, while direct GuPCMContactBoxBox clipping
