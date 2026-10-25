@@ -1338,6 +1338,14 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     active_constraint_handles_.reserve(active_constraint_handles_.size()+1);
     speculative_node_first_.resize(actors_.size(),invalid_instance);
     accurate_node_first_.resize(actors_.size(),invalid_instance);
+    // addConnectionToGraph may mark this edge active immediately. Prepare
+    // the existing IslandSim reference slots before any edge mutation.
+    speculative_islands_.active_reference_counts.resize(actors_.size(),0);
+    accurate_islands_.active_reference_counts.resize(actors_.size(),0);
+    // The source wake handoff can enqueue a previously dormant partner
+    // on the next island publication after the new connection merges.
+    speculative_islands_.activating_nodes.reserve(actors_.size());
+    accurate_islands_.activating_nodes.reserve(actors_.size());
     const EdgeIndex id=allocate_contact_edge(pair);
     auto& edge=island_edges_[id];
     edge.type=IslandEdgeType::Constraint;
@@ -1345,7 +1353,25 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     link_contact_edge(id,false);
     link_contact_edge(id,true);
     active_constraint_handles_.push_back(id);
-    authored_activation_pending_=true;
+    const bool awake_a=actors_[a].kind==Kind::DynamicBox &&
+                       !actors_[a].sleeping;
+    const bool awake_b=actors_[b].kind==Kind::DynamicBox &&
+                       !actors_[b].sleeping;
+    if(awake_a || awake_b) {
+        // Source addConnectionToGraph tests endpoint activity before
+        // later island-route repair, with no scan of all constraints.
+        activate_contact_edge(id,false);
+        activate_contact_edge(id,true);
+        for(BodyId endpoint:{a,b}) {
+            auto& body=actors_[endpoint];
+            if(body.kind==Kind::DynamicBox && body.sleeping &&
+               !body.activating) {
+                queue_node_activation(endpoint);
+                body.activating=true;
+                authored_activation_pending_=true;
+            }
+        }
+    }
     island_topology_dirty_=true;
     dirty_=true;
     return id;
@@ -3817,22 +3843,6 @@ void Scene::activate_published_islands() noexcept {
             (actors_[pair.b].kind==Kind::DynamicBox &&
              !actors_[pair.b].sleeping)))
             activate_contact_edge(id,true);
-    }
-    // Source addConnectionToGraph activates a constraint edge if either
-    // dynamic endpoint is active. Static-world and inactive kinematics
-    // do not themselves wake the rigid island; two kinematics cannot
-    // form an active 1D constraint pair.
-    for(EdgeIndex id:active_constraint_handles_) {
-        const auto& edge=island_edges_[id];
-        if(!edge.live || edge.retiring)continue;
-        const Pair pair=edge.pair;
-        if((actors_[pair.a].kind==Kind::DynamicBox &&
-            !actors_[pair.a].sleeping) ||
-           (actors_[pair.b].kind==Kind::DynamicBox &&
-            !actors_[pair.b].sleeping)) {
-            activate_contact_edge(id,false);
-            activate_contact_edge(id,true);
-        }
     }
     authored_activation_pending_=false;
 }
