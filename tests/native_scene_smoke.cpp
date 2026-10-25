@@ -55,6 +55,10 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Source 1D biased motion/unbiased velocity publication diverged");
         scene.remove_constraint_edge(edge);
+        // The solved 1.0-unit center distance makes 1.0-unit boxes
+        // touch, so separate their geometry before asserting that the
+        // retired constraint no longer bridges two free islands.
+        scene.set_position(b,{6,7,0});
         scene.step(1.0f/120.0f);
         if(!scene.indexed_distance_constraints_.empty() ||
            !scene.distance_rows_.empty() ||
