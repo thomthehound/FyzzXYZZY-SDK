@@ -110,6 +110,18 @@ BodyId World::add_dynamic_box(Vec3 half_extents, Vec3 position, float density) {
     return impl_->add_dynamic_box(half_extents, position, density);
 }
 
+ConstraintId World::add_center_distance_constraint(
+    BodyId a,BodyId b,float distance) {
+    if(a==b || !std::isfinite(distance) || distance<0.0f)
+        throw std::invalid_argument(
+            "Rigid center-distance endpoints or distance invalid");
+    return impl_->add_center_distance_constraint(a,b,distance);
+}
+
+void World::remove_constraint(ConstraintId id) {
+    impl_->remove_constraint(id);
+}
+
 void World::step(float seconds) {
     if (!std::isfinite(seconds) || seconds <= 0.0f) {
         throw std::invalid_argument("Simulation step must be finite and positive");

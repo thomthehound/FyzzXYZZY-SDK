@@ -124,6 +124,7 @@ struct RigidBodyDynamics {
 };
 
 using BodyId = std::uint32_t;
+using ConstraintId = std::uint32_t;
 
 // DyThresholdTable / PxsForceThresholdTask reports changes in the
 // exceeded normal-force stream after source solver writeback. Dynamic
@@ -196,6 +197,14 @@ public:
     virtual BodyId add_static_box(Vec3 half_extents, Vec3 position) = 0;
     virtual BodyId add_static_floor(float height) = 0;
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
+    // ScConstraintSim / Dy 1D center-anchor equal-limit distance row.
+    virtual ConstraintId add_center_distance_constraint(
+        BodyId, BodyId, float) {
+        throw std::logic_error("This backend has no rigid distance constraints");
+    }
+    virtual void remove_constraint(ConstraintId) {
+        throw std::logic_error("This backend cannot retire a constraint");
+    }
     virtual void step(float seconds) = 0;
     virtual BodyState body_state(BodyId id) const = 0;
     virtual std::span<const ContactEvent> contact_events() const {
@@ -278,6 +287,12 @@ public:
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    // Equal-limit, center-anchored, hard distance constraint. Joint
+    // orientation/anchors, spring flags and breaking are not admitted.
+    // ConstraintId is scoped to this World and invalid after removal.
+    ConstraintId add_center_distance_constraint(
+        BodyId a, BodyId b, float distance);
+    void remove_constraint(ConstraintId id);
     void step(float seconds);
     BodyState body_state(BodyId id) const;
     // Events are valid until the next completed World::step.

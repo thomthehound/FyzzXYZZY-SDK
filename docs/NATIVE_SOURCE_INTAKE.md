@@ -1592,6 +1592,17 @@ interleaving with contact managers, angular Jacobians, off-center
 anchors, writeback, spring/limit flags and extended/articulation
 responses remain open.
 
+**Public constraint lifecycle:** The admitted center-anchored,
+equal-limit 1D distance row is now available through
+`World::add_center_distance_constraint` and
+`World::remove_constraint`. Native execution owns the existing typed
+IslandSim EdgeIndex and Sc constraint record; the independent reference
+owns an actual `PxDistanceJoint` using the same source min/max/zero
+tolerance contract. Both retire joints with their incident actor,
+and source-enabled conformance checks completed-frame rigid motion
+through these public APIs. Extended joint flags, general anchors and
+articulation constraints are not part of this admission.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`

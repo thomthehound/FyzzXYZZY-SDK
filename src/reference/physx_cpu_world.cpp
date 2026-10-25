@@ -3,6 +3,7 @@
 
 #include "fyzzxyzzy/world.h"
 #include <PxPhysicsAPI.h>
+#include <extensions/PxDistanceJoint.h>
 
 #include <algorithm>
 #include <array>
@@ -110,6 +111,13 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     physx::PxScene* scene = nullptr;
     physx::PxMaterial* material = nullptr;
     std::vector<physx::PxRigidActor*> actors;
+    // The PxDistanceJoint remains PhysX's authoritative solver owner;
+    // these tokens only retain public constraint lifetime and endpoints.
+    struct DistanceJointOwner {
+        physx::PxDistanceJoint* joint=nullptr;
+        BodyId actor0=0,actor1=0;
+    };
+    std::vector<DistanceJointOwner> distance_joints;
     // Deleted PhysX callback pointers are address tokens ONLY:
     // a removed actor must never be dereferenced after PxActor::release.
     struct RetiredActorToken {
@@ -276,6 +284,9 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     }
 
     void cleanup() noexcept {
+        for(auto& owner:distance_joints)
+            if(owner.joint)owner.joint->release();
+        distance_joints.clear();
         for (physx::PxRigidActor* actor : actors)
             if (actor) actor->release();
         actors.clear();
@@ -324,6 +335,41 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         return add(physx::PxCreateDynamic(
             *runtime->physics, physx::PxTransform(to_physx(position)),
             physx::PxBoxGeometry(to_physx(half_extents)), *material, density));
+    }
+
+    ConstraintId add_center_distance_constraint(
+        BodyId a,BodyId b,float distance) override {
+        if(a==b || a>=actors.size() || b>=actors.size() ||
+           !actors[a] || !actors[b])
+            throw std::out_of_range("Invalid reference distance endpoints");
+        if(!actors[a]->is<physx::PxRigidDynamic>() &&
+           !actors[b]->is<physx::PxRigidDynamic>())
+            throw std::logic_error("Distance joint requires a dynamic actor");
+        if(distance_joints.size()>=std::numeric_limits<ConstraintId>::max())
+            throw std::overflow_error("Reference distance joint IDs exhausted");
+        distance_joints.reserve(distance_joints.size()+1);
+        auto* joint=physx::PxDistanceJointCreate(
+            *runtime->physics,actors[a],physx::PxTransform(physx::PxIdentity),
+            actors[b],physx::PxTransform(physx::PxIdentity));
+        if(!joint)
+            throw std::runtime_error("Cannot create source PxDistanceJoint");
+        joint->setMinDistance(distance);
+        joint->setMaxDistance(distance);
+        joint->setTolerance(0.0f);
+        joint->setDistanceJointFlag(
+            physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
+        joint->setDistanceJointFlag(
+            physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
+        const auto id=static_cast<ConstraintId>(distance_joints.size());
+        distance_joints.push_back({joint,a,b});
+        return id;
+    }
+
+    void remove_constraint(ConstraintId id) override {
+        if(id>=distance_joints.size() || !distance_joints[id].joint)
+            throw std::out_of_range("Unknown or retired reference constraint");
+        distance_joints[id].joint->release();
+        distance_joints[id].joint=nullptr;
     }
 
     void step(float seconds) override {
@@ -401,6 +447,14 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
         auto* const actor=actors[id];
+        // Constraint objects are retired before their incident rigid
+        // body. Do not leave a live PxDistanceJoint with a freed actor.
+        for(auto& owner:distance_joints) {
+            if(owner.joint && (owner.actor0==id || owner.actor1==id)) {
+                owner.joint->release();
+                owner.joint=nullptr;
+            }
+        }
         if(contact_notifications) {
             // Push before release: allocation failure leaves actor
             // ownership intact. The stale pointer is compared only,

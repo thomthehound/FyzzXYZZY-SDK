@@ -4043,6 +4043,74 @@ void verify_source_compliant_world_parity() {
             "Compliant material incorrectly disabled free-flight integration");
 }
 
+
+void verify_public_center_distance_constraint_lifecycle() {
+    using namespace fyzz;
+    struct Observation {
+        BodyState a{},b{};
+    };
+    const auto run=[](ExecutionMode mode) -> Observation {
+        World world(WorldOptions{mode});
+        const auto a=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,7,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0;
+        d.angular_damping=0;
+        world.set_body_dynamics(a,d);
+        world.set_body_dynamics(b,d);
+        bool bad=false;
+        try {world.add_center_distance_constraint(a,a,1.0f);}
+        catch(const std::invalid_argument&){bad=true;}
+        if(!bad)throw std::runtime_error(
+            "Public constraint allowed self-coupled rigid actors");
+        const auto id=world.add_center_distance_constraint(a,b,1.0f);
+        world.step(1.0f/120.0f);
+        const Observation first{world.body_state(a),world.body_state(b)};
+        if(!(first.a.position.x>0 && first.b.position.x<2) ||
+           !(first.a.velocity.x<0.001f && first.a.velocity.x>-0.001f) ||
+           !std::isfinite(first.b.velocity.x))
+            throw std::runtime_error(
+                "Public distance constraint did not execute source PGS");
+        world.remove_constraint(id);
+        bool stale=false;
+        try {world.remove_constraint(id);}
+        catch(const std::out_of_range&){stale=true;}
+        if(!stale)throw std::runtime_error(
+            "Retired public constraint accepted duplicate release");
+        world.set_body_position(b,{6,7,0});
+        world.step(1.0f/120.0f);
+        if(std::abs(world.body_state(b).position.x-6.0f)>1.0e-4f)
+            throw std::runtime_error(
+                "Retired constraint continued influencing Dy motion");
+
+        // Destruction of an incident body must also retire source
+        // ScConstraintSim/PxDistanceJoint ownership.
+        const auto second_id=world.add_center_distance_constraint(a,b,2.0f);
+        world.remove_body(b);
+        stale=false;
+        try {world.remove_constraint(second_id);}
+        catch(const std::out_of_range&){stale=true;}
+        if(!stale)throw std::runtime_error(
+            "Actor retirement leaked a public constraint");
+        return first;
+    };
+    const Observation native=run(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const Observation source=run(ExecutionMode::ReferencePhysXCpu);
+    for(const auto& [x,y]:{
+        std::pair{native.a.position.x,source.a.position.x},
+        std::pair{native.b.position.x,source.b.position.x},
+        std::pair{native.a.velocity.x,source.a.velocity.x},
+        std::pair{native.b.velocity.x,source.b.velocity.x}
+    }) if(std::abs(x-y)>1.0e-3f)
+        throw std::runtime_error(
+            "World center-distance PGS diverged from original PhysX");
+#endif
+}
+
 void verify_source_simulation_shape_flag_lifecycle() {
     using namespace fyzz;
     constexpr float dt=1.0f/120.0f;
@@ -10909,6 +10977,7 @@ int run_native_scene_smoke() {
     verify_source_spatial_velocity_mods();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
+    verify_public_center_distance_constraint_lifecycle();
     verify_source_simulation_shape_flag_lifecycle();
     verify_source_contact_notification_world();
     verify_removed_actor_touch_notifications();
