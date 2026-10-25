@@ -4026,47 +4026,57 @@ void Scene::deactivate_ready_islands() noexcept {
     // after wakeIslands has published the active-index changes. A long-
     // sleeping scene must not revisit every dormant historical handle
     // on each solver frame, nor reverse the source deactivation order.
-    // PxsIslandSim::processLostEdges clears mIslandAwake on the current
-    // active-island set, then marks every island touched by an ACTIVE
-    // kinematic before considering rigid-node readiness. Kinematics have
-    // invalid island IDs but real graph edge instances. Mark only their
-    // connected rigid owners, using the graph's existing reusable visited
-    // slots rather than scanning every dormant actor or copying an island.
-    auto& graph=accurate_islands_;
-    if(++graph.active_island_visit_stamp==0) {
-        std::fill(graph.active_island_seen.begin(),
-                  graph.active_island_seen.end(),0);
-        graph.active_island_visit_stamp=1;
-    }
-    const auto kinematic_awake_stamp=graph.active_island_visit_stamp;
-    for(BodyId kinematic:graph.active_kinematic_nodes) {
-        const Actor& body=actors_[kinematic];
-        if(!body.alive || body.kind!=Kind::KinematicBox ||
-           body.ready_for_sleep)continue;
-        for(std::size_t index=accurate_node_first_[kinematic];
-            index!=invalid_instance;) {
-            const EdgeIndex edge_id=static_cast<EdgeIndex>(index/2);
-            const auto& edge=island_edges_[edge_id];
-            const auto& instance=edge.accurate[index&1u];
-            index=instance.next;
-            if(!edge.live || edge.retiring || !edge.connected ||
-               !(edge.accurate_state&1u))continue;
-            const BodyId other=edge.pair.a==kinematic
-                ? edge.pair.b:edge.pair.a;
-            if(other>=graph.node_island.size() ||
-               actors_[other].kind!=Kind::DynamicBox)continue;
-            const auto owner=graph.node_island[other];
-            if(owner!=IslandGraph::invalid)
-                graph.active_island_seen[owner]=kinematic_awake_stamp;
+    // Each IslandSim first excludes islands touched by its own ACTIVE
+    // kinematics from sleep admission. Share the source walk, not the
+    // output or island owners: speculative SAP links and accurate touch
+    // links have independent adjacency and mActiveIslands permutations.
+    const auto mark_kinematic_awake=[&](IslandGraph& graph,bool accurate) {
+        if(++graph.active_island_visit_stamp==0) {
+            std::fill(graph.active_island_seen.begin(),
+                      graph.active_island_seen.end(),0);
+            graph.active_island_visit_stamp=1;
         }
-    }
+        const auto stamp=graph.active_island_visit_stamp;
+        const auto& first=accurate?accurate_node_first_:
+                                   speculative_node_first_;
+        for(BodyId kinematic:graph.active_kinematic_nodes) {
+            const Actor& body=actors_[kinematic];
+            if(!body.alive || body.kind!=Kind::KinematicBox ||
+               body.ready_for_sleep)continue;
+            for(std::size_t index=first[kinematic];
+                index!=invalid_instance;) {
+                const auto& edge=island_edges_[index/2];
+                const auto& instance=(accurate?edge.accurate:
+                                              edge.speculative)[index&1u];
+                index=instance.next;
+                if(!edge.live || edge.retiring ||
+                   (accurate && !edge.connected) ||
+                   !((accurate?edge.accurate_state:
+                               edge.speculative_state)&1u))
+                    continue;
+                const BodyId other=edge.pair.a==kinematic
+                    ? edge.pair.b:edge.pair.a;
+                if(other>=graph.node_island.size() ||
+                   actors_[other].kind!=Kind::DynamicBox)continue;
+                const auto owner=graph.node_island[other];
+                if(owner!=IslandGraph::invalid)
+                    graph.active_island_seen[owner]=stamp;
+            }
+        }
+        return stamp;
+    };
+    const auto accurate_kinematic_awake_stamp=
+        mark_kinematic_awake(accurate_islands_,true);
+    const auto speculative_kinematic_awake_stamp=
+        mark_kinematic_awake(speculative_islands_,false);
     for(std::size_t index=accurate_islands_.active_islands.size();
         index>0;--index) {
         const auto handle=accurate_islands_.active_islands[index-1];
         if(handle>=accurate_islands_.islands.size())continue;
         const auto& island=accurate_islands_.islands[handle];
         if(!island.live ||
-           graph.active_island_seen[handle]==kinematic_awake_stamp)
+           accurate_islands_.active_island_seen[handle]==
+               accurate_kinematic_awake_stamp)
             continue;
         bool ready=true;
         bool has_active_node=false;
@@ -4120,8 +4130,10 @@ void Scene::deactivate_ready_islands() noexcept {
             }
         }
     }
-    if(accurate_islands_.nodes_to_deactivate.empty() &&
-       speculative_split_sleep_candidates_.empty())return;
+    // A target that just settled may release a speculative SAP-only
+    // island even when accurate IslandSim had already slept its rigid
+    // members on an earlier frame. Its still-live source EdgeInstance
+    // must be reconsidered without waiting for another rigid sleep event.
     // Speculative IslandSim can join accurate islands via SAP-only
     // contacts. It must NOT emit sleep edges while any member of its
     // larger speculative island remains active. Process only candidate
@@ -4155,6 +4167,24 @@ void Scene::deactivate_ready_islands() noexcept {
         collect_candidate(candidate);
     for(BodyId candidate:speculative_split_sleep_candidates_)
         collect_candidate(candidate);
+    for(BodyId kinematic:speculative_islands_.active_kinematic_nodes) {
+        const Actor& body=actors_[kinematic];
+        if(!body.kinematic_settling || !body.ready_for_sleep)continue;
+        for(std::size_t index=speculative_node_first_[kinematic];
+            index!=invalid_instance;) {
+            const auto& edge=island_edges_[index/2];
+            const auto& instance=edge.speculative[index&1u];
+            index=instance.next;
+            if(!edge.live || edge.retiring ||
+               !(edge.speculative_state&1u))continue;
+            const BodyId other=edge.pair.a==kinematic
+                ? edge.pair.b:edge.pair.a;
+            if(other<actors_.size() &&
+               actors_[other].kind==Kind::DynamicBox)
+                collect_candidate(other);
+        }
+    }
+    if(speculative_sleep_order_.empty())return;
     std::sort(speculative_sleep_order_.begin(),
               speculative_sleep_order_.end(),
         [&](const SpeculativeSleepCandidate& a,
@@ -4180,6 +4210,9 @@ void Scene::deactivate_ready_islands() noexcept {
             return ai>bi;
         });
     for(const auto candidate:speculative_sleep_order_) {
+        if(speculative_islands_.active_island_seen[candidate.handle]==
+           speculative_kinematic_awake_stamp)
+            continue;
         const auto& island=speculative_islands_.islands[candidate.handle];
         const BodyId root=island.root;
         bool all_sleeping=true;

@@ -510,6 +510,59 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Settled kinematic retained an unwarranted island wake veto");
     }
+    static void verify_kinematic_speculative_sleep_veto() {
+        // Two slender rotated boxes have overlapping SAP bounds, but
+        // no Gu contact. A moving kinematic must keep that speculative
+        // interaction alive even when its independent accurate dynamic
+        // island can sleep. Settling releases the speculative edge once.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
+        const auto k=scene.add_dynamic_box(
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(BodyId id:{a,k}) {
+            scene.set_velocity(id,{0,9.81f,0});
+            scene.set_angular_velocity(id,{0,0.83f,0});
+        }
+        scene.step(1.0f);
+        scene.set_angular_velocity(a,{});
+        scene.set_velocity(a,{});
+        scene.set_angular_velocity(k,{});
+        scene.set_velocity(k,{});
+        scene.set_kinematic(k,true);
+        scene.set_position(a,{0,0.1f,0});
+        scene.set_position(k,{0.6f,0.1f,0.6f});
+        scene.advance_collision(true);
+        const auto edge=scene.contact_edge_index({a,k});
+        if(edge==Scene::invalid_edge || scene.contacts().size()!=0 ||
+           scene.speculative_island_count()!=1 ||
+           scene.accurate_island_count()!=1 ||
+           scene.speculative_islands_.active_kinematic_nodes.size()!=1)
+            throw std::runtime_error(
+                "Source kinematic speculative fixture lacks SAP-only edge");
+        const auto old=scene.body_state(k);
+        scene.set_kinematic_target(k,{0.61f,0.1f,0.6f},old.orientation);
+        scene.actors_[a].ready_for_sleep=true;
+        scene.deactivate_ready_islands();
+        if(!scene.body_is_sleeping(a) ||
+           !(scene.island_edges_[edge].speculative_state&1u) ||
+           !scene.speculative_islands_.deactivating_edges.empty())
+            throw std::runtime_error(
+                "Speculative active kinematic failed to protect SAP edge");
+        scene.actors_[k].kinematic_target_pending=false;
+        scene.actors_[k].kinematic_settling=true;
+        scene.actors_[k].ready_for_sleep=true;
+        scene.deactivate_ready_islands();
+        if(scene.island_edges_[edge].speculative_state&1u ||
+           scene.speculative_islands_.deactivating_edges.size()!=1 ||
+           scene.speculative_islands_.deactivating_edges[0]!=edge)
+            throw std::runtime_error(
+                "Settled kinematic did not release speculative-only edge");
+        scene.deactivate_ready_islands();
+        if(!scene.speculative_islands_.deactivating_edges.empty())
+            throw std::runtime_error(
+                "Speculative kinematic retirement replayed in quiet third pass");
+    }
     static void verify_graph_owned_kinematic_active_references() {
         Scene scene{};
         const auto a=scene.add_dynamic_box(
@@ -11366,6 +11419,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
+    fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
