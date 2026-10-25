@@ -345,7 +345,7 @@ struct ContactCorrelationSourceFixture {
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
            std::abs(scene.contact_edges_[edge].
-                    pcm_plane_box.relative_position.x-0.004f)>1.0e-6f ||
+                    pcm_cache.relative_position.x-0.004f)>1.0e-6f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.004f))>1.0e-6f)
             throw std::runtime_error(
@@ -399,7 +399,7 @@ struct ContactCorrelationSourceFixture {
         if(scene.contacts().empty() ||
            scene.contacts()[0].count>4 ||
            std::abs(scene.contact_edges_[edge].
-                    pcm_plane_box.relative_rotation.z)<0.01f)
+                    pcm_cache.relative_rotation.z)<0.01f)
             throw std::runtime_error(
                 "PCM plane-box rotation did not rebuild four-point manifold");
         for(const auto& point:scene.contacts()[0].points)
@@ -429,7 +429,7 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            !scene.contact_edges_[scene.contacts()[0].edge_handle].
-                pcm_plane_box.initialized ||
+                pcm_cache.initialized ||
            std::abs(scene.contacts()[0].points[0].position.x)<1.0f)
             throw std::runtime_error(
                 "Reused contact-manager handle retained the old PCM manifold");
@@ -448,7 +448,7 @@ struct ContactCorrelationSourceFixture {
         if(deep.contacts().size()!=1 ||
            deep.contacts()[0].count!=4 ||
            deep.contact_edges_[deep.contacts()[0].edge_handle].
-               pcm_plane_box.count!=4)
+               pcm_cache.count!=4)
             throw std::runtime_error(
                 "PCM plane-box failed source eight-corner four-witness reduction");
         for(const auto& point:deep.contacts()[0].points)
