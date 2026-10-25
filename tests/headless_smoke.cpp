@@ -797,9 +797,21 @@ int main() {
                 const float dz=a.position.z-b.position.z;
                 if(ndot<0.999f ||
                    std::abs(a.separation-b.separation)>2e-4f ||
-                   dx*dx+dy*dy+dz*dz>1.0e-4f)
+                   dx*dx+dy*dy+dz*dz>1.0e-4f) {
+                    std::cerr<<"PCM edge/edge mismatch reversed="<<reversed
+                             <<" native_pos=("<<a.position.x<<","
+                             <<a.position.y<<","<<a.position.z<<")"
+                             <<" src_pos=("<<b.position.x<<","
+                             <<b.position.y<<","<<b.position.z<<")"
+                             <<" native_normal=("<<a.normal.x<<","
+                             <<a.normal.y<<","<<a.normal.z<<")"
+                             <<" src_normal=("<<b.normal.x<<","
+                             <<b.normal.y<<","<<b.normal.z<<")"
+                             <<" native_sep="<<a.separation
+                             <<" src_sep="<<b.separation<<'\n';
                     throw std::runtime_error(
                         "Native sub-margin edge/edge witness disagrees with stock PCM");
+                }
             }
 
             // Independent stock PhysX PCM box/box oracle. This
