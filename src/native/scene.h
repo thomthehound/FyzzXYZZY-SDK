@@ -1124,6 +1124,8 @@ private:
     // integrated and sleep-checked. This is a frame-local dependency
     // join, not a second scheduler, a task queue or a persistent owner.
     struct RigidStepJoin {
+        std::span<std::uint32_t> solver_completion_stamps{};
+        std::uint32_t completion_generation=0;
         std::size_t outstanding_solver_tasks=0;
         bool third_pass_joined=false;
         bool lost_contacts_joined=false;
@@ -1133,14 +1135,19 @@ private:
         bool results_published=false;
         void finish_third_pass();
         void finish_lost_contacts();
-        void dispatch_solver_tasks(std::size_t count);
-        void finish_solver_task();
+        void dispatch_solver_tasks(std::span<std::uint32_t> stamps,
+                                   std::uint32_t generation);
+        void finish_solver_task(std::size_t task_index);
         void require_post_solver() const;
         void finish_post_solver();
         void finish_after_integration();
         void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
+    // Frame-local PxsSolverEndTask completions are keyed by the actual
+    // task descriptor; stamps avoid allocating/clearing a new registry.
+    std::vector<std::uint32_t> solver_task_completion_stamps_;
+    std::uint32_t solver_task_completion_generation_=0;
     struct IndexedManifold {
         std::size_t index=invalid_instance;
         std::uint64_t generation=0;

@@ -6187,23 +6187,27 @@ void Scene::RigidStepJoin::finish_lost_contacts() {
             "Native ScPipeline completed lost contacts before third pass or twice");
     lost_contacts_joined=true;
 }
-void Scene::RigidStepJoin::dispatch_solver_tasks(std::size_t count) {
-    // Source producer branches are independent: the numerical Dy tasks
-    // may run concurrently with third-pass lost-contact cleanup. The
-    // dependency is on mPostSolver, never on starting Dy itself.
-    if(solver_dispatched)
+void Scene::RigidStepJoin::dispatch_solver_tasks(
+    std::span<std::uint32_t> stamps,std::uint32_t generation) {
+    // Source PxsSolverEndTask contributes one completion edge per
+    // real Dy task chain, not merely an anonymous task-count decrement.
+    // Generation stamps reuse the Scene's task storage across frames.
+    if(solver_dispatched || generation==0)
         throw std::logic_error(
-            "Native ScPipeline dispatched the same Dy task chains twice");
-    // DynamicsContext::updatePostKinematic schedules one
-    // PxsSolverEndTask per active-island solver task chain. An empty
-    // island graph legitimately schedules zero chains.
+            "Native ScPipeline dispatched duplicate/invalid Dy task chains");
     solver_dispatched=true;
-    outstanding_solver_tasks=count;
+    solver_completion_stamps=stamps;
+    completion_generation=generation;
+    outstanding_solver_tasks=stamps.size();
 }
-void Scene::RigidStepJoin::finish_solver_task() {
-    if(!solver_dispatched || !outstanding_solver_tasks)
+void Scene::RigidStepJoin::finish_solver_task(std::size_t task_index) {
+    if(!solver_dispatched ||
+       task_index>=solver_completion_stamps.size() ||
+       solver_completion_stamps[task_index]==completion_generation ||
+       !outstanding_solver_tasks)
         throw std::logic_error(
-            "Native Dy solver end task completed without a live continuation");
+            "Native Dy solver end task was invalid or already completed");
+    solver_completion_stamps[task_index]=completion_generation;
     --outstanding_solver_tasks;
 }
 void Scene::RigidStepJoin::require_post_solver() const {
@@ -6399,7 +6403,14 @@ void Scene::step(float seconds) {
     // Dispatch is over the ACTUAL Dy::updatePostKinematic task-group
     // descriptors, including groups without contact rows. No task
     // allocations or second island registry are introduced.
-    join.dispatch_solver_tasks(solver_tasks_.size());
+    solver_task_completion_stamps_.resize(solver_tasks_.size(),0);
+    if(++solver_task_completion_generation_==0) {
+        std::fill(solver_task_completion_stamps_.begin(),
+                  solver_task_completion_stamps_.end(),0);
+        solver_task_completion_generation_=1;
+    }
+    join.dispatch_solver_tasks(
+        solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     solve_constraints();
     write_back_contacts();
@@ -6433,7 +6444,8 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    for(const auto& task:solver_tasks_) {
+    for(std::size_t task_index=0;task_index<solver_tasks_.size();++task_index) {
+        const auto& task=solver_tasks_[task_index];
         // PxsSolverEndTask owns integration and Dy::sleepCheck for its
         // contiguous range of accurate active islands, not just PGS.
         // The task contributes to postSolver only after every rigid
@@ -6559,7 +6571,7 @@ void Scene::step(float seconds) {
             dirty_ = true;
         }
         }
-        join.finish_solver_task();
+        join.finish_solver_task(task_index);
     }
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying

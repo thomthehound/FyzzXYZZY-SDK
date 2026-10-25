@@ -1407,7 +1407,7 @@ struct ContactCorrelationSourceFixture {
             return false;
         };
         if(!rejected([&]{ join.require_post_solver(); }) ||
-           !rejected([&]{ join.finish_solver_task(); }) ||
+           !rejected([&]{ join.finish_solver_task(0); }) ||
            !rejected([&]{ join.finish_lost_contacts(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_after_integration(); }) ||
@@ -1416,9 +1416,13 @@ struct ContactCorrelationSourceFixture {
                 "ScPipeline postSolver accepted an uncompleted producer");
         // Original PhysX runs the two producer branches independently.
         // Dispatch and finish one Dy chain BEFORE the lost-touch branch.
-        join.dispatch_solver_tasks(2);
-        join.finish_solver_task();
-        if(!rejected([&]{ join.require_post_solver(); }))
+        std::array<std::uint32_t,2> completed{};
+        join.dispatch_solver_tasks(completed,1);
+        // Completing one island chain twice cannot substitute for
+        // the missing completion of another active island chain.
+        join.finish_solver_task(1);
+        if(!rejected([&]{ join.finish_solver_task(1); }) ||
+           !rejected([&]{ join.require_post_solver(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver retired an incomplete lost-touch branch");
         join.finish_third_pass();
@@ -1427,7 +1431,7 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ join.finish_third_pass(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver omitted the final Dy task completion");
-        join.finish_solver_task();
+        join.finish_solver_task(0);
         join.finish_post_solver();
         join.finish_after_integration();
         join.publish_results();
@@ -1435,16 +1439,21 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ join.publish_results(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_lost_contacts(); }) ||
-           !rejected([&]{ join.finish_solver_task(); }) ||
-           !rejected([&]{ join.dispatch_solver_tasks(1); }))
+           !rejected([&]{ join.finish_solver_task(0); }) ||
+           !rejected([&]{
+               std::array<std::uint32_t,1> duplicate{};
+               join.dispatch_solver_tasks(duplicate,2);
+           }))
             throw std::runtime_error(
                 "ScPipeline postSolver accepted duplicate task completion");
         // Source permits zero active solver task chains in an empty
         // scene, but still requires lost-contact completion and Dy
         // task dispatch before publishing a finished frame.
         Scene::RigidStepJoin empty;
-        empty.dispatch_solver_tasks(0);
-        if(!rejected([&]{ empty.finish_lost_contacts(); }) ||
+        std::array<std::uint32_t,0> no_tasks{};
+        empty.dispatch_solver_tasks(no_tasks,1);
+        if(!rejected([&]{ empty.finish_solver_task(0); }) ||
+           !rejected([&]{ empty.finish_lost_contacts(); }) ||
            !rejected([&]{ empty.finish_post_solver(); }))
             throw std::runtime_error(
                 "Empty source task stream bypassed third-pass completion");
