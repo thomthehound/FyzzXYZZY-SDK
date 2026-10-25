@@ -204,6 +204,7 @@ BodyId Scene::add(Actor actor) {
     }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
+    broadphase_endpoint_membership_dirty_=true;
     if(dynamic_node)++live_dynamic_count_;
     dirty_ = true;
     // Static nodes belong to the shared world endpoint, not an island.
@@ -577,6 +578,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
                 edge.pcm_cache={};
         }
     actor.simulation_shape_enabled=enabled;
+    broadphase_endpoint_membership_dirty_=true;
     dirty_=true;
 }
 
@@ -708,6 +710,7 @@ void Scene::remove(BodyId id) {
     // Only explicitly retired shapes leave the live volume registry.
     // Stable BodyIds remain in actors_ for existing external handles.
     std::erase(live_actor_ids_,id);
+    broadphase_endpoint_membership_dirty_=true;
     if(dynamic_node)--live_dynamic_count_;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
@@ -757,22 +760,70 @@ void Scene::update_actor_bounds(Actor& actor) {
         actor.cached_bounds_current=true;
 }
 void Scene::update_bounds() {
-    // Previous ScPipeline::afterIntegration already refreshed each
-    // integrated rigid body's bounds. Authored shape edits invalidate
-    // only their own cache entry, and first-time actors are uncached.
-    endpoints_.clear();
-    for(BodyId id:live_actor_ids_) {
-        Actor& actor=actors_[id];
-        if(!actor.simulation_shape_enabled ||
-           actor.kind==Kind::StaticPlane)continue;
-        if(!actor.cached_bounds_current)update_actor_bounds(actor);
-        endpoints_.push_back({actor.encoded_bounds[0],id});
+    // BpAABBManager/ScPipeline preserve volume membership independently
+    // of the fixed BodyId arena. Rebuild the x-min projection only when
+    // admission, retirement or shape refiltering changes membership.
+    // Otherwise reuse the prior source SAP endpoint order and update
+    // only its cached AABB keys.
+    const auto less=[](Endpoint a,Endpoint b) {
+        return a.min_x<b.min_x ||
+            (a.min_x==b.min_x && a.id<b.id);
+    };
+    try {
+        if(broadphase_endpoint_membership_dirty_) {
+            endpoints_.clear();
+            endpoints_.reserve(live_actor_ids_.size());
+            for(BodyId id:live_actor_ids_) {
+                Actor& actor=actors_[id];
+                if(!actor.simulation_shape_enabled ||
+                   actor.kind==Kind::StaticPlane)continue;
+                if(!actor.cached_bounds_current)
+                    update_actor_bounds(actor);
+                endpoints_.push_back({actor.encoded_bounds[0],id});
+            }
+            std::sort(endpoints_.begin(),endpoints_.end(),less);
+            ++broadphase_endpoint_full_sort_count_;
+            broadphase_endpoint_membership_dirty_=false;
+            return;
+        }
+        for(Endpoint& ep:endpoints_) {
+            Actor& actor=actors_[ep.id];
+            if(!actor.cached_bounds_current)
+                update_actor_bounds(actor);
+            ep.min_x=actor.encoded_bounds[0];
+        }
+        // BpBroadPhaseSap performs insertion-like endpoint shifts
+        // when shapes move locally. The exact encoded-key/BodyId
+        // ordering is unchanged. Bound the total shift work to avoid
+        // quadratic behavior on teleports or broadly shuffled scenes:
+        // that case uses std::sort on this same scene-owned array.
+        const std::size_t budget=std::max<std::size_t>(
+            16,endpoints_.size()/4);
+        std::size_t shifts=0;
+        for(std::size_t i=1;i<endpoints_.size();++i) {
+            Endpoint moving=endpoints_[i];
+            std::size_t j=i;
+            while(j>0 && less(moving,endpoints_[j-1])) {
+                endpoints_[j]=endpoints_[j-1];
+                --j;
+                ++shifts;
+                if(shifts>budget)break;
+            }
+            endpoints_[j]=moving;
+            if(shifts>budget) {
+                std::sort(endpoints_.begin(),endpoints_.end(),less);
+                ++broadphase_endpoint_full_sort_count_;
+                break;
+            }
+        }
+        broadphase_endpoint_local_shift_count_+=shifts;
+    } catch (...) {
+        // AABB encode or vector growth may throw. The published
+        // collision/pair arenas are restored by StepCheckpoint; this
+        // private projection must rebuild from the rolled-back bodies.
+        broadphase_endpoint_membership_dirty_=true;
+        throw;
     }
-    std::sort(endpoints_.begin(),endpoints_.end(),
-        [](Endpoint a,Endpoint b) {
-            return a.min_x<b.min_x ||
-                (a.min_x==b.min_x && a.id<b.id);
-        });
 }
 void Scene::after_integration_cached_bounds() {
     // ScPipeline::afterIntegration::updateScBodyAndShapeSim refreshes
@@ -6200,6 +6251,11 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.solved_result_frame_=solved_result_frame;
     scene.active_contact_interaction_count_=initial_active_interactions;
     scene.island_topology_dirty_=topology_dirty;
+    // The sorted x-endpoint array is derived from authoritative actor
+    // geometry. A rejected Gu/Dy transaction may have edited its keys,
+    // so rebuild it on the next dirty publication instead of copying
+    // an O(live volumes) endpoint array in every rollback checkpoint.
+    scene.broadphase_endpoint_membership_dirty_=true;
     scene.dirty_=dirty;
     scene.authored_activation_pending_=authored_activation_pending;
  }
