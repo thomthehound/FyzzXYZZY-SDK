@@ -182,8 +182,9 @@ public:
                 "PCM contact mode must be selected before scene admission");
         pcm_plane_box_enabled_=enabled;
     }
-    // Direct SAT/face-manifold PCM box-box admission, independently
-    // selected while the source GJK/EPA fallback is still outstanding.
+    // Source box-box PCM includes SAT/incident-face generation and
+    // GJK/EPA continuation when SAT yields no face witnesses. Explicit
+    // disablement selects the retained diagnostic Gu path.
     void set_pcm_box_box(bool enabled) {
         if(!actors_.empty())
             throw std::logic_error(

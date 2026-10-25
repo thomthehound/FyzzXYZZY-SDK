@@ -57,9 +57,10 @@ Native `WorldOptions::pcm_plane_box=false` and
 `pcm_box_box=false` are explicit diagnostic selections rather than
 production fallbacks. PCM admission is limited to these primitive pairs:
 other shape classes, CCD and contact modification are not implied by
-this translation. Issue #114 remains the source-conformance acceptance
-ledger until the required cross-platform multiframe comparisons are
-complete.
+this translation. A default-constructed native `Scene`, like native
+`WorldOptions`, selects PCM for both admitted primitive pairs. Issue #114's
+source-conformance gates cover the bounded contact-generator and
+manager-cache implementation, not the complete N1 rigid solver.
 These paths identify the **initial source intake surface**. They do **not**
 authorize compiling all of PhysX into the native SDK. Extract/translate
 needed code together with its genuine input, output, allocation and lifetime
@@ -195,12 +196,20 @@ Native regression coverage includes direct PCM face witnesses,
 GJK/EPA depth and normal conventions, an exact SAT-to-GJK speculative
 contact-distance boundary, cache refresh and authored invalidation,
 lost touch/reentry, manager retirement, and actual PGS completion.
+Default scene construction, manifold rollback after rejected Dy frames,
+retained friction-anchor admission, sleep/wake and manager reuse are
+exercised on the real native PCM path. The scene-owned PCM candidate
+arena is reused across regenerated box/box contacts.
+
 Reference-enabled tests compare native emitted contact points against
-independent stock PCM for plane/box and box/box. The source default
-is not satisfied by legacy-Gu mode. Multiframe coupled-dynamics
-trajectory parity, all supported edge/corner regimes, and the
-reference-enabled Linux/Windows acceptance suites remain independent
-requirements before Issue #114 can close.
+independent default PCM for plane/box and box/box. Their frame-by-frame
+coverage includes representative rotated face/edge/corner witnesses,
+shallow and speculative contact, multiframe sliding and integration,
+changing timestep, contact loss/reentry and reversed actor creation.
+Legacy-Gu oracles remain separately selected and cannot satisfy the
+PCM acceptance gate. This supported-primitive translation does not
+complete the broader N1 coupled PGS trajectory, general geometry,
+CCD, contact modification or asynchronous continuation obligations.
 
 ## N1 coupled frictional-rotation source parity gate
 
