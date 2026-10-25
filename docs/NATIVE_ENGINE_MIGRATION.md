@@ -213,7 +213,7 @@ Record per-frame submissions, GPU pipeline creations, descriptor writes, host st
 
 ## Gate N4 — reference retirement and broader engine integration
 
-Make native CPU the default; reference PhysX becomes an opt-in comparison/benchmark target available only to tests or explicit reference builds. Extract upstream source headers still required by the port into SDK-owned, licensed source trees. Remove the mutable PhysX `FetchContent main` dependency from production targets and source-bundle packaging. Run all CPU, GPU, Godot and offline tests. Continue GPU narrowphase, solver, articulations and deformable systems through the same native scene and task DAG.
+Retain native CPU as the default; keep the reference implementation opt-in for comparison and benchmarking in test or explicitly source-enabled builds. Extract upstream source headers still required by the port into SDK-owned, licensed source trees. Remove the mutable PhysX `FetchContent main` dependency from production targets and source-bundle packaging. Run all CPU, GPU, Godot and offline tests. Continue GPU narrowphase, solver, articulations and deformable systems through the same native scene and task DAG.
 
 **Pass:** non-test SDK builds and packages do not fetch, compile or link the reference PhysX repository. A native C++ application and Godot use the same FyzzXYZZY-managed scene and backend state.
 
