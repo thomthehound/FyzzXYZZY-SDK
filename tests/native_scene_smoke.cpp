@@ -582,7 +582,7 @@ struct ContactCorrelationSourceFixture {
             // GuEPA::Facet::isValid2 uses a fixed FEps() squared-area
             // threshold. The same contact configuration at 1/100
             // scale has no source EPA facet, despite finite geometry.
-            {
+            for(bool reversed:{false,true}) {
                 constexpr float scale=0.01f;
                 const Vec3 half{0.5f*scale,0.5f*scale,0.5f*scale};
                 const Vec3 position{0.892f*scale,1.091f*scale,0};
