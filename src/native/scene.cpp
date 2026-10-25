@@ -575,10 +575,8 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
         for(EdgeIndex edge_id:active_edge_handles_) {
             auto& edge=contact_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
-                if(pcm_plane_box_enabled_)
-                    edge.pcm_plane_box.initialized=false;
-                if(pcm_box_box_enabled_)
-                    edge.pcm_box_box.initialized=false;
+                if(pcm_plane_box_enabled_)edge.pcm_plane_box={};
+                if(pcm_box_box_enabled_)edge.pcm_box_box={};
             }
         }
     actor.contact_offset=contact_offset;
@@ -1359,7 +1357,7 @@ std::uint8_t Scene::generate_pcm_box_box(
             if(!source_pcm_box_box_gjk_epa(
                     first.half_extents,first.position,first.orientation,
                     second.half_extents,second.position,second.orientation,
-                    contact_distance,candidate))
+                    contact_distance,candidate,&cache.warmstart))
                 return 0;
             const PcmPersistentContact witness{
                 candidate.local_a,candidate.local_b,
