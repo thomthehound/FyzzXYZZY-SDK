@@ -35,6 +35,7 @@ void profile(const char* name,Motion motion,unsigned retired) {
     const auto sorts_before=scene.broadphase_endpoint_full_sort_count();
     const auto shifts_before=scene.broadphase_endpoint_local_shift_count();
     const auto pair_updates_before=scene.broadphase_incremental_pair_update_count();
+    const auto crossings_before=scene.broadphase_endpoint_crossing_count();
     std::size_t contact_transitions=0;
     constexpr unsigned trials=5,steps=64;
     std::vector<double> times;
@@ -67,11 +68,12 @@ void profile(const char* name,Motion motion,unsigned retired) {
     std::printf(
         "native_sap mode=%s boxes=%u retired=%u median_us_per_query=%.3f"
         " full_sorts=%zu local_shifts=%zu incremental_pair_updates=%zu"
-        " contact_transitions=%zu pairs=%zu\n",
+        " minmax_crossings=%zu contact_transitions=%zu pairs=%zu\n",
         name,boxes,retired,times[trials/2],
         scene.broadphase_endpoint_full_sort_count()-sorts_before,
         scene.broadphase_endpoint_local_shift_count()-shifts_before,
         scene.broadphase_incremental_pair_update_count()-pair_updates_before,
+        scene.broadphase_endpoint_crossing_count()-crossings_before,
         contact_transitions,scene.pairs().size());
 }
 } // namespace
