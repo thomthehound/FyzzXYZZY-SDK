@@ -25,6 +25,11 @@ Vec3 cross(Vec3 a,Vec3 b) {
     return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
 }
 float length2(Vec3 v) { return dot(v,v); }
+float box_min_margin(Vec3 half) {
+    // GuVecBox.h::CalculateBoxMargin, BOX_MIN_MARGIN_RATIO. This is
+    // not the larger BOX_MARGIN_RATIO used for PCM cache refresh.
+    return 0.05f*std::min({half.x,half.y,half.z});
+}
 Vec3 rotate(Quat q,Vec3 v) {
     const Vec3 u{q.x,q.y,q.z};
     const Vec3 t=mul(cross(u,v),2.0f);
@@ -273,10 +278,8 @@ bool epa(const BoxPair& pair,
         if(!f.valid)return false;
         facets[facet_count++]=f;
     }
-    const float margin=std::min(
-        0.15f*std::min({pair.ha.x,pair.ha.y,pair.ha.z}),
-        0.15f*std::min({pair.hb.x,pair.hb.y,pair.hb.z}));
-    const float epsilon=margin*0.1f;
+    const float epsilon=0.1f*std::min(
+        box_min_margin(pair.ha),box_min_margin(pair.hb));
     struct Edge {int from,to;};
     std::array<Edge,768> boundary{};
     for(int iteration=0;iteration<60;++iteration) {
@@ -368,10 +371,8 @@ bool source_pcm_box_box_gjk_epa(
             inverse_b.y*rotation0.y-inverse_b.z*rotation0.z
     };
     const BoxPair pair{half0,half1,relative,rotation0,rotation1,qa};
-    const float margin=std::min(
-        0.15f*std::min({half0.x,half0.y,half0.z}),
-        0.15f*std::min({half1.x,half1.y,half1.z}));
-    const float epsilon=margin*0.1f;
+    const float epsilon=0.1f*std::min(
+        box_min_margin(half0),box_min_margin(half1));
     constexpr float progress_factor=1.0f-0.000225f;
     std::array<Support,4> simplex{};
     int count=0;
