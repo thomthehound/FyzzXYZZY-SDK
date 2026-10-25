@@ -480,6 +480,7 @@ private:
     // simulation operations or a second friction-correlation path.
     friend struct ContactCorrelationSourceFixture;
     friend struct SolverIterationSourceFixture;
+    friend struct ConstraintIslandSourceFixture;
     enum class Kind : std::uint8_t {
         StaticBox, DynamicBox, StaticPlane, KinematicBox
     };
@@ -744,7 +745,11 @@ private:
     std::uint8_t generate_pcm_box_box(
         const Actor& first, const Actor& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
-    struct ContactEdge {
+    enum class IslandEdgeType : std::uint8_t {
+        ContactManager, Constraint
+    };
+    struct IslandEdge {
+        IslandEdgeType type=IslandEdgeType::ContactManager;
         Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
         bool live=false;            // allocated by addContactManager
         bool connected=false;       // source accurate mConnectedMap bit
@@ -770,7 +775,13 @@ private:
     // Source HandleManager-style reusable slots. Active handles align
     // with the one authoritative sorted SAP pair stream; the slots own
     // lifecycle and accurate touch state, not another collision graph.
-    std::vector<ContactEdge> contact_edges_;
+    std::vector<IslandEdge> island_edges_;
+    // Constraint edges consume the same IslandSim EdgeIndex allocator
+    // and intrusive endpoint heads as eCONTACT_MANAGER. Their persistent
+    // identity is independent of overlapping Gu shape pairs.
+    std::vector<EdgeIndex> active_constraint_handles_;
+    EdgeIndex add_constraint_edge(BodyId a, BodyId b);
+    void remove_constraint_edge(EdgeIndex id);
     // One aggregate count, derived only from transitions on the same
     // authoritative EdgeIndex contact-manager slots.
     std::size_t active_contact_interaction_count_=0;
@@ -800,6 +811,8 @@ private:
             // descriptor stream reads these slots, not Gu pair order.
             EdgeIndex first_contact=invalid_edge, last_contact=invalid_edge;
             std::size_t contact_count=0;
+            EdgeIndex first_constraint=invalid_edge, last_constraint=invalid_edge;
+            std::size_t constraint_count=0;
             // mActiveIndex, invalid outside the source mActiveIslands list.
             std::size_t active_index=invalid_instance;
         };
@@ -998,7 +1011,7 @@ private:
         // Sparse undo records for intrusive source EdgeInstances and
         // per-node list heads. Replayed in reverse order on failure;
         // unchanged or historically allocated slots incur no copies.
-        struct EdgeUndo { EdgeIndex id; ContactEdge previous; };
+        struct EdgeUndo { EdgeIndex id; IslandEdge previous; };
         struct HintUndo {
             BodyId node;
             BodyId next;
@@ -1125,7 +1138,7 @@ private:
     // Source overflow descriptor array, compacted in place each 32-bit
     // partition wave; previously assigned managers are never rescanned.
     std::vector<std::size_t> pending_dynamic_constraints_;
-    // DyDynamicsBase::iterateIslandsContactEdges source-indexed manager
+    // DyDynamicsBase::iterateIslandsIslandEdges source-indexed manager
     // sequence, expressed as indices into the authoritative Gu manifolds.
     // Both the constraint partitioner and its stable output consume it.
     std::vector<std::size_t> indexed_managers_;

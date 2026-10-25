@@ -358,7 +358,7 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     if(pcm_plane_box_enabled_ || pcm_box_box_enabled_) {
         bool invalidated=false;
         for(EdgeIndex edge_id:active_edge_handles_) {
-            auto& edge=contact_edges_[edge_id];
+            auto& edge=island_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
                 edge.pcm_cache={};
                 invalidated=true;
@@ -584,7 +584,7 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     if(id>=accurate_node_first_.size())return;
     for(std::size_t instance=accurate_node_first_[id];
         instance!=invalid_instance;) {
-        const auto& edge=contact_edges_[instance/2];
+        const auto& edge=island_edges_[instance/2];
         const auto& link=edge.accurate[instance&1u];
         instance=link.next;
         if(!edge.live || !edge.connected || edge.retiring)continue;
@@ -618,7 +618,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // motion and is not eligible for Dy solver-body integration.
     erase_shape_friction_history(id);
     for(EdgeIndex edge_id:active_edge_handles_) {
-        auto& edge=contact_edges_[edge_id];
+        auto& edge=island_edges_[edge_id];
         if(edge.pair.a==id || edge.pair.b==id)edge.pcm_cache={};
     }
     // A mode change refilters the existing shape interactions and wakes
@@ -685,7 +685,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     erase_shape_friction_history(id);
     if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
         for(EdgeIndex edge_id:active_edge_handles_) {
-            auto& edge=contact_edges_[edge_id];
+            auto& edge=island_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id)
                 edge.pcm_cache={};
         }
@@ -715,7 +715,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     // so walk current overlap handles, never historical retired slots.
     if(pcm_plane_box_enabled_ || pcm_box_box_enabled_)
         for(EdgeIndex edge_id:active_edge_handles_) {
-            auto& edge=contact_edges_[edge_id];
+            auto& edge=island_edges_[edge_id];
             if(edge.pair.a==id || edge.pair.b==id) {
                 edge.pcm_cache={};
             }
@@ -1015,19 +1015,19 @@ std::uint32_t Scene::contact_edge_index(Pair pair) const noexcept {
 }
 bool Scene::contact_edge_connected(Pair pair) const noexcept {
     const auto handle=contact_edge_index(pair);
-    return handle!=invalid_edge && contact_edges_[handle].connected;
+    return handle!=invalid_edge && island_edges_[handle].connected;
 }
 bool Scene::speculative_contact_edge_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
-    return id!=invalid_edge && (contact_edges_[id].speculative_state&1u);
+    return id!=invalid_edge && (island_edges_[id].speculative_state&1u);
 }
 bool Scene::accurate_contact_edge_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
-    return id!=invalid_edge && (contact_edges_[id].accurate_state&1u);
+    return id!=invalid_edge && (island_edges_[id].accurate_state&1u);
 }
 bool Scene::contact_interaction_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
-    return id!=invalid_edge && contact_edges_[id].interaction_active;
+    return id!=invalid_edge && island_edges_[id].interaction_active;
 }
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
     // SimpleIslandManager::addContactManager -> addEdge obtains the
@@ -1037,18 +1037,18 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         id=free_edge_handles_.back();
         step_checkpoint_.save_edge(*this,id);
         free_edge_handles_.pop_back();
-        contact_edges_[id]={pair,true,false,false};
+        island_edges_[id]={IslandEdgeType::ContactManager,pair,true,false,false};
     } else {
-        if(contact_edges_.size()>=invalid_edge)
+        if(island_edges_.size()>=invalid_edge)
             throw std::overflow_error("Native island edge handles exhausted");
-        id=static_cast<EdgeIndex>(contact_edges_.size());
+        id=static_cast<EdgeIndex>(island_edges_.size());
         // deactivateNodeInternal may publish a contact edge after the
         // geometry transaction commits. Reserve its bounded source
         // output before enlarging the authoritative handle arena.
         // As with the source's reusable event arrays, grow capacity
         // geometrically. Reserving the exact new watermark for every
         // edge would reallocate on every manager admission.
-        const std::size_t needed=contact_edges_.size()+1;
+        const std::size_t needed=island_edges_.size()+1;
         const auto reserve_events=[&](IslandGraph& graph) {
             auto& events=graph.deactivating_edges;
             if(events.capacity()>=needed)return;
@@ -1070,7 +1070,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         reserve_activation(accurate_islands_);
         step_checkpoint_.activity_undo.reserve(needed);
         activity_undo_generations_.resize(needed,0);
-        contact_edges_.push_back({pair,true,false,false});
+        island_edges_.push_back({IslandEdgeType::ContactManager,pair,true,false,false});
     }
     return id;
 }
@@ -1079,10 +1079,10 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
 // EdgeIndex. The speculative and accurate IslandSim graphs retain
 // separate lists, but share the authoritative contact-manager handle.
 void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
-    auto& edge=contact_edges_[id];
+    auto& edge=island_edges_[id];
     auto& heads=accurate?accurate_node_first_:speculative_node_first_;
     auto instance_at=[&](std::size_t index)->EdgeInstance& {
-        auto& owner=contact_edges_[index/2];
+        auto& owner=island_edges_[index/2];
         return (accurate?owner.accurate:owner.speculative)[index&1];
     };
     for(std::size_t side=0;side<2;++side) {
@@ -1112,71 +1112,79 @@ void Scene::link_contact_edge(EdgeIndex id, bool accurate) {
 // source island handles own only the ordered first/last indices.
 void Scene::append_accurate_island_edge(EdgeIndex id, std::uint32_t owner) {
     auto& island=accurate_islands_.islands[owner];
-    if(!island.live || !contact_edges_[id].connected ||
-       island.first_contact==id ||
-       contact_edges_[id].island_prev!=invalid_edge ||
-       contact_edges_[id].island_next!=invalid_edge)
+    const bool constraint=
+        island_edges_[id].type==IslandEdgeType::Constraint;
+    auto& first=constraint?island.first_constraint:island.first_contact;
+    auto& last=constraint?island.last_constraint:island.last_contact;
+    auto& count=constraint?island.constraint_count:island.contact_count;
+    if(!island.live || !island_edges_[id].connected ||
+       first==id ||
+       island_edges_[id].island_prev!=invalid_edge ||
+       island_edges_[id].island_next!=invalid_edge)
         throw std::logic_error("Invalid PhysX accurate island edge insertion");
     step_checkpoint_.save_graph_ownership(*this);
     step_checkpoint_.save_edge(*this,id);
-    if(island.last_contact!=invalid_edge) {
-        step_checkpoint_.save_edge(*this,island.last_contact);
-        contact_edges_[island.last_contact].island_next=id;
-    } else {
-        island.first_contact=id;
-    }
-    contact_edges_[id].island_prev=island.last_contact;
-    contact_edges_[id].island_next=invalid_edge;
-    island.last_contact=id;
-    ++island.contact_count;
+    if(last!=invalid_edge) {
+        step_checkpoint_.save_edge(*this,last);
+        island_edges_[last].island_next=id;
+    } else first=id;
+    island_edges_[id].island_prev=last;
+    island_edges_[id].island_next=invalid_edge;
+    last=id;
+    ++count;
 }
 // PxsIslandSim.cpp::removeEdgeFromIsland with
 // IG_STORE_ISLAND_EDGES_IN_ARRAYS=1 replaces the removed element with the
 // final array element. Rewire the final EdgeIndex into that slot in O(1).
 // Retaining stable order here would be *different* from PhysX.
 void Scene::remove_accurate_island_edge(EdgeIndex id) {
-    const Pair pair=contact_edges_[id].pair;
+    const Pair pair=island_edges_[id].pair;
     const BodyId node=actors_[pair.a].kind==Kind::DynamicBox
         ? pair.a:pair.b;
     const auto owner=accurate_islands_.node_island[node];
     if(owner==IslandGraph::invalid) return;
     auto& island=accurate_islands_.islands[owner];
-    if(island.first_contact==invalid_edge || !island.contact_count)
+    const bool constraint=
+        island_edges_[id].type==IslandEdgeType::Constraint;
+    auto& first=constraint?island.first_constraint:island.first_contact;
+    auto& last_ref=constraint?island.last_constraint:island.last_contact;
+    auto& count=constraint?island.constraint_count:island.contact_count;
+    if(first==invalid_edge || !count)
         throw std::logic_error("PhysX accurate island edge list underflow");
     step_checkpoint_.save_graph_ownership(*this);
-    const EdgeIndex last=island.last_contact;
-    const EdgeIndex before=contact_edges_[id].island_prev;
-    const EdgeIndex after=contact_edges_[id].island_next;
+    const EdgeIndex last=last_ref;
+    const EdgeIndex before=island_edges_[id].island_prev;
+    const EdgeIndex after=island_edges_[id].island_next;
     step_checkpoint_.save_edge(*this,id);
     if(last!=id) {
-        const EdgeIndex last_before=contact_edges_[last].island_prev;
+        const EdgeIndex last_before=island_edges_[last].island_prev;
         step_checkpoint_.save_edge(*this,last);
         if(last_before!=invalid_edge) {
             step_checkpoint_.save_edge(*this,last_before);
-            contact_edges_[last_before].island_next=invalid_edge;
+            island_edges_[last_before].island_next=invalid_edge;
         }
-        island.last_contact=last_before;
+        last_ref=last_before;
         const EdgeIndex successor=after==last?invalid_edge:after;
         if(before!=invalid_edge) {
             step_checkpoint_.save_edge(*this,before);
-            contact_edges_[before].island_next=last;
-        } else island.first_contact=last;
+            island_edges_[before].island_next=last;
+        } else first=last;
         if(successor!=invalid_edge) {
             step_checkpoint_.save_edge(*this,successor);
-            contact_edges_[successor].island_prev=last;
-        } else island.last_contact=last;
-        contact_edges_[last].island_prev=before;
-        contact_edges_[last].island_next=successor;
+            island_edges_[successor].island_prev=last;
+        } else last_ref=last;
+        island_edges_[last].island_prev=before;
+        island_edges_[last].island_next=successor;
     } else {
         if(before!=invalid_edge) {
             step_checkpoint_.save_edge(*this,before);
-            contact_edges_[before].island_next=invalid_edge;
-        } else island.first_contact=invalid_edge;
-        island.last_contact=before;
+            island_edges_[before].island_next=invalid_edge;
+        } else first=invalid_edge;
+        last_ref=before;
     }
-    contact_edges_[id].island_prev=invalid_edge;
-    contact_edges_[id].island_next=invalid_edge;
-    --island.contact_count;
+    island_edges_[id].island_prev=invalid_edge;
+    island_edges_[id].island_next=invalid_edge;
+    --count;
 }
 void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
     // A removed speculative bridge can isolate an already sleeping node
@@ -1185,7 +1193,7 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
     // directly from this source edge before it is disconnected.
     // Third-pass deactivation validates the rebuilt island; no island
     // inventory reconstruction or unrelated island scan is needed.
-    const auto& retiring=contact_edges_[id];
+    const auto& retiring=island_edges_[id];
     if(!accurate && (retiring.speculative_state&1u)) {
         for(BodyId candidate:{retiring.pair.a,retiring.pair.b}) {
             const BodyId other=(candidate==retiring.pair.a)
@@ -1202,20 +1210,20 @@ void Scene::unlink_contact_edge(EdgeIndex id, bool accurate) {
     // fabricating an IslandSim sleep-deactivation event. Source Sc's
     // overlap removal destroys the interaction rather than publishing
     // an IslandSim sleep event. Retire that flag on the same EdgeIndex.
-    if(!accurate && contact_edges_[id].interaction_active) {
+    if(!accurate && island_edges_[id].interaction_active) {
         step_checkpoint_.save_activity(*this,id);
-        contact_edges_[id].interaction_active=false;
+        island_edges_[id].interaction_active=false;
         --active_contact_interaction_count_;
     }
     deactivate_contact_edge(id,accurate,false);
     // Contact manager retirement and touch loss both remove the same
     // accurate source edge before disconnecting its intrusive endpoints.
-    if(accurate && contact_edges_[id].connected)
+    if(accurate && island_edges_[id].connected)
         remove_accurate_island_edge(id);
-    auto& edge=contact_edges_[id];
+    auto& edge=island_edges_[id];
     auto& heads=accurate?accurate_node_first_:speculative_node_first_;
     auto instance_at=[&](std::size_t index)->EdgeInstance& {
-        auto& owner=contact_edges_[index/2];
+        auto& owner=island_edges_[index/2];
         return (accurate?owner.accurate:owner.speculative)[index&1];
     };
     for(std::size_t side=0;side<2;++side) {
@@ -1277,11 +1285,57 @@ void Scene::retire_destroyed_contact_edges() {
         free_edge_handles_.size()+retired_edge_handles_.size());
     for(EdgeIndex id:retired_edge_handles_) {
         step_checkpoint_.save_edge(*this,id);
-        auto& edge=contact_edges_[id];
+        auto& edge=island_edges_[id];
         edge={};
         free_edge_handles_.push_back(id);
     }
     retired_edge_handles_.clear();
+}
+Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
+    require(a);
+    require(b);
+    if(a==b || (!rigid_node(actors_[a].kind) &&
+                !rigid_node(actors_[b].kind)))
+        throw std::invalid_argument(
+            "Constraint requires two distinct actors and a rigid node");
+    // EdgeIndex comes from the SAME HandleManager pool as Gu managers;
+    // both IslandSim graphs use the same paired endpoint slots.
+    const Pair pair=ordered_pair(a,b);
+    for(EdgeIndex id:active_constraint_handles_)
+        if(island_edges_[id].live && island_edges_[id].pair==pair)
+            throw std::logic_error("Constraint edge already exists");
+    active_constraint_handles_.reserve(active_constraint_handles_.size()+1);
+    speculative_node_first_.resize(actors_.size(),invalid_instance);
+    accurate_node_first_.resize(actors_.size(),invalid_instance);
+    const EdgeIndex id=allocate_contact_edge(pair);
+    auto& edge=island_edges_[id];
+    edge.type=IslandEdgeType::Constraint;
+    edge.connected=true;
+    link_contact_edge(id,false);
+    link_contact_edge(id,true);
+    active_constraint_handles_.push_back(id);
+    island_topology_dirty_=true;
+    dirty_=true;
+    return id;
+}
+void Scene::remove_constraint_edge(EdgeIndex id) {
+    if(id>=island_edges_.size() ||
+       island_edges_[id].type!=IslandEdgeType::Constraint ||
+       !island_edges_[id].live || island_edges_[id].retiring)
+        throw std::out_of_range("Unknown or retired constraint edge");
+    auto it=std::find(active_constraint_handles_.begin(),
+                      active_constraint_handles_.end(),id);
+    if(it==active_constraint_handles_.end())
+        throw std::logic_error("Constraint handle missing from source pool");
+    retired_edge_handles_.reserve(retired_edge_handles_.size()+1);
+    unlink_contact_edge(id,true);
+    unlink_contact_edge(id,false);
+    island_edges_[id].retiring=true;
+    island_edges_[id].connected=false;
+    active_constraint_handles_.erase(it);
+    retired_edge_handles_.push_back(id);
+    island_topology_dirty_=true;
+    dirty_=true;
 }
 void Scene::publish_pairs() {
     // Source SAP's sorted prior/new overlap streams drive one linear
@@ -1306,8 +1360,8 @@ void Scene::publish_pairs() {
             unlink_contact_edge(id,true);
             unlink_contact_edge(id,false);
             step_checkpoint_.save_edge(*this,id);
-            contact_edges_[id].retiring=true;
-            contact_edges_[id].connected=false;
+            island_edges_[id].retiring=true;
+            island_edges_[id].connected=false;
             retired_edge_handles_.push_back(id);
             next_lost_.push_back(previous_pairs_[old_index++]);
         } else if(old_index==previous_pairs_.size() ||
@@ -1325,7 +1379,7 @@ void Scene::publish_pairs() {
                 rigid_node(actors_[pair.a].kind);
             const bool b_dynamic=
                 rigid_node(actors_[pair.b].kind);
-            contact_edges_[id].gu_order_reversed =
+            island_edges_[id].gu_order_reversed =
                 (a_dynamic && b_dynamic) || (!a_dynamic && b_dynamic);
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
@@ -1990,7 +2044,7 @@ void Scene::update_contacts() {
     // publication; no second O(all Gu manifolds) pass during PGS.
     // Generation stamps invalidate untouched/retired EdgeIndex slots
     // without clearing the historical handle watermark each frame.
-    next_manifold_by_edge_.resize(contact_edges_.size());
+    next_manifold_by_edge_.resize(island_edges_.size());
     if(++indexed_manifold_generation_==0) {
         for(auto& item:next_manifold_by_edge_)item.generation=0;
         for(auto& item:manifold_by_edge_)item.generation=0;
@@ -2026,7 +2080,7 @@ void Scene::update_contacts() {
         const bool plane_pair=a.kind==Kind::StaticPlane ||
                               b.kind==Kind::StaticPlane;
         const bool reversed=!plane_pair &&
-            contact_edges_[edge].gu_order_reversed;
+            island_edges_[edge].gu_order_reversed;
         const Actor& first=plane_pair
             ? (a.kind==Kind::StaticPlane?a:b)
             : (reversed?b:a);
@@ -2063,7 +2117,7 @@ void Scene::update_contacts() {
                 throw std::logic_error(
                     "PCM plane-box requires the admitted dynamic box");
             manifold.count=generate_pcm_plane_box(
-                plane,box,contact_distance,contact_edges_[edge].pcm_cache,
+                plane,box,contact_distance,island_edges_[edge].pcm_cache,
                 std::span<ContactPoint>(box_contact_scratch_));
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
@@ -2073,7 +2127,7 @@ void Scene::update_contacts() {
             step_checkpoint_.save_edge(*this,edge);
             manifold.count=generate_pcm_box_box(
                 first,second,contact_distance,
-                contact_edges_[edge].pcm_cache,
+                island_edges_[edge].pcm_cache,
                 std::span<ContactPoint>(box_contact_scratch_));
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
@@ -2309,7 +2363,7 @@ void Scene::update_contacts() {
         if(id!=invalid_edge) {
             link_contact_edge(id,true);
             step_checkpoint_.save_edge(*this,id);
-            contact_edges_[id].connected=true;
+            island_edges_[id].connected=true;
         }
     }
     for(Pair pair:next_lost_contacts_) {
@@ -2317,7 +2371,7 @@ void Scene::update_contacts() {
         if(id!=invalid_edge) {
             unlink_contact_edge(id,true);
             step_checkpoint_.save_edge(*this,id);
-            contact_edges_[id].connected=false;
+            island_edges_[id].connected=false;
         }
     }
     manifolds_.swap(next_manifolds_);
@@ -2401,8 +2455,8 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     // both endpoints and this graph's intrusive instances must still
     // match. One edge-slot check per hop replaces linear neighbor scans.
     const auto live_hop=[&](BodyId from,BodyId to,EdgeIndex id) {
-        if(id==invalid_edge || id>=contact_edges_.size())return false;
-        const auto& edge=contact_edges_[id];
+        if(id==invalid_edge || id>=island_edges_.size())return false;
+        const auto& edge=island_edges_[id];
         if(!edge.live || edge.retiring ||
            (accurate && !edge.connected))return false;
         const bool forward=edge.pair.a==from && edge.pair.b==to;
@@ -2489,7 +2543,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         while(!island_route_queue_.empty() && !found) {
             const BodyId from=source_hop_pop(island_route_queue_,higher);
             for(std::size_t i=first[from];i!=invalid_instance;) {
-                const ContactEdge& edge=contact_edges_[i/2];
+                const IslandEdge& edge=island_edges_[i/2];
                 const auto& link=(accurate?edge.accurate:
                                   edge.speculative)[i&1];
                 const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
@@ -2608,7 +2662,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
                     i!=invalid_instance;) {
                     const EdgeIndex edge_index=
                         static_cast<EdgeIndex>(i/2);
-                    const auto& edge=contact_edges_[edge_index];
+                    const auto& edge=island_edges_[edge_index];
                     const auto& link=edge.accurate[i&1];
                     i=link.next;
                     if(!edge.connected ||
@@ -2802,7 +2856,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
     // retirement, but cannot alter the identity chosen by an earlier
     // size-accumulating merge. It runs only on topology-dirty first pass
     // or on a proven third-pass split, never on quiet frames.
-    const auto merge=[&](Graph& graph,Pair pair) {
+    const auto merge=[&](Graph& graph,Pair pair,EdgeIndex connecting_edge) {
         if(!dynamic_edge(pair))return false;
         const bool accurate=&graph==&accurate_islands_;
         auto& hops=accurate?accurate_hops_:speculative_hops_;
@@ -2812,7 +2866,6 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         const auto epoch=accurate?accurate_hint_epoch_:speculative_hint_epoch_;
         const auto a=graph.node_island[pair.a];
         const auto b=graph.node_island[pair.b];
-        const EdgeIndex connecting_edge=contact_edge_index(pair);
         if(connecting_edge==invalid_edge)
             throw std::logic_error("Source island merge lacks contact edge");
         if(a==b) {
@@ -2871,20 +2924,29 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         winner.tail=loser.tail;
         winner.count+=loser.count;
         winner.static_touches+=loser.static_touches;
-        if(&graph==&accurate_islands_ &&
-           loser.first_contact!=invalid_edge) {
-            // PxsIslandSim.cpp::mergeEdges appends the losing island's
-            // ordered contact-manager array to the retained island.
-            if(winner.last_contact!=invalid_edge) {
-                step_checkpoint_.save_edge(*this,winner.last_contact);
-                step_checkpoint_.save_edge(*this,loser.first_contact);
-                contact_edges_[winner.last_contact].island_next=
-                    loser.first_contact;
-                contact_edges_[loser.first_contact].island_prev=
-                    winner.last_contact;
-            } else winner.first_contact=loser.first_contact;
-            winner.last_contact=loser.last_contact;
-            winner.contact_count+=loser.contact_count;
+        if(&graph==&accurate_islands_) {
+            // IslandSim::mergeEdges concatenates each source edge-type
+            // list independently; constraint edges never become Gu rows.
+            for(const bool constraint:{false,true}) {
+                auto& wf=constraint?winner.first_constraint:winner.first_contact;
+                auto& wl=constraint?winner.last_constraint:winner.last_contact;
+                auto& wc=constraint?winner.constraint_count:winner.contact_count;
+                const EdgeIndex lf=constraint?loser.first_constraint:
+                                              loser.first_contact;
+                const EdgeIndex ll=constraint?loser.last_constraint:
+                                              loser.last_contact;
+                const std::size_t lc=constraint?loser.constraint_count:
+                                               loser.contact_count;
+                if(lf==invalid_edge)continue;
+                if(wl!=invalid_edge) {
+                    step_checkpoint_.save_edge(*this,wl);
+                    step_checkpoint_.save_edge(*this,lf);
+                    island_edges_[wl].island_next=lf;
+                    island_edges_[lf].island_prev=wl;
+                } else wf=lf;
+                wl=ll;
+                wc+=lc;
+            }
         }
         // Source mergeIslands removes the subsumed island from the
         // dense mActiveIslands array with markIslandInactive's swap-last
@@ -2994,8 +3056,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // membership, determine each node's active references.
         next.active_reference_counts=graph.active_reference_counts;
         next.active_reference_counts.resize(actors_.size(),0);
-        next.activated_edges.reserve(contact_edges_.size());
-        next.deactivating_edges.reserve(contact_edges_.size());
+        next.activated_edges.reserve(island_edges_.size());
+        next.deactivating_edges.reserve(island_edges_.size());
         // Keep the existing active-node permutation and the original
         // prefix through actor admission, retirement and component
         // splits. Source addNode does not reset mActiveNodes.
@@ -3042,7 +3104,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 const BodyId from=members[cursor];
                 std::size_t node_static_touches=0;
                 for(std::size_t i=first[from];i!=invalid_instance;) {
-                    const auto& edge=contact_edges_[i/2];
+                    const auto& edge=island_edges_[i/2];
                     const auto& link=(accurate?edge.accurate:
                                       edge.speculative)[i&1];
                     const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
@@ -3262,7 +3324,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                     const BodyId from=source_hop_pop(pending,higher).node;
                     for(std::size_t i=accurate_node_first_[from];
                         i!=invalid_instance;) {
-                        const ContactEdge& edge=contact_edges_[i/2];
+                        const IslandEdge& edge=island_edges_[i/2];
                         const auto& link=edge.accurate[i&1];
                         const BodyId to=(i&1)?edge.pair.a:edge.pair.b;
                         i=link.next;
@@ -3291,7 +3353,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 Graph::IslandId owner;
             };
             std::vector<MigratedManager> migrated;
-            migrated.reserve(manifolds_.size());
+            migrated.reserve(manifolds_.size()+active_constraint_handles_.size());
             const auto prior_owner_retained=[&](BodyId node) {
                 if(!dynamic_node(node))return false;
                 const auto old=graph.node_island[node];
@@ -3308,7 +3370,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 for(std::size_t i=accurate_node_first_[node];
                     i!=invalid_instance;) {
                     const EdgeIndex edge_index=static_cast<EdgeIndex>(i/2);
-                    const auto& edge=contact_edges_[edge_index];
+                    const auto& edge=island_edges_[edge_index];
                     const auto& link=edge.accurate[i&1];
                     i=link.next;
                     if(!edge.connected)continue;
@@ -3333,13 +3395,14 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             // with source replaceWithLast semantics. Copy their remaining
             // order before publishing replacement component handles.
             std::vector<MigratedManager> retained;
-            retained.reserve(manifolds_.size());
+            retained.reserve(manifolds_.size()+active_constraint_handles_.size());
             for(const auto& island:graph.islands)
-                for(EdgeIndex id=island.first_contact;id!=invalid_edge;
-                    id=contact_edges_[id].island_next) {
-                    const Pair pair=contact_edges_[id].pair;
+            for(EdgeIndex first:{island.first_contact,island.first_constraint})
+                for(EdgeIndex id=first;id!=invalid_edge;
+                    id=island_edges_[id].island_next) {
+                    const Pair pair=island_edges_[id].pair;
                     const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
-                    if(!dynamic_node(node) || !contact_edges_[id].connected)
+                    if(!dynamic_node(node) || !island_edges_[id].connected)
                         continue;
                     const auto owner=next.node_island[node];
                     if(owner==Graph::invalid)
@@ -3353,8 +3416,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             // then append splitEdges in their collected node order.
             for(const auto& item:retained) {
                 step_checkpoint_.save_edge(*this,item.edge);
-                contact_edges_[item.edge].island_prev=invalid_edge;
-                contact_edges_[item.edge].island_next=invalid_edge;
+                island_edges_[item.edge].island_prev=invalid_edge;
+                island_edges_[item.edge].island_next=invalid_edge;
             }
             for(const auto& item:retained)
                 append_accurate_island_edge(item.edge,item.owner);
@@ -3379,15 +3442,33 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             admit_nodes(speculative_islands_);
             admit_nodes(accurate_islands_);
             for(Pair pair:found_)
-                merge(speculative_islands_,pair);
+                merge(speculative_islands_,pair,contact_edge_index(pair));
+            for(EdgeIndex id:active_constraint_handles_)
+                if(island_edges_[id].live && !island_edges_[id].retiring)
+                    merge(speculative_islands_,island_edges_[id].pair,id);
             for(Pair pair:found_contacts_) {
-                merge(accurate_islands_,pair);
+                merge(accurate_islands_,pair,contact_edge_index(pair));
                 const auto id=contact_edge_index(pair);
                 const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
                 if(id!=invalid_edge && dynamic_node(node))
                     append_accurate_island_edge(
                         id,accurate_islands_.node_island[node]);
             }
+            for(EdgeIndex id:active_constraint_handles_)
+                if(island_edges_[id].live && !island_edges_[id].retiring) {
+                    const Pair pair=island_edges_[id].pair;
+                    merge(accurate_islands_,pair,id);
+                    const BodyId node=dynamic_node(pair.a)?pair.a:pair.b;
+                    if(dynamic_node(node)) {
+                        auto& owner=accurate_islands_.islands[
+                            accurate_islands_.node_island[node]];
+                        if(owner.first_constraint!=id &&
+                           island_edges_[id].island_prev==invalid_edge &&
+                           island_edges_[id].island_next==invalid_edge)
+                            append_accurate_island_edge(
+                                id,accurate_islands_.node_island[node]);
+                    }
+                }
         }
         // Reconcile lost edges and actor retirement with the authoritative
         // intrusive graph. Already-selected source handles survive on the
@@ -3400,10 +3481,10 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 accurate_island_nodes_.push_back(static_cast<BodyId>(i));
     } else {
         for(Pair pair:found_)
-            if(merge(speculative_islands_,pair))
+            if(merge(speculative_islands_,pair,contact_edge_index(pair)))
                 --speculative_island_count_;
         for(Pair pair:found_contacts_) {
-            if(merge(accurate_islands_,pair)) {
+            if(merge(accurate_islands_,pair,contact_edge_index(pair))) {
                 --accurate_island_count_;
                 order_changed=true;
             }
@@ -3458,7 +3539,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
 // PxsIslandSim.cpp::markEdgeActive/removeEdgeFromActivatingList:
 // the shared EdgeIndex has independent activity in the two IslandSims.
 void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
-    auto& edge=contact_edges_[id];
+    auto& edge=island_edges_[id];
     if(!edge.live || edge.retiring ||
        (accurate && !edge.connected))return;
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
@@ -3484,7 +3565,7 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
 }
 void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
                                     bool publish) noexcept {
-    auto& edge=contact_edges_[id];
+    auto& edge=island_edges_[id];
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(!(state&3u))return;
     step_checkpoint_.save_activity(*this,id);
@@ -3531,8 +3612,8 @@ void Scene::clear_activated_edges(bool checkpointed) noexcept {
                       step_checkpoint_.speculative_islands.activated_edges):
             graph.activated_edges;
         for(EdgeIndex id:prior) {
-            auto& state=accurate?contact_edges_[id].accurate_state:
-                                 contact_edges_[id].speculative_state;
+            auto& state=accurate?island_edges_[id].accurate_state:
+                                 island_edges_[id].speculative_state;
             if(state&2u) {
                 step_checkpoint_.save_activity(*this,id);
                 state&=static_cast<std::uint8_t>(~2u);
@@ -3548,7 +3629,7 @@ void Scene::activate_node_contact_edges(BodyId node) noexcept {
         for(std::size_t instance=heads[node];
             instance!=invalid_instance;) {
             const EdgeIndex id=static_cast<EdgeIndex>(instance/2);
-            const auto& edge=contact_edges_[id];
+            const auto& edge=island_edges_[id];
             const auto& link=(accurate?edge.accurate:
                                        edge.speculative)[instance&1u];
             instance=link.next;
@@ -3778,7 +3859,7 @@ void Scene::deactivate_ready_islands() noexcept {
             // the second endpoint is already inactive or the world.
             for(std::size_t i=accurate_node_first_[node];
                 i!=invalid_instance;) {
-                const auto& edge=contact_edges_[i/2];
+                const auto& edge=island_edges_[i/2];
                 const auto& link=edge.accurate[i&1];
                 const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
                 const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
@@ -3870,7 +3951,7 @@ void Scene::deactivate_ready_islands() noexcept {
             speculative_sleep_seen_[node]=stamp;
             for(std::size_t i=speculative_node_first_[node];
                 i!=invalid_instance;) {
-                const auto& edge=contact_edges_[i/2];
+                const auto& edge=island_edges_[i/2];
                 const auto& link=edge.speculative[i&1];
                 const BodyId other=(i&1)?edge.pair.a:edge.pair.b;
                 const EdgeIndex edge_id=static_cast<EdgeIndex>(i/2);
@@ -3892,7 +3973,7 @@ void Scene::deactivate_ready_islands() noexcept {
 // without inventing a second interaction registry or task dispatcher.
 void Scene::consume_contact_interaction_activity() noexcept {
     for(EdgeIndex id:speculative_islands_.activated_edges) {
-        auto& edge=contact_edges_[id];
+        auto& edge=island_edges_[id];
         if(!edge.live || edge.retiring || edge.interaction_active ||
            !(edge.speculative_state&1u))continue;
         step_checkpoint_.save_activity(*this,id);
@@ -3903,7 +3984,7 @@ void Scene::consume_contact_interaction_activity() noexcept {
     // uses the speculative graph so an accurate component can sleep
     // while its speculative-only bridge remains interaction-active.
     for(EdgeIndex id:speculative_islands_.deactivating_edges) {
-        auto& edge=contact_edges_[id];
+        auto& edge=island_edges_[id];
         if(!edge.live || edge.retiring || !edge.interaction_active ||
            (edge.speculative_state&1u))continue;
         step_checkpoint_.save_activity(*this,id);
@@ -4114,7 +4195,7 @@ void Scene::prepare_solver_bodies() {
     }
     solver_active_ids_.clear();
     world_solver_row_ = {};
-    // DyDynamicsContext::iterateIslandsContactEdges gives pre-integration
+    // DyDynamicsContext::iterateIslandsIslandEdges gives pre-integration
     // the accurate ACTIVE islands' ordered contact-manager EdgeIndices.
     // Consume the same intrusive stream as setupDescTask: retained Gu
     // managers in dormant islands are not solver-body admission work.
@@ -4127,11 +4208,11 @@ void Scene::prepare_solver_bodies() {
         const auto& island=accurate_islands_.islands[handle];
         std::size_t visited=0;
         for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
-            edge=contact_edges_[edge].island_next) {
+            edge=island_edges_[edge].island_next) {
             if(++visited>island.contact_count)
                 throw std::logic_error(
                     "PhysX active contact-manager chain contains a cycle");
-            const auto& manager=contact_edges_[edge];
+            const auto& manager=island_edges_[edge];
             if(!manager.live || !manager.connected || manager.retiring)
                 throw std::logic_error(
                     "PhysX active island contains an inactive contact manager");
@@ -4258,7 +4339,7 @@ void Scene::partition_constraints() {
     // unassigned dynamic descriptors for each overflow wave; compact the
     // same reusable descriptor buffer in place to avoid an O(waves*all
     // manifolds) rescan for high-degree constraint graphs.
-    // DyDynamicsBase::iterateIslandsContactEdges enumerates the
+    // DyDynamicsBase::iterateIslandsIslandEdges enumerates the
     // accurate active islands' eCONTACT_MANAGER edges. Gu manifolds
     // remain pair-sorted for source collision caches and writeback,
     // but that order is *not* the source constraint descriptor input.
@@ -4292,13 +4373,13 @@ void Scene::partition_constraints() {
         const auto& island=accurate_islands_.islands[handle];
         std::size_t count=0;
         for(EdgeIndex edge=island.first_contact;edge!=invalid_edge;
-            edge=contact_edges_[edge].island_next) {
+            edge=island_edges_[edge].island_next) {
             if(edge>=manifold_by_edge_.size() ||
                manifold_by_edge_[edge].generation!=
                    manifold_lookup_generation_ ||
                manifold_by_edge_[edge].index>=manifolds_.size() ||
                !(manifolds_[manifold_by_edge_[edge].index].pair==
-                 contact_edges_[edge].pair))
+                 island_edges_[edge].pair))
                 throw std::logic_error(
                     "Active PhysX island has an unindexed contact manager");
             indexed_managers_.push_back(manifold_by_edge_[edge].index);
@@ -4572,12 +4653,12 @@ void Scene::prepare_constraints(float seconds) {
     if(friction_cache_epoch_==std::numeric_limits<std::uint64_t>::max())
         throw std::overflow_error("Native friction cache epoch exhausted");
     const auto next_cache_epoch=friction_cache_epoch_+1;
-    next_friction_by_edge_.resize(contact_edges_.size());
+    next_friction_by_edge_.resize(island_edges_.size());
     for(std::size_t manager_index:indexed_managers_) {
         auto& manifold=manifolds_[manager_index];
         const EdgeIndex edge=manifold.edge_handle;
-        if(edge>=contact_edges_.size() ||
-           !(contact_edges_[edge].pair==manifold.pair))
+        if(edge>=island_edges_.size() ||
+           !(island_edges_[edge].pair==manifold.pair))
             throw std::logic_error(
                 "Dy source manager preparation has a mismatched island edge");
         step_checkpoint_.save_manifold_solver_metadata(*this,manager_index);
@@ -4608,7 +4689,7 @@ void Scene::prepare_constraints(float seconds) {
         // ScNPhaseCore::shouldSwapBodies puts static shapes SECOND,
         // even when the floor was created before its dynamic partner.
         // The persistent source-order flag applies to every shape pair.
-        const bool reversed=contact_edges_[edge].gu_order_reversed;
+        const bool reversed=island_edges_[edge].gu_order_reversed;
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
         const auto& a = rigid_node(actors_[id0].kind)
@@ -5191,7 +5272,7 @@ void Scene::solve_constraints() {
             const auto& manifold = manifolds_[index];
             // Dy descriptors retain Sc's source-oriented body order,
             // including the signs of the contact/friction Jacobians.
-            const bool reversed=contact_edges_[
+            const bool reversed=island_edges_[
                 manifold.edge_handle].gu_order_reversed;
             const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
             const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
@@ -5464,7 +5545,7 @@ void Scene::publish_contact_events() {
             const double normal_force=normal_impulse_writeback_[index];
             impulse+=normal_force;
             Vec3 outward=point.normal;
-            if(contact_edges_[manifold.edge_handle].gu_order_reversed)
+            if(island_edges_[manifold.edge_handle].gu_order_reversed)
                 outward={-outward.x,-outward.y,-outward.z};
             next_contact_event_points_.push_back({
                 point.position,outward,point.separation,normal_force});
@@ -5574,7 +5655,7 @@ void Scene::write_back_contacts() {
             result.broken=source.broken;
             // DyFrictionCorrelation stores body0 anchors in Sc's
             // source-ordered frame, not the canonical Gu report pair.
-            const BodyId body0=contact_edges_[manifold.edge_handle]
+            const BodyId body0=island_edges_[manifold.edge_handle]
                 .gu_order_reversed ? source.pair.b : source.pair.a;
             const auto& actor=actors_[body0];
             for (std::size_t k=0;k<source.anchor_count;++k) {
@@ -5799,7 +5880,7 @@ void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
     // contents without a search, a dirty bitmap or per-frame clearing of
     // a high-watermark array. Newly allocated slots are simply discarded.
     if(id<initial_edges)
-        edge_undo.push_back({id,scene.contact_edges_[id]});
+        edge_undo.push_back({id,scene.island_edges_[id]});
 }
 void Scene::StepCheckpoint::save_activity(
     Scene& scene, EdgeIndex id) noexcept {
@@ -5808,7 +5889,7 @@ void Scene::StepCheckpoint::save_activity(
     if(scene.activity_undo_generations_[id]==
        scene.activity_undo_generation_)return;
     scene.activity_undo_generations_[id]=scene.activity_undo_generation_;
-    const auto& edge=scene.contact_edges_[id];
+    const auto& edge=scene.island_edges_[id];
     activity_undo.push_back({id,edge.speculative_state,edge.accurate_state,
                              edge.interaction_active});
 }
@@ -5936,15 +6017,15 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
                   scene.activity_undo_generations_.end(),0);
         scene.activity_undo_generation_=1;
     }
-    scene.activity_undo_generations_.resize(scene.contact_edges_.size(),0);
-    activity_undo.reserve(scene.contact_edges_.size());
+    scene.activity_undo_generations_.resize(scene.island_edges_.size(),0);
+    activity_undo.reserve(scene.island_edges_.size());
     speculative_islands.activated_edges.reserve(
-        scene.contact_edges_.size());
+        scene.island_edges_.size());
     accurate_islands.activated_edges.reserve(
-        scene.contact_edges_.size());
+        scene.island_edges_.size());
     hint_undo.clear();
     head_undo.clear();
-    initial_edges=scene.contact_edges_.size();
+    initial_edges=scene.island_edges_.size();
     initial_active_interactions=scene.active_contact_interaction_count_;
     initial_speculative_hints=scene.speculative_fast_route_.size();
     initial_accurate_hints=scene.accurate_fast_route_.size();
@@ -6024,9 +6105,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // rejected frames restore the exact original active-island storage.
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     speculative_islands.deactivating_edges.reserve(
-        scene.contact_edges_.size());
+        scene.island_edges_.size());
     accurate_islands.deactivating_edges.reserve(
-        scene.contact_edges_.size());
+        scene.island_edges_.size());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
@@ -6144,18 +6225,18 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // order, without allocation. Only touched pre-existing records were
     // copied, so unchanged history never incurs a full watermark copy.
     for(auto it=edge_undo.rbegin();it!=edge_undo.rend();++it)
-        scene.contact_edges_[it->id]=it->previous;
+        scene.island_edges_[it->id]=it->previous;
     // Structural edge records can be taken after an activity change.
     // The compact activity journal is authoritative for the original
     // eACTIVE/eACTIVATING state and must replay LAST for each old slot.
     for(auto it=activity_undo.rbegin();it!=activity_undo.rend();++it) {
-        scene.contact_edges_[it->id].speculative_state=it->speculative;
-        scene.contact_edges_[it->id].accurate_state=it->accurate;
-        scene.contact_edges_[it->id].interaction_active=
+        scene.island_edges_[it->id].speculative_state=it->speculative;
+        scene.island_edges_[it->id].accurate_state=it->accurate;
+        scene.island_edges_[it->id].interaction_active=
             it->interaction_active;
     }
-    while(scene.contact_edges_.size()>initial_edges)
-        scene.contact_edges_.pop_back();
+    while(scene.island_edges_.size()>initial_edges)
+        scene.island_edges_.pop_back();
     for(auto it=head_undo.rbegin();it!=head_undo.rend();++it) {
         auto& heads=it->accurate ? scene.accurate_node_first_ :
                                   scene.speculative_node_first_;
@@ -6452,6 +6533,9 @@ void Scene::RigidStepJoin::publish_results() {
 }
 
 void Scene::step(float seconds) {
+    if(!active_constraint_handles_.empty())
+        throw std::logic_error(
+            "Native Dy 1D constraint preparation and solve are not admitted");
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
 
