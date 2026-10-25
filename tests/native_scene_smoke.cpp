@@ -20,30 +20,22 @@
 // exact normal, so a purely geometric fixture would miss the source
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
-// Existing Gu and PGS conformance fixtures intentionally retain the
-// independent legacy narrowphase. Native scenes now default to PCM;
-// the legacy generator is selected only where a test explicitly
-// exercises its preserved source contract.
-Scene native_legacy_gu_scene() {
-    Scene scene;
-    scene.set_pcm_plane_box(false);
-    scene.set_pcm_box_box(false);
-    return scene;
-}
+// Gu and PGS conformance fixtures select diagnostic legacy contact
+// generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
     static void verify_mixed_pcm_legacy_cache_ownership() {
         // Source PxcNpCacheStreamPair indexes only legacy cached
         // contacts; Gu's published contact arena also includes PCM.
         // A preceding PCM plane manager must not displace the cached
         // box/box points belonging to the subsequent source manager.
-        Scene mixed=fyzz::native::native_legacy_gu_scene();
+        Scene mixed{Scene::ContactGenerator::DiagnosticLegacyGu};
         mixed.set_pcm_plane_box(true);
         mixed.add_static_floor(0.0f);
         const auto lower=mixed.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
         const auto upper=mixed.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,1.47f,0},1.0f);
-        Scene legacy=fyzz::native::native_legacy_gu_scene();
+        Scene legacy{Scene::ContactGenerator::DiagnosticLegacyGu};
         legacy.add_static_floor(0.0f);
         legacy.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -279,7 +271,7 @@ struct ContactCorrelationSourceFixture {
                stale.count==0 || stale.count>4)
                 throw std::runtime_error(
                     "PCM box fallback did not discard stale GJK simplex");
-            Scene actual=fyzz::native::native_legacy_gu_scene();
+            Scene actual{Scene::ContactGenerator::DiagnosticLegacyGu};
             actual.set_pcm_box_box(true);
             const auto fixed=actual.add_static_box(half,{0,0,0});
             const auto moving=actual.add_dynamic_box(half,at,1.0f);
@@ -339,7 +331,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Sub-margin positive GJK gap was lost to EPA");
             }
-            Scene scene=fyzz::native::native_legacy_gu_scene();
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.set_pcm_box_box(true);
             const auto fixed=scene.add_static_box(half,{0,0,0});
             const auto moving=scene.add_dynamic_box(half,moving_at,1.0f);
@@ -382,7 +374,7 @@ struct ContactCorrelationSourceFixture {
                witness.normal_b.x<0.5f)
                 throw std::runtime_error(
                     "PCM source EPA edge/edge witness failed");
-            Scene scene=fyzz::native::native_legacy_gu_scene();
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.set_pcm_box_box(true);
             scene.add_static_box(half,{0,0,0});
             scene.add_dynamic_box(half,moving_at,1.0f);
@@ -419,7 +411,7 @@ struct ContactCorrelationSourceFixture {
                        2.0f*offset,direct,count) || count!=0)
                     throw std::runtime_error(
                         "Scaled rotated PCM probe did not reach GJK/EPA");
-                Scene scene=fyzz::native::native_legacy_gu_scene();
+                Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
                 scene.set_pcm_box_box(true);
                 BodyId moving{},fixed{};
                 if(reversed) {
@@ -479,7 +471,7 @@ struct ContactCorrelationSourceFixture {
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_pcm_box_box(true);
         const auto fixed=scene.add_static_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0});
@@ -568,7 +560,7 @@ struct ContactCorrelationSourceFixture {
         // then require the unmodified Sc/PGS contact stream to use the
         // source aggregate rather than the leading witness.
         {
-            Scene mixed=fyzz::native::native_legacy_gu_scene();
+            Scene mixed{Scene::ContactGenerator::DiagnosticLegacyGu};
             mixed.set_pcm_box_box(true);
             mixed.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
             mixed.add_dynamic_box(
@@ -638,7 +630,7 @@ struct ContactCorrelationSourceFixture {
         // refresh/invalidation/reduction execute in the actual Scene
         // publication path. The same Sc manager EdgeIndex owns its
         // cache and subsequent Dy constraint rows.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_pcm_plane_box(true);
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
@@ -761,7 +753,7 @@ struct ContactCorrelationSourceFixture {
         // All eight corners are accepted under deep penetration,
         // then the original four-witness clustering must reduce the
         // point cache BEFORE Sc/PGS and contact reports consume it.
-        Scene deep=fyzz::native::native_legacy_gu_scene();
+        Scene deep{Scene::ContactGenerator::DiagnosticLegacyGu};
         deep.set_pcm_plane_box(true);
         deep.add_static_floor(0);
         const auto buried=deep.add_dynamic_box(
@@ -798,7 +790,7 @@ struct ContactCorrelationSourceFixture {
         // DyFrictionCorrelation. A local-contact cache HIT moves raw
         // geometry by the midpoint of the two shape motions; the
         // original cached generating transforms are not advanced.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         const auto id=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
@@ -841,7 +833,7 @@ struct ContactCorrelationSourceFixture {
                 "Pxc legacy contact reference frame advanced incorrectly on repeated hit");
         // No-contact overlaps also own source cache records. The
         // infinite plane participates in BP even far above the floor.
-        Scene separated=fyzz::native::native_legacy_gu_scene();
+        Scene separated{Scene::ContactGenerator::DiagnosticLegacyGu};
         separated.add_static_floor(0.0f);
         const auto distant=separated.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1);
@@ -862,7 +854,7 @@ struct ContactCorrelationSourceFixture {
         // contact normal, and only then flips the published Sc contact
         // normal to +Y. A cached upward movement must INCREASE the
         // separation; caching the flipped normal reverses that sign.
-        Scene late_floor=fyzz::native::native_legacy_gu_scene();
+        Scene late_floor{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto late_box=late_floor.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1);
         late_floor.add_static_floor(0.0f);
@@ -889,7 +881,7 @@ struct ContactCorrelationSourceFixture {
 
         // Box-box contacts use the source Sc actor-order frame, not a
         // separately ordered cache stream or canonical BodyId geometry.
-        Scene stack=fyzz::native::native_legacy_gu_scene();
+        Scene stack{Scene::ContactGenerator::DiagnosticLegacyGu};
         stack.add_dynamic_box({0.5f,0.5f,0.5f},{0,0.5f,0},1);
         const auto upper=stack.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.10f,1.52f,0.10f},1);
@@ -914,7 +906,7 @@ struct ContactCorrelationSourceFixture {
         // body-local frames must follow the actual selected contact IDs
         // or the friction Jacobians use different lever arms.
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -995,7 +987,7 @@ struct ContactCorrelationSourceFixture {
         // entries only with eRETAIN_ACCELERATIONS, while each per-step
         // velocity change is always consumed exactly once.
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto body=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1.0f);
         RigidBodyDynamics dynamics{};
@@ -1031,7 +1023,7 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Cleared retained PhysX acceleration continued after the next step");
 
-        Scene default_scene=fyzz::native::native_legacy_gu_scene();
+        Scene default_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto once=default_scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1.0f);
         auto no_retention=dynamics;
@@ -1051,7 +1043,7 @@ struct ContactCorrelationSourceFixture {
         // each integrated active body's pose-derived bounds before the
         // frame completes. The next SAP update must consume those bounds
         // rather than recomputing a stale pre-integration transform.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1.0f);
         scene.advance_collision(true);
@@ -1099,7 +1091,7 @@ struct ContactCorrelationSourceFixture {
         // per-step or per-second contribution cannot survive the
         // island's authoritative sleep-to-wake boundary.
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto id=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1.0f);
         RigidBodyDynamics dynamics{};
@@ -1191,7 +1183,7 @@ struct ContactCorrelationSourceFixture {
         // Two islands have floor contact rows, and a third free-flight
         // island has no constraints but STILL requires its own solver
         // task completion after body integration.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_enhanced_determinism(true);
         scene.add_static_floor(0.0f);
         const auto left=scene.add_dynamic_box(
@@ -1230,7 +1222,7 @@ struct ContactCorrelationSourceFixture {
         // authored solver iteration counts must never leak across
         // isolated enhanced-determinism task chains.
         const auto prepare=[](bool enhanced) {
-            Scene scene=fyzz::native::native_legacy_gu_scene();
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.set_enhanced_determinism(enhanced);
             scene.add_static_floor(0.0f);
             const std::array<std::pair<std::uint8_t,std::uint8_t>,4> counts{{
@@ -1295,7 +1287,7 @@ struct ContactCorrelationSourceFixture {
         prepare(true);
     }
     static void verify() {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         scene.add_dynamic_box({0.5f,0.5f,0.5f},
                               {0.0f,0.49f,0.0f},1.0f);
@@ -1391,7 +1383,7 @@ struct ContactCorrelationSourceFixture {
         // joined their solver consumer. A serial CPU lowering must
         // preserve that ownership boundary without a fake task queue.
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,8,0},1.0f);
         const auto b=scene.add_dynamic_box(
@@ -1449,7 +1441,7 @@ struct ContactCorrelationSourceFixture {
                 "Completed post-solver retirement failed to recycle source manager handle");
         // A collision-only transaction has no Dy consumer. It still
         // completes both island passes and retires before publishing.
-        Scene query=fyzz::native::native_legacy_gu_scene();
+        Scene query{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto x=query.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,8,0},1.0f);
         const auto y=query.add_dynamic_box(
@@ -1472,7 +1464,7 @@ struct ContactCorrelationSourceFixture {
         // must not outlive a successful step or leak its prior force
         // into a later report.
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_contact_notifications(true);
         const auto a=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,8,0},1.0f);
@@ -1516,7 +1508,7 @@ struct ContactCorrelationSourceFixture {
     }
     static void verify_reversible_cache_checkpoint() {
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -1625,7 +1617,7 @@ struct ContactCorrelationSourceFixture {
     }
     static void verify_source_gu_manager_lookup_lifecycle() {
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -1715,7 +1707,7 @@ struct ContactCorrelationSourceFixture {
         // and per-manager source handles must follow the former; Gu
         // force writeback must retain its independent original offsets.
         constexpr float dt=1.0f/480.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto center=scene.add_dynamic_box(
             {1,1,1},{0,10,0},1.0f);
         const auto b=scene.add_static_box(
@@ -1782,7 +1774,7 @@ struct ContactCorrelationSourceFixture {
         // than using a symmetric floor's final angular velocity as a
         // false oracle (the four point torques can cancel).
         const auto probe=[](float slop) {
-            Scene scene=fyzz::native::native_legacy_gu_scene();
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.add_static_floor(0.0f);
             const auto box=scene.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -1816,7 +1808,7 @@ struct ContactCorrelationSourceFixture {
         // after dozens of ordinary PGS steps. The original source
         // applies FMin(maxDyn,FMax(-maxDyn,candidate)) even when
         // maxDyn is negative; std::clamp has undefined behavior there.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         scene.add_static_floor(0.001f);
         const auto box=scene.add_dynamic_box(
@@ -1896,7 +1888,7 @@ struct ContactCorrelationSourceFixture {
                 "Production compliant PGS did not generate a signed Gu force");
     }
     static void verify_signed_compliant_source_writeback() {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -1934,7 +1926,7 @@ struct ContactCorrelationSourceFixture {
         const auto inspect=[&](Material floor_material,
                                Material body_material, float height=0.49f,
                                float density=2.0f) {
-            Scene scene=fyzz::native::native_legacy_gu_scene();
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto floor=scene.add_static_floor(0.0f);
             const auto box=scene.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,height,0},density);
@@ -2050,7 +2042,7 @@ struct ContactCorrelationSourceFixture {
         // even when DyContactPrepShared::extractContacts filters ALL
         // its zero-maxImpulse rows. This is a real dynamic/dynamic
         // manager, not a static-floor case that bypasses mask logic.
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,2.0f,0.0f},1.0f);
         const auto b=scene.add_dynamic_box(
@@ -2135,7 +2127,7 @@ struct ContactCorrelationSourceFixture {
         }
     }
     static void verify_zero_capped_stream_compaction() {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto zero=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-3.0f,0.49f,0},1.0f);
@@ -2203,7 +2195,7 @@ namespace fyzz::native {
 struct SolverIterationSourceFixture {
     static void verify_active_manager_admission() {
         constexpr float dt=1.0f/120.0f;
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_contact_notifications(true);
         const auto floor=scene.add_static_floor(0.0f);
         // Retain a substantial accurate Gu contact history that is
@@ -2339,7 +2331,7 @@ struct SolverIterationSourceFixture {
                 "Source active manager admission failed after response reenable");
     }
     static void verify() {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         constexpr std::size_t bodies=130;
         for(std::size_t i=0;i<bodies;++i) {
@@ -2424,7 +2416,7 @@ struct SolverIterationSourceFixture {
             std::uint8_t requested_velocity_iterations=255;
         };
         const auto run_final_pass=[](std::uint8_t request) {
-            Scene tested=fyzz::native::native_legacy_gu_scene();
+            Scene tested{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto floor=tested.add_static_floor(0.0f);
             // Suppress restitution, which removes the position bias in
             // DyContactPrep. We need an actual penetration-bias delta
@@ -2545,7 +2537,7 @@ void verify_source_zero_velocity_iteration_request() {
         double normal_impulse=0;
     };
     const auto native=[&](std::uint8_t vel_iterations) {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
@@ -2602,7 +2594,7 @@ void verify_source_rigid_contact_limits() {
     // Each source SolverContactPoint has its OWN impulse clamp, and
     // Dy writeback must retain the corresponding original Gu order.
     const auto impulse_case=[&](float cap) {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -2654,7 +2646,7 @@ void verify_source_rigid_contact_limits() {
     // A dynamic/dynamic manager takes the SMALLER of the two per-body
     // caps, independent of which actor is first in the canonical pair.
     const auto dynamic_pair=[&](float lower_cap,float upper_cap) {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto lower=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
         const auto upper=scene.add_dynamic_box(
@@ -2692,7 +2684,7 @@ void verify_source_rigid_contact_limits() {
     // Under deep penetration, limiting either actor must limit biased
     // position motion, without clamping the ordinary final velocity.
     const auto bias_case=[&](float cap) {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.25f,0},1.0f);
@@ -2805,7 +2797,7 @@ void verify_source_multiframe_completion() {
     // published result buffers and become invalid on a collision-only
     // query, even when that query does not change contact geometry.
     {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -2859,7 +2851,7 @@ void verify_source_multiframe_completion() {
     // before Dy body admission: the exact equivalent is zero integration
     // on the deactivation frame, followed by an explicit wake handoff.
     {
-        Scene serial=fyzz::native::native_legacy_gu_scene();
+        Scene serial{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=serial.add_static_floor(0.0f);
         const auto sleeper=serial.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -3072,7 +3064,7 @@ void verify_source_pose_authoring() {
     // separated dynamic box. Exercise original Gu SAT and SAP bounds,
     // not a rotated AABB approximation or a manually injected row.
     {
-        fyzz::native::Scene scene=fyzz::native::native_legacy_gu_scene();
+        fyzz::native::Scene scene{fyzz::native::Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto fixed=scene.add_static_box(
             {1.0f,0.4f,0.15f},{0,2,0});
         const auto moving=scene.add_dynamic_box(
@@ -3169,7 +3161,7 @@ void verify_source_shape_offsets() {
     // Shape-specific contact distances must affect both the SAP
     // candidate bounds and original Gu box-box contact generation.
     {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto fixed=scene.add_static_box(
             {0.5f,0.5f,0.5f},{0.0f,2.0f,0.0f});
         const auto moving=scene.add_dynamic_box(
@@ -3197,7 +3189,7 @@ void verify_source_shape_offsets() {
     // Plane-box Gu uses exactly the same pair distance, even though the
     // infinite plane enters broadphase as an unconditional candidate.
     {
-        Scene scene=fyzz::native::native_legacy_gu_scene();
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.56f,0},1.0f);
@@ -3548,7 +3540,7 @@ void verify_source_contact_notification_world() {
     // simulation result. A rejected step must not replace that storage
     // with partially prepared Sc/Dy event data.
     {
-        fyzz::native::Scene scene=fyzz::native::native_legacy_gu_scene();
+        fyzz::native::Scene scene{fyzz::native::Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_contact_notifications(true);
         const auto floor=scene.add_static_floor(0.0f);
         const auto box=scene.add_dynamic_box(
@@ -3813,7 +3805,7 @@ bool has(std::span<const fyzz::native::Pair> p, fyzz::BodyId a, fyzz::BodyId b) 
 void verify_idempotent_pose_autowake() {
     using fyzz::native::Scene;
     {
-        Scene connected=fyzz::native::native_legacy_gu_scene();
+        Scene connected{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=connected.add_static_floor(0.0f);
         const auto left=connected.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
@@ -3872,7 +3864,7 @@ void verify_idempotent_pose_autowake() {
         // Source Dy::sleepCheck can mark a body ready one frame before
         // the third pass deactivates it. The same-pose write must reset
         // that readiness as well as waking bodies already asleep.
-        Scene ready=fyzz::native::native_legacy_gu_scene();
+        Scene ready{Scene::ContactGenerator::DiagnosticLegacyGu};
         ready.add_static_floor(0.0f);
         const auto body=ready.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -3903,7 +3895,7 @@ void verify_idempotent_pose_autowake() {
 void verify_source_contact_edge_deactivations() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=scene.add_static_floor(0.0f);
     const auto left=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1);
@@ -3952,7 +3944,7 @@ void verify_source_contact_edge_deactivations() {
            !scene.body_is_sleeping(right) &&
            scene.deactivating_accurate_contact_edges().empty(),
            "Authored wake replayed stale edge deactivations");
-    Scene lost=fyzz::native::native_legacy_gu_scene();
+    Scene lost{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=lost.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,12,0},1);
     const auto b=lost.add_dynamic_box(
@@ -4025,7 +4017,7 @@ void verify_active_pose_preserves_sleep_filter() {
            "Active pose filter fixture did not exercise accumulated-energy renewal");
 }
 // Keep multi-island lifetime regressions in separate stack frames. The
-// native scene smoke runner contains many Scene fixtures=fyzz::native::native_legacy_gu_scene(); combining all
+// native scene smoke runner contains many Scene fixtures{Scene::ContactGenerator::DiagnosticLegacyGu}; combining all
 // of their local allocations into one MSVC frame can exhaust the
 // default Windows stack even though the individual tests are small.
 void verify_simultaneous_initial_sleep_compaction() {
@@ -4039,7 +4031,7 @@ void verify_simultaneous_initial_sleep_compaction() {
     // can leave dormant B in mActiveNodes and misreport the suffix.
     // Exercise both numerical and collision-only publication paths.
     for(const bool query_only : {false,true}) {
-        Scene multi_sleep=fyzz::native::native_legacy_gu_scene();
+        Scene multi_sleep{Scene::ContactGenerator::DiagnosticLegacyGu};
         multi_sleep.add_static_floor(0.0f);
         const auto first=multi_sleep.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -4107,7 +4099,7 @@ void verify_simultaneous_initial_sleep_compaction() {
 // quiet authored wakes, actor admission and failed graph reconstruction.
 void verify_speculative_active_node_lifecycle() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     scene.add_static_floor(0.0f);
     const auto first=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -4190,7 +4182,7 @@ void verify_speculative_active_node_lifecycle() {
 void verify_dirty_order_multisplit_manager_remainder() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     // Form all three islands separately first. The central C-D-E
     // source root must acquire size three before the two size-two
     // arms connect, otherwise mergeIslands could retain an arm root.
@@ -4308,7 +4300,7 @@ void verify_dirty_order_multisplit_manager_remainder() {
 void verify_hop_priority_split_migration() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene split=fyzz::native::native_legacy_gu_scene();
+    Scene split{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto c=split.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,10,0},1);
     const auto d=split.add_dynamic_box(
@@ -4389,7 +4381,7 @@ void verify_equal_hop_split_queue_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
     using fyzz::Vec3;
-    Scene split=fyzz::native::native_legacy_gu_scene();
+    Scene split{Scene::ContactGenerator::DiagnosticLegacyGu};
     const Vec3 origin{0,10,0};
     // Admit root-anchor first so the two-node original root survives
     // the star's later one-node merges. Losing root-center then forces
@@ -4474,7 +4466,7 @@ void verify_equal_hop_split_queue_order() {
 // the new node/manager ordering directly; it must not traverse twice.
 void verify_source_dirty_witness_split() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,16,0},1);
     const auto b=scene.add_dynamic_box(
@@ -4541,7 +4533,7 @@ void verify_source_dirty_witness_split() {
 // witness instead of searching D a second time.
 void verify_successful_route_branch_witness() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,18,0},1);
     const auto b=scene.add_dynamic_box(
@@ -4588,7 +4580,7 @@ void verify_successful_route_branch_witness() {
 // same island handle after the bounded component reconstruction.
 void verify_route_repair_continues_after_split() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     // The initial two-node island chooses B (the second node) as its
     // PhysX merge-tie root. Losing A-B makes the earlier dirty A fail.
     const auto a=scene.add_dynamic_box(
@@ -4660,7 +4652,7 @@ void verify_route_repair_continues_after_split() {
 void verify_dirty_seed_split_manager_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene split=fyzz::native::native_legacy_gu_scene();
+    Scene split{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto c=split.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,10,0},1);
     const auto d=split.add_dynamic_box(
@@ -4720,7 +4712,7 @@ void verify_dirty_seed_split_manager_order() {
 // manager order gives a different finite-iteration PGS input here.
 void verify_split_contact_manager_migration() {
     using fyzz::native::Scene;
-    Scene split=fyzz::native::native_legacy_gu_scene();
+    Scene split{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=split.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,10,0},1.0f);
     const auto b=split.add_dynamic_box(
@@ -4765,7 +4757,7 @@ void verify_island_contact_manager_order() {
     // canonical Gu [B,C,D]. Removing C must swap-last to [D,B], not
     // perform a stable erase or rebuild from canonical pair order.
     {
-        Scene island_managers=fyzz::native::native_legacy_gu_scene();
+        Scene island_managers{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto center=island_managers.add_dynamic_box(
             {1,1,1},{0,10,0},1);
         const auto b=island_managers.add_static_box(
@@ -4860,7 +4852,7 @@ void verify_island_contact_manager_order() {
     // the newly connected bridge. Equal-size merges preserve the
     // second island, independent of canonical Gu BodyId ordering.
     {
-        Scene merge_order=fyzz::native::native_legacy_gu_scene();
+        Scene merge_order{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=merge_order.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1);
         const auto b=merge_order.add_dynamic_box(
@@ -4909,7 +4901,7 @@ void verify_sparse_motion_checkpoint() {
     constexpr float dt=1.0f/120.0f;
     // Retired BodyIds remain allocated for stable identity. They must
     // not force historical actor scans or motion copies in every frame.
-    Scene history=fyzz::native::native_legacy_gu_scene();
+    Scene history{Scene::ContactGenerator::DiagnosticLegacyGu};
     for(unsigned i=0;i<512;++i) {
         const auto id=history.add_dynamic_box(
             {0.2f,0.2f,0.2f},{float(i)*3.0f,3.0f,0},1.0f);
@@ -4930,7 +4922,7 @@ void verify_sparse_motion_checkpoint() {
     // A dormant scene needs no motion records. A newly admitted body
     // can subsequently wake an old sleeping neighbor, and both bodies
     // must roll back to their pre-step states if contact preparation fails.
-    Scene wakes=fyzz::native::native_legacy_gu_scene();
+    Scene wakes{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=wakes.add_static_floor(0.0f);
     const auto sleeper=wakes.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -4973,7 +4965,7 @@ void verify_sparse_motion_checkpoint() {
 
 void verify_demand_driven_island_ownership_checkpoint() {
     using fyzz::native::Scene;
-    Scene quiet=fyzz::native::native_legacy_gu_scene();
+    Scene quiet{Scene::ContactGenerator::DiagnosticLegacyGu};
     for(int i=0;i<24;++i)
         quiet.add_dynamic_box({0.5f,0.5f,0.5f},
                               {static_cast<float>(i*4),150,0},1.0f);
@@ -5008,7 +5000,7 @@ void verify_demand_driven_island_ownership_checkpoint() {
 // rigid integration fixture to keep their stack frames and failures isolated.
 void verify_source_active_island_handoff() {
     using fyzz::native::Scene;
-    Scene active=fyzz::native::native_legacy_gu_scene();
+    Scene active{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=active.add_static_floor(0.0f);
     const auto a=active.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -5117,7 +5109,7 @@ void verify_source_active_island_handoff() {
 void verify_source_mixed_split_and_sleep_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     // Source mergeIslands keeps the SECOND handle on equal-sized
     // singletons. Admit the eventually sleeping rod first, then the
     // awake winner. Losing their SAP-only bridge must detach the
@@ -5219,7 +5211,7 @@ void verify_source_mixed_split_and_sleep_order() {
 void verify_source_speculative_reverse_sleep_order() {
     using fyzz::native::Scene;
     using fyzz::native::Pair;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=scene.add_dynamic_box({2.0f,0.1f,0.2f},{0,10,0},1.0f);
     const auto b=scene.add_dynamic_box({2.0f,0.1f,0.2f},{20,10,0},1.0f);
     const auto c=scene.add_dynamic_box({2.0f,0.1f,0.2f},{0,10,5},1.0f);
@@ -5312,7 +5304,7 @@ void verify_source_speculative_reverse_sleep_order() {
 
 void verify_source_correlated_friction_patch_lifecycle() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=scene.add_static_floor(0.0f);
     const auto left=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{-3.0f,0.49f,0.0f},1.0f);
@@ -5382,7 +5374,7 @@ void verify_source_correlated_friction_patch_lifecycle() {
 
 void verify_source_solver_task_batch_partitioning() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     scene.add_static_floor(0.0f);
     // DyDynamicsContext::updatePostKinematic uses the default
     // solverBatchSize=128 and requires at least one contact before
@@ -5423,7 +5415,7 @@ void verify_source_solver_task_batch_partitioning() {
 
 void verify_source_reverse_active_island_sleep_retirement() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     scene.add_static_floor(0.0f);
     std::array<fyzz::BodyId,4> bodies{};
     for(std::size_t i=0;i<bodies.size();++i)
@@ -5466,7 +5458,7 @@ void verify_source_reverse_active_island_sleep_retirement() {
 
 void verify_source_reverse_wake_order_and_rollback_capacity() {
     using fyzz::native::Scene;
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     scene.add_static_floor(0.0f);
     std::array<fyzz::BodyId,4> ids{};
     for(std::size_t i=0;i<ids.size();++i)
@@ -5523,7 +5515,7 @@ void verify_source_contact_interaction_consumption() {
     using fyzz::native::Scene;
     // Sc::InteractionFlag::eIS_ACTIVE follows the speculative graph,
     // not the accurate Gu contact or an actor's individual sleep flag.
-    Scene scene=fyzz::native::native_legacy_gu_scene();
+    Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=scene.add_static_floor(0.0f);
     const auto a=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -5577,7 +5569,7 @@ void verify_source_contact_interaction_consumption() {
     // activate its speculative interaction, then throw in Dy. Rollback
     // must not publish either the new manager or the interaction count;
     // retry must admit the same logical contact exactly once.
-    Scene admission=fyzz::native::native_legacy_gu_scene();
+    Scene admission{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto wall=admission.add_static_box(
         {0.5f,0.5f,0.5f},{0,0.5f,0});
     const auto box=admission.add_dynamic_box(
@@ -5607,7 +5599,7 @@ void verify_source_contact_interaction_consumption() {
 
 void verify_source_active_reference_lifecycle() {
     using fyzz::native::Scene;
-    Scene refs=fyzz::native::native_legacy_gu_scene();
+    Scene refs{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto floor=refs.add_static_floor(0.0f);
     const auto a=refs.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,0.5f,0},1.0f);
@@ -5669,7 +5661,7 @@ void verify_source_active_reference_lifecycle() {
 
 void verify_source_speculative_only_active_references() {
     using fyzz::native::Scene;
-    Scene separated=fyzz::native::native_legacy_gu_scene();
+    Scene separated{Scene::ContactGenerator::DiagnosticLegacyGu};
     const auto a=separated.add_dynamic_box(
         {2.0f,0.1f,0.2f},{0,10,0},1.0f);
     const auto b=separated.add_dynamic_box(
@@ -5714,7 +5706,7 @@ void verify_source_retired_bridge_deactivation() {
         // The retained floor manager must still publish one speculative
         // deactivation in the third pass, without requiring a new
         // accurate sleep event or a local lost-edge split.
-        Scene retired_bridge=fyzz::native::native_legacy_gu_scene();
+        Scene retired_bridge{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto sleeping_rod=retired_bridge.add_dynamic_box(
             {2.0f,0.1f,0.2f},{0,10,0},1.0f);
         const auto active_rod=retired_bridge.add_dynamic_box(
@@ -5801,7 +5793,7 @@ void verify_source_activity_rollback() {
         // bits as well as each IslandSim's counts and indexed worklists.
         // Structural EdgeUndo snapshots are taken *after* the edge's
         // activity was cleared; they cannot supersede ActivityUndo.
-        Scene activity_rollback=fyzz::native::native_legacy_gu_scene();
+        Scene activity_rollback{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=activity_rollback.add_static_floor(0.0f);
         const auto body=activity_rollback.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -5846,7 +5838,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     using fyzz::native::Scene;
     // End-to-end native CPU execution, without a reference PxScene.
     {
-        Scene falling_scene=fyzz::native::native_legacy_gu_scene();
+        Scene falling_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         falling_scene.add_static_floor(0);
         const auto falling = falling_scene.add_dynamic_box(
             {0.25f,0.25f,0.25f}, {0,2,0}, 1);
@@ -5879,7 +5871,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // The provisional translation-only mass admission must not
         // silently turn a constrained rigid body into a rotation-locked
         // one when source PxReal angular inertia is not representable.
-        Scene heavy=fyzz::native::native_legacy_gu_scene();
+        Scene heavy{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto obstacle=heavy.add_static_box({1,1,1},{0,5,0});
         const auto body = heavy.add_dynamic_box(
             {1,1,1},{1.5f,5,0},std::numeric_limits<float>::max());
@@ -5905,7 +5897,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
-        Scene stacked=fyzz::native::native_legacy_gu_scene();
+        Scene stacked{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto ground=stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
         const auto lower = stacked.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,2,0},1);
@@ -5978,7 +5970,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // Tiny mass can still have a representable inverse mass while
         // its source angular tensor is not representable. Contact PGS
         // must reject this geometry instead of using a zero tensor.
-        Scene very_light=fyzz::native::native_legacy_gu_scene();
+        Scene very_light{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto left = very_light.add_dynamic_box(
             {1,1,1},{0,5,0},5.0e-40f);
         const auto right = very_light.add_dynamic_box(
@@ -6049,7 +6041,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
             {{1.0e13f,1.0e13f,1.0e13f},1.0e-39f}
         }};
         for (const auto& [half_extents,density] : cases) {
-            Scene body=fyzz::native::native_legacy_gu_scene();
+            Scene body{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto id = body.add_dynamic_box(
                 half_extents,{0,5,0},density);
             bool rejected = false;
@@ -6079,7 +6071,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // Two individually finite extreme inputs must pass through the
         // exact PhysX unconstrained-velocity clamp before contact prep.
         // Preserve finite impulse state without a custom wide dot product.
-        Scene extreme=fyzz::native::native_legacy_gu_scene();
+        Scene extreme{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a = extreme.add_dynamic_box({50,50,50}, {0,60,0}, 1);
         const auto b = extreme.add_dynamic_box({50,50,50}, {80,60,0}, 1);
         extreme.set_velocity(a, {2.0e38f,0,0});
@@ -6105,7 +6097,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // The unconstrained speed clamp precedes the contact solver.
         // Use touching faces (zero penetration bias) so this tests that
         // clamp rather than incorrectly capping post-solver correction.
-        Scene unequal_mass=fyzz::native::native_legacy_gu_scene();
+        Scene unequal_mass{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto light = unequal_mass.add_dynamic_box(
             {1,1,1}, {0,5,0}, 1.0e-6f);
         const auto heavy = unequal_mass.add_dynamic_box(
@@ -6128,7 +6120,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     {
         // A free body uses the same source default velocity clamp, so
         // safety is independent of whether contacts are generated.
-        Scene unopposed=fyzz::native::native_legacy_gu_scene();
+        Scene unopposed{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto b = unopposed.add_dynamic_box(
             {1,1,1}, {0,5,0}, 1);
         unopposed.set_velocity(b, {2.0e38f,2.0e38f,2.0e38f});
@@ -6138,7 +6130,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // Consequently sqrt(1e32f / inf) is zero, not 1e16 normalization.
         expect(vel.x == 0.0f && vel.y == 0.0f && vel.z == 0.0f,
                "Native high-speed clamp diverged from PhysX float arithmetic");
-        Scene finite_limit=fyzz::native::native_legacy_gu_scene();
+        Scene finite_limit{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto limited = finite_limit.add_dynamic_box(
             {1,1,1}, {0,5,0}, 1);
         finite_limit.set_velocity(limited, {2.0e16f,0,0});
@@ -6151,7 +6143,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     {
         // Velocity authoring has no full-manifold invalidation scan:
         // an isolated edit changes only the selected actor's velocity.
-        Scene authoring=fyzz::native::native_legacy_gu_scene();
+        Scene authoring{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto static_id = authoring.add_static_floor(0);
         const auto dynamic_id = authoring.add_dynamic_box(
             {0.25f,0.25f,0.25f}, {0,1,0}, 1);
@@ -6172,7 +6164,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // Source inertia is directional and density-scaled. The same
         // world torque impulse must produce different angular velocity
         // for a rectangular body on its distinct principal axes.
-        Scene torque=fyzz::native::native_legacy_gu_scene();
+        Scene torque{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto id = torque.add_dynamic_box(
             {0.5f,1.0f,2.0f}, {0,10,0}, 2.0f);
         torque.apply_torque_impulse(id, {1,1,1});
@@ -6207,7 +6199,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // even when static contacts are present. Normal contact rows
         // must now accept the resulting rotated body without replaying
         // the pending torque on later frames.
-        Scene rotating_contact=fyzz::native::native_legacy_gu_scene();
+        Scene rotating_contact{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto id = rotating_contact.add_dynamic_box(
             {0.5f,1.0f,2.0f},{0,2,0},1);
         rotating_contact.add_static_floor(0);
@@ -6228,7 +6220,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // readiness precedes whole-island deactivation. Once a rigid
         // body rests on its static floor it must stop integrating gravity
         // and remain stationary, but an explicit velocity edit wakes it.
-        Scene sleeping=fyzz::native::native_legacy_gu_scene();
+        Scene sleeping{Scene::ContactGenerator::DiagnosticLegacyGu};
         sleeping.add_static_floor(0.0f);
         const auto id=sleeping.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6284,7 +6276,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // first becomes ready is not allowed to deactivate it immediately.
         // The next third pass then deactivates before gravity and PGS:
         // that frame must not integrate one extra position increment.
-        Scene phase_boundary=fyzz::native::native_legacy_gu_scene();
+        Scene phase_boundary{Scene::ContactGenerator::DiagnosticLegacyGu};
         phase_boundary.add_static_floor(0.0f);
         const auto sleeper=phase_boundary.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6319,7 +6311,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     // from the previously published Gu manager, just as for a static
     // support edit, even when the new topology no longer connects them.
     {
-        Scene moved_peer=fyzz::native::native_legacy_gu_scene();
+        Scene moved_peer{Scene::ContactGenerator::DiagnosticLegacyGu};
         moved_peer.add_static_floor(0.0f);
         const auto left=moved_peer.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
@@ -6352,7 +6344,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     // their next actual step, not suspend the body in midair.
     for(bool retire_support : {false,true}) {
         for(bool query_first : {false,true}) {
-            Scene unsupported=fyzz::native::native_legacy_gu_scene();
+            Scene unsupported{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto floor=unsupported.add_static_floor(0.0f);
             const auto body=unsupported.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6396,7 +6388,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // and may consume an authored node wake, without a numerical
         // solver step. Its accurate active-node index must not vanish
         // after a graph rebuild or remain stale after an island split.
-        Scene queried=fyzz::native::native_legacy_gu_scene();
+        Scene queried{Scene::ContactGenerator::DiagnosticLegacyGu};
         queried.add_static_floor(0.0f);
         const auto sleeper=queried.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6437,7 +6429,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // spans, their actual storage, and their published elements.
         // A failure after a newly ready body deactivates exercises
         // swap-last active index retirement before rollback.
-        Scene retained_active=fyzz::native::native_legacy_gu_scene();
+        Scene retained_active{Scene::ContactGenerator::DiagnosticLegacyGu};
         retained_active.add_static_floor(0.0f);
         const auto sleeper=retained_active.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6523,7 +6515,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // relocation so only genuinely new rigid nodes remain in
         // getNodesToActivate's active suffix. Rebuilding the graph for
         // actor admission must preserve the existing active permutation.
-        Scene partitions=fyzz::native::native_legacy_gu_scene();
+        Scene partitions{Scene::ContactGenerator::DiagnosticLegacyGu};
         partitions.add_static_floor(0.0f);
         const auto sleeper=partitions.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6596,7 +6588,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // bidirectional through third-pass sleep, user wake, and
         // reactivation. The separate deactivation output is published
         // for exactly the boundary in which ready nodes go inactive.
-        Scene indexed=fyzz::native::native_legacy_gu_scene();
+        Scene indexed{Scene::ContactGenerator::DiagnosticLegacyGu};
         indexed.add_static_floor(0.0f);
         const auto body=indexed.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6650,7 +6642,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // islands. Dormant bodies remain in the persistent source graph
         // but are excluded from unconstrained integration and PGS. An
         // isolated awake node must retain its own active island batch.
-        Scene active_handoff=fyzz::native::native_legacy_gu_scene();
+        Scene active_handoff{Scene::ContactGenerator::DiagnosticLegacyGu};
         active_handoff.add_static_floor(0.0f);
         const auto resting=active_handoff.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6661,7 +6653,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Active-island fixture did not admit both source islands");
         // Isolate the dormant transition from the free-flight wake state:
         // first sleep the floor body, then introduce the distant flyer.
-        Scene staged=fyzz::native::native_legacy_gu_scene();
+        Scene staged{Scene::ContactGenerator::DiagnosticLegacyGu};
         staged.add_static_floor(0.0f);
         const auto dormant=staged.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6692,7 +6684,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     // Ensure a rejected step does not clear that pending wake indicator:
     // the next quiet query still propagates to the sleeping island peer.
     {
-        Scene pending_query=fyzz::native::native_legacy_gu_scene();
+        Scene pending_query{Scene::ContactGenerator::DiagnosticLegacyGu};
         pending_query.add_static_floor(0.0f);
         const auto left=pending_query.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
@@ -6723,7 +6715,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // A rejected Dy step rebuilds the active accurate island view
         // after source wake/deactivation. The previous published active
         // batch count must survive rollback without copying the list.
-        Scene active_rollback=fyzz::native::native_legacy_gu_scene();
+        Scene active_rollback{Scene::ContactGenerator::DiagnosticLegacyGu};
         active_rollback.add_static_floor(0.0f);
         const auto sleeper=active_rollback.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6757,7 +6749,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // flag when a new contact wakes its island. A body that just
         // reached readiness must still resolve the newly added static
         // contact, not sleep before submitting the new Gu rows.
-        Scene new_touch=fyzz::native::native_legacy_gu_scene();
+        Scene new_touch{Scene::ContactGenerator::DiagnosticLegacyGu};
         new_touch.add_static_floor(0.0f);
         const auto candidate=new_touch.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -6785,7 +6777,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // IslandSim::activateIslandInternal wakes connected rigid nodes,
         // not only the node explicitly edited by a user. A persistent
         // dynamic contact must admit both nodes together on reactivation.
-        Scene coupled_sleep=fyzz::native::native_legacy_gu_scene();
+        Scene coupled_sleep{Scene::ContactGenerator::DiagnosticLegacyGu};
         coupled_sleep.add_static_floor(0.0f);
         const auto left=coupled_sleep.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
@@ -6811,7 +6803,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // IslandSim::wakeIslands consumes an actual authored activation,
         // including when a collision-only query is otherwise quiet.
         // An already-awake neighbor is not itself a perpetual wake event.
-        Scene queued_wake=fyzz::native::native_legacy_gu_scene();
+        Scene queued_wake{Scene::ContactGenerator::DiagnosticLegacyGu};
         queued_wake.add_static_floor(0.0f);
         const auto left=queued_wake.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-0.5f,0.5f,0},1.0f);
@@ -6857,7 +6849,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // contact interactions use speculative deactivation state.
         // Keep one rod awake without translating far enough to destroy
         // the SAP overlap, while its accurate neighbor is allowed to sleep.
-        Scene distinct_sleep=fyzz::native::native_legacy_gu_scene();
+        Scene distinct_sleep{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto rod_a=distinct_sleep.add_dynamic_box(
             {2.0f,0.1f,0.2f},{0,10,0},1.0f);
         const auto rod_b=distinct_sleep.add_dynamic_box(
@@ -7000,7 +6992,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // failure atomicity must roll back both the fresh contact
         // manager and the previously sleeping peer's activation. The
         // identical valid retry must admit both bodies to the solver.
-        Scene wake_rollback=fyzz::native::native_legacy_gu_scene();
+        Scene wake_rollback{Scene::ContactGenerator::DiagnosticLegacyGu};
         wake_rollback.add_static_floor(0.0f);
         const auto sleeper=wake_rollback.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -7046,7 +7038,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // an already sleeping rigid body. Reusing the existing accurate
         // contact managers wakes the touched actor before subsequent
         // Gu/PGS progression; quiet static-world contacts do not.
-        Scene moving_ground=fyzz::native::native_legacy_gu_scene();
+        Scene moving_ground{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=moving_ground.add_static_floor(0.0f);
         const auto body=moving_ground.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -7068,7 +7060,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // before the next step. IslandSim::wakeIslands consumes it at
         // publication, not from a one-frame event stream that may be
         // cleared by a later quiet collision query.
-        Scene collision_wake=fyzz::native::native_legacy_gu_scene();
+        Scene collision_wake{Scene::ContactGenerator::DiagnosticLegacyGu};
         collision_wake.add_static_floor(0);
         const auto body=collision_wake.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1);
@@ -7095,7 +7087,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         // Sc::Scene destroys contact-manager links when a supporting
         // static actor is retired. A sleeping box must wake and resume
         // falling rather than remain indefinitely suspended in space.
-        Scene removed_support=fyzz::native::native_legacy_gu_scene();
+        Scene removed_support{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=removed_support.add_static_floor(0);
         const auto box=removed_support.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -7374,7 +7366,7 @@ int run_native_scene_smoke() {
     // advances the publication frame, clears transient previous-step
     // results/events, and retains the original contact manager identity.
     {
-        Scene quiet=fyzz::native::native_legacy_gu_scene();
+        Scene quiet{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=quiet.add_static_floor(0.0f);
         const auto box=quiet.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -7413,7 +7405,7 @@ int run_native_scene_smoke() {
     // touch loss. removeConnection defers release until the joined
     // post-third-pass retirement, including overlapping found/lost pairs.
     {
-        Scene handles=fyzz::native::native_legacy_gu_scene();
+        Scene handles{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=handles.add_static_floor(0.0f);
         const auto first=handles.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -7465,7 +7457,7 @@ int run_native_scene_smoke() {
     // touching dynamic pairs join accurate solver islands. The static
     // world is never a dynamic connectivity bridge.
     {
-        Scene connected=fyzz::native::native_legacy_gu_scene();
+        Scene connected{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=connected.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,5.0f,0.0f},1.0f);
         const auto b=connected.add_dynamic_box(
@@ -7521,7 +7513,7 @@ int run_native_scene_smoke() {
         // The admitted synchronous schedule processes completed lost
         // contact events before solving, and the split result must be
         // published for the new frame through the same native scene.
-        Scene phased=fyzz::native::native_legacy_gu_scene();
+        Scene phased{Scene::ContactGenerator::DiagnosticLegacyGu};
         phased.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1.0f);
         const auto middle=phased.add_dynamic_box(
@@ -7547,7 +7539,7 @@ int run_native_scene_smoke() {
         // two-edge route really must split the dynamic components.
         // Both speculative SAP and accurate Gu graphs must agree on
         // the independently published resulting connectivity.
-        Scene cycle=fyzz::native::native_legacy_gu_scene();
+        Scene cycle{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto ca=cycle.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,8,0},1.0f);
         const auto cb=cycle.add_dynamic_box(
@@ -7613,7 +7605,7 @@ int run_native_scene_smoke() {
         // removed edge has a surviving replacement path in the final
         // graph. The proof must not stop at the first still-connected
         // pair, nor treat multiple redundant removals as a split.
-        Scene redundant_losses=fyzz::native::native_legacy_gu_scene();
+        Scene redundant_losses{Scene::ContactGenerator::DiagnosticLegacyGu};
         redundant_losses.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,12,0},1.0f);
         redundant_losses.add_dynamic_box(
@@ -7647,7 +7639,7 @@ int run_native_scene_smoke() {
         // Retire the A-C edge of a three-node cycle, recycle its handle
         // for A-D, then delete A-D while B still provides another route.
         // Finally remove B and verify real component split repair.
-        Scene relink=fyzz::native::native_legacy_gu_scene();
+        Scene relink{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto aa=relink.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,15,0},1.0f);
         const auto bb=relink.add_dynamic_box(
@@ -7701,7 +7693,7 @@ int run_native_scene_smoke() {
         // in each graph, not four entries with a repeated tip.
         // Re-adding redundant chords must retain the cached tip->C->root
         // route for the next removal; only a real union changes the root.
-        Scene dirty_routes=fyzz::native::native_legacy_gu_scene();
+        Scene dirty_routes{Scene::ContactGenerator::DiagnosticLegacyGu};
         dirty_routes.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,22,0},1.0f);
         dirty_routes.add_dynamic_box(
@@ -7769,7 +7761,7 @@ int run_native_scene_smoke() {
         // the alternate paths learned in an established dynamic island.
         // Two root-directed fast hits (one per graph) must survive.
         {
-            Scene admitted_routes=fyzz::native::native_legacy_gu_scene();
+            Scene admitted_routes{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto a=admitted_routes.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0.0f,26,0},1.0f);
             admitted_routes.add_dynamic_box(
@@ -7817,7 +7809,7 @@ int run_native_scene_smoke() {
         // larger island handle. Node admission/retirement must not
         // renumber unrelated source islands in either graph.
         {
-            Scene lifetime=fyzz::native::native_legacy_gu_scene();
+            Scene lifetime{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto a=lifetime.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,30,0},1.0f);
             const auto b=lifetime.add_dynamic_box(
@@ -7888,7 +7880,7 @@ int run_native_scene_smoke() {
         // even if the smaller island owns the lower BodyId and appears
         // first in the full component rebuild's traversal.
         {
-            Scene concurrent=fyzz::native::native_legacy_gu_scene();
+            Scene concurrent{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto singleton=concurrent.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,36,0},1.0f);
             const auto large_root=concurrent.add_dynamic_box(
@@ -8213,7 +8205,7 @@ int run_native_scene_smoke() {
         // rotated SAP AABBs without touching in Gu SAT. This discriminates
         // the speculative source graph from the accurate touch graph;
         // replacing both with Gu manager connectivity fails here.
-        Scene candidate_only=fyzz::native::native_legacy_gu_scene();
+        Scene candidate_only{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto rod_a=candidate_only.add_dynamic_box(
             {2.0f,0.1f,0.2f},{0,20,0},1.0f);
         const auto rod_b=candidate_only.add_dynamic_box(
@@ -8319,7 +8311,7 @@ int run_native_scene_smoke() {
         // None of these static-only changes should fabricate an island
         // topology revision.
         {
-            Scene static_counts=fyzz::native::native_legacy_gu_scene();
+            Scene static_counts{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto ground=static_counts.add_static_floor(0);
             const auto a=static_counts.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.5f,0},1);
@@ -8371,7 +8363,7 @@ int run_native_scene_smoke() {
                    "Retired static actor retained ghost island touches");
         }
 
-        Scene static_world=fyzz::native::native_legacy_gu_scene();
+        Scene static_world{Scene::ContactGenerator::DiagnosticLegacyGu};
         static_world.add_static_floor(0.0f);
         const auto ground_box=static_world.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
@@ -8415,7 +8407,7 @@ int run_native_scene_smoke() {
     // The same scene must distinguish SAP candidate overlaps from actual
     // shape contacts, and preserve touch found/lost across quiet frames.
     {
-        Scene contact_scene=fyzz::native::native_legacy_gu_scene();
+        Scene contact_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto distant_floor = contact_scene.add_static_floor(0.0f);
         const auto falling = contact_scene.add_dynamic_box(
             {1.0f,1.0f,1.0f}, {0,20,0}, 1.0f);
@@ -8476,7 +8468,7 @@ int run_native_scene_smoke() {
         // The ordered pair must not determine which way gravity would
         // be opposed: creating the box before the floor reverses IDs
         // but not the physical plane orientation.
-        Scene reversed=fyzz::native::native_legacy_gu_scene();
+        Scene reversed{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto box = reversed.add_dynamic_box(
             {1,1,1}, {0,1.02f,0}, 1);
         const auto floor = reversed.add_static_floor(0);
@@ -8500,7 +8492,7 @@ int run_native_scene_smoke() {
                "Box-before-floor touch loss emitted wrong events");
     }
     {
-        Scene box_scene=fyzz::native::native_legacy_gu_scene();
+        Scene box_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto fixed = box_scene.add_static_box(
             {1,1,1},{0,0,0});
         const auto moveable = box_scene.add_dynamic_box(
@@ -8575,7 +8567,7 @@ int run_native_scene_smoke() {
         // DyBodyCoreIntegrator closed-form quaternion step, limited to
         // an isolated free body until source angular contact constraints
         // and the original PGS execution are integrated.
-        Scene angular=fyzz::native::native_legacy_gu_scene();
+        Scene angular{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto body = angular.add_dynamic_box(
             {0.25f,0.5f,0.75f},{0,10,0},1);
         angular.set_angular_velocity(body,{0,2,0});
@@ -8617,7 +8609,7 @@ int run_native_scene_smoke() {
     // offset contact; the retired one-impulse-per-manifold solver could
     // not produce contact torque at any rigid-body geometry.
     {
-        Scene angular_contact=fyzz::native::native_legacy_gu_scene();
+        Scene angular_contact{Scene::ContactGenerator::DiagnosticLegacyGu};
         angular_contact.add_static_box({1,1,1},{0,0,0});
         const auto body=angular_contact.add_dynamic_box(
             {0.5f,0.5f,0.5f},{1.3f,1.25f,0},1.0f);
@@ -8633,7 +8625,7 @@ int run_native_scene_smoke() {
     // Original Gu box-box SAT/contact path must accept an oblique
     // body directly in the owning scene, not only the free-flight path.
     {
-        Scene oblique=fyzz::native::native_legacy_gu_scene();
+        Scene oblique{Scene::ContactGenerator::DiagnosticLegacyGu};
         auto moving=oblique.add_dynamic_box({0.5f,0.5f,0.5f},
                                              {0,5,0},1.0f);
         oblique.set_angular_velocity(moving,{0,0,2.0f});
@@ -8670,7 +8662,7 @@ int run_native_scene_smoke() {
     // A pitched box has more than an AABB corner representation. The
     // source plane contact stream must carry its real rotated vertices.
     {
-        Scene pitched=fyzz::native::native_legacy_gu_scene();
+        Scene pitched{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto moving=pitched.add_dynamic_box(
             {0.4f,0.7f,0.3f},{0,5,0},1);
         pitched.set_angular_velocity(moving,{0,0,2.0f});
@@ -8697,7 +8689,7 @@ int run_native_scene_smoke() {
     // participants. An unrelated free-flight body must keep its original
     // unconstrained motion through repeated solver rounds and retirement.
     {
-        Scene sparse=fyzz::native::native_legacy_gu_scene();
+        Scene sparse{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor = sparse.add_static_floor(0.0f);
         const auto contact = sparse.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -8725,7 +8717,7 @@ int run_native_scene_smoke() {
     // Two static contact managers must reference the same zero-mass world
     // solver body, without duplicating or accumulating static velocity.
     {
-        Scene supports=fyzz::native::native_legacy_gu_scene();
+        Scene supports{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto left = supports.add_static_box(
             {0.5f,0.5f,1.0f},{-0.5f,-0.5f,0});
         const auto right = supports.add_static_box(
@@ -8747,7 +8739,7 @@ int run_native_scene_smoke() {
     // sliding motion with the reference material (0.5/0.5 friction).
     // A normal-only solver preserves almost all horizontal velocity.
     {
-        Scene sliding=fyzz::native::native_legacy_gu_scene();
+        Scene sliding{Scene::ContactGenerator::DiagnosticLegacyGu};
         sliding.add_static_floor(0);
         const auto box=sliding.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -8768,7 +8760,7 @@ int run_native_scene_smoke() {
     // overlap must receive source-scale positional correction, rather
     // than the earlier unrelated 0.2 normal-bias approximation.
     {
-        Scene correction=fyzz::native::native_legacy_gu_scene();
+        Scene correction{Scene::ContactGenerator::DiagnosticLegacyGu};
         correction.add_static_floor(0.0f);
         const auto body=correction.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.48f,0},1.0f);
@@ -8783,7 +8775,7 @@ int run_native_scene_smoke() {
     // removes tangential slip more strongly than the old 0.2 multiplier.
     // Use a low sliding speed so the limit does not dominate this check.
     {
-        Scene relaxation=fyzz::native::native_legacy_gu_scene();
+        Scene relaxation{Scene::ContactGenerator::DiagnosticLegacyGu};
         relaxation.add_static_floor(0.0f);
         const auto body=relaxation.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -8800,7 +8792,7 @@ int run_native_scene_smoke() {
     // dynamic/dynamic contacts. None of the leaf bodies touch each other;
     // the center is the one genuine per-partition conflict.
     {
-        Scene crowded=fyzz::native::native_legacy_gu_scene();
+        Scene crowded{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto center = crowded.add_dynamic_box(
             {2.0f,2.0f,2.0f},{0,5,0},1.0f);
         std::vector<fyzz::BodyId> leaves;
@@ -8882,7 +8874,7 @@ int run_native_scene_smoke() {
     // conflict between distinct static-floor contacts; all may share
     // partition zero, even though they reference one world solver row.
     {
-        Scene detached=fyzz::native::native_legacy_gu_scene();
+        Scene detached{Scene::ContactGenerator::DiagnosticLegacyGu};
         detached.add_static_floor(0.0f);
         for (unsigned i=0;i<12;++i)
             detached.add_dynamic_box({0.25f,0.25f,0.25f},
@@ -8899,7 +8891,7 @@ int run_native_scene_smoke() {
     // verify final per-point normal impulse sums against velocity change.
     {
         constexpr float dt=1.0f/120.0f;
-        Scene reported=fyzz::native::native_legacy_gu_scene();
+        Scene reported{Scene::ContactGenerator::DiagnosticLegacyGu};
         reported.add_static_floor(0.0f);
         const auto light=reported.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
@@ -8961,7 +8953,7 @@ int run_native_scene_smoke() {
     // writeback accidentally appended in solver order by checking each
     // unique leaf's momentum against its original Gu manager offset.
     {
-        Scene reordered=fyzz::native::native_legacy_gu_scene();
+        Scene reordered{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
                                                {0,5,0},1.0f);
         const auto b=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
@@ -9007,7 +8999,7 @@ int run_native_scene_smoke() {
     // Compare the aggregate world X impulse with each independent body's
     // tangential velocity change, and verify per-manager patch offsets.
     {
-        Scene friction_report=fyzz::native::native_legacy_gu_scene();
+        Scene friction_report{Scene::ContactGenerator::DiagnosticLegacyGu};
         friction_report.add_static_floor(0.0f);
         const auto left=friction_report.add_dynamic_box(
             {0.5f,0.5f,0.5f},{-5.0f,0.5f,0.0f},1.0f);
@@ -9072,7 +9064,7 @@ int run_native_scene_smoke() {
     // solved force streams. A finite static box can overflow its AABB
     // during source broadphase preparation without any solver step.
     {
-        Scene geometry=fyzz::native::native_legacy_gu_scene();
+        Scene geometry{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=geometry.add_static_floor(0.0f);
         const auto box=geometry.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -9458,7 +9450,7 @@ int run_native_scene_smoke() {
     // managers must not copy the historical handle watermark on every
     // simulation step merely to guarantee exception rollback.
     {
-        Scene stable=fyzz::native::native_legacy_gu_scene();
+        Scene stable{Scene::ContactGenerator::DiagnosticLegacyGu};
         stable.add_static_floor(0.0f);
         for(int i=0;i<16;++i)
             stable.add_dynamic_box({0.5f,0.5f,0.5f},
@@ -9581,7 +9573,7 @@ int run_native_scene_smoke() {
     // The second body's near-FLT_MAX origin plus the finite final motion
     // yields an unrepresentable position after the first body integrated.
     {
-        Scene rollback_pose=fyzz::native::native_legacy_gu_scene();
+        Scene rollback_pose{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto first=rollback_pose.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,10,0},1.0f);
         const auto second=rollback_pose.add_dynamic_box(
@@ -9619,7 +9611,7 @@ int run_native_scene_smoke() {
     {
         constexpr float dt=1.0f/120.0f;
         for (const bool relocate_floor : {false,true}) {
-            Scene cached=fyzz::native::native_legacy_gu_scene();
+            Scene cached{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto floor=cached.add_static_floor(0.0f);
             const auto box=cached.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -9641,7 +9633,7 @@ int run_native_scene_smoke() {
             else
                 cached.set_position(box,shifted_body);
 
-            Scene fresh=fyzz::native::native_legacy_gu_scene();
+            Scene fresh{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto new_floor=fresh.add_static_floor(0.0f);
             const auto new_box=fresh.add_dynamic_box(
                 {0.5f,0.5f,0.5f},shifted_body,1.0f);
@@ -9682,7 +9674,7 @@ int run_native_scene_smoke() {
         bool observed_break=false, observed_unbroken=false;
         for (const float sliding_speed :
              {0.0f,0.01f,0.04f,0.08f,0.2f,0.6f,2.0f,4.0f}) {
-            Scene final_pass=fyzz::native::native_legacy_gu_scene();
+            Scene final_pass{Scene::ContactGenerator::DiagnosticLegacyGu};
             final_pass.add_static_floor(0.0f);
             const auto box=final_pass.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.49f,0},1.0f);
@@ -9732,7 +9724,7 @@ int run_native_scene_smoke() {
     {
         using Change=fyzz::native::ForceThresholdChange;
         constexpr float dt=1.0f/120.0f;
-        Scene thresholds=fyzz::native::native_legacy_gu_scene();
+        Scene thresholds{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto ground=thresholds.add_static_floor(0);
         const auto monitored=thresholds.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -9804,7 +9796,7 @@ int run_native_scene_smoke() {
     // produce LOST without retiring the underlying Gu contact.
     {
         using Change=fyzz::native::ForceThresholdChange;
-        Scene pair_threshold=fyzz::native::native_legacy_gu_scene();
+        Scene pair_threshold{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto first=pair_threshold.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,5,0},1.0f);
         const auto second=pair_threshold.add_dynamic_box(
@@ -9848,7 +9840,7 @@ int run_native_scene_smoke() {
             scene.set_velocity(load,{0,-1.0f,0});
             return std::array<fyzz::BodyId,3>{left,right,load};
         };
-        Scene baseline=fyzz::native::native_legacy_gu_scene();
+        Scene baseline{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto ids=populate(baseline);
         baseline.step(dt);
         const auto managers=baseline.contacts();
@@ -9875,7 +9867,7 @@ int run_native_scene_smoke() {
         expect(largest < static_cast<double>(threshold)*dt &&
                static_cast<double>(threshold)*dt < total,
                "Threshold fixture did not separate individual and summed force");
-        Scene combined=fyzz::native::native_legacy_gu_scene();
+        Scene combined{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto both=populate(combined);
         combined.set_contact_report_threshold(both[2],threshold);
         combined.step(dt);
@@ -9904,7 +9896,7 @@ int run_native_scene_smoke() {
                "Lost static-world threshold repeated after retirement");
         // With zero threshold, both separately qualifying static
         // contacts must still generate ONE aggregated Found report.
-        Scene duplicates=fyzz::native::native_legacy_gu_scene();
+        Scene duplicates{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto duplicate_ids=populate(duplicates);
         duplicates.set_contact_report_threshold(duplicate_ids[2],0.0f);
         duplicates.step(dt);
@@ -9946,7 +9938,7 @@ int run_native_scene_smoke() {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
         auto friction_run=[](Mode mode, bool disable) {
-            Scene sample=fyzz::native::native_legacy_gu_scene();
+            Scene sample{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto ground=sample.add_static_floor(0.0f);
             const auto box=sample.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
@@ -9987,7 +9979,7 @@ int run_native_scene_smoke() {
         expect(std::abs(disabled.first-0.2f)<0.002f &&
                disabled.second==0.0,
                "PxsMaterial flag eDISABLE_FRICTION did not suppress tangent rows");
-        Scene spring_scene=fyzz::native::native_legacy_gu_scene();
+        Scene spring_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto spring_box=spring_scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,2,0},1.0f);
         Material compliant{};
@@ -10008,7 +10000,7 @@ int run_native_scene_smoke() {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
         auto rebound=[](Mode mode, float initial_height=0.49f) {
-            Scene bounce=fyzz::native::native_legacy_gu_scene();
+            Scene bounce{Scene::ContactGenerator::DiagnosticLegacyGu};
             const auto ground=bounce.add_static_floor(0.0f);
             const auto box=bounce.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{0,initial_height,0},1.0f);
