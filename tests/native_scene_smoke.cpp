@@ -388,7 +388,8 @@ struct ContactCorrelationSourceFixture {
             scene.set_shape_offsets(moving,0.02f*scale,0);
             scene.set_pose(moving,rotated_at,yaw);
             scene.advance_collision(true);
-            const auto edge=scene.contact_edge_index({fixed,moving});
+            const Pair pair{std::min(fixed,moving),std::max(fixed,moving)};
+            const auto edge=scene.contact_edge_index(pair);
             if(edge==std::numeric_limits<std::uint32_t>::max() ||
                !scene.contacts().empty())
                 throw std::runtime_error(
@@ -419,7 +420,7 @@ struct ContactCorrelationSourceFixture {
             // valid face manifold on this same EdgeIndex.
             scene.set_pose(moving,{0,0.9f*scale,0},{});
             scene.advance_collision(true);
-            if(scene.contact_edge_index({fixed,moving})!=edge ||
+            if(scene.contact_edge_index(pair)!=edge ||
                scene.contacts().size()!=1 ||
                scene.contacts()[0].count==0 ||
                scene.found_contacts().size()!=1)
