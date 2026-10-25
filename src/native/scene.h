@@ -218,6 +218,9 @@ public:
     std::size_t broadphase_incremental_pair_update_count() const noexcept {
         return broadphase_incremental_pair_update_count_;
     }
+    std::size_t broadphase_endpoint_crossing_count() const noexcept {
+        return broadphase_endpoint_crossing_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1231,6 +1234,11 @@ private:
     // and its Found/Lost edge publication, not a second pair owner.
     bool broadphase_full_pair_update_=true;
     std::size_t broadphase_incremental_pair_update_count_=0;
+    std::size_t broadphase_endpoint_crossing_count_=0;
+    // BpBroadPhaseSap::batchUpdateFewUpdates emits candidate changes
+    // when min/max endpoints of different volumes cross on any axis.
+    // Sorted/deduplicated for publication; never a second pair owner.
+    std::vector<Pair> broadphase_crossed_pairs_;
     std::vector<BodyId> broadphase_updated_ids_;
     // mUpdated's compact indices into the scene-owned SapBox1D
     // registry. Prevent six complete endpoint scans for one mover.
