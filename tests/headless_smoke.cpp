@@ -2714,10 +2714,10 @@ int main() {
                                !std::isfinite(position_error) ||
                                !std::isfinite(linear_error) ||
                                !std::isfinite(angular_error) ||
-                               position_error>0.14f ||
-                               linear_error>0.45f ||
-                               angular_error>0.85f ||
-                               std::abs(orientation_dot)<0.975f) {
+                               position_error>0.001f ||
+                               linear_error>0.01f ||
+                               angular_error>0.01f ||
+                               std::abs(orientation_dot)<0.99999f) {
                                 std::cerr<<"Native/PhysX frictional stack"
                                          <<" frame="<<frame+1
                                          <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
@@ -2777,6 +2777,14 @@ int main() {
                             }
                         }
                     }
+                    // Enforce measured cross-platform contact-publication
+                    // parity, independently of the body trajectory bounds.
+                    if(unmatched_source_contact_events ||
+                       unmatched_native_contact_events ||
+                       mismatched_contact_counts ||
+                       max_contact_impulse_error>0.01)
+                        throw std::runtime_error(
+                            "Coupled rigid PhysX contact publication diverged");
                     if(source_effect<0.03f || source_rotation<0.01f)
                         throw std::runtime_error(
                             "PhysX friction/rotation oracle fixture lacked response");
