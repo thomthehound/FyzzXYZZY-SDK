@@ -1228,9 +1228,9 @@ private:
     std::vector<ContactPoint> gu_cached_points_, next_gu_cached_points_;
     // PxContactBuffer::MAX_CONTACTS, reused for all box-box candidates.
     std::array<ContactPoint, 255> box_contact_scratch_{};
-    // The PCM generator and PGS contact stream share Scene's reusable
-    // per-pair scratch lifetime. This arena is not rollback state.
-    std::array<PcmContactCandidate,64> pcm_candidate_scratch_{};
+    // Lazy scene-owned PCM working set, allocated once and reused
+    // across managers. The arena is not authoritative rollback state.
+    std::vector<PcmContactCandidate> pcm_candidate_scratch_;
     std::vector<Pair> found_contacts_;
     std::vector<Pair> lost_contacts_;
     std::vector<Pair> next_found_contacts_, next_lost_contacts_;
