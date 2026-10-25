@@ -712,7 +712,7 @@ private:
         Vec3 local_a{}, local_b{}, normal_b{};
         float separation=0.0f;
     };
-    struct PcmPlaneBoxCache {
+    struct PcmManifoldCache {
         std::array<PcmPersistentContact,4> points{};
         Vec3 relative_position{};
         Quat relative_rotation{};
@@ -722,16 +722,16 @@ private:
         bool initialized=false;
     };
     static void refresh_pcm_contact_points(
-        PcmPlaneBoxCache& cache, Vec3 position_a_in_b,
+        PcmManifoldCache& cache, Vec3 position_a_in_b,
         Quat rotation_a_in_b, float projection_break);
     static void reduce_pcm_box_five(
-        PcmPlaneBoxCache& cache, const PcmPersistentContact& new_contact);
+        PcmManifoldCache& cache, const PcmPersistentContact& new_contact);
     std::uint8_t generate_pcm_plane_box(
         const Actor& plane, const Actor& box, float contact_distance,
-        PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
+        PcmManifoldCache& cache, std::span<ContactPoint> output);
     std::uint8_t generate_pcm_box_box(
         const Actor& first, const Actor& second, float contact_distance,
-        PcmPlaneBoxCache& cache, std::span<ContactPoint> output);
+        PcmManifoldCache& cache, std::span<ContactPoint> output);
     struct ContactEdge {
         Pair pair{};                // PhysX mEdgeNodeIndices[2*EdgeIndex]
         bool live=false;            // allocated by addContactManager
@@ -744,8 +744,7 @@ private:
         // static rule puts the dynamic participant first. Canonical
         // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
-        PcmPlaneBoxCache pcm_plane_box{};
-        PcmPlaneBoxCache pcm_box_box{};
+        PcmManifoldCache pcm_cache{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
         // PhysX mEdgeInstances[2*EdgeIndex + endpoint] for the separate
