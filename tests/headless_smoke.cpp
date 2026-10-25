@@ -2271,7 +2271,7 @@ int main() {
                         "PhysX off-center contact fixture produced no angular response");
             }
 
-            // Source-Gu frictional rigid PGS: normal-only comparisons
+            // Coupled PCM/Gu rigid PGS: normal-only comparisons
             // cannot validate the correlated two-tangent friction rows.
             // The extended 48-frame source-divergence reproduction
             // remains enabled with STRICT_RIGID_FRICTION_CONFORMANCE.
@@ -2280,12 +2280,20 @@ int main() {
             // Compare BOTH mass orderings and retain a separate friction-
             // disabled oracle to prove the fixture actually excites
             // tangential resistance rather than resting normal contact.
+            for(const bool use_pcm:{false,true}) {
             for(const bool reversed:{false,true}) {
-                fyzz::World native_friction(native_legacy_gu_options(true));
+                fyzz::WorldOptions native_options=use_pcm
+                    ? fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu,true}
+                    : native_legacy_gu_options(true);
+                fyzz::World native_friction(native_options);
                 fyzz::World source_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
+                    use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
+                            : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
+                    true});
                 fyzz::World source_no_friction(fyzz::WorldOptions{
-                    fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,true});
+                    use_pcm ? fyzz::ExecutionMode::ReferencePhysXCpu
+                            : fyzz::ExecutionMode::ReferencePhysXCpuLegacyGu,
+                    true});
                 const fyzz::Vec3 half{0.5f,0.5f,0.5f};
                 fyzz::Material frictional{};
                 frictional.static_friction=0.8f;
@@ -2331,7 +2339,7 @@ int main() {
                 for(int frame=0;frame<frames;++frame) {
                     const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
 #if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                    if(reversed && (frame==11 || frame==12)) {
+                    if(!use_pcm && reversed && (frame==11 || frame==12)) {
                         const auto probe=[&](const char* name,
                             fyzz::World& w,fyzz::BodyId bottom,fyzz::BodyId top) {
                             const auto lo=w.body_state(bottom);
@@ -2369,7 +2377,7 @@ int main() {
                     native_friction.step(dt);
                     source_friction.step(dt);
                     source_no_friction.step(dt);
-                    if(reversed && frame==0) {
+                    if(!use_pcm && reversed && frame==0) {
                         const auto find_pair=[](fyzz::World& world,
                                                 fyzz::BodyId a,
                                                 fyzz::BodyId b)
@@ -2401,7 +2409,7 @@ int main() {
                         }
                     }
 #if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                    if(reversed && frame<25) {
+                    if(!use_pcm && reversed && frame<25) {
                         const auto line=[&](const char* name,fyzz::World& w,
                                             fyzz::BodyId lower,fyzz::BodyId upper) {
                             const auto lo=w.body_state(lower);
@@ -2499,6 +2507,7 @@ int main() {
                            std::abs(orientation_dot)<0.975f) {
                             std::cerr<<"Native/PhysX frictional stack"
                                      <<" frame="<<frame+1
+                                     <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
                                      <<" reversed="<<reversed
                                      <<" actor="<<label
                                      <<" pos="<<position_error
@@ -2563,8 +2572,10 @@ int main() {
                 std::cout<<"N1 coupled-friction oracle passed"
                          <<" frames="<<frames
                          <<" reversed="<<reversed
+                         <<" generator="<<(use_pcm?"PCM":"legacy-Gu")
                          <<" friction_effect="<<source_effect
                          <<" angular_response="<<source_rotation<<'\n';
+            }
             }
 
             // Coupled PGS conformance: unlike a free two-body impact,
