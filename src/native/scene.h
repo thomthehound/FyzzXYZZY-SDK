@@ -725,6 +725,10 @@ private:
         Quat rotation_a_in_b, float projection_break);
     static void reduce_pcm_box_five(
         PcmManifoldCache& cache, const PcmPersistentContact& new_contact);
+    static void reduce_pcm_box_batch(
+        PcmManifoldCache& cache,
+        std::span<const PcmContactCandidate> candidates,
+        float tolerance_length);
     std::uint8_t generate_pcm_plane_box(
         const Actor& plane, const Actor& box, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
