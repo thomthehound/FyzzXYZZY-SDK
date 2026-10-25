@@ -22,6 +22,66 @@
 namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
+struct ConstraintIslandSourceFixture {
+    static void verify_typed_constraint_edge_lifetime() {
+        // eCONSTRAINT and eCONTACT_MANAGER use the same EdgeIndex pool,
+        // but each accurate island maintains a separate type list.
+        // This fixture covers island ownership only, not Dy 1D solving.
+        Scene scene;
+        const BodyId a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const BodyId b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{5,5,0},1.0f);
+        scene.advance_collision();
+        if(scene.accurate_island_count()!=2 ||
+           !scene.contacts().empty())
+            throw std::runtime_error("Constraint fixture started connected");
+
+        const auto edge=scene.add_constraint_edge(a,b);
+        scene.advance_collision();
+        if(scene.accurate_island_count()!=1 ||
+           scene.speculative_island_count()!=1 ||
+           scene.accurate_island_id(a)!=scene.accurate_island_id(b) ||
+           scene.island_edges_[edge].type!=
+               Scene::IslandEdgeType::Constraint ||
+           scene.contact_edge_index({a,b})!=Scene::invalid_edge ||
+           !scene.contacts().empty())
+            throw std::runtime_error(
+                "Typed source constraint edge failed island admission");
+        const auto owner=scene.accurate_island_id(a);
+        const auto& island=scene.accurate_islands_.islands[owner];
+        if(island.contact_count!=0 || island.constraint_count!=1 ||
+           island.first_constraint!=edge || island.last_constraint!=edge)
+            throw std::runtime_error(
+                "Source eCONSTRAINT contaminated contact-manager array");
+        bool rejected_unsolved=false;
+        try {scene.step(1.0f/120.0f);}
+        catch(const std::logic_error&) {rejected_unsolved=true;}
+        if(!rejected_unsolved)
+            throw std::runtime_error(
+                "Unadmitted Dy 1D constraint silently simulated");
+
+        scene.remove_constraint_edge(edge);
+        scene.advance_collision();
+        if(scene.accurate_island_count()!=2 ||
+           scene.speculative_island_count()!=2 ||
+           scene.accurate_island_id(a)==scene.accurate_island_id(b) ||
+           !scene.active_constraint_handles_.empty() ||
+           scene.island_edges_[edge].live)
+            throw std::runtime_error(
+                "Constraint edge retirement retained a stale island bridge");
+        scene.set_position(b,{0,6,0});
+        scene.advance_collision();
+        const auto contact=scene.contact_edge_index({a,b});
+        if(contact!=edge || contact>=scene.island_edges_.size() ||
+           scene.island_edges_[contact].type!=
+               Scene::IslandEdgeType::ContactManager ||
+           scene.contacts().empty())
+            throw std::runtime_error(
+                "Shared EdgeIndex reuse confused constraint and contact owners");
+    }
+};
+
 struct ContactCorrelationSourceFixture {
     static void verify_kinematic_target_source_reference_parity() {
         // ScKinematics.cpp calculates target velocity at dt and moves
@@ -347,7 +407,7 @@ struct ContactCorrelationSourceFixture {
                scene.contacts()[0].count!=4 ||
                !scene.gu_cache_records_.empty() ||
                !scene.gu_cached_points_.empty() ||
-               !scene.contact_edges_[scene.contacts()[0].edge_handle].
+               !scene.island_edges_[scene.contacts()[0].edge_handle].
                    pcm_cache.initialized)
                 throw std::runtime_error(
                     "Default native scene did not admit plane-box PCM");
@@ -372,7 +432,7 @@ struct ContactCorrelationSourceFixture {
                 }
             }
             if(!correlated || !slept ||
-               !scene.contact_edges_[manager].pcm_cache.initialized ||
+               !scene.island_edges_[manager].pcm_cache.initialized ||
                !scene.gu_cache_records_.empty())
                 throw std::runtime_error(
                     "Default PCM contact lost friction anchors or sleep lifecycle");
@@ -383,7 +443,7 @@ struct ContactCorrelationSourceFixture {
             scene.step(1.0f/120.0f);
             if(scene.body_is_sleeping(moving) ||
                scene.solved_result_frame()!=scene.frame_index() ||
-               !scene.contact_edges_[manager].pcm_cache.initialized ||
+               !scene.island_edges_[manager].pcm_cache.initialized ||
                !scene.gu_cache_records_.empty())
                 throw std::runtime_error(
                     "Default PCM wake did not reactivate the same Sc/Dy manager");
@@ -398,7 +458,7 @@ struct ContactCorrelationSourceFixture {
                scene.contacts()[0].count!=4 ||
                !scene.gu_cache_records_.empty() ||
                !scene.gu_cached_points_.empty() ||
-               !scene.contact_edges_[scene.contacts()[0].edge_handle].
+               !scene.island_edges_[scene.contacts()[0].edge_handle].
                    pcm_cache.initialized)
                 throw std::runtime_error(
                     "Default native scene did not admit box-box PCM");
@@ -429,7 +489,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "PCM rollback fixture failed to establish cache");
             const auto edge=scene.contacts()[0].edge_handle;
-            const auto before=scene.contact_edges_[edge].pcm_cache;
+            const auto before=scene.island_edges_[edge].pcm_cache;
             if(!before.initialized || before.count!=4)
                 throw std::runtime_error(
                     "PCM rollback fixture lacks retained witnesses");
@@ -444,7 +504,7 @@ struct ContactCorrelationSourceFixture {
             } catch(const std::overflow_error&) {
                 rejected=true;
             }
-            const auto& restored=scene.contact_edges_[edge].pcm_cache;
+            const auto& restored=scene.island_edges_[edge].pcm_cache;
             if(!rejected || scene.frame_index()!=frame ||
                restored.initialized!=before.initialized ||
                restored.count!=before.count ||
@@ -476,8 +536,8 @@ struct ContactCorrelationSourceFixture {
             }
             scene.advance_collision(true);
             if(scene.contacts().size()!=1 ||
-               !scene.contact_edges_[edge].pcm_cache.initialized ||
-               std::abs(scene.contact_edges_[edge].
+               !scene.island_edges_[edge].pcm_cache.initialized ||
+               std::abs(scene.island_edges_[edge].
                         pcm_cache.relative_position.x-
                         before.relative_position.x)<0.10f)
                 throw std::runtime_error(
@@ -523,7 +583,7 @@ struct ContactCorrelationSourceFixture {
             // admissible at the current pose but has an invalid cached
             // relative transform. The next real Gu pass must regenerate
             // and reject it via the original GJK/EPA result.
-            auto& cache=scene.contact_edges_[edge].pcm_cache;
+            auto& cache=scene.island_edges_[edge].pcm_cache;
             const Vec3 actual_relative=cache.relative_position;
             cache.initialized=true;
             cache.count=1;
@@ -636,7 +696,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Native PCM boundary GJK witness not published");
             const auto edge=actual.contacts()[0].edge_handle;
-            if(actual.contact_edges_[edge].pcm_cache.warmstart.count==0)
+            if(actual.island_edges_[edge].pcm_cache.warmstart.count==0)
                 throw std::runtime_error(
                     "GJK simplex ownership lost on native contact manager");
             actual.step(1.0f/120.0f);
@@ -778,7 +838,7 @@ struct ContactCorrelationSourceFixture {
                 scene.advance_collision(true);
                 if(scene.contacts().size()!=1 ||
                    scene.contacts()[0].count!=1 ||
-                   !scene.contact_edges_[scene.contacts()[0].edge_handle].
+                   !scene.island_edges_[scene.contacts()[0].edge_handle].
                         pcm_cache.initialized)
                     throw std::runtime_error(
                         "Scaled rotated GJK/EPA contact not admitted");
@@ -869,7 +929,7 @@ struct ContactCorrelationSourceFixture {
                 "PCM box pair did not allocate the reusable source candidate arena");
         const auto* const reused_pcm_buffer=
             scene.pcm_candidate_scratch_.data();
-        const auto& cache=scene.contact_edges_[edge].pcm_cache;
+        const auto& cache=scene.island_edges_[edge].pcm_cache;
         if(!cache.initialized || cache.count!=4 ||
            !scene.gu_cache_records_.empty() ||
            !scene.gu_cached_points_.empty())
@@ -892,28 +952,28 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           scene.contact_edges_[edge].pcm_cache.count!=4 ||
-           scene.contact_edges_[edge].pcm_cache.relative_position.x!=saved.x)
+           scene.island_edges_[edge].pcm_cache.count!=4 ||
+           scene.island_edges_[edge].pcm_cache.relative_position.x!=saved.x)
             throw std::runtime_error(
                 "PCM box-box steady cache was regenerated instead of refreshed");
         // An authored pose must reset the same manager's PCM geometry
         // cache; new B witnesses follow the new physical shape pose.
         scene.set_position(dynamic,{0.02f,1.46f,0});
-        if(scene.contact_edges_[edge].pcm_cache.initialized)
+        if(scene.island_edges_[edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "Authored PCM box-box pose retained obsolete witnesses");
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].count!=4 ||
-           !scene.contact_edges_[edge].pcm_cache.initialized)
+           !scene.island_edges_[edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "PCM box-box authored-pose reconstruction failed");
         if(scene.pcm_candidate_scratch_.data()!=reused_pcm_buffer)
             throw std::runtime_error(
                 "PCM regeneration reallocated scene-owned candidate scratch");
-        if(std::abs(scene.contact_edges_[edge].pcm_cache.
+        if(std::abs(scene.island_edges_[edge].pcm_cache.
                         relative_position.x-0.02f)>1.0e-6f ||
-           std::abs(scene.contact_edges_[edge].pcm_cache.
+           std::abs(scene.island_edges_[edge].pcm_cache.
                         points[0].local_a.x-original_local_a_x)<0.01f)
             throw std::runtime_error(
                 "PCM authored pose failed to rebuild first-shape local witnesses");
@@ -953,12 +1013,12 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "PCM aggregate-normal fixture did not form a four-point patch");
             const auto manager=mixed.contacts()[0].edge_handle;
-            auto& manifold=mixed.contact_edges_[manager].pcm_cache;
+            auto& manifold=mixed.island_edges_[manager].pcm_cache;
             manifold.points[1].normal_b={0.6f,0.8f,0};
             mixed.advance_collision(true);
             if(mixed.contacts().size()!=1 ||
                mixed.contacts()[0].edge_handle!=manager ||
-               mixed.contact_edges_[manager].pcm_cache.count!=4)
+               mixed.island_edges_[manager].pcm_cache.count!=4)
                 throw std::runtime_error(
                     "PCM mixed-normal cache did not survive quiet refresh");
             const float expected_x=0.6f/std::sqrt(0.6f*0.6f+3.8f*3.8f);
@@ -1022,8 +1082,8 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "PCM floor contact did not admit four source cached witnesses");
         const auto edge=scene.contacts()[0].edge_handle;
-        if(!scene.contact_edges_[edge].pcm_cache.initialized ||
-           scene.contact_edges_[edge].pcm_cache.count!=4 ||
+        if(!scene.island_edges_[edge].pcm_cache.initialized ||
+           scene.island_edges_[edge].pcm_cache.count!=4 ||
            !scene.gu_cache_records_.empty())
             throw std::runtime_error(
                 "PCM manager used independent Gu cache or lost source manifold");
@@ -1040,7 +1100,7 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           std::abs(scene.contact_edges_[edge].
+           std::abs(scene.island_edges_[edge].
                     pcm_cache.relative_position.x-0.004f)>1.0e-6f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.004f))>1.0e-6f)
@@ -1051,12 +1111,12 @@ struct ContactCorrelationSourceFixture {
         // non-forced geometry advance must rebuild that invalidated
         // manager before returning contact spans.
         scene.set_position(box,{0.004f,0.5f,0});
-        if(scene.contact_edges_[edge].pcm_cache.initialized ||
+        if(scene.island_edges_[edge].pcm_cache.initialized ||
            !scene.dirty_)
             throw std::runtime_error(
                 "Idempotent Sc PCM pose failed manager invalidation");
         scene.advance_collision();
-        if(!scene.contact_edges_[edge].pcm_cache.initialized ||
+        if(!scene.island_edges_[edge].pcm_cache.initialized ||
            scene.contacts().size()!=1)
             throw std::runtime_error(
                 "Idempotent Sc PCM pose did not republish Gu contacts");
@@ -1069,7 +1129,7 @@ struct ContactCorrelationSourceFixture {
         scene.dirty_=true;
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
-           scene.contact_edges_[edge].pcm_cache.relative_position.x!=0.004f ||
+           scene.island_edges_[edge].pcm_cache.relative_position.x!=0.004f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.004f))>1.0e-6f)
             throw std::runtime_error(
@@ -1078,7 +1138,7 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
            scene.contacts()[0].edge_handle!=edge ||
-           std::abs(scene.contact_edges_[edge].pcm_cache.relative_position.x-
+           std::abs(scene.island_edges_[edge].pcm_cache.relative_position.x-
                     0.05f)>1.0e-6f ||
            std::abs(scene.contacts()[0].points[0].position.x-
                     (first.position.x+0.05f))>1.0e-5f)
@@ -1094,7 +1154,7 @@ struct ContactCorrelationSourceFixture {
         scene.advance_collision(true);
         if(scene.contacts().empty() ||
            scene.contacts()[0].count>4 ||
-           std::abs(scene.contact_edges_[edge].
+           std::abs(scene.island_edges_[edge].
                     pcm_cache.relative_rotation.z)<0.01f)
             throw std::runtime_error(
                 "PCM plane-box rotation did not rebuild four-point manifold");
@@ -1106,7 +1166,7 @@ struct ContactCorrelationSourceFixture {
         scene.set_position(box,{0.05f,3.0f,0});
         scene.advance_collision(true);
         if(!scene.contacts().empty() ||
-           scene.contact_edges_[edge].pcm_cache.count!=0)
+           scene.island_edges_[edge].pcm_cache.count!=0)
             throw std::runtime_error(
                 "PCM persistent manager did not retire separated points");
         scene.set_position(box,{0.05f,0.5f,0});
@@ -1124,7 +1184,7 @@ struct ContactCorrelationSourceFixture {
             {0.5f,0.5f,0.5f},{2,0.5f,0},1);
         scene.advance_collision(true);
         if(scene.contacts().size()!=1 ||
-           !scene.contact_edges_[scene.contacts()[0].edge_handle].
+           !scene.island_edges_[scene.contacts()[0].edge_handle].
                 pcm_cache.initialized ||
            std::abs(scene.contacts()[0].points[0].position.x)<1.0f)
             throw std::runtime_error(
@@ -1143,7 +1203,7 @@ struct ContactCorrelationSourceFixture {
         deep.advance_collision(true);
         if(deep.contacts().size()!=1 ||
            deep.contacts()[0].count!=4 ||
-           deep.contact_edges_[deep.contacts()[0].edge_handle].
+           deep.island_edges_[deep.contacts()[0].edge_handle].
                pcm_cache.count!=4)
             throw std::runtime_error(
                 "PCM plane-box failed source eight-corner four-witness reduction");
@@ -1157,13 +1217,13 @@ struct ContactCorrelationSourceFixture {
         // generation even if the relative transform did not move.
         const auto deep_edge=deep.contacts()[0].edge_handle;
         deep.set_shape_offsets(buried,0.2f,0.0f);
-        if(deep.contact_edges_[deep_edge].pcm_cache.initialized)
+        if(deep.island_edges_[deep_edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "Authored PCM shape distance retained stale candidate set");
         deep.advance_collision(true);
         if(deep.contacts().size()!=1 ||
            deep.contacts()[0].count!=4 ||
-           !deep.contact_edges_[deep_edge].pcm_cache.initialized)
+           !deep.island_edges_[deep_edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "PCM edited shape distance did not regenerate manifold");
     }
@@ -1187,7 +1247,7 @@ struct ContactCorrelationSourceFixture {
         // irrespective of which actor was admitted first.
         if(scene.gu_cached_points_[0].normal.y!=-1.0f ||
            scene.manifolds_[0].points[0].normal.y!=1.0f ||
-           !scene.contact_edges_[scene.manifolds_[0].edge_handle].gu_order_reversed)
+           !scene.island_edges_[scene.manifolds_[0].edge_handle].gu_order_reversed)
             throw std::runtime_error(
                 "Pxc floor-first Gu cache or source Sc body order mismatch");
         const float source_x=scene.manifolds_[0].points[0].position.x;
@@ -1245,7 +1305,7 @@ struct ContactCorrelationSourceFixture {
            late_floor.manifolds_.size()!=1 ||
            late_floor.gu_cached_points_[0].normal.y!=-1.0f ||
            late_floor.manifolds_[0].points[0].normal.y!=1.0f ||
-           late_floor.contact_edges_[
+           late_floor.island_edges_[
                late_floor.manifolds_[0].edge_handle].gu_order_reversed)
             throw std::runtime_error(
                 "Pxc plane-first cache or published Sc flip has incorrect normal");
@@ -1826,8 +1886,8 @@ struct ContactCorrelationSourceFixture {
         scene.third_pass_island_gen();
         if(scene.retired_edge_handles_.size()!=1 ||
            scene.retired_edge_handles_[0]!=original ||
-           original>=scene.contact_edges_.size() ||
-           !scene.contact_edges_[original].retiring ||
+           original>=scene.island_edges_.size() ||
+           !scene.island_edges_[original].retiring ||
            std::find(scene.free_edge_handles_.begin(),
                      scene.free_edge_handles_.end(),original)!=
                scene.free_edge_handles_.end())
@@ -1841,7 +1901,7 @@ struct ContactCorrelationSourceFixture {
         if(!scene.retired_edge_handles_.empty() ||
            scene.free_edge_handles_.empty() ||
            scene.free_edge_handles_.back()!=original ||
-           scene.contact_edges_[original].live)
+           scene.island_edges_[original].live)
             throw std::runtime_error(
                 "Source post-third-pass manager retirement did not publish");
         scene.step_checkpoint_.rollback(scene);
@@ -10608,6 +10668,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
+    fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();

@@ -1566,6 +1566,17 @@ indices and source motion rollback preserve frame ownership without
 a scan of every historical rigid ID. Dynamic interaction wake and
 steady-state retirement are tested on the native production Scene.
 
+**Typed island-edge admission:** The source EdgeIndex pool and its paired
+speculative/accurate EdgeInstances now admit distinct
+`eCONSTRAINT` and `eCONTACT_MANAGER` slots. Accurate islands retain
+separate per-type intrusive lists and counts; adding and removing a
+constraint changes island connectivity without entering the Gu contact
+manager stream. A regression proves merger, split, retirement, and
+contact-handle reuse without type confusion. This is an internal
+island-lifecycle admission only: native Dy 1D row preparation, solving,
+and constraint writeback are deliberately rejected until the real
+source 1D execution path is implemented.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`
