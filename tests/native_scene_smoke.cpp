@@ -4162,16 +4162,18 @@ void verify_anchored_distance_constraint_angular_jacobians() {
         const Result result{world.body_state(a),world.body_state(b)};
         if(!std::isfinite(result.a.angular_velocity.z) ||
            !std::isfinite(result.b.angular_velocity.z) ||
-           std::abs(result.a.angular_velocity.z)<0.02f ||
-           std::abs(result.b.angular_velocity.z)<0.02f ||
+           std::abs(result.a.orientation.z)<0.002f ||
+           std::abs(result.b.orientation.z)<0.002f ||
            !(result.a.position.x>0 && result.b.position.x<2)) {
             std::cerr<<"Anchored 1D mode="<<static_cast<int>(mode)
                 <<" pa="<<result.a.position.x
                 <<" pb="<<result.b.position.x
+                <<" qa="<<result.a.orientation.z
+                <<" qb="<<result.b.orientation.z
                 <<" wa="<<result.a.angular_velocity.z
                 <<" wb="<<result.b.angular_velocity.z<<'\n';
             throw std::runtime_error(
-                "Anchored source 1D joint omitted angular PGS response");
+                "Anchored source 1D joint omitted position-solver angular motion");
         }
         world.remove_constraint(joint);
         return result;
@@ -4182,6 +4184,8 @@ void verify_anchored_distance_constraint_angular_jacobians() {
     for(const auto& pair:{
         std::pair{native.a.position.x,original.a.position.x},
         std::pair{native.b.position.x,original.b.position.x},
+        std::pair{native.a.orientation.z,original.a.orientation.z},
+        std::pair{native.b.orientation.z,original.b.orientation.z},
         std::pair{native.a.angular_velocity.z,original.a.angular_velocity.z},
         std::pair{native.b.angular_velocity.z,original.b.angular_velocity.z}
     }) if(std::abs(pair.first-pair.second)>0.02f)
