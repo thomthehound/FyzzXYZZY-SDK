@@ -165,72 +165,69 @@ struct Facet {
     float distance=0.0f;
     bool valid=false;
 };
+// GuEPAFacet::isValid2 retains the signed distance and input winding.
+// The source EPA accepts a negative plane distance when an initial
+// point/segment/triangle has not yet enclosed the origin; flipping
+// every face to positive would erase exactly that contact branch.
 Facet make_facet(const std::array<Support,64>& vertices,
                  int i,int j,int k) {
     const Vec3 a=vertices[i].q,b=vertices[j].q,c=vertices[k].q;
     Vec3 n=cross(sub(b,a),sub(c,a));
     const float norm2=length2(n);
-    if(norm2<=1.0e-16f)return {};
+    if(!(norm2>std::numeric_limits<float>::epsilon()))return {};
     n=mul(n,1.0f/std::sqrt(norm2));
-    float distance=dot(n,a);
-    if(distance<0.0f) {
-        std::swap(j,k);
-        n=neg(n);
-        distance=-distance;
-    }
-    return {i,j,k,n,distance,true};
+    return {i,j,k,n,dot(n,a),true};
 }
-// A simplex of fewer than four points expands as in EPA::expandPoint,
-// expandSegment and expandTriangle. Find a non-degenerate seed tetrahedron
-// enclosing the origin from original support witnesses plus fixed axes.
-bool initialize_tetra(const BoxPair& pair,
-                      std::array<Support,64>& vertices,int& count) {
-    constexpr std::array<Vec3,14> directions{{
-        {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1},
-        {1,1,1},{1,1,-1},{1,-1,1},{1,-1,-1},
-        {-1,1,1},{-1,1,-1},{-1,-1,1},{-1,-1,-1}
-    }};
-    for(const Vec3 direction:directions) {
-        const Support candidate=pair.support(direction);
-        bool duplicate=false;
-        for(int i=0;i<count;++i)
-            if(vertices[i].ai==candidate.ai &&
-               vertices[i].bi==candidate.bi) {
-                duplicate=true;
-                break;
-            }
-        if(!duplicate && count<20)vertices[count++]=candidate;
+// GuEPA.cpp::expandPoint, expandSegment, expandTriangle and the source
+// four-vertex tetrahedral admission. All support points remain in B's
+// coordinate frame. Unlike a synthetic origin-containing tetra search,
+// this reproduces the valid back-to-back initial facet pair.
+bool initialize_epa(const BoxPair& pair,
+                    std::array<Support,64>& vertices,
+                    int& count,std::array<Facet,256>& facets,
+                    int& facet_count) {
+    if(count<=0 || count>4)return false;
+    if(count==1) {
+        const Support next=pair.support({-1,0,0});
+        if(length2(sub(next.q,vertices[0].q))==0.0f)return false;
+        vertices[count++]=next;
     }
-    int seed[4]{};
-    float max_volume=0.0f;
-    bool found=false;
-    for(int a=0;a<count-3;++a)
-      for(int b=a+1;b<count-2;++b)
-       for(int c=b+1;c<count-1;++c)
-        for(int d=c+1;d<count;++d) {
-            const Vec3 v0=sub(vertices[a].q,vertices[d].q);
-            const Vec3 v1=sub(vertices[b].q,vertices[d].q);
-            const Vec3 v2=sub(vertices[c].q,vertices[d].q);
-            const float determinant=dot(v0,cross(v1,v2));
-            if(std::abs(determinant)<1.0e-10f)continue;
-            const Vec3 target=neg(vertices[d].q);
-            const float wa=dot(target,cross(v1,v2))/determinant;
-            const float wb=dot(v0,cross(target,v2))/determinant;
-            const float wc=dot(v0,cross(v1,target))/determinant;
-            const float wd=1.0f-wa-wb-wc;
-            if(std::min({wa,wb,wc,wd})< -1.0e-4f)continue;
-            if(!found || std::abs(determinant)>max_volume) {
-                seed[0]=a;seed[1]=b;seed[2]=c;seed[3]=d;
-                max_volume=std::abs(determinant);
-                found=true;
-            }
-        }
-    if(!found)return false;
-    const std::array<Support,4> selected{{
-        vertices[seed[0]],vertices[seed[1]],
-        vertices[seed[2]],vertices[seed[3]]}};
-    for(int i=0;i<4;++i)vertices[i]=selected[i];
-    count=4;
+    if(count==2) {
+        const Vec3 edge=sub(vertices[1].q,vertices[0].q);
+        const Vec3 ab{std::abs(edge.x),std::abs(edge.y),std::abs(edge.z)};
+        Vec3 axis{1,0,0};
+        if(ab.x>ab.y && ab.z>ab.y)
+            axis={0,1,0};
+        else if(ab.x>ab.z)
+            axis={0,0,1};
+        Vec3 perpendicular=cross(axis,edge);
+        const float sq=length2(perpendicular);
+        if(!(sq>0.0f))return false;
+        perpendicular=mul(perpendicular,1.0f/std::sqrt(sq));
+        vertices[count++]=pair.support(neg(perpendicular));
+    }
+    if(count==3) {
+        const Facet f0=make_facet(vertices,0,1,2);
+        const Facet f1=make_facet(vertices,1,0,2);
+        if(!f0.valid || !f1.valid)return false;
+        facets[facet_count++]=f0;
+        facets[facet_count++]=f1;
+        return true;
+    }
+    const Vec3 p0=vertices[0].q;
+    const Vec3 v1=sub(vertices[1].q,p0);
+    const Vec3 v2=sub(vertices[2].q,p0);
+    if(dot(cross(v1,v2),sub(vertices[3].q,p0))>0.0f)
+        std::swap(vertices[1],vertices[2]);
+    constexpr std::array<std::array<int,3>,4> tetra_faces{{
+        {0,1,2},{0,3,1},{0,2,3},{1,3,2}
+    }};
+    for(const auto& face:tetra_faces) {
+        const Facet facet=make_facet(
+            vertices,face[0],face[1],face[2]);
+        if(!facet.valid)return false;
+        facets[facet_count++]=facet;
+    }
     return true;
 }
 bool contact_from_facet(const BoxPair& pair,
@@ -257,10 +254,10 @@ bool contact_from_facet(const BoxPair& pair,
     // Source EPA::calculateContactInformation negates the polytope
     // outward facet normal and writes negative penetration depth.
     const Vec3 normal=neg(facet.normal);
-    output={pair.local_a(pa),pb,normal,-facet.distance};
+    const float depth=std::abs(facet.distance);
+    output={pair.local_a(pa),pb,normal,-depth};
     const Vec3 difference=sub(pa,pb);
-    return std::sqrt(length2(difference))<=
-        facet.distance+1.0e-3f;
+    return std::sqrt(length2(difference))<=depth+1.0e-3f;
 }
 bool epa(const BoxPair& pair,
          const std::array<Support,4>& simplex,int simplex_count,
@@ -268,16 +265,11 @@ bool epa(const BoxPair& pair,
     std::array<Support,64> vertices{};
     int vertices_count=simplex_count;
     for(int i=0;i<simplex_count;++i)vertices[i]=simplex[i];
-    if(!initialize_tetra(pair,vertices,vertices_count))return false;
     std::array<Facet,256> facets{};
     int facet_count=0;
-    for(const std::array<int,3> face :
-        std::array<std::array<int,3>,4>{{{0,1,2},{0,3,1},
-                                         {0,2,3},{1,3,2}}}) {
-        const Facet f=make_facet(vertices,face[0],face[1],face[2]);
-        if(!f.valid)return false;
-        facets[facet_count++]=f;
-    }
+    if(!initialize_epa(
+            pair,vertices,vertices_count,facets,facet_count))
+        return false;
     const float epsilon=0.1f*std::min(
         box_min_margin(pair.ha),box_min_margin(pair.hb));
     struct Edge {int from,to;};
@@ -295,7 +287,7 @@ bool epa(const BoxPair& pair,
         // GJK's BoxV support is expressed in the second box's frame.
         const Support new_point=pair.support(selected.normal);
         const float projection=dot(new_point.q,selected.normal);
-        if(projection-distance<=epsilon)
+        if(std::abs(projection-distance)<=epsilon)
             return contact_from_facet(pair,vertices,selected,output);
         if(vertices_count==64)return false;
         bool duplicate=false;
