@@ -1175,6 +1175,90 @@ int main() {
                         "Integrated PCM sliding did not exercise cached motion");
             }
 
+            // Specifically exercise GuPCMContactBoxBox's >4 candidate
+            // path. An ordinary four-witness box test cannot validate
+            // reduceBatchContacts' signed-extrema or depth replacement.
+            {
+                constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                constexpr fyzz::Vec3 lower{0,0.5f,0};
+                constexpr float contact_distance=0.04f;
+                std::array<fyzz::native::PcmContactCandidate,64> raw{};
+                unsigned reduced_cases=0;
+                for(float theta:{0.13f,0.27f,0.41f})
+                    for(float x:{0.0f,0.11f,0.22f,0.33f})
+                        for(float z:{0.0f,0.10f,0.21f}) {
+                            const fyzz::Vec3 above{x,1.43f,z};
+                            const fyzz::Quat rotation{
+                                0,0,std::sin(theta*0.5f),
+                                    std::cos(theta*0.5f)};
+                            std::size_t candidate_count=0;
+                            if(!fyzz::native::source_pcm_box_box_candidates(
+                                    half,lower,{},half,above,rotation,
+                                    contact_distance,raw,candidate_count) ||
+                               candidate_count<=4)
+                                continue;
+                            for(bool reversed:{false,true}) {
+                                fyzz::WorldOptions native_options{};
+                                native_options.execution=
+                                    fyzz::ExecutionMode::NativeCpu;
+                                native_options.contact_notifications=true;
+                                fyzz::WorldOptions reference_options{};
+                                reference_options.execution=
+                                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                                reference_options.contact_notifications=true;
+                                fyzz::World native_pcm(native_options);
+                                fyzz::World stock_pcm(reference_options);
+                                const auto author=[&](fyzz::World& world) {
+                                    fyzz::BodyId moving=0;
+                                    if(reversed) {
+                                        moving=world.add_dynamic_box(
+                                            half,above,1.0f);
+                                        world.add_static_box(half,lower);
+                                    } else {
+                                        world.add_static_box(half,lower);
+                                        moving=world.add_dynamic_box(
+                                            half,above,1.0f);
+                                    }
+                                    world.set_body_pose(moving,above,rotation);
+                                    fyzz::RigidBodyDynamics dynamics{};
+                                    dynamics.gravity_enabled=false;
+                                    world.set_body_dynamics(moving,dynamics);
+                                };
+                                author(native_pcm);
+                                author(stock_pcm);
+                                native_pcm.step(1.0f/120.0f);
+                                stock_pcm.step(1.0f/120.0f);
+                                const auto got=native_pcm.contact_event_points();
+                                const auto expected=stock_pcm.contact_event_points();
+                                if(got.size()!=4 || expected.size()!=4)
+                                    throw std::runtime_error(
+                                        "PCM reduction did not preserve four source witnesses");
+                                for(std::size_t i=0;i<4;++i) {
+                                    const auto& a=got[i];
+                                    const auto& e=expected[i];
+                                    const float dx=a.position.x-e.position.x;
+                                    const float dy=a.position.y-e.position.y;
+                                    const float dz=a.position.z-e.position.z;
+                                    const float alignment=
+                                        a.normal.x*e.normal.x+
+                                        a.normal.y*e.normal.y+
+                                        a.normal.z*e.normal.z;
+                                    if(dx*dx+dy*dy+dz*dz>2e-4f ||
+                                       alignment<0.999f ||
+                                       std::abs(a.separation-e.separation)>
+                                           2e-3f)
+                                        throw std::runtime_error(
+                                            "PCM batch reducer changed PhysX witness ordering");
+                                }
+                            }
+                            ++reduced_cases;
+                            if(reduced_cases>=2)break;
+                        }
+                if(reduced_cases==0)
+                    throw std::runtime_error(
+                        "PCM batch oracle never exercised over-four clipping");
+            }
+
             // Persistent box/box PCM compared to the independent
             // eENABLE_PCM reference across changing contact regions,
             // authored translations/rotations, loss/reentry and timestep.
