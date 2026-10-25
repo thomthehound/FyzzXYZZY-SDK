@@ -980,9 +980,16 @@ int main() {
                 reference_pcm.step(1.0f/120.0f);
                 const auto actual=native_pcm.contact_event_points();
                 const auto expected=reference_pcm.contact_event_points();
-                if(actual.size()!=1 || expected.size()!=1)
+                if(actual.size()!=1 || expected.size()!=1) {
+                    std::cerr<<"Scaled PCM count reversed="<<reversed
+                             <<" native="<<actual.size()
+                             <<" reference="<<expected.size()
+                             <<" native_events="<<native_pcm.contact_events().size()
+                             <<" reference_events="<<reference_pcm.contact_events().size()
+                             <<'\n';
                     throw std::runtime_error(
                         "Small-scale PCM GJK/EPA witness count differs from PhysX");
+                }
                 const auto& a=actual[0];
                 const auto& b=expected[0];
                 const float nx=a.normal.x*b.normal.x+
