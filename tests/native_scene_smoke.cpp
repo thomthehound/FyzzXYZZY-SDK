@@ -5397,8 +5397,9 @@ void verify_sparse_broadphase_volume_lifetime() {
 }
 
 // Source SAP endpoints are retained between frames, shift locally for
-// small x-axis motions, and fall back to an ordered full sort when many
-// adjacent keys must cross. Candidate pairs must match for all paths.
+// sparse mUpdated volumes even across long teleports, and fall back to
+// an ordered full sort when many volumes update simultaneously.
+// Candidate pairs must match for all paths.
 void verify_incremental_sap_endpoint_order() {
     using namespace fyzz::native;
     using fyzz::BodyId;
@@ -5428,12 +5429,14 @@ void verify_incremental_sap_endpoint_order() {
            scene.pairs().front()==Pair{fixed[0],moving},
            "Local source SAP insertion movement changed overlap candidates");
 
+    const auto sparse_shifts=scene.broadphase_endpoint_local_shift_count();
     scene.set_position(moving,{200.0f,0,0});
     scene.advance_collision();
     const auto fallback_sorts=scene.broadphase_endpoint_full_sort_count();
-    expect(fallback_sorts==initial_sorts+1 &&
+    expect(fallback_sorts==initial_sorts &&
+           scene.broadphase_endpoint_local_shift_count()>sparse_shifts &&
            scene.pairs().empty(),
-           "Far-teleport SAP endpoint update skipped bounded sort fallback");
+           "Sparse source SAP teleport incorrectly re-sorted all axes");
 
     scene.set_shape_simulation_enabled(moving,false);
     scene.advance_collision();
