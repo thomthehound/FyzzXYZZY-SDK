@@ -1317,9 +1317,13 @@ For `mUpdatedSize*5 < mBoxesSize` (the upstream threshold), the
 source-style `batchUpdateFewUpdates` endpoint shifts now emit pair
 change candidates whenever a minimum passes another volume's maximum
 or a maximum passes another minimum, across all three axes.
-Those candidates are ordered/deduplicated, checked against the *final*
-three-axis encoded bounds, and merged with existing `previous_pairs_`
-while leaving uncrossed pairs and their contact-manager handles intact.
+Crossings are first filtered against the **other two axes** using
+PhysX's `Intersect2D_Handle` condition; previously published pairs
+bypass that filter when required to deliver Lost after simultaneous
+multi-axis motion. Surviving candidates are ordered/deduplicated,
+checked against the *final* three-axis encoded bounds, and merged
+with existing `previous_pairs_` while leaving uncrossed pairs and
+their contact-manager handles intact.
 Sc's existing Found/Lost and edge-publication lifecycle remains the
 sole pair owner; source infinite-plane candidates are unchanged.
 Structural edits and larger update sets still use the complete SAP
