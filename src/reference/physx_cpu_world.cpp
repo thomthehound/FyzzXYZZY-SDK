@@ -116,8 +116,10 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
     struct DistanceJointOwner {
         physx::PxDistanceJoint* joint=nullptr;
         BodyId actor0=0,actor1=0;
+        std::uint32_t generation=0;
     };
     std::vector<DistanceJointOwner> distance_joints;
+    std::vector<std::uint32_t> free_distance_joint_ids;
     // Deleted PhysX callback pointers are address tokens ONLY:
     // a removed actor must never be dereferenced after PxActor::release.
     struct RetiredActorToken {
@@ -287,6 +289,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         for(auto& owner:distance_joints)
             if(owner.joint)owner.joint->release();
         distance_joints.clear();
+        free_distance_joint_ids.clear();
         for (physx::PxRigidActor* actor : actors)
             if (actor) actor->release();
         actors.clear();
@@ -345,9 +348,16 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if(!actors[a]->is<physx::PxRigidDynamic>() &&
            !actors[b]->is<physx::PxRigidDynamic>())
             throw std::logic_error("Distance joint requires a dynamic actor");
-        if(distance_joints.size()>=std::numeric_limits<ConstraintId>::max())
+        const bool recycled=!free_distance_joint_ids.empty();
+        if(!recycled &&
+           distance_joints.size()>=std::numeric_limits<std::uint32_t>::max())
             throw std::overflow_error("Reference distance joint IDs exhausted");
-        distance_joints.reserve(distance_joints.size()+1);
+        if(recycled && distance_joints[free_distance_joint_ids.back()].generation==
+               std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Reference distance joint generations exhausted");
+        // Complete all allocations before constructing the source joint;
+        // its active solver owner cannot be leaked by a vector growth.
+        if(!recycled)distance_joints.reserve(distance_joints.size()+1);
         auto* joint=physx::PxDistanceJointCreate(
             *runtime->physics,actors[a],physx::PxTransform(physx::PxIdentity),
             actors[b],physx::PxTransform(physx::PxIdentity));
@@ -360,16 +370,32 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
             physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
         joint->setDistanceJointFlag(
             physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
-        const auto id=static_cast<ConstraintId>(distance_joints.size());
-        distance_joints.push_back({joint,a,b});
-        return id;
+        std::uint32_t index;
+        std::uint32_t generation;
+        if(recycled) {
+            index=free_distance_joint_ids.back();
+            free_distance_joint_ids.pop_back();
+            generation=distance_joints[index].generation+1;
+            distance_joints[index]={joint,a,b,generation};
+        } else {
+            index=static_cast<std::uint32_t>(distance_joints.size());
+            generation=1;
+            distance_joints.push_back({joint,a,b,generation});
+        }
+        return (static_cast<ConstraintId>(generation)<<32)|index;
     }
 
     void remove_constraint(ConstraintId id) override {
-        if(id>=distance_joints.size() || !distance_joints[id].joint)
+        const auto index=static_cast<std::uint32_t>(id);
+        const auto generation=static_cast<std::uint32_t>(id>>32);
+        if(!generation || index>=distance_joints.size() ||
+           !distance_joints[index].joint ||
+           distance_joints[index].generation!=generation)
             throw std::out_of_range("Unknown or retired reference constraint");
-        distance_joints[id].joint->release();
-        distance_joints[id].joint=nullptr;
+        free_distance_joint_ids.reserve(free_distance_joint_ids.size()+1);
+        distance_joints[index].joint->release();
+        distance_joints[index].joint=nullptr;
+        free_distance_joint_ids.push_back(index);
     }
 
     void step(float seconds) override {
@@ -447,20 +473,31 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         if (id >= actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
         auto* const actor=actors[id];
-        // Constraint objects are retired before their incident rigid
-        // body. Do not leave a live PxDistanceJoint with a freed actor.
-        for(auto& owner:distance_joints) {
-            if(owner.joint && (owner.actor0==id || owner.actor1==id)) {
-                owner.joint->release();
-                owner.joint=nullptr;
-            }
-        }
+        // Reserve all public-lifetime slots and callback tokens before
+        // any source actor/joint release. No partial retirement if an
+        // allocation fails during this authored operation.
+        std::size_t incident=0;
+        for(const auto& owner:distance_joints)
+            incident+=owner.joint &&
+                (owner.actor0==id || owner.actor1==id);
+        free_distance_joint_ids.reserve(
+            free_distance_joint_ids.size()+incident);
+        if(contact_notifications)
+            retired_actor_tokens.reserve(retired_actor_tokens.size()+1);
         if(contact_notifications) {
             // Push before release: allocation failure leaves actor
             // ownership intact. The stale pointer is compared only,
             // NEVER dereferenced by the contact callback.
             retired_actor_tokens.push_back({
                 actor,static_cast<std::uintptr_t>(id)+1});
+        }
+        for(std::uint32_t index=0;index<distance_joints.size();++index) {
+            auto& owner=distance_joints[index];
+            if(owner.joint && (owner.actor0==id || owner.actor1==id)) {
+                owner.joint->release();
+                owner.joint=nullptr;
+                free_distance_joint_ids.push_back(index);
+            }
         }
         actor->release(); // PhysX removes it from the scene.
         actors[id] = nullptr;

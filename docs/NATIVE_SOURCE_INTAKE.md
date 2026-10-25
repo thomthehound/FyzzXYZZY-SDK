@@ -1603,9 +1603,11 @@ equal-limit 1D distance row is now available through
 IslandSim EdgeIndex and Sc constraint record; the independent reference
 owns an actual `PxDistanceJoint` using the same source min/max/zero
 tolerance contract. Both retire joints with their incident actor.
-The native public token contains the recycled ScConstraintSim slot and
-a generation, so a stale ID cannot remove an unrelated constraint after
-the underlying IslandSim EdgeIndex is reused. Generation exhaustion
+Both CPU backends issue generation-stamped public identities over
+recyclable source-owned constraint slots, so a stale ID cannot remove an
+unrelated constraint after ScConstraintSim or PxDistanceJoint retirement.
+The reference backend reuses its joint ownership slots and pre-reserves
+all release bookkeeping before actor destruction. Generation exhaustion
 rejects before graph mutation. Source-enabled conformance checks
 completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
