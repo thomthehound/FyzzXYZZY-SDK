@@ -225,6 +225,11 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Native source PCM face/face must publish four witnesses");
         const auto edge=scene.contacts()[0].edge_handle;
+        if(scene.pcm_candidate_scratch_.size()!=64)
+            throw std::runtime_error(
+                "PCM box pair did not allocate the reusable source candidate arena");
+        const auto* const reused_pcm_buffer=
+            scene.pcm_candidate_scratch_.data();
         const auto& cache=scene.contact_edges_[edge].pcm_cache;
         if(!cache.initialized || cache.count!=4 ||
            !scene.gu_cache_records_.empty() ||
@@ -264,6 +269,9 @@ struct ContactCorrelationSourceFixture {
            !scene.contact_edges_[edge].pcm_cache.initialized)
             throw std::runtime_error(
                 "PCM box-box authored-pose reconstruction failed");
+        if(scene.pcm_candidate_scratch_.data()!=reused_pcm_buffer)
+            throw std::runtime_error(
+                "PCM regeneration reallocated scene-owned candidate scratch");
         if(std::abs(scene.contact_edges_[edge].pcm_cache.
                         relative_position.x-0.02f)>1.0e-6f ||
            std::abs(scene.contact_edges_[edge].pcm_cache.
