@@ -201,6 +201,12 @@ public:
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
+    // Live source broadphase proxy ownership, excluding retired actor IDs.
+    // Simulation-disabled actors retain their proxy identity but are not
+    // admitted into an active SAP endpoint until re-enabled.
+    std::size_t broadphase_registered_actor_count() const noexcept {
+        return live_actor_ids_.size();
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1179,6 +1185,11 @@ private:
     // Sc::BodyCore::numCountedInteractions, derived once from the
     // authoritative contact manager stream for Dy::sleepCheck.
     std::vector<std::uint32_t> sleep_interaction_counts_;
+    // Source BpAABBManager volume membership: actor IDs are stable, but
+    // retired slots never participate in the SAP workload again. Keep
+    // registration in insertion order; retirement erases only its live
+    // proxy. This is derived from the authoritative Actor::alive state.
+    std::vector<BodyId> live_actor_ids_;
     std::vector<Endpoint> endpoints_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
