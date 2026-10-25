@@ -5771,14 +5771,19 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         partition_ends.assign(scene.partition_ends_.begin(),
                               scene.partition_ends_.end());
     }
-    // Active-index publication is observable even on quiet frames, so
+    // The inverse active-node index is derivable from the active list.
+    // Preserve its original extent for rollback without copying the full
+    // historical BodyId watermark on every rigid step.
+    initial_speculative_active_index_size=
+        scene.speculative_islands_.active_node_index.size();
+    initial_accurate_active_index_size=
+        scene.accurate_islands_.active_node_index.size();
+    // Active-node publication is observable even on quiet frames, so
     // retain its exact permutation. Membership and handles are lazily
     // snapshotted by save_graph_ownership() only when changed.
     const auto copy_active=[](IslandGraph& saved,const IslandGraph& live) {
         saved.active_nodes.assign(live.active_nodes.begin(),
                                    live.active_nodes.end());
-        saved.active_node_index.assign(live.active_node_index.begin(),
-                                        live.active_node_index.end());
         saved.active_islands.assign(live.active_islands.begin(),
                                      live.active_islands.end());
         saved.activating_nodes.assign(live.activating_nodes.begin(),
@@ -6065,9 +6070,18 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.speculative_islands_.active_island_visit_stamp=
             speculative_islands.active_island_visit_stamp;
     }
+    // Undo any newly active inverse-index entries before recovering the
+    // original active-node list. Every non-invalid source inverse slot
+    // corresponds to one currently active node; rollback rebuilds precisely
+    // the previous published permutation, without scanning dormant IDs.
+    for(BodyId id:scene.speculative_islands_.active_nodes)
+        scene.speculative_islands_.active_node_index[id]=invalid_instance;
     scene.speculative_islands_.active_nodes.swap(speculative_islands.active_nodes);
-    scene.speculative_islands_.active_node_index.swap(
-        speculative_islands.active_node_index);
+    scene.speculative_islands_.active_node_index.resize(
+        initial_speculative_active_index_size);
+    for(std::size_t i=0;i<scene.speculative_islands_.active_nodes.size();++i)
+        scene.speculative_islands_.active_node_index[
+            scene.speculative_islands_.active_nodes[i]]=i;
     // The structural island snapshot restores mActiveIndex itself.
     // A quiet step has no such snapshot: clear its current live slots,
     // then restore the previous ordered active list and reverse slots.
@@ -6107,9 +6121,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         scene.accurate_islands_.active_island_visit_stamp=
             accurate_islands.active_island_visit_stamp;
     }
+    for(BodyId id:scene.accurate_islands_.active_nodes)
+        scene.accurate_islands_.active_node_index[id]=invalid_instance;
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
-    scene.accurate_islands_.active_node_index.swap(
-        accurate_islands.active_node_index);
+    scene.accurate_islands_.active_node_index.resize(
+        initial_accurate_active_index_size);
+    for(std::size_t i=0;i<scene.accurate_islands_.active_nodes.size();++i)
+        scene.accurate_islands_.active_node_index[
+            scene.accurate_islands_.active_nodes[i]]=i;
     if(!graph_ownership_saved)
         for(auto handle:scene.accurate_islands_.active_islands)
             if(handle<scene.accurate_islands_.islands.size())
