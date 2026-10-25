@@ -221,6 +221,12 @@ public:
     std::size_t broadphase_endpoint_crossing_count() const noexcept {
         return broadphase_endpoint_crossing_count_;
     }
+    std::size_t broadphase_activity_pocket_count() const noexcept {
+        return broadphase_activity_pocket_count_;
+    }
+    std::size_t broadphase_activity_pocket_endpoint_count() const noexcept {
+        return broadphase_activity_pocket_endpoint_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1233,6 +1239,13 @@ private:
     // Bounded native CPU pair updates retain the source pair registry
     // and its Found/Lost edge publication, not a second pair owner.
     bool broadphase_full_pair_update_=true;
+    // Bp SAP activity pockets bound multi-update endpoint reorder work.
+    struct ActivityPocket {
+        std::size_t start=0,end=0;
+    };
+    std::vector<ActivityPocket> sap_activity_pockets_;
+    std::size_t broadphase_activity_pocket_count_=0;
+    std::size_t broadphase_activity_pocket_endpoint_count_=0;
     std::size_t broadphase_incremental_pair_update_count_=0;
     std::size_t broadphase_endpoint_crossing_count_=0;
     // BpBroadPhaseSap::batchUpdateFewUpdates emits candidate changes

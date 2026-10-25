@@ -162,6 +162,54 @@ void profile_static_membership() {
         scene.broadphase_endpoint_full_sort_count()-before,
         scene.pairs().size());
 }
+// Multiple updated volumes in disconnected neighborhoods use activity
+// pockets, avoiding whole-axis sorting when the large-update threshold
+// is crossed.
+void profile_activity_pockets() {
+    fyzz::native::Scene scene;
+    constexpr unsigned statics=192,movers=64;
+    for(unsigned i=0;i<statics;++i)
+        scene.add_static_box({0.4f,0.4f,0.4f},
+                             {float(i%32)*3.0f,float(i/32)*3.0f,0});
+    std::vector<fyzz::BodyId> ids;
+    ids.reserve(movers);
+    for(unsigned i=0;i<movers;++i)
+        ids.push_back(scene.add_dynamic_box(
+            {0.4f,0.4f,0.4f},
+            {float(i%32)*3.0f,float(i/32)*3.0f,0},1.0f));
+    scene.advance_collision();
+    const auto sorts_before=scene.broadphase_endpoint_full_sort_count();
+    const auto pockets_before=scene.broadphase_activity_pocket_count();
+    const auto endpoints_before=
+        scene.broadphase_activity_pocket_endpoint_count();
+    constexpr unsigned trials=5,steps=64;
+    std::vector<double> times;
+    times.reserve(trials);
+    unsigned frame=0;
+    for(unsigned trial=0;trial<trials;++trial) {
+        const auto start=Clock::now();
+        for(unsigned step=0;step<steps;++step,++frame) {
+            for(unsigned i=0;i<movers;++i) {
+                const float dx=(frame&1u)?0.25f:-0.25f;
+                scene.set_position(ids[i],
+                    {float(i%32)*3.0f+dx,float(i/32)*3.0f,0});
+            }
+            scene.advance_collision(true);
+        }
+        times.push_back(std::chrono::duration<double,std::micro>(
+            Clock::now()-start).count()/steps);
+    }
+    std::sort(times.begin(),times.end());
+    std::printf(
+        "native_sap mode=activity-pockets boxes=%u updated=%u"
+        " median_us_per_query=%.3f full_sorts=%zu pockets=%zu"
+        " pocket_endpoints=%zu pairs=%zu\n",
+        statics+movers,movers,times[trials/2],
+        scene.broadphase_endpoint_full_sort_count()-sorts_before,
+        scene.broadphase_activity_pocket_count()-pockets_before,
+        scene.broadphase_activity_pocket_endpoint_count()-endpoints_before,
+        scene.pairs().size());
+}
 } // namespace
 
 int main() {
@@ -173,6 +221,7 @@ int main() {
         profile("retired-history",Motion::Stationary,2048);
         profile_persistent_pairs();
         profile_static_membership();
+        profile_activity_pockets();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr,"native SAP benchmark: %s\n",error.what());

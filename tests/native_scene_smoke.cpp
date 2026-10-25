@@ -280,6 +280,74 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Three-axis SAP stress oracle lacked source endpoint crossings");
     }
+    static void verify_source_activity_pockets() {
+        Scene scene;
+        std::array<BodyId,72> statics{};
+        std::array<BodyId,28> moving{};
+        for(std::size_t i=0;i<statics.size();++i)
+            statics[i]=scene.add_static_box(
+                {0.45f,0.45f,0.45f},
+                {float(i%12)*2.0f,float(i/12)*2.0f,0});
+        for(std::size_t i=0;i<moving.size();++i)
+            moving[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%12)*2.0f,float(i/12)*2.0f,0},1.0f);
+        scene.advance_collision();
+        const auto prior_pockets=scene.broadphase_activity_pocket_count();
+        const auto prior_full=scene.broadphase_endpoint_full_sort_count();
+        std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
+        for(unsigned frame=0;frame<48;++frame) {
+            for(std::size_t i=0;i<moving.size();++i) {
+                const float x=float((frame*3+i*11)%13-6)*0.23f;
+                const float y=float((frame*7+i*3)%17-8)*0.19f;
+                scene.set_position(moving[i],
+                    {float(i%12)*2.0f+x,
+                     float(i/12)*2.0f+y,0});
+            }
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            std::vector<Pair> expected;
+            for(BodyId i=0;i<scene.actors_.size();++i)
+                for(BodyId j=i+1;j<scene.actors_.size();++j) {
+                    const auto& a=scene.actors_[i];
+                    const auto& b=scene.actors_[j];
+                    if(a.kind!=Scene::Kind::DynamicBox &&
+                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    const auto& aa=a.encoded_bounds;
+                    const auto& bb=b.encoded_bounds;
+                    if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                       aa[1]>bb[4] || bb[1]>aa[4] ||
+                       aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    expected.push_back({i,j});
+                }
+            const auto actual=scene.pairs();
+            if(!std::equal(expected.begin(),expected.end(),
+                           actual.begin(),actual.end()))
+                throw std::runtime_error(
+                    "Source activity pockets changed encoded-AABB pair membership");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto new_pairs=scene.found_pairs();
+            const auto retired_pairs=scene.lost_pairs();
+            if(!std::equal(found.begin(),found.end(),
+                           new_pairs.begin(),new_pairs.end()) ||
+               !std::equal(lost.begin(),lost.end(),
+                           retired_pairs.begin(),retired_pairs.end()))
+                throw std::runtime_error(
+                    "Source activity pocket pair reports diverged");
+            previous=std::move(expected);
+        }
+        if(scene.broadphase_activity_pocket_count()==prior_pockets ||
+           scene.broadphase_endpoint_full_sort_count()!=prior_full)
+            throw std::runtime_error(
+                "Batch SAP updates bypassed local activity pockets");
+    }
     static void verify_static_only_full_sweep() {
         // Source group filtering must reject static/static pairs even
         // when every encoded bound overlaps. Membership changes force
@@ -11163,6 +11231,7 @@ int run_native_scene_smoke() {
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
+    fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();

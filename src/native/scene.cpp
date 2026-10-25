@@ -845,6 +845,74 @@ void Scene::update_bounds() {
         // on the source's large-update branch.
         const bool sparse=broadphase_updated_volume_slots_.size()*5<
                           sap_volumes_.size();
+        if(!sparse) {
+            // Source batchUpdate maintains activity pockets around the
+            // endpoint regions affected by moving proxies. Compute the
+            // same closed index intervals before altering the old sorted
+            // keys, coalesce overlapping/adjacent pockets, then reorder
+            // only those segments and repair their SapBox1D indices.
+            // The x/y/z full pair sweep remains the source authority for
+            // this many-update path; crossing candidates belong only to
+            // batchUpdateFewUpdates.
+            for(unsigned axis=0;axis<3;++axis) {
+                auto& endpoints=sap_axis_endpoints_[axis];
+                auto& pockets=sap_activity_pockets_;
+                pockets.clear();
+                pockets.reserve(broadphase_updated_volume_slots_.size()*2);
+                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                    for(unsigned side=0;side<2;++side) {
+                        const auto pos=sap_volumes_[slot].
+                            endpoint_positions[axis][side];
+                        Endpoint moving=endpoints[pos];
+                        moving.value=actors_[moving.id].encoded_bounds[
+                            axis+(side?3:0)];
+                        const auto insertion=static_cast<std::size_t>(
+                            std::lower_bound(endpoints.begin(),
+                                             endpoints.end(),moving,less)-
+                            endpoints.begin());
+                        const auto target=std::min(insertion,
+                            endpoints.size()-1);
+                        pockets.push_back({std::min<std::size_t>(pos,target),
+                                           std::max<std::size_t>(pos,target)});
+                    }
+                }
+                std::sort(pockets.begin(),pockets.end(),
+                          [](ActivityPocket a,ActivityPocket b) {
+                              return a.start<b.start ||
+                                     (a.start==b.start && a.end<b.end);
+                          });
+                std::size_t merged=0;
+                for(const ActivityPocket pocket:pockets) {
+                    if(merged && pocket.start<=pockets[merged-1].end+1)
+                        pockets[merged-1].end=
+                            std::max(pockets[merged-1].end,pocket.end);
+                    else pockets[merged++]=pocket;
+                }
+                pockets.resize(merged);
+                for(std::uint32_t slot:broadphase_updated_volume_slots_)
+                    for(unsigned side=0;side<2;++side) {
+                        const auto pos=sap_volumes_[slot].
+                            endpoint_positions[axis][side];
+                        endpoints[pos].value=actors_[endpoints[pos].id].
+                            encoded_bounds[axis+(side?3:0)];
+                    }
+                for(const ActivityPocket pocket:pockets) {
+                    std::sort(endpoints.begin()+pocket.start,
+                              endpoints.begin()+pocket.end+1,less);
+                    for(std::size_t index=pocket.start;
+                        index<=pocket.end;++index) {
+                        const Endpoint ep=endpoints[index];
+                        sap_volumes_[ep.volume_slot].
+                            endpoint_positions[axis][ep.is_max?1u:0u]=
+                            static_cast<std::uint32_t>(index);
+                    }
+                    ++broadphase_activity_pocket_count_;
+                    broadphase_activity_pocket_endpoint_count_+=
+                        pocket.end-pocket.start+1;
+                }
+            }
+            return;
+        }
         const std::size_t budget=sparse
             ? std::numeric_limits<std::size_t>::max()
             : std::max<std::size_t>(16,sap_volumes_.size()/4);
