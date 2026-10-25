@@ -288,6 +288,40 @@ struct ContactCorrelationSourceFixture {
            scene.contacts()[0].count!=4)
             throw std::runtime_error(
                 "New box contact manager retained retired PCM witnesses");
+        // GuPersistentContactManifold::getWorldNormal averages cached
+        // B-local normals on a quiet refresh; it does not reuse the
+        // first contact normal after a GJK-updated mixed-normal patch.
+        // Prime a real scene-owned manifold, change one retained normal,
+        // then require the unmodified Sc/PGS contact stream to use the
+        // source aggregate rather than the leading witness.
+        {
+            Scene mixed;
+            mixed.set_pcm_box_box(true);
+            mixed.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
+            mixed.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+            mixed.advance_collision(true);
+            if(mixed.contacts().size()!=1 ||
+               mixed.contacts()[0].count!=4)
+                throw std::runtime_error(
+                    "PCM aggregate-normal fixture did not form a four-point patch");
+            const auto manager=mixed.contacts()[0].edge_handle;
+            auto& manifold=mixed.contact_edges_[manager].pcm_cache;
+            manifold.points[1].normal_b={0.6f,0.8f,0};
+            mixed.advance_collision(true);
+            if(mixed.contacts().size()!=1 ||
+               mixed.contacts()[0].edge_handle!=manager ||
+               mixed.contact_edges_[manager].pcm_cache.count!=4)
+                throw std::runtime_error(
+                    "PCM mixed-normal cache did not survive quiet refresh");
+            const float expected_x=0.6f/std::sqrt(0.6f*0.6f+3.8f*3.8f);
+            const float expected_y=3.8f/std::sqrt(0.6f*0.6f+3.8f*3.8f);
+            for(const auto& point:mixed.contacts()[0].points)
+                if(std::abs(point.normal.x-expected_x)>1e-5f ||
+                   std::abs(point.normal.y-expected_y)>1e-5f)
+                    throw std::runtime_error(
+                        "PCM cached patch emitted the first normal instead of the source aggregate");
+        }
         // Independent direct-contact generator must distinguish face
         // contact from separated SAT configurations without Gu.
         std::array<PcmContactCandidate,64> candidates{};
