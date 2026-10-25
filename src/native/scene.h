@@ -149,7 +149,16 @@ bool source_pcm_box_box_gjk_epa(
 
 class Scene final {
 public:
+    enum class ContactGenerator : std::uint8_t {
+        DefaultPcm,
+        DiagnosticLegacyGu
+    };
     Scene() = default;
+    // Explicitly construct diagnostic Gu scenes without returning the
+    // large Scene working set by value or changing the default mode.
+    explicit Scene(ContactGenerator generator) noexcept
+        : pcm_plane_box_enabled_(generator==ContactGenerator::DefaultPcm),
+          pcm_box_box_enabled_(generator==ContactGenerator::DefaultPcm) {}
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
     Scene(Scene&&) = default;
