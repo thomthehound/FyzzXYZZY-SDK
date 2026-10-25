@@ -866,6 +866,10 @@ void Scene::update_bounds() {
                         Endpoint moving=endpoints[pos];
                         moving.value=actors_[moving.id].encoded_bounds[
                             axis+(side?3:0)];
+                        // mUpdated is a volume worklist, not six changed
+                        // keys. Skip endpoints whose encoded value did not
+                        // move; no activity pocket is needed on that axis.
+                        if(moving.value==endpoints[pos].value)continue;
                         const auto insertion=static_cast<std::size_t>(
                             std::lower_bound(endpoints.begin(),
                                              endpoints.end(),moving,less)-
@@ -876,6 +880,7 @@ void Scene::update_bounds() {
                                            std::max<std::size_t>(pos,target)});
                     }
                 }
+                if(pockets.empty())continue;
                 std::sort(pockets.begin(),pockets.end(),
                           [](ActivityPocket a,ActivityPocket b) {
                               return a.start<b.start ||
