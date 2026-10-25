@@ -1304,9 +1304,11 @@ the six endpoint lists. Ordinary movement identifies volumes with
 changed encoded bounds and shifts just their six indexed endpoints,
 repairing moved index entries as each crosses its neighbors. Source's
 `mUpdatedSize*5 < mBoxesSize` sparse-update branch retains endpoint
-shifts even for a lone body teleporting across many neighbors; only
-large update sets fall back to bounded full source-key sorting and
-remapping. Unchanged axes incur no full scan. A rejected
+shifts even for a lone body teleporting across many neighbors.
+Larger update sets build coalesced activity pockets from each changed
+endpoint's old and final index, reorder only those closed intervals,
+and update their direct index mappings. Membership changes still rebuild
+the complete endpoint lists. Unchanged axes incur no full scan. A rejected
 collision or solver transaction invalidates this derived state for
 a subsequent rebuild without adding a dense endpoint snapshot to
 the per-frame checkpoint. Each live volume retains exactly one
@@ -1321,27 +1323,31 @@ Crossings are first filtered against the **other two axes** using
 PhysX's `Intersect2D_Handle` condition; previously published pairs
 bypass that filter when required to deliver Lost after simultaneous
 multi-axis motion. Surviving candidates are ordered/deduplicated,
-checked against the *final* three-axis encoded bounds, and merged
-with existing `previous_pairs_` while leaving uncrossed pairs and
-their contact-manager handles intact.
-Sc's existing Found/Lost and edge-publication lifecycle remains the
-sole pair owner; source infinite-plane candidates are unchanged.
-Structural edits and larger update sets still use the complete SAP
-sweep. The full PhysX activity-pocket batch-update implementation and
-original hashed `BpsSapPairManager` remain separate translation work.
-The current crossing-event capture is faithful to which endpoint
-relationships can create/destroy overlaps, but its event buffering and
-final pair-stream merge are not byte-for-byte upstream pair-manager code.
-Full CPU-GPU performance parity remains unproven. Native tests verify
-three-axis endpoint/index invariants, sparse teleport crossings, stable
-contact-manager pairs with no crossing, exact per-axis Found/Lost
-transitions, and 76 frames of independent three-axis candidate/event
-checks including large-update fallback, plane membership, shape
-re-admission and retirement. The native SAP benchmark records actual
-min/max crossing counts, pair transitions and collision-only CPU
-query times for unchanged geometry, local motion, contacting motion,
-teleports and retired-history workloads; CI wall-clock measurements are
-diagnostic and never a substitute for exact source-conformance tests.
+checked against the *final* three-axis encoded bounds. The persistent
+hashed `SapPairManager` owns the finite broadphase overlap set in dense
+pair, state, chain and hash-table arrays. Source `PAIR_NEW`,
+`PAIR_REMOVED` and `PAIR_INARRAY` transitions coalesce candidate changes
+before swap-last pair retirement; a newly created and immediately removed
+pair is not published. The Sc `previous_pairs_` / `EdgeIndex` stream
+continues to own contact-manager identity and receives only net
+Found/Lost changes. Quiet pair publications retain that stream and its
+handles without rebuilding it. Infinite-plane candidate discovery
+remains separate from finite SAP pair hashing.
+
+Large encoded-bound update sets use the complete SAP pair sweep
+together with coalesced endpoint activity pockets. Actor membership
+changes rebuild all endpoints. Rejected Gu/Dy transactions invalidate
+the derived pair hash for reconstruction from the previously committed
+Sc pair stream; no per-frame dense hash snapshot is required.
+Original linked-list pocket reorder operations, exact pair-manager
+scratch-index ordering and CPU-GPU performance parity remain open.
+Native tests verify three-axis endpoint/index invariants, sparse
+teleports, pair-state cancellation and hash-chain compaction, stable
+contact-manager handles, exact 104-frame candidate/event comparison,
+and 48-frame multi-volume activity-pocket oracle coverage. Benchmarks
+include stationary, local, contacting, teleport, retired-history,
+persistent-pair, static-membership and activity-pocket workloads;
+CI timings are diagnostic, not conformance thresholds.
 `ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
 per-step velocity changes and per-second accelerations in the same
 third-pass island deactivation path; the wake regression rejects replay
