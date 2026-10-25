@@ -2808,6 +2808,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             const bool da=dynamic_node(pair.a);
             const bool db=dynamic_node(pair.b);
             if(da==db)return;
+            // Source PxNodeIndex::isStaticBody is an INVALID endpoint,
+            // never a kinematic rigid node with its own EdgeInstance.
+            if(rigid_node(actors_[da?pair.b:pair.a].kind))return;
             const BodyId node=da?pair.a:pair.b;
             const auto id=graph.node_island[node];
             if(id==Graph::invalid || id>=graph.islands.size())
@@ -3128,7 +3131,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                         // In each graph a static contact manager has one
                         // intrusive instance on its dynamic endpoint.
                         if(actors_[to].alive &&
-                           actors_[to].kind!=Kind::DynamicBox)
+                           !rigid_node(actors_[to].kind))
                             ++node_static_touches;
                         continue;
                     }

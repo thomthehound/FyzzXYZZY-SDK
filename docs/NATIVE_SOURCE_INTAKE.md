@@ -1572,7 +1572,10 @@ speculative/accurate EdgeInstances now admit distinct
 separate per-type intrusive lists and counts; adding and removing a
 constraint changes island connectivity without entering the Gu contact
 manager stream. A regression proves merger, split, retirement, and
-contact-handle reuse without type confusion. This is an internal
+contact-handle reuse without type confusion. Kinematic endpoints keep their own rigid
+EdgeInstances and do not increment static-world touch counters during
+full graph reconciliation or incremental candidate publication.
+This is an internal
 island-lifecycle admission only: native Dy 1D row preparation, solving,
 and constraint writeback are deliberately rejected until the real
 source 1D execution path is implemented.

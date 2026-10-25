@@ -93,6 +93,7 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Shared EdgeIndex reuse confused constraint and contact owners");
     }
+    static void verify_actor_retirement() {
         // Actor retirement must withdraw every incident eCONSTRAINT
         // connection before its node index can be reused by island repair.
         {
@@ -113,6 +114,24 @@ struct ConstraintIslandSourceFixture {
                 throw std::runtime_error(
                     "Constraint actor retirement retained an orphan island edge");
         }
+    }
+    static void verify_kinematic_endpoint_not_static_world() {
+        Scene scene;
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5,0},1.0f);
+        const auto kinematic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5.9f,0},1.0f);
+        scene.set_kinematic(kinematic,true);
+        scene.advance_collision(true);
+        if(scene.contacts().empty() ||
+           scene.accurate_island_count()!=1 ||
+           scene.accurate_island_id(kinematic)!=
+               Scene::IslandGraph::invalid ||
+           scene.accurate_island_static_touches(dynamic)!=0 ||
+           scene.speculative_island_static_touches(dynamic)!=0)
+            throw std::runtime_error(
+                "Kinematic contact was counted as a static-world touch");
+    }
 };
 
 struct ContactCorrelationSourceFixture {
@@ -10702,6 +10721,8 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
+    fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
+    fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
