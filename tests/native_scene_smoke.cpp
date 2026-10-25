@@ -130,6 +130,26 @@ struct ContactCorrelationSourceFixture {
                 "Mixed PCM/legacy Gu managers failed native PGS completion");
     }
     static void verify_source_pcm_box_box_lifecycle() {
+        // Independently exercise GJK and EPA for box support points in
+        // B-local coordinates. Near separation produces GJK_CONTACT;
+        // a penetrating pair requires EPA_CONTACT and signed depth.
+        {
+            PcmContactCandidate gjk{},epa{};
+            const bool near=source_pcm_box_box_gjk_epa(
+                {0.5f,0.5f,0.5f},{0,1.52f,0},{},
+                {0.5f,0.5f,0.5f},{0,0.5f,0},{},
+                0.04f,gjk);
+            const bool deep=source_pcm_box_box_gjk_epa(
+                {0.5f,0.5f,0.5f},{0,1.46f,0},{},
+                {0.5f,0.5f,0.5f},{0,0.5f,0},{},
+                0.04f,epa);
+            if(!near || !deep ||
+               std::abs(gjk.separation-0.02f)>2e-3f ||
+               std::abs(epa.separation+0.04f)>2e-3f ||
+               gjk.normal_b.y<0.999f || epa.normal_b.y<0.999f)
+                throw std::runtime_error(
+                    "Native PCM GJK/EPA sign, witness or depth differs from source");
+        }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
