@@ -1037,6 +1037,11 @@ private:
         // mutation, never on a quiet step. Active-node publication
         // remains a separate per-frame rollback concern.
         IslandGraph speculative_islands, accurate_islands;
+        // The inverse active-node index is private derived state: restore
+        // changed entries from the published active-node permutations
+        // instead of cloning a BodyId-high-watermark array each step.
+        std::size_t initial_speculative_active_index_size=0;
+        std::size_t initial_accurate_active_index_size=0;
         bool graph_ownership_saved=false;
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
