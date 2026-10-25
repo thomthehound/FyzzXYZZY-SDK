@@ -4164,9 +4164,15 @@ void verify_anchored_distance_constraint_angular_jacobians() {
            !std::isfinite(result.b.angular_velocity.z) ||
            std::abs(result.a.angular_velocity.z)<0.02f ||
            std::abs(result.b.angular_velocity.z)<0.02f ||
-           !(result.a.position.x>0 && result.b.position.x<2))
+           !(result.a.position.x>0 && result.b.position.x<2)) {
+            std::cerr<<"Anchored 1D mode="<<static_cast<int>(mode)
+                <<" pa="<<result.a.position.x
+                <<" pb="<<result.b.position.x
+                <<" wa="<<result.a.angular_velocity.z
+                <<" wb="<<result.b.angular_velocity.z<<'\n';
             throw std::runtime_error(
                 "Anchored source 1D joint omitted angular PGS response");
+        }
         world.remove_constraint(joint);
         return result;
     };
