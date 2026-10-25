@@ -189,7 +189,7 @@ bool initialize_epa(const BoxPair& pair,
                     int& facet_count) {
     if(count<=0 || count>4)return false;
     if(count==1) {
-        const Support next=pair.support({-1,0,0});
+        const Support next=pair.support({1,0,0});
         if(length2(sub(next.q,vertices[0].q))==0.0f)return false;
         vertices[count++]=next;
     }
@@ -205,7 +205,7 @@ bool initialize_epa(const BoxPair& pair,
         const float sq=length2(perpendicular);
         if(!(sq>0.0f))return false;
         perpendicular=mul(perpendicular,1.0f/std::sqrt(sq));
-        vertices[count++]=pair.support(neg(perpendicular));
+        vertices[count++]=pair.support(perpendicular);
     }
     if(count==3) {
         const Facet f0=make_facet(vertices,0,1,2);
@@ -344,7 +344,7 @@ bool epa(const BoxPair& pair,
         if(boundary_count>available_slots)return false;
         for(int i=0;i<boundary_count;++i) {
             const auto e=boundary[i];
-            Facet f=make_facet(vertices,e.from,e.to,new_index);
+            Facet f=make_facet(vertices,e.to,e.from,new_index);
             if(!f.valid)return false;
             // GuEPA.cpp::addFacet accepts triangles outside the
             // current upper bound as topology, but not heap entries.
@@ -402,16 +402,16 @@ bool source_pcm_box_box_gjk_epa(
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        // Check the support plane before accepting a near-origin
-        // simplex for EPA: a small positive edge gap is not overlap.
-        // A zero-length simplex still needs EPA's penetration branch.
-        if(dist<=0.0f) {
-            if(count>0) {
-                store();
-                return epa(pair,simplex,count,contact);
-            }
-            return false;
+        // GuGJKPenetration terminates once the closest simplex lies
+        // inside the minimum-margin epsilon. The source then admits
+        // the simplex to EPA even if a small geometric gap remains.
+        // EPA's signed facet distance, not a speculative GJK witness,
+        // determines the final PCM contact normal and penetration.
+        if(count>0 && dist<=epsilon) {
+            store();
+            return epa(pair,simplex,count,contact);
         }
+        if(dist<=0.0f)return false;
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
@@ -430,16 +430,6 @@ bool source_pcm_box_box_gjk_epa(
             store();
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
-        }
-
-        // A positive support plane proves that the Minkowski origin
-        // is outside the shapes, even before the nearest simplex has
-        // converged. Continue refining that separated simplex instead
-        // of admitting it to EPA solely on the margin tolerance.
-        // A nonpositive plane at this distance retains EPA admission.
-        if(count>0 && dist<=epsilon && projection<=0.0f) {
-            store();
-            return epa(pair,simplex,count,contact);
         }
 
         for(int i=0;i<count;++i)
