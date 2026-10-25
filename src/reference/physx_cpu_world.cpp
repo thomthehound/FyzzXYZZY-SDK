@@ -462,6 +462,15 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
         authored->release();
     }
 
+    void set_body_contact_report_threshold(BodyId id, float force) override {
+        if(id>=actors.size() || !actors[id])
+            throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");
+        auto* dynamic=actors[id]->is<physx::PxRigidDynamic>();
+        if(!dynamic)
+            throw std::logic_error("Source contact threshold requires dynamic actor");
+        dynamic->setContactReportThreshold(force);
+    }
+
     void set_body_dynamics(BodyId id, RigidBodyDynamics d) override {
         if(id>=actors.size() || !actors[id])
             throw std::out_of_range("Unknown or retired FyzzXYZZY body ID");

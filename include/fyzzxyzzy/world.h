@@ -125,6 +125,31 @@ struct RigidBodyDynamics {
 
 using BodyId = std::uint32_t;
 
+// DyThresholdTable / PxsForceThresholdTask reports changes in the
+// exceeded normal-force stream after source solver writeback. Dynamic
+// contacts use canonical body IDs; static supports share a world key.
+enum class ForceThresholdChange : std::uint8_t { Found, Persists, Lost };
+struct ForceThresholdKey {
+    BodyId actor0=0;
+    BodyId actor1=0;
+    bool static_world=false;
+    friend bool operator==(const ForceThresholdKey&,
+                           const ForceThresholdKey&) = default;
+    friend bool operator<(const ForceThresholdKey& a,
+                          const ForceThresholdKey& b) {
+        if (a.actor0!=b.actor0) return a.actor0<b.actor0;
+        if (a.static_world!=b.static_world)
+            return a.static_world<b.static_world;
+        return a.actor1<b.actor1;
+    }
+};
+struct ForceThresholdReport {
+    ForceThresholdKey key{};
+    double normal_impulse=0.0;
+    float threshold=0.0f;
+    ForceThresholdChange change=ForceThresholdChange::Found;
+};
+
 // ShapeInteraction / NPhaseCore user notification from a completed
 // simulation fetch, not Gu broadphase found/lost overlap candidates.
 enum class ContactEventKind : std::uint8_t { Found, Persists, Lost };
@@ -179,6 +204,9 @@ public:
     virtual std::span<const ContactEventPoint> contact_event_points() const {
         return {};
     }
+    virtual std::span<const ForceThresholdReport> force_threshold_changes() const {
+        throw std::logic_error("This backend has no Dy force-threshold stream");
+    }
     // All built-in CPU backends implement scene actor lifecycle. Additional
     // backends must reject unsupported operations explicitly.
     virtual void set_body_position(BodyId, Vec3) {
@@ -214,6 +242,9 @@ public:
     virtual void set_body_material(BodyId, Material) {
         throw std::logic_error("This backend cannot author rigid material");
     }
+    virtual void set_body_contact_report_threshold(BodyId, float) {
+        throw std::logic_error("This backend cannot author rigid contact threshold");
+    }
     // PxShape's contact and rest distances belong to the existing actor shape.
     virtual void set_body_shape_offsets(BodyId, float, float) {
         throw std::logic_error("This backend cannot author shape offsets");
@@ -243,6 +274,10 @@ public:
     // Events are valid until the next completed World::step.
     std::span<const ContactEvent> contact_events() const;
     std::span<const ContactEventPoint> contact_event_points() const;
+    // Native Dy threshold reports are low-level solver-node transitions,
+    // distinct from per-shape Sc contact callbacks. The independent
+    // PhysX CPU backend does not expose this internal source stream.
+    std::span<const ForceThresholdReport> force_threshold_changes() const;
     void set_body_position(BodyId id, Vec3 position);
     // PxRigidActor::setGlobalPose, with logical identity for the SDK floor.
     void set_body_pose(BodyId id, Vec3 position, Quat orientation);
@@ -262,6 +297,8 @@ public:
     void clear_body_force(BodyId id, ForceMode mode=ForceMode::Force);
     void clear_body_torque(BodyId id, ForceMode mode=ForceMode::Force);
     void set_body_material(BodyId id, Material material);
+    // PxRigidDynamic::setContactReportThreshold. PX_MAX_REAL disables.
+    void set_body_contact_report_threshold(BodyId id, float force);
     // PhysX PxShape::setContactOffset / setRestOffset: both in metres.
     // Contact offset must be nonnegative and greater than rest offset.
     void set_body_shape_offsets(BodyId id, float contact_offset, float rest_offset);

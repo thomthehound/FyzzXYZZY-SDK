@@ -64,6 +64,57 @@ int main() {
             if (!retired_native_actor)
                 throw std::runtime_error("Native CPU scene failed to retire actor");
 
+            // Public World must publish the actual scene-owned Dy
+            // threshold stream. Static supports share the solver world
+            // node; no Sc touch notification subscription is required.
+            {
+                fyzz::World threshold_world(fyzz::WorldOptions{
+                    fyzz::ExecutionMode::NativeCpu});
+                const auto floor=threshold_world.add_static_floor(0.0f);
+                const auto dynamic=threshold_world.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+                fyzz::Material material{};
+                material.restitution=0.0f;
+                threshold_world.set_body_material(floor,material);
+                threshold_world.set_body_material(dynamic,material);
+                bool rejected_static=false,rejected_negative=false;
+                try {
+                    threshold_world.set_body_contact_report_threshold(floor,0);
+                } catch(const std::logic_error&) {rejected_static=true;}
+                try {
+                    threshold_world.set_body_contact_report_threshold(
+                        dynamic,-1.0f);
+                } catch(const std::invalid_argument&) {rejected_negative=true;}
+                if(!rejected_static || !rejected_negative)
+                    throw std::runtime_error(
+                        "World contact threshold admission differs from source");
+                threshold_world.set_body_contact_report_threshold(dynamic,0);
+                threshold_world.step(1.0f/120.0f);
+                const auto first=threshold_world.force_threshold_changes();
+                if(first.size()!=1 ||
+                   first[0].key.actor0!=dynamic ||
+                   !first[0].key.static_world ||
+                   first[0].change!=fyzz::ForceThresholdChange::Found ||
+                   !(first[0].normal_impulse>0.0))
+                    throw std::runtime_error(
+                        "World failed to publish Dy threshold Found");
+                threshold_world.step(1.0f/120.0f);
+                const auto second=threshold_world.force_threshold_changes();
+                if(second.size()!=1 ||
+                   second[0].change!=fyzz::ForceThresholdChange::Persists ||
+                   !(second[0].normal_impulse>0.0))
+                    throw std::runtime_error(
+                        "World failed to publish Dy threshold Persists");
+                threshold_world.set_body_position(dynamic,{0,5,0});
+                threshold_world.step(1.0f/120.0f);
+                const auto last=threshold_world.force_threshold_changes();
+                if(last.size()!=1 ||
+                   last[0].change!=fyzz::ForceThresholdChange::Lost ||
+                   last[0].normal_impulse!=0.0)
+                    throw std::runtime_error(
+                        "World failed to publish Dy threshold Lost");
+            }
+
             bool rejected_unknown = false;
             try {
                 fyzz::World unsupported(fyzz::WorldOptions{
@@ -79,6 +130,7 @@ int main() {
             explicit_cpu.add_static_floor(0.0f);
             const auto cpu_test = explicit_cpu.add_dynamic_box(
                 {0.2f, 0.2f, 0.2f}, {0.0f, 1.0f, 0.0f}, 1.0f);
+            explicit_cpu.set_body_contact_report_threshold(cpu_test,0.0f);
             explicit_cpu.step(1.0f / 60.0f);
             if (explicit_cpu.body_state(cpu_test).position.y >= 1.0f)
                 throw std::runtime_error("Explicit production CPU PhysX scene failed");

@@ -6657,6 +6657,9 @@ public:
     std::span<const ContactEventPoint> contact_event_points() const override {
         return scene_.contact_event_points();
     }
+    std::span<const ForceThresholdReport> force_threshold_changes() const override {
+        return scene_.force_threshold_changes();
+    }
     BodyId add_static_box(Vec3 h, Vec3 p) override {
         return scene_.add_static_box(h, p);
     }
@@ -6698,6 +6701,9 @@ public:
     }
     void set_body_material(BodyId id, Material material) override {
         scene_.set_material(id,material);
+    }
+    void set_body_contact_report_threshold(BodyId id, float force) override {
+        scene_.set_contact_report_threshold(id,force);
     }
     void set_body_shape_offsets(BodyId id, float contact_offset,
                                 float rest_offset) override {

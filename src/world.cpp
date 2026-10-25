@@ -126,6 +126,9 @@ std::span<const ContactEvent> World::contact_events() const {
 std::span<const ContactEventPoint> World::contact_event_points() const {
     return impl_->contact_event_points();
 }
+std::span<const ForceThresholdReport> World::force_threshold_changes() const {
+    return impl_->force_threshold_changes();
+}
 void World::set_body_position(BodyId id, Vec3 position) {
     validate_position(position);
     impl_->set_body_position(id, position);
@@ -186,6 +189,12 @@ void World::set_body_material(BodyId id, Material material) {
         throw std::invalid_argument(
             "PhysX contact material coefficients/modes invalid");
     impl_->set_body_material(id,material);
+}
+
+void World::set_body_contact_report_threshold(BodyId id, float force) {
+    if(!std::isfinite(force) || force<0.0f)
+        throw std::invalid_argument("Invalid source contact report threshold");
+    impl_->set_body_contact_report_threshold(id,force);
 }
 
 void World::set_body_shape_offsets(BodyId id, float contact_offset,
