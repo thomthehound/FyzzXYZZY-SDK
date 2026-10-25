@@ -178,7 +178,13 @@ the four-contact reduction retains spatial coverage and deepest
 contacts. When SAT accepts a pair without generating face witnesses,
 support-mapped GJK and EPA provide the remaining separation or
 penetration contact, using bounded native working sets and retained
-support-index simplex state. The existing PGS constraint preparation
+support-index simplex state. GJK simplex reduction follows
+`GuGJKSimplex.h/.cpp`'s segment, triangle-Voronoi and tetrahedron-face
+branches directly, including the original face tie order and
+degenerate-feature fallback; the former exhaustive-subset Gram solve
+is no longer in the per-support inner loop. EPA keeps its original
+fixed-size support/facet bounds and squared-area admission cutoff.
+The existing PGS constraint preparation
 consumes these PCM points directly, including normal and friction
 correlation, threshold publication and contact callbacks. The PCM
 stream is not diverted through `PxcCacheLocalContacts` or the
@@ -1283,8 +1289,17 @@ node at this stage. The next SAP pass reuses those cached bounds;
 authored pose/contact-offset edits invalidate only the affected actor.
 The actor's current-bounds flag and six encoded endpoints use the
 existing per-body motion rollback record, not an extra shape table or
-a second bounds recomputation per ordinary frame. Native tests cover
-integration-publication, subsequent SAP reuse and authored invalidation.
+a second bounds recomputation per ordinary frame. Source broadphase
+volume membership is maintained separately from the permanent BodyId
+arena: admission registers one live proxy; retirement withdraws it,
+while IDs and state of retired actors remain intact. Bounds publication
+and infinite-plane candidate discovery iterate live members and
+simulation-enabled box endpoints, not the historical actor-ID high
+watermark. CPU x-endpoints are still resorted per dirty publication;
+incremental SAP endpoint movement and CPU-GPU performance parity
+remain separate performance work. Native tests cover integration
+publication, SAP reuse, authored invalidation, high-churn retirement,
+plane-pair candidates and simulation-shape re-admission.
 `ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
 per-step velocity changes and per-second accelerations in the same
 third-pass island deactivation path; the wake regression rejects replay
