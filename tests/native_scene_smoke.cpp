@@ -201,6 +201,86 @@ struct ContactCorrelationSourceFixture {
                     "Default box-box PCM did not reach native Dy");
         }
     }
+    static void verify_default_pcm_failure_atomic_cache() {
+        // A rejected Dy frame must restore the same manager-owned PCM
+        // manifold it observed before Gu contact regeneration. Exercise
+        // both primitive specializations with integrated (not authored)
+        // motion so an existing cache is mutated inside the transaction.
+        for(bool plane_pair:{false,true}) {
+            Scene scene;
+            if(plane_pair)
+                scene.add_static_floor(0.0f);
+            else
+                scene.add_static_box(
+                    {0.5f,0.5f,0.5f},{0,0.5f,0});
+            const auto moving=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},
+                {0,plane_pair?0.5f:1.46f,0},1.0f);
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               scene.contacts()[0].count!=4)
+                throw std::runtime_error(
+                    "PCM rollback fixture failed to establish cache");
+            const auto edge=scene.contacts()[0].edge_handle;
+            const auto before=scene.contact_edges_[edge].pcm_cache;
+            if(!before.initialized || before.count!=4)
+                throw std::runtime_error(
+                    "PCM rollback fixture lacks retained witnesses");
+            const auto frame=scene.frame_index();
+            auto& body=scene.actors_[moving];
+            body.position.x+=0.125f;
+            body.cached_bounds_current=false;
+            scene.dirty_=true;
+            bool rejected=false;
+            try {
+                scene.step(std::numeric_limits<float>::max());
+            } catch(const std::overflow_error&) {
+                rejected=true;
+            }
+            const auto& restored=scene.contact_edges_[edge].pcm_cache;
+            if(!rejected || scene.frame_index()!=frame ||
+               restored.initialized!=before.initialized ||
+               restored.count!=before.count ||
+               restored.relative_position.x!=before.relative_position.x ||
+               restored.relative_position.y!=before.relative_position.y ||
+               restored.relative_position.z!=before.relative_position.z ||
+               restored.relative_rotation.x!=before.relative_rotation.x ||
+               restored.relative_rotation.y!=before.relative_rotation.y ||
+               restored.relative_rotation.z!=before.relative_rotation.z ||
+               restored.relative_rotation.w!=before.relative_rotation.w ||
+               restored.warmstart.count!=before.warmstart.count)
+                throw std::runtime_error(
+                    "Rejected source Dy frame leaked PCM cache update");
+            for(std::size_t i=0;i<before.count;++i) {
+                const auto& a=before.points[i];
+                const auto& b=restored.points[i];
+                if(a.local_a.x!=b.local_a.x ||
+                   a.local_a.y!=b.local_a.y ||
+                   a.local_a.z!=b.local_a.z ||
+                   a.local_b.x!=b.local_b.x ||
+                   a.local_b.y!=b.local_b.y ||
+                   a.local_b.z!=b.local_b.z ||
+                   a.normal_b.x!=b.normal_b.x ||
+                   a.normal_b.y!=b.normal_b.y ||
+                   a.normal_b.z!=b.normal_b.z ||
+                   a.separation!=b.separation)
+                    throw std::runtime_error(
+                        "Rejected PCM step changed a retained witness");
+            }
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               !scene.contact_edges_[edge].pcm_cache.initialized ||
+               std::abs(scene.contact_edges_[edge].
+                        pcm_cache.relative_position.x-
+                        before.relative_position.x)<0.10f)
+                throw std::runtime_error(
+                    "PCM rollback did not permit contact regeneration");
+            scene.step(1.0f/120.0f);
+            if(scene.solved_result_frame()!=scene.frame_index())
+                throw std::runtime_error(
+                    "PCM rollback retry did not complete native PGS");
+        }
+    }
     static void verify_source_pcm_box_box_lifecycle() {
         verify_source_pcm_batch_reduction();
         // Independently exercise GJK and EPA for box support points in
@@ -10097,6 +10177,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
+    fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
