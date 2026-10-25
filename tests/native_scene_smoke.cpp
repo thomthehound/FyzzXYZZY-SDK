@@ -150,6 +150,65 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Native PCM GJK/EPA sign, witness or depth differs from source");
         }
+        // Find a genuine SAT-positive/zero-face case so the production
+        // PCM path must invoke GJK/EPA instead of direct face clipping.
+        // This is intentionally geometric, not a mock contact injection.
+        {
+            constexpr Vec3 moving_half{0.6f,0.2f,0.3f};
+            constexpr Vec3 fixed_half{0.5f,0.5f,0.5f};
+            constexpr float distance=0.04f;
+            std::array<PcmContactCandidate,64> direct{};
+            bool verified=false;
+            for(float angle:{0.33f,0.61f,0.91f}) {
+                const Quat moving_rotation{
+                    0,0,std::sin(angle*0.5f),std::cos(angle*0.5f)};
+                for(float x:{0.55f,0.8f,1.0f})
+                    for(float y:{0.55f,0.8f,1.0f})
+                        for(float z:{0.0f,0.27f,0.51f}) {
+                            const Vec3 moving_at{x,y,z};
+                            std::size_t count=0;
+                            if(!source_pcm_box_box_candidates(
+                                    moving_half,moving_at,moving_rotation,
+                                    fixed_half,{0,0,0},{},
+                                    distance,direct,count) || count!=0)
+                                continue;
+                            PcmContactCandidate fallback{};
+                            if(!source_pcm_box_box_gjk_epa(
+                                    moving_half,moving_at,moving_rotation,
+                                    fixed_half,{0,0,0},{},
+                                    distance,fallback))
+                                continue;
+                            if(!std::isfinite(fallback.separation) ||
+                               fallback.separation>distance ||
+                               std::abs(fallback.normal_b.x)+
+                               std::abs(fallback.normal_b.y)+
+                               std::abs(fallback.normal_b.z)<0.5f)
+                                throw std::runtime_error(
+                                    "PCM GJK/EPA emitted an invalid contact");
+                            Scene actual;
+                            actual.set_pcm_box_box(true);
+                            actual.add_static_box(fixed_half,{0,0,0});
+                            const auto moving=actual.add_dynamic_box(
+                                moving_half,moving_at,1.0f);
+                            actual.set_pose(moving,moving_at,moving_rotation);
+                            actual.advance_collision(true);
+                            if(actual.contacts().size()!=1 ||
+                               actual.contacts()[0].count==0)
+                                throw std::runtime_error(
+                                    "Production PCM did not publish GJK/EPA contact");
+                            actual.step(1.0f/120.0f);
+                            if(actual.solved_result_frame()!=actual.frame_index())
+                                throw std::runtime_error(
+                                    "GJK/EPA witness was not solved by native PGS");
+                            verified=true;
+                            break;
+                        }
+                if(verified)break;
+            }
+            if(!verified)
+                throw std::runtime_error(
+                    "PCM fixture failed to exercise a genuine GJK/EPA path");
+        }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
