@@ -49,9 +49,11 @@ struct ConstraintIslandSourceFixture {
            scene.distance_rows_.size()!=1 ||
            scene.solved_result_frame()!=scene.frame_index() ||
            !std::isfinite(separation) || !(separation<2.0f) ||
-           !(first.velocity.x>0) || !(second.velocity.x<0))
+           !(first.position.x>0.0f) || !(second.position.x<2.0f) ||
+           std::abs(first.velocity.x)>1.0e-3f ||
+           std::abs(second.velocity.x)>1.0e-3f)
             throw std::runtime_error(
-                "Native source 1D distance row bypassed active Dy solver");
+                "Source 1D biased motion/unbiased velocity publication diverged");
         scene.remove_constraint_edge(edge);
         scene.step(1.0f/120.0f);
         if(!scene.indexed_distance_constraints_.empty() ||
