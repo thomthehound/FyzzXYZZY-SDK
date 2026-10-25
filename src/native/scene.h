@@ -14,6 +14,12 @@
 #include <vector>
 
 namespace fyzz::native {
+// Native source callers retain these identifiers while the public World
+// API uses the same canonical threshold report types and storage.
+using ::fyzz::ForceThresholdChange;
+using ::fyzz::ForceThresholdKey;
+using ::fyzz::ForceThresholdReport;
+
 
 // The exact rigid friction saturation expression from
 // DySolverConstraints.cpp::{solveContact,solveContact_BStatic}.
