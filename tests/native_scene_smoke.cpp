@@ -5298,6 +5298,7 @@ void verify_sparse_broadphase_volume_lifetime() {
 // adjacent keys must cross. Candidate pairs must match for all paths.
 void verify_incremental_sap_endpoint_order() {
     using namespace fyzz::native;
+    using fyzz::BodyId;
     Scene scene;
     std::vector<BodyId> fixed;
     for(int i=0;i<40;++i)
