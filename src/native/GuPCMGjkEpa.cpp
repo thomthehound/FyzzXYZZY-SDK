@@ -344,7 +344,10 @@ bool epa(const BoxPair& pair,
         if(boundary_count>available_slots)return false;
         for(int i=0;i<boundary_count;++i) {
             const auto e=boundary[i];
-            Facet f=make_facet(vertices,e.to,e.from,new_index);
+            // These horizon edges come from removed (visible) facets.
+            // The surviving neighbor has opposite winding, so this
+            // orientation already matches source addFacet(target,source).
+            Facet f=make_facet(vertices,e.from,e.to,new_index);
             if(!f.valid)return false;
             // GuEPA.cpp::addFacet accepts triangles outside the
             // current upper bound as topology, but not heap entries.
