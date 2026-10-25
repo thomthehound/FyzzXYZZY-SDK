@@ -761,18 +761,25 @@ void Scene::update_actor_bounds(Actor& actor) {
 }
 void Scene::update_bounds() {
     // BpBroadPhaseSap::batchCreate/mBoxBoundsMinMax:
-    // physical min/max endpoints are retained on every axis; live
-    // actor membership is still owned by BpAABBManager's scene proxy
-    // list, not by the stable BodyId high-water mark.
+    // min and max endpoints are retained on every axis and mapped
+    // directly from each live SapBox1D's mMinMax endpoint positions.
+    // Actor ID history never changes the width of this working set.
     const auto less=[](Endpoint a,Endpoint b) {
         if(a.value!=b.value)return a.value<b.value;
-        // Source encoded min and max have different low bits.
-        // The deterministic fallback for equal encoded keys does
-        // not change the broadphase inclusive-overlap predicate.
         if(a.is_max!=b.is_max)return !a.is_max;
         return a.id<b.id;
     };
+    const auto reindex=[&](unsigned axis) {
+        const auto& endpoints=sap_axis_endpoints_[axis];
+        for(std::size_t i=0;i<endpoints.size();++i) {
+            const Endpoint& ep=endpoints[i];
+            sap_volumes_[ep.volume_slot].
+                endpoint_positions[axis][ep.is_max?1u:0u]=
+                static_cast<std::uint32_t>(i);
+        }
+    };
     broadphase_updated_ids_.clear();
+    broadphase_updated_volume_slots_.clear();
     broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
     try {
         if(broadphase_endpoint_membership_dirty_) {
@@ -789,71 +796,120 @@ void Scene::update_bounds() {
                 if(!actor.cached_bounds_current)
                     update_actor_bounds(actor);
                 const auto& bounds=actor.encoded_bounds;
-                sap_volumes_.push_back({id,bounds});
+                const auto slot=static_cast<std::uint32_t>(
+                    sap_volumes_.size());
+                sap_volumes_.push_back({id,bounds,{}});
                 for(unsigned axis=0;axis<3;++axis) {
                     sap_axis_endpoints_[axis].push_back({
-                        bounds[axis],id,false});
+                        bounds[axis],id,slot,false});
                     sap_axis_endpoints_[axis].push_back({
-                        bounds[axis+3],id,true});
+                        bounds[axis+3],id,slot,true});
                 }
             }
-            for(auto& axis:sap_axis_endpoints_)
-                std::sort(axis.begin(),axis.end(),less);
+            for(unsigned axis=0;axis<3;++axis) {
+                auto& endpoints=sap_axis_endpoints_[axis];
+                std::sort(endpoints.begin(),endpoints.end(),less);
+                reindex(axis);
+            }
             ++broadphase_endpoint_full_sort_count_;
             broadphase_endpoint_membership_dirty_=false;
             return;
         }
-        // The source mUpdated handles are derived from actual encoded
-        // bounds changes, not an authored-pose bit on an unchanged AABB.
-        for(SapVolume& volume:sap_volumes_) {
+
+        // The source mUpdated worklist uses the stored encoded bounds,
+        // not dirty authored positions whose rounded AABB is unchanged.
+        for(std::size_t slot=0;slot<sap_volumes_.size();++slot) {
+            SapVolume& volume=sap_volumes_[slot];
             Actor& actor=actors_[volume.id];
             if(!actor.cached_bounds_current)
                 update_actor_bounds(actor);
             if(volume.published_bounds!=actor.encoded_bounds) {
                 broadphase_updated_ids_.push_back(volume.id);
+                broadphase_updated_volume_slots_.push_back(
+                    static_cast<std::uint32_t>(slot));
                 volume.published_bounds=actor.encoded_bounds;
             }
         }
-        if(broadphase_updated_ids_.empty())return;
+        if(broadphase_updated_volume_slots_.empty())return;
 
-        // Source BroadPhaseSap::batchUpdate performs local endpoint
-        // shifts with a bounded fallback for broadly reordered data.
-        // Update both min and max endpoints on all three axes.
+        // BpBroadPhaseSap::batchUpdateFewUpdates indexes only the two
+        // changed endpoints per axis via SapBox1D::mMinMax. Every
+        // insertion shift immediately repairs the moved endpoint's
+        // index, so no O(all six endpoints) scan is needed for local
+        // updates. Broad reorderings use a bounded full-sort fallback.
         const std::size_t budget=std::max<std::size_t>(
             16,sap_volumes_.size()/4);
-        std::size_t shifts=0;
+        std::size_t total_shifts=0;
         bool full_sort=false;
         for(unsigned axis=0;axis<3;++axis) {
             auto& endpoints=sap_axis_endpoints_[axis];
-            for(Endpoint& ep:endpoints) {
-                const Actor& actor=actors_[ep.id];
-                ep.value=actor.encoded_bounds[axis+(ep.is_max?3:0)];
-            }
-            std::size_t axis_shifts=0;
-            for(std::size_t i=1;i<endpoints.size();++i) {
-                Endpoint moving=endpoints[i];
-                std::size_t j=i;
-                while(j>0 && less(moving,endpoints[j-1])) {
-                    endpoints[j]=endpoints[j-1];
-                    --j;
-                    ++axis_shifts;
-                    if(axis_shifts>budget)break;
+            std::size_t shifts=0;
+            bool fallback=false;
+            for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                for(unsigned side=0;side<2;++side) {
+                    auto& pos=sap_volumes_[slot].
+                        endpoint_positions[axis][side];
+                    std::size_t i=pos;
+                    Endpoint moving=endpoints[i];
+                    moving.value=actors_[moving.id].encoded_bounds[
+                        axis+(side?3:0)];
+                    if(i && less(moving,endpoints[i-1])) {
+                        do {
+                            endpoints[i]=endpoints[i-1];
+                            const auto& moved=endpoints[i];
+                            sap_volumes_[moved.volume_slot].
+                                endpoint_positions[axis][
+                                    moved.is_max?1u:0u]=
+                                static_cast<std::uint32_t>(i);
+                            --i;
+                            ++shifts;
+                            if(shifts>budget) {
+                                fallback=true;
+                                break;
+                            }
+                        } while(i && less(moving,endpoints[i-1]));
+                    } else {
+                        while(i+1<endpoints.size() &&
+                              less(endpoints[i+1],moving)) {
+                            endpoints[i]=endpoints[i+1];
+                            const auto& moved=endpoints[i];
+                            sap_volumes_[moved.volume_slot].
+                                endpoint_positions[axis][
+                                    moved.is_max?1u:0u]=
+                                static_cast<std::uint32_t>(i);
+                            ++i;
+                            ++shifts;
+                            if(shifts>budget) {
+                                fallback=true;
+                                break;
+                            }
+                        }
+                    }
+                    endpoints[i]=moving;
+                    pos=static_cast<std::uint32_t>(i);
+                    if(fallback)break;
                 }
-                endpoints[j]=moving;
-                if(axis_shifts>budget) {
-                    std::sort(endpoints.begin(),endpoints.end(),less);
-                    full_sort=true;
-                    break;
-                }
+                if(fallback)break;
             }
-            shifts+=axis_shifts;
+            if(fallback) {
+                // Some updated endpoints have not yet been processed;
+                // source truth is the current actor AABB for every
+                // endpoint in this axis before the complete fallback.
+                for(Endpoint& ep:endpoints)
+                    ep.value=actors_[ep.id].encoded_bounds[
+                        axis+(ep.is_max?3:0)];
+                std::sort(endpoints.begin(),endpoints.end(),less);
+                reindex(axis);
+                full_sort=true;
+            }
+            total_shifts+=shifts;
         }
         if(full_sort)++broadphase_endpoint_full_sort_count_;
-        broadphase_endpoint_local_shift_count_+=shifts;
+        broadphase_endpoint_local_shift_count_+=total_shifts;
     } catch (...) {
-        // AABB encoding or reserved endpoint allocation can fail.
-        // The source-owned pair/contact checkpoint restores the last
-        // published view; rebuild derived axes on the next publication.
+        // Rollback restores authoritative actors and source pair/contact
+        // publication; invalidate the derived axis positions so the
+        // next dirty publication rebuilds them without a dense snapshot.
         broadphase_endpoint_membership_dirty_=true;
         throw;
     }
