@@ -215,6 +215,9 @@ public:
     std::size_t broadphase_endpoint_local_shift_count() const noexcept {
         return broadphase_endpoint_local_shift_count_;
     }
+    std::size_t broadphase_incremental_pair_update_count() const noexcept {
+        return broadphase_incremental_pair_update_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -637,6 +640,10 @@ private:
     struct Endpoint {
         std::uint32_t min_x = 0;
         BodyId id = 0;
+        // Source BpBroadPhaseSap compares the previous mBoxBoundsMinMax
+        // against updated AABBs, on all three integer-encoded axes.
+        // This per-volume projection is not an independent actor owner.
+        std::array<std::uint32_t,6> published_bounds{};
     };
     BodyId add(Actor actor);
     Actor& require(BodyId id);
@@ -1205,6 +1212,13 @@ private:
     bool broadphase_endpoint_membership_dirty_=true;
     std::size_t broadphase_endpoint_full_sort_count_=0;
     std::size_t broadphase_endpoint_local_shift_count_=0;
+    // BpBroadPhaseSap's mUpdated handles and candidate pair scratch.
+    // Bounded native CPU pair updates retain the source pair registry
+    // and its Found/Lost edge publication, not a second pair owner.
+    bool broadphase_full_pair_update_=true;
+    std::size_t broadphase_incremental_pair_update_count_=0;
+    std::vector<BodyId> broadphase_updated_ids_;
+    std::vector<Pair> broadphase_candidate_deltas_;
     std::vector<BodyId> active_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
