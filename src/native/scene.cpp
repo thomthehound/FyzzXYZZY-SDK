@@ -1022,11 +1022,18 @@ void Scene::SapPairManager::add(Pair pair) {
         rehash(hash_table.empty()?64:hash_table.size()*2);
     const auto index=static_cast<std::uint32_t>(active_pairs.size());
     // Reserve every parallel array before publishing a hash bucket.
+    // Geometric growth retains amortized O(1) pair insertion.
     // A failed allocation invalidates the derived registry at rollback.
-    active_pairs.reserve(index+1);
-    states.reserve(index+1);
-    next.reserve(index+1);
-    touched.reserve(touched.size()+1);
+    if(active_pairs.capacity()==active_pairs.size())
+        active_pairs.reserve(std::max<std::size_t>(
+            8,active_pairs.capacity()*2));
+    if(states.capacity()==states.size())
+        states.reserve(std::max<std::size_t>(8,states.capacity()*2));
+    if(next.capacity()==next.size())
+        next.reserve(std::max<std::size_t>(8,next.capacity()*2));
+    if(touched.capacity()==touched.size())
+        touched.reserve(std::max<std::size_t>(
+            8,touched.capacity()*2));
     const auto bucket=hash(pair)&(hash_table.size()-1);
     active_pairs.push_back(pair);
     states.push_back(in_array|newly_created);
