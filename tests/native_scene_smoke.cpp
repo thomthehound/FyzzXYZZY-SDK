@@ -5459,6 +5459,53 @@ void verify_incremental_sap_endpoint_order() {
            "Retired source SAP endpoint survived a structural rebuild");
 }
 
+// BpBroadPhaseSap pair deltas originate at opposite-type endpoint
+// crossings. Same-kind crossings inside an existing 1D overlap must
+// not retire/reallocate its Sc contact manager; crossing min/max on
+// X, Y or Z must emit the exact Found/Lost transition instead.
+void verify_source_sap_endpoint_crossing_deltas() {
+    using namespace fyzz::native;
+    Scene scene;
+    const auto fixed=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0,0,0});
+    const auto moving=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+    const Pair pair{fixed,moving};
+    scene.advance_collision();
+    expect(scene.pairs().size()==1 && scene.pairs().front()==pair,
+           "Source SAP crossing fixture lacks initial pair");
+    const auto crosses=scene.broadphase_endpoint_crossing_count();
+    scene.set_position(moving,{0.05f,0,0});
+    scene.advance_collision();
+    expect(scene.pairs().size()==1 &&
+           scene.pairs().front()==pair &&
+           scene.found_pairs().empty() &&
+           scene.lost_pairs().empty() &&
+           scene.broadphase_endpoint_crossing_count()==crosses,
+           "Source SAP re-created a pair without a min/max crossing");
+    for(int axis=0;axis<3;++axis) {
+        fyzz::Vec3 away{};
+        if(axis==0)away.x=4.0f;
+        if(axis==1)away.y=4.0f;
+        if(axis==2)away.z=4.0f;
+        scene.set_position(moving,away);
+        scene.advance_collision();
+        expect(scene.pairs().empty() &&
+               scene.lost_pairs().size()==1 &&
+               scene.lost_pairs().front()==pair,
+               "Source SAP min/max crossing did not retire pair");
+        scene.set_position(moving,{0,0,0});
+        scene.advance_collision();
+        expect(scene.pairs().size()==1 &&
+               scene.pairs().front()==pair &&
+               scene.found_pairs().size()==1 &&
+               scene.found_pairs().front()==pair,
+               "Source SAP min/max crossing did not recreate pair");
+    }
+    expect(scene.broadphase_endpoint_crossing_count()>crosses,
+           "Source SAP never recorded min/max crossing candidates");
+}
+
 // Independent oracle for the complete integer SAP pair stream. The
 // boxes remain axis-aligned and all authored coordinates are separated
 // from the 0.02 m contact-offset boundary, so the exact source broadphase
@@ -10853,6 +10900,7 @@ int run_native_scene_smoke() {
     verify_sparse_motion_checkpoint();
     verify_sparse_broadphase_volume_lifetime();
     verify_incremental_sap_endpoint_order();
+    verify_source_sap_endpoint_crossing_deltas();
     verify_incremental_sap_pair_deltas();
     verify_native_rigid_integration_and_island_lifecycle();
 
