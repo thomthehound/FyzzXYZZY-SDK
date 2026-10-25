@@ -1013,6 +1013,99 @@ int main() {
                         "PCM sliding fixture failed to vary its contact patch");
             }
 
+            // Integrated, non-authored motion: no pose reset between
+            // frames. The native and independent source managers must
+            // refresh the same B-local witnesses under real Dy position
+            // integration, then invalidate and regenerate as the dynamic
+            // box crosses the source's tangential travel threshold.
+            for(bool reverse:{false,true}) {
+                fyzz::WorldOptions native_options{};
+                native_options.execution=fyzz::ExecutionMode::NativeCpu;
+                native_options.contact_notifications=true;
+                fyzz::WorldOptions reference_options{};
+                reference_options.execution=
+                    fyzz::ExecutionMode::ReferencePhysXCpu;
+                reference_options.contact_notifications=true;
+                fyzz::World native_pcm(native_options);
+                fyzz::World reference_pcm(reference_options);
+                const auto setup=[&](fyzz::World& world) {
+                    constexpr fyzz::Vec3 half{0.5f,0.5f,0.5f};
+                    fyzz::BodyId moving=0;
+                    if(reverse) {
+                        moving=world.add_dynamic_box(
+                            half,{0,1.50f,0},1.0f);
+                        world.add_static_box(half,{0,0.5f,0});
+                    } else {
+                        world.add_static_box(half,{0,0.5f,0});
+                        moving=world.add_dynamic_box(
+                            half,{0,1.50f,0},1.0f);
+                    }
+                    fyzz::RigidBodyDynamics d{};
+                    d.gravity_enabled=false;
+                    d.linear_damping=0.0f;
+                    d.angular_damping=0.0f;
+                    world.set_body_dynamics(moving,d);
+                    fyzz::Material frictionless{};
+                    frictionless.disable_friction=true;
+                    frictionless.restitution=0.0f;
+                    world.set_body_material(moving,frictionless);
+                    world.set_body_velocity(moving,{0.2f,0,0});
+                    return moving;
+                };
+                const auto n=setup(native_pcm);
+                const auto p=setup(reference_pcm);
+                unsigned contact_frames=0;
+                for(int frame=0;frame<48;++frame) {
+                    const float dt=frame%2?1.0f/60.0f:1.0f/120.0f;
+                    native_pcm.step(dt);
+                    reference_pcm.step(dt);
+                    const auto nstate=native_pcm.body_state(n);
+                    const auto rstate=reference_pcm.body_state(p);
+                    if(std::abs(nstate.position.x-rstate.position.x)>1e-3f ||
+                       std::abs(nstate.position.y-rstate.position.y)>1e-3f ||
+                       std::abs(nstate.velocity.x-rstate.velocity.x)>1e-3f)
+                        throw std::runtime_error(
+                            "Integrated PCM sliding trajectory diverged from PhysX");
+                    const auto got=native_pcm.contact_event_points();
+                    const auto expected=reference_pcm.contact_event_points();
+                    if(got.size()!=expected.size() || expected.size()>4) {
+                        std::cerr<<"PCM integrated frame="<<frame
+                                 <<" reverse="<<reverse
+                                 <<" got="<<got.size()
+                                 <<" expected="<<expected.size()<<'\n';
+                        throw std::runtime_error(
+                            "Native integrated PCM cache contact count diverged");
+                    }
+                    contact_frames+=!expected.empty();
+                    for(const auto& src:expected) {
+                        bool found=false;
+                        for(const auto& dst:got) {
+                            const float dx=src.position.x-dst.position.x;
+                            const float dy=src.position.y-dst.position.y;
+                            const float dz=src.position.z-dst.position.z;
+                            const float alignment=
+                                src.normal.x*dst.normal.x+
+                                src.normal.y*dst.normal.y+
+                                src.normal.z*dst.normal.z;
+                            found|=dx*dx+dy*dy+dz*dz<2e-5f &&
+                                   alignment>0.999f &&
+                                   std::abs(src.separation-
+                                            dst.separation)<1e-3f;
+                        }
+                        if(!found) {
+                            std::cerr<<"PCM integrated witness frame="<<frame
+                                     <<" reverse="<<reverse<<'\n';
+                            throw std::runtime_error(
+                                "Integrated PCM manager refresh diverged from PhysX");
+                        }
+                    }
+                }
+                if(contact_frames<24 ||
+                   native_pcm.body_state(n).position.x<0.11f)
+                    throw std::runtime_error(
+                        "Integrated PCM sliding did not exercise cached motion");
+            }
+
             // Persistent box/box PCM compared to the independent
             // eENABLE_PCM reference across changing contact regions,
             // authored translations/rotations, loss/reentry and timestep.
