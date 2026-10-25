@@ -175,7 +175,7 @@ Closest closest_tetrahedron(const std::array<Support,4>& simplex) {
     const float n2=length2(n);
     // GuGJKSimplex.cpp's tetrahedron degeneracy check is a
     // normalized signed point-to-plane distance with a 1e-4 cutoff.
-    if(n2>0.0f &&
+    if(!(n2>0.0f) ||
        std::abs(dot(n,sub(d,a))/std::sqrt(n2))<1.0e-4f)
         return closest_triangle(simplex,0,1,2);
     const Vec3 v0=n,v1=cross(ac,ad),v2=cross(ad,ab);
