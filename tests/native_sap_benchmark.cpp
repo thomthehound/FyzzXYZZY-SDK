@@ -76,6 +76,56 @@ void profile(const char* name,Motion motion,unsigned retired) {
         scene.broadphase_endpoint_crossing_count()-crossings_before,
         contact_transitions,scene.pairs().size());
 }
+// Unlike the isolated-mover benchmarks, this workload carries many
+// unchanged live contact managers across one sparse crossing. It makes
+// candidate reconciliation costs visible without conflating them with
+// the cost of reconstructing the entire broadphase membership.
+void profile_persistent_pairs() {
+    fyzz::native::Scene scene;
+    constexpr unsigned pairs=128;
+    for(unsigned i=0;i<pairs/2;++i)
+        scene.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+    const auto target=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{4,0,0});
+    for(unsigned i=pairs/2;i<pairs;++i)
+        scene.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+    scene.add_dynamic_box({0.5f,0.5f,0.5f},{0,0,0},1.0f);
+    const auto mover=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{8,0,0},1.0f);
+    scene.advance_collision();
+    const auto shifts_before=scene.broadphase_endpoint_local_shift_count();
+    const auto crosses_before=scene.broadphase_endpoint_crossing_count();
+    const auto sorts_before=scene.broadphase_endpoint_full_sort_count();
+    constexpr unsigned trials=5,steps=64;
+    std::vector<double> times;
+    times.reserve(trials);
+    std::size_t transitions=0;
+    unsigned frame=0;
+    for(unsigned trial=0;trial<trials;++trial) {
+        const auto start=Clock::now();
+        for(unsigned step=0;step<steps;++step,++frame) {
+            scene.set_position(mover,frame%2
+                ? fyzz::Vec3{8,0,0}:fyzz::Vec3{4,0,0});
+            scene.advance_collision(true);
+            transitions+=scene.found_pairs().size()+
+                         scene.lost_pairs().size();
+        }
+        const auto elapsed=std::chrono::duration<double,std::micro>(
+            Clock::now()-start).count();
+        times.push_back(elapsed/steps);
+    }
+    std::sort(times.begin(),times.end());
+    std::printf(
+        "native_sap mode=persistent-pairs pairs=%u"
+        " median_us_per_query=%.3f full_sorts=%zu"
+        " local_shifts=%zu minmax_crossings=%zu transitions=%zu"
+        " final_pairs=%zu target=%u\\n",
+        pairs,times[trials/2],
+        scene.broadphase_endpoint_full_sort_count()-sorts_before,
+        scene.broadphase_endpoint_local_shift_count()-shifts_before,
+        scene.broadphase_endpoint_crossing_count()-crosses_before,
+        transitions,scene.pairs().size(),target);
+}
 } // namespace
 
 int main() {
@@ -85,6 +135,7 @@ int main() {
         profile("contact-local",Motion::LocalContacts,0);
         profile("teleport",Motion::Teleport,0);
         profile("retired-history",Motion::Stationary,2048);
+        profile_persistent_pairs();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr,"native SAP benchmark: %s\n",error.what());
