@@ -761,8 +761,10 @@ force-threshold Lost reports without replay.
 dynamic-body motion, while the source's retained friction anchors
 and previous exceeded-threshold streams use reversible scene-owned
 buffer rotations instead of O(cache size) checkpoint copies.
-Active-node publication and solver-partition metadata still incur
-checkpoint bandwidth. Persistent source island handles,
+Active-node permutations and solver-partition metadata still incur
+checkpoint bandwidth; their private reverse indices are reconstructed on
+rollback from the published active-node order, avoiding per-step copies
+of the historical actor-ID watermark. Persistent source island handles,
 node membership chains, static-touch counts and accurate solver-node
 offsets are **now copied only on the first actual graph ownership
 mutation in a publication**, never on an unchanged-topology PGS step.
@@ -799,10 +801,11 @@ successful retry.
 The accurate graph's `mActiveNodes` and
 `mNodesToPutToSleep` equivalents are also published read-only spans.
 Their transaction now follows the same reversible-buffer ownership rule
-as solver reports: the checkpoint retains the active-node permutation,
-reverse index and deactivation output on each transaction, reserves
-full per-actor capacity for the working arrays, and swaps the
-existing published arrays into the checkpoint. Persistent island
+as solver reports: the checkpoint retains the active-node permutation
+and deactivation output on each transaction, reserves full per-actor
+capacity for working lists, and swaps the existing published arrays into
+the checkpoint. The internal inverse index stays in place and is
+reconstructed from the restored permutation on failure. Persistent island
 membership is copied separately and lazily, only before a real
 graph owner mutation. Failed frames restore those original allocations,
 not copies, so retained spans continue to see the last successful
