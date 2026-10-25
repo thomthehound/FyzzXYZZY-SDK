@@ -388,7 +388,7 @@ bool source_pcm_box_box_gjk_epa(
     float previous=std::numeric_limits<float>::max();
     for(int iteration=0;iteration<32;++iteration) {
         const float dist=std::sqrt(length2(closest));
-        if(dist<=epsilon) {
+        if(dist<=0.0f) {
             store();
             return epa(pair,simplex,count,contact);
         }
@@ -399,11 +399,21 @@ bool source_pcm_box_box_gjk_epa(
             store();
             return false; // GJK_NON_INTERSECT
         }
+        // A positive supporting plane establishes geometric separation
+        // even when the closest simplex is below the GJK/EPA margin
+        // threshold. Source convergence must precede EPA admission:
+        // proximity to the origin is not evidence that it lies inside
+        // the Minkowski difference. This matters for speculative
+        // rotated edge/edge contacts with a sub-epsilon positive gap.
         if(count>0 && projection>dist*progress_factor) {
             const Closest current=closest_simplex(simplex,count);
             store();
             return current.mask &&
                 contact_from_gjk(pair,current,contact);
+        }
+        if(dist<=epsilon && projection<=0.0f) {
+            store();
+            return epa(pair,simplex,count,contact);
         }
         for(int i=0;i<count;++i)
             if(support.ai==simplex[i].ai &&
@@ -424,10 +434,9 @@ bool source_pcm_box_box_gjk_epa(
         closest=next.point;
         const float next_dist=std::sqrt(next.dist2);
         compact(simplex,count,next);
-        if(next_dist<=epsilon) {
-            store();
-            return epa(pair,simplex,count,contact);
-        }
+        // Do not send a small positive closest distance directly to
+        // EPA. The next support projection must distinguish a genuine
+        // origin-enclosing Minkowski simplex from a separated pair.
         if(next_dist>=previous) {
             store();
             return false; // GJK_DEGENERATE
