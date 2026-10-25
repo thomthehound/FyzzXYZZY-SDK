@@ -837,8 +837,16 @@ void Scene::update_bounds() {
         // insertion shift immediately repairs the moved endpoint's
         // index, so no O(all six endpoints) scan is needed for local
         // updates. Broad reorderings use a bounded full-sort fallback.
-        const std::size_t budget=std::max<std::size_t>(
-            16,sap_volumes_.size()/4);
+        // BpBroadPhaseSap::batchUpdateFewUpdates uses direct endpoint
+        // shifts for sparse mUpdated handles, even across a long
+        // distance. Full re-sorting for a single teleport is both
+        // slower and less source-faithful. Bound insertion work only
+        // on the source's large-update branch.
+        const bool sparse=broadphase_updated_volume_slots_.size()*5<
+                          sap_volumes_.size();
+        const std::size_t budget=sparse
+            ? std::numeric_limits<std::size_t>::max()
+            : std::max<std::size_t>(16,sap_volumes_.size()/4);
         std::size_t total_shifts=0;
         bool full_sort=false;
         for(unsigned axis=0;axis<3;++axis) {
