@@ -5232,6 +5232,63 @@ void verify_island_contact_manager_order() {
 // The source graph's rollback ownership is a cold-path concern. Steady
 // PGS steps may update active-node publication and motion, but must not
 // copy every persistent island node/handle array when no topology changes.
+// BpAABBManager retains only live volume membership; stable BodyIds may
+// accumulate forever without increasing a quiet scene's SAP scan width.
+// Validate both the proxy lifetime and exact infinite-plane candidate
+// semantics, including simulation flag changes and failure-free reentry.
+void verify_sparse_broadphase_volume_lifetime() {
+    using namespace fyzz::native;
+    Scene scene;
+    for(unsigned i=0;i<2048;++i) {
+        const auto id=scene.add_dynamic_box(
+            {0.2f,0.2f,0.2f},{float(i)*3.0f,4.0f,0.0f},1.0f);
+        scene.remove(id);
+    }
+    const auto retired_floor=scene.add_static_floor(-50.0f);
+    scene.remove(retired_floor);
+    expect(scene.broadphase_registered_actor_count()==0,
+           "Source SAP retained historical retired volume proxies");
+
+    const auto floor=scene.add_static_floor(0.0f);
+    const auto static_box=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{20.0f,2.0f,0.0f});
+    const auto touching=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.5f,0.0f},1.0f);
+    const auto separated=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{20.0f,8.0f,0.0f},1.0f);
+    expect(scene.broadphase_registered_actor_count()==4,
+           "Source SAP re-admission did not reuse live registry");
+    scene.advance_collision();
+    const auto floor_contact=std::find_if(
+        scene.contacts().begin(),scene.contacts().end(),
+        [&](const ContactManifold& contact) {
+            return contact.pair==Pair{floor,touching} && contact.count>0;
+        });
+    expect(floor_contact!=scene.contacts().end() &&
+           scene.contact_edge_connected({floor,separated}) &&
+           !scene.contact_edge_connected({static_box,separated}),
+           "Source SAP lost plane candidates or admitted separated boxes");
+
+    scene.set_shape_simulation_enabled(separated,false);
+    scene.advance_collision();
+    expect(!scene.contact_edge_connected({floor,separated}) &&
+           scene.broadphase_registered_actor_count()==4,
+           "Disabled shape retained a source SAP pair or lost actor identity");
+    scene.set_shape_simulation_enabled(separated,true);
+    scene.advance_collision();
+    expect(scene.contact_edge_connected({floor,separated}),
+           "Re-enabled shape failed source SAP re-admission");
+
+    scene.remove(touching);
+    scene.advance_collision();
+    expect(scene.broadphase_registered_actor_count()==3 &&
+           !scene.contact_edge_connected({floor,touching}),
+           "Retired touching volume survived live SAP membership");
+    scene.step(1.0f/120.0f);
+    expect(scene.broadphase_registered_actor_count()==3,
+           "Source SAP live registry changed after solver publication");
+}
+
 void verify_sparse_motion_checkpoint() {
     using namespace fyzz;
     using namespace fyzz::native;
@@ -10481,6 +10538,7 @@ int run_native_scene_smoke() {
     verify_source_speculative_only_active_references();
     verify_source_activity_rollback();
     verify_sparse_motion_checkpoint();
+    verify_sparse_broadphase_volume_lifetime();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
