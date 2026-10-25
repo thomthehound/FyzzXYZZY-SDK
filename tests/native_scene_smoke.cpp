@@ -23,6 +23,45 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ContactCorrelationSourceFixture {
+    static void verify_moving_kinematic_target_through_source_solver() {
+        constexpr float dt=1.0f/120.0f;
+        Scene scene{};
+        const auto moving=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,8,0},1.0f);
+        const auto kine=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.98f,8,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0.0f;
+        d.angular_damping=0.0f;
+        scene.set_dynamics(moving,d);
+        scene.set_dynamics(kine,d);
+        scene.set_kinematic(kine,true);
+        const Vec3 target{0.84f,8,0};
+        scene.set_kinematic_target(kine,target,{});
+        scene.step(dt);
+        const auto moved=scene.body_state(kine);
+        if(std::abs(moved.position.x-target.x)>1.0e-6f ||
+           std::abs(moved.velocity.x+0.14f/dt)>1.0e-3f ||
+           scene.accurate_islands_.node_island[kine]!=
+               Scene::IslandGraph::invalid ||
+           !std::isfinite(scene.body_state(moving).velocity.x))
+            throw std::runtime_error(
+                "Sc target velocity or postSolver kinematic pose incorrect");
+        // The subsequent Gu publication consumes the target pose from
+        // afterIntegration, not an early pre-PGS transform mutation.
+        scene.step(dt);
+        if(scene.body_state(kine).position.x!=target.x ||
+           scene.body_state(kine).velocity.x!=0.0f ||
+           scene.body_state(kine).angular_velocity.x!=0.0f)
+            throw std::runtime_error(
+                "Sc kinematic settling retained previous target velocity");
+        scene.step(dt);
+        if(scene.actors_[kine].kinematic_tracked ||
+           !scene.active_kinematic_targets_.empty())
+            throw std::runtime_error(
+                "Sc kinematic target list retained settled body");
+    }
     static void verify_kinematic_node_is_not_a_solver_island() {
         // The same PxRigidDynamic survives its eKINEMATIC transition,
         // but PxsIslandSim invalidates its rigid island membership.
@@ -10518,6 +10557,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_node_is_not_a_solver_island();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();

@@ -1554,6 +1554,18 @@ target velocities/pose integration, active-reference kinematic lists,
 kinematic-kinematic contacts under nondefault filtering, articulation
 nodes and typed constraint edges remain unported.
 
+Moving kinematic boxes now accept a source-style target pose. The
+existing rigid actor retains that target until a timestep is known;
+`ScKinematics::calculateKinematicVelocity` computes its linear and
+shortest-axis angular velocity before Dy contact preparation. Contacts
+use an infinite-mass kinematic solver row with that motion velocity,
+rather than a copied dynamic solver body. `postSolver` commits the target
+pose, `afterIntegration` publishes its encoded bounds, and the next
+target-less frame clears the kinematic velocity. Sparse active target
+indices and source motion rollback preserve frame ownership without
+a scan of every historical rigid ID. Dynamic interaction wake and
+steady-state retirement are tested on the native production Scene.
+
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation
 variants of the shared visited-island witness and `mVisitedNodes`

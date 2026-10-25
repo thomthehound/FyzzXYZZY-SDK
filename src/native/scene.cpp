@@ -573,6 +573,26 @@ void Scene::set_kinematic_target(BodyId id, Vec3 position, Quat orientation) {
     actor.kinematic_settling=false;
     actor.sleeping=false;
     actor.wake_counter=0.4f;
+    // Target motion wakes previously touching dynamic partners through
+    // the existing Sc interaction/IslandSim activation stream.
+    speculative_islands_.activating_nodes.reserve(actors_.size());
+    accurate_islands_.activating_nodes.reserve(actors_.size());
+    for(const auto& manifold:manifolds_) {
+        if(manifold.pair.a!=id && manifold.pair.b!=id)continue;
+        const BodyId other=manifold.pair.a==id
+            ? manifold.pair.b:manifold.pair.a;
+        auto& partner=actors_[other];
+        if(!partner.alive || partner.kind!=Kind::DynamicBox ||
+           (!partner.sleeping && !partner.ready_for_sleep))continue;
+        if(!partner.activating)queue_node_activation(other);
+        partner.activating=true;
+        partner.sleeping=false;
+        partner.ready_for_sleep=false;
+        partner.wake_counter=std::max(partner.wake_counter,0.4f);
+        partner.sleep_linear_acc={};
+        partner.sleep_angular_acc={};
+        authored_activation_pending_=true;
+    }
 }
 
 void Scene::set_kinematic(BodyId id,bool enabled) {
@@ -910,6 +930,7 @@ void Scene::publish_kinematic_targets() {
         body.position=body.kinematic_target_position;
         body.orientation=body.kinematic_target_orientation;
         body.cached_bounds_current=false;
+        dirty_=true;
         body.kinematic_target_pending=false;
         body.kinematic_settling=true;
     }
@@ -4582,9 +4603,9 @@ void Scene::prepare_constraints(float seconds) {
         const bool reversed=contact_edges_[edge].gu_order_reversed;
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
-        const auto& a = actors_[id0].kind==Kind::DynamicBox
+        const auto& a = rigid_node(actors_[id0].kind)
             ? solver_rows_[id0].data : world_solver_row_.data;
-        const auto& b = actors_[id1].kind==Kind::DynamicBox
+        const auto& b = rigid_node(actors_[id1].kind)
             ? solver_rows_[id1].data : world_solver_row_.data;
         manifold.solver_offset = solver_contact_points_.size();
         manifold.friction_patch_offset = next_friction_patches_.size();
@@ -5166,9 +5187,9 @@ void Scene::solve_constraints() {
                 manifold.edge_handle].gu_order_reversed;
             const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
             const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
-            auto& a = actors_[id0].kind == Kind::DynamicBox
+            auto& a = rigid_node(actors_[id0].kind)
                 ? solver_rows_[id0] : world_solver_row_;
-            auto& b = actors_[id1].kind == Kind::DynamicBox
+            auto& b = rigid_node(actors_[id1].kind)
                 ? solver_rows_[id1] : world_solver_row_;
             // A zero source maxContactImpulse is omitted by
             // DyContactPrepShared::extractContacts; there is no packed
