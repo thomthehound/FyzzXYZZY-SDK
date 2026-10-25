@@ -191,7 +191,12 @@ BodyId Scene::add(Actor actor) {
     const auto id = static_cast<BodyId>(actors_.size());
     actor.alive = true;
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
+    // Secure proxy capacity before publishing the new authoritative
+    // Actor ID. After actors_.push_back succeeds, registration cannot
+    // throw or leave a half-admitted actor behind.
+    live_actor_ids_.reserve(live_actor_ids_.size()+1);
     actors_.push_back(actor);
+    live_actor_ids_.push_back(id);
     if(dynamic_node)++live_dynamic_count_;
     dirty_ = true;
     // Static nodes belong to the shared world endpoint, not an island.
@@ -693,6 +698,9 @@ void Scene::remove(BodyId id) {
         partner.sleep_angular_acc={};
     }
     actor.alive = false;
+    // Only explicitly retired shapes leave the live volume registry.
+    // Stable BodyIds remain in actors_ for existing external handles.
+    std::erase(live_actor_ids_,id);
     if(dynamic_node)--live_dynamic_count_;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
@@ -746,13 +754,12 @@ void Scene::update_bounds() {
     // integrated rigid body's bounds. Authored shape edits invalidate
     // only their own cache entry, and first-time actors are uncached.
     endpoints_.clear();
-    for(std::size_t index=0;index<actors_.size();++index) {
-        Actor& actor=actors_[index];
-        if(!actor.alive || !actor.simulation_shape_enabled ||
+    for(BodyId id:live_actor_ids_) {
+        Actor& actor=actors_[id];
+        if(!actor.simulation_shape_enabled ||
            actor.kind==Kind::StaticPlane)continue;
         if(!actor.cached_bounds_current)update_actor_bounds(actor);
-        endpoints_.push_back({actor.encoded_bounds[0],
-                              static_cast<BodyId>(index)});
+        endpoints_.push_back({actor.encoded_bounds[0],id});
     }
     std::sort(endpoints_.begin(),endpoints_.end(),
         [](Endpoint a,Endpoint b) {
@@ -801,15 +808,16 @@ void Scene::update_pairs() {
     }
     // The infinite plane is only a *candidate* broadphase shape, not a
     // resolved contact. Native narrowphase must reject noncontact candidates.
-    for (std::size_t i = 0; i < actors_.size(); ++i) {
-        if (!actors_[i].alive || !actors_[i].simulation_shape_enabled ||
-            actors_[i].kind != Kind::StaticPlane) continue;
-        for (std::size_t j = 0; j < actors_.size(); ++j) {
-            if (actors_[j].alive && actors_[j].simulation_shape_enabled &&
-                actors_[j].kind == Kind::DynamicBox)
-                pending_pairs_.push_back(ordered_pair(
-                    static_cast<BodyId>(i), static_cast<BodyId>(j)));
-        }
+    // Iterate only registered source volumes: never rescan historical
+    // retired BodyIds for every plane. The sorted endpoints are precisely
+    // the active simulation-enabled non-plane shapes.
+    for(BodyId plane:live_actor_ids_) {
+        const Actor& actor=actors_[plane];
+        if(!actor.simulation_shape_enabled ||
+           actor.kind!=Kind::StaticPlane)continue;
+        for(Endpoint endpoint:endpoints_)
+            if(actors_[endpoint.id].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(ordered_pair(plane,endpoint.id));
     }
     std::sort(pending_pairs_.begin(), pending_pairs_.end());
     pending_pairs_.erase(std::unique(pending_pairs_.begin(), pending_pairs_.end()),
