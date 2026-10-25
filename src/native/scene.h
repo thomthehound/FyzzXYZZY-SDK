@@ -128,6 +128,10 @@ struct PcmContactCandidate {
     Vec3 local_a{}, local_b{}, normal_b{};
     float separation=0.0f;
 };
+struct PcmGjkWarmstart {
+    std::array<std::uint8_t,4> a{},b{};
+    std::uint8_t count=0;
+};
 bool source_pcm_box_box_candidates(
     Vec3 half0,Vec3 position0,Quat rotation0,
     Vec3 half1,Vec3 position1,Quat rotation1,
@@ -140,7 +144,8 @@ bool source_pcm_box_box_candidates(
 bool source_pcm_box_box_gjk_epa(
     Vec3 half0,Vec3 position0,Quat rotation0,
     Vec3 half1,Vec3 position1,Quat rotation1,
-    float contact_distance,PcmContactCandidate& contact);
+    float contact_distance,PcmContactCandidate& contact,
+    PcmGjkWarmstart* warmstart=nullptr);
 
 class Scene final {
 public:
@@ -712,6 +717,7 @@ private:
         Vec3 relative_position{};
         Quat relative_rotation{};
         Quat orientation_a{}, orientation_b{};
+        PcmGjkWarmstart warmstart{};
         std::uint8_t count=0;
         bool initialized=false;
     };
