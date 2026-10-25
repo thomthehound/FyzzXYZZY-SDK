@@ -166,6 +166,49 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "PCM source batch reducer changed candidate order or depth replacement");
     }
+    static void verify_default_native_pcm_scene() {
+        // A newly constructed source-native scene must use PCM for the
+        // admitted primitives without relying on World configuration
+        // or any opt-in test switch. Legacy Gu remains diagnostic only.
+        {
+            Scene scene;
+            scene.add_static_floor(0.0f);
+            scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,0.5f,0},1.0f);
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               scene.contacts()[0].count!=4 ||
+               !scene.gu_cache_records_.empty() ||
+               !scene.gu_cached_points_.empty() ||
+               !scene.contact_edges_[scene.contacts()[0].edge_handle].
+                   pcm_cache.initialized)
+                throw std::runtime_error(
+                    "Default native scene did not admit plane-box PCM");
+            scene.step(1.0f/120.0f);
+            if(scene.solved_result_frame()!=scene.frame_index())
+                throw std::runtime_error(
+                    "Default plane-box PCM did not reach native Dy");
+        }
+        {
+            Scene scene;
+            scene.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
+            scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,1.46f,0},1.0f);
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               scene.contacts()[0].count!=4 ||
+               !scene.gu_cache_records_.empty() ||
+               !scene.gu_cached_points_.empty() ||
+               !scene.contact_edges_[scene.contacts()[0].edge_handle].
+                   pcm_cache.initialized)
+                throw std::runtime_error(
+                    "Default native scene did not admit box-box PCM");
+            scene.step(1.0f/120.0f);
+            if(scene.solved_result_frame()!=scene.frame_index())
+                throw std::runtime_error(
+                    "Default box-box PCM did not reach native Dy");
+        }
+    }
     static void verify_source_pcm_box_box_lifecycle() {
         verify_source_pcm_batch_reduction();
         // Independently exercise GJK and EPA for box support points in
@@ -10061,6 +10104,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
