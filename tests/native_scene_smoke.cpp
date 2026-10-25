@@ -211,15 +211,16 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "GJK boundary witness did not complete native PGS");
         }
-        // A positive gap can be smaller than the original 10%-margin
-        // GJK/EPA threshold. The source GJK supporting plane, not
-        // merely closest-simplex distance, decides whether EPA is legal.
-        // Rotating about Y keeps the exact vertical separation while
-        // exercising rotated support vertices and nontrivial witnesses.
+        // A positive gap can be smaller than 10% of BoxV's 5%
+        // minimum box-extent margin: 0.00390625 < 0.004375 for
+        // half-extents 0.875. The reference/incident plane witnesses
+        // must be judged by GJK geometry, not mistaken for overlap.
+        // Rotating about Y keeps the exact vertical gap while exercising
+        // rotated support vertices and nontrivial closest-point paths.
         {
-            constexpr Vec3 half{0.5f,0.5f,0.5f};
+            constexpr Vec3 half{0.875f,0.875f,0.875f};
             constexpr float gap=0.00390625f;
-            constexpr Vec3 moving_at{0,1.00390625f,0};
+            constexpr Vec3 moving_at{0,1.75390625f,0};
             const Quat yaw{0,std::sin(0.14f),0,std::cos(0.14f)};
             std::array<PcmContactCandidate,64> direct{};
             std::size_t count=0;
