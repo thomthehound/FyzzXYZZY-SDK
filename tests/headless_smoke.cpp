@@ -938,14 +938,19 @@ int main() {
                 const float dx=a.position.x-b.position.x;
                 const float dy=a.position.y-b.position.y;
                 const float dz=a.position.z-b.position.z;
-                if(nx<0.995f ||
+                const float distance_sq=dx*dx+dy*dy+dz*dz;
+                if(!std::isfinite(nx) ||
+                   !std::isfinite(a.separation) ||
+                   !std::isfinite(b.separation) ||
+                   !std::isfinite(distance_sq) ||
+                   nx<0.995f ||
                    std::abs(a.separation-b.separation)>5.0e-6f ||
-                   dx*dx+dy*dy+dz*dz>1.0e-8f) {
+                   distance_sq>1.0e-8f) {
                     std::cerr<<"Scaled PCM source witness reversed="
                              <<reversed<<" normal_dot="<<nx
                              <<" native_sep="<<a.separation
                              <<" reference_sep="<<b.separation
-                             <<" position_dist2="<<(dx*dx+dy*dy+dz*dz)
+                             <<" position_dist2="<<distance_sq
                              <<'\n';
                     throw std::runtime_error(
                         "Small-scale PCM GJK/EPA witness diverged from PhysX");

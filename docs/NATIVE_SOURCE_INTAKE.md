@@ -203,9 +203,10 @@ arena is reused across regenerated box/box contacts.
 
 Reference-enabled tests compare native emitted contact points against
 independent default PCM for plane/box and box/box. Their frame-by-frame
-coverage includes representative rotated face/edge/corner witnesses,
-shallow and speculative contact, multiframe sliding and integration,
-changing timestep, contact loss/reentry and reversed actor creation.
+coverage includes representative rotated face/edge/corner witnesses, including scaled
+GJK/EPA contact against stock PCM; shallow and speculative contact;
+multiframe sliding and integration; changing timestep; contact
+loss/reentry; and reversed actor creation.
 Legacy-Gu oracles remain separately selected and cannot satisfy the
 PCM acceptance gate. This supported-primitive translation does not
 complete the broader N1 coupled PGS trajectory, general geometry,
@@ -213,21 +214,23 @@ CCD, contact modification or asynchronous continuation obligations.
 
 ## N1 coupled frictional-rotation source parity gate
 
-A new native-versus-original-PhysX legacy-Gu fixture compares two
-frictional rigid boxes over a static support, two inverse mass orderings,
-two coupled contact managers (floor/lower and lower/upper), rotated
-contact normals, and a friction-disabled
-PhysX oracle. The normal-only tests previously missed this coupling.
+The 48-frame coupled rigid PGS fixture compares the native scene with
+the independent PhysX CPU reference in both default PCM and explicitly
+selected diagnostic legacy-Gu modes. Two frictional dynamic boxes share
+a static support, exercising both mass and creation orders, the coupled
+floor/lower and lower/upper managers, rotated contact normals, and a
+friction-disabled reference control. Normal-only tests miss this coupling.
 
-The full **48-frame** mixed-timestep fixture is the coupled
-friction/rotation acceptance gate in source-enabled Windows and Linux
-CI. `FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON` is both the
-default and an explicit reference-CI configure argument. The original
-per-frame position, linear/angular velocity, and quaternion bounds,
-frame-12 first-impact witness, and independent friction-disabled PhysX
-control remain unchanged. CI additionally runs the source comparison
-verbosely to record the compiled frame horizon for both creation
-orders. Source-free Vulkan/D3D12 jobs never link the PhysX oracle.
+The full **48-frame** mixed-timestep fixture runs both generators in
+source-enabled Windows and Linux CI.
+`FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON` remains the
+default and explicit reference-CI setting. The same per-frame position,
+linear/angular velocity and quaternion bounds, tight frame-12 impact
+check, and friction-disabled reference control apply to both modes;
+the legacy-Gu raw-contact ordering oracle remains diagnostic only.
+The source-enabled test reports its frame horizon, creation order,
+and generator mode. Source-free Vulkan/D3D12 jobs do not link
+the CPU reference.
 
 **Historical strict failure:** A previous reversed-actor run diverged
 at frame 20, with native/reference upper-body vertical velocities of
