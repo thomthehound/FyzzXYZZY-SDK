@@ -341,6 +341,88 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Production Sc PCM edge/edge contact disappeared");
         }
+        // Scale the same rotated edge/corner penetration across two
+        // orders of magnitude. All three shapes of the test (the
+        // support points, authored contact offsets and first pose)
+        // scale together; a fixed absolute EPA facet threshold must
+        // not silently discard the small contact manager.
+        {
+            struct Result {
+                ContactPoint witness{};
+                std::uint32_t edge=0;
+            };
+            const auto probe=[](float scale,bool reversed)->Result {
+                const Vec3 half{
+                    0.5f*scale,0.5f*scale,0.5f*scale};
+                const Vec3 position{
+                    0.892f*scale,1.091f*scale,0};
+                const Quat rotation{
+                    0,0,std::sin(0.1f),std::cos(0.1f)};
+                const float offset=0.02f*scale;
+                std::array<PcmContactCandidate,64> direct{};
+                std::size_t count=0;
+                if(!source_pcm_box_box_candidates(
+                       half,position,rotation,half,{0,0,0},{},
+                       2.0f*offset,direct,count) || count!=0)
+                    throw std::runtime_error(
+                        "Scaled rotated PCM probe did not reach GJK/EPA");
+                Scene scene;
+                scene.set_pcm_box_box(true);
+                BodyId moving{},fixed{};
+                if(reversed) {
+                    moving=scene.add_dynamic_box(half,position,1.0f);
+                    fixed=scene.add_static_box(half,{0,0,0});
+                } else {
+                    fixed=scene.add_static_box(half,{0,0,0});
+                    moving=scene.add_dynamic_box(half,position,1.0f);
+                }
+                scene.set_shape_offsets(fixed,offset,0.0f);
+                scene.set_shape_offsets(moving,offset,0.0f);
+                scene.set_pose(moving,position,rotation);
+                scene.advance_collision(true);
+                if(scene.contacts().size()!=1 ||
+                   scene.contacts()[0].count!=1 ||
+                   !scene.contact_edges_[scene.contacts()[0].edge_handle].
+                        pcm_cache.initialized)
+                    throw std::runtime_error(
+                        "Scaled rotated GJK/EPA contact not admitted");
+                const auto point=scene.contacts()[0].points[0];
+                if(!std::isfinite(point.separation) ||
+                   !(point.separation<0.0f) ||
+                   !std::isfinite(point.normal.x) ||
+                   !std::isfinite(point.normal.y))
+                    throw std::runtime_error(
+                        "Scaled EPA contact lost penetrating witness");
+                const auto manager=scene.contacts()[0].edge_handle;
+                scene.step(1.0f/120.0f);
+                if(scene.solved_result_frame()!=scene.frame_index())
+                    throw std::runtime_error(
+                        "Scaled EPA contact failed native Dy completion");
+                return {point,manager};
+            };
+            for(bool reversed:{false,true}) {
+                const auto baseline=probe(1.0f,reversed);
+                const auto small=probe(0.01f,reversed);
+                const auto& a=baseline.witness;
+                const auto& b=small.witness;
+                const float alignment=a.normal.x*b.normal.x+
+                    a.normal.y*b.normal.y+a.normal.z*b.normal.z;
+                const float dx=a.position.x-b.position.x*100.0f;
+                const float dy=a.position.y-b.position.y*100.0f;
+                const float dz=a.position.z-b.position.z*100.0f;
+                if(alignment<0.995f ||
+                   std::abs(a.separation-b.separation*100.0f)>5e-4f ||
+                   dx*dx+dy*dy+dz*dz>1e-4f) {
+                    std::cerr<<"Scaled PCM witness reversed="<<reversed
+                             <<" large_sep="<<a.separation
+                             <<" small_sep="<<b.separation
+                             <<" normal_dot="<<alignment
+                             <<" dist2="<<(dx*dx+dy*dy+dz*dz)<<'\n';
+                    throw std::runtime_error(
+                        "Scaled PCM GJK/EPA witness lost geometric invariance");
+                }
+            }
+        }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
