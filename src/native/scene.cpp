@@ -193,8 +193,15 @@ BodyId Scene::add(Actor actor) {
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     // Secure proxy capacity before publishing the new authoritative
     // Actor ID. After actors_.push_back succeeds, registration cannot
-    // throw or leave a half-admitted actor behind.
-    live_actor_ids_.reserve(live_actor_ids_.size()+1);
+    // throw or leave a half-admitted actor behind. Grow geometrically
+    // so bulk admission retains amortized constant time per volume.
+    if(live_actor_ids_.size()==live_actor_ids_.capacity()) {
+        const auto capacity=live_actor_ids_.capacity();
+        const auto growth=std::max<std::size_t>(capacity,8);
+        const auto limit=live_actor_ids_.max_size();
+        live_actor_ids_.reserve(
+            capacity>limit-growth ? limit : capacity+growth);
+    }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
     if(dynamic_node)++live_dynamic_count_;
