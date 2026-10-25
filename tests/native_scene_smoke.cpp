@@ -5353,6 +5353,132 @@ void verify_incremental_sap_endpoint_order() {
            "Retired source SAP endpoint survived a structural rebuild");
 }
 
+// Independent oracle for the complete integer SAP pair stream. The
+// boxes remain axis-aligned and all authored coordinates are separated
+// from the 0.02 m contact-offset boundary, so the exact source broadphase
+// candidate set is unambiguous. This exercises BpBroadPhaseSap's
+// few-updates path, the full-update fallback, and Sc Found/Lost ordering.
+void verify_incremental_sap_pair_deltas() {
+    using namespace fyzz::native;
+    using fyzz::BodyId;
+    using fyzz::Vec3;
+    struct Shape {
+        BodyId id{};
+        Vec3 p{};
+        bool dynamic=false;
+        bool plane=false;
+        bool enabled=true;
+        bool alive=true;
+    };
+    Scene scene;
+    std::vector<Shape> shapes;
+    for(int i=0;i<28;++i) {
+        const Vec3 p{float(i*4),0,0};
+        shapes.push_back({scene.add_static_box(
+            {0.5f,0.5f,0.5f},p),p});
+    }
+    for(int i=0;i<3;++i) {
+        const Vec3 p{float(i*4),0,0};
+        shapes.push_back({scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},p,1.0f),p,true});
+    }
+    shapes.push_back({scene.add_static_floor(-20.0f),
+                      {0,-20.0f,0},false,true});
+    const auto expected_pairs=[&] {
+        std::vector<Pair> pairs;
+        for(std::size_t i=0;i<shapes.size();++i) {
+            const auto& a=shapes[i];
+            if(!a.alive || !a.enabled)continue;
+            for(std::size_t j=i+1;j<shapes.size();++j) {
+                const auto& b=shapes[j];
+                if(!b.alive || !b.enabled ||
+                   (!a.dynamic && !b.dynamic))continue;
+                if(!a.plane && !b.plane) {
+                    // All boxes have half extent 0.5 and the standard
+                    // 0.02 shape contact offsets on both endpoints.
+                    if(std::abs(a.p.x-b.p.x)>1.04f ||
+                       std::abs(a.p.y-b.p.y)>1.04f ||
+                       std::abs(a.p.z-b.p.z)>1.04f)
+                        continue;
+                }
+                pairs.push_back(a.id<b.id ? Pair{a.id,b.id} :
+                    Pair{b.id,a.id});
+            }
+        }
+        std::sort(pairs.begin(),pairs.end());
+        return pairs;
+    };
+    std::vector<Pair> previous;
+    std::size_t active_updates=0;
+    for(int frame=0;frame<76;++frame) {
+        // One shape crosses the 3D source SAP cell boundaries at a
+        // time. Preserve spatially separated y/z-only transitions.
+        auto& a=shapes[28];
+        const Vec3 next{
+            float((frame*7)%29)*4.0f,
+            frame%5==0 ? 2.0f:0.0f,
+            frame%7==0 ? 2.0f:0.0f};
+        scene.set_position(a.id,next);
+        a.p=next;
+        if(frame%3==0) {
+            auto& b=shapes[29];
+            b.p={float((frame*5)%29)*4.0f,
+                 (frame/3)%2 ? 0.0f:2.0f,0.0f};
+            scene.set_position(b.id,b.p);
+        }
+        if(frame%11==0) {
+            // Static geometry may move too, without changing its
+            // BpAABBManager proxy identity.
+            auto& fixed=shapes[4];
+            fixed.p={frame%22 ? 16.0f:20.0f,0,0};
+            scene.set_position(fixed.id,fixed.p);
+        }
+        if(frame==19 || frame==32) {
+            shapes[7].enabled=(frame==32);
+            scene.set_shape_simulation_enabled(
+                shapes[7].id,shapes[7].enabled);
+        }
+        if(frame==46 || frame==52) {
+            shapes.back().enabled=(frame==52);
+            scene.set_shape_simulation_enabled(
+                shapes.back().id,shapes.back().enabled);
+        }
+        if(frame==60) {
+            scene.remove(shapes[5].id);
+            shapes[5].alive=false;
+        }
+        if(frame==61) {
+            const Vec3 p{0,0,0};
+            shapes.push_back({scene.add_static_box(
+                {0.5f,0.5f,0.5f},p),p});
+        }
+        scene.advance_collision();
+        const auto expected=expected_pairs();
+        const auto actual=scene.pairs();
+        expect(std::equal(actual.begin(),actual.end(),
+                          expected.begin(),expected.end()),
+               "Incremental 3D SAP candidate set differs from complete source overlap");
+        std::vector<Pair> found,lost;
+        std::set_difference(expected.begin(),expected.end(),
+                            previous.begin(),previous.end(),
+                            std::back_inserter(found));
+        std::set_difference(previous.begin(),previous.end(),
+                            expected.begin(),expected.end(),
+                            std::back_inserter(lost));
+        const auto emitted_found=scene.found_pairs();
+        const auto emitted_lost=scene.lost_pairs();
+        expect(std::equal(emitted_found.begin(),emitted_found.end(),
+                          found.begin(),found.end()) &&
+               std::equal(emitted_lost.begin(),emitted_lost.end(),
+                          lost.begin(),lost.end()),
+               "Incremental SAP Found/Lost publication differs from full source delta");
+        previous=expected;
+        active_updates=scene.broadphase_incremental_pair_update_count();
+    }
+    expect(active_updates>0,
+           "Sparse 3D SAP regression never consumed source mUpdated volume path");
+}
+
 void verify_sparse_motion_checkpoint() {
     using namespace fyzz;
     using namespace fyzz::native;
@@ -10604,6 +10730,7 @@ int run_native_scene_smoke() {
     verify_sparse_motion_checkpoint();
     verify_sparse_broadphase_volume_lifetime();
     verify_incremental_sap_endpoint_order();
+    verify_incremental_sap_pair_deltas();
     verify_native_rigid_integration_and_island_lifecycle();
 
     // Exercise the actual World selection, not only the owner fixture.
