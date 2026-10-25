@@ -6196,6 +6196,13 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         scene.island_edges_.size());
     accurate_islands.deactivating_constraint_edges.reserve(
         scene.island_edges_.size());
+    // The rollback owner's spare activation buffers become the next
+    // publication's working storage after the swap. Pre-reserve before
+    // noexcept wakeIslands can activate a retained sleeping connection.
+    speculative_islands.activated_constraint_edges.reserve(
+        scene.island_edges_.size());
+    accurate_islands.activated_constraint_edges.reserve(
+        scene.island_edges_.size());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
     topology_revision=scene.island_topology_revision_;
