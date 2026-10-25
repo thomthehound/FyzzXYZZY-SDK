@@ -4141,6 +4141,52 @@ void verify_source_compliant_world_parity() {
 }
 
 
+void verify_kinematic_anchored_constraint_handoff() {
+    using namespace fyzz;
+    struct Result {BodyState dynamic{},kinematic{};};
+    const auto run=[](ExecutionMode mode) {
+        World world(WorldOptions{mode});
+        const auto dynamic=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto kinematic=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,7,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0;
+        d.angular_damping=0;
+        world.set_body_dynamics(dynamic,d);
+        world.set_body_kinematic(kinematic,true);
+        const auto joint=world.add_anchored_distance_constraint(
+            dynamic,kinematic,{0,0.25f,0},{0,-0.2f,0},1.5f);
+        const Quat target_q{0,0,std::sin(0.12f),std::cos(0.12f)};
+        world.set_body_kinematic_target(
+            kinematic,{2.2f,7.15f,0},target_q);
+        world.step(1.0f/120.0f);
+        const Result result{
+            world.body_state(dynamic),world.body_state(kinematic)};
+        if(!(result.dynamic.position.x>0.01f) ||
+           std::abs(result.dynamic.orientation.z)<0.001f ||
+           std::abs(result.kinematic.position.x-2.2f)>1.0e-5f ||
+           std::abs(result.kinematic.orientation.z-target_q.z)>1.0e-5f)
+            throw std::runtime_error(
+                "Source kinematic/1D constraint postSolver handoff failed");
+        world.remove_constraint(joint);
+        return result;
+    };
+    const auto native=run(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto reference=run(ExecutionMode::ReferencePhysXCpu);
+    for(const auto& pair:{
+        std::pair{native.dynamic.position.x,reference.dynamic.position.x},
+        std::pair{native.dynamic.orientation.z,reference.dynamic.orientation.z},
+        std::pair{native.dynamic.velocity.x,reference.dynamic.velocity.x},
+        std::pair{native.kinematic.position.x,reference.kinematic.position.x}
+    }) if(std::abs(pair.first-pair.second)>0.03f)
+        throw std::runtime_error(
+            "Source anchored kinematic/rigid solver differs from PhysX");
+#endif
+}
+
 void verify_anchored_distance_constraint_angular_jacobians() {
     using namespace fyzz;
     struct Result {BodyState a{},b{};};
@@ -11139,6 +11185,7 @@ int run_native_scene_smoke() {
     verify_source_spatial_velocity_mods();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
+    verify_kinematic_anchored_constraint_handoff();
     verify_anchored_distance_constraint_angular_jacobians();
     verify_public_center_distance_constraint_lifecycle();
     verify_source_simulation_shape_flag_lifecycle();

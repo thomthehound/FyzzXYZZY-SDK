@@ -342,47 +342,7 @@ struct PhysXCpuWorld final : WorldBackend, physx::PxSimulationEventCallback {
 
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {
-        if(a==b || a>=actors.size() || b>=actors.size() ||
-           !actors[a] || !actors[b])
-            throw std::out_of_range("Invalid reference distance endpoints");
-        if(!actors[a]->is<physx::PxRigidDynamic>() &&
-           !actors[b]->is<physx::PxRigidDynamic>())
-            throw std::logic_error("Distance joint requires a dynamic actor");
-        const bool recycled=!free_distance_joint_ids.empty();
-        if(!recycled &&
-           distance_joints.size()>=std::numeric_limits<std::uint32_t>::max())
-            throw std::overflow_error("Reference distance joint IDs exhausted");
-        if(recycled && distance_joints[free_distance_joint_ids.back()].generation==
-               std::numeric_limits<std::uint32_t>::max())
-            throw std::overflow_error("Reference distance joint generations exhausted");
-        // Complete all allocations before constructing the source joint;
-        // its active solver owner cannot be leaked by a vector growth.
-        if(!recycled)distance_joints.reserve(distance_joints.size()+1);
-        auto* joint=physx::PxDistanceJointCreate(
-            *runtime->physics,actors[a],physx::PxTransform(physx::PxIdentity),
-            actors[b],physx::PxTransform(physx::PxIdentity));
-        if(!joint)
-            throw std::runtime_error("Cannot create source PxDistanceJoint");
-        joint->setMinDistance(distance);
-        joint->setMaxDistance(distance);
-        joint->setTolerance(0.0f);
-        joint->setDistanceJointFlag(
-            physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
-        joint->setDistanceJointFlag(
-            physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
-        std::uint32_t index;
-        std::uint32_t generation;
-        if(recycled) {
-            index=free_distance_joint_ids.back();
-            free_distance_joint_ids.pop_back();
-            generation=distance_joints[index].generation+1;
-            distance_joints[index]={joint,a,b,generation};
-        } else {
-            index=static_cast<std::uint32_t>(distance_joints.size());
-            generation=1;
-            distance_joints.push_back({joint,a,b,generation});
-        }
-        return (static_cast<ConstraintId>(generation)<<32)|index;
+        return add_anchored_distance_constraint(a,b,{},{},distance);
     }
 
     ConstraintId add_anchored_distance_constraint(

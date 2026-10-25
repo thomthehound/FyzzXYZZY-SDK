@@ -1596,7 +1596,8 @@ offsets, angular baseline velocities and each dynamic body's world
 square-root inverse inertia, and `solve1D` publishes angular momentum
 deltas through the existing PGS state and motion integration. Native
 and original `PxDistanceJoint` regression cases compare off-center
-anchor angular response without a second joint solver. Remaining
+anchor angular response, including a moving kinematic endpoint and
+the subsequent postSolver target-pose handoff, without a second solver. Remaining
 constraint breadth includes unified contact/1D descriptor partitions,
 writeback, springs, limits and extended/articulation responses.
 
