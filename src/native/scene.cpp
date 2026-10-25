@@ -1037,12 +1037,22 @@ void Scene::update_pairs() {
         // endpoint-crossing candidates. In particular, an updated
         // body's old contact manager survives unchanged when its
         // motion never crosses the corresponding min/max boundary.
-        std::size_t old_index=0,new_index=0;
+        std::size_t old_index=0,new_index=0,crossed_index=0;
+        // Both lists are sorted. Advance the crossing cursor only
+        // forward, rather than binary-searching it for every persistent
+        // manager. Sparse updates are linear in live pairs plus crossing
+        // candidates, independent of the number of crossing axes.
         const auto skip_crossed=[&] {
-            while(old_index<previous_pairs_.size() &&
-                  std::binary_search(crossed.begin(),crossed.end(),
-                                     previous_pairs_[old_index]))
+            while(old_index<previous_pairs_.size()) {
+                while(crossed_index<crossed.size() &&
+                      crossed[crossed_index]<previous_pairs_[old_index])
+                    ++crossed_index;
+                if(crossed_index==crossed.size() ||
+                   !(crossed[crossed_index]==previous_pairs_[old_index]))
+                    break;
                 ++old_index;
+                ++crossed_index;
+            }
         };
         for(;;) {
             skip_crossed();
