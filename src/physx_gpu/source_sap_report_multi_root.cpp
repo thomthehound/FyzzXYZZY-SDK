@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -167,26 +168,37 @@ void SourceSapReportNativeStage::append(
     const Resource mapLost = {address(source.lostPairReportMap), pairs};
     const Resource overflow = {layout.descriptor + overflowField, 4u};
 
-    const std::array<std::vector<Resource>,3> passes{{
-        {raw,rawFound,rawLost,volume,
-         {blocks[0].pointer,blocks[0].bytes,compute::BufferAccess::Write},
-         {blocks[1].pointer,blocks[1].bytes,compute::BufferAccess::Write},
-         {blocks[2].pointer,blocks[2].bytes,compute::BufferAccess::Write},
-         {blocks[3].pointer,blocks[3].bytes,compute::BufferAccess::Write}},
-        {raw,{aggregate.pointer,aggregate.bytes,compute::BufferAccess::Write},
-         rawFound,rawLost,volume,blocks[0],blocks[1],blocks[2],blocks[3],
-         {foundAggregate.pointer,foundAggregate.bytes,compute::BufferAccess::Write},
-         {foundActor.pointer,foundActor.bytes,compute::BufferAccess::Write},
-         {lostAggregate.pointer,lostAggregate.bytes,compute::BufferAccess::Write},
-         {lostActor.pointer,lostActor.bytes,compute::BufferAccess::Write}},
-        {raw,aggregate,foundActor,lostActor,
-         {mapFound.pointer,mapFound.bytes,compute::BufferAccess::Write},
-         {mapLost.pointer,mapLost.bytes,compute::BufferAccess::Write},
-         {overflow.pointer,overflow.bytes,compute::BufferAccess::Write}}
+    // Original report launches have fixed source descriptor arities:
+    // eight, thirteen, and seven. Keep their exact binding order without
+    // allocating temporary descriptor vectors at every broadphase pass.
+    const std::array<Resource,8> first_pass{{
+        raw,rawFound,rawLost,volume,
+        {blocks[0].pointer,blocks[0].bytes,compute::BufferAccess::Write},
+        {blocks[1].pointer,blocks[1].bytes,compute::BufferAccess::Write},
+        {blocks[2].pointer,blocks[2].bytes,compute::BufferAccess::Write},
+        {blocks[3].pointer,blocks[3].bytes,compute::BufferAccess::Write}
+    }};
+    const std::array<Resource,13> second_pass{{
+        raw,{aggregate.pointer,aggregate.bytes,compute::BufferAccess::Write},
+        rawFound,rawLost,volume,blocks[0],blocks[1],blocks[2],blocks[3],
+        {foundAggregate.pointer,foundAggregate.bytes,compute::BufferAccess::Write},
+        {foundActor.pointer,foundActor.bytes,compute::BufferAccess::Write},
+        {lostAggregate.pointer,lostAggregate.bytes,compute::BufferAccess::Write},
+        {lostActor.pointer,lostActor.bytes,compute::BufferAccess::Write}
+    }};
+    const std::array<Resource,7> third_pass{{
+        raw,aggregate,foundActor,lostActor,
+        {mapFound.pointer,mapFound.bytes,compute::BufferAccess::Write},
+        {mapLost.pointer,mapLost.bytes,compute::BufferAccess::Write},
+        {overflow.pointer,overflow.bytes,compute::BufferAccess::Write}
+    }};
+    const std::array<std::span<const Resource>,3> passes{{
+        first_pass,second_pass,third_pass
     }};
 
-    std::vector<compute::BatchCommand> pending;
-    pending.reserve(3u);
+    // Stage all three commands before appending any of them to the
+    // caller's authoritative stream, retaining all-or-nothing behavior.
+    std::array<compute::BatchCommand,3> pending{};
     for (std::uint32_t pass=0u;pass<3u;++pass) {
         auto constants = params;
         compute::DispatchCommand cmd;
@@ -202,7 +214,7 @@ void SourceSapReportNativeStage::append(
         }
         cmd.push_constants.resize(sizeof(constants));
         std::memcpy(cmd.push_constants.data(),&constants,sizeof(constants));
-        pending.emplace_back(std::move(cmd));
+        pending[pass]=std::move(cmd);
     }
     commands.reserve(commands.size()+pending.size());
     for (auto& cmd:pending)commands.emplace_back(std::move(cmd));
