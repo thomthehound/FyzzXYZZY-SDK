@@ -174,6 +174,21 @@ struct ContactCorrelationSourceFixture {
                fallback.normal_b.y<0.999f || simplex.count==0)
                 throw std::runtime_error(
                     "Native PCM GJK speculative boundary or warm-start differs");
+            // This primitive's zero-face regeneration clears the old
+            // simplex before GJK, even when a manager has saved indices.
+            PcmGjkWarmstart stale{};
+            stale.count=4;
+            stale.a={7,0,6,1};
+            stale.b={0,7,1,6};
+            PcmContactCandidate restarted{};
+            if(!source_pcm_box_box_gjk_epa(
+                    half,at,{},half,{0,0,0},{},
+                    contact_distance,restarted,&stale) ||
+               std::abs(restarted.separation-fallback.separation)>1.0e-6f ||
+               restarted.normal_b.y<0.999f ||
+               stale.count==0 || stale.count>4)
+                throw std::runtime_error(
+                    "PCM box fallback did not discard stale GJK simplex");
             Scene actual;
             actual.set_pcm_box_box(true);
             const auto fixed=actual.add_static_box(half,{0,0,0});
