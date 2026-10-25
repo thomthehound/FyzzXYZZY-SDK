@@ -1244,7 +1244,12 @@ private:
     // registry. Prevent six complete endpoint scans for one mover.
     std::vector<std::uint32_t> broadphase_updated_volume_slots_;
     std::vector<Pair> broadphase_candidate_deltas_;
-    std::vector<BodyId> active_;
+    // Full SAP sweep's transient active intervals, divided by source
+    // filtering class. Compact SapVolume slots support O(1) swap-last
+    // endpoint retirement without indexing retired actor history.
+    std::vector<std::uint32_t> sap_active_dynamic_slots_;
+    std::vector<std::uint32_t> sap_active_static_slots_;
+    std::vector<std::uint32_t> sap_active_positions_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
     // Publish swaps are reversible without copying the source-owned

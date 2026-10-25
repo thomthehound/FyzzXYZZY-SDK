@@ -126,6 +126,42 @@ void profile_persistent_pairs() {
         scene.broadphase_endpoint_crossing_count()-crosses_before,
         transitions,scene.pairs().size(),target);
 }
+// Full source SAP batch updates must not spend quadratic work on
+// overlapping static-only volumes when their membership changes.
+void profile_static_membership() {
+    fyzz::native::Scene scene;
+    constexpr unsigned statics=256;
+    for(unsigned i=0;i<statics;++i)
+        scene.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+    const auto toggle=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0,0,0});
+    scene.advance_collision();
+    const auto before=scene.broadphase_endpoint_full_sort_count();
+    constexpr unsigned trials=5,steps=64;
+    std::vector<double> times;
+    times.reserve(trials);
+    unsigned frame=0;
+    for(unsigned trial=0;trial<trials;++trial) {
+        const auto start=Clock::now();
+        for(unsigned step=0;step<steps;++step,++frame) {
+            scene.set_shape_simulation_enabled(toggle,frame%2!=0);
+            scene.advance_collision(true);
+            if(!scene.pairs().empty())
+                throw std::runtime_error(
+                    "Static-only SAP admitted a filtered pair");
+        }
+        const auto elapsed=std::chrono::duration<double,std::micro>(
+            Clock::now()-start).count();
+        times.push_back(elapsed/steps);
+    }
+    std::sort(times.begin(),times.end());
+    std::printf(
+        "native_sap mode=static-membership boxes=%u"
+        " median_us_per_query=%.3f full_sorts=%zu pairs=%zu\n",
+        statics,times[trials/2],
+        scene.broadphase_endpoint_full_sort_count()-before,
+        scene.pairs().size());
+}
 } // namespace
 
 int main() {
@@ -136,6 +172,7 @@ int main() {
         profile("teleport",Motion::Teleport,0);
         profile("retired-history",Motion::Stationary,2048);
         profile_persistent_pairs();
+        profile_static_membership();
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr,"native SAP benchmark: %s\n",error.what());

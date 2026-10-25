@@ -187,6 +187,32 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Three-axis SAP stress oracle lacked source endpoint crossings");
     }
+    static void verify_static_only_full_sweep() {
+        // Source group filtering must reject static/static pairs even
+        // when every encoded bound overlaps. Membership changes force
+        // complete endpoint sweeps, not the sparse crossing path.
+        Scene scene;
+        for(unsigned i=0;i<96;++i)
+            scene.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+        const BodyId toggle=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0,0});
+        scene.advance_collision();
+        const auto initial_sorts=
+            scene.broadphase_endpoint_full_sort_count();
+        for(unsigned frame=0;frame<16;++frame) {
+            scene.set_shape_simulation_enabled(toggle,frame%2!=0);
+            scene.advance_collision();
+            check(scene);
+            if(!scene.pairs().empty() ||
+               !scene.found_pairs().empty() ||
+               !scene.lost_pairs().empty())
+                throw std::runtime_error(
+                    "Static-only SAP full sweep published filtered pairs");
+        }
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts+16)
+            throw std::runtime_error(
+                "Static membership changes skipped required SAP rebuilds");
+    }
     static void verify_persistent_overlap_crossings() {
         // A large published contact-manager set with one sparse mover
         // exercises interleaved old/new pair keys. Endpoint crossings
@@ -11040,6 +11066,7 @@ int run_native_scene_smoke() {
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
+    fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();

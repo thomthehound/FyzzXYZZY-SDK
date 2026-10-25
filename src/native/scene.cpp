@@ -1076,28 +1076,42 @@ void Scene::update_pairs() {
         return;
     }
 
-    active_.clear();
-    // Source BpBroadPhaseSap walks sorted x-min/x-max endpoints.
-    // On min, pairs are tested against still-active boxes on y/z;
-    // on max, that box leaves the active interval. The ordering is
-    // stable and the same encoded integer bounds are used by Gu.
+    sap_active_dynamic_slots_.clear();
+    sap_active_static_slots_.clear();
+    sap_active_positions_.resize(sap_volumes_.size());
+    // BpBroadPhaseSap x-axis sweep: only a pair with at least one
+    // dynamic participant passes source group filtering. Keep active
+    // static and dynamic intervals separate so dense static-only
+    // scenes never enumerate static/static candidates. Each endpoint
+    // already owns a compact slot for constant-time active removal.
     for(const Endpoint ep:sap_axis_endpoints_[0]) {
+        const bool dynamic=actors_[ep.id].kind==Kind::DynamicBox;
+        auto& own=dynamic?sap_active_dynamic_slots_:
+                          sap_active_static_slots_;
         if(ep.is_max) {
-            std::erase(active_,ep.id);
+            const std::uint32_t slot=ep.volume_slot;
+            const std::uint32_t index=sap_active_positions_[slot];
+            const std::uint32_t tail=own.back();
+            own[index]=tail;
+            sap_active_positions_[tail]=index;
+            own.pop_back();
             continue;
         }
-        const Actor& actor=actors_[ep.id];
-        const auto& a=actor.encoded_bounds;
-        for(BodyId other_id:active_) {
-            const Actor& other=actors_[other_id];
-            if(actor.kind!=Kind::DynamicBox &&
-               other.kind!=Kind::DynamicBox)continue;
-            const auto& b=other.encoded_bounds;
-            if(a[1]>b[4] || b[1]>a[4] ||
-               a[2]>b[5] || b[2]>a[5])continue;
-            pending_pairs_.push_back(ordered_pair(ep.id,other_id));
-        }
-        active_.push_back(ep.id);
+        const auto& a=actors_[ep.id].encoded_bounds;
+        const auto compare=[&](const std::vector<std::uint32_t>& slots) {
+            for(const std::uint32_t slot:slots) {
+                const BodyId other_id=sap_volumes_[slot].id;
+                const auto& b=actors_[other_id].encoded_bounds;
+                if(a[1]>b[4] || b[1]>a[4] ||
+                   a[2]>b[5] || b[2]>a[5])continue;
+                pending_pairs_.push_back(ordered_pair(ep.id,other_id));
+            }
+        };
+        compare(sap_active_dynamic_slots_);
+        if(dynamic)compare(sap_active_static_slots_);
+        sap_active_positions_[ep.volume_slot]=
+            static_cast<std::uint32_t>(own.size());
+        own.push_back(ep.volume_slot);
     }
     // Infinite source planes have no finite endpoint and therefore
     // remain separate candidate broadphase shapes, as before.
