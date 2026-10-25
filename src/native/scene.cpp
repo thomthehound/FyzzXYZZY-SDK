@@ -964,7 +964,7 @@ void Scene::update_pairs() {
     // handles, rather than sweeping every surviving pair. The scene's
     // existing previous_pairs_ / contact-manager EdgeIndex stream remains
     // authoritative. For modest movement, retain unaffected pairs and
-    // regenerate exactly those incident to updated source volumes.
+    // reconsider only min/max endpoint-crossing candidates.
     //
     // Source uses (mUpdatedSize * 5 < mBoxesSize) to select this path.
     // Large changes or source BpAABBManager membership edits use the
