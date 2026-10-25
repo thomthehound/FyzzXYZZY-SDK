@@ -5452,7 +5452,23 @@ void verify_incremental_sap_pair_deltas() {
             shapes.push_back({scene.add_static_box(
                 {0.5f,0.5f,0.5f},p),p});
         }
+        if(frame==68 || frame==69) {
+            // Force more than 20% of the live SAP volumes to change
+            // without changing membership. The source mUpdated
+            // threshold must select the complete pair-update path.
+            for(int i=10;i<20;++i) {
+                auto& fixed=shapes[static_cast<std::size_t>(i)];
+                fixed.p={float(i*4)+(frame==68?1.5f:0.0f),0,0};
+                scene.set_position(fixed.id,fixed.p);
+            }
+        }
+        const auto sparse_before=
+            scene.broadphase_incremental_pair_update_count();
         scene.advance_collision();
+        if(frame==68 || frame==69)
+            expect(scene.broadphase_incremental_pair_update_count()==
+                       sparse_before,
+                   "Source SAP wide mUpdated set skipped full pair-update fallback");
         const auto expected=expected_pairs();
         const auto actual=scene.pairs();
         expect(std::equal(actual.begin(),actual.end(),
