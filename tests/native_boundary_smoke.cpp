@@ -25,6 +25,15 @@ int main() {
     if (!reference_unavailable)
         throw std::runtime_error("Reference-only build boundary bypassed");
 
+    // No reference runtime is present. Default construction must still
+    // produce an independently functioning native rigid scene.
+    World default_cpu;
+    const auto default_id=default_cpu.add_dynamic_box(
+        {0.25f,0.25f,0.25f},{0,2,0},1);
+    default_cpu.step(1.0f/60.0f);
+    if(default_cpu.body_state(default_id).position.y>=2.0f)
+        throw std::runtime_error("Default World did not use native CPU");
+
     World native_cpu(WorldOptions{ExecutionMode::NativeCpu});
     const auto native_id = native_cpu.add_dynamic_box(
         {0.25f,0.25f,0.25f}, {0,2,0}, 1);
