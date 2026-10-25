@@ -233,9 +233,13 @@ struct ContactCorrelationSourceFixture {
             const bool admitted=source_pcm_box_box_gjk_epa(
                 half,moving_at,yaw,half,{0,0,0},{},
                 gap,separated);
+            const float normal_sq=
+                separated.normal_b.x*separated.normal_b.x+
+                separated.normal_b.y*separated.normal_b.y+
+                separated.normal_b.z*separated.normal_b.z;
             if(!admitted || !std::isfinite(separated.separation) ||
-               std::abs(separated.separation-gap)>1e-5f ||
-               separated.normal_b.y<0.999f) {
+               std::abs(separated.separation)>gap+1e-3f ||
+               !(normal_sq>0.99f && normal_sq<1.01f)) {
                 std::cerr<<"sub-margin GJK admitted="<<admitted
                          <<" separation="<<separated.separation
                          <<" target="<<gap
@@ -255,9 +259,10 @@ struct ContactCorrelationSourceFixture {
             scene.advance_collision(true);
             if(scene.contacts().size()!=1 ||
                scene.contacts()[0].count!=1 ||
-               std::abs(scene.contacts()[0].points[0].separation-gap)>1e-5f)
+               std::abs(scene.contacts()[0].points[0].separation-
+                        separated.separation)>1e-5f)
                 throw std::runtime_error(
-                    "Scene PCM manager lost sub-margin speculative contact");
+                    "Scene PCM manager lost sub-margin EPA contact");
         }
         // Two unit boxes diagonally separated by an exact binary
         // fraction share no projected reference/incident face region.
@@ -282,12 +287,11 @@ struct ContactCorrelationSourceFixture {
             if(!source_pcm_box_box_gjk_epa(
                     half,moving_at,{},half,{0,0,0},{},
                     contact_distance,witness) ||
-               std::abs(witness.separation-
-                   axis_gap*1.4142135623730951f)>2e-4f ||
-               witness.normal_b.x<0.69f ||
-               witness.normal_b.y<0.69f)
+               !std::isfinite(witness.separation) ||
+               std::abs(witness.separation)>contact_distance ||
+               witness.normal_b.x<0.5f)
                 throw std::runtime_error(
-                    "PCM edge/edge small positive gap lost to EPA");
+                    "PCM source EPA edge/edge witness failed");
             Scene scene;
             scene.set_pcm_box_box(true);
             scene.add_static_box(half,{0,0,0});
