@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
+#include <span>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -45,28 +47,35 @@ public:
                        const CudaDeviceAddressMap& addresses) noexcept
         : context_(context), addresses_(addresses) {}
 
-    void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
-        std::vector<compute::UploadSpan> resolved;
-        resolved.reserve(uploads.size());
+    void queue_uploads(std::span<const SourceSapUpload> uploads) {
+        // The source stream owns the descriptor scratch. Context copies
+        // host data into fence-retained staging before this call returns,
+        // so subsequent frames can reuse the same small descriptor array.
+        resolved_uploads_.clear();
+        resolved_uploads_.reserve(uploads.size());
         for (const auto& upload : uploads) {
             // CUDA zero-byte HtoD copies enqueue no transfer.
             if (!upload.bytes) continue;
             if (!upload.data)
                 throw std::invalid_argument("PhysX source HtoD upload has no host data");
             const auto target = addresses_.resolve(upload.destination, upload.bytes);
-            resolved.push_back({target.buffer, target.offset,
-                                upload.data, upload.bytes});
+            resolved_uploads_.push_back({target.buffer, target.offset,
+                                         upload.data, upload.bytes});
         }
-        if (resolved.empty()) return;
+        if (resolved_uploads_.empty()) return;
         tokens_.reserve(tokens_.size() + (pending_.empty() ? 1u : 2u));
         flush_gpu_commands();
         // The Context snapshots host bytes and owns the GPU staging resource
         // until the corresponding completion token is reaped.
-        const auto token = context_.submit_upload_batch(resolved);
+        const auto token = context_.submit_upload_batch(resolved_uploads_);
         tokens_.push_back(token);
         ++stats_.upload_batches;
-        stats_.upload_spans += resolved.size();
-        for (const auto& span : resolved) stats_.upload_bytes += span.bytes;
+        stats_.upload_spans += resolved_uploads_.size();
+        for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
+    }
+    void queue_uploads(std::initializer_list<SourceSapUpload> uploads) {
+        queue_uploads(std::span<const SourceSapUpload>(uploads.begin(),
+                                                        uploads.size()));
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -142,6 +151,7 @@ private:
     compute::Context& context_;
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
+    std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
     SubmissionStats stats_;
 };
