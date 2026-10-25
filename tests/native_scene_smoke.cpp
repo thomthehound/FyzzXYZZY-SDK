@@ -3080,29 +3080,22 @@ struct SolverIterationSourceFixture {
            scene.sleep_interaction_counts_[second]!=2)
             throw std::runtime_error(
                 "PhysX active island contact edges did not drive both Dy stages");
-        // The old dormant Gu contact managers remain queryable but
-        // must not be cleared or reclassified by source partitioning.
-        // Only three newly active descriptors are stamped this frame.
-        if(scene.constraint_partition_stamps_.size()!=
-               scene.manifolds_.size() ||
-           scene.constraint_partition_generation_==0)
+        // Dormant Gu managers remain queryable, but the unified input
+        // carries only this frame's three active source descriptors.
+        // It no longer allocates or clears stamps for dormant Gu slots.
+        if(scene.constraint_descriptors_.size()!=3 ||
+           scene.constraint_partitions_.size()!=3 ||
+           scene.ordered_constraints_.size()!=3)
             throw std::runtime_error(
-                "Source partition stamps do not cover published Gu contacts");
-        std::size_t stamped=0;
-        for(std::size_t i=0;i<scene.manifolds_.size();++i) {
-            if(scene.constraint_partition_stamps_[i]==
-               scene.constraint_partition_generation_) {
-                ++stamped;
-                if(std::find(scene.indexed_managers_.begin(),
-                             scene.indexed_managers_.end(),i)==
-                   scene.indexed_managers_.end())
-                    throw std::runtime_error(
-                        "Dormant Gu manager was repartitioned by active PGS");
-            }
+                "Source partition stream includes dormant Gu history");
+        for(const auto& descriptor:scene.constraint_descriptors_) {
+            if(descriptor.distance ||
+               std::find(scene.indexed_managers_.begin(),
+                         scene.indexed_managers_.end(),
+                         descriptor.index)==scene.indexed_managers_.end())
+                throw std::runtime_error(
+                    "Dormant Gu manager was repartitioned by active PGS");
         }
-        if(stamped!=3)
-            throw std::runtime_error(
-                "Source partition stamps omitted a live contact manager");
         for(std::size_t i=0;i<scene.indexed_managers_.size();++i) {
             const auto pair=scene.manifolds_[
                 scene.indexed_managers_[i]].pair;
@@ -3159,15 +3152,12 @@ struct SolverIterationSourceFixture {
         RigidBodyDynamics disabled{};
         disabled.max_contact_impulse=0.0f;
         scene.set_dynamics(second,disabled);
-        const auto previous_partition_generation=
-            scene.constraint_partition_generation_;
         scene.step(dt);
-        if(scene.constraint_partition_generation_==
-               previous_partition_generation ||
-           scene.constraint_partition_stamps_.size()!=
-               scene.manifolds_.size())
+        if(scene.constraint_descriptors_.size()!=3 ||
+           scene.constraint_partitions_.size()!=3 ||
+           scene.ordered_constraints_.size()!=3)
             throw std::runtime_error(
-                "Source PGS partition did not advance its scratch generation");
+                "Source PGS partition retained stale prior-frame descriptors");
         if(scene.solver_active_ids_.size()!=1 ||
            scene.solver_active_ids_[0]!=first ||
            scene.indexed_managers_.size()!=3 ||
