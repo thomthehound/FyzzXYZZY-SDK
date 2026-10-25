@@ -118,6 +118,16 @@ ConstraintId World::add_center_distance_constraint(
     return impl_->add_center_distance_constraint(a,b,distance);
 }
 
+ConstraintId World::add_anchored_distance_constraint(
+    BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance) {
+    if(a==b || !std::isfinite(distance) || distance<0.0f)
+        throw std::invalid_argument("Invalid anchored rigid distance constraint");
+    validate_position(local_a);
+    validate_position(local_b);
+    return impl_->add_anchored_distance_constraint(
+        a,b,local_a,local_b,distance);
+}
+
 void World::remove_constraint(ConstraintId id) {
     impl_->remove_constraint(id);
 }

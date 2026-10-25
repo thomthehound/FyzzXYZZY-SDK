@@ -1590,11 +1590,15 @@ position projection. The source-enabled test executes the corresponding real PxD
 on an independent PhysX CPU scene, comparing the first PGS position
 and unbiased velocity publications with native output. Source-free
 CI tests the same production scene against its analytic invariants.
-Source 1D center-anchor admission does not yet
-imply complete joint/constraint solver support: descriptor partition
-interleaving with contact managers, angular Jacobians, off-center
-anchors, writeback, spring/limit flags and extended/articulation
-responses remain open.
+The same typed Sc constraint and Dy 1D row now admit local body anchors.
+The source `ExtDistanceJointSolverPrep` Jacobians use rotated anchor
+offsets, angular baseline velocities and each dynamic body's world
+square-root inverse inertia, and `solve1D` publishes angular momentum
+deltas through the existing PGS state and motion integration. Native
+and original `PxDistanceJoint` regression cases compare off-center
+anchor angular response without a second joint solver. Remaining
+constraint breadth includes unified contact/1D descriptor partitions,
+writeback, springs, limits and extended/articulation responses.
 
 **Public constraint lifecycle:** The admitted center-anchored,
 equal-limit 1D distance row is now available through

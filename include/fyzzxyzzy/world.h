@@ -204,6 +204,10 @@ public:
         BodyId, BodyId, float) {
         throw std::logic_error("This backend has no rigid distance constraints");
     }
+    virtual ConstraintId add_anchored_distance_constraint(
+        BodyId,BodyId,Vec3,Vec3,float) {
+        throw std::logic_error("This backend has no anchored distance constraints");
+    }
     virtual void remove_constraint(ConstraintId) {
         throw std::logic_error("This backend cannot retire a constraint");
     }
@@ -294,6 +298,9 @@ public:
     // ConstraintId is scoped to this World and invalid after removal.
     ConstraintId add_center_distance_constraint(
         BodyId a, BodyId b, float distance);
+    // Equal-limit 1D joint with local anchors and source angular Jacobians.
+    ConstraintId add_anchored_distance_constraint(
+        BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance);
     void remove_constraint(ConstraintId id);
     void step(float seconds);
     BodyState body_state(BodyId id) const;

@@ -1343,7 +1343,9 @@ void Scene::retire_destroyed_contact_edges() {
     retired_edge_handles_.clear();
 }
 Scene::EdgeIndex Scene::add_distance_constraint(
-    BodyId a, BodyId b, float length) {
+    BodyId a, BodyId b, float length,Vec3 local_a,Vec3 local_b) {
+    if(!finite(local_a) || !finite(local_b))
+        throw std::invalid_argument("Source joint anchors must be finite");
     if(!std::isfinite(length) || length<0.0f)
         throw std::invalid_argument("Rigid 1D distance must be finite and nonnegative");
     const auto& left=require(a);
@@ -1368,13 +1370,14 @@ Scene::EdgeIndex Scene::add_distance_constraint(
     EdgeIndex id;
     if(free_constraint_ids_.empty()) {
         id=static_cast<EdgeIndex>(constraint_records_.size());
-        constraint_records_.push_back({edge,length,true,1});
+        constraint_records_.push_back({edge,length,true,1,local_a,local_b});
     } else {
         id=free_constraint_ids_.back();
         free_constraint_ids_.pop_back();
         const std::uint32_t generation=
             constraint_records_[id].generation+1;
-        constraint_records_[id]={edge,length,true,generation};
+        constraint_records_[id]={
+            edge,length,true,generation,local_a,local_b};
     }
     island_edges_[edge].constraint_id=id;
     return edge;
@@ -4887,9 +4890,12 @@ void Scene::prepare_constraints(float seconds) {
             throw std::logic_error("Source 1D constraint descriptor owner missing");
         const auto& body0=actors_[edge.pair.a];
         const auto& body1=actors_[edge.pair.b];
-        const Vec3 offset{body0.position.x-body1.position.x,
-                          body0.position.y-body1.position.y,
-                          body0.position.z-body1.position.z};
+        const Vec3 ra=rotate(body0.orientation,constraint.local_anchor_a);
+        const Vec3 rb=rotate(body1.orientation,constraint.local_anchor_b);
+        const Vec3 offset{
+            body0.position.x+ra.x-body1.position.x-rb.x,
+            body0.position.y+ra.y-body1.position.y-rb.y,
+            body0.position.z+ra.z-body1.position.z-rb.z};
         const float distance=std::sqrt(
             offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
         if(!std::isfinite(distance))
@@ -4903,7 +4909,27 @@ void Scene::prepare_constraints(float seconds) {
             ? body0.inverse_mass:0.0f;
         const float mass1=body1.kind==Kind::DynamicBox
             ? body1.inverse_mass:0.0f;
-        const float response=mass0+mass1;
+        // ExtDistanceJointSolverPrep supplies rA x axis and rB x axis.
+        // DyConstraintSetup multiplies each by its body's world
+        // sqrt-inverse-inertia before computing 1D effective mass.
+        const auto cross=[](Vec3 v,Vec3 n) {
+            return Vec3{v.y*n.z-v.z*n.y,
+                        v.z*n.x-v.x*n.z,
+                        v.x*n.y-v.y*n.x};
+        };
+        const auto dot=[](Vec3 a,Vec3 b) {
+            return a.x*b.x+a.y*b.y+a.z*b.z;
+        };
+        const auto jacobian=[&](BodyId id,Vec3 r) {
+            if(actors_[id].kind!=Kind::DynamicBox)return Vec3{};
+            const auto& t=solver_rows_[id].data.sqrt_inverse_inertia;
+            const Vec3 j=cross(r,axis);
+            return Vec3{dot(t[0],j),dot(t[1],j),dot(t[2],j)};
+        };
+        const Vec3 ja=jacobian(edge.pair.a,ra);
+        const Vec3 jb=jacobian(edge.pair.b,rb);
+        const float response=mass0+mass1+
+            dot(ja,ja)+dot(jb,jb);
         if(!(response>0.0f) || !std::isfinite(response))
             throw std::logic_error("Source 1D distance requires finite response");
         const Vec3 relative{
@@ -4911,7 +4937,8 @@ void Scene::prepare_constraints(float seconds) {
             body0.velocity.y-body1.velocity.y,
             body0.velocity.z-body1.velocity.z};
         const float initial_speed=
-            axis.x*relative.x+axis.y*relative.y+axis.z*relative.z;
+            dot(axis,relative)+dot(cross(ra,axis),body0.angular_velocity)-
+            dot(cross(rb,axis),body1.angular_velocity);
         const float reciprocal=1.0f/response;
         // DyCpuGpuBiasCoefficient's PGS joint ERP is exactly 1.0.
         // Hard 1D row: vMul=-recip, impulseMultiplier=1,
@@ -4923,6 +4950,8 @@ void Scene::prepare_constraints(float seconds) {
         row.edge=edge_id;
         row.a=edge.pair.a;row.b=edge.pair.b;
         row.axis=axis;
+        row.angular_a=ja;
+        row.angular_b=jb;
         row.inverse_mass_a=mass0;
         row.inverse_mass_b=mass1;
         row.velocity_multiplier=-static_cast<double>(reciprocal);
@@ -5598,7 +5627,9 @@ void Scene::solve_constraints() {
                      b.solver.linear_velocity_delta.y)+
                 static_cast<double>(row.axis.z)*
                     (a.solver.linear_velocity_delta.z-
-                     b.solver.linear_velocity_delta.z);
+                     b.solver.linear_velocity_delta.z)+
+                dot(row.angular_a,a.solver.angular_state)-
+                dot(row.angular_b,b.solver.angular_state);
             const double constant=iter<position_iterations
                 ? row.constant:row.unbiased_constant;
             const double next=std::clamp(
@@ -5610,11 +5641,18 @@ void Scene::solve_constraints() {
             const double ib=impulse*row.inverse_mass_b;
             const Vec3 va=a.solver.linear_velocity_delta;
             const Vec3 vb=b.solver.linear_velocity_delta;
-            const std::array<double,6> candidate{
+            const Vec3 aa=a.solver.angular_state,ab=b.solver.angular_state;
+            const std::array<double,12> candidate{
                 va.x+ia*row.axis.x,va.y+ia*row.axis.y,
                 va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
-                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z};
-            std::array<float,6> applied{};
+                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z,
+                aa.x+impulse*row.angular_a.x,
+                aa.y+impulse*row.angular_a.y,
+                aa.z+impulse*row.angular_a.z,
+                ab.x-impulse*row.angular_b.x,
+                ab.y-impulse*row.angular_b.y,
+                ab.z-impulse*row.angular_b.z};
+            std::array<float,12> applied{};
             for(std::size_t k=0;k<candidate.size();++k) {
                 if(!std::isfinite(candidate[k]) ||
                    std::abs(candidate[k])>max_float)
@@ -5623,6 +5661,8 @@ void Scene::solve_constraints() {
             }
             a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
             b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
+            a.solver.angular_state={applied[6],applied[7],applied[8]};
+            b.solver.angular_state={applied[9],applied[10],applied[11]};
             row.applied_force=next;
         }
         // DyConstraintPartition's ordered descriptors, rather than
@@ -7490,6 +7530,11 @@ public:
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {
         return scene_.create_center_distance_constraint(a,b,distance);
+    }
+    ConstraintId add_anchored_distance_constraint(
+        BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance) override {
+        return scene_.create_anchored_distance_constraint(
+            a,b,local_a,local_b,distance);
     }
     void remove_constraint(ConstraintId id) override {
         scene_.retire_center_distance_constraint(id);

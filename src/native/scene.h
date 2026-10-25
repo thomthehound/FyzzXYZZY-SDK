@@ -198,11 +198,16 @@ public:
     void set_shape_simulation_enabled(BodyId id, bool enabled);
     void set_kinematic(BodyId id, bool enabled);
     void set_kinematic_target(BodyId id, Vec3 position, Quat orientation);
-    // Admitted ScConstraintSim hard 1D center-anchor lifecycle. General
-    // graph edge admission remains private to the source island manager.
+    // Both center and local-anchor 1D rows share one ScConstraintSim
+    // owner, typed island EdgeIndex and generation-stamped public ID.
     ConstraintId create_center_distance_constraint(
         BodyId a, BodyId b, float distance) {
-        const EdgeIndex edge=add_distance_constraint(a,b,distance);
+        return create_anchored_distance_constraint(a,b,{},{},distance);
+    }
+    ConstraintId create_anchored_distance_constraint(
+        BodyId a,BodyId b,Vec3 local_a,Vec3 local_b,float distance) {
+        const EdgeIndex edge=add_distance_constraint(
+            a,b,distance,local_a,local_b);
         const EdgeIndex index=island_edges_[edge].constraint_id;
         const auto& record=constraint_records_[index];
         return (static_cast<ConstraintId>(record.generation)<<32)|index;
@@ -823,13 +828,15 @@ private:
         // Public world IDs encode this generation with the existing
         // recycled ScConstraintSim slot, not its reusable EdgeIndex.
         std::uint32_t generation=0;
+        Vec3 local_anchor_a{},local_anchor_b{};
     };
     std::vector<ConstraintRecord> constraint_records_;
     std::vector<EdgeIndex> free_constraint_ids_;
     EdgeIndex add_constraint_edge(BodyId a, BodyId b);
     // Center-anchor equal-limit PxDistanceJoint: its source
     // Px1DConstraint has one translational row and no angular Jacobian.
-    EdgeIndex add_distance_constraint(BodyId a, BodyId b, float length);
+    EdgeIndex add_distance_constraint(BodyId a,BodyId b,float length,
+                                      Vec3 local_a={},Vec3 local_b={});
     void remove_constraint_edge(EdgeIndex id);
     // One aggregate count, derived only from transitions on the same
     // authoritative EdgeIndex contact-manager slots.
@@ -1205,6 +1212,7 @@ private:
         EdgeIndex edge=invalid_edge;
         BodyId a=0,b=0;
         Vec3 axis{};
+        Vec3 angular_a{},angular_b{};
         float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
         double constant=0.0,unbiased_constant=0.0;
         double velocity_multiplier=0.0,applied_force=0.0;

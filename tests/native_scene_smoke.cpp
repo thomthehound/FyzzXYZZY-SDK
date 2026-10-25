@@ -4141,6 +4141,49 @@ void verify_source_compliant_world_parity() {
 }
 
 
+void verify_anchored_distance_constraint_angular_jacobians() {
+    using namespace fyzz;
+    struct Result {BodyState a{},b{};};
+    const auto run=[](ExecutionMode mode) {
+        World world(WorldOptions{mode});
+        const auto a=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,7,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0;
+        d.angular_damping=0;
+        world.set_body_dynamics(a,d);
+        world.set_body_dynamics(b,d);
+        const auto joint=world.add_anchored_distance_constraint(
+            a,b,{0,0.35f,0},{0,-0.25f,0},1.4f);
+        world.step(1.0f/120.0f);
+        const Result result{world.body_state(a),world.body_state(b)};
+        if(!std::isfinite(result.a.angular_velocity.z) ||
+           !std::isfinite(result.b.angular_velocity.z) ||
+           std::abs(result.a.angular_velocity.z)<0.02f ||
+           std::abs(result.b.angular_velocity.z)<0.02f ||
+           !(result.a.position.x>0 && result.b.position.x<2))
+            throw std::runtime_error(
+                "Anchored source 1D joint omitted angular PGS response");
+        world.remove_constraint(joint);
+        return result;
+    };
+    const auto native=run(ExecutionMode::NativeCpu);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    const auto original=run(ExecutionMode::ReferencePhysXCpu);
+    for(const auto& pair:{
+        std::pair{native.a.position.x,original.a.position.x},
+        std::pair{native.b.position.x,original.b.position.x},
+        std::pair{native.a.angular_velocity.z,original.a.angular_velocity.z},
+        std::pair{native.b.angular_velocity.z,original.b.angular_velocity.z}
+    }) if(std::abs(pair.first-pair.second)>0.02f)
+        throw std::runtime_error(
+            "Anchored rigid 1D Jacobian diverged from stock PhysX");
+#endif
+}
+
 void verify_public_center_distance_constraint_lifecycle() {
     using namespace fyzz;
     struct Observation {
@@ -11086,6 +11129,7 @@ int run_native_scene_smoke() {
     verify_source_spatial_velocity_mods();
     verify_source_compliant_world_parity();
     verify_source_signed_compliant_contact_writeback();
+    verify_anchored_distance_constraint_angular_jacobians();
     verify_public_center_distance_constraint_lifecycle();
     verify_source_simulation_shape_flag_lifecycle();
     verify_source_contact_notification_world();
