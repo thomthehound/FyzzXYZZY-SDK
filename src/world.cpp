@@ -46,10 +46,9 @@ void validate_orientation(Quat q) {
 }
 
 std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
-    if((options.pcm_plane_box || options.pcm_box_box) &&
-       options.execution!=ExecutionMode::NativeCpu)
-        throw std::invalid_argument(
-            "Native PCM contact selection requires NativeCpu");
+    // Native PCM selectors are deliberately irrelevant to independent
+    // PhysX reference execution. ReferencePhysXCpu retains eENABLE_PCM;
+    // ReferencePhysXCpuLegacyGu remains the explicit non-PCM oracle.
     switch (options.execution) {
     case ExecutionMode::ReferencePhysXCpu:
     case ExecutionMode::ReferencePhysXCpuLegacyGu:
