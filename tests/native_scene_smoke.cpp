@@ -129,7 +129,35 @@ struct ContactCorrelationSourceFixture {
             throw std::runtime_error(
                 "Mixed PCM/legacy Gu managers failed native PGS completion");
     }
+    static void verify_source_pcm_batch_reduction() {
+        // GuPersistentContactManifold::reduceBatchContacts retains the
+        // deepest, furthest, positive transverse extreme, and negative
+        // transverse extreme. The tolerance-depth pass substitutes a
+        // shallow chosen point with the deepest eligible leftover.
+        constexpr Vec3 normal{0,1,0};
+        constexpr std::array<PcmContactCandidate,6> candidates{{
+            {{0,0,0},{0,0,0},normal,-0.20f},
+            {{1,0,0},{1,0,0},normal,-0.10f},
+            {{-1,0,0},{-1,0,0},normal,-0.08f},
+            {{0,0,1},{0,0,1},normal,-0.05f},
+            {{0,0,-1},{0,0,-1},normal,0.10f},
+            {{0.5f,0,-0.5f},{0.5f,0,-0.5f},normal,-0.01f}
+        }};
+        Scene::PcmManifoldCache manifold{};
+        Scene::reduce_pcm_box_batch(
+            manifold,std::span<const PcmContactCandidate>(candidates),1.0f);
+        if(manifold.count!=4 ||
+           manifold.points[0].local_b.x!=0.0f ||
+           manifold.points[0].separation!=-0.20f ||
+           manifold.points[1].local_b.x!=1.0f ||
+           manifold.points[2].local_b.z!=1.0f ||
+           manifold.points[3].local_b.x!=-1.0f ||
+           manifold.points[3].separation!=-0.08f)
+            throw std::runtime_error(
+                "PCM source batch reducer changed candidate order or depth replacement");
+    }
     static void verify_source_pcm_box_box_lifecycle() {
+        verify_source_pcm_batch_reduction();
         // Independently exercise GJK and EPA for box support points in
         // B-local coordinates. Near separation produces GJK_CONTACT;
         // a penetrating pair requires EPA_CONTACT and signed depth.
