@@ -432,11 +432,12 @@ bool source_pcm_box_box_gjk_epa(
                 contact_from_gjk(pair,current,contact);
         }
 
-        // Once the separating plane check has failed, proximity to
-        // the Minkowski origin can legitimately enter source EPA.
-        // Do not send a separated simplex to EPA merely because its
-        // gap falls below the margin tolerance.
-        if(count>0 && dist<=epsilon) {
+        // A positive support plane proves that the Minkowski origin
+        // is outside the shapes, even before the nearest simplex has
+        // converged. Continue refining that separated simplex instead
+        // of admitting it to EPA solely on the margin tolerance.
+        // A nonpositive plane at this distance retains EPA admission.
+        if(count>0 && dist<=epsilon && projection<=0.0f) {
             store();
             return epa(pair,simplex,count,contact);
         }
