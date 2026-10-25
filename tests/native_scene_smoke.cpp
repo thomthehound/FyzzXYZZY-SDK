@@ -211,6 +211,46 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "GJK boundary witness did not complete native PGS");
         }
+        // A positive gap can be smaller than the original 10%-margin
+        // GJK/EPA threshold. The source GJK supporting plane, not
+        // merely closest-simplex distance, decides whether EPA is legal.
+        // Rotating about Y keeps the exact vertical separation while
+        // exercising rotated support vertices and nontrivial witnesses.
+        {
+            constexpr Vec3 half{0.5f,0.5f,0.5f};
+            constexpr float gap=0.00390625f;
+            constexpr Vec3 moving_at{0,1.00390625f,0};
+            const Quat yaw{0,std::sin(0.14f),0,std::cos(0.14f)};
+            std::array<PcmContactCandidate,64> direct{};
+            std::size_t count=0;
+            if(!source_pcm_box_box_candidates(
+                    half,moving_at,yaw,half,{0,0,0},{},
+                    gap,direct,count) || count!=0)
+                throw std::runtime_error(
+                    "Rotated sub-margin speculative contact did not enter GJK");
+            PcmContactCandidate separated{};
+            if(!source_pcm_box_box_gjk_epa(
+                    half,moving_at,yaw,half,{0,0,0},{},
+                    gap,separated) ||
+               !std::isfinite(separated.separation) ||
+               std::abs(separated.separation-gap)>1e-5f ||
+               separated.normal_b.y<0.999f)
+                throw std::runtime_error(
+                    "Sub-margin positive GJK gap was lost to EPA");
+            Scene scene;
+            scene.set_pcm_box_box(true);
+            const auto fixed=scene.add_static_box(half,{0,0,0});
+            const auto moving=scene.add_dynamic_box(half,moving_at,1.0f);
+            scene.set_shape_offsets(fixed,gap*0.5f,0.0f);
+            scene.set_shape_offsets(moving,gap*0.5f,0.0f);
+            scene.set_pose(moving,moving_at,yaw);
+            scene.advance_collision(true);
+            if(scene.contacts().size()!=1 ||
+               scene.contacts()[0].count!=1 ||
+               std::abs(scene.contacts()[0].points[0].separation-gap)>1e-5f)
+                throw std::runtime_error(
+                    "Scene PCM manager lost sub-margin speculative contact");
+        }
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
