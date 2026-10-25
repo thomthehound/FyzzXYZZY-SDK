@@ -761,8 +761,9 @@ private:
         // static rule puts the dynamic participant first. Canonical
         // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
-        bool distance_row_enabled=false;
-        float distance_length=0.0f;
+        // ScConstraintSim owns authored 1D data; this edge stores
+        // only the typed graph-to-constraint index.
+        EdgeIndex constraint_id=invalid_edge;
         PcmManifoldCache pcm_cache{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
@@ -782,6 +783,15 @@ private:
     // and intrusive endpoint heads as eCONTACT_MANAGER. Their persistent
     // identity is independent of overlapping Gu shape pairs.
     std::vector<EdgeIndex> active_constraint_handles_;
+    // ScConstraintSim and Dy::Constraint::index are separate from the
+    // IslandSim EdgeIndex, with recycled IDTracker indices.
+    struct ConstraintRecord {
+        EdgeIndex edge=invalid_edge;
+        float distance_length=0.0f;
+        bool live=false;
+    };
+    std::vector<ConstraintRecord> constraint_records_;
+    std::vector<EdgeIndex> free_constraint_ids_;
     EdgeIndex add_constraint_edge(BodyId a, BodyId b);
     // Center-anchor equal-limit PxDistanceJoint: its source
     // Px1DConstraint has one translational row and no angular Jacobian.

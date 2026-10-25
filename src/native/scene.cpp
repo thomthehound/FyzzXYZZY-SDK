@@ -1331,9 +1331,25 @@ Scene::EdgeIndex Scene::add_distance_constraint(
     const auto& right=require(b);
     if(left.kind!=Kind::DynamicBox && right.kind!=Kind::DynamicBox)
         throw std::logic_error("Distance constraint requires a dynamic solver node");
+    if(constraint_records_.size()>=invalid_edge &&
+       free_constraint_ids_.empty())
+        throw std::overflow_error("Sc constraint identifier exhausted");
+    // Reserve the source constraint owner before mutating the graph;
+    // the remaining POD append/recycled-ID assignment cannot throw.
+    if(free_constraint_ids_.empty())
+        constraint_records_.reserve(constraint_records_.size()+1);
+    free_constraint_ids_.reserve(constraint_records_.size()+1);
     const EdgeIndex edge=add_constraint_edge(a,b);
-    island_edges_[edge].distance_row_enabled=true;
-    island_edges_[edge].distance_length=length;
+    EdgeIndex id;
+    if(free_constraint_ids_.empty()) {
+        id=static_cast<EdgeIndex>(constraint_records_.size());
+        constraint_records_.push_back({edge,length,true});
+    } else {
+        id=free_constraint_ids_.back();
+        free_constraint_ids_.pop_back();
+        constraint_records_[id]={edge,length,true};
+    }
+    island_edges_[edge].constraint_id=id;
     return edge;
 }
 Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
@@ -1399,10 +1415,21 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
     if(it==active_constraint_handles_.end())
         throw std::logic_error("Constraint handle missing from source pool");
     retired_edge_handles_.reserve(retired_edge_handles_.size()+1);
+    const EdgeIndex constraint_id=island_edges_[id].constraint_id;
+    if(constraint_id!=invalid_edge)
+        free_constraint_ids_.reserve(free_constraint_ids_.size()+1);
     unlink_contact_edge(id,true);
     unlink_contact_edge(id,false);
     island_edges_[id].retiring=true;
     island_edges_[id].connected=false;
+    if(constraint_id!=invalid_edge) {
+        auto& record=constraint_records_[constraint_id];
+        if(!record.live || record.edge!=id)
+            throw std::logic_error("Source constraint owner/index mismatch");
+        record={};
+        free_constraint_ids_.push_back(constraint_id);
+        island_edges_[id].constraint_id=invalid_edge;
+    }
     active_constraint_handles_.erase(it);
     retired_edge_handles_.push_back(id);
     island_topology_dirty_=true;
@@ -4336,7 +4363,7 @@ void Scene::prepare_solver_bodies() {
                 throw std::logic_error("Source 1D constraint island list cycle");
             const auto& joint=island_edges_[edge];
             if(!joint.live || !joint.connected ||
-               !joint.distance_row_enabled)
+               joint.constraint_id==invalid_edge)
                 throw std::logic_error("Source 1D constraint is not admitted");
             for(BodyId id:{joint.pair.a,joint.pair.b})
                 if(actors_[id].kind==Kind::DynamicBox &&
@@ -4469,6 +4496,18 @@ void Scene::partition_constraints() {
     indexed_managers_.clear();
     indexed_distance_constraints_.clear();
     solver_tasks_.clear();
+    std::size_t distance_task_begin=0;
+    const auto sort_constraints=[&] {
+        // DyDynamicsBase::ConstraintLess compares Dy::Constraint::index
+        // descending, not graph EdgeIndex or body-pair identity.
+        auto first=indexed_distance_constraints_.begin()+distance_task_begin;
+        std::sort(first,indexed_distance_constraints_.end(),
+            [&](EdgeIndex a,EdgeIndex b) {
+                return island_edges_[a].constraint_id >
+                       island_edges_[b].constraint_id;
+            });
+        distance_task_begin=indexed_distance_constraints_.size();
+    };
     std::size_t task_body_count=0;
     std::size_t task_constraint_count=0;
     std::size_t task_first_batch=0;
@@ -4508,7 +4547,7 @@ void Scene::partition_constraints() {
         for(EdgeIndex edge=island.first_constraint;edge!=invalid_edge;
             edge=island_edges_[edge].island_next) {
             if(++count>island.constraint_count ||
-               !island_edges_[edge].distance_row_enabled)
+               island_edges_[edge].constraint_id==invalid_edge)
                 throw std::logic_error("Source 1D edge descriptor invalid");
             indexed_distance_constraints_.push_back(edge);
         }
@@ -4536,6 +4575,7 @@ void Scene::partition_constraints() {
         if(enhanced_determinism_ ||
            (task_body_count>=source_solver_batch_size &&
             task_constraint_count>=1)) {
+            sort_constraints();
             solver_tasks_.push_back({task_first_batch,batch_index+1,
                 indexed_managers_.size(),0,0,prepared_solver_bodies,
                 task_pos_iters,task_vel_iters,
@@ -4546,12 +4586,14 @@ void Scene::partition_constraints() {
             task_pos_iters=task_vel_iters=0;
         }
     }
-    if(task_body_count)
+    if(task_body_count) {
+        sort_constraints();
         solver_tasks_.push_back({task_first_batch,
             active_accurate_island_batches_.size(),
             indexed_managers_.size(),0,0,prepared_solver_bodies,
             task_pos_iters,task_vel_iters,
             indexed_distance_constraints_.size()});
+    }
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
     // sequence directly. The compound contact reducer's separate
@@ -4752,6 +4794,9 @@ void Scene::prepare_constraints(float seconds) {
     distance_rows_.reserve(indexed_distance_constraints_.size());
     for(EdgeIndex edge_id:indexed_distance_constraints_) {
         const auto& edge=island_edges_[edge_id];
+        const auto& constraint=constraint_records_[edge.constraint_id];
+        if(!constraint.live || constraint.edge!=edge_id)
+            throw std::logic_error("Source 1D constraint descriptor owner missing");
         const auto& body0=actors_[edge.pair.a];
         const auto& body1=actors_[edge.pair.b];
         const Vec3 offset{body0.position.x-body1.position.x,
@@ -4784,7 +4829,7 @@ void Scene::prepare_constraints(float seconds) {
         // Hard 1D row: vMul=-recip, impulseMultiplier=1,
         // constant=-recip*(initialSpeed+geometricError/dt);
         // velocity iterations use its unbiased speed-only constant.
-        const float error=distance-edge.distance_length;
+        const float error=distance-constraint.distance_length;
         const float bias=error*inv_dt;
         DistanceRow row{};
         row.edge=edge_id;
@@ -6801,7 +6846,7 @@ void Scene::RigidStepJoin::publish_results() {
 
 void Scene::step(float seconds) {
     for(EdgeIndex edge:active_constraint_handles_)
-        if(!island_edges_[edge].distance_row_enabled)
+        if(island_edges_[edge].constraint_id==invalid_edge)
             throw std::logic_error(
                 "Unconfigured source constraint edge has no Dy 1D solver row");
     if (!std::isfinite(seconds) || seconds <= 0.0f)

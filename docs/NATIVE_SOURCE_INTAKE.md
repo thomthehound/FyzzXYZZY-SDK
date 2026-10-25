@@ -1576,7 +1576,9 @@ contact-handle reuse without type confusion. Kinematic endpoints keep their own 
 EdgeInstances and do not increment static-world touch counters during
 full graph reconciliation or incremental candidate publication.
 The admitted center-anchor equal-limit distance constraint additionally
-generates the source's single hard 1D row, with independent geometric
+owns a separate recycled ScConstraintSim-style index (distinct from
+its IslandSim EdgeIndex) and generates the source's single hard 1D row,
+with independent geometric
 error, initial joint speed, biased/unbiased solver constants and
 impulse bounds. The row executes in the existing per-island Dy
 position/velocity iteration and motion snapshot, rather than a separate

@@ -134,6 +134,12 @@ struct ConstraintIslandSourceFixture {
         scene.set_dynamics(a,free);
         scene.set_dynamics(b,free);
         const auto edge=scene.add_distance_constraint(a,b,1.0f);
+        const auto sc_id=scene.island_edges_[edge].constraint_id;
+        if(sc_id==Scene::invalid_edge ||
+           !scene.constraint_records_[sc_id].live ||
+           scene.constraint_records_[sc_id].edge!=edge)
+            throw std::runtime_error(
+                "Source ScConstraintSim lacks separate 1D ownership");
         scene.step(1.0f/120.0f);
         const auto first=scene.body_state(a);
         const auto second=scene.body_state(b);
@@ -157,6 +163,7 @@ struct ConstraintIslandSourceFixture {
         scene.step(1.0f/120.0f);
         if(!scene.indexed_distance_constraints_.empty() ||
            !scene.distance_rows_.empty() ||
+           scene.constraint_records_[sc_id].live ||
            scene.accurate_island_count()!=2)
             throw std::runtime_error(
                 "Native 1D distance row survived source edge retirement");
