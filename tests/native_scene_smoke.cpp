@@ -187,6 +187,68 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Three-axis SAP stress oracle lacked source endpoint crossings");
     }
+    static void verify_persistent_overlap_crossings() {
+        // A large published contact-manager set with one sparse mover
+        // exercises interleaved old/new pair keys. Endpoint crossings
+        // must not retire any unaffected pair or change its EdgeIndex.
+        Scene scene;
+        constexpr std::size_t count=96;
+        std::array<BodyId,count> statics{};
+        for(std::size_t i=0;i<count;++i)
+            statics[i]=scene.add_static_box(
+                {0.5f,0.5f,0.5f},{0,0,0});
+        const BodyId stable=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const BodyId mover=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{7,7,7},1.0f);
+        scene.advance_collision();
+        if(scene.pairs().size()!=count ||
+           scene.found_pairs().size()!=count)
+            throw std::runtime_error(
+                "SAP persistent-pair fixture failed initial admission");
+        std::array<std::uint32_t,count> handles{};
+        for(std::size_t i=0;i<count;++i) {
+            handles[i]=scene.contact_edge_index({statics[i],stable});
+            if(handles[i]==Scene::invalid_edge)
+                throw std::runtime_error(
+                    "SAP persistent manager missing its initial EdgeIndex");
+        }
+        const auto initial_sorts=
+            scene.broadphase_endpoint_full_sort_count();
+        for(unsigned frame=0;frame<24;++frame) {
+            const bool overlapping=(frame%2)==0;
+            scene.set_position(mover,overlapping
+                ? Vec3{0,0,0}:Vec3{7,7,7});
+            scene.advance_collision();
+            check(scene);
+            const auto published=scene.pairs();
+            if(published.size()!=count+(overlapping?count+1:0) ||
+               !std::is_sorted(published.begin(),published.end()))
+                throw std::runtime_error(
+                    "Sparse SAP pair merge lost sorted persistent managers");
+            if(scene.found_pairs().size()!=(overlapping?count+1:0) ||
+               scene.lost_pairs().size()!=(overlapping?0:count+1))
+                throw std::runtime_error(
+                    "Sparse SAP crossing published incorrect pair deltas");
+            for(std::size_t i=0;i<count;++i) {
+                if(scene.contact_edge_index({statics[i],stable})!=handles[i])
+                    throw std::runtime_error(
+                        "Sparse SAP replaced an unaffected contact manager");
+                const Pair new_pair{statics[i],mover};
+                if(std::binary_search(published.begin(),published.end(),
+                                      new_pair)!=overlapping)
+                    throw std::runtime_error(
+                        "Sparse SAP missed an interleaved crossing pair");
+            }
+            if(std::binary_search(published.begin(),published.end(),
+                                  Pair{stable,mover})!=overlapping)
+                throw std::runtime_error(
+                    "Sparse SAP missed the dynamic/dynamic crossing pair");
+        }
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts)
+            throw std::runtime_error(
+                "Sparse SAP reconstructed endpoints for one mover");
+    }
     static void verify() {
         Scene scene;
         const auto a=scene.add_static_box(
@@ -10977,6 +11039,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
+    fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
