@@ -937,16 +937,16 @@ int main() {
                 }
             }
 
-            // Small-scale rotated GJK/EPA witnesses must agree with the
-            // independent default PCM scene, not just with a geometrically
-            // scaled native run. Both shapes and contact offsets scale.
+            // The source EPA facet squared-area cutoff is absolute.
+            // Compare an admitted 1/10-scale contact and its rejected
+            // 1/100-scale counterpart against independent default PCM.
+            for(float scale:{0.1f,0.01f})
             for(bool reversed:{false,true}) {
-                constexpr float scale=0.01f;
-                constexpr fyzz::Vec3 half{
+                const fyzz::Vec3 half{
                     0.5f*scale,0.5f*scale,0.5f*scale};
-                constexpr fyzz::Vec3 at{
+                const fyzz::Vec3 at{
                     0.892f*scale,1.091f*scale,0.0f};
-                constexpr float contact_offset=0.02f*scale;
+                const float contact_offset=0.02f*scale;
                 const fyzz::Quat rotated{
                     0,0,std::sin(0.1f),std::cos(0.1f)};
                 fyzz::WorldOptions native_options{};
@@ -980,8 +980,11 @@ int main() {
                 reference_pcm.step(1.0f/120.0f);
                 const auto actual=native_pcm.contact_event_points();
                 const auto expected=reference_pcm.contact_event_points();
-                if(actual.size()!=1 || expected.size()!=1) {
-                    std::cerr<<"Scaled PCM count reversed="<<reversed
+                const std::size_t source_count=scale==0.01f?0:1;
+                if(actual.size()!=source_count ||
+                   expected.size()!=source_count) {
+                    std::cerr<<"Scaled PCM count scale="<<scale
+                             <<" reversed="<<reversed
                              <<" native="<<actual.size()
                              <<" reference="<<expected.size()
                              <<" native_events="<<native_pcm.contact_events().size()
@@ -990,6 +993,7 @@ int main() {
                     throw std::runtime_error(
                         "Small-scale PCM GJK/EPA witness count differs from PhysX");
                 }
+                if(source_count==0)continue;
                 const auto& a=actual[0];
                 const auto& b=expected[0];
                 const float nx=a.normal.x*b.normal.x+

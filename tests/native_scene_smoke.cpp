@@ -559,16 +559,16 @@ struct ContactCorrelationSourceFixture {
             };
             for(bool reversed:{false,true}) {
                 const auto baseline=probe(1.0f,reversed);
-                const auto small=probe(0.01f,reversed);
+                const auto small=probe(0.1f,reversed);
                 const auto& a=baseline.witness;
                 const auto& b=small.witness;
                 const float alignment=a.normal.x*b.normal.x+
                     a.normal.y*b.normal.y+a.normal.z*b.normal.z;
-                const float dx=a.position.x-b.position.x*100.0f;
-                const float dy=a.position.y-b.position.y*100.0f;
-                const float dz=a.position.z-b.position.z*100.0f;
+                const float dx=a.position.x-b.position.x*10.0f;
+                const float dy=a.position.y-b.position.y*10.0f;
+                const float dz=a.position.z-b.position.z*10.0f;
                 if(alignment<0.995f ||
-                   std::abs(a.separation-b.separation*100.0f)>5e-4f ||
+                   std::abs(a.separation-b.separation*10.0f)>5e-4f ||
                    dx*dx+dy*dy+dz*dz>1e-4f) {
                     std::cerr<<"Scaled PCM witness reversed="<<reversed
                              <<" large_sep="<<a.separation
@@ -578,6 +578,37 @@ struct ContactCorrelationSourceFixture {
                     throw std::runtime_error(
                         "Scaled PCM GJK/EPA witness lost geometric invariance");
                 }
+            }
+            // GuEPA::Facet::isValid2 uses a fixed FEps() squared-area
+            // threshold. The same contact configuration at 1/100
+            // scale has no source EPA facet, despite finite geometry.
+            {
+                constexpr float scale=0.01f;
+                const Vec3 half{0.5f*scale,0.5f*scale,0.5f*scale};
+                const Vec3 position{0.892f*scale,1.091f*scale,0};
+                const Quat rotation{
+                    0,0,std::sin(0.1f),std::cos(0.1f)};
+                Scene tiny{Scene::ContactGenerator::DiagnosticLegacyGu};
+                tiny.set_pcm_box_box(true);
+                BodyId moving{},fixed{};
+                if(reversed) {
+                    moving=tiny.add_dynamic_box(half,position,1);
+                    fixed=tiny.add_static_box(half,{0,0,0});
+                } else {
+                    fixed=tiny.add_static_box(half,{0,0,0});
+                    moving=tiny.add_dynamic_box(half,position,1);
+                }
+                tiny.set_shape_offsets(fixed,0.02f*scale,0.0f);
+                tiny.set_shape_offsets(moving,0.02f*scale,0.0f);
+                tiny.set_pose(moving,position,rotation);
+                tiny.advance_collision(true);
+                if(!tiny.contacts().empty())
+                    throw std::runtime_error(
+                        "Native PCM bypassed original EPA facet admission");
+                tiny.step(1.0f/120.0f);
+                if(tiny.solved_result_frame()!=tiny.frame_index())
+                    throw std::runtime_error(
+                        "Source EPA no-contact case did not complete Dy frame");
             }
         }
         // PCM box-box SAT uses B-local contacts and four persistent

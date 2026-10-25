@@ -204,7 +204,8 @@ arena is reused across regenerated box/box contacts.
 Reference-enabled tests compare native emitted contact points against
 independent default PCM for plane/box and box/box. Their frame-by-frame
 coverage includes representative rotated face/edge/corner witnesses, including scaled
-GJK/EPA contact against stock PCM; shallow and speculative contact;
+GJK/EPA contact and the original absolute EPA facet cutoff against
+stock PCM; shallow and speculative contact;
 multiframe sliding and integration; changing timestep; contact
 loss/reentry; and reversed actor creation.
 Legacy-Gu oracles remain separately selected and cannot satisfy the

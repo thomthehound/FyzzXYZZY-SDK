@@ -186,12 +186,10 @@ Facet make_facet(const std::array<Support,64>& vertices,
     const Vec3 e0=sub(b,a),e1=sub(c,a);
     Vec3 n=cross(e0,e1);
     const float norm2=length2(n);
-    // Cross-product length squared has units of length^4. Test the
-    // relative triangle area instead of rejecting every small facet
-    // with a fixed float-epsilon area cutoff.
-    const float edge_product=length2(e0)*length2(e1);
-    if(!(edge_product>0.0f) || !std::isfinite(edge_product) ||
-       !(norm2>std::numeric_limits<float>::epsilon()*edge_product))
+    // GuEPA.cpp::Facet::isValid2 compares the squared cross product
+    // directly with FEps(), not with a scale-relative area tolerance.
+    // Tiny triangles may therefore fail source EPA facet admission.
+    if(!(norm2>std::numeric_limits<float>::epsilon()))
         return {};
     n=mul(n,1.0f/std::sqrt(norm2));
     return {i,j,k,n,dot(n,a),true};
