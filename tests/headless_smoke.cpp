@@ -885,7 +885,6 @@ int main() {
                 }
             }
 
-
             // Small-scale rotated GJK/EPA witnesses must agree with the
             // independent default PCM scene, not just with a geometrically
             // scaled native run. Both shapes and contact offsets scale.
@@ -947,7 +946,7 @@ int main() {
                              <<" native_sep="<<a.separation
                              <<" reference_sep="<<b.separation
                              <<" position_dist2="<<(dx*dx+dy*dy+dz*dz)
-                             <<'\\n';
+                             <<'\n';
                     throw std::runtime_error(
                         "Small-scale PCM GJK/EPA witness diverged from PhysX");
                 }
