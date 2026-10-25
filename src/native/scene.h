@@ -164,10 +164,9 @@ public:
     void set_enhanced_determinism(bool enabled) noexcept {
         enhanced_determinism_=enabled;
     }
-    // Explicit partial PCM admission: only plane/box uses
-    // Gu::pcmContactPlaneBox. Box/box remains legacy until its own
-    // PCM generation, GJK/EPA and four-point manifold are ported.
-    // Select before the first actor is created.
+    // Select the primitive PCM generators before actor admission.
+    // NativeCpu defaults to both; disabling a generator is an explicit
+    // diagnostic selection of its independently retained legacy path.
     void set_pcm_plane_box(bool enabled) {
         if(!actors_.empty())
             throw std::logic_error(
