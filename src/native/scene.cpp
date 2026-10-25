@@ -1323,6 +1323,19 @@ void Scene::retire_destroyed_contact_edges() {
     }
     retired_edge_handles_.clear();
 }
+Scene::EdgeIndex Scene::add_distance_constraint(
+    BodyId a, BodyId b, float length) {
+    if(!std::isfinite(length) || length<0.0f)
+        throw std::invalid_argument("Rigid 1D distance must be finite and nonnegative");
+    const auto& left=require(a);
+    const auto& right=require(b);
+    if(left.kind!=Kind::DynamicBox && right.kind!=Kind::DynamicBox)
+        throw std::logic_error("Distance constraint requires a dynamic solver node");
+    const EdgeIndex edge=add_constraint_edge(a,b);
+    island_edges_[edge].distance_row_enabled=true;
+    island_edges_[edge].distance_length=length;
+    return edge;
+}
 Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     require(a);
     require(b);
@@ -4314,6 +4327,25 @@ void Scene::prepare_solver_bodies() {
         if(visited!=island.contact_count)
             throw std::logic_error(
                 "PhysX active contact-manager chain is truncated");
+        // Source iterateIslandsConstraintEdges admits solver-body rows
+        // even when Gu has no contact manager for the same two actors.
+        visited=0;
+        for(EdgeIndex edge=island.first_constraint;edge!=invalid_edge;
+            edge=island_edges_[edge].island_next) {
+            if(++visited>island.constraint_count)
+                throw std::logic_error("Source 1D constraint island list cycle");
+            const auto& joint=island_edges_[edge];
+            if(!joint.live || !joint.connected ||
+               !joint.distance_row_enabled)
+                throw std::logic_error("Source 1D constraint is not admitted");
+            for(BodyId id:{joint.pair.a,joint.pair.b})
+                if(actors_[id].kind==Kind::DynamicBox &&
+                   !actors_[id].sleeping)
+                    solver_rows_[id].prepared_generation=
+                        solver_preparation_generation_;
+        }
+        if(visited!=island.constraint_count)
+            throw std::logic_error("Source 1D constraint island list truncated");
     }
     // Dy::DynamicsContext::iterateIslandsNodes hands contiguous accurate
     // island nodes to preIntegrationParallel. Free-flight bodies retain the
@@ -4435,6 +4467,7 @@ void Scene::partition_constraints() {
     // The generation test below rejects stale slots after touch loss,
     // contact-manager retirement and source handle reuse.
     indexed_managers_.clear();
+    indexed_distance_constraints_.clear();
     solver_tasks_.clear();
     std::size_t task_body_count=0;
     std::size_t task_constraint_count=0;
@@ -4471,8 +4504,18 @@ void Scene::partition_constraints() {
         }
         if(count!=island.contact_count)
             throw std::logic_error("PhysX island contact list truncated");
+        count=0;
+        for(EdgeIndex edge=island.first_constraint;edge!=invalid_edge;
+            edge=island_edges_[edge].island_next) {
+            if(++count>island.constraint_count ||
+               !island_edges_[edge].distance_row_enabled)
+                throw std::logic_error("Source 1D edge descriptor invalid");
+            indexed_distance_constraints_.push_back(edge);
+        }
+        if(count!=island.constraint_count)
+            throw std::logic_error("Source 1D edge list truncated");
         task_body_count+=island.count;
-        task_constraint_count+=island.contact_count;
+        task_constraint_count+=island.contact_count+island.constraint_count;
         // DyDynamics.cpp::preIntegrationParallel accumulates the
         // maximum PxsBodyCore solverIterationCounts word over precisely
         // this source task's node array, including unconstrained bodies.
@@ -4495,7 +4538,8 @@ void Scene::partition_constraints() {
             task_constraint_count>=1)) {
             solver_tasks_.push_back({task_first_batch,batch_index+1,
                 indexed_managers_.size(),0,0,prepared_solver_bodies,
-                task_pos_iters,task_vel_iters});
+                task_pos_iters,task_vel_iters,
+                indexed_distance_constraints_.size()});
             task_first_batch=batch_index+1;
             task_body_count=0;
             task_constraint_count=0;
@@ -4506,7 +4550,8 @@ void Scene::partition_constraints() {
         solver_tasks_.push_back({task_first_batch,
             active_accurate_island_batches_.size(),
             indexed_managers_.size(),0,0,prepared_solver_bodies,
-            task_pos_iters,task_vel_iters});
+            task_pos_iters,task_vel_iters,
+            indexed_distance_constraints_.size()});
     // The admitted non-compound rigid PGS descriptor path in
     // DyDynamics.cpp::setupDescTask consumes this indexed-manager
     // sequence directly. The compound contact reducer's separate
@@ -4703,6 +4748,58 @@ void Scene::prepare_constraints(float seconds) {
     };
     solver_contact_points_.clear();
     solver_contact_order_.clear();
+    distance_rows_.clear();
+    distance_rows_.reserve(indexed_distance_constraints_.size());
+    for(EdgeIndex edge_id:indexed_distance_constraints_) {
+        const auto& edge=island_edges_[edge_id];
+        const auto& body0=actors_[edge.pair.a];
+        const auto& body1=actors_[edge.pair.b];
+        const Vec3 offset{body0.position.x-body1.position.x,
+                          body0.position.y-body1.position.y,
+                          body0.position.z-body1.position.z};
+        const float distance=std::sqrt(
+            offset.x*offset.x+offset.y*offset.y+offset.z*offset.z);
+        if(!std::isfinite(distance))
+            throw std::overflow_error("Source 1D distance overflow");
+        // ExtDistanceJoint's equal min/max path uses the COM anchor
+        // Jacobian and falls back to +X for coincident anchors.
+        const Vec3 axis=distance<1.192092896e-07f
+            ? Vec3{1,0,0}
+            : Vec3{offset.x/distance,offset.y/distance,offset.z/distance};
+        const float mass0=body0.kind==Kind::DynamicBox
+            ? body0.inverse_mass:0.0f;
+        const float mass1=body1.kind==Kind::DynamicBox
+            ? body1.inverse_mass:0.0f;
+        const float response=mass0+mass1;
+        if(!(response>0.0f) || !std::isfinite(response))
+            throw std::logic_error("Source 1D distance requires finite response");
+        const Vec3 relative{
+            body0.velocity.x-body1.velocity.x,
+            body0.velocity.y-body1.velocity.y,
+            body0.velocity.z-body1.velocity.z};
+        const float initial_speed=
+            axis.x*relative.x+axis.y*relative.y+axis.z*relative.z;
+        const float reciprocal=1.0f/response;
+        // DyCpuGpuBiasCoefficient's PGS joint ERP is exactly 1.0.
+        // Hard 1D row: vMul=-recip, impulseMultiplier=1,
+        // constant=-recip*(initialSpeed+geometricError/dt);
+        // velocity iterations use its unbiased speed-only constant.
+        const float error=distance-edge.distance_length;
+        const float bias=error*inv_dt;
+        DistanceRow row{};
+        row.edge=edge_id;
+        row.a=edge.pair.a;row.b=edge.pair.b;
+        row.axis=axis;
+        row.inverse_mass_a=mass0;
+        row.inverse_mass_b=mass1;
+        row.velocity_multiplier=-static_cast<double>(reciprocal);
+        row.constant=-static_cast<double>(reciprocal)*
+                     (static_cast<double>(bias)+initial_speed);
+        row.unbiased_constant=-static_cast<double>(reciprocal)*initial_speed;
+        if(!std::isfinite(row.constant) || !std::isfinite(row.unbiased_constant))
+            throw std::overflow_error("Source 1D solver constants overflow");
+        distance_rows_.push_back(row);
+    }
     solver_friction_rows_.clear();
     next_friction_patches_.clear();
     // PXC_SAME_NORMAL and DyCorrelationBuffer::MAX_FRICTION_PATCHES.
@@ -5333,6 +5430,7 @@ void Scene::solve_constraints() {
     };
     std::size_t task_constraint_begin=0;
     std::size_t task_solver_begin=0;
+    std::size_t task_distance_begin=0;
     for(const auto& task:solver_tasks_) {
     const unsigned position_iterations=task.position_iterations;
     // DySolverControl::solveV_Blocks executes max(requested, 1):
@@ -5538,6 +5636,56 @@ void Scene::solve_constraints() {
                 throw std::logic_error(
                     "Native source contact solver patch stream truncated");
         }
+        // The admitted one-row center-anchor joint uses the original
+        // DySolverConstraints::solve1D recurrence on the same Dy solver
+        // delta state. No independent spring/position correction owner.
+        // The serial CPU lowering places typed 1D descriptors after
+        // contacts; unified source partition ordering remains a gate.
+        for(std::size_t index=task_distance_begin;
+            index<task.distance_end;++index) {
+            auto& row=distance_rows_[index];
+            auto& a=actors_[row.a].kind==Kind::StaticBox ||
+                    actors_[row.a].kind==Kind::StaticPlane
+                ? world_solver_row_:solver_rows_[row.a];
+            auto& b=actors_[row.b].kind==Kind::StaticBox ||
+                    actors_[row.b].kind==Kind::StaticPlane
+                ? world_solver_row_:solver_rows_[row.b];
+            const double normal_delta=
+                static_cast<double>(row.axis.x)*
+                    (a.solver.linear_velocity_delta.x-
+                     b.solver.linear_velocity_delta.x)+
+                static_cast<double>(row.axis.y)*
+                    (a.solver.linear_velocity_delta.y-
+                     b.solver.linear_velocity_delta.y)+
+                static_cast<double>(row.axis.z)*
+                    (a.solver.linear_velocity_delta.z-
+                     b.solver.linear_velocity_delta.z);
+            const double constant=iter<position_iterations
+                ? row.constant:row.unbiased_constant;
+            const double next=std::clamp(
+                row.applied_force+
+                normal_delta*row.velocity_multiplier+constant,
+                -max_float,max_float);
+            const double impulse=next-row.applied_force;
+            const double ia=impulse*row.inverse_mass_a;
+            const double ib=impulse*row.inverse_mass_b;
+            const Vec3 va=a.solver.linear_velocity_delta;
+            const Vec3 vb=b.solver.linear_velocity_delta;
+            const std::array<double,6> candidate{
+                va.x+ia*row.axis.x,va.y+ia*row.axis.y,
+                va.z+ia*row.axis.z,vb.x-ib*row.axis.x,
+                vb.y-ib*row.axis.y,vb.z-ib*row.axis.z};
+            std::array<float,6> applied{};
+            for(std::size_t k=0;k<candidate.size();++k) {
+                if(!std::isfinite(candidate[k]) ||
+                   std::abs(candidate[k])>max_float)
+                    throw std::overflow_error("Source 1D solver velocity overflow");
+                applied[k]=static_cast<float>(candidate[k]);
+            }
+            a.solver.linear_velocity_delta={applied[0],applied[1],applied[2]};
+            b.solver.linear_velocity_delta={applied[3],applied[4],applied[5]};
+            row.applied_force=next;
+        }
         if (iter + 1 == position_iterations) {
             // DySolverControl.cpp::saveMotionVelocities occurs immediately
             // after the last biased/conclude position iteration, BEFORE
@@ -5553,6 +5701,7 @@ void Scene::solve_constraints() {
     }
     task_constraint_begin=task.constraint_end;
     task_solver_begin=task.solver_body_end;
+    task_distance_begin=task.distance_end;
     }
 }
 void Scene::publish_contact_events() {
@@ -6650,9 +6799,10 @@ void Scene::RigidStepJoin::publish_results() {
 }
 
 void Scene::step(float seconds) {
-    if(!active_constraint_handles_.empty())
-        throw std::logic_error(
-            "Native Dy 1D constraint preparation and solve are not admitted");
+    for(EdgeIndex edge:active_constraint_handles_)
+        if(!island_edges_[edge].distance_row_enabled)
+            throw std::logic_error(
+                "Unconfigured source constraint edge has no Dy 1D solver row");
     if (!std::isfinite(seconds) || seconds <= 0.0f)
         throw std::invalid_argument("Native CPU timestep must be finite and positive");
 

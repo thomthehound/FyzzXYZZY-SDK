@@ -1575,10 +1575,16 @@ manager stream. A regression proves merger, split, retirement, and
 contact-handle reuse without type confusion. Kinematic endpoints keep their own rigid
 EdgeInstances and do not increment static-world touch counters during
 full graph reconciliation or incremental candidate publication.
-This is an internal
-island-lifecycle admission only: native Dy 1D row preparation, solving,
-and constraint writeback are deliberately rejected until the real
-source 1D execution path is implemented.
+The admitted center-anchor equal-limit distance constraint additionally
+generates the source's single hard 1D row, with independent geometric
+error, initial joint speed, biased/unbiased solver constants and
+impulse bounds. The row executes in the existing per-island Dy
+position/velocity iteration and motion snapshot, rather than a separate
+position projection. Source 1D center-anchor admission does not yet
+imply complete joint/constraint solver support: descriptor partition
+interleaving with contact managers, angular Jacobians, off-center
+anchors, writeback, spring/limit flags and extended/articulation
+responses remain open.
 
 **Unported source responsibilities:** complete source `PxNodeIndex`
 node lifecycle and destruction; non-rigid, kinematic and articulation

@@ -23,6 +23,43 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ConstraintIslandSourceFixture {
+    static void verify_source_distance_1d_execution() {
+        // Equal-limit distance joint with center anchors, no spring:
+        // execute through Dy's existing PGS delta/snapshot pipeline,
+        // rather than a second geometric position-projection solver.
+        Scene scene{};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,7,0},1.0f);
+        RigidBodyDynamics free{};
+        free.gravity_enabled=false;
+        free.linear_damping=0;
+        free.angular_damping=0;
+        scene.set_dynamics(a,free);
+        scene.set_dynamics(b,free);
+        const auto edge=scene.add_distance_constraint(a,b,1.0f);
+        scene.step(1.0f/120.0f);
+        const auto first=scene.body_state(a);
+        const auto second=scene.body_state(b);
+        const float separation=second.position.x-first.position.x;
+        if(scene.island_edges_[edge].type!=Scene::IslandEdgeType::Constraint ||
+           scene.accurate_island_count()!=1 ||
+           scene.indexed_distance_constraints_.size()!=1 ||
+           scene.distance_rows_.size()!=1 ||
+           scene.solved_result_frame()!=scene.frame_index() ||
+           !std::isfinite(separation) || !(separation<2.0f) ||
+           !(first.velocity.x>0) || !(second.velocity.x<0))
+            throw std::runtime_error(
+                "Native source 1D distance row bypassed active Dy solver");
+        scene.remove_constraint_edge(edge);
+        scene.step(1.0f/120.0f);
+        if(!scene.indexed_distance_constraints_.empty() ||
+           !scene.distance_rows_.empty() ||
+           scene.accurate_island_count()!=2)
+            throw std::runtime_error(
+                "Native 1D distance row survived source edge retirement");
+    }
     static void verify_typed_constraint_edge_lifetime() {
         // eCONSTRAINT and eCONTACT_MANAGER use the same EdgeIndex pool,
         // but each accurate island maintains a separate type list.
@@ -10728,6 +10765,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
+    fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();

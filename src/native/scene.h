@@ -761,6 +761,8 @@ private:
         // static rule puts the dynamic participant first. Canonical
         // BodyId ordering remains solely the edge/event lookup key.
         bool gu_order_reversed=false;
+        bool distance_row_enabled=false;
+        float distance_length=0.0f;
         PcmManifoldCache pcm_cache{};
         // IG::Edge::eACTIVE/eACTIVATING belong to independent IslandSims.
         std::uint8_t speculative_state=0, accurate_state=0;
@@ -781,6 +783,9 @@ private:
     // identity is independent of overlapping Gu shape pairs.
     std::vector<EdgeIndex> active_constraint_handles_;
     EdgeIndex add_constraint_edge(BodyId a, BodyId b);
+    // Center-anchor equal-limit PxDistanceJoint: its source
+    // Px1DConstraint has one translational row and no angular Jacobian.
+    EdgeIndex add_distance_constraint(BodyId a, BodyId b, float length);
     void remove_constraint_edge(EdgeIndex id);
     // One aggregate count, derived only from transitions on the same
     // authoritative EdgeIndex contact-manager slots.
@@ -1145,6 +1150,18 @@ private:
     // sequence, expressed as indices into the authoritative Gu manifolds.
     // Both the constraint partitioner and its stable output consume it.
     std::vector<std::size_t> indexed_managers_;
+    // Additional eCONSTRAINT 1D rows are indexed by their existing
+    // island EdgeIndex, never stored as shape-contact managers.
+    std::vector<EdgeIndex> indexed_distance_constraints_;
+    struct DistanceRow {
+        EdgeIndex edge=invalid_edge;
+        BodyId a=0,b=0;
+        Vec3 axis{};
+        float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
+        double constant=0.0,unbiased_constant=0.0;
+        double velocity_multiplier=0.0,applied_force=0.0;
+    };
+    std::vector<DistanceRow> distance_rows_;
     // DyDynamicsContext::updatePostKinematic's contiguous source task
     // groups: cumulative offsets into indexed_managers_. The admitted
     // rigid-only default batches 128 bodies or until one contact exists.
@@ -1157,6 +1174,7 @@ private:
         std::size_t manager_end=0, partition_end=0;
         std::size_t constraint_end=0, solver_body_end=0;
         std::uint8_t position_iterations=0, velocity_iterations=0;
+        std::size_t distance_end=0;
     };
     // CPU lowering of ScPipeline's two producers of mPostSolver:
     // PxsSolverEndTask for each Dy active-island task chain and
