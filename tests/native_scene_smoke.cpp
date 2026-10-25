@@ -364,6 +364,69 @@ struct ContactCorrelationSourceFixture {
                     "PCM rollback retry did not complete native PGS");
         }
     }
+    static void verify_failed_pcm_regeneration_clears_retained_points() {
+        // An empty GJK/EPA result is a real touch loss. Its previous
+        // refreshed witnesses may still fit the projection-breaking
+        // threshold, but must not be replayed by a later quiet update.
+        // This checks the actual Sc manager/cache and Gu publication,
+        // including both original source actor orders.
+        constexpr float scale=0.01f;
+        const Vec3 half{0.5f*scale,0.5f*scale,0.5f*scale};
+        const Vec3 rotated_at{0.892f*scale,1.091f*scale,0};
+        const Quat yaw{0,0,std::sin(0.1f),std::cos(0.1f)};
+        for(bool reversed:{false,true}) {
+            Scene scene{};
+            BodyId moving{},fixed{};
+            if(reversed) {
+                moving=scene.add_dynamic_box(half,rotated_at,1.0f);
+                fixed=scene.add_static_box(half,{0,0,0});
+            } else {
+                fixed=scene.add_static_box(half,{0,0,0});
+                moving=scene.add_dynamic_box(half,rotated_at,1.0f);
+            }
+            scene.set_shape_offsets(fixed,0.02f*scale,0);
+            scene.set_shape_offsets(moving,0.02f*scale,0);
+            scene.set_pose(moving,rotated_at,yaw);
+            scene.advance_collision(true);
+            const auto edge=scene.contact_edge_index({fixed,moving});
+            if(edge==std::numeric_limits<std::uint32_t>::max() ||
+               !scene.contacts().empty())
+                throw std::runtime_error(
+                    "Failed PCM regeneration test lacks source no-contact manager");
+
+            // Seed a refreshed contact that remains tangentially
+            // admissible at the current pose but has an invalid cached
+            // relative transform. The next real Gu pass must regenerate
+            // and reject it via the original GJK/EPA result.
+            auto& cache=scene.contact_edges_[edge].pcm_cache;
+            const Vec3 actual_relative=cache.relative_position;
+            cache.initialized=true;
+            cache.count=1;
+            cache.points[0]={{},actual_relative,{1,0,0},0};
+            cache.relative_position={9,9,9};
+            scene.advance_collision(true);
+            if(!scene.contacts().empty() || cache.count!=0)
+                throw std::runtime_error(
+                    "Failed PCM regeneration retained phantom witnesses");
+            scene.advance_collision(true);
+            if(!scene.contacts().empty() ||
+               !scene.found_contacts().empty() ||
+               !scene.lost_contacts().empty())
+                throw std::runtime_error(
+                    "Failed PCM regeneration replayed stale contact on quiet frame");
+
+            // A subsequent actual pose change must still regenerate a
+            // valid face manifold on this same EdgeIndex.
+            scene.set_pose(moving,{0,0.9f*scale,0},{});
+            scene.advance_collision(true);
+            if(scene.contact_edge_index({fixed,moving})!=edge ||
+               scene.contacts().size()!=1 ||
+               scene.contacts()[0].count==0 ||
+               scene.found_contacts().size()!=1)
+                throw std::runtime_error(
+                    "Empty PCM cache prevented legitimate touch reentry");
+        }
+    }
     static void verify_source_pcm_box_box_lifecycle() {
         verify_source_pcm_batch_reduction();
         // Independently exercise GJK and EPA for box support points in
@@ -10293,6 +10356,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
+    fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
