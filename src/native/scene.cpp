@@ -852,7 +852,7 @@ void Scene::update_bounds() {
         // when a minimum crosses another volume's maximum (or the
         // reverse). Do not emit same-kind crossings: they cannot
         // change the 1D overlap state.
-        const crossing=[&](const Endpoint& moving,
+        const auto crossing=[&](const Endpoint& moving,
                            const Endpoint& neighbor) {
             if(!sparse || moving.id==neighbor.id ||
                moving.is_max==neighbor.is_max)return;
