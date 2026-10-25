@@ -14,6 +14,12 @@
 #include <utility>
 #include <vector>
 
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+#include "PxPhysicsAPI.h"
+#include "extensions/PxDistanceJoint.h"
+#include "extensions/PxSimpleFactory.h"
+#endif
+
 // Exercise the actual production Dy preparation after installing a Gu
 // contact stream with noncontiguous, nearly aligned normal runs.
 // Ordinary admitted box-box/plane-box Gu managers usually supply one
@@ -23,6 +29,95 @@ namespace fyzz::native {
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ConstraintIslandSourceFixture {
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    static void verify_original_distance_joint_1d() {
+        // Independent PxDistanceJoint with center anchors and equal
+        // minimum/maximum distance; same gravity, rigid dimensions,
+        // density and PGS timestep as the native source row fixture.
+        physx::PxDefaultAllocator allocator;
+        physx::PxDefaultErrorCallback errors;
+        auto* foundation=physx::PxCreateFoundation(
+            PX_PHYSICS_VERSION,allocator,errors);
+        if(!foundation)
+            throw std::runtime_error("Cannot initialize source foundation");
+        auto* physics=physx::PxCreatePhysics(
+            PX_PHYSICS_VERSION,*foundation,physx::PxTolerancesScale());
+        if(!physics)throw std::runtime_error("Cannot initialize source physics");
+        physx::PxSceneDesc desc(physics->getTolerancesScale());
+        desc.gravity=physx::PxVec3(0.0f);
+        desc.solverType=physx::PxSolverType::ePGS;
+        auto* dispatcher=physx::PxDefaultCpuDispatcherCreate(1);
+        desc.cpuDispatcher=dispatcher;
+        desc.filterShader=physx::PxDefaultSimulationFilterShader;
+        auto* scene=physics->createScene(desc);
+        auto* material=physics->createMaterial(0.5f,0.5f,0.2f);
+        auto* left=physx::PxCreateDynamic(*physics,
+            physx::PxTransform(physx::PxVec3(0,7,0)),
+            physx::PxBoxGeometry(0.5f,0.5f,0.5f),*material,1.0f);
+        auto* right=physx::PxCreateDynamic(*physics,
+            physx::PxTransform(physx::PxVec3(2,7,0)),
+            physx::PxBoxGeometry(0.5f,0.5f,0.5f),*material,1.0f);
+        if(!dispatcher || !scene || !material || !left || !right)
+            throw std::runtime_error("Cannot admit source distance fixture");
+        left->setLinearDamping(0);
+        right->setLinearDamping(0);
+        left->setAngularDamping(0);
+        right->setAngularDamping(0);
+        scene->addActor(*left);
+        scene->addActor(*right);
+        auto* joint=physx::PxDistanceJointCreate(
+            *physics,left,physx::PxTransform(physx::PxIdentity),
+            right,physx::PxTransform(physx::PxIdentity));
+        if(!joint)
+            throw std::runtime_error("Original 1D distance joint creation failed");
+        joint->setMinDistance(1.0f);
+        joint->setMaxDistance(1.0f);
+        joint->setTolerance(0.0f);
+        joint->setDistanceJointFlag(
+            physx::PxDistanceJointFlag::eMIN_DISTANCE_ENABLED,true);
+        joint->setDistanceJointFlag(
+            physx::PxDistanceJointFlag::eMAX_DISTANCE_ENABLED,true);
+        constexpr float dt=1.0f/120.0f;
+        scene->simulate(dt);
+        if(!scene->fetchResults(true))
+            throw std::runtime_error("Original distance joint solve failed");
+        const auto source_a=left->getGlobalPose().p;
+        const auto source_b=right->getGlobalPose().p;
+        const auto velocity_a=left->getLinearVelocity();
+        const auto velocity_b=right->getLinearVelocity();
+        Scene native{};
+        const auto a=native.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto b=native.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{2,7,0},1.0f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0;
+        d.angular_damping=0;
+        native.set_dynamics(a,d);
+        native.set_dynamics(b,d);
+        native.add_distance_constraint(a,b,1.0f);
+        native.step(dt);
+        const auto actual_a=native.body_state(a);
+        const auto actual_b=native.body_state(b);
+        // A failure here is a source conformance failure; do not
+        // relax the joint equation or substitute a projection pass.
+        if(std::abs(actual_a.position.x-source_a.x)>1.0e-3f ||
+           std::abs(actual_b.position.x-source_b.x)>1.0e-3f ||
+           std::abs(actual_a.velocity.x-velocity_a.x)>1.0e-3f ||
+           std::abs(actual_b.velocity.x-velocity_b.x)>1.0e-3f)
+            throw std::runtime_error(
+                "Native center-distance 1D row diverged from source PGS");
+        joint->release();
+        left->release();
+        right->release();
+        material->release();
+        scene->release();
+        dispatcher->release();
+        physics->release();
+        foundation->release();
+    }
+#endif
     static void verify_source_distance_1d_execution() {
         // Equal-limit distance joint with center anchors, no spring:
         // execute through Dy's existing PGS delta/snapshot pipeline,
@@ -10772,6 +10867,9 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
     fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
+#endif
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();

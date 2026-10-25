@@ -1580,7 +1580,11 @@ generates the source's single hard 1D row, with independent geometric
 error, initial joint speed, biased/unbiased solver constants and
 impulse bounds. The row executes in the existing per-island Dy
 position/velocity iteration and motion snapshot, rather than a separate
-position projection. Source 1D center-anchor admission does not yet
+position projection. The source-enabled test executes the corresponding real PxDistanceJoint
+on an independent PhysX CPU scene, comparing the first PGS position
+and unbiased velocity publications with native output. Source-free
+CI tests the same production scene against its analytic invariants.
+Source 1D center-anchor admission does not yet
 imply complete joint/constraint solver support: descriptor partition
 interleaving with contact managers, angular Jacobians, off-center
 anchors, writeback, spring/limit flags and extended/articulation

@@ -159,6 +159,11 @@ if(BUILD_TESTING)
   target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE FyzzXYZZY::Core)
+  target_compile_definitions(fyzzxyzzy_native_scene_smoke PRIVATE
+    FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
+  if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE physx_lib)
+  endif()
   add_test(NAME fyzzxyzzy_native_scene_smoke
     COMMAND fyzzxyzzy_native_scene_smoke)
 endif()
