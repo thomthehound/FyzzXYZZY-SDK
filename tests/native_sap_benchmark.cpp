@@ -119,7 +119,7 @@ void profile_persistent_pairs() {
         "native_sap mode=persistent-pairs pairs=%u"
         " median_us_per_query=%.3f full_sorts=%zu"
         " local_shifts=%zu minmax_crossings=%zu transitions=%zu"
-        " final_pairs=%zu target=%u\\n",
+        " final_pairs=%zu target=%u\n",
         pairs,times[trials/2],
         scene.broadphase_endpoint_full_sort_count()-sorts_before,
         scene.broadphase_endpoint_local_shift_count()-shifts_before,
