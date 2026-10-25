@@ -51,7 +51,11 @@ struct ConstraintIslandSourceFixture {
                 "Typed source constraint edge failed island admission");
         const auto owner=scene.accurate_island_id(a);
         const auto& island=scene.accurate_islands_.islands[owner];
-        if(island.contact_count!=0 || island.constraint_count!=2 ||
+        if(scene.speculative_islands_.active_constraint_edge_count!=2 ||
+           scene.accurate_islands_.active_constraint_edge_count!=2 ||
+           scene.speculative_active_reference_count(a)!=2 ||
+           scene.accurate_active_reference_count(b)!=2 ||
+           island.contact_count!=0 || island.constraint_count!=2 ||
            island.first_constraint!=edge ||
            island.last_constraint!=parallel ||
            scene.island_edges_[parallel].island_prev!=edge)
@@ -68,6 +72,8 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision();
         if(scene.accurate_island_count()!=1 ||
            scene.speculative_island_count()!=1 ||
+           scene.accurate_islands_.active_constraint_edge_count!=1 ||
+           scene.accurate_active_reference_count(a)!=1 ||
            scene.active_constraint_handles_.size()!=1 ||
            !scene.island_edges_[parallel].live)
             throw std::runtime_error(
@@ -76,6 +82,8 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision();
         if(scene.accurate_island_count()!=2 ||
            scene.speculative_island_count()!=2 ||
+           scene.accurate_islands_.active_constraint_edge_count!=0 ||
+           scene.accurate_active_reference_count(a)!=0 ||
            scene.accurate_island_id(a)==scene.accurate_island_id(b) ||
            !scene.active_constraint_handles_.empty() ||
            scene.island_edges_[edge].live ||

@@ -1075,6 +1075,14 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         };
         reserve_events(speculative_islands_);
         reserve_events(accurate_islands_);
+        const auto reserve_constraint_events=[&](IslandGraph& graph) {
+            auto& events=graph.deactivating_constraint_edges;
+            if(events.capacity()<needed)
+                events.reserve(std::max(needed,events.capacity()+
+                    std::max<std::size_t>(events.capacity(),8)));
+        };
+        reserve_constraint_events(speculative_islands_);
+        reserve_constraint_events(accurate_islands_);
         const auto reserve_activation=[&](IslandGraph& graph) {
             auto& events=graph.activated_edges;
             if(events.capacity()>=needed)return;
@@ -1084,6 +1092,14 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         };
         reserve_activation(speculative_islands_);
         reserve_activation(accurate_islands_);
+        const auto reserve_constraint_activation=[&](IslandGraph& graph) {
+            auto& events=graph.activated_constraint_edges;
+            if(events.capacity()<needed)
+                events.reserve(std::max(needed,events.capacity()+
+                    std::max<std::size_t>(events.capacity(),8)));
+        };
+        reserve_constraint_activation(speculative_islands_);
+        reserve_constraint_activation(accurate_islands_);
         step_checkpoint_.activity_undo.reserve(needed);
         activity_undo_generations_.resize(needed,0);
         island_edges_.push_back({IslandEdgeType::ContactManager,pair,true,false,false});
@@ -1329,6 +1345,7 @@ Scene::EdgeIndex Scene::add_constraint_edge(BodyId a, BodyId b) {
     link_contact_edge(id,false);
     link_contact_edge(id,true);
     active_constraint_handles_.push_back(id);
+    authored_activation_pending_=true;
     island_topology_dirty_=true;
     dirty_=true;
     return id;
@@ -3070,12 +3087,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         // Full admission/retirement rebuilds replace graph handles but
         // do not recreate contact managers or reset their active flags.
         next.active_edge_count=graph.active_edge_count;
+        next.active_constraint_edge_count=graph.active_constraint_edge_count;
         // The original EdgeIndex slots, not reconstructed island
         // membership, determine each node's active references.
         next.active_reference_counts=graph.active_reference_counts;
         next.active_reference_counts.resize(actors_.size(),0);
         next.activated_edges.reserve(island_edges_.size());
         next.deactivating_edges.reserve(island_edges_.size());
+        next.activated_constraint_edges.reserve(island_edges_.size());
+        next.deactivating_constraint_edges.reserve(island_edges_.size());
         // Keep the existing active-node permutation and the original
         // prefix through actor admission, retirement and component
         // splits. Source addNode does not reset mActiveNodes.
@@ -3569,9 +3589,19 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
         step_checkpoint_.save_reference(*this,edge.pair.b);
     }
     auto& graph=accurate?accurate_islands_:speculative_islands_;
+    // PxsIslandSim indexes activation outputs and live counts by
+    // EdgeType. Constraint edges never appear in contact-manager events.
+    if(edge.type==IslandEdgeType::Constraint &&
+       actors_[edge.pair.a].kind==Kind::KinematicBox &&
+       actors_[edge.pair.b].kind==Kind::KinematicBox)return;
     state|=3u; // Edge::eACTIVE | Edge::eACTIVATING
-    graph.activated_edges.push_back(id);
-    ++graph.active_edge_count;
+    if(edge.type==IslandEdgeType::Constraint) {
+        graph.activated_constraint_edges.push_back(id);
+        ++graph.active_constraint_edge_count;
+    } else {
+        graph.activated_edges.push_back(id);
+        ++graph.active_edge_count;
+    }
     // Source IslandSim::markEdgeActive counts references only for
     // edges with two valid node endpoints. Static world edges do not
     // contribute to either rigid node's active reference count.
@@ -3594,7 +3624,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     }
     auto& graph=accurate?accurate_islands_:speculative_islands_;
     if(state&2u) {
-        auto& pending=graph.activated_edges;
+        auto& pending=edge.type==IslandEdgeType::Constraint
+            ? graph.activated_constraint_edges : graph.activated_edges;
         for(std::size_t i=0;i<pending.size();++i)
             if(pending[i]==id) {
                 pending[i]=pending.back();
@@ -3605,7 +3636,9 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     const bool was_active=(state&1u)!=0;
     state=0;
     if(was_active) {
-        --graph.active_edge_count;
+        if(edge.type==IslandEdgeType::Constraint)
+            --graph.active_constraint_edge_count;
+        else --graph.active_edge_count;
         // Source removeEdgeFromActivatingList releases both valid
         // endpoint references on every real active-to-inactive edge
         // transition, including retirement of an actor no longer alive.
@@ -3614,30 +3647,36 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
             --graph.active_reference_counts[edge.pair.a];
             --graph.active_reference_counts[edge.pair.b];
         }
-        if(publish)graph.deactivating_edges.push_back(id);
+        if(publish) {
+            if(edge.type==IslandEdgeType::Constraint)
+                graph.deactivating_constraint_edges.push_back(id);
+            else graph.deactivating_edges.push_back(id);
+        }
     }
 }
 void Scene::clear_activated_edges(bool checkpointed) noexcept {
-    // IslandSim::wakeIslands retires eACTIVATING from the previous
-    // transition list, preserving persistent eACTIVE and active count.
+    // Consume the previous generation's eACTIVATING bits by edge type,
+    // never merging constraint and contact-manager event streams.
     for(const bool accurate:{false,true}) {
         auto& graph=accurate?accurate_islands_:speculative_islands_;
-        // Checkpointed publications swapped the previous output into
-        // the rollback owner. Traverse it without changing its storage:
-        // a rejected publication must restore the original span.
-        auto& prior=checkpointed ?
-            (accurate?step_checkpoint_.accurate_islands.activated_edges:
-                      step_checkpoint_.speculative_islands.activated_edges):
-            graph.activated_edges;
-        for(EdgeIndex id:prior) {
-            auto& state=accurate?island_edges_[id].accurate_state:
-                                 island_edges_[id].speculative_state;
-            if(state&2u) {
-                step_checkpoint_.save_activity(*this,id);
-                state&=static_cast<std::uint8_t>(~2u);
+        auto& saved=accurate?step_checkpoint_.accurate_islands:
+                             step_checkpoint_.speculative_islands;
+        for(const bool constraint:{false,true}) {
+            auto& prior=checkpointed
+                ? (constraint?saved.activated_constraint_edges:
+                              saved.activated_edges)
+                : (constraint?graph.activated_constraint_edges:
+                              graph.activated_edges);
+            for(EdgeIndex id:prior) {
+                auto& state=accurate?island_edges_[id].accurate_state:
+                                     island_edges_[id].speculative_state;
+                if(state&2u) {
+                    step_checkpoint_.save_activity(*this,id);
+                    state&=static_cast<std::uint8_t>(~2u);
+                }
             }
+            if(!checkpointed)prior.clear();
         }
-        if(!checkpointed)prior.clear();
     }
 }
 void Scene::activate_node_contact_edges(BodyId node) noexcept {
@@ -3778,6 +3817,22 @@ void Scene::activate_published_islands() noexcept {
             (actors_[pair.b].kind==Kind::DynamicBox &&
              !actors_[pair.b].sleeping)))
             activate_contact_edge(id,true);
+    }
+    // Source addConnectionToGraph activates a constraint edge if either
+    // dynamic endpoint is active. Static-world and inactive kinematics
+    // do not themselves wake the rigid island; two kinematics cannot
+    // form an active 1D constraint pair.
+    for(EdgeIndex id:active_constraint_handles_) {
+        const auto& edge=island_edges_[id];
+        if(!edge.live || edge.retiring)continue;
+        const Pair pair=edge.pair;
+        if((actors_[pair.a].kind==Kind::DynamicBox &&
+            !actors_[pair.a].sleeping) ||
+           (actors_[pair.b].kind==Kind::DynamicBox &&
+            !actors_[pair.b].sleeping)) {
+            activate_contact_edge(id,false);
+            activate_contact_edge(id,true);
+        }
     }
     authored_activation_pending_=false;
 }
@@ -6094,6 +6149,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         // endpoint journal. No O(all actors) counter-array snapshot is
         // needed for a normal rigid PGS frame.
         saved.active_edge_count=live.active_edge_count;
+        saved.active_constraint_edge_count=live.active_constraint_edge_count;
         saved.initial_active_node_count=live.initial_active_node_count;
     };
     copy_active(speculative_islands,scene.speculative_islands_);
@@ -6125,6 +6181,10 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     speculative_islands.deactivating_edges.reserve(
         scene.island_edges_.size());
     accurate_islands.deactivating_edges.reserve(
+        scene.island_edges_.size());
+    speculative_islands.deactivating_constraint_edges.reserve(
+        scene.island_edges_.size());
+    accurate_islands.deactivating_constraint_edges.reserve(
         scene.island_edges_.size());
     speculative_count=scene.speculative_island_count_;
     accurate_count=scene.accurate_island_count_;
@@ -6184,10 +6244,20 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         speculative_islands.activated_edges);
     scene.accurate_islands_.activated_edges.swap(
         accurate_islands.activated_edges);
+    scene.speculative_islands_.deactivating_constraint_edges.swap(
+        speculative_islands.deactivating_constraint_edges);
+    scene.accurate_islands_.deactivating_constraint_edges.swap(
+        accurate_islands.deactivating_constraint_edges);
+    scene.speculative_islands_.activated_constraint_edges.swap(
+        speculative_islands.activated_constraint_edges);
+    scene.accurate_islands_.activated_constraint_edges.swap(
+        accurate_islands.activated_constraint_edges);
     // The checkpoint owns the prior published lists; its former scratch
     // buffers must start empty before the next activation publication.
     scene.speculative_islands_.activated_edges.clear();
     scene.accurate_islands_.activated_edges.clear();
+    scene.speculative_islands_.activated_constraint_edges.clear();
+    scene.accurate_islands_.activated_constraint_edges.clear();
     if(capture_solver_state) {
         // The previous active batch view is observable through the
         // source island instrumentation, so rejected solves restore it.
@@ -6397,8 +6467,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.deactivating_edges);
     scene.speculative_islands_.activated_edges.swap(
         speculative_islands.activated_edges);
+    scene.speculative_islands_.deactivating_constraint_edges.swap(
+        speculative_islands.deactivating_constraint_edges);
+    scene.speculative_islands_.activated_constraint_edges.swap(
+        speculative_islands.activated_constraint_edges);
     scene.speculative_islands_.active_edge_count=
         speculative_islands.active_edge_count;
+    scene.speculative_islands_.active_constraint_edge_count=
+        speculative_islands.active_constraint_edge_count;
     scene.speculative_islands_.initial_active_node_count=
         speculative_islands.initial_active_node_count;
     if(graph_ownership_saved) {
@@ -6436,8 +6512,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.deactivating_edges);
     scene.accurate_islands_.activated_edges.swap(
         accurate_islands.activated_edges);
+    scene.accurate_islands_.deactivating_constraint_edges.swap(
+        accurate_islands.deactivating_constraint_edges);
+    scene.accurate_islands_.activated_constraint_edges.swap(
+        accurate_islands.activated_constraint_edges);
     scene.accurate_islands_.active_edge_count=
         accurate_islands.active_edge_count;
+    scene.accurate_islands_.active_constraint_edge_count=
+        accurate_islands.active_constraint_edge_count;
     scene.accurate_islands_.initial_active_node_count=
         accurate_islands.initial_active_node_count;
     // The reference arrays belong to their original graph owners even
@@ -6949,6 +7031,8 @@ void Scene::advance_collision(bool force_update) {
         accurate_islands_.nodes_to_deactivate.clear();
         speculative_islands_.deactivating_edges.clear();
         accurate_islands_.deactivating_edges.clear();
+        speculative_islands_.deactivating_constraint_edges.clear();
+        accurate_islands_.deactivating_constraint_edges.clear();
         accurate_islands_.initial_active_node_count=
             accurate_islands_.active_nodes.size();
         speculative_islands_.initial_active_node_count=

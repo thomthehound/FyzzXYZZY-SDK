@@ -853,6 +853,9 @@ private:
         std::vector<EdgeIndex> deactivating_edges;
         std::vector<EdgeIndex> activated_edges;
         std::size_t active_edge_count=0; // mActiveEdgeCount[eCONTACT_MANAGER]
+        std::vector<EdgeIndex> deactivating_constraint_edges;
+        std::vector<EdgeIndex> activated_constraint_edges;
+        std::size_t active_constraint_edge_count=0; // mActiveEdgeCount[eCONSTRAINT]
         // IslandSim::Node::mActiveRefCount is incremented on
         // markEdgeActive and decremented on removeEdgeFromActivatingList
         // only if BOTH edge endpoints are non-static. These counts are
