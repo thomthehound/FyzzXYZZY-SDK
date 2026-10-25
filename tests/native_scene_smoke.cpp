@@ -88,6 +88,69 @@ struct SourceSapEndpointFixture {
             }
         }
     }
+    static void verify_pair_manager_states() {
+        // Exercise source PAIR_NEW/PAIR_REMOVED cancellation and the
+        // packed hash-chain swap-last removal directly. This catches
+        // state-machine regressions that final AABB equality cannot.
+        Scene::SapPairManager manager;
+        std::vector<Pair> collisions;
+        for(BodyId id=1;id<20000 && collisions.size()<40;++id) {
+            const Pair pair{0,id};
+            if((Scene::SapPairManager::hash(pair)&63u)==0u)
+                collisions.push_back(pair);
+        }
+        if(collisions.size()!=40)
+            throw std::runtime_error(
+                "SAP hash-chain fixture did not find enough collisions");
+        std::vector<Pair> created,deleted;
+        for(Pair pair:collisions)manager.add(pair);
+        manager.finish(created,deleted);
+        if(created.size()!=collisions.size() || !deleted.empty())
+            throw std::runtime_error(
+                "SAP new-pair publication did not preserve collisions");
+        // Remove then re-add in one update leaves an old pair alive.
+        for(std::size_t i=0;i<collisions.size();i+=2) {
+            manager.remove(collisions[i]);
+            manager.add(collisions[i]);
+        }
+        // Created and removed before publication never enter Sc.
+        const Pair transient{1,19999};
+        manager.add(transient);
+        manager.remove(transient);
+        manager.finish(created,deleted);
+        if(!created.empty() || !deleted.empty() ||
+           manager.find(transient)!=Scene::SapPairManager::invalid)
+            throw std::runtime_error(
+                "SAP same-frame pair cancellation leaked an event");
+        // Force removal from middle of a long collision chain. Its last
+        // packed pair must relink at the moved index, not the old slot.
+        for(std::size_t i=0;i<collisions.size();i+=2)
+            manager.remove(collisions[i]);
+        manager.finish(created,deleted);
+        if(!created.empty() || deleted.size()!=collisions.size()/2)
+            throw std::runtime_error(
+                "SAP collision-chain retirement lost deletion reports");
+        for(std::size_t i=0;i<collisions.size();++i) {
+            const auto index=manager.find(collisions[i]);
+            if((index!=Scene::SapPairManager::invalid)!=(i%2==1))
+                throw std::runtime_error(
+                    "SAP swap-last retirement corrupted the hash chain");
+        }
+        // A full update removes unmatched old pairs and retains only
+        // specifically reaffirmed members with their persistent keys.
+        manager.begin_full();
+        const Pair novel{2,19998};
+        manager.add(collisions[1]);
+        manager.add(novel);
+        manager.finish(created,deleted);
+        if(created.size()!=1 || created[0]!=novel ||
+           deleted.size()!=collisions.size()/2-1 ||
+           manager.active_pairs.size()!=2 ||
+           manager.find(collisions[1])==Scene::SapPairManager::invalid ||
+           manager.find(novel)==Scene::SapPairManager::invalid)
+            throw std::runtime_error(
+                "SAP full-update pair-state reconciliation diverged");
+    }
     static void check_pair_registry(const Scene& scene) {
         if(scene.sap_pair_registry_dirty_)
             throw std::runtime_error(
@@ -11097,6 +11160,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
+    fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::ContactCorrelationSourceFixture::verify();
