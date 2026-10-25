@@ -423,7 +423,8 @@ bool source_pcm_box_box_gjk_epa(
             std::max(1.0f,std::max({
                 pair.ha.x,pair.ha.y,pair.ha.z,
                 pair.hb.x,pair.hb.y,pair.hb.z}));
-        if(dist<=origin_tolerance && projection<=0.0f) {
+        if(dist<=epsilon && dist<=origin_tolerance &&
+           projection<=0.0f) {
             store();
             return epa(pair,simplex,count,contact);
         }
