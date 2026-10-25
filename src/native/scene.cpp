@@ -3464,8 +3464,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(state&1u)return; // Edge::eACTIVE
     step_checkpoint_.save_activity(*this,id);
-    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
-       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+    if(rigid_node(actors_[edge.pair.a].kind) &&
+       rigid_node(actors_[edge.pair.b].kind)) {
         step_checkpoint_.save_reference(*this,edge.pair.a);
         step_checkpoint_.save_reference(*this,edge.pair.b);
     }
@@ -3476,8 +3476,8 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
     // Source IslandSim::markEdgeActive counts references only for
     // edges with two valid node endpoints. Static world edges do not
     // contribute to either rigid node's active reference count.
-    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
-       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+    if(rigid_node(actors_[edge.pair.a].kind) &&
+       rigid_node(actors_[edge.pair.b].kind)) {
         ++graph.active_reference_counts[edge.pair.a];
         ++graph.active_reference_counts[edge.pair.b];
     }
@@ -3488,8 +3488,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(!(state&3u))return;
     step_checkpoint_.save_activity(*this,id);
-    if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
-       actors_[edge.pair.b].kind==Kind::DynamicBox) {
+    if(rigid_node(actors_[edge.pair.a].kind) &&
+       rigid_node(actors_[edge.pair.b].kind)) {
         step_checkpoint_.save_reference(*this,edge.pair.a);
         step_checkpoint_.save_reference(*this,edge.pair.b);
     }
@@ -3510,8 +3510,8 @@ void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
         // Source removeEdgeFromActivatingList releases both valid
         // endpoint references on every real active-to-inactive edge
         // transition, including retirement of an actor no longer alive.
-        if(actors_[edge.pair.a].kind==Kind::DynamicBox &&
-           actors_[edge.pair.b].kind==Kind::DynamicBox) {
+        if(rigid_node(actors_[edge.pair.a].kind) &&
+           rigid_node(actors_[edge.pair.b].kind)) {
             --graph.active_reference_counts[edge.pair.a];
             --graph.active_reference_counts[edge.pair.b];
         }
