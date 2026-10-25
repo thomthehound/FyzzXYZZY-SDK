@@ -814,6 +814,88 @@ int main() {
                 }
             }
 
+            // Independently compare rotated face/edge geometry with
+            // stock PCM before the solver changes either pose.
+            struct OrientedCase {
+                fyzz::Vec3 fixed_half,moving_half,moving_at;
+                fyzz::Quat fixed_q,moving_q;
+            };
+            const auto rx=[](float a) {
+                return fyzz::Quat{std::sin(a*0.5f),0,0,std::cos(a*0.5f)};
+            };
+            const auto ry=[](float a) {
+                return fyzz::Quat{0,std::sin(a*0.5f),0,std::cos(a*0.5f)};
+            };
+            const auto rz=[](float a) {
+                return fyzz::Quat{0,0,std::sin(a*0.5f),std::cos(a*0.5f)};
+            };
+            const std::array<OrientedCase,3> rotated{{
+                {{0.5f,0.5f,0.5f},{0.5f,0.5f,0.5f},{0.12f,1.41f,0.15f},
+                 {},ry(0.14f)},
+                {{0.75f,0.35f,0.5f},{0.25f,0.48f,0.34f},{0.25f,1.12f,0.16f},
+                 rz(0.10f),rx(0.20f)},
+                {{0.5f,0.5f,0.5f},{0.5f,0.5f,0.5f},{0.25f,0.90f,0.23f},
+                 rx(0.17f),rz(0.30f)}
+            }};
+            for(std::size_t index=0;index<rotated.size();++index)
+                for(bool reversed:{false,true}) {
+                    const auto& c=rotated[index];
+                    fyzz::WorldOptions native_opt{};
+                    native_opt.execution=fyzz::ExecutionMode::NativeCpu;
+                    native_opt.contact_notifications=true;
+                    fyzz::WorldOptions reference_opt{};
+                    reference_opt.execution=fyzz::ExecutionMode::ReferencePhysXCpu;
+                    reference_opt.contact_notifications=true;
+                    fyzz::World native(native_opt),reference(reference_opt);
+                    const auto setup=[&](fyzz::World& w) {
+                        fyzz::BodyId fixed=0,moving=0;
+                        if(reversed) {
+                            moving=w.add_dynamic_box(c.moving_half,c.moving_at,1);
+                            fixed=w.add_static_box(c.fixed_half,{0,0.5f,0});
+                        } else {
+                            fixed=w.add_static_box(c.fixed_half,{0,0.5f,0});
+                            moving=w.add_dynamic_box(c.moving_half,c.moving_at,1);
+                        }
+                        w.set_body_pose(fixed,{0,0.5f,0},c.fixed_q);
+                        w.set_body_pose(moving,c.moving_at,c.moving_q);
+                        fyzz::RigidBodyDynamics d{};
+                        d.gravity_enabled=false;
+                        w.set_body_dynamics(moving,d);
+                    };
+                    setup(native);
+                    setup(reference);
+                    native.step(1.0f/120.0f);
+                    reference.step(1.0f/120.0f);
+                    const auto a=native.contact_event_points();
+                    const auto b=reference.contact_event_points();
+                    if(b.empty() || a.size()!=b.size()) {
+                        std::cerr<<"Rotated PCM case "<<index
+                                 <<" reversed="<<reversed<<" native="<<a.size()
+                                 <<" reference="<<b.size()<<'\n';
+                        throw std::runtime_error(
+                            "Rotated PCM contact count differs from PhysX");
+                    }
+                    for(const auto& expected:b) {
+                        bool found=false;
+                        for(const auto& got:a) {
+                            const float dx=got.position.x-expected.position.x;
+                            const float dy=got.position.y-expected.position.y;
+                            const float dz=got.position.z-expected.position.z;
+                            const float alignment=
+                                got.normal.x*expected.normal.x+
+                                got.normal.y*expected.normal.y+
+                                got.normal.z*expected.normal.z;
+                            found|=dx*dx+dy*dy+dz*dz<2.5e-4f &&
+                                   alignment>0.998f &&
+                                   std::abs(got.separation-expected.separation)<
+                                       2e-3f;
+                        }
+                        if(!found)
+                            throw std::runtime_error(
+                                "Rotated PCM contact witness differs from PhysX");
+                    }
+                }
+
             // Persistent box/box PCM compared to the independent
             // eENABLE_PCM reference across changing contact regions,
             // authored translations/rotations, loss/reentry and timestep.
