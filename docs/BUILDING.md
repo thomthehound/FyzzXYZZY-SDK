@@ -47,9 +47,13 @@ ctest --test-dir build-native -C Release --output-on-failure
 
 The `fyzzxyzzy_native_sap_benchmark` target is available in test builds,
 including reference-free configurations. It records CPU query time and
-the scene-owned full-sort/local-shift counters for unchanged AABBs,
-adjacent-key motion, wide teleports and scenes with many retired BodyIds.
-It does not change the regression or source-conformance acceptance criteria.
+the scene-owned full-sort/local-shift and incremental-pair-update
+counters for unchanged AABBs, adjacent-key motion, repeated genuine
+contact-manager transitions, wide teleports and scenes with many retired
+BodyIds. Candidate-pair generation is based on changed volume AABBs;
+the original PhysX three-axis endpoint-crossing machinery remains a
+separate porting task. The profiler does not change regression or
+source-conformance acceptance criteria.
 
 Linux (after configuring `build-native` above):
 
