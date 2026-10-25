@@ -36,12 +36,12 @@ struct ConstraintIslandSourceFixture {
         // density and PGS timestep as the native source row fixture.
         physx::PxDefaultAllocator allocator;
         physx::PxDefaultErrorCallback errors;
-        auto* foundation=physx::PxCreateFoundation(
+        auto* foundation=PxCreateFoundation(
             PX_PHYSICS_VERSION,allocator,errors);
         if(!foundation)
             throw std::runtime_error("Cannot initialize source foundation");
-        auto* physics=physx::PxCreatePhysics(
-            PX_PHYSICS_VERSION,*foundation,physx::PxTolerancesScale());
+        auto* physics=PxCreatePhysics(
+            PX_PHYSICS_VERSION,*foundation,physx::PxTolerancesScale(),false,nullptr);
         if(!physics)throw std::runtime_error("Cannot initialize source physics");
         physx::PxSceneDesc desc(physics->getTolerancesScale());
         desc.gravity=physx::PxVec3(0.0f);
