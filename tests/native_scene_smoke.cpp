@@ -962,6 +962,69 @@ struct ConstraintIslandSourceFixture {
                     "Prepublication constraint retirement leaked island ownership");
         }
     }
+    static void verify_post_third_pass_handle_retirement_rollback() {
+        // PostThirdPassTask may recycle a removed source EdgeIndex
+        // before the Dy continuation completes. A rejected later Dy
+        // integration must restore the retiring edge and allocator,
+        // including its prior published simulation result.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,10,0},1.0f);
+        const float dt=1.0f/120.0f;
+        scene.step(dt);
+        const auto edge=scene.add_distance_constraint(a,b,3.0f);
+        scene.advance_collision();
+        scene.remove_constraint_edge(edge);
+        const auto frame=scene.frame_index();
+        const auto state=scene.body_state(a);
+        if(scene.retired_edge_handles_.empty() ||
+           !scene.island_edges_[edge].retiring)
+            throw std::runtime_error(
+                "PostThirdPass retirement fixture lacks a pending edge");
+        RigidBodyDynamics extreme{};
+        extreme.gravity_enabled=false;
+        // PxsBodyCore stores finite squared velocity limits, so the
+        // authored cap itself must remain representable in PxReal.
+        extreme.max_linear_velocity=1.0e18f;
+        extreme.max_angular_velocity=1.0e18f;
+        scene.set_dynamics(a,extreme);
+        scene.set_velocity(a,{1.0e17f,0,0});
+        bool failed=false;
+        try {scene.step(1.0e23f);}
+        catch(const std::overflow_error&) {failed=true;}
+        if(!failed || scene.frame_index()!=frame ||
+           !scene.island_edges_[edge].live ||
+           !scene.island_edges_[edge].retiring ||
+           std::find(scene.retired_edge_handles_.begin(),
+                     scene.retired_edge_handles_.end(),edge)==
+               scene.retired_edge_handles_.end() ||
+           std::find(scene.free_edge_handles_.begin(),
+                     scene.free_edge_handles_.end(),edge)!=
+               scene.free_edge_handles_.end() ||
+           scene.body_state(a).position.x!=state.position.x ||
+           scene.body_state(a).position.y!=state.position.y ||
+           scene.body_state(a).position.z!=state.position.z)
+            throw std::runtime_error(
+                "Failed postThirdPass/Dy frame leaked a recycled edge handle");
+        // A retry consumes the SAME pending retiring source edge once,
+        // with no extra allocator entry or new owner.
+        scene.set_velocity(a,{});
+        scene.step(dt);
+        if(scene.solved_result_frame()!=scene.frame_index() ||
+           scene.island_edges_[edge].live ||
+           !scene.retired_edge_handles_.empty() ||
+           std::count(scene.free_edge_handles_.begin(),
+                      scene.free_edge_handles_.end(),edge)!=1)
+            throw std::runtime_error(
+                "PostThirdPass retry did not commit exactly one edge retirement");
+        const auto replacement=scene.add_distance_constraint(a,b,3.0f);
+        if(replacement!=edge || !scene.island_edges_[edge].live ||
+           scene.island_edges_[edge].retiring)
+            throw std::runtime_error(
+                "PostThirdPass recycled edge identity before successful commit");
+    }
     static void verify_constraint_sleep_deactivation_generations() {
         // Real ScConstraintSim and Dy PGS work through sleepCheck into
         // the following IslandSim third pass. Its typed eCONSTRAINT
@@ -1045,6 +1108,9 @@ struct ConstraintIslandSourceFixture {
                 if(!island.live || island.count!=expected ||
                    island.node_type_counts[Scene::rigid_node_type_index]!=
                        expected ||
+                   graph->node_type[a]!=Scene::IslandNodeType::RigidBody ||
+                   graph->node_type[b]!=Scene::IslandNodeType::RigidBody ||
+                   graph->node_type[k]!=Scene::IslandNodeType::RigidBody ||
                    graph->node_island[k]!=Scene::IslandGraph::invalid)
                     throw std::runtime_error(
                         "Typed island aggregate/rigid ownership diverged");
@@ -1166,6 +1232,70 @@ struct ConstraintIslandSourceFixture {
                     "Constraint actor retirement retained an orphan island edge");
         }
     }
+    static void verify_counted_interaction_lifetime() {
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,6,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,6,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,9,0},1.0f);
+        const auto first=scene.create_center_distance_constraint(a,b,4.0f);
+        const auto second=scene.create_center_distance_constraint(a,b,4.0f);
+        if(scene.actors_[a].num_counted_interactions!=2 ||
+           scene.actors_[b].num_counted_interactions!=2 ||
+           scene.actors_[c].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Parallel Sc joints were not counted on both attached bodies");
+        scene.advance_collision(true);
+        scene.set_position(c,{0,6.95f,0});
+        scene.advance_collision(true);
+        if(scene.contact_edge_index({a,c})==Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=3 ||
+           scene.actors_[b].num_counted_interactions!=2 ||
+           scene.actors_[c].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Gu contact manager and Sc joint counts did not coexist");
+        scene.retire_center_distance_constraint(first);
+        if(scene.actors_[a].num_counted_interactions!=2 ||
+           scene.actors_[b].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Retiring one Sc joint changed surviving interaction counts");
+        scene.set_position(c,{0,9,0});
+        scene.advance_collision(true);
+        scene.retire_center_distance_constraint(second);
+        scene.advance_collision(true);
+        if(scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[b].num_counted_interactions!=0 ||
+           scene.actors_[c].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Retired Gu and Sc edges retained body interaction counts");
+
+        // Fail after Gu overlap admission using actual kinematic target
+        // velocity overflow, then verify the exact original body counts.
+        const auto k=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,12,0},1.0f);
+        scene.set_kinematic(k,true);
+        scene.advance_collision(true);
+        scene.set_position(k,{0,6.9f,0});
+        scene.set_kinematic_target(k,{1.0e35f,6.9f,0},{});
+        bool rejected=false;
+        try {scene.step(1.0e-10f);}
+        catch(const std::overflow_error&) {rejected=true;}
+        if(!rejected ||
+           scene.contact_edge_index({a,k})!=Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[k].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Failed Dy publication leaked source counted interactions");
+        scene.set_kinematic_target(k,{0,6.9f,0},{});
+        scene.step(1.0f/120.0f);
+        if(scene.contact_edge_index({a,k})==Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Dy retry failed to register its Gu counted interactions");
+    }
     static void verify_active_kinematic_guards_rigid_island_sleep() {
         // PhysX marks islands touched by an active kinematic before
         // testing already-published Dy sleep readiness. A kinematic
@@ -1239,6 +1369,8 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision(true);
         const auto edge=scene.contact_edge_index({a,k});
         if(edge==Scene::invalid_edge || scene.contacts().size()!=0 ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1 ||
            scene.speculative_island_count()!=1 ||
            scene.accurate_island_count()!=1 ||
            scene.speculative_islands_.active_kinematic_nodes.size()!=1)
@@ -1263,9 +1395,50 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Settled kinematic did not release speculative-only edge");
         scene.deactivate_ready_islands();
-        if(!scene.speculative_islands_.deactivating_edges.empty())
+        if(!scene.speculative_islands_.deactivating_edges.empty() ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1)
             throw std::runtime_error(
-                "Speculative kinematic retirement replayed in quiet third pass");
+                "Sleep-deactivated SAP edge lost its attached body count");
+        scene.set_position(k,{0.6f,0.1f,6.0f});
+        scene.advance_collision(true);
+        if(scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[k].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Retired SAP-only edge retained counted interactions");
+    }
+    static void verify_joint_counted_sleep_energy() {
+        // DySleep uses the source lifetime interaction count, even
+        // when a joint has no contact manager. For the same sub-threshold
+        // motion, one counted joint raises the energy threshold while
+        // an unconstrained body resets its wake counter.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto anchor=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{4,6,0});
+        const auto constrained=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,6,0},1.0f);
+        const auto free=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8,6,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.linear_damping=0.0f;
+        dynamics.angular_damping=0.0f;
+        scene.set_dynamics(constrained,dynamics);
+        scene.set_dynamics(free,dynamics);
+        scene.create_center_distance_constraint(constrained,anchor,4.0f);
+        for(BodyId id:{constrained,free}) {
+            scene.set_velocity(id,{0,0.12f,0});
+            scene.actors_[id].wake_counter=0.01f;
+        }
+        if(scene.actors_[constrained].num_counted_interactions!=1 ||
+           scene.actors_[free].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Sc joint-only sleep fixture lacks source interaction counts");
+        scene.step(1.0f/120.0f);
+        if(scene.actors_[constrained].wake_counter>=0.05f ||
+           scene.actors_[free].wake_counter<0.25f)
+            throw std::runtime_error(
+                "Dy sleep energy ignored Sc constraint lifetime interaction");
     }
     static void verify_graph_owned_kinematic_active_references() {
         Scene scene{};
@@ -2868,6 +3041,7 @@ struct ContactCorrelationSourceFixture {
         };
         if(!rejected([&]{ join.require_post_solver(); }) ||
            !rejected([&]{ join.finish_solver_task(0); }) ||
+           !rejected([&]{ join.finish_third_pass(); }) ||
            !rejected([&]{ join.finish_lost_contacts(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_after_integration(); }) ||
@@ -2886,10 +3060,18 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ join.require_post_solver(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver retired an incomplete lost-touch branch");
+        join.finish_speculative_third_pass();
+        if(!rejected([&]{ join.finish_third_pass(); }) ||
+           !rejected([&]{ join.finish_lost_contacts(); }) ||
+           !rejected([&]{ join.finish_speculative_third_pass(); }))
+            throw std::runtime_error(
+                "ScPipeline postThirdPassTask ran before accurate IslandSim completion");
+        join.finish_accurate_third_pass();
         join.finish_third_pass();
         join.finish_lost_contacts();
         if(!rejected([&]{ join.require_post_solver(); }) ||
-           !rejected([&]{ join.finish_third_pass(); }))
+           !rejected([&]{ join.finish_third_pass(); }) ||
+           !rejected([&]{ join.finish_accurate_third_pass(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver omitted the final Dy task completion");
         join.finish_solver_task(0);
@@ -2923,6 +3105,13 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ empty.finish_post_solver(); }))
             throw std::runtime_error(
                 "Empty source task stream bypassed third-pass completion");
+        // Independent island completions may arrive in the opposite
+        // order, even when no rigid solver tasks are admitted.
+        empty.finish_accurate_third_pass();
+        if(!rejected([&]{ empty.finish_third_pass(); }))
+            throw std::runtime_error(
+                "Empty source task stream skipped speculative IslandSim");
+        empty.finish_speculative_third_pass();
         empty.finish_third_pass();
         empty.finish_lost_contacts();
         empty.finish_post_solver();
@@ -3994,8 +4183,8 @@ struct SolverIterationSourceFixture {
            std::find(scene.solver_active_ids_.begin(),
                      scene.solver_active_ids_.end(),second)==
                scene.solver_active_ids_.end() ||
-           scene.sleep_interaction_counts_[first]!=2 ||
-           scene.sleep_interaction_counts_[second]!=2)
+           scene.actors_[first].num_counted_interactions!=2 ||
+           scene.actors_[second].num_counted_interactions!=2)
             throw std::runtime_error(
                 "PhysX active island contact edges did not drive both Dy stages");
         // Dormant Gu managers remain queryable, but the unified input
@@ -4079,8 +4268,8 @@ struct SolverIterationSourceFixture {
         if(scene.solver_active_ids_.size()!=1 ||
            scene.solver_active_ids_[0]!=first ||
            scene.indexed_managers_.size()!=3 ||
-           scene.sleep_interaction_counts_[first]!=2 ||
-           scene.sleep_interaction_counts_[second]!=2)
+           scene.actors_[first].num_counted_interactions!=2 ||
+           scene.actors_[second].num_counted_interactions!=2)
             throw std::runtime_error(
                 "Zero-response accurate edge changed source body admission or sleep count");
         scene.set_dynamics(second,RigidBodyDynamics{});
@@ -12130,7 +12319,10 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_island_node_type_counts();
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
+    fyzz::native::ConstraintIslandSourceFixture::verify_post_third_pass_handle_retirement_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
+    fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
+    fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();

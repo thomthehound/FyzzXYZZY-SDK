@@ -612,6 +612,9 @@ private:
         Vec3 sleep_linear_acc{}, sleep_angular_acc{};
         bool ready_for_sleep=false;
         bool sleeping=false;
+        // Shape overlaps and constraints both contribute to the
+        // PxsBodyCore lifetime interaction count used by Dy sleep.
+        std::uint32_t num_counted_interactions=0;
         // IslandSim::Node::eACTIVATING, set by a genuine authored
         // sleep-to-wake transition; consumed by wakeIslands after Gu
         // publication. Active nodes do not reawaken peers every frame.
@@ -751,6 +754,7 @@ private:
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
     // lifecycle, within the existing single scene-owned island pipeline.
     std::uint32_t allocate_contact_edge(Pair pair);
+    void change_counted_interactions(Pair pair, bool attach);
     void retire_destroyed_contact_edges();
     // IslandSim::addConnectionToGraph/removeConnectionInternal,
     // two source edge instances per contact manager, per graph.
@@ -954,6 +958,10 @@ private:
         std::vector<std::uint32_t> active_island_seen;
         std::uint32_t active_island_visit_stamp=0;
         std::vector<IslandId> node_island;
+        // PxsIslandSim::Node::mType belongs to the IslandSim node slot,
+        // not the rigid Actor class or a Dy PxSolverBody. Both graphs
+        // retain their own copy of the node metadata and island IDs.
+        std::vector<IslandNodeType> node_type;
         std::vector<BodyId> node_next, node_prev;
         // IslandSim::Node::mStaticTouchCount for live dynamic nodes.
         std::vector<std::uint32_t> node_static_touches;
@@ -1162,12 +1170,12 @@ private:
             bool interaction_active;
         };
         std::vector<ActivityUndo> activity_undo;
-        // Per-node sparse rollback for source active references. The
-        // generation journal saves a dynamic endpoint at most once per
-        // frame, avoiding two O(actor_count) copies on quiet PGS steps.
+        // Share endpoint stamps for IslandSim active references and
+        // ScBodySim lifetime interactions. Some newly admitted nodes
+        // have no graph reference slots before the first island pass.
         struct ReferenceUndo {
             BodyId node;
-            std::uint32_t speculative, accurate;
+            std::uint32_t speculative, accurate, counted_interactions;
         };
         std::vector<ReferenceUndo> reference_undo;
         std::size_t initial_speculative_references=0;
@@ -1307,6 +1315,8 @@ private:
         std::span<std::uint32_t> solver_completion_stamps{};
         std::uint32_t completion_generation=0;
         std::size_t outstanding_solver_tasks=0;
+        bool accurate_third_pass_joined=false;
+        bool speculative_third_pass_joined=false;
         bool third_pass_joined=false;
         bool lost_contacts_joined=false;
         bool solver_dispatched=false;
@@ -1314,6 +1324,8 @@ private:
         bool after_integration_completed=false;
         bool finalization_completed=false;
         bool results_published=false;
+        void finish_accurate_third_pass();
+        void finish_speculative_third_pass();
         void finish_third_pass();
         void finish_lost_contacts();
         void dispatch_solver_tasks(std::span<std::uint32_t> stamps,
@@ -1368,9 +1380,6 @@ private:
     // Prepared contact bodies for the current frame; avoids re-preparing
     // free-flight actors before the original island owner is integrated.
     std::vector<BodyId> solver_active_ids_;
-    // Sc::BodyCore::numCountedInteractions, derived once from the
-    // authoritative contact manager stream for Dy::sleepCheck.
-    std::vector<std::uint32_t> sleep_interaction_counts_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.

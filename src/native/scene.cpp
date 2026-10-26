@@ -1614,7 +1614,35 @@ bool Scene::contact_interaction_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
     return id!=invalid_edge && island_edges_[id].interaction_active;
 }
+void Scene::change_counted_interactions(Pair pair, bool attach) {
+    // ShapeInteraction construction and constraint attachment update
+    // PxsBodyCore::numCountedInteractions independently of Dy activity.
+    // Validate both endpoints before any change; each body is visited
+    // once, with rollback sharing the graph's sparse endpoint journal.
+    for(BodyId id:{pair.a,pair.b}) {
+        const Actor& actor=actors_[id];
+        if(!rigid_node(actor.kind))continue;
+        const auto count=actor.num_counted_interactions;
+        if(attach && count==std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Source body interaction count overflow");
+        if(!attach && count==0)
+            throw std::logic_error("Source body interaction count underflow");
+    }
+    for(BodyId id:{pair.a,pair.b}) {
+        Actor& actor=actors_[id];
+        if(!rigid_node(actor.kind))continue;
+        step_checkpoint_.save_reference(*this,id);
+        if(attach)++actor.num_counted_interactions;
+        else --actor.num_counted_interactions;
+    }
+}
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
+    // Overflow must reject before allocating a shared EdgeIndex.
+    for(BodyId id:{pair.a,pair.b})
+        if(rigid_node(actors_[id].kind) &&
+           actors_[id].num_counted_interactions==
+               std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Source body interaction count overflow");
     // SimpleIslandManager::addContactManager -> addEdge obtains the
     // edge handle once; accurate touch may later toggle independently.
     EdgeIndex id;
@@ -1673,6 +1701,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         activity_undo_generations_.resize(needed,0);
         island_edges_.push_back({IslandEdgeType::ContactManager,pair,true,false,false});
     }
+    change_counted_interactions(pair,true);
     return id;
 }
 // PxsIslandSim.cpp::IslandSim::addConnectionToGraph and
@@ -2006,6 +2035,7 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
         free_constraint_ids_.reserve(free_constraint_ids_.size()+1);
     unlink_contact_edge(id,true);
     unlink_contact_edge(id,false);
+    change_counted_interactions(island_edges_[id].pair,false);
     island_edges_[id].retiring=true;
     island_edges_[id].connected=false;
     if(constraint_id!=invalid_edge) {
@@ -2058,6 +2088,7 @@ void Scene::publish_pairs() {
             const EdgeIndex id=active_edge_handles_[old_index];
             unlink_contact_edge(id,true);
             unlink_contact_edge(id,false);
+            change_counted_interactions(island_edges_[id].pair,false);
             step_checkpoint_.save_edge(*this,id);
             island_edges_[id].retiring=true;
             island_edges_[id].connected=false;
@@ -3400,7 +3431,8 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             if(after!=invalid)graph.node_prev[after]=before;
             else graph.islands[owner].tail=before;
             --graph.islands[owner].count;
-            --graph.islands[owner].node_type_counts[rigid_node_type_index];
+            --graph.islands[owner].node_type_counts[
+                static_cast<std::size_t>(graph.node_type[node])];
             const auto count=graph.node_static_touches[node];
             static_touches+=count;
             graph.islands[owner].static_touches-=count;
@@ -3412,7 +3444,9 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
         island.root=seed;
         island.tail=island_split_members_.back();
         island.count=island_split_members_.size();
-        island.node_type_counts[rigid_node_type_index]=island.count;
+        for(BodyId member:island_split_members_)
+            ++island.node_type_counts[
+                static_cast<std::size_t>(graph.node_type[member])];
         island.static_touches=static_touches;
         // PhysX processLostEdges creates an active detached island when
         // the original island was active. Preserve this event order now,
@@ -3698,6 +3732,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         hops.resize(actors_.size(),0);
         stamps.resize(actors_.size(),0);
         graph.node_island.resize(actors_.size(),Graph::invalid);
+        graph.node_type.resize(actors_.size(),IslandNodeType::RigidBody);
         graph.node_next.resize(actors_.size(),invalid);
         graph.node_prev.resize(actors_.size(),invalid);
         graph.node_static_touches.resize(actors_.size(),0);
@@ -3712,13 +3747,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 handle=graph.free_handles.back();
                 graph.free_handles.pop_back();
                 graph.islands[handle]={id,id,1,true};
-                graph.islands[handle].node_type_counts[rigid_node_type_index]=1;
+                graph.islands[handle].node_type_counts[
+                    static_cast<std::size_t>(graph.node_type[id])]=1;
             } else {
                 if(graph.islands.size()>=Graph::invalid)
                     throw std::overflow_error("Source island handles exhausted");
                 handle=static_cast<Graph::IslandId>(graph.islands.size());
                 graph.islands.push_back({id,id,1,true});
-                graph.islands.back().node_type_counts[rigid_node_type_index]=1;
+                graph.islands.back().node_type_counts[
+                    static_cast<std::size_t>(graph.node_type[id])]=1;
             }
             graph.node_island[id]=handle;
             graph.node_next[id]=invalid;
@@ -3743,6 +3780,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         Graph next;
         next.islands.resize(graph.islands.size());
         next.node_island.assign(actors_.size(),Graph::invalid);
+        next.node_type=graph.node_type;
+        next.node_type.resize(actors_.size(),IslandNodeType::RigidBody);
         next.node_next.assign(actors_.size(),invalid);
         next.node_prev.assign(actors_.size(),invalid);
         next.node_static_touches.assign(actors_.size(),0);
@@ -3935,7 +3974,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             island.root=root;
             island.tail=root;
             island.count=members.size();
-            island.node_type_counts[rigid_node_type_index]=island.count;
+            for(BodyId member:members)
+                ++island.node_type_counts[
+                    static_cast<std::size_t>(next.node_type[member])];
             island.static_touches=static_touches;
             island.live=true;
             next.node_island[root]=handle;
@@ -6970,16 +7011,17 @@ void Scene::StepCheckpoint::save_activity(
 }
 void Scene::StepCheckpoint::save_reference(
     Scene& scene, BodyId node) noexcept {
-    if(!scene.activity_checkpoint_active_ ||
-       node>=initial_speculative_references ||
-       node>=initial_accurate_references)return;
+    if(!scene.activity_checkpoint_active_)return;
     if(scene.reference_undo_generations_[node]==
        scene.reference_undo_generation_)return;
     scene.reference_undo_generations_[node]=
         scene.reference_undo_generation_;
+    const auto& speculative=scene.speculative_islands_.active_reference_counts;
+    const auto& accurate=scene.accurate_islands_.active_reference_counts;
     reference_undo.push_back({node,
-        scene.speculative_islands_.active_reference_counts[node],
-        scene.accurate_islands_.active_reference_counts[node]});
+        node<initial_speculative_references?speculative[node]:0,
+        node<initial_accurate_references?accurate[node]:0,
+        scene.actors_[node].num_counted_interactions});
 }
 void Scene::StepCheckpoint::save_hint(
     const Scene& scene, BodyId node, bool accurate) {
@@ -7028,6 +7070,7 @@ void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
     const auto save=[](IslandGraph& saved,const IslandGraph& live) {
         saved.islands.assign(live.islands.begin(),live.islands.end());
         saved.node_island.assign(live.node_island.begin(),live.node_island.end());
+        saved.node_type.assign(live.node_type.begin(),live.node_type.end());
         saved.node_next.assign(live.node_next.begin(),live.node_next.end());
         saved.node_prev.assign(live.node_prev.begin(),live.node_prev.end());
         saved.node_static_touches.assign(live.node_static_touches.begin(),
@@ -7450,6 +7493,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(graph_ownership_saved) {
         scene.speculative_islands_.islands.swap(speculative_islands.islands);
         scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
+        scene.speculative_islands_.node_type.swap(speculative_islands.node_type);
         scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
         scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
         scene.speculative_islands_.node_static_touches.swap(
@@ -7498,6 +7542,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(graph_ownership_saved) {
         scene.accurate_islands_.islands.swap(accurate_islands.islands);
         scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
+        scene.accurate_islands_.node_type.swap(accurate_islands.node_type);
         scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
         scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
         scene.accurate_islands_.node_static_touches.swap(
@@ -7544,10 +7589,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // after a full island rebuild. Rewind only changed endpoint slots
     // after structural ownership and edge-state undo have completed.
     for(auto it=reference_undo.rbegin();it!=reference_undo.rend();++it) {
-        scene.speculative_islands_.active_reference_counts[it->node]=
-            it->speculative;
-        scene.accurate_islands_.active_reference_counts[it->node]=
-            it->accurate;
+        scene.actors_[it->node].num_counted_interactions=
+            it->counted_interactions;
+        if(it->node<scene.speculative_islands_.active_reference_counts.size())
+            scene.speculative_islands_.active_reference_counts[it->node]=
+                it->speculative;
+        if(it->node<scene.accurate_islands_.active_reference_counts.size())
+            scene.accurate_islands_.active_reference_counts[it->node]=
+                it->accurate;
     }
     scene.speculative_islands_.active_reference_counts.resize(
         initial_speculative_references);
@@ -7591,12 +7640,28 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.authored_activation_pending_=authored_activation_pending;
  }
 
-void Scene::RigidStepJoin::finish_third_pass() {
-    // PostThirdPassIslandGenTask is an explicit dependency of the
-    // processLostContacts3 continuation, independent of Dy solve tasks.
-    if(third_pass_joined)
+void Scene::RigidStepJoin::finish_accurate_third_pass() {
+    // The accurate and speculative IslandSims run independent
+    // ThirdPassTask continuations into the SAME PostThirdPassTask.
+    if(accurate_third_pass_joined || third_pass_joined)
         throw std::logic_error(
-            "Native ScPipeline completed postThirdPassIslandGen twice");
+            "Native ScPipeline completed accurate third pass twice/out of order");
+    accurate_third_pass_joined=true;
+}
+void Scene::RigidStepJoin::finish_speculative_third_pass() {
+    if(speculative_third_pass_joined || third_pass_joined)
+        throw std::logic_error(
+            "Native ScPipeline completed speculative third pass twice/out of order");
+    speculative_third_pass_joined=true;
+}
+void Scene::RigidStepJoin::finish_third_pass() {
+    // PxsSimpleIslandManager::thirdPassIslandGen wires BOTH island task
+    // completions into PostThirdPassTask. Its handle retirement and
+    // postThirdPassIslandGen continuation cannot run after only one.
+    if(!accurate_third_pass_joined || !speculative_third_pass_joined ||
+       third_pass_joined)
+        throw std::logic_error(
+            "Native ScPipeline postThirdPassIslandGen missing island producer");
     third_pass_joined=true;
 }
 void Scene::RigidStepJoin::finish_lost_contacts() {
@@ -7724,7 +7789,14 @@ void Scene::step(float seconds) {
     // third-pass sleep, and Sc interaction-state consumption.
     // PhysX can overlap this branch with Dy; serial CPU execution
     // resolves it first without changing the dependency edge.
+    join.finish_accurate_third_pass();
+    join.finish_speculative_third_pass();
     join.finish_third_pass();
+    // PxsSimpleIslandManager::PostThirdPassTask returns destroyed
+    // EdgeIndex handles to its allocator only after both IslandSims'
+    // processLostEdges consumers have completed. The lifetime remains
+    // checkpointed until the whole frame succeeds.
+    retire_destroyed_contact_edges();
     join.finish_lost_contacts();
     calculate_kinematic_velocities(1.0f/seconds);
     // Dy::DynamicsContext takes the accurate *active* island ranges,
@@ -7845,30 +7917,10 @@ void Scene::step(float seconds) {
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     begin_contact_writeback();
-    // PxsBodyCore::numCountedInteractions is maintained by original Sc
-    // interaction edges. In this admitted contact-only subset each Gu
-    // contact manager contributes one interaction to each dynamic body.
-    // Derive counted interactions from the SAME source-indexed
-    // contact-manager descriptor stream used by the current Dy task
-    // chains, not every Gu manager retained by dormant accurate islands.
-    // Zero-response contacts still count as interactions. A sleeping
-    // graph may retain its managers, but cannot add energy to any body
-    // processed by this frame's Dy::sleepCheck.
-    sleep_interaction_counts_.resize(actors_.size(),0);
-    for(BodyId id:accurate_islands_.active_nodes)
-        sleep_interaction_counts_[id]=0;
-    for(std::size_t index:indexed_managers_) {
-        const auto& manifold=manifolds_[index];
-        for(BodyId id:{manifold.pair.a,manifold.pair.b}) {
-            if(actors_[id].kind!=Kind::DynamicBox ||
-               actors_[id].sleeping)continue;
-            if(sleep_interaction_counts_[id]==
-               std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error(
-                    "Native source counted interactions overflow");
-            ++sleep_interaction_counts_[id];
-        }
-    }
+    // ScBodySim counted interactions are updated on Gu overlap and Sc
+    // constraint attachment/retirement. DySleep consumes the lifetime
+    // count, including non-touching managers and joint-only islands,
+    // without scanning dormant Gu contacts or clearing per-frame stamps.
     // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
@@ -7987,7 +8039,7 @@ void Scene::step(float seconds) {
                 const float normalized_energy=
                     0.5f*(angular_energy+accumulated_linear);
                 const float cluster=1.0f+
-                    static_cast<float>(sleep_interaction_counts_[id]);
+                    static_cast<float>(actor.num_counted_interactions);
                 const float threshold=cluster*energy_threshold;
                 if(normalized_energy>=threshold) {
                     actor.sleep_linear_acc={};
@@ -8031,7 +8083,6 @@ void Scene::step(float seconds) {
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
     after_integration_cached_bounds();
-    retire_destroyed_contact_edges();
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the
     // integration/cache phase, independently from task-local solve.

@@ -1525,15 +1525,19 @@ remains a future performance investigation.
 Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
-`ScPipeline`'s asynchronous `destroyManagers`/lost-contact
-continuations, deactivation for unsupported constraint/non-rigid edge
-types, kinematic/non-rigid active-reference paths and `afterIntegration`
-reconciliation also remain unported. Rigid contact-manager
-`IslandSim::Node::mActiveRefCount` bookkeeping is implemented. Rigid contact-manager deactivation
-is already published independently by the accurate/speculative graphs. The admitted
-rigid-node active lists and persistent island handles are real source
-lowerings, but a correctly published graph does **not** establish full
-source island lifetime or task semantics.
+The admitted rigid CPU ScPipeline now has independent accurate and
+speculative third-pass completion edges into `PostThirdPassTask`,
+checkpointed EdgeIndex reclamation at that join, the lost-contact
+producer, and cumulative task-local Dy solve/writeback/integration/
+sleep-check completion edges into `postSolver`. `afterIntegration`,
+force-threshold processing, finalization and solved-result publication
+remain ordered within the same frame. The serial CPU lowering preserves
+these dependency edges; executing those continuations concurrently
+and reconciling island deactivation against overlapping Dy integration
+remain distinct work. Rigid contact-manager active references and
+the separate accurate/speculative edge-deactivation streams are live.
+Unsupported non-rigid edge types, their per-type activation consumers,
+and heterogeneous solver execution remain outside this admission.
 
 **Source wake/lost-edge dependency:** The admitted serial scene now
 executes speculative and accurate `wakeIslands` before third-pass
@@ -1630,20 +1634,26 @@ incrementally. Source swap-last retirement, explicit type changes,
 structural rebuild and checkpoint rollback preserve their membership
 without a shadow body graph or hot-path historical-actor scan.
 
-**Unported source responsibilities:** complete source `PxNodeIndex`
-node lifecycle and destruction; non-rigid, kinematic and articulation
-variants of the shared visited-island witness and `mVisitedNodes`
-split-migration paths; unsupported constraint/kinematic edge partitions
-and their activation/deactivation lists; complete sleep/wake callback
-semantics; first/second/third-pass task joins; post-third-pass interaction
-retirement; `afterIntegration` deactivation reconciliation; source
-callback ownership; and complete per-island solve/fetch scheduling.
-The rigid contact-manager graph already implements shared route
-witnesses, local split migration and both activating/deactivating
-edge lists; these are **not** still-open rigid lifecycle tasks. The provisional union/find
-parent/rank representation **has already been retired** in favor of
-source-style graph-owned island handles and node chains. These
-remaining responsibilities still prevent N1 completion.
+**Remaining architectural responsibilities:** real `ScArticulationSim`
+and deformable/particle simulation owners, distinct node identities,
+type-indexed active/deactivation streams, heterogeneous edge endpoints
+and their shared visited-island split migration, and the associated Dy
+articulation/non-rigid solve and after-integration paths. Both IslandSims
+now retain per-node source type slots; island membership counts are
+derived from those slots during singleton admission, local splits and
+structural reconstruction, then combined on merges. The rigid task
+admission rejects unsupported heterogeneous islands rather than
+silently converting their members into rigid solver bodies.
+
+The admitted rigid CPU path has source-style active island handles,
+source hop-priority witnesses, local split migration, typed contact/1D
+constraint partitions, both third-pass completion producers, task-local
+solve/writeback/integration and postSolver/finalization gates. Remaining
+work includes other joint families and articulation responses, full
+sleep/wake callback semantics, actual asynchronous backend continuations,
+and `afterIntegration` deactivation reconciliation when the island and
+Dy branches execute concurrently. Successful serial rigid execution
+does not establish N1-level heterogeneous simulation parity.
 
 ## Simulation-shape filtering and source manager lifetime
 
