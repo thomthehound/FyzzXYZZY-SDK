@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - integration/sap-audit-n1
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -390,6 +391,53 @@ jobs:
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
+      - name: Compare native SAP batch performance
+        if: github.ref == 'refs/heads/integration/sap-audit-n1'
+        shell: bash
+        run: |
+          git fetch --no-tags --depth=1 origin 3a6f0fbde56a1407cf45d353ddc50648f8aaeae4
+          git worktree add --detach ../sap-before 3a6f0fbde56a1407cf45d353ddc50648f8aaeae4
+          flags=(
+            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF
+            -DFYZZXYZZY_BUILD_GODOT=OFF
+            -DFYZZXYZZY_BUILD_VULKAN=OFF
+            -DFYZZXYZZY_BUILD_D3D12=OFF
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          )
+          cmake -S ../sap-before -B build-before "${flags[@]}"
+          cmake -S . -B build-after "${flags[@]}"
+          cmake --build build-before --target fyzzxyzzy_native_sap_benchmark --parallel 4
+          cmake --build build-after --target fyzzxyzzy_native_sap_benchmark --parallel 4
+          for trial in 1 2 3 4 5 6 7; do
+            if ((trial % 2)); then order="before after"; else order="after before"; fi
+            for which in $order; do
+              "build-${which}/fyzzxyzzy_native_sap_benchmark" >> "${which}.txt"
+            done
+          done
+          python3 - <<'PY'
+          from statistics import median
+          def load(path):
+              result={}
+              for line in open(path):
+                  if not line.startswith('native_sap mode='):
+                      continue
+                  fields=dict(x.split('=',1) for x in line.split() if '=' in x)
+                  result.setdefault(fields['mode'],[]).append(
+                      float(fields['median_us_per_query']))
+              return result
+          before,after=load('before.txt'),load('after.txt')
+          print('Matched SAP timings: previous / bounded merge')
+          for mode in after:
+              a,b=median(before[mode]),median(after[mode])
+              print(f'{mode:32s} before={a:9.3f} us after={b:9.3f} us ratio={a/b:5.2f}x')
+          print('Endpoint-only diagnostics:')
+          for line in open('after.txt'):
+              if 'mode=endpoint-only-' in line:
+                  print(line.strip())
+                  if 'mode=endpoint-only-crossings' in line:
+                      break
+          PY
 
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
