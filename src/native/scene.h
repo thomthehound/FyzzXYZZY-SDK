@@ -511,6 +511,7 @@ private:
     friend struct ContactCorrelationSourceFixture;
     friend struct SolverIterationSourceFixture;
     friend struct SourceSapEndpointFixture;
+    friend struct NativeSapTimingFixture;
     enum class Kind : std::uint8_t { StaticBox, DynamicBox, StaticPlane };
     struct Actor {
         Kind kind = Kind::StaticBox;
