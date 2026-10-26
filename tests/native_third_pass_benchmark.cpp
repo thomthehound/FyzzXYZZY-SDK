@@ -18,7 +18,7 @@ struct NativeThirdPassTimingFixture {
     struct Result {
         std::vector<BodyState> bodies;
         std::vector<std::uint32_t> speculative_owners,accurate_owners;
-        std::vector<double> impulses;
+        std::vector<double> impulses, joint_impulses;
         double median_us=0, checksum=0;
         std::size_t asleep=0, spec_islands=0, acc_islands=0;
         std::size_t starts=0, dispatched=0;
@@ -139,7 +139,8 @@ struct NativeThirdPassTimingFixture {
            a.bodies.size()!=b.bodies.size() ||
            a.speculative_owners!=b.speculative_owners ||
            a.accurate_owners!=b.accurate_owners ||
-           a.impulses!=b.impulses)
+           a.impulses!=b.impulses ||
+           a.joint_impulses!=b.joint_impulses)
             throw std::runtime_error(
                 "Native serial and concurrent third-pass trial ownership differs");
         const auto same_vec=[](Vec3 x,Vec3 y) {
@@ -161,21 +162,28 @@ struct NativeThirdPassTimingFixture {
         }
     }
 
-    static Result profile_solver(Mode mode,std::size_t body_count) {
+    static Result profile_solver(Mode mode,std::size_t body_count,
+                                 bool joint_pairs=false) {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.parallel_third_pass_enabled_=false;
         scene.parallel_solver_enabled_=mode!=Mode::Serial;
+        if(joint_pairs)scene.set_enhanced_determinism(true);
         if(mode==Mode::ForcedParallel)
             scene.parallel_solver_min_descriptors_=0;
         scene.add_static_floor(0.0f);
         std::vector<BodyId> ids;
         ids.reserve(body_count);
         for(std::size_t i=0;i<body_count;++i) {
+            const float x=joint_pairs
+                ? float(i/2)*6.0f+float(i%2)*1.4f
+                : float(i)*3.0f;
             const auto id=scene.add_dynamic_box(
                 {0.5f,0.5f,0.5f},
-                {float(i)*3.0f,0.48f,0.0f},1.0f);
+                {x,0.48f,0.0f},1.0f);
             scene.actors_[id].dynamics.gravity_enabled=false;
             ids.push_back(id);
+            if(joint_pairs && (i&1u))
+                scene.add_distance_constraint(ids[i-1],id,1.4f);
         }
         constexpr std::size_t warmup=16,trials=5,frames=32;
         std::array<double,trials> times{};
@@ -188,7 +196,10 @@ struct NativeThirdPassTimingFixture {
             // keep all island groups active through the measured window.
             // Authored inputs remain outside the timed native step.
             for(std::size_t i=0;i<ids.size();++i) {
-                scene.set_position(ids[i],{float(i)*3.0f,0.48f,0.0f});
+                const float x=joint_pairs
+                    ? float(i/2)*6.0f+float(i%2)*1.4f
+                    : float(i)*3.0f;
+                scene.set_position(ids[i],{x,0.48f,0.0f});
                 scene.set_velocity(ids[i],{0.0f,-1.0f,0.0f});
             }
             const auto start=std::chrono::steady_clock::now();
@@ -207,6 +218,8 @@ struct NativeThirdPassTimingFixture {
                 const auto impulses=scene.solved_normal_impulses();
                 result.impulses.insert(result.impulses.end(),
                                        impulses.begin(),impulses.end());
+                for(const auto& row:scene.distance_rows_)
+                    result.joint_impulses.push_back(row.applied_force);
             }
         }
         for(double& v:times)v/=frames;
@@ -227,19 +240,20 @@ struct NativeThirdPassTimingFixture {
             throw std::runtime_error("Independent Dy PGS worker did not run");
         return result;
     }
-    static void compare_solver(std::size_t body_count) {
-        const auto serial=profile_solver(Mode::Serial,body_count);
-        const auto forced=profile_solver(Mode::ForcedParallel,body_count);
-        const auto adaptive=profile_solver(Mode::Adaptive,body_count);
+    static void compare_solver(std::size_t body_count,bool joint_pairs=false) {
+        const auto serial=profile_solver(Mode::Serial,body_count,joint_pairs);
+        const auto forced=profile_solver(Mode::ForcedParallel,body_count,joint_pairs);
+        const auto adaptive=profile_solver(Mode::Adaptive,body_count,joint_pairs);
         verify_same_state(serial,forced);
         verify_same_state(serial,adaptive);
         std::printf(
-            "dy_pgs bodies=%zu serial_median_us=%.3f"
+            "dy_pgs workload=%s bodies=%zu serial_median_us=%.3f"
             " forced_parallel_median_us=%.3f adaptive_median_us=%.3f"
             " forced_speedup=%.3fx adaptive_speedup=%.3fx"
             " forced_starts=%zu forced_dispatches=%zu"
             " adaptive_starts=%zu adaptive_dispatches=%zu\n",
-            body_count,serial.median_us,forced.median_us,
+            joint_pairs?"contact-1d":"contacts",body_count,
+            serial.median_us,forced.median_us,
             adaptive.median_us,serial.median_us/forced.median_us,
             serial.median_us/adaptive.median_us,
             forced.starts,forced.dispatched,
@@ -284,6 +298,8 @@ int main() {
         fyzz::native::NativeThirdPassTimingFixture::compare(true,512,true);
         fyzz::native::NativeThirdPassTimingFixture::compare_solver(256);
         fyzz::native::NativeThirdPassTimingFixture::compare_solver(512);
+        fyzz::native::NativeThirdPassTimingFixture::compare_solver(256,true);
+        fyzz::native::NativeThirdPassTimingFixture::compare_solver(512,true);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
         return 1;
