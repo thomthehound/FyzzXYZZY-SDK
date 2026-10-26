@@ -1117,6 +1117,9 @@ private:
     std::size_t third_pass_worker_start_count_=0;
     std::size_t concurrent_solver_dispatches_=0;
     bool parallel_solver_enabled_=true;
+    // Published by existing source contact/1D preparation, not a
+    // second scan over all task descriptors on each active PGS frame.
+    bool solver_kinematic_participant_=false;
     // Admit independent source PGS task groups only when both ranges
     // contain useful work; small tasks avoid the worker handoff.
     std::size_t parallel_solver_min_descriptors_=256;
