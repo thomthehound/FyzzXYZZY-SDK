@@ -797,7 +797,9 @@ private:
     bool worthwhile_parallel_route_work() const noexcept;
     void run_third_pass_worker() noexcept;
     void dispatch_third_pass_worker(bool repair_only,
-                                    std::size_t solver_first=invalid_instance);
+                                    std::size_t solver_first=invalid_instance,
+                                    bool integrate_solver=false,
+                                    float seconds=0.0f);
     void join_third_pass_worker() noexcept;
     bool complete_third_pass_worker();
     bool process_third_pass_island_task(bool accurate);
@@ -838,6 +840,8 @@ private:
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(BodyId id);
     void solve_constraint_task(std::size_t task_index);
+    void integrate_solver_task(std::size_t task_index,float seconds,
+                               std::vector<BodyId>& ready_nodes);
     void begin_contact_writeback();
     void write_back_contacts(std::size_t first,std::size_t last);
     void update_threshold_stream(float seconds);
@@ -1105,6 +1109,10 @@ private:
     // Feed the speculative producer directly, independently of the
     // accurate producer's mNodesToPutToSleep output.
     std::vector<BodyId> speculative_ready_nodes_;
+    // Separate writable lanes for concurrently completing source
+    // PxsSolverEndTask integration/sleepCheck continuations. Each is
+    // merged in task order after the join, preserving ready-node order.
+    std::vector<BodyId> solver_ready_caller_, solver_ready_worker_;
     // The two source ThirdPassTask producers mutate separate IslandSims.
     // Their shared checkpoint records both graph edge/reference fields:
     // serialize only that sparse recording + edge mutation, not the
@@ -1116,6 +1124,7 @@ private:
     std::size_t overlapped_dy_preintegration_dispatches_=0;
     std::size_t third_pass_worker_start_count_=0;
     std::size_t concurrent_solver_dispatches_=0;
+    std::size_t concurrent_integration_dispatches_=0;
     bool parallel_solver_enabled_=true;
     // Published by existing source contact/1D preparation, not a
     // second scan over all task descriptors on each active PGS frame.
@@ -1639,6 +1648,8 @@ private:
         std::condition_variable cv;
         bool stopping=false, pending=false, done=false;
         bool outstanding=false, repair_only=false, split=false;
+        bool integrate_solver=false;
+        float seconds=0.0f;
         std::size_t solver_first=invalid_instance, solver_end=0;
         std::exception_ptr error;
         std::jthread worker;
