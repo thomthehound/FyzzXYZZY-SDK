@@ -8583,6 +8583,29 @@ void Scene::step(float seconds) {
     std::size_t parallel_solver_split=0;
     if(parallel_solver_enabled_ && solver_tasks_.size()>1 &&
        ordered_constraints_.size()>=parallel_solver_min_descriptors_) {
+        // A kinematic node may connect more than one otherwise disjoint
+        // dynamic island. Both task groups could then address the same
+        // kinematic solver row, so it cannot be treated as task-local.
+        // Static-world rows are already private to each solver task.
+        bool shared_kinematic=false;
+        for(const auto& descriptor:ordered_constraints_) {
+            BodyId a=0,b=0;
+            if(descriptor.distance) {
+                const auto& row=distance_rows_[descriptor.index];
+                a=row.a;
+                b=row.b;
+            } else {
+                const auto& manager=manifolds_[descriptor.index];
+                a=manager.pair.a;
+                b=manager.pair.b;
+            }
+            if(actors_[a].kind==Kind::KinematicBox ||
+               actors_[b].kind==Kind::KinematicBox) {
+                shared_kinematic=true;
+                break;
+            }
+        }
+        if(!shared_kinematic) {
         const std::size_t total=ordered_constraints_.size();
         const std::size_t minimum=parallel_solver_min_descriptors_
             ? std::max<std::size_t>(1,parallel_solver_min_descriptors_/4)
@@ -8597,6 +8620,7 @@ void Scene::step(float seconds) {
                 parallel_solver_split=i;
                 best_balance=imbalance;
             }
+        }
         }
     }
     if(parallel_solver_split) {
