@@ -2840,7 +2840,8 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             if(after!=invalid)graph.node_prev[after]=before;
             else graph.islands[owner].tail=before;
             --graph.islands[owner].count;
-            --graph.islands[owner].node_type_counts[rigid_node_type_index];
+            --graph.islands[owner].node_type_counts[
+                static_cast<std::size_t>(graph.node_type[node])];
             const auto count=graph.node_static_touches[node];
             static_touches+=count;
             graph.islands[owner].static_touches-=count;
@@ -2852,7 +2853,9 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
         island.root=seed;
         island.tail=island_split_members_.back();
         island.count=island_split_members_.size();
-        island.node_type_counts[rigid_node_type_index]=island.count;
+        for(BodyId member:island_split_members_)
+            ++island.node_type_counts[
+                static_cast<std::size_t>(graph.node_type[member])];
         island.static_touches=static_touches;
         // PhysX processLostEdges creates an active detached island when
         // the original island was active. Preserve this event order now,
@@ -3138,6 +3141,7 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         hops.resize(actors_.size(),0);
         stamps.resize(actors_.size(),0);
         graph.node_island.resize(actors_.size(),Graph::invalid);
+        graph.node_type.resize(actors_.size(),IslandNodeType::RigidBody);
         graph.node_next.resize(actors_.size(),invalid);
         graph.node_prev.resize(actors_.size(),invalid);
         graph.node_static_touches.resize(actors_.size(),0);
@@ -3152,13 +3156,15 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
                 handle=graph.free_handles.back();
                 graph.free_handles.pop_back();
                 graph.islands[handle]={id,id,1,true};
-                graph.islands[handle].node_type_counts[rigid_node_type_index]=1;
+                graph.islands[handle].node_type_counts[
+                    static_cast<std::size_t>(graph.node_type[id])]=1;
             } else {
                 if(graph.islands.size()>=Graph::invalid)
                     throw std::overflow_error("Source island handles exhausted");
                 handle=static_cast<Graph::IslandId>(graph.islands.size());
                 graph.islands.push_back({id,id,1,true});
-                graph.islands.back().node_type_counts[rigid_node_type_index]=1;
+                graph.islands.back().node_type_counts[
+                    static_cast<std::size_t>(graph.node_type[id])]=1;
             }
             graph.node_island[id]=handle;
             graph.node_next[id]=invalid;
@@ -3183,6 +3189,8 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
         Graph next;
         next.islands.resize(graph.islands.size());
         next.node_island.assign(actors_.size(),Graph::invalid);
+        next.node_type=graph.node_type;
+        next.node_type.resize(actors_.size(),IslandNodeType::RigidBody);
         next.node_next.assign(actors_.size(),invalid);
         next.node_prev.assign(actors_.size(),invalid);
         next.node_static_touches.assign(actors_.size(),0);
@@ -3375,7 +3383,9 @@ void Scene::update_island_connectivity(bool repair_lost_edges) {
             island.root=root;
             island.tail=root;
             island.count=members.size();
-            island.node_type_counts[rigid_node_type_index]=island.count;
+            for(BodyId member:members)
+                ++island.node_type_counts[
+                    static_cast<std::size_t>(next.node_type[member])];
             island.static_touches=static_touches;
             island.live=true;
             next.node_island[root]=handle;
@@ -6468,6 +6478,7 @@ void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
     const auto save=[](IslandGraph& saved,const IslandGraph& live) {
         saved.islands.assign(live.islands.begin(),live.islands.end());
         saved.node_island.assign(live.node_island.begin(),live.node_island.end());
+        saved.node_type.assign(live.node_type.begin(),live.node_type.end());
         saved.node_next.assign(live.node_next.begin(),live.node_next.end());
         saved.node_prev.assign(live.node_prev.begin(),live.node_prev.end());
         saved.node_static_touches.assign(live.node_static_touches.begin(),
@@ -6890,6 +6901,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(graph_ownership_saved) {
         scene.speculative_islands_.islands.swap(speculative_islands.islands);
         scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
+        scene.speculative_islands_.node_type.swap(speculative_islands.node_type);
         scene.speculative_islands_.node_next.swap(speculative_islands.node_next);
         scene.speculative_islands_.node_prev.swap(speculative_islands.node_prev);
         scene.speculative_islands_.node_static_touches.swap(
@@ -6938,6 +6950,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     if(graph_ownership_saved) {
         scene.accurate_islands_.islands.swap(accurate_islands.islands);
         scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
+        scene.accurate_islands_.node_type.swap(accurate_islands.node_type);
         scene.accurate_islands_.node_next.swap(accurate_islands.node_next);
         scene.accurate_islands_.node_prev.swap(accurate_islands.node_prev);
         scene.accurate_islands_.node_static_touches.swap(

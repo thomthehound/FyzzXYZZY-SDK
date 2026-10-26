@@ -904,6 +904,10 @@ private:
         std::vector<std::uint32_t> active_island_seen;
         std::uint32_t active_island_visit_stamp=0;
         std::vector<IslandId> node_island;
+        // PxsIslandSim::Node::mType belongs to the IslandSim node slot,
+        // not the rigid Actor class or a Dy PxSolverBody. Both graphs
+        // retain their own copy of the node metadata and island IDs.
+        std::vector<IslandNodeType> node_type;
         std::vector<BodyId> node_next, node_prev;
         // IslandSim::Node::mStaticTouchCount for live dynamic nodes.
         std::vector<std::uint32_t> node_static_touches;

@@ -512,6 +512,9 @@ struct ConstraintIslandSourceFixture {
                 if(!island.live || island.count!=expected ||
                    island.node_type_counts[Scene::rigid_node_type_index]!=
                        expected ||
+                   graph->node_type[a]!=Scene::IslandNodeType::RigidBody ||
+                   graph->node_type[b]!=Scene::IslandNodeType::RigidBody ||
+                   graph->node_type[k]!=Scene::IslandNodeType::RigidBody ||
                    graph->node_island[k]!=Scene::IslandGraph::invalid)
                     throw std::runtime_error(
                         "Typed island aggregate/rigid ownership diverged");
