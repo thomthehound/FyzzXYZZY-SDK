@@ -1521,7 +1521,12 @@ void Scene::after_integration_cached_bounds() {
 // Sc's sorted, generation-safe contact edges remain separately owned.
 std::uint32_t Scene::SapPairManager::hash(Pair pair) noexcept {
     // Unsigned arithmetic reproduces Hash32Bits_1 without signed-shift UB.
+    // Keep the original packed-key hash for low 16-bit handles.
+    // Native BodyId spans 32 bits, so fold both high halves before
+    // mixing to avoid systematic bucket aliases in long-lived scenes.
     std::uint32_t key=pair.a | (pair.b<<16);
+    key^=(pair.a>>16)*0x9e3779b9u;
+    key^=(pair.b>>16)*0x85ebca6bu;
     key+=~(key<<15);
     key^=key>>10;
     key+=key<<3;
