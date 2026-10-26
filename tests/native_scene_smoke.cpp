@@ -389,8 +389,10 @@ struct ConstraintIslandSourceFixture {
                 "PostThirdPass retirement fixture lacks a pending edge");
         RigidBodyDynamics extreme{};
         extreme.gravity_enabled=false;
-        extreme.max_linear_velocity=1.0e20f;
-        extreme.max_angular_velocity=1.0e20f;
+        // PxsBodyCore stores finite squared velocity limits, so the
+        // authored cap itself must remain representable in PxReal.
+        extreme.max_linear_velocity=1.0e18f;
+        extreme.max_angular_velocity=1.0e18f;
         scene.set_dynamics(a,extreme);
         scene.set_velocity(a,{1.0e17f,0,0});
         bool failed=false;
@@ -404,7 +406,10 @@ struct ConstraintIslandSourceFixture {
                scene.retired_edge_handles_.end() ||
            std::find(scene.free_edge_handles_.begin(),
                      scene.free_edge_handles_.end(),edge)!=
-               scene.free_edge_handles_.end())
+               scene.free_edge_handles_.end() ||
+           scene.body_state(a).position.x!=state.position.x ||
+           scene.body_state(a).position.y!=state.position.y ||
+           scene.body_state(a).position.z!=state.position.z)
             throw std::runtime_error(
                 "Failed postThirdPass/Dy frame leaked a recycled edge handle");
         // A retry consumes the SAME pending retiring source edge once,
@@ -423,7 +428,6 @@ struct ConstraintIslandSourceFixture {
            scene.island_edges_[edge].retiring)
             throw std::runtime_error(
                 "PostThirdPass recycled edge identity before successful commit");
-        (void)state;
     }
     static void verify_constraint_sleep_deactivation_generations() {
         // Real ScConstraintSim and Dy PGS work through sleepCheck into
