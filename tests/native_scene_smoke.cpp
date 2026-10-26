@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -5325,8 +5326,12 @@ struct SolverIterationSourceFixture {
     static void verify_parallel_pgs_groups() {
         constexpr float dt=1.0f/120.0f;
         constexpr std::size_t count=12;
-        Scene serial{Scene::ContactGenerator::DiagnosticLegacyGu};
-        Scene concurrent{Scene::ContactGenerator::DiagnosticLegacyGu};
+        auto serial_owner=std::make_unique<Scene>(
+            Scene::ContactGenerator::DiagnosticLegacyGu);
+        auto concurrent_owner=std::make_unique<Scene>(
+            Scene::ContactGenerator::DiagnosticLegacyGu);
+        Scene& serial=*serial_owner;
+        Scene& concurrent=*concurrent_owner;
         serial.parallel_solver_enabled_=false;
         concurrent.parallel_solver_min_descriptors_=0;
         std::array<BodyId,count> serial_ids{}, concurrent_ids{};
@@ -5348,11 +5353,8 @@ struct SolverIterationSourceFixture {
             return a.x==b.x && a.y==b.y && a.z==b.z;
         };
         for(std::size_t frame=0;frame<6;++frame) {
-            std::fprintf(stderr,"N1 parallel frame %zu serial begin\n",frame);
             serial.step(dt);
-            std::fprintf(stderr,"N1 parallel frame %zu concurrent begin\n",frame);
             concurrent.step(dt);
-            std::fprintf(stderr,"N1 parallel frame %zu both done\n",frame);
             if(serial.solver_tasks_.size()!=count ||
                concurrent.solver_tasks_.size()!=count ||
                concurrent.concurrent_solver_dispatches_!=frame+1 ||
@@ -5413,9 +5415,12 @@ struct SolverIterationSourceFixture {
         // solver task groups. Validate the mixed 1D/contact PGS stream
         // through all position and velocity iterations, not only
         // isolated static-contact row updates.
-        std::fprintf(stderr,"N1 parallel contact fixture done\n");
-        Scene joints_serial{Scene::ContactGenerator::DiagnosticLegacyGu};
-        Scene joints_parallel{Scene::ContactGenerator::DiagnosticLegacyGu};
+        auto joints_serial_owner=std::make_unique<Scene>(
+            Scene::ContactGenerator::DiagnosticLegacyGu);
+        auto joints_parallel_owner=std::make_unique<Scene>(
+            Scene::ContactGenerator::DiagnosticLegacyGu);
+        Scene& joints_serial=*joints_serial_owner;
+        Scene& joints_parallel=*joints_parallel_owner;
         joints_serial.set_enhanced_determinism(true);
         joints_parallel.set_enhanced_determinism(true);
         joints_serial.parallel_solver_enabled_=false;
@@ -5446,11 +5451,8 @@ struct SolverIterationSourceFixture {
             }
         }
         for(std::size_t frame=0;frame<8;++frame) {
-            std::fprintf(stderr,"N1 mixed frame %zu serial begin\n",frame);
             joints_serial.step(dt);
-            std::fprintf(stderr,"N1 mixed frame %zu concurrent begin\n",frame);
             joints_parallel.step(dt);
-            std::fprintf(stderr,"N1 mixed frame %zu both done\n",frame);
             if(joints_serial.solver_tasks_.size()!=pairs ||
                joints_parallel.solver_tasks_.size()!=pairs ||
                joints_parallel.concurrent_solver_dispatches_!=frame+1 ||
@@ -5499,7 +5501,9 @@ struct SolverIterationSourceFixture {
         // Unlike the source static-world body, a kinematic actor has an
         // individually prepared row and may touch two separate accurate
         // rigid islands. Do not concurrently solve those shared rows.
-        Scene mixed{Scene::ContactGenerator::DiagnosticLegacyGu};
+        auto mixed_owner=std::make_unique<Scene>(
+            Scene::ContactGenerator::DiagnosticLegacyGu);
+        Scene& mixed=*mixed_owner;
         mixed.set_enhanced_determinism(true);
         mixed.parallel_third_pass_enabled_=false;
         mixed.parallel_solver_min_descriptors_=0;
@@ -13605,14 +13609,10 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
-    std::fprintf(stderr,"N1 diagnose before solver fixtures\n");
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
-    std::fprintf(stderr,"N1 diagnose before parallel solver fixture\n");
     fyzz::native::SolverIterationSourceFixture::verify_parallel_pgs_groups();
-    std::fprintf(stderr,"N1 diagnose after parallel solver fixture\n");
     fyzz::native::SolverIterationSourceFixture::verify_parallel_solver_end_rollback();
-    std::fprintf(stderr,"N1 diagnose after parallel rollback fixture\n");
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
     verify_source_gyroscopic_motion();
@@ -13638,7 +13638,6 @@ int run_native_scene_smoke() {
     verify_source_activity_rollback();
     verify_sparse_motion_checkpoint();
     verify_native_rigid_integration_and_island_lifecycle();
-    std::fprintf(stderr,"N1 diagnose after entire smoke\n");
 
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
