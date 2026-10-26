@@ -8591,6 +8591,7 @@ void Scene::advance_collision(bool force_update) {
         // mNodesToPutToSleep output rather than replaying the event.
         // This is constant-work and cannot throw.
         accurate_islands_.nodes_to_deactivate.clear();
+        speculative_islands_.nodes_to_deactivate.clear();
         speculative_islands_.deactivating_edges.clear();
         accurate_islands_.deactivating_edges.clear();
         speculative_islands_.deactivating_constraint_edges.clear();

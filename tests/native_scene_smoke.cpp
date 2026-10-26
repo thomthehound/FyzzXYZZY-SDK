@@ -1811,6 +1811,7 @@ struct ConstraintIslandSourceFixture {
         scene.step(0.02f);
         if(!scene.body_is_sleeping(id) ||
            !scene.speculative_ready_nodes_.empty() ||
+           !scene.speculative_islands_.nodes_to_deactivate.empty() ||
            !scene.accurate_islands_.nodes_to_deactivate.empty())
             throw std::runtime_error(
                 "Quiet Dy frame replayed the consumed readiness transition");
