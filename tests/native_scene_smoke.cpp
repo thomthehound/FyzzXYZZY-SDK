@@ -5348,8 +5348,11 @@ struct SolverIterationSourceFixture {
             return a.x==b.x && a.y==b.y && a.z==b.z;
         };
         for(std::size_t frame=0;frame<6;++frame) {
+            std::fprintf(stderr,"N1 parallel frame %zu serial begin\n",frame);
             serial.step(dt);
+            std::fprintf(stderr,"N1 parallel frame %zu concurrent begin\n",frame);
             concurrent.step(dt);
+            std::fprintf(stderr,"N1 parallel frame %zu both done\n",frame);
             if(serial.solver_tasks_.size()!=count ||
                concurrent.solver_tasks_.size()!=count ||
                concurrent.concurrent_solver_dispatches_!=frame+1 ||
@@ -5410,6 +5413,7 @@ struct SolverIterationSourceFixture {
         // solver task groups. Validate the mixed 1D/contact PGS stream
         // through all position and velocity iterations, not only
         // isolated static-contact row updates.
+        std::fprintf(stderr,"N1 parallel contact fixture done\n");
         Scene joints_serial{Scene::ContactGenerator::DiagnosticLegacyGu};
         Scene joints_parallel{Scene::ContactGenerator::DiagnosticLegacyGu};
         joints_serial.set_enhanced_determinism(true);
@@ -5442,8 +5446,11 @@ struct SolverIterationSourceFixture {
             }
         }
         for(std::size_t frame=0;frame<8;++frame) {
+            std::fprintf(stderr,"N1 mixed frame %zu serial begin\n",frame);
             joints_serial.step(dt);
+            std::fprintf(stderr,"N1 mixed frame %zu concurrent begin\n",frame);
             joints_parallel.step(dt);
+            std::fprintf(stderr,"N1 mixed frame %zu both done\n",frame);
             if(joints_serial.solver_tasks_.size()!=pairs ||
                joints_parallel.solver_tasks_.size()!=pairs ||
                joints_parallel.concurrent_solver_dispatches_!=frame+1 ||
