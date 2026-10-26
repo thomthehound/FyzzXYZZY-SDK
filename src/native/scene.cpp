@@ -1165,26 +1165,59 @@ void Scene::update_bounds() {
                          aa[1]>bb[4] || bb[1]>aa[4] ||
                          aa[2]>bb[5] || bb[2]>aa[5]);
             };
-            // An unchanged pair cannot change overlap state. Only an
-            // updated volume can create a new pair, so no whole-scene
-            // static/static or inactive-pair reconstruction is needed.
+            // Bp SAP's ordered X endpoints bound the candidate work:
+            // no new pair can arise between two unchanged volumes, or
+            // between volumes with disjoint X intervals. Split active
+            // intervals by updated membership and visit only pairs with
+            // an updated participant; the source three-axis overlap and
+            // persistent Sc pair keys remain authoritative.
+            const std::size_t volume_count=sap_volumes_.size();
+            sap_merge_updated_flags_.resize(volume_count);
+            std::fill(sap_merge_updated_flags_.begin(),
+                      sap_merge_updated_flags_.end(),0);
             for(const std::uint32_t slot:
-                broadphase_updated_volume_slots_) {
-                const Actor& a=actors_[sap_volumes_[slot].id];
-                for(std::size_t other_slot=0;
-                    other_slot<sap_volumes_.size();++other_slot) {
-                    if(other_slot==slot)continue;
-                    const Actor& b=actors_[sap_volumes_[other_slot].id];
-                    if((a.kind!=Kind::DynamicBox &&
-                        b.kind!=Kind::DynamicBox) ||
-                       !overlaps(a,b))continue;
-                    const Pair pair=ordered_pair(
-                        sap_volumes_[slot].id,
-                        sap_volumes_[other_slot].id);
-                    if(!std::binary_search(previous_pairs_.begin(),
-                                           previous_pairs_.end(),pair))
-                        broadphase_crossed_pairs_.push_back(pair);
+                broadphase_updated_volume_slots_)
+                sap_merge_updated_flags_[slot]=1;
+            sap_merge_active_updated_.clear();
+            sap_merge_active_unchanged_.clear();
+            sap_merge_active_positions_.resize(volume_count);
+            for(const Endpoint ep:sap_axis_endpoints_[0]) {
+                const std::uint32_t slot=ep.volume_slot;
+                const bool updated=sap_merge_updated_flags_[slot]!=0;
+                auto& own=updated?sap_merge_active_updated_:
+                                  sap_merge_active_unchanged_;
+                if(ep.is_max) {
+                    const auto index=sap_merge_active_positions_[slot];
+                    const std::uint32_t tail=own.back();
+                    own[index]=tail;
+                    sap_merge_active_positions_[tail]=index;
+                    own.pop_back();
+                    continue;
                 }
+                const Actor& a=actors_[ep.id];
+                const auto& aa=a.encoded_bounds;
+                const auto compare=[&](
+                    const std::vector<std::uint32_t>& active) {
+                    for(const std::uint32_t other_slot:active) {
+                        const BodyId other_id=sap_volumes_[other_slot].id;
+                        const Actor& b=actors_[other_id];
+                        if(a.kind!=Kind::DynamicBox &&
+                           b.kind!=Kind::DynamicBox)continue;
+                        const auto& bb=b.encoded_bounds;
+                        if(aa[1]>bb[4] || bb[1]>aa[4] ||
+                           aa[2]>bb[5] || bb[2]>aa[5])continue;
+                        const Pair pair=ordered_pair(ep.id,other_id);
+                        if(!std::binary_search(previous_pairs_.begin(),
+                                               previous_pairs_.end(),pair))
+                            broadphase_crossed_pairs_.push_back(pair);
+                    }
+                };
+                compare(sap_merge_active_updated_);
+                if(updated)
+                    compare(sap_merge_active_unchanged_);
+                sap_merge_active_positions_[slot]=
+                    static_cast<std::uint32_t>(own.size());
+                own.push_back(slot);
             }
             sap_merge_updated_ids_=broadphase_updated_ids_;
             std::sort(sap_merge_updated_ids_.begin(),
