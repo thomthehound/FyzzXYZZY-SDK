@@ -173,6 +173,12 @@ if(BUILD_TESTING)
   target_include_directories(fyzzxyzzy_native_sap_benchmark PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_native_sap_benchmark PRIVATE FyzzXYZZY::Core)
+  add_executable(fyzzxyzzy_native_third_pass_benchmark
+    tests/native_third_pass_benchmark.cpp)
+  target_include_directories(fyzzxyzzy_native_third_pass_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_native_third_pass_benchmark PRIVATE
+    FyzzXYZZY::Core)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into

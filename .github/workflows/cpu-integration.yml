@@ -137,6 +137,10 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Prove strict 48-frame coupled PGS conformance
         run: ctest --test-dir build -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
+      - name: Measure native serial/concurrent third-pass scheduler
+        run: |
+          cmake --build build --target fyzzxyzzy_native_third_pass_benchmark --parallel 2
+          ./build/fyzzxyzzy_native_third_pass_benchmark
       - name: Offline CPU source distribution
         shell: bash
         run: |

@@ -1658,6 +1658,16 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Third-pass scheduling measurements:** The native Release benchmark
+compares full Scene::step times using equivalent serial and parallel
+source IslandSims on two deterministic workloads: injected prior-Dy
+readiness and real lost-route split/remerge churn. Five trial medians,
+thread starts and dispatch counts are printed to the Linux CI log. It
+checks resulting body and island state parity, but does not impose
+timing thresholds on shared CI hardware. The reusable worker is
+allocated lazily outside the Scene stack frame; a scene with no
+concurrent work holds no synchronization bundle.
+
 **Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
 unconstrained Dy preIntegration after the accurate ThirdPassTask has
 completed, while the speculative ThirdPassTask can still be running.
