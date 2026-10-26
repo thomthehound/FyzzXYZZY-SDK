@@ -1065,7 +1065,35 @@ bool Scene::contact_interaction_active(Pair pair) const noexcept {
     const auto id=contact_edge_index(pair);
     return id!=invalid_edge && island_edges_[id].interaction_active;
 }
+void Scene::change_counted_interactions(Pair pair, bool attach) {
+    // ShapeInteraction construction and constraint attachment update
+    // PxsBodyCore::numCountedInteractions independently of Dy activity.
+    // Validate both endpoints before any change; each body is visited
+    // once, with rollback sharing the graph's sparse endpoint journal.
+    for(BodyId id:{pair.a,pair.b}) {
+        const Actor& actor=actors_[id];
+        if(!rigid_node(actor.kind))continue;
+        const auto count=actor.num_counted_interactions;
+        if(attach && count==std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Source body interaction count overflow");
+        if(!attach && count==0)
+            throw std::logic_error("Source body interaction count underflow");
+    }
+    for(BodyId id:{pair.a,pair.b}) {
+        Actor& actor=actors_[id];
+        if(!rigid_node(actor.kind))continue;
+        step_checkpoint_.save_reference(*this,id);
+        if(attach)++actor.num_counted_interactions;
+        else --actor.num_counted_interactions;
+    }
+}
 std::uint32_t Scene::allocate_contact_edge(Pair pair) {
+    // Overflow must reject before allocating a shared EdgeIndex.
+    for(BodyId id:{pair.a,pair.b})
+        if(rigid_node(actors_[id].kind) &&
+           actors_[id].num_counted_interactions==
+               std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Source body interaction count overflow");
     // SimpleIslandManager::addContactManager -> addEdge obtains the
     // edge handle once; accurate touch may later toggle independently.
     EdgeIndex id;
@@ -1124,6 +1152,7 @@ std::uint32_t Scene::allocate_contact_edge(Pair pair) {
         activity_undo_generations_.resize(needed,0);
         island_edges_.push_back({IslandEdgeType::ContactManager,pair,true,false,false});
     }
+    change_counted_interactions(pair,true);
     return id;
 }
 // PxsIslandSim.cpp::IslandSim::addConnectionToGraph and
@@ -1457,6 +1486,7 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
         free_constraint_ids_.reserve(free_constraint_ids_.size()+1);
     unlink_contact_edge(id,true);
     unlink_contact_edge(id,false);
+    change_counted_interactions(island_edges_[id].pair,false);
     island_edges_[id].retiring=true;
     island_edges_[id].connected=false;
     if(constraint_id!=invalid_edge) {
@@ -1498,6 +1528,7 @@ void Scene::publish_pairs() {
             const EdgeIndex id=active_edge_handles_[old_index];
             unlink_contact_edge(id,true);
             unlink_contact_edge(id,false);
+            change_counted_interactions(island_edges_[id].pair,false);
             step_checkpoint_.save_edge(*this,id);
             island_edges_[id].retiring=true;
             island_edges_[id].connected=false;
@@ -6420,16 +6451,17 @@ void Scene::StepCheckpoint::save_activity(
 }
 void Scene::StepCheckpoint::save_reference(
     Scene& scene, BodyId node) noexcept {
-    if(!scene.activity_checkpoint_active_ ||
-       node>=initial_speculative_references ||
-       node>=initial_accurate_references)return;
+    if(!scene.activity_checkpoint_active_)return;
     if(scene.reference_undo_generations_[node]==
        scene.reference_undo_generation_)return;
     scene.reference_undo_generations_[node]=
         scene.reference_undo_generation_;
+    const auto& speculative=scene.speculative_islands_.active_reference_counts;
+    const auto& accurate=scene.accurate_islands_.active_reference_counts;
     reference_undo.push_back({node,
-        scene.speculative_islands_.active_reference_counts[node],
-        scene.accurate_islands_.active_reference_counts[node]});
+        node<initial_speculative_references?speculative[node]:0,
+        node<initial_accurate_references?accurate[node]:0,
+        scene.actors_[node].num_counted_interactions});
 }
 void Scene::StepCheckpoint::save_hint(
     const Scene& scene, BodyId node, bool accurate) {
@@ -6997,10 +7029,14 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // after a full island rebuild. Rewind only changed endpoint slots
     // after structural ownership and edge-state undo have completed.
     for(auto it=reference_undo.rbegin();it!=reference_undo.rend();++it) {
-        scene.speculative_islands_.active_reference_counts[it->node]=
-            it->speculative;
-        scene.accurate_islands_.active_reference_counts[it->node]=
-            it->accurate;
+        scene.actors_[it->node].num_counted_interactions=
+            it->counted_interactions;
+        if(it->node<scene.speculative_islands_.active_reference_counts.size())
+            scene.speculative_islands_.active_reference_counts[it->node]=
+                it->speculative;
+        if(it->node<scene.accurate_islands_.active_reference_counts.size())
+            scene.accurate_islands_.active_reference_counts[it->node]=
+                it->accurate;
     }
     scene.speculative_islands_.active_reference_counts.resize(
         initial_speculative_references);
@@ -7319,30 +7355,10 @@ void Scene::step(float seconds) {
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     begin_contact_writeback();
-    // PxsBodyCore::numCountedInteractions is maintained by original Sc
-    // interaction edges. In this admitted contact-only subset each Gu
-    // contact manager contributes one interaction to each dynamic body.
-    // Derive counted interactions from the SAME source-indexed
-    // contact-manager descriptor stream used by the current Dy task
-    // chains, not every Gu manager retained by dormant accurate islands.
-    // Zero-response contacts still count as interactions. A sleeping
-    // graph may retain its managers, but cannot add energy to any body
-    // processed by this frame's Dy::sleepCheck.
-    sleep_interaction_counts_.resize(actors_.size(),0);
-    for(BodyId id:accurate_islands_.active_nodes)
-        sleep_interaction_counts_[id]=0;
-    for(std::size_t index:indexed_managers_) {
-        const auto& manifold=manifolds_[index];
-        for(BodyId id:{manifold.pair.a,manifold.pair.b}) {
-            if(actors_[id].kind!=Kind::DynamicBox ||
-               actors_[id].sleeping)continue;
-            if(sleep_interaction_counts_[id]==
-               std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error(
-                    "Native source counted interactions overflow");
-            ++sleep_interaction_counts_[id];
-        }
-    }
+    // ScBodySim counted interactions are updated on Gu overlap and Sc
+    // constraint attachment/retirement. DySleep consumes the lifetime
+    // count, including non-touching managers and joint-only islands,
+    // without scanning dormant Gu contacts or clearing per-frame stamps.
     // DyBodyCoreIntegrator.h::integrateCore uses the saved *position*
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
@@ -7461,7 +7477,7 @@ void Scene::step(float seconds) {
                 const float normalized_energy=
                     0.5f*(angular_energy+accumulated_linear);
                 const float cluster=1.0f+
-                    static_cast<float>(sleep_interaction_counts_[id]);
+                    static_cast<float>(actor.num_counted_interactions);
                 const float threshold=cluster*energy_threshold;
                 if(normalized_energy>=threshold) {
                     actor.sleep_linear_acc={};

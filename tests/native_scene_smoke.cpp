@@ -636,6 +636,70 @@ struct ConstraintIslandSourceFixture {
                     "Constraint actor retirement retained an orphan island edge");
         }
     }
+    static void verify_counted_interaction_lifetime() {
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,6,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,6,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,9,0},1.0f);
+        const auto first=scene.create_center_distance_constraint(a,b,4.0f);
+        const auto second=scene.create_center_distance_constraint(a,b,4.0f);
+        if(scene.actors_[a].num_counted_interactions!=2 ||
+           scene.actors_[b].num_counted_interactions!=2 ||
+           scene.actors_[c].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Parallel Sc joints were not counted on both attached bodies");
+        scene.advance_collision(true);
+        scene.set_position(c,{0,6.95f,0});
+        scene.advance_collision(true);
+        if(scene.contact_edge_index({a,c})==Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=3 ||
+           scene.actors_[b].num_counted_interactions!=2 ||
+           scene.actors_[c].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Gu contact manager and Sc joint counts did not coexist");
+        scene.retire_center_distance_constraint(first);
+        if(scene.actors_[a].num_counted_interactions!=2 ||
+           scene.actors_[b].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Retiring one Sc joint changed surviving interaction counts");
+        scene.set_position(c,{0,9,0});
+        scene.advance_collision(true);
+        scene.retire_center_distance_constraint(second);
+        scene.advance_collision(true);
+        if(scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[b].num_counted_interactions!=0 ||
+           scene.actors_[c].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Retired Gu and Sc edges retained body interaction counts");
+
+        // Fail after Gu overlap admission using actual kinematic target
+        // velocity overflow, then verify the exact original body counts.
+        const auto k=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,12,0},1.0f);
+        scene.set_kinematic(k,true);
+        scene.advance_collision(true);
+        scene.set_position(k,{0,6.9f,0});
+        scene.set_kinematic_target(k,{1.0e35f,6.9f,0},{});
+        bool rejected=false;
+        try {scene.step(1.0e-10f);}
+        catch(const std::overflow_error&) {rejected=true;}
+        if(!rejected ||
+           scene.contact_edge_index({a,k})!=Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[k].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Failed Dy publication leaked source counted interactions");
+        scene.set_kinematic_target(k,{0,6.9f,0},{});
+        scene.step(1.0f/120.0f);
+        if(scene.contact_edge_index({a,k})==Scene::invalid_edge ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1)
+            throw std::runtime_error(
+                "Dy retry failed to register its Gu counted interactions");
+    }
     static void verify_active_kinematic_guards_rigid_island_sleep() {
         // PhysX marks islands touched by an active kinematic before
         // testing already-published Dy sleep readiness. A kinematic
@@ -3480,8 +3544,8 @@ struct SolverIterationSourceFixture {
            std::find(scene.solver_active_ids_.begin(),
                      scene.solver_active_ids_.end(),second)==
                scene.solver_active_ids_.end() ||
-           scene.sleep_interaction_counts_[first]!=2 ||
-           scene.sleep_interaction_counts_[second]!=2)
+           scene.actors_[first].num_counted_interactions!=2 ||
+           scene.actors_[second].num_counted_interactions!=2)
             throw std::runtime_error(
                 "PhysX active island contact edges did not drive both Dy stages");
         // Dormant Gu managers remain queryable, but the unified input
@@ -3565,8 +3629,8 @@ struct SolverIterationSourceFixture {
         if(scene.solver_active_ids_.size()!=1 ||
            scene.solver_active_ids_[0]!=first ||
            scene.indexed_managers_.size()!=3 ||
-           scene.sleep_interaction_counts_[first]!=2 ||
-           scene.sleep_interaction_counts_[second]!=2)
+           scene.actors_[first].num_counted_interactions!=2 ||
+           scene.actors_[second].num_counted_interactions!=2)
             throw std::runtime_error(
                 "Zero-response accurate edge changed source body admission or sleep count");
         scene.set_dynamics(second,RigidBodyDynamics{});
@@ -11618,6 +11682,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
     fyzz::native::ConstraintIslandSourceFixture::verify_post_third_pass_handle_retirement_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
+    fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
