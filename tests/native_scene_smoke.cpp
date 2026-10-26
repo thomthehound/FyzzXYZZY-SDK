@@ -1893,6 +1893,9 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Sc first/second-pass contact activity was not published");
         scene.actors_[dynamic].ready_for_sleep=true;
+        // The prior Dy sleepCheck would publish this transition to
+        // the speculative third-pass producer independently.
+        scene.speculative_ready_nodes_.push_back(dynamic);
         scene.deactivate_ready_accurate_islands();
         if(!scene.body_is_sleeping(dynamic) ||
            !scene.island_edges_[edge].interaction_active ||
