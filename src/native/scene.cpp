@@ -6158,6 +6158,7 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_points_.clear();
     solver_contact_order_.clear();
     distance_rows_.clear();
+    solver_kinematic_participant_=false;
     distance_rows_.reserve(indexed_distance_constraints_.size());
     for(EdgeIndex edge_id:indexed_distance_constraints_) {
         const auto& edge=island_edges_[edge_id];
@@ -6166,6 +6167,9 @@ void Scene::prepare_constraints(float seconds) {
             throw std::logic_error("Source 1D constraint descriptor owner missing");
         const auto& body0=actors_[edge.pair.a];
         const auto& body1=actors_[edge.pair.b];
+        solver_kinematic_participant_ |=
+            body0.kind==Kind::KinematicBox ||
+            body1.kind==Kind::KinematicBox;
         const Vec3 ra=rotate(body0.orientation,constraint.local_anchor_a);
         const Vec3 rb=rotate(body1.orientation,constraint.local_anchor_b);
         const Vec3 offset{
@@ -6287,6 +6291,9 @@ void Scene::prepare_constraints(float seconds) {
         // for contact Jacobians, friction correlation or solver rows.
         const Actor& actor_a=actors_[manifold.pair.a];
         const Actor& actor_b=actors_[manifold.pair.b];
+        solver_kinematic_participant_ |=
+            actor_a.kind==Kind::KinematicBox ||
+            actor_b.kind==Kind::KinematicBox;
         const bool active_dynamic=
             (actor_a.kind==Kind::DynamicBox && !actor_a.sleeping) ||
             (actor_b.kind==Kind::DynamicBox && !actor_b.sleeping);
@@ -8581,31 +8588,12 @@ void Scene::step(float seconds) {
     // their PGS work only when both descriptor ranges are worthwhile.
     // Completion must join before any shared actor/writeback publication.
     std::size_t parallel_solver_split=0;
-    if(parallel_solver_enabled_ && solver_tasks_.size()>1 &&
+    if(parallel_solver_enabled_ && !solver_kinematic_participant_ &&
+       solver_tasks_.size()>1 &&
        ordered_constraints_.size()>=parallel_solver_min_descriptors_) {
-        // A kinematic node may connect more than one otherwise disjoint
-        // dynamic island. Both task groups could then address the same
-        // kinematic solver row, so it cannot be treated as task-local.
-        // Static-world rows are already private to each solver task.
-        bool shared_kinematic=false;
-        for(const auto& descriptor:ordered_constraints_) {
-            BodyId a=0,b=0;
-            if(descriptor.distance) {
-                const auto& row=distance_rows_[descriptor.index];
-                a=row.a;
-                b=row.b;
-            } else {
-                const auto& manager=manifolds_[descriptor.index];
-                a=manager.pair.a;
-                b=manager.pair.b;
-            }
-            if(actors_[a].kind==Kind::KinematicBox ||
-               actors_[b].kind==Kind::KinematicBox) {
-                shared_kinematic=true;
-                break;
-            }
-        }
-        if(!shared_kinematic) {
+        // Prepared task rows are disjoint only without shared kinematic
+        // solver endpoints; their presence is recorded during the
+        // existing contact and 1D preparation loops.
         const std::size_t total=ordered_constraints_.size();
         const std::size_t minimum=parallel_solver_min_descriptors_
             ? std::max<std::size_t>(1,parallel_solver_min_descriptors_/4)
@@ -8620,7 +8608,6 @@ void Scene::step(float seconds) {
                 parallel_solver_split=i;
                 best_balance=imbalance;
             }
-        }
         }
     }
     if(parallel_solver_split) {
