@@ -235,7 +235,7 @@ struct NativeThirdPassTimingFixture {
             " forced_parallel_median_us=%.3f adaptive_median_us=%.3f"
             " forced_speedup=%.3fx adaptive_speedup=%.3fx"
             " forced_starts=%zu forced_dispatches=%zu"
-            " adaptive_starts=%zu adaptive_dispatches=%zu\\n",
+            " adaptive_starts=%zu adaptive_dispatches=%zu\n",
             body_count,serial.median_us,forced.median_us,
             adaptive.median_us,serial.median_us/forced.median_us,
             serial.median_us/adaptive.median_us,
