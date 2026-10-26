@@ -19,11 +19,11 @@ struct NativeThirdPassTimingFixture {
         std::size_t asleep=0, spec_islands=0, acc_islands=0;
         std::size_t starts=0, dispatched=0;
     };
-    static Result profile(bool split_churn,bool concurrent) {
+    static Result profile(bool split_churn,bool concurrent,std::size_t chains) {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.parallel_third_pass_enabled_=concurrent;
         std::vector<BodyId> ids,bridges;
-        const std::size_t count=split_churn?16:96;
+        const std::size_t count=split_churn?chains:96;
         for(std::size_t i=0;i<count;++i) {
             const float x=float(i)*(split_churn?20.0f:3.0f);
             if(split_churn) {
@@ -85,20 +85,20 @@ struct NativeThirdPassTimingFixture {
             throw std::runtime_error("Serial third-pass unexpectedly launched work");
         return result;
     }
-    static void compare(bool split_churn) {
-        const auto serial=profile(split_churn,false);
-        const auto parallel=profile(split_churn,true);
+    static void compare(bool split_churn,std::size_t chains=16) {
+        const auto serial=profile(split_churn,false,chains);
+        const auto parallel=profile(split_churn,true,chains);
         if(serial.asleep!=parallel.asleep ||
            serial.acc_islands!=parallel.acc_islands ||
            serial.spec_islands!=parallel.spec_islands ||
            std::abs(serial.checksum-parallel.checksum)>1e-4)
             throw std::runtime_error("Serial and concurrent island results diverged");
         std::printf(
-            "third_pass workload=%s serial_median_us=%.3f"
+            "third_pass workload=%s chains=%zu serial_median_us=%.3f"
             " concurrent_median_us=%.3f speedup=%.3fx"
             " worker_starts=%zu dispatches=%zu asleep=%zu"
             " accurate_islands=%zu speculative_islands=%zu\n",
-            split_churn?"lost-route-churn":"readiness-events",
+            split_churn?"lost-route-churn":"readiness-events",chains,
             serial.median_us,parallel.median_us,
             serial.median_us/parallel.median_us,
             parallel.starts,parallel.dispatched,parallel.asleep,
@@ -109,7 +109,9 @@ struct NativeThirdPassTimingFixture {
 int main() {
     try {
         fyzz::native::NativeThirdPassTimingFixture::compare(false);
-        fyzz::native::NativeThirdPassTimingFixture::compare(true);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,16);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,64);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,256);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
         return 1;
