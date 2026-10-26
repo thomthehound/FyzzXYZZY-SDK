@@ -1539,7 +1539,12 @@ The admitted rigid CPU ScPipeline now has independent accurate and
 speculative third-pass completion edges into `PostThirdPassTask`,
 checkpointed EdgeIndex reclamation at that join, the lost-contact
 producer, and cumulative task-local Dy solve/writeback/integration/
-sleep-check completion edges into `postSolver`. `afterIntegration`,
+sleep-check completion edges into `postSolver`. Accurate rigid sleep
+deactivation and speculative edge retirement now execute as separate
+IslandSim producer stages. Sc speculative contact activation is consumed
+after wake/second-pass publication; deactivation is consumed at the
+post-third-pass join. Both use the same EdgeIndex interaction state and
+transaction journal. `afterIntegration`,
 force-threshold processing, finalization and solved-result publication
 remain ordered within the same frame. The serial CPU lowering preserves
 these dependency edges; executing those continuations concurrently

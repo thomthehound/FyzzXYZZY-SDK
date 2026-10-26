@@ -786,6 +786,8 @@ private:
     // Serial ScPipeline::activateEdgesInternal/postThirdPassIslandGen
     // consumption for rigid eCONTACT_MANAGER, using source edge outputs.
     void consume_contact_interaction_activity() noexcept;
+    void consume_activated_contact_interactions() noexcept;
+    void consume_deactivated_contact_interactions() noexcept;
     void clear_activated_edges(bool checkpointed) noexcept;
     void refresh_kinematic_node(BodyId id, bool accurate) noexcept;
     void activate_contact_edge(std::uint32_t id, bool accurate) noexcept;

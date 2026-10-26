@@ -5224,6 +5224,14 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
 // This serial execution preserves activation-before-deactivation order
 // without inventing a second interaction registry or task dispatcher.
 void Scene::consume_contact_interaction_activity() noexcept {
+    // Collision-only and source-fixture entry points preserve both
+    // transitions without allocating a separate Sc interaction table.
+    consume_activated_contact_interactions();
+    consume_deactivated_contact_interactions();
+}
+void Scene::consume_activated_contact_interactions() noexcept {
+    // ScPipeline::activateEdgesInternal consumes wake/second-pass edge
+    // activity before the independent third-pass retirement producers.
     for(EdgeIndex id:speculative_islands_.activated_edges) {
         auto& edge=island_edges_[id];
         if(!edge.live || edge.retiring || edge.interaction_active ||
@@ -5232,6 +5240,10 @@ void Scene::consume_contact_interaction_activity() noexcept {
         edge.interaction_active=true;
         ++active_contact_interaction_count_;
     }
+}
+void Scene::consume_deactivated_contact_interactions() noexcept {
+    // ScPipeline::postThirdPassIslandGen consumes deactivation only after
+    // both IslandSim producers have completed their lost-edge processing.
     // No accurate-island deactivation is consumed here. Sc explicitly
     // uses the speculative graph so an accurate component can sleep
     // while its speculative-only bridge remains interaction-active.
@@ -5242,8 +5254,7 @@ void Scene::consume_contact_interaction_activity() noexcept {
         step_checkpoint_.save_activity(*this,id);
         edge.interaction_active=false;
         --active_contact_interaction_count_;
-    }
-}
+    }}
 // Source PxsIslandSim::mActiveIslands is distinct from the complete
 // island inventory. Build active batch indices from the already-owned
 // contiguous accurate island-node sequence after source wake/deactivation.
@@ -8132,6 +8143,7 @@ void Scene::step(float seconds) {
     // The source first/second-pass wakeIslands handoffs precede
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
+    consume_activated_contact_interactions();
     third_pass_island_gen();
     // Source wakeIslands publishes active island membership BEFORE
     // processLostEdges tests sleep readiness. Reconcile once even when
@@ -8154,7 +8166,7 @@ void Scene::step(float seconds) {
     // PxsSimpleIslandManager::PostThirdPassTask may consume deactivations
     // only after both producer edges have joined.
     join.finish_third_pass();
-    consume_contact_interaction_activity();
+    consume_deactivated_contact_interactions();
     // PxsSimpleIslandManager::PostThirdPassTask returns destroyed
     // EdgeIndex handles to its allocator only after both IslandSims'
     // processLostEdges consumers have completed. The lifetime remains
@@ -8531,6 +8543,7 @@ void Scene::advance_collision(bool force_update) {
         // island before third-pass lost-edge repair can split it.
         // Sparse motion journals restore these wakes if repair fails.
         activate_published_islands();
+        consume_activated_contact_interactions();
         third_pass_island_gen();
         // A collision-only publication has no Dy consumers. The two
         // island repair passes have already joined, so handle retirement
@@ -8546,7 +8559,7 @@ void Scene::advance_collision(bool force_update) {
     activity_checkpoint_active_=false;
     synchronize_active_island_nodes(true);
     deactivate_ready_islands();
-    consume_contact_interaction_activity();
+    consume_deactivated_contact_interactions();
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();
 }
