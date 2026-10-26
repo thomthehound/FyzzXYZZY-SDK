@@ -2503,18 +2503,20 @@ void Scene::publish_pairs() {
             step_checkpoint_.save_handle_lists(*this);
             const Pair pair=pending_pairs_[new_index++];
             const EdgeIndex id=allocate_contact_edge(pair);
-            // ScNPhaseCore::shouldSwapBodies is the source authority
-            // for the contact manager's persistent oriented shape pair:
-            // static second; two nonkinematic dynamics in descending
-            // ActorID order (the admitted BodyIds track creation order).
-            // Never use broadphase endpoint order or canonical pair
-            // sorting to select Gu's reference/incident box face.
-            const bool a_dynamic=
-                rigid_node(actors_[pair.a].kind);
-            const bool b_dynamic=
-                rigid_node(actors_[pair.b].kind);
+            // ScNPhaseCore::shouldSwapBodies puts static or kinematic
+            // participants second. Two ordinary dynamics are ordered by
+            // descending ActorID, but a later-created kinematic is not
+            // swapped ahead of an earlier ordinary dynamic. BodyIds
+            // preserve admission order for the supported rigid actors.
+            // The manager retains this orientation for its lifetime.
+            const Kind a=actors_[pair.a].kind;
+            const Kind b=actors_[pair.b].kind;
+            const bool a_static=!rigid_node(a);
+            const bool both_rigid=rigid_node(a) && rigid_node(b);
             island_edges_[id].gu_order_reversed =
-                (a_dynamic && b_dynamic) || (!a_dynamic && b_dynamic);
+                a_static ||
+                (both_rigid && (a==Kind::KinematicBox ||
+                                b==Kind::DynamicBox));
             link_contact_edge(id,false);
             next_edge_handles_.push_back(id);
             next_found_.push_back(pair);
