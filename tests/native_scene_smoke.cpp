@@ -1697,6 +1697,7 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision();
         const auto original=scene.body_state(sleeper);
         const auto control=scene.body_state(awake);
+        const auto old_bounds=scene.actors_[sleeper].encoded_bounds;
         scene.step_checkpoint_.capture(scene);
         ++scene.rigid_integration_generation_;
         scene.remember_pre_integration_pose(sleeper);
@@ -1721,6 +1722,13 @@ struct ConstraintIslandSourceFixture {
            scene.accurate_islands_.nodes_to_deactivate.size()!=1)
             throw std::runtime_error(
                 "Concurrent afterIntegration fixture has no accurate sleep");
+        // Dy sleepCheck can finish AFTER the island pass deactivates
+        // the body and overwrite its counter/velocity. Source
+        // afterIntegration grants the accurate island decision priority.
+        scene.actors_[sleeper].velocity={4,5,6};
+        scene.actors_[sleeper].angular_velocity={0,3,0};
+        scene.actors_[sleeper].wake_counter=0.9f;
+        scene.actors_[sleeper].ready_for_sleep=false;
         scene.reconcile_integrated_deactivations();
         const auto restored=scene.body_state(sleeper);
         const auto unaffected=scene.body_state(awake);
@@ -1734,7 +1742,9 @@ struct ConstraintIslandSourceFixture {
            restored.velocity.x!=0 || restored.velocity.y!=0 ||
            restored.angular_velocity.y!=0 ||
            !scene.actors_[sleeper].cached_bounds_current ||
+           scene.actors_[sleeper].encoded_bounds!=old_bounds ||
            scene.actors_[sleeper].wake_counter!=0 ||
+           !scene.actors_[sleeper].ready_for_sleep ||
            unaffected.position.x!=6.25f ||
            unaffected.orientation.w!=control.orientation.w)
             throw std::runtime_error(
@@ -1759,11 +1769,17 @@ struct ConstraintIslandSourceFixture {
         // Step a normal serial frame after the failed transaction.
         // Its third pass deactivates before Dy, and no stale concurrent
         // mLastCCDTransform may change the resulting motion.
+        const auto prior_awake=scene.body_state(awake);
         scene.step(1.0f/120.0f);
         if(scene.body_is_sleeping(awake) ||
-           !std::isfinite(scene.body_state(sleeper).position.y))
+           !std::isfinite(scene.body_state(sleeper).position.y) ||
+           scene.actors_[awake].last_ccd_generation!=
+               scene.rigid_integration_generation_ ||
+           scene.actors_[awake].last_ccd_position.x!=prior_awake.position.x ||
+           scene.actors_[awake].last_ccd_position.y!=prior_awake.position.y ||
+           scene.actors_[awake].last_ccd_orientation.w!=prior_awake.orientation.w)
             throw std::runtime_error(
-                "Concurrent deactivation test contaminated the serial Dy retry");
+                "Production Dy pre-integration pose witness failed after rollback");
     }
     static void verify_sc_activity_third_pass_publication() {
         // Activation and third-pass deactivation have distinct Sc
