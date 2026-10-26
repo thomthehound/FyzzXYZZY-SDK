@@ -6296,6 +6296,161 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
+void verify_source_combined_lifecycle_matrix() {
+    using namespace fyzz;
+    // One real World and one independent PhysX CPU World per cell.
+    // Preserve original mass/ActorID ordering across the SAME sequence:
+    // 1D constraint admission -> multi-dt solver -> joint retirement ->
+    // frictional dynamic pair -> shape-contact retirement. This probes
+    // source Sc/Gu/Dy handoffs, not isolated arithmetic helper functions.
+    struct Frame {
+        BodyState left{},right{};
+        int event=-1;
+        std::size_t points=0;
+    };
+    const auto run=[](ExecutionMode mode,bool pcm,bool reversed) {
+        WorldOptions opts{mode};
+        opts.contact_notifications=true;
+        opts.pcm_plane_box=pcm;
+        opts.pcm_box_box=pcm;
+        World world(opts);
+        const Vec3 half{0.4f,0.4f,0.4f};
+        const Vec3 left_position{0,6,0};
+        const Vec3 right_position{1.8f,6,0};
+        BodyId left=0,right=0;
+        const auto add_left=[&] {
+            left=world.add_dynamic_box(
+                half,left_position,reversed?2.3f:0.7f);
+        };
+        const auto add_right=[&] {
+            right=world.add_dynamic_box(
+                half,right_position,reversed?0.7f:2.3f);
+        };
+        if(reversed){add_right();add_left();}
+        else{add_left();add_right();}
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.linear_damping=0.0f;
+        d.angular_damping=0.0f;
+        world.set_body_dynamics(left,d);
+        world.set_body_dynamics(right,d);
+        Material m{};
+        m.static_friction=0.75f;
+        m.dynamic_friction=0.6f;
+        m.restitution=0.0f;
+        world.set_body_material(left,m);
+        world.set_body_material(right,m);
+        world.set_body_velocity(left,{0.4f,0,0});
+        world.set_body_velocity(right,{-0.15f,0,0});
+        const auto constraint=world.add_center_distance_constraint(
+            left,right,1.35f);
+        std::array<Frame,12> observations{};
+        for(std::size_t frame=0;frame<observations.size();++frame) {
+            if(frame==6)world.remove_constraint(constraint);
+            if(frame==7) {
+                world.set_body_position(left,left_position);
+                world.set_body_position(right,{0.72f,6,0});
+                world.set_body_velocity(left,{0,0,0.4f});
+                world.set_body_velocity(right,{0,0,-0.3f});
+            }
+            if(frame==9)
+                world.set_body_position(right,{5.0f,6,0});
+            const float dt=frame%3==0 ? 1.0f/90.0f :
+                frame%3==1 ? 1.0f/240.0f : 1.0f/120.0f;
+            world.step(dt);
+            auto& result=observations[frame];
+            result.left=world.body_state(left);
+            result.right=world.body_state(right);
+            const auto events=world.contact_events();
+            if(events.size()>1)
+                throw std::runtime_error(
+                    "Source integrated lifecycle reported extra shape interactions");
+            if(!events.empty()) {
+                if(events[0].body0!=std::min(left,right) ||
+                   events[0].body1!=std::max(left,right))
+                    throw std::runtime_error(
+                        "Source integrated lifecycle reported wrong actor pair");
+                result.event=static_cast<int>(events[0].kind);
+                result.points=events[0].contact_count;
+            }
+            if(result.left.sleeping || result.right.sleeping)
+                throw std::runtime_error(
+                    "Live Sc constraint/contact lifecycle unexpectedly deactivated");
+        }
+        return observations;
+    };
+    const auto max_component=[](Vec3 a,Vec3 b) {
+        return std::max({std::abs(a.x-b.x),std::abs(a.y-b.y),
+                         std::abs(a.z-b.z)});
+    };
+    const auto validate=[&](const std::array<Frame,12>& native,
+                            bool pcm,bool reversed) {
+        for(std::size_t frame=0;frame<native.size();++frame) {
+            const int expected=frame==7
+                ? static_cast<int>(ContactEventKind::Found)
+                : frame==8
+                    ? static_cast<int>(ContactEventKind::Persists)
+                    : frame==9
+                        ? static_cast<int>(ContactEventKind::Lost):-1;
+            if(native[frame].event!=expected ||
+               (expected==static_cast<int>(ContactEventKind::Lost)
+                   ? native[frame].points!=0
+                   : expected!=-1 && native[frame].points==0))
+                throw std::runtime_error(
+                    "Sc/Gu/Dy integrated contact lifecycle differs at frame "+
+                    std::to_string(frame)+", pcm="+std::to_string(pcm)+
+                    ", reversed="+std::to_string(reversed));
+        }
+        if(!(native[0].left.position.x>0.0f) ||
+           !(native[0].right.position.x<1.8f))
+            throw std::runtime_error(
+                "Combined 1D fixture never exercised source position PGS");
+    };
+    for(const bool pcm:{false,true})
+        for(const bool reversed:{false,true}) {
+            const auto native=run(ExecutionMode::NativeCpu,pcm,reversed);
+            validate(native,pcm,reversed);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+            const auto source=run(pcm
+                ? ExecutionMode::ReferencePhysXCpu
+                : ExecutionMode::ReferencePhysXCpuLegacyGu,pcm,reversed);
+            for(std::size_t frame=0;frame<native.size();++frame) {
+                if(native[frame].event!=source[frame].event)
+                    throw std::runtime_error(
+                        "Original Sc contact event ordering diverged in "
+                        "the combined source lifecycle at frame "+
+                        std::to_string(frame));
+                for(const auto side:{0,1}) {
+                    const auto& a=side?native[frame].right:native[frame].left;
+                    const auto& b=side?source[frame].right:source[frame].left;
+                    const float pos=max_component(a.position,b.position);
+                    const float vel=max_component(a.velocity,b.velocity);
+                    const float ang=max_component(
+                        a.angular_velocity,b.angular_velocity);
+                    const float dot=std::abs(
+                        a.orientation.x*b.orientation.x+
+                        a.orientation.y*b.orientation.y+
+                        a.orientation.z*b.orientation.z+
+                        a.orientation.w*b.orientation.w);
+                    if(!std::isfinite(pos) || !std::isfinite(vel) ||
+                       !std::isfinite(ang) || !std::isfinite(dot) ||
+                       pos>0.025f || vel>0.075f || ang>0.10f ||
+                       dot<0.999f) {
+                        std::cerr<<"N1 Sc/Gu/Dy matrix"
+                            <<" generator="<<(pcm?"PCM":"Gu")
+                            <<" reversed="<<reversed
+                            <<" frame="<<frame<<" body="<<side
+                            <<" position="<<pos<<" velocity="<<vel
+                            <<" angular="<<ang<<" dot="<<dot<<'\\n';
+                        throw std::runtime_error(
+                            "Native coupled source lifecycle diverged from PhysX");
+                    }
+                }
+            }
+#endif
+        }
+}
+
 void verify_source_multiframe_completion() {
     using namespace fyzz;
     using fyzz::native::Scene;
@@ -13940,6 +14095,7 @@ int run_native_scene_smoke() {
     verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
+    verify_source_combined_lifecycle_matrix();
     verify_source_multiframe_completion();
     verify_source_pose_authoring();
     verify_source_zero_velocity_iteration_request();
