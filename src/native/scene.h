@@ -1129,6 +1129,7 @@ private:
     std::size_t third_pass_worker_start_count_=0;
     std::size_t concurrent_solver_dispatches_=0;
     std::size_t concurrent_integration_dispatches_=0;
+    std::size_t concurrent_solver_worker_jobs_=0;
     bool parallel_solver_enabled_=true;
     // Published by existing source contact/1D preparation, not a
     // second scan over all task descriptors on each active PGS frame.
