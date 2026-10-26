@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: architecture and source audit; no solver implementation or N1 acceptance in this document.**
+**N1 admitted CPU status:** The native scene owns source-derived SAP/Gu/PCM contact managers, both island graphs, typed 1D constraints, Dy CPU PGS task chains, sleep/kinematic handoffs, force/contact reporting, and completed-result rollback. Original CPU source correspondence is exercised by the tests below; the admitted production slice excludes articulations, CCD, TGS, arbitrary/multishape geometry and GPU dynamics. Final N1 acceptance still requires the current matrix and platform CI to pass.
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -26,6 +26,44 @@ This source contract complements
 by the source-derived GPU/AABB integration in
 [GPU_BROADPHASE_TRACE.md](GPU_BROADPHASE_TRACE.md).
 
+## N1 admitted CPU correspondence matrix
+
+This is the merger boundary for `World(ExecutionMode::NativeCpu)`,
+not a claim that all of PhysX has been ported. Each row names the
+**original source owner**, its lowering within the **single native
+`Scene`**, and an executable witness. The independent source-enabled
+CPU reference is a test oracle, not a runtime fallback. The CPU PGS
+admission is limited to single-shape rigid plane/box and box/box
+contacts (default PCM and explicit legacy Gu), rigid/kinematic boxes,
+and the admitted equal-limit distance joint.
+
+| Original source phase / owner | Native Scene owner and boundary | Acceptance witnesses |
+| --- | --- | --- |
+| `ScPipeline::postBroadPhase`, `postNarrowPhase`, `setEdgesConnected`; `PxsNphaseImplementationContext` | `advance_collision_internal`, `update_pairs`, `publish_pairs`, `update_contacts`: surviving candidate, contact and shape-manager lifetimes are distinct | `verify_source_pcm_box_box_lifecycle`, `verify_source_pcm_plane_box_lifecycle`, `verify_source_simulation_shape_flag_lifecycle` |
+| `PxsSimpleIslandManager` first/second/third passes; `PxsIslandSim::findRoute/processLostEdges` | `update_island_connectivity`, `activate_published_islands`, `process_third_pass_island_task`: persistent speculative and accurate node, typed edge, witness and awake owners | `verify_source_dirty_witness_split`, `verify_route_repair_continues_after_split`, `verify_source_speculative_reverse_sleep_order` |
+| `ScPipeline::updateDynamics`, `DyDynamics::update/updatePostKinematic`, `DyConstraintPartition` | `prepare_unconstrained_velocities`, `prepare_solver_bodies`, `partition_constraints`: source accurate-island body and descriptor ranges, never a second world | `verify_source_solver_task_batch_partitioning`, `verify_parallel_pgs_groups`, `verify_enhanced_determinism_tasks` |
+| `DyContactPrep`, `DySolverConstraints`, `DySolverControl` | `prepare_constraints`, `solve_constraint_task`, `write_back_contacts`: source normal and correlated friction rows, separate position/velocity results and Gu-indexed writeback | Strict 48-frame coupled PGS conformance (both generators and mass orders), `verify_source_correlated_friction_patch_lifecycle`, `verify_source_combined_lifecycle_matrix` |
+| `ScConstraintSim`, `ExtDistanceJointSolverPrep`; Dy hard 1D rows | Public `World::add_{center,anchored}_distance_constraint/remove_constraint` lower into the same typed edge and per-island Dy solver chain | `verify_public_center_distance_constraint_lifecycle`, `verify_anchored_distance_constraint_angular_jacobians`, `verify_source_combined_lifecycle_matrix` |
+| `ScKinematics`, `PxsIslandSim::deactivateIsland`, `ScPipeline::postSolver/afterIntegration` | `calculate_kinematic_velocities`, `publish_kinematic_targets`, `reconcile_integrated_deactivations`, `after_integration_cached_bounds` | `verify_source_sleep_wake_generator_matrix`, `verify_kinematic_target_source_reference_parity`, `verify_after_integration_deactivation_reconciliation` |
+| `ScNPhaseCore::processPersistentContactEvents`, `DySolverConstraints::writeBackContact`, `PxsForceThresholdTask` | `publish_contact_events`, `update_threshold_stream`, `write_back_contacts`: active kinematic touch reports, distinct kinematic node threshold identities, one actual static-world key | `verify_kinematic_contact_reporting_source_lifetime`, `verify_kinematic_threshold_source_pairs`, `verify_source_contact_notification_world` |
+| `ScPipeline::postSolver/finalizationPhase`; `NpScene::fetchResults` | `RigidStepJoin`, `StepCheckpoint`, `solved_result_frame_`: no completed result, event or retired handle is published on a rejected frame | `verify_source_multiframe_completion`, `verify_parallel_solver_end_rollback`, `verify_post_third_pass_handle_retirement_rollback` |
+
+The combined-lifecycle witness is an independently executed 12-frame
+source/native comparison under **both** PCM and legacy Gu, in **both**
+mass/actor creation orders. It preserves one `World` across 1D joint
+creation/retirement, changing timesteps, frictional contact and
+Found/Persists/Lost reporting. The separate sleep/wake witness runs both
+source contact generators through full island deactivation, user wake
+and subsequent shape-contact loss. Neither uses a native-only synthetic
+scene as a substitute for the original CPU reference.
+
+The final acceptance requirement is that these tests, the strict
+coupled-friction witness, and the existing backend/architecture suites
+pass on Linux and Windows. Unsupported geometry, triggers, CCD,
+articulations, GPU dynamics and unadmitted constraint families are
+not silently routed to reference PhysX; they remain explicit future
+admissions rather than N1 CPU parity claims.
+
 ## Original code paths and required behavior
 
 | Source family in `thomthehound/PhysX` | Actual role | Required native disposition |
@@ -46,12 +84,207 @@ by the source-derived GPU/AABB integration in
 | `lowleveldynamics/src/DySolverControl.cpp` | Position iterations, velocity iterations, special conclude/writeback pass, friction iteration policy and threshold streams | Preserve distinct solver passes, writeback timing and the no-contacts integration case |
 | `lowleveldynamics/src/DyTGSContactPrep.cpp`, `DyTGS.h` | Alternate TGS constraint preparation and step solver | **Separate later integration**. Do not claim TGS parity from a PGS port or quietly synthesize TGS behavior |
 
+**Contact-generator admission.** The production
+`ExecutionMode::NativeCpu` now selects PCM contact generation for the
+admitted plane/box and box/box pairs. Both use the existing
+`Scene` contact-manager ownership, cache lifecycle and PGS preparation.
+The independent `ReferencePhysXCpu` oracle retains original PhysX
+`PxSceneFlag::eENABLE_PCM`; `ReferencePhysXCpuLegacyGu` selects
+original non-PCM Gu for separately retained legacy conformance.
+Native `WorldOptions::pcm_plane_box=false` and
+`pcm_box_box=false` are explicit diagnostic selections rather than
+production fallbacks. PCM admission is limited to these primitive pairs:
+other shape classes, CCD and contact modification are not implied by
+this translation. A default-constructed native `Scene`, like native
+`WorldOptions`, selects PCM for both admitted primitive pairs. Issue #114's
+source-conformance gates cover the bounded contact-generator and
+manager-cache implementation, not the complete N1 rigid solver.
 These paths identify the **initial source intake surface**. They do **not**
 authorize compiling all of PhysX into the native SDK. Extract/translate
 needed code together with its genuine input, output, allocation and lifetime
 contracts, retaining source attribution. Neither rewriting the mathematics
 from memory nor a hard-coded equivalent-looking "demo solver" satisfies
 this contract.
+
+## Enhanced-determinism Dy task admission
+
+`PxSceneFlag::eENABLE_ENHANCED_DETERMINISM` is now an opt-in
+`WorldOptions` input forwarded to both the original independent PhysX
+CPU scene and the native scene. Its specifically source-derived
+`DyDynamicsContext::updatePostKinematic` effect is to terminate each
+solver task chain after one accurate active island, bypassing the default
+128-rigid-body / minimum-one-contact batching rule. The existing
+`SolverTask` partition, iteration-count and solver-body offset
+boundaries are reused; no second scheduler is created. The original
+`createFinalizeConstraints` sets `maxBatchSize=1` for the flag,
+which is already the native implementation's scalar per-manager
+contact-descriptor treatment. This is **the admitted CPU rigid-subset
+scheduling branch**, not a claim that every other PhysX
+enhanced-determinism feature or packed SIMD ABI is complete.
+Source-free tests separate four differently configured islands,
+including a no-contact island, and verify iteration maxima,
+partition boundaries and normal-force writeback. Reference-enabled
+tests compare the enhanced native and original PhysX CPU scenes over
+varying timesteps.
+
+## Source ScNPhaseCore contact-pair orientation
+
+`ScNPhaseCore::createShapeInteraction` calls
+`shouldSwapBodies` before it constructs the contact manager. The
+admitted source rule places ordinary dynamics before static or kinematic
+participants and orders two nonkinematic dynamic actors by **descending
+ActorID**. In a mixed rigid/kinematic pair, the kinematic actor stays
+second even when created later; when it is the first candidate, the
+source swaps it. The SDK's monotonic BodyId admission preserves these
+ActorID comparisons. Gu/PCM reference-face selection, cached collision
+axes, and Dy preparation all use this persistent source-oriented pair,
+not canonical BodyId or temporary broadphase endpoint order.
+
+The single native contact-manager EdgeIndex now retains the derived
+orientation for its complete overlap lifetime. Gu contact generation,
+cached face-axis selection, **and DyContactPrep/PGS actor and Jacobian
+ordering** consume that same source-oriented pair. Only Sc's outward
+contact-event reporting translates normals back to canonical BodyIds.
+Maintaining one orientation across Gu and Dy prevents a canonical
+lookup-key optimization from changing the source's friction tangent
+sign and floating-point solve order. Both creation orders of a
+dynamic/kinematic contact manager are asserted on the production
+PCM and diagnostic Gu paths, followed by independent six-frame rigid
+response comparisons against the corresponding CPU reference modes.
+No shadow collision pipeline or fabricated contact geometry is added.
+
+Both the first speculative Gu contact geometry and the angular velocity
+at the first resolved impact now have independent PhysX source-witness
+assertions that remain active regardless of the long-horizon strict
+flag. These discriminate source actor ordering and contact Jacobians
+where the earlier permissive multi-frame bounds were inadequate.
+
+The independent frictional PhysX fixture exposes why this matters.
+With the upper body created before its lower support, native previously
+chose lower-box face points while source legacy Gu chose upper-box
+points **on the very first, speculative contact frame**. At the first
+solved impact, their comparable normal impulses induced very
+different angular velocities. Correctly ordering Sc's shape pair is
+a necessary source-fidelity repair; the full strict multiframe
+test remains the acceptance authority.
+
+## Original Pxc legacy narrowphase contact cache
+
+The source-matched rigid scene now lowers `PxcCacheLocalContacts`
+within the single native Gu/Sc contact-manager publication. PhysX
+defaults to enabling the legacy contact cache independently of PCM
+(`PxSceneFlag::eDISABLE_CONTACT_CACHE` is not set by default).
+The source `g_CanUseContactCache` permits plane/box and box/box.
+On a cache miss, the original Gu contact positions, normals and
+separations and both generating shape poses are saved in a flat
+source-owned cache stream. The next frame compares the current
+relative `shape1.inverse * shape0` pose against the original cached
+relative transform, using the source's strict 1% of tolerance length
+and per-quaternion-component thresholds. A hit does **not** replace
+the raw stored contacts or advance their reference transforms:
+it reconstructs each point by transforming the prior contact into
+both old local shape frames, then into both current world frames,
+averaging the two projected points and correcting separation by
+the motion along the cached normal. It also skips Gu generation and
+preserves the old pair-data collision axis. An invalid cache performs
+real Gu generation and replaces the stored source raw points.
+
+This is distinct from both PCM and the DyFrictionCorrelation cached
+anchors. The entire BP pair stream (including zero-contact candidates)
+owns indexed contact-cache records, while two reusable scene arenas
+carry compressed contact point streams. Gu and cache buffers rotate
+at the existing atomic publication boundary and are swapped back
+with published manifolds after a rejected step. No new collision
+pipeline or secondary physical contact registry is introduced.
+
+## Source PCM primitive contact-manager admission
+
+`GuPCMContactPlaneBox::pcmContactPlaneBox` and
+`GuPCMContactBoxBox::pcmContactBoxBox` execute through the same native
+narrowphase publication and active-island PGS solver. The source-style
+`EdgeIndex` contact manager owns a single `PcmManifoldCache`, shared
+exclusively by its geometry-pair specialization; no separate PCM world,
+independent broadphase or PhysX runtime is involved.
+
+For plane/box, eight box-local candidates use the source plane-relative
+transform, contact-distance test and original corner order. Cached
+box-local/plane-local witnesses refresh in reverse with swap-last
+eviction, using the source projection threshold and manifold
+invalidation. Excess contacts reduce to four persistent witnesses,
+and emitted positions are projected onto the plane rather than copied
+from the legacy box vertices.
+
+For box/box, native generation performs the fifteen original SAT
+separation tests, source-selected reference face and incident polygon
+clipping. Shape-local witnesses retain their B-local normal and depth;
+the four-contact reduction retains spatial coverage and deepest
+contacts. When SAT accepts a pair without generating face witnesses,
+support-mapped GJK and EPA provide the remaining separation or
+penetration contact, using bounded native working sets and retained
+support-index simplex state. The existing PGS constraint preparation
+consumes these PCM points directly, including normal and friction
+correlation, threshold publication and contact callbacks. The PCM
+stream is not diverted through `PxcCacheLocalContacts` or the
+legacy Gu generator.
+
+Explicit authored pose and shape-offset edits reset the owning
+manager's PCM cache; ordinary integrated motion refreshes and
+invalidates its retained witnesses without treating motion as an
+authored edit. `StepCheckpoint::save_edge` journals the same manager
+on geometry mutation, preserving failure-atomic rollback and source
+retirement/reuse ownership. The shared four-contact cache avoids
+duplicating a full plane and box manifold in every manager.
+
+Native regression coverage includes direct PCM face witnesses,
+GJK/EPA depth and normal conventions, an exact SAT-to-GJK speculative
+contact-distance boundary, cache refresh and authored invalidation,
+lost touch/reentry, manager retirement, and actual PGS completion.
+Default scene construction, manifold rollback after rejected Dy frames,
+retained friction-anchor admission, sleep/wake and manager reuse are
+exercised on the real native PCM path. The scene-owned PCM candidate
+arena is reused across regenerated box/box contacts.
+
+Reference-enabled tests compare native emitted contact points against
+independent default PCM for plane/box and box/box. Their frame-by-frame
+coverage includes representative rotated face/edge/corner witnesses, including scaled
+GJK/EPA contact and the original absolute EPA facet cutoff against
+stock PCM; shallow and speculative contact;
+multiframe sliding and integration; changing timestep; contact
+loss/reentry; and reversed actor creation.
+Legacy-Gu oracles remain separately selected and cannot satisfy the
+PCM acceptance gate. This supported-primitive translation does not
+complete the broader N1 coupled PGS trajectory, general geometry,
+CCD, contact modification or asynchronous continuation obligations.
+
+## N1 coupled frictional-rotation source parity gate
+
+The 48-frame coupled rigid PGS fixture compares the native scene with
+the independent PhysX CPU reference in both default PCM and explicitly
+selected diagnostic legacy-Gu modes. Two frictional dynamic boxes share
+a static support, exercising both mass and creation orders, the coupled
+floor/lower and lower/upper managers, rotated contact normals, and a
+friction-disabled reference control. Normal-only tests miss this coupling.
+
+The full **48-frame** mixed-timestep fixture runs both generators in
+source-enabled Windows and Linux CI.
+`FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON` remains the
+default and explicit reference-CI setting. The same per-frame position,
+linear/angular velocity and quaternion bounds, tight frame-12 impact
+check, and friction-disabled reference control apply to both modes;
+the legacy-Gu raw-contact ordering oracle remains diagnostic only.
+The source-enabled test reports its frame horizon, creation order,
+and generator mode. Source-free Vulkan/D3D12 jobs do not link
+the CPU reference.
+
+**Historical strict failure:** A previous reversed-actor run diverged
+at frame 20, with native/reference upper-body vertical velocities of
+approximately 0.051/0.927 m/s and mismatched upper/lower and floor/lower
+normal impulses. Turning off strong-friction retention in both engines
+did not eliminate that earlier gap. Preserve this observation as
+diagnostic history; it is not evidence that the current committed
+48-frame oracle still fails. Passing this bounded test does not
+establish the remaining complete shape-interaction, island, packed
+solver ABI, or public fetch/callback N1 requirements.
 
 ## Source task ordering: execution and handoffs
 
@@ -177,12 +410,126 @@ Important verified source edges:
     report timestamps. The native scene must not publish a
     predicted pose as final source-equivalent post-solver state.
 
-**Explicit existing departure:** `src/native/scene.cpp::step` currently
-predicts poses, rebuilds an X-only SAP, publishes face-only contacts, and
-runs a single normal constraint for an entire manifold after position
-prediction. This does not implement the above graph or source rigid-body
-solver. It remains an admitted **limited transitional execution mode**,
-not a certified PhysX CPU replacement.
+**Current integrated CPU slice and remaining departure:** `src/native/scene.cpp::step` now runs the scene-owned Gu collision stage at the starting pose, source-derived `DyContactPrepShared` per-point rigid-body normal Jacobian/effective-mass/bias preparation, and `DySolverConstraintsShared` normal impulse passes. Following `DySolverControl`, it snapshots motion deltas after biased position iterations and separately executes unbiased velocity iterations; `DyBodyCoreIntegrator` uses saved position-phase motion to advance poses and final velocity-phase deltas to update next-frame body velocity. This retires the predicted-pose/one-normal-per-manifold solver and its angular guard.
+
+The active native contact path translates the rigid single-shape `PxsMaterialCore.h`, `PxsMaterialCombiner.h`, `DyContactPrep.cpp` and `DyContactPrepShared.h` material branches: every admitted shape owns its material, whose static/dynamic friction, signed restitution (including compliant stiffness), damping, independently ranked combine modes, acceleration-spring flag and friction/strong-friction disable flags flow into the existing Gu→Dy contact-manager preparation. The `PxsMaterialCombiner` special cases for single-compliant and mixed force/acceleration spring combinations are active. Ordinary restitution and the default material path remain unchanged; compliant contacts retain source spring equations in both position and velocity passes and its `DySolverConstraintsShared.h` impulse-multiplier recurrence on every solve. The `staticFriction >= dynamicFriction` promotion and disable-friction omission are preserved. Public `World::set_body_material` modifies the existing NativeCpu Scene actor; the optional real PhysX CPU backend assigns a `PxMaterial` on the existing `PxShape`. Neither mode owns a parallel material table. Native Dy-row and source-enabled real PhysX parity regressions cover the same inputs. Multi-material shapes, per-contact material assignments, packed SIMD ABI and source event callbacks remain unported.
+
+The active PGS preparation now uses the original CPU `DyCpuGpuBiasCoefficient::rigidContact = 0.8f` for both normal penetration correction and friction relaxation. Cached friction normals live in both actors' local frames and survive correlated contact motion; source `DyContactPrepShared::pointsAreClose` uses **absolute** projected anchor separation to retire patches on either excessive compression or positive separation. These numerical and lifetime boundaries are covered by the current draft review, without declaring full source parity.
+
+The same native source reporting path now also implements the low-level **Dy force-threshold stream**: `DySolverConstraints.cpp::writeBackContact` supplies final contact-normal impulses, `DyThresholdTable` aggregates by persistent rigid-body pair, and `DyDynamics.cpp::PxsForceThresholdTask` determines current versus previous threshold exceedance. The current scene has one shape per BodyId but must preserve **two different keys**: the individual `Gu` `BodyId` pair owns geometric contacts, while the low-level `DyThresholdTable` aggregates ALL static-shape contacts on one dynamic body through the shared world-node key. Ordinary dynamic/dynamic and dynamic/kinematic contacts both retain their two actual source node identities, while only genuine static shapes map to the shared world node. An explicit `ForceThresholdKey` distinguishes these cases without inventing a second island/shape registry. Mapping different static managers to one world key can disturb Gu sort order: the current active threshold candidates are sorted in their reusable arena, combined in place, and previous/current exceeded streams then merge linearly, without per-contact allocations. `PxRigidDynamic` actors, including those switched to `eKINEMATIC`, opt in with `Scene::set_contact_report_threshold` (source default `PX_MAX_REAL` disables); rigid-pair thresholds use `min(body0, body1)`, and an exceedance requires `sum(finalNormalImpulse) > reportThreshold * dt`. `force_threshold_changes()` emits Found/Persists/Lost states; LOST has zero impulse and PERSISTS carries the prior stream's impulse, matching source stream construction. Collision-only contact progression invalidates visible reports, but cannot erase previous-step exceedance history. Native tests cover these transitions, force-versus-impulse units, dynamic/dynamic minimum thresholds and contact loss. A two-static-support fixture independently measures both Gu support impulses, places a threshold strictly between the largest individual impulse and their sum, and requires a **single world-node Found report** with the combined impulse. Even when both supports exceed a zero threshold, it requires only one event; removal of both supports produces exactly one Lost report. Separate PCM/legacy-Gu regressions put one dynamic body in contact with two distinct kinematic supports, assert two distinct exceeded-pair identities in either actor admission order, then retire only one kinematic threshold while the other persists. This retains the source's real `PxNodeIndex` distinction without adding a new registry.
+
+The same native low-level stream is exposed without copying through
+`World::force_threshold_changes()`, and the public authoring route
+`World::set_body_contact_report_threshold` reaches the owning Scene.
+The independent PhysX CPU backend forwards the authoring call to
+`PxRigidDynamic::setContactReportThreshold` but does not claim that
+its shape-level `onContact` callbacks expose the private
+`DyThresholdTable` node-aggregation stream. Unsupported access to
+that internal reference stream rejects explicitly. Public native
+regressions require Found/Persists/Lost across actual solver steps,
+with static-actor and invalid-threshold rejection.
+
+This is a **bounded low-level source subset**, not the whole `PxSimulationEventCallback` surface. The admitted static/kinematic/dynamic source threshold-node identities are preserved by the existing actor and island slots. Original `eHAS_FORCE_THRESHOLDS` interaction flags and the full lifecycle for unsupported node/interaction types, multi-shape shapeInteraction objects, contact-report pair flags, `ScNPhaseCore` event dispatch and complete material-dependent callback publication remain open N1 work. The explicit dynamic-pair/static-world threshold key is a native surrogate for the source island node pair, not a new island or shape registry; wide `double` impulse totals remain an SDK extreme-mass extension where original PhysX uses `PxReal`.
+
+The production `ScNPhaseCore::processPersistentContactEvents`
+continuation uses `Sc::ActorSim::isActive` for either contact actor,
+not merely dynamic bodies entering a Dy solver island. Native touch
+reporting now also honors target-driven/settling kinematics without
+treating a referenced but idle kinematic as awake. The supported
+`World` callback stream is tested across target movement, delayed
+contact loss, both actor orders and independent PCM/legacy-Gu CPU
+reference modes. This is the admitted single-shape contact notification
+surface; triggers, CCD callbacks and general filter changes remain
+separate admissions.
+
+The native scene now also executes the per-contact **normal-impulse writeback** portion of `DySolverConstraints.cpp::writeBackContact` after the final velocity iteration. It copies each source-derived constraint's accumulated normal impulse into one reusable output arena indexed by the original `Gu` contact offset, independent of `DyConstraintPartition` ordering. Geometry-only `advance_collision()` invalidates previous solved values; the next `step()` replaces them. Native regressions check impulses against rigid-body velocity changes, original contact offsets, source partition rollover and contact retirement. Output uses `double` only for the SDK's previously admitted extreme inverse-mass translational cases; original PhysX writes `PxReal`. The cached friction patch's `broken` flag now follows the original `DySolverConstraints.cpp::solveContact` and `solveContact_BStatic` lifecycle: an iteration-local clamp result is collected during each friction solve, but **only the final velocity/writeback iteration** publishes it. A position-pass clamp that subsequently converges does not invalidate the next frame's correlated local anchors. The 600-frame dynamic stack provides a decisive recovered-anchor case: the ground/lower-box patch saturates during a frame-86 position pass but does not clamp at final writeback. Its `broken` report must be false and its cached local anchors must survive through frame 87. A controlled negative test restoring the earlier sticky `broken |= clamped` rule failed this exact assertion in both independent Linux Vulkan and Windows D3D12 suites; the negative mutation was subsequently reverted. A broader low/high slip sweep retains additional Coulomb-limit consistency checks, but cannot alone distinguish final-only break reporting from a stale clamping history. This test does not claim full `DyFrictionCorrelation` parity or heterogeneous materials.
+
+The same Scene-owned final writeback now also reconstructs `DyContactPrep.cpp::writeBackContactFriction`'s two-tangent per-anchor world impulse vectors, preserves correlated friction patch ownership/anchor positions and reports broken state through `Scene::solved_friction_patches()`. Both report streams are invalidated by geometry-only collision advancement and republished after stepping. Distinct-mass/opposite-slip fixture responses validate the signed friction impulses against body velocity changes. A separate deliberately **permuted** three-manager contact graph exercises Gu order `AB, AC, DE` versus Dy partition order `AB, DE, AC` and validates the force writeback against distinct leaf momentum changes, correcting the inadequate sorted-star-only regression. The SDK's extreme-mass reporting extension retains `double` impulse components where the original source writes `PxReal`/`PxVec3`.
+
+Shape-interaction threshold callback/event dispatch, heterogeneous material-dependent writeback, exact source contact/patch mapping, packed descriptor publication and full scene report dispatch remain unported.
+
+**Source contact impulse and penetration limits:** The same
+`ScBodyCore/PxsBodyCore` authoring now admits
+`PxRigidBody::setMaxContactImpulse` and
+`PxRigidBody::setMaxDepenetrationVelocity` on the real dynamic body.
+`DyContactPrepShared::extractContacts` takes the minimum of both
+body-contact impulse limits and applies it independently to each
+`SolverContactPoint`; `DySolverConstraints` clamps the accumulated
+normal impulse before changing any linear/angular solver velocity.
+With a zero source cap, contact extraction contributes **no**
+solver contact rows, solver-order entries or friction patches for that
+manager, while Gu touch events and the source contact-manager edge
+remain alive. Dormant managers likewise need no Dy contact-row placeholders.
+The native one-shape-per-actor lowering packs only admitted active solver
+rows contiguously, while explicitly zeroing omitted managers' original
+Gu-indexed force slots during writeback; later live managers retain their
+correct compact Dy offsets and independent Gu offsets. This does not
+treat a zero cap as contact separation. `DyContactPrep` separately computes
+`max(data0.penBiasClamp,data1.penBiasClamp)`, the negative of the
+smaller positive depenetration velocity, and uses it to clamp position
+bias before PGS response. The original unrestricted defaults remain
+unchanged. Public settings are checked before mutation and also
+forwarded to actual reference `PxRigidDynamic` bodies. Regressions
+exercise independently saturated multipoint plane contacts
+(their total must exceed a single point's cap), the minimum of two
+dynamic body limits, zero-impulse response without touch loss, compact
+zero/live/zero solver-row transitions with exact Gu force indexing,
+restricted penetration recovery and invalid-input rejection. Complete contact
+modification, per-point impulse overrides and independent packed
+contact stream extraction remain outside the current rigid subset.
+
+**Source rigid body preintegration and per-task iteration control:** The
+public `World::set_body_dynamics` now authors `ScBodyCore/PxsBodyCore`
+linear/angular damping, the gravity-disable flag, maximum linear/angular
+speeds, and the packed 8-bit position/velocity iteration counts. These
+inputs travel through the single authoritative actor to the existing
+native `DyBodyCoreIntegrator::bodyCoreComputeUnconstrainedVelocity`
+translation, including the same damping-before-speed-clamp progression
+and per-body velocity-limit squaring. The independent CPU reference
+adapter authors the corresponding real `PxRigidDynamic` parameters,
+so comparison does not rely on a shadow source model.
+
+`DyDynamics::preIntegrationParallel` accumulates **maximum** position
+and velocity iterations from each source task's participating bodies.
+The native `DyDynamicsContext::updatePostKinematic` source task chains
+now retain that per-task maximum, the exact manager/partition descriptor
+range, and the prepared solver-body range. The actual PGS dispatcher
+runs each chain independently through its own biased position passes,
+position motion snapshot, and unbiased velocity passes, without imposing
+an unrelated group's higher iteration count on the entire scene.
+The source `DySolverControl::solve` friction policy also scales with the
+per-task count: only the final three position iterations (or all of them
+when fewer than three) enable friction by default, followed by velocity
+solves. This replaces the accidentally 4+1-specific "skip iteration
+zero" rule. `NpRigidDynamic::setSolverIterationCounts` permits **zero
+requested velocity iterations** (but requires at least one position
+iteration). `DySolverControl::solveV_Blocks` still performs one mandatory
+final velocity/writeback solve when that request is zero. The native task
+descriptor preserves the exact requested maximum, while its PGS execution
+uses `max(requestedVelocityIterations, 1)` for the final pass. The
+default 4+1 behavior remains unchanged. Native tests exercise 130
+independent floor-contact bodies across the 128-body task boundary,
+including one task with zero requested velocity iterations. That
+task's dedicated test contrasts zero versus one requested pass under
+identical closing contact velocities and an intentionally
+**non-bouncing penetrated contact**, so `DyContactPrep` retains its
+position-phase penetration bias instead of clearing it for restitution.
+The final unbiased solver velocity must differ measurably from the
+saved position-phase motion velocity, while zero and one requests must
+produce the same final velocity and Gu-indexed normal impulse. Merely observing positive
+normal-impulse writeback is insufficient, because position iterations
+already generate force-buffer values. Additional cases cover authored gravity,
+damping, speed-clamp, invalid-input and static-body rejection. The
+source-enabled fixture additionally compares native free-body velocities
+to a real `PxRigidDynamic` using the same public settings. This is
+source **serial task-chain execution**, not a claim that asynchronous
+ScPipeline continuation objects or packed SIMD descriptors are complete.
+
+The native solver also imports the **rigid-body** ownership/ordering slice of `DyConstraintPartition::partitionContactConstraints`: actor-owned 32-bit dynamic constraint masks, 32-partition overflow waves, per-body static contacts after dynamic constraints, stable counting-prefix ordering of authoritative contact managers and reusable scene-owned arrays. Both normal and friction rows execute in that order within each original PGS pass. A 35-edge dynamic contact star tests partition rollover; twelve unrelated boxes contacting the shared zero-mass static floor verify there is no false partition conflict. The original `DyConstraintPartition.cpp::initSolverProgress` initializes scheduler progress for every active source partition input, even when `DyContactPrepShared::extractContacts` removes all response rows because either body has a zero `maxContactImpulse`. Native `Scene::prepare_solver_bodies` now resets the three partition fields on such active but unprepared solver bodies during its existing active-island-node traversal. The accurate island and Gu manager remain admitted; only heavy Dy point/body preparation is omitted. A 160-frame dynamic–dynamic regression verifies that their contact descriptor remains scheduled without accumulating partition bits, producing phantom Dy rows, or corrupting Gu force writeback; it also exercises zero-to-live-to-zero cap transitions and mixed one-sided/two-sided caps. No extra dormant-body scan or parallel partition owner is introduced. This path is serial; it does **not** claim the complete source island-manager lifecycle, per-island task graph, parallel batch execution, rigid-body static SIMD specialization or articulation partitioning.
+
+The existing scene now also applies the admitted rigid-body `DyFrictionCorrelation` pipeline: `createContactPatches` retains contiguous same-normal/material Gu runs; `correlatePatches` links those runs in source reverse-chain order to cached or newly created friction patches; `getFrictionPatches` validates unbroken body-local anchors against current relative normals and absolute separation; and `growPatches` retains adequately separated two-anchor caches or rebuilds anchors from the linked contact runs. The `DySolverConstraints` PGS loop consumes each correlated patch's normal rows immediately before its friction rows, while source Gu offset indexing remains authoritative for contact-force writeback. The solver header normal is selected once from the current reversed contact-patch correlation head and used for every correlated normal Jacobian and friction tangent, independently of the historical cached body-local friction normal; the noncontiguous-run regression exercises this distinction with near-aligned normals and reused anchors. Reused per-scene scratch and a mapped row-order vector avoid per-contact allocations and redundant per-patch force rescans. A two-manager fixture checks multi-contact anchor formation, material-specific friction disablement, and cache re-entry; the existing 600-frame stack and velocity-writeback regressions continue to cover solver dynamics.
+
+This is **not** full source solver admission: heterogeneous per-contact material groups and target velocities, strict `DyCorrelationBuffer` SIMD/packed layout and all geometry/mixed-material cache permutations, packed solver constraint ABI, exact `PxReal`/SIMD rounding, full source island/task scheduling and batch specialization, and full shape-interaction event/callback publication remains unported (the opt-in rigid-touch subset is now admitted). The admitted two-material compliant/noncompliant combine modes, force/acceleration spring rows, final per-contact normal/friction writeback and low-level threshold-change stream are implemented; these do not constitute full reporting. The native path is a transitional rigid-body contact/material subset, not an accepted PhysX CPU replacement or N1 completion.
 
 ## Stage handoff ledger: do not confuse task labels with solver ownership
 
@@ -298,14 +645,26 @@ continuations allow it:
    island manager's `getNodesToDeactivate` and can restore the
    previous pose and zero velocities of bodies the solver
    integrated concurrently but the island logic deactivated.
-   This reconciliation is relevant to correct next-frame state
-   and must not be discarded in a native implementation.
+   The current serial CPU lowering completes third-pass deactivation
+   **before** admitting Dy solver bodies. Those deactivated nodes
+   therefore cannot integrate in that frame, satisfying the observable
+   state transition without running a redundant pose rollback.
+   When solver and island execution overlap, the original
+   `afterIntegration` compensation and its dependency join must
+   be reinstated and verified against that actual overlap.
 
-Acceptance regression for this connection: multi-frame dynamic
-bodies crossing sleep/wake thresholds, contact loss and
-destroyed-manager retirement must preserve active state, event
-ordering, and stable next-frame island membership versus PhysX CPU.
-This is a **test requirement**, not presently implemented parity.
+The admitted serial CPU regression now verifies the precise
+ready-on-prior-frame → island-deactivation → no-Dy-integration
+transition, unchanged pose and zero motion, dormant next-frame state,
+and an authored wake re-entering Dy. Separate 96-frame native-versus-
+original-PhysX CPU free-flight comparisons cover changing timesteps,
+unequal mass, rotation and damping; 40-frame Sc contact lifecycles
+compare Found/Persists/Lost publication against both original reference
+modes. The numerical free-flight test uses explicit positional,
+velocity, angular-velocity and orientation tolerances: this is a
+bounded, reference-backed conformance subset, **not** proof of
+strict multi-frame contact/PGS trajectory parity, concurrent task
+refcount equivalence or complete public `fetchResults` semantics.
 
 ### Backend admission cases that must not be conflated
 
@@ -403,6 +762,326 @@ prove GPU solver work or identical staging cost.
 | Source geometry and contact correlation | Identified `GuContact*`, `PxsNphaseImplementationContext` and `DyContactPrep` source families | Exact correlation/anchor data structure, cache transitions and geometry edge-case acceptance |
 | Native acceptance | Existing source-free scene and oracle smoke tests support an openly bounded subset | Complete rotational PGS, source schedule, GPU SAP and N1/N2 full parity **not admitted** |
 
+## Failed-step publication and performance ledger
+
+A native `Scene::step` is atomic with respect to its authoritative
+body state, pending angular impulses, collision/force/threshold reports,
+friction cache, island topology and frame counter. A failed attempt
+restores the preceding successful publication and permits an unchanged
+retry. The published Gu pair/contact arena is restored by reversing
+the original `std::vector::swap` handoff, preserving existing
+`std::span` storage across failure; transient Dy working arrays are
+recomputed rather than duplicated.
+
+The CPU publication boundary now stages published force, friction,
+threshold-change, Gu contact and broadphase-pair buffers through reusable
+or reversible swaps, rather than copying those result streams each frame.
+The capacity-reusing checkpoint saves only *mutable dynamic motion*
+(position, orientation, velocities and pending torque) together with
+persistent friction history and island/threshold bookkeeping. Immutable
+shape geometry and actor materials are not cloned; there is no second
+simulation or solver.
+
+**Completed Dy result publication:** Scene's solver result generation
+is distinct from its Gu collision clock. Gu-only advancement invalidates
+the current solver-result generation without pretending to have run a
+solver/fetch transaction. A normal rigid PGS step publishes the new
+generation only after integration, the destroyed-manager consumer
+join and Sc contact-event preparation. If any source preparation, solve,
+writeback or event stage rejects the step, the existing scene-owned
+checkpoint restores the exact previous completed-result generation,
+motion and result allocations. This is a truthful synchronous
+publication boundary for the admitted native CPU path, not the full
+asynchronous `NpScene::fetchResults` callback or GPU task API.
+
+**Destroyed contact-manager completion join:** `ScPipeline.cpp::destroyManagers`
+forks speculative and accurate `thirdPassIslandGen` work and
+`processLostContacts3` joins it to the scene's solver completion.
+The admitted rigid native scene now preserves a destroyed manager's
+retiring `EdgeIndex` allocation through accurate/speculative island
+repair **and through Dy contact preparation, solve, writeback and
+body integration**. Its serial completion edge returns that handle
+to the free pool only after all those consumers have finished and
+before the successful frame publishes Sc contact events. This is
+the source lifetime dependency; it is not a replacement task
+scheduler or an assertion of parallel CPU execution. For a standalone
+`advance_collision`, no Dy consumer exists, so post-third-pass
+retirement completes inside its collision transaction. Both paths
+journal the original handle allocation and intrusive edge metadata
+for rollback. Tests check the handle before/after the join, failed
+transactions, reuse after completion, and combined lost-touch and
+force-threshold Lost reports without replay.
+**Remaining copy cost:** native steps now journal only mutated
+dynamic-body motion, while the source's retained friction anchors
+and previous exceeded-threshold streams use reversible scene-owned
+buffer rotations instead of O(cache size) checkpoint copies.
+Active-node publication and solver-partition metadata still incur
+checkpoint bandwidth. Persistent source island handles,
+node membership chains, static-touch counts and accurate solver-node
+offsets are **now copied only on the first actual graph ownership
+mutation in a publication**, never on an unchanged-topology PGS step.
+The original topology is retained by a capacity-reusing checkpoint
+until the publication succeeds; failed attempts restore it by
+allocation-preserving swaps. Source intrusive `EdgeInstance` links
+and node-first heads are likewise **not copied per frame**:
+an allocation-reusing write-ahead journal records only the
+edge slots and heads about to change. On exception, reverse replay
+restores original adjacency; newly allocated slots are truncated.
+The active/retired/free handle arrays are copied lazily, only when an
+overlap is added/removed or a handle is actually retired. Gu-only touch
+changes do not copy those arrays. The transient next-edge merge buffer
+is never checkpointed; it is cleared and reconstructed on retry.
+Journal recording can allocate and throw *before* mutation, while
+rollback and publication-buffer restoration cannot allocate.
+
+`Scene::advance_collision` now shares the strong failure boundary:
+an AABB overflow or an exception partway through contact/edge
+publication restores prior published Gu/contact/impulse spans,
+previous force reports, edge ownership and island state. Geometry-only queries deliberately omit dynamic-motion,
+friction-history, threshold-history and solver-partition copies
+because that operation does not mutate them. For an unchanged scene
+without a forced refresh, pending island repair or edge retirement,
+`advance_collision` takes the constant-work quiet publication path:
+it advances the frame clock and retires transient result/event streams
+without checkpointing edge slots, handles or island arrays. Dirty,
+forced and outstanding-retirement cases still use failure-atomic
+collision/island/edge staging. Regressions verify quiet publication
+does not change persistent contact/island state, and preserved
+backing-storage identity after a deterministic nonfinite AABB with
+successful retry.
+
+The accurate graph's `mActiveNodes` and
+`mNodesToPutToSleep` equivalents are also published read-only spans.
+Their transaction now follows the same reversible-buffer ownership rule
+as solver reports: the checkpoint retains the active-node permutation,
+reverse index and deactivation output on each transaction, reserves
+full per-actor capacity for the working arrays, and swaps the
+existing published arrays into the checkpoint. Persistent island
+membership is copied separately and lazily, only before a real
+graph owner mutation. Failed frames restore those original allocations,
+not copies, so retained spans continue to see the last successful
+publication. Preserving the full deactivation capacity across repeated
+rollback also keeps the subsequent `noexcept` third-pass from allocating
+after the publication boundary. This does not introduce a second
+island owner or double-copy the active-node lists.
+
+The failure-atomicity audit also covered two transients that must not
+borrow authoritative publication lifetimes. Prepared Dy rows now carry a
+separate monotonically increasing preparation generation: a rejected
+step restores its frame index but cannot accidentally reuse rows from
+that failed attempt if contact geometry changes before retry. The
+preparation generation does not roll back; its rare wrap clears stale
+row markers. The complete Gu manifold arena continues to be restored
+by swaps when the contact epoch advances. When a quiet step never swaps
+the arena, a generation-stamped journal records only those Gu managers
+whose exposed Dy descriptor fields (solver row offset, friction patch
+offset/count and preparation epoch) actually change. The journal stores
+pre-step metadata once per touched manager and restores it on rejection
+without duplicating contact points or manifold storage. Dormant
+managers retire stale solver metadata once, instead of publishing
+perpetually changing offsets on every subsequent quiet frame.
+The quiet-path snapshot now costs O(mutated Gu managers) rather than
+O(all published managers), including after hundreds of dormant
+contacts accumulate. Published
+Found/Lost event streams likewise rotate reversibly on a quiet step,
+even though the pair and contact arena epochs remain unchanged.
+
+An authored wake-work indicator avoids traversing all speculative
+island handles on an unchanged collision query with no new edge or
+contact events. It is saved in the step checkpoint and restored after
+rejected frames. This does not replace the source's explicit activating
+node/edge lists and active-index arrays.
+
+A reference-free regression checks that eighty steady free-flight
+PGS steps do not trigger any island ownership snapshots, while dynamic
+actor admission does. The existing failing-solver local-split
+regression additionally requires the snapshot diagnostic to roll
+back and a successful retry to match the clean-scene count.
+These are structural, not wall-clock, cost assertions: active-index
+publication and solver-partition metadata still incur per-step copies.
+Motion uses a sparse journal; friction and threshold caches use
+reversible buffer ownership, preserving the original published state
+when a solve is rejected.
+That remaining dynamic-scene checkpoint cost is a
+performance-remediation item, not the final source publication
+architecture. As the original `ScPipeline`/`Dy::DynamicsContext`
+continuation and fetch boundaries are integrated, lower the
+remaining actor/cache checkpoint into staged writes and source-owned
+publication. Do not add blocking waits or re-run the simulation
+to emulate failure atomicity.
+
+**Active-only Dy partition and threshold candidates:** The source task
+descriptor stream now uses generation-stamped Gu-indexed partition
+assignments rather than writing an unassigned sentinel across the
+entire retained manifold arena every PGS frame. Overflow-wave conflict
+handling and stable per-partition descriptor ordering are unchanged;
+a failed solve advances the scratch generation so a retry cannot
+accidentally reuse its assignments. The source force-threshold stage
+likewise collects fresh candidates only from managers admitted by
+the current active island tasks. It still merges with the retained
+previous exceeded-force stream to emit the original Found, Persists
+and Lost transitions, including when a manager becomes dormant.
+These optimizations remove independent O(all dormant Gu managers)
+passes from the source task partition and threshold pipelines.
+
+The native regression exercises multiply-combined finite materials that
+overflow during contact preparation, repeated failed attempts, preservation
+of previously published contact spans and force/threshold reports,
+one-shot torque impulse continuity on a retry, and a late pose-overflow
+after an earlier body has integrated. The test must fail if any of those
+stages leaks state from an unsuccessful step.
+
+### Rigid-contact solver admission and island-manager ordering
+
+`Scene::add_dynamic_box` may retain extreme finite boxes for the
+provisional free-translation path even when their density-scaled source
+`PxReal` inverse inertia is not representable. Such a body must **not**
+enter `Scene::prepare_solver_bodies` for contact solving: an implicit
+zero angular tensor alters the original per-point `DyContactPrepShared`
+Jacobians and impulse distribution. The production solver rejects the
+unsupported constrained actor, while `StepCheckpoint` restores the
+previous frame and its free-flight translation remains usable. The
+heavy-density and subnormal-density rejected-contact fixtures exercise
+that publication and retry boundary.
+
+**Admitted indexed-manager descriptor order:** The original
+`DyDynamicsBase.cpp::iterateIslandsContactEdges` gathers contact
+managers by walking accurate `IslandSim` active islands and their
+`eCONTACT_MANAGER` edge arrays, not the canonical `BodyId` pair order.
+The native accurate `IslandGraph::Island` now owns the corresponding
+ordered first/last `EdgeIndex` links; existing persistent contact-manager
+slots retain O(1) insertion, source `mergeEdges` concatenation, and
+`removeEdgeFromIsland` **swap-last** retirement. No separate contact
+registry, copied solver rows or per-manager allocations are introduced.
+The actual `partition_constraints` path builds
+`indexed_managers_` from active accurate islands and resolves these
+handles to the current Gu manifold offsets via generation-stamped
+reusable lookup slots. Both dynamic/static partition classification and
+stable partition scatter use this source-indexed sequence, while Gu
+contact/impulse writeback remains in its original pair order. Rejected
+steps recover previously published indexed-manager spans with
+allocation-preserving checkpoint swaps. The independent native smoke
+fixture creates managers in noncanonical order and verifies the source
+swap-last permutation after loss.
+
+**Active-island retirement and rigid solver task grouping:** The
+admitted `PxsIslandSim::processLostEdges` deactivation pass now
+consumes the accurate graph's `mActiveIslands` in reverse source order,
+after wake publication; dormant historical handles are not scanned in
+steady-state frames. The graph reconciles sleeping nodes after an actual
+deactivation, not through an unconditional second traversal. The rigid
+`DyDynamicsContext::updatePostKinematic` descriptor lowering groups
+consecutive accurate active islands using the default 128-body
+`solverBatchSize` and source minimum of one contact manager, and runs
+`DyConstraintPartition` independently within each group. Its
+32-partition overflow reprocesses only pending manager endpoints instead
+of resetting unrelated solver bodies. The existing single Scene still
+executes these disjoint groups serially; asynchronous source task
+continuations and heterogeneous constraint groups remain unported.
+The native regression checks reverse simultaneous sleep order, quiet
+retirement, and 128+2 contact-island groups with full impulse writeback.
+
+**Source-ordered friction preparation:** The active accurate-island
+contact-manager stream now drives `DyContactPrep` correlation and
+normal/friction-row creation. The original Gu manifold order and
+point offsets remain stable for collision history and force writeback.
+Retained strong-friction patches are located by the persistent manager
+`EdgeIndex`, verified against their original pair identity and the
+friction cache epoch. This avoids a global Gu-pair sort when task
+descriptor order differs from contact generation order.
+
+Each manager-span index rotates with its friction arena after successful
+preparation and reverses with that arena on failed steps. Dormant
+managers and recycled handles cannot consume stale anchors. Explicit
+shape-pose and offset changes compact the affected patch cache and
+reindex surviving managers; ordinary solver frames do not perform
+that rebuilding work. Gu-indexed force writeback clears inactive
+Dy descriptor metadata without revisiting dormant contacts during
+solver preparation. Regressions cover noncanonical task order,
+anchor retention after authored edits, and failed publication restore.
+**Remaining source ordering breadth:** The admitted non-compound rigid
+PGS path consumes the indexed-manager sequence directly, matching
+`DyDynamics.cpp::setupDescTask`'s non-compound branch. The
+`PGS_SUPPORT_COMPOUND_CONSTRAINTS` alternative performs a separate
+stable two-key solver-body remap and contact reduction, and remains an
+explicit later source admission; it is not silently approximated by an
+unrelated global pair sort. The native source-local lost-edge split
+now executes `PxsIslandSim::removeEdgeFromIsland` for each migrating manager
+in visited-node adjacency order, then applies `splitEdges`-style
+append into its new source-owned island. This preserves the
+original/root island's **swap-last-compacted remainder** instead of
+replaying managers in the pre-split indexed array order. A linear
+five-body split regression distinguishes the resulting source
+C-D, D-E order from the previous D-E, C-D fallback.
+Local split manager migration seeds each disconnected component's
+`mVisitedNodes`-equivalent discovery at the smallest **dirty** rigid
+node (the original `mDirtyMap` scan), not at its lowest `BodyId`.
+A min-priority heap of the existing hop estimates traverses the
+authoritative `EdgeInstance` adjacency; the migration sequence is
+recorded **on queue insertion**, as in source `findRoute`, rather than
+when elements are popped. An additional split regression makes the
+orphan's dirty B node follow its smaller, non-dirty A node in actor
+order, and requires B's static manager to precede A's managers in
+the new island. New rigid nodes now initialize `mHopCounts` to **zero**, as in
+`PxsIslandSim::addNode`, rather than an invented infinite default.
+Per-graph hint vectors grow during `addNode`-equivalent island
+admission; existing hop estimates are retained across unrelated
+actor admissions and backed by the existing journal on rejection.
+`PxsIslandSim::processNewEdges` and `mergeIslandsInternal` also
+update hop estimates: on merge, the smaller island's member nodes
+receive the source `mHopCounts[winnerEndpoint] +
+mHopCounts[loserEndpoint] + 1` offset, then the connecting loser
+endpoint receives `winnerHop + 1`; a new chord may shorten either
+endpoint's route. These writes now occur in the existing loser-node
+remapping pass with journaled per-node hints, retaining the original
+root-directed connector in the persistent edge slot.
+
+The branched priority regression starts with C-X and B-X already
+linked. X has a shorter *merge-derived* root estimate than A, whose
+separate A-G island subsequently joins through B-A. B's adjacency
+therefore discovers the newer A-B before X-B. Removing the root
+bridge B-C and C-X chord in the **same** publication preserves the
+source estimates until the split: the hop-priority queue expands X-H
+before A-G even though FIFO would do the opposite. The fixture
+asserts actual unequal cached values before the loss and H-static
+before G-static after migration. It does not rely on an invented
+infinite-hop sentinel or on stale values left unadjusted by merges.
+For simultaneous splits, dirty nodes are consumed in ascending
+`mDirtyMap` seed order. The first failed `findRoute` immediately
+splits its component, **reusing the original search's** `mVisitedNodes`
+in queue-insertion order. There is no second component traversal and
+no deferred list of failed roots. Nodes visited in that split are
+marked for the rest of the same graph's dirty-map pass, matching
+`processLostEdges`' skip of already-confirmed split members.
+Only that component's visited nodes are detached from the original
+node chain. The root component keeps
+its existing handle and unchanged membership order; the detached
+component acquires a free or newly allocated source-style island
+handle and a node chain ordered by `mVisitedNodes` insertion. Its
+indexed managers are swap-last removed from the original island in
+the same visit order, then appended to the new handle. Unrelated
+islands are neither traversed nor rebuilt. The full-component scan
+remains only for actor admission/retirement and exceptional topology
+reconciliation, not ordinary lost-contact splitting. The new
+`island_local_split_count` and `island_full_rebuild_count`
+diagnostics distinguish those two paths. Shared split witnesses are
+now retained within each third pass using generation-stamped scratch.
+The third pass now also retains witnesses along validated fast routes,
+terminates successful priority searches at an earlier confirmed island
+member, unwinds that root/witness route, and propagates hints to the
+remaining discovered branches in source `mVisitedNodes` order.
+Standalone regressions distinguish split-witness skipping from
+successful-search branch repair. The full source `mIslandIds`-based
+visited/invalid transition, deferred dirty-node budgets and
+kinematic/non-rigid visitation remain fidelity work.
+Source `Cm::PriorityQueue` ties are now reproduced by the same binary-heap
+push/pop rules: equal-hop insertions do not bubble, and removal selects
+the left child when both children tie. The five-way split regression
+observes the resulting manager permutation (not FIFO or BodyId order).
+Full source witness-driven route reuse, per-pass dirty budgets, typed
+`PxNodeIndex` lifetime, and the original continuation graph remain
+fidelity gates. Ordinary rigid split-handle allocation is now local.
+
 ## Native ownership and data contracts
 
 The only production scene state owner remains `fyzz::native::Scene`.
@@ -423,6 +1102,1102 @@ The native runtime must remain buildable with
 `FYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF`; source components
 are SDK-owned under preserved notices. The separately linked PhysX CPU
 reference retains its existing `PxScene` and serves only as an oracle.
+
+## Admitted rigid island connectivity and sleep lifecycle
+
+The native scene now consumes two distinct source contact-edge streams,
+without creating a second physics world or actor registry:
+
+| Source producer and type | Native owner and consumer | Admitted semantics |
+| --- | --- | --- |
+| `BpBroadPhaseSap` candidate pairs, `PxsSimpleIslandManager::firstPassIslandGen` and `IslandSim::processNewEdges` | `Scene::previous_pairs_` → scene-owned speculative `IslandGraph` with persistent island handles and intrusive node membership | Dynamic/dynamic candidate connectivity, including non-touching rotated AABB candidates; static endpoints never merge rigid islands |
+| `GuContact*` physical touches, `Sc::Scene::setEdgesConnected`, `PxsSimpleIslandManager::secondPassIslandGenPart1` | `Scene::manifolds_` → scene-owned accurate `IslandGraph` with persistent island handles and intrusive node membership | Only touching dynamic/dynamic contact edges connect accurate islands; candidate-only pairs do not |
+| `Dy::DynamicsContext::iterateIslandsNodes` and `preIntegrationParallel` | Contiguous accurate-island `BodyId` spans → the existing `SolverBodyRow` arena; same spans drive pose integration | Each live awake dynamic body is admitted once; only bodies with contacts allocate prepared solver rows; the original static-world solver row remains separate |
+| `IslandSim::processLostEdges`' connected-component result | On source dynamic pair/touch removal, update the same scene-owned graph state | Accurately split or rejoin components at the next published collision state; static-only contact changes do not rebuild dynamic connectivity |
+
+**Fidelity classification:** source-style persistent island IDs, island
+handle recycling and intrusive node-membership chains, **only for the
+rigid dynamic/static contact-only subset**. The previous
+provisional union/find parent/rank arrays have been removed. Both source
+island graphs now own independent handles and node-to-island mappings;
+the shared contact-manager `EdgeIndex` array owns both adjacency graphs,
+not a second actor, force, contact or solver world. Merging components
+retains the larger source island's handle and remaps the smaller node
+chain. On actor admission/retirement, new rigid nodes are first
+admitted into the existing source island ownership and the found edges
+are merged in source order, with each merged island's accumulated size
+determining its retained handle. Only afterward does the bounded
+component traversal reconcile removed edges, retire old actors, and
+rebuild intrusive node membership. Thus simultaneous found/lost edges
+cannot change retained island identity merely because a new actor was
+also admitted. A genuine split still preserves the surviving old-root
+component's handle and unrelated islands. The rigid-body active-node
+lists and initial-active/activated suffixes are implemented separately
+for both graphs; source-local split migration, activated/deactivated
+*edge* worklists, non-rigid node types, post-integration scheduling,
+and callback interleaving remain open.
+
+The island owner now also maintains the source `Node::mStaticTouchCount`
+and `IslandSim::mIslandStaticTouchCount` independently for speculative
+SAP candidates and accurate Gu touches. Static-edge found/lost changes
+update the owning node and island counters without changing dynamic
+connectivity revision; dynamic merges accumulate both islands' static
+touch totals, and actual split/node-lifetime rebuilds recount them from
+the authoritative surviving intrusive adjacency. A contact with the
+SDK infinite floor therefore remains a speculative candidate even
+after physical touch is lost, exactly as the underlying edge streams
+require. These counters are the source island contact-state inputs for
+`Dy::sleepCheck` and whole-island deactivation, now used by the admitted
+default-scene non-stabilized sleep path. They remain distinct from the
+number of counted Sc contact interactions used by the wake-energy filter.
+
+### Default-scene rigid sleep and wake
+
+Native `Actor` state now retains the original `PxsBodyCore` 0.4-second
+creation wake counter, `PxsRigidBody::mSleepLinVelAcc` and
+`mSleepAngVelAcc`, and the per-node readiness outcome of
+`DySleep.cpp::updateWakeCounter`. The latter consumes each dynamic
+body's post-position-pass motion velocity, inverse mass/local inertia,
+default sleep threshold (`5e-5 * 10² = 0.005` at the
+default `PxTolerancesScale.speed = 10`) and current contact-manager
+interaction count. The original creation wake counter is 0.4 seconds;
+the source wake filter accumulates motion near expiration rather than
+using instantaneous zero-velocity tests. The two speculative/accurate
+island owners retain their existing
+contacts while a full component becomes inactive; inactive members skip
+gravity, constraint submission and pose integration. Explicit velocity,
+torque or position authoring reactivates the body, and connected
+speculative-island members are woken together **before unconstrained
+velocity integration**. New physical touches with static bodies are
+additional wake events. Retiring a contact participant or authoring either a static or dynamic
+pose also revokes stale readiness in its former Gu contact partners.
+This includes the one-frame interval in which the partner is ready to
+sleep but not yet deactivated. The explicit authoring path queues
+activation before contact removal can split the old island, so a
+former sleeping partner does not remain suspended after losing its
+support. Quiet queries consume genuine pending wake requests without
+scanning the entire island inventory.
+These transitions, including rollback of wake counters and readiness,
+are compared with the independent `PxRigidDynamic::isSleeping()`
+reference for an ordinary settled floor contact.
+
+This is **not** complete `PxsSimpleIslandManager` sleep/wake parity:
+the rigid contact-manager `Edge::eACTIVE/eACTIVATING` flags and
+activated-edge worklists are now independently owned by the speculative
+and accurate graphs. Rigid two-dynamic-endpoint
+`IslandSim::Node::mActiveRefCount` bookkeeping is also implemented.
+The supported rigid/kinematic path now also consumes active references
+for kinematic endpoints, retains independent per-graph active indices,
+executes concurrent third-pass and per-island Dy solver tasks, and
+reconciles deactivated bodies against their pre-integration poses at
+`ScPipeline::afterIntegration`. Rigid and kinematic distance-constraint
+endpoints use typed island edges and source-derived 1D PGS rows.
+Unsupported non-rigid node types, stabilization/freeze features, full
+sleep/wake callback breadth and CCD remain outside this admission.
+The implemented rigid task joins do not establish general asynchronous
+GPU or articulation execution.
+
+**Cost:** unchanged dynamic connectivity and static-only topology
+changes incur no component reconstruction. A newly found
+dynamic/dynamic SAP candidate merges the speculative node chains by
+remapping the smaller island's nodes (O(smaller island size)); a new
+physical touch does the same independently in the accurate graph.
+Source island identities remain stable across quiet frames and redundant
+contact changes. Node-lifecycle rebuilds traverse the final live graph
+in O(V+E) without a per-incidence search through new-edge streams;
+found edges are handled once by the regular source merge operation
+before that traversal. Accurate-node ordering is rebuilt only when a touch
+merges previously separate islands or a split/node-lifetime rebuild
+occurs, costing O(dynamic nodes log dynamic nodes). On a lost dynamic
+edge, the native scene uses the
+`IslandSim::processLostEdges` / `findRoute` connectivity invariant:
+if the removed edge's endpoints are still connected in the surviving
+published graph, their component has not split. The scene now retains the original `IslandSim::mEdgeInstances`
+per-endpoint intrusive adjacency form directly in each persistent
+contact-manager `EdgeIndex` slot: two endpoint links, per speculative
+and accurate graph, with per-node first-edge heads. SAP overlap
+creation/removal links or unlinks speculative instances; Gu touch
+found/lost does the same independently for accurate instances.
+Lost-edge route checks traverse this persistent state, using only
+visited marks and a reusable hop-priority queue; no temporary adjacency graph or
+edge-list reconstruction is needed for each loss. Redundant lost
+edges preserve connected components and solver-node order. A proved
+dynamic-node admission/retirement still reconstructs island-node
+membership from surviving source edge slots, costing
+O(dynamic nodes log dynamic nodes + candidate edges + touching edges).
+Ordinary contact-loss disconnections instead migrate only locally
+disconnected nodes and managers, without a second heap traversal.
+The admitted all-awake rigid subset now also follows the source
+`IslandSim::removeConnectionFromGraph` → `mDirtyMap` →
+`tryFastPath`/`findRoute` sequence: unlinking a dynamic/dynamic
+instance queues its rigid endpoints as dirty and clears any direct
+`mFastRoute` hint through the removed edge. Third-pass repair walks
+those dirty nodes toward their current island root. An advisory
+`mFastRoute`/hop-count cache is reused only when **every cached link**
+still exists in that graph and hop estimates decrease toward that
+root. Otherwise, a graph traversal through the persistent
+`EdgeInstance` adjacency finds a surviving root route and refreshes
+its path estimates. If root connectivity is lost, the native third pass now detaches
+only the failed component into a locally allocated source-style
+island handle, leaving unrelated node chains and handles untouched.
+
+When a reconstruction changes an island root, only that root's affected
+node hints are invalidated; unrelated actor admissions do not evict
+existing cached routes. Failed publications restore route successors,
+EdgeIndex handles, hop estimates and stamps through sparse per-slot undo
+entries, preserving successful earlier hints on retry without copying
+entire arrays. Only dirty dynamic/dynamic edges trigger this work;
+static touch loss does not split the admitted awake dynamic components.
+Failed fast paths use the source `Cm::PriorityQueue` binary min-heap
+ordered solely by estimated hops to the old root. There is **no**
+BodyId or discovery-order tie-break: `push` retains equal-priority
+parent order, while `pop` prefers the left child on a tie. Outdated
+estimates change exploration order, **never** connectivity. In the worst case the traversal visits O(V+E) graph
+entries and maintains a O(log V) priority heap per visited node,
+versus O(path length) validation for an intact cached route. Visitation
+stamps are retained and advanced across publications rather than
+clearing all actor marks each frame. Split members are also marked
+confirmed for the current source dirty-map sweep, so subsequent dirty
+seeds in that same orphan incur no extra route searches. Source
+`IslandSim::findRoute` also reuses confirmed witnesses from earlier
+successful searches and validates cached paths; those root-witness
+and off-path branch operations are now translated for the rigid graph.
+For admitted rigid/kinematic/constraint graph traversal, source
+`mVisitedState` and the temporary `IG_INVALID_ISLAND` designation for
+unconfirmed search nodes are lowered into generation-stamped visited
+and confirmed witnesses. Authoritative persistent island handles remain
+valid throughout the task and are changed only by local split migration.
+The same hop-priority queue, dirty-map index order, root/witness
+termination and visited-node migration order drive the native graph.
+Regressions cover branch witnesses, hop priorities, multi-split order,
+stale-route recovery, concurrent graph repairs and rollback.
+The optional source dirty-node budget is disabled in the original
+configuration (`IG_LIMIT_DIRTY_NODES=0`) and is not a default-CPU
+admission requirement. Articulation/non-rigid node transitions and
+their independent activation/solver consumers remain unsupported.
+The full-rebuild instrumentation differentiates redundant edge
+removal from a true split; allocations are retained between frames.
+
+**Regression boundary:** dynamic three-node merge, split,
+incremental rejoin and removal; redundant edge deletion in a
+three-node cycle without rebuild, followed by true bridge-edge
+deletion forcing a split; isolated free-flight integration;
+multiple dynamic bodies touching one shared static world without an
+accidental merge; static-only changes without component reconstruction;
+and diagonal thin boxes whose speculative AABB graph is connected while
+their accurate Gu contact graph is disconnected. The tests distinguish
+an incremental speculative insertion, incremental accurate touch
+insertion and a complete lost-edge rebuild through scene-owned
+instrumentation. They execute through the production `NativeCpu`
+path in source-free Vulkan and D3D12 builds.
+
+**Original source phase boundary (still required):**
+`PxsSimpleIslandManager::firstPassIslandGen` processes speculative
+new/lost edges with `processLostEdges(..., false, false, ...)`; the
+accurate graph's `secondPassIslandGenPart2` also processes losses
+without deactivation. The source's split/dirty-route repair is gated
+by `allowDeactivation` inside `IslandSim::processLostEdges`, and is
+scheduled through the speculative and accurate third-pass tasks.
+`ScPipeline::destroyManagers` launches
+`thirdPassIslandGen` with a common post-third-pass continuation;
+`postThirdPassIslandGen` and `afterIntegration` coordinate
+sleep/deactivation and publication. The native all-awake rigid subset now separates two synchronous
+stages inside the existing `Scene`: first/second-pass speculative
+and accurate **edge insertion** after published Gu results, followed by
+lost-edge route checking and component repair once lost-contact
+products are ready. In the admitted synchronous CPU path, the complete
+pair/touch publication and island connectivity handoff now precedes
+`Dy::bodyCoreComputeUnconstrainedVelocity`: newly connected sleeping
+nodes must receive their own gravity/damping preparation in the same
+frame in which `IslandSim::wakeIslands` activates them. This removes
+the earlier split wake sequence (old-island wake before gravity, new-touch
+wake after gravity) without a second actor or solver owner.
+
+**Rigid CPU post-solver continuation join:** In
+`ScPipeline.cpp::updateDynamics`, `mProcessLostContactsTask3` and
+`DyDynamics.cpp::createSolverTaskChain`'s `PxsSolverEndTask` continuations
+are independent producers of `mPostSolver`. The lost-contact branch
+includes the speculative/accurate third-pass and Sc interaction activity
+consumer; each solver task chain owns a contiguous group of accurate
+active islands and completes only after those rigid bodies are integrated
+and sleep-checked. The production native CPU `Scene::step` now lowers
+these real dependencies into one frame-local `RigidStepJoin`.
+The post-third-pass and lost-contact continuations are distinct
+completion dependencies. Every `PxsSolverEndTask` completes by its actual
+indexed task-chain identity, not by decrementing an anonymous count:
+duplicate completion of one task cannot mask an unfinished island
+chain. Reusable generation stamps avoid per-frame clearing/allocation,
+including wraparound. The join then requires `postSolver`,
+`afterIntegration`, and completed event publication in source order,
+with destroyed-manager release gated behind all solver chains.
+Zero-task scenes and mixed contact/free-flight task groups use the same
+join. Per-chain completion storage scales with active Dy tasks and
+retains capacity across steps. No secondary graph or actor owner is
+created, and Dy dispatch need not wait for the independent lost-contact
+producer. Native regressions check reversed producer completion,
+missing/duplicate chain identity, generation rollover,
+enhanced-determinism task partitioning, zero-contact island integration,
+and retirement across frames. Original asynchronous `PxBaseTask`
+dispatch, post-integration concurrent-deactivation pose restoration,
+GPU/DMA continuations, non-rigid edge types and full fetch/report task
+ownership remain unimplemented; a serial join does not claim them.
+
+**Rigid `afterIntegration` shape publication and actor deactivation:**
+`ScPipeline::afterIntegration` calls
+`PxsSimulationController::updateScBodyAndShapeSim` after PGS body
+integration. The serial CPU `Scene` now updates encoded Gu box bounds
+from the already integrated pose for each active accurate-island rigid
+node at this stage. The next SAP pass reuses those cached bounds;
+authored pose/contact-offset edits invalidate only the affected actor.
+The actor's current-bounds flag and six encoded endpoints use the
+existing per-body motion rollback record, not an extra shape table or
+a second bounds recomputation per ordinary frame. Native tests cover
+integration-publication, subsequent SAP reuse and authored invalidation.
+`ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
+per-step velocity changes and per-second accelerations in the same
+third-pass island deactivation path; the wake regression rejects replay
+of stale spatial forces. PhysX's concurrent third-pass/PGS variant
+restores deactivated poses from their saved pre-solver transforms inside
+`afterIntegration`; this serial CPU path deactivates before Dy and
+never integrates those nodes, so no speculative pose repair is
+performed. True parallel pose reconciliation and other simulation
+controller callbacks remain separate admission requirements.
+
+**Legacy source friction-anchor replacement:** 
+`DyFrictionCorrelation.cpp::growPatches` selects replacement
+candidates for either cached friction anchor while searching the
+current contact runs. Its upstream writeback loop starts at the
+prior anchor count and can consequently leave a replaced old slot
+unpublished. Native correlation retains the original search and
+cached one-anchor persistence, but records which of the two slots
+were actually changed and transforms those selected world points
+into BOTH source body-local frames. A two-body anchor/Gu-contact
+consistency regression exercises the one-to-two growth case; the
+unmodified retained slot incurs no extra transform work.
+
+The source-derived active-island handoff is now explicit:
+after third-pass activation/deactivation the synchronous CPU scene
+maintains the accurate graph's `IslandSim::mActiveNodes` and
+`mActiveNodeIndex` rigid-node lowerings, using source-style swap-last
+retirement, append activation and a dense reverse map. The third pass
+also emits `mNodesToPutToSleep`-equivalent accurate rigid deactivations
+only when a previously ready island actually sleeps. These lists reside
+in the same persistent accurate island owner and participate in its
+rollback transaction. The dispatch then builds indices into the
+existing accurate-island node batches, mirroring
+`IslandSim::mActiveIslands`. Unconstrained velocities, prepared-contact
+solver-body admission, and pose integration consume those active batches,
+not the entire actor array or dormant graph islands. Index storage is
+reused, and no copied actor registry or second island owner is introduced.
+A regression verifies the dormant/awake split, free-flight integration
+and subsequent wake admission. Rigid per-node active-index permutations
+are now retained through append activation, swap-last deactivation,
+and rollback in both graphs. Source rigid contact-manager
+`mDeactivatingEdges` output is now lowered for both graphs as a
+separate sleep-lifetime event: walking each newly inactive node's
+intrusive links emits the edge only when its other endpoint is already
+inactive or static. The first sleeping endpoint of a dynamic/dynamic
+accurate contact does not emit it; the second emits once. The speculative
+graph can contain AABB-only links between independently sleeping
+accurate islands: it emits **no edges** while its own island retains an
+awake member. Both newly sleeping accurate members **and** roots of
+components detached by speculative third-pass lost-edge repair are
+candidate triggers: a SAP-only bridge can retire its final awake member
+without any new accurate sleep event. Only those locally touched island
+roots are examined, deduplicated with generation stamps; there is no
+global island scan. On the resulting speculative island deactivation,
+its original island-node and EdgeInstance order emits each static/dynamic
+or dynamic/dynamic edge once. Destroyed/lost
+contact edges are *not* sleep events, and manager handles remain live.
+The one-frame outputs are graph-owned, geometrically capacity-reserved
+before the no-throw deactivation stage, and restored on failed
+publication. The distinct-sleep regression first asserts that accurate
+floor deactivation does not prematurely emit speculative floor edges,
+then removes the SAP-only bridge and requires the formerly sleeping
+component's speculative floor edge to deactivate in that new publication,
+without a new accurate sleep event or a repeated quiet-frame event.
+The source rigid contact-manager active/activating flags, active-edge
+counts and activated-edge worklists are now preserved independently by
+both graphs. Non-rigid node and constraint edge types, callback consumers
+and concurrent task continuations remain unported.
+The graph-owned accurate active-node index also reconciles
+on successful geometry-only publications (including new admission,
+retirement and quiet authored wakes). Its reusable active-ID capacity
+and reverse map are prepared by the topology rebuild, so that no-throw
+handoff cannot allocate after the editor collision transaction commits.
+The last solver active-batch view remains a separate successful-step
+publication. Each successful quiet collision publication also clears
+the previous one-frame accurate rigid deactivation output without
+performing a third-pass island traversal; otherwise the old sleep event
+would be observable again against a newer frame index.
+
+The accurate rigid graph also retains
+`IslandSim::mInitialActiveNodeCount[eRIGID_BODY_TYPE]`, captured before
+the wake/publication pass. Its `markInactive` lowering relocates
+removed initial members to the prefix tail before swap-last removal,
+keeping `getNodesToActivate` as a genuine suffix. The surrounding
+index traversal rechecks the original compacted slot after every
+removal; multiple initial rigid nodes can deactivate in the same pass
+without skipping a relocated dormant member. A two-island simultaneous
+sleep/new-admission regression tests both numerical and collision-only
+publication and subsequent authored reactivation. Topology rebuilds
+retain the active-node permutation and its prefix rather than
+reconstructing active nodes from actor sleep flags. The count is
+checkpointed alongside the source active-index map.
+
+The speculative IslandSim now independently maintains
+`mActiveNodes[eRIGID_BODY_TYPE]`, `mActiveNodeIndex`, and
+`mInitialActiveNodeCount` with the same source append/swap-last
+mechanics, rather than leaving its active-node list empty. These are
+**separate graph-owned permutations** over the one Sc actor sleep state:
+one scene-owned no-throw synchronization walks both graphs; each
+maintains its own reverse indices, originally active prefix, and
+newly activated suffix. Quiet authored wakes and collision-only
+publications update both. Before a potentially failing publication,
+the checkpoint reserves full actor capacity for both working active
+lists and swaps the prior published allocations into its undo state;
+a failed topology rebuild restores both original list pointers and
+index maps. A standalone regression exercises two ready-to-sleep
+islands, a quiet wake and non-replayed suffix, dynamic actor admission,
+rejected rebuild, successful retry, and retirement. The existing Dy
+body admission continues to use **accurate** active island batches,
+not speculative SAP-only contact candidates.
+
+This translates the admitted *rigid active-node index* contract for
+both IslandSim owners, alongside their independent rigid contact-manager
+**active/activating edge flags, activated-edge worklists, and active counts**.
+Complete kinematic/non-rigid deactivation, constraint-edge activation,
+active-reference accounting, original per-type partitions and task
+continuations remain explicit acceptance requirements. The rigid
+Sc sleep state is not duplicated as an independent speculative scheduler.
+
+The admitted serial dependency chain is **contact publication → first/second
+island connectivity → third-pass lost-edge repair → whole-island wake
+→ third-pass deactivation from previously published readiness →
+unconstrained velocities → solver preparation/PGS → integration and
+readiness for the next third pass**. The third-pass-compatible
+repair can run before numerical PGS work; the original source permits
+speculative/accurate third-pass tasks to overlap the solver and join
+at post-third-pass. The admitted serial ordering is a valid
+dependency-ready lowering, not an implementation of its actual
+continuations or concurrent task graph. Geometry-only collision
+publication also completes the shared source-island wake stage before
+returning: an editor contact query may introduce a new Gu static touch
+while the body is asleep, and the resulting activation must not be
+dropped by a later quiet query. The activation operation is no-throw
+and runs after collision-only checkpoint commit, preserving the
+existing low-cost geometry-only failure boundary. Full `step()`
+reuses the same operation before gravity, damping and Dy submission.
+
+The current synchronous CPU scene consumes prior-frame
+`Dy::sleepCheck` readiness at the third-pass boundary instead of putting a
+body to sleep in the same frame its PGS solve first marks it ready.
+`PxsIslandSim::processLostEdges(allowDeactivation)` owns the original
+per-island test. The admitted native scene now applies rigid-body
+deactivation to accurate island membership, leaving speculative-only
+connections to govern broadphase/contact interaction activity; it no
+longer treats every awake speculative member as a wake event. Explicit
+sleep-to-wake authoring queues an actor-local activating flag, and
+new speculative/accurate edges activate their affected islands during
+the collision-publication handoff. Quiet collision queries also consume
+pending authoring activation. That flag is part of rollback state.
+`ScPipeline::afterIntegration` restores prior poses
+when solver and island tasks overlap. Serial CPU deactivation before PGS
+avoids the concurrent integration that requires restoration in the original
+schedule. Regressions require a visible ready-but-awake frame followed
+by an inactive frame with an unchanged pose, and verify that a newly
+published Gu touch clears the readiness of an **already awake** node
+before third-pass deactivation. Quiet island propagation must not clear
+readiness every frame, or no island would ever fall asleep. This implements the admitted rigid active-node index, activated suffix,
+and accurate deactivating-node output, alongside the admitted
+rigid contact-manager deactivating-edge output in both graphs,
+and now the source rigid contact-manager activated-edge queues and
+active/activating bits, but **not** kinematic rules, active-reference
+bookkeeping, callback lists, or the parallel
+third-pass/post-integration join.
+
+**Persistent contact-manager EdgeIndex (admitted source subset):**
+`PxsSimpleIslandManager::addContactManager` allocates one `EdgeIndex`
+for each created SAP contact-manager overlap. `native::Scene` now owns
+the corresponding indexed edge slots and reusable handle pool alongside
+the original sorted pair stream; it does **not** allocate a separate
+collision graph or duplicate the physics actors. Finite broadphase overlaps are retained in a compact hashed
+`SapPairManager` with explicit creation/removal states. Indexed minimum
+and maximum endpoints on all three axes produce sparse crossing
+candidates. Multi-volume updates preserve endpoint order directly
+when all final neighbor comparisons remain sorted. Rank-local
+changes use indexed adjacent shifts regardless of world displacement.
+Bounded bulk updates merge sorted changed endpoints into the unchanged
+stream and sweep active X intervals involving updated volumes for net
+three-axis pair transitions. Larger reorders retain linked activity
+pockets. A per-volume axis mask skips unmodified endpoint arrays.
+The pair-state manager receives only potential new three-axis overlaps
+or retirements of existing pairs. All routes preserve the same
+endpoint ordering, overlap definition, and Sc contact-manager ownership.
+A complete pair sweep remains necessary for structural proxy changes.
+The contact-manager stream remains separate: unchanged Sc pairs
+retain their original EdgeIndices, while net pair additions and
+removals enter the existing linear Sc publication merge. Source `setEdgeConnected`/`setEdgeDisconnected`
+semantics are represented by an accurate-connection bit on that slot,
+updated from Gu found/lost touch events. Both speculative and accurate
+island connectivity now consume the same persistent edge slots.
+Loss of physical touch does **not** destroy its contact manager as long
+as the candidate overlap remains alive.
+
+`removeConnection` queues removed-overlap handles for retirement.
+They remain unavailable for reuse until the source-corresponding
+third-pass join has completed graph repair; only then are they returned
+to the scene-owned free-handle pool. New overlaps created in the same
+publication cannot take a pending-retirement handle. Source handle
+indices may subsequently be reused on later overlaps. A failed
+`Scene::step` restores the slot pool, accurate connection bits, active
+handle ordering and retirement queue alongside actor/contact history.
+The native smoke tests exercise touch loss/reentry, overlap replacement,
+no premature same-frame reuse, subsequent handle reuse, and rejected
+step retry identity. An additional graph regression retires a link in
+a dynamic cycle, reuses the same handle for a different contact, then
+tests redundant lost-edge routing and a real split against the
+relinked adjacency. The same source edge slots, not a second graph
+owner, supply both graphs and their traversal.
+
+**Remaining source and performance differences:** persistent
+`EdgeInstance` next/previous links and per-node first-edge indices
+are now represented and maintained by the existing scene's contact
+manager handles. Source dirty-node endpoint marking, hop-priority exploration and validated
+fast-root/hop-route hints are now active for all-awake rigid links,
+with speculative and accurate state kept separate. Static-touch
+counters now follow physical touch and candidate transitions, including
+dynamic component merge/split and static actor retirement. Stable island
+handles and per-node island membership replace the provisional
+union/find roots. Source hop-priority queue visitation and its
+equal-priority `Cm::PriorityQueue` heap order are now implemented
+for the admitted rigid graph, including split migration visitation
+order. Split-local `mVisitedState` witnesses now survive across dirty
+seeds in the same graph pass, and failed `findRoute`'s discovery
+list feeds `splitEdges` without a second component traversal.
+The admitted rigid graph now reuses successful-search and fast-path
+witnesses as well, including source-style off-path branch hint
+propagation; **what remains** is the full invalid-island state
+transition, deferred multi-frame dirty-work budgets, typed node
+lifetime, non-contact-manager edge activity and
+the remaining non-rigid lifecycle. The rigid
+`mDeactivatingEdges[eCONTACT_MANAGER]` sleep output is implemented
+independently of manager retirement.
+Ordinary lost-contact splitting now migrates only the failed
+component's nodes and indexed-manager edges using source visit order,
+swap-last removal and local handle allocation. The full-component
+rebuild remains for actor admission/retirement. Neither path replays
+managers in canonical Gu pair order. Failure rollback journals **only the modified** source edge
+slots, route hints and intrusive node-head links, including splices into
+neighboring edge instances. It does not traverse or copy old EdgeIndex
+allocations at the start of successful steps. At most O(changed edge
+writes + changed node-head writes) adjacency copies occur in a frame;
+the persistent island-node/handle arrays are now snapshotted only
+on structural mutations; unchanged-topology PGS steps retain only
+active-node publication and motion/friction rollback state.
+Incremental ownership undo for exceptionally large changing islands
+remains a future performance investigation.
+Tests verify a stable multi-contact solve journals zero edge records,
+and an exception after removing an existing accurate edge restores
+both published contact storage and the original intrusive connectivity.
+The admitted rigid CPU ScPipeline now has independent accurate and
+speculative third-pass completion edges into `PostThirdPassTask`.
+Lost-edge repair consumes per-IslandSim dirty-node streams and route
+scratch, including separate visit generations, heap witnesses and split
+migration work. Only accurate splits refresh the indexed Dy island-node
+offsets; speculative-only SAP splits preserve the existing accurate
+solver order. The shared topology publication advances once after both
+owners' repairs, regardless of their serial completion order. Source
+handles and graph ownership remain failure-atomic across either pass,
+with targeted reversed-order, rollback and retry regressions.
+The same ScPipeline continuation retains checkpointed EdgeIndex
+reclamation at that join, the lost-contact producer, and cumulative task-local Dy solve/writeback/integration/
+sleep-check completion edges into `postSolver`. Accurate rigid sleep
+deactivation and speculative edge retirement now execute as separate
+IslandSim producer stages. Sc speculative contact activation is consumed
+after wake/second-pass publication; deactivation is consumed at the
+post-third-pass join. Both use the same EdgeIndex interaction state and
+transaction journal. `afterIntegration`,
+force-threshold processing, finalization and solved-result publication
+remain ordered within the same frame. The serial CPU lowering preserves
+these dependency edges; executing those continuations concurrently
+and reconciling island deactivation against overlapping Dy integration
+remain distinct work. Rigid contact-manager active references and
+the separate accurate/speculative edge-deactivation streams are live.
+Unsupported non-rigid edge types, their per-type activation consumers,
+and heterogeneous solver execution remain outside this admission.
+
+**Source wake/lost-edge dependency:** The admitted serial scene now
+executes speculative and accurate `wakeIslands` before third-pass
+lost-edge repair, matching source first/second/third-pass ordering.
+A pending wake propagates through the old island before the edge
+disconnect causes split migration. Collision-only publications retain
+sparse actor-motion rollback records for these early wakes; unchanged
+actors incur no motion copies. A dormant two-body regression requires
+the original wake propagation when the same publication loses its link.
+
+**Kinematic node admission:** A rigid box may now switch its
+`PxRigidBodyFlag::eKINEMATIC` state through the same World/Scene
+actor identity, without creating a second body owner. The native
+IslandSim-style graph excludes kinematic actors from rigid dynamic
+island membership and Dy integration while preserving their Gu box
+geometry and live contact-manager endpoints. The independent reference
+backend authors the source `PxRigidBodyFlag`. Native conformance
+exercises dynamic-to-kinematic and reverse membership transitions,
+stable rigid IDs and stationary kinematic contact response. Kinematic-kinematic contacts under nondefault filtering and articulation
+nodes remain unsupported; kinematic targets, active-reference lists and
+typed constraint edges are admitted as detailed below.
+
+Moving kinematic boxes now accept a source-style target pose. The
+existing rigid actor retains that target until a timestep is known;
+`ScKinematics::calculateKinematicVelocity` computes its linear and
+shortest-axis angular velocity before Dy contact preparation. Contacts
+use an infinite-mass kinematic solver row with that motion velocity,
+rather than a copied dynamic solver body. `postSolver` commits the target
+pose, `afterIntegration` publishes its encoded bounds, and the next
+target-less frame clears the kinematic velocity. Sparse active target
+indices and source motion rollback preserve frame ownership without
+a scan of every historical rigid ID. Dynamic interaction wake and
+steady-state retirement are tested on the native production Scene.
+All active contact/1D constraint descriptors now prepare kinematic
+endpoints as zero-response solver rows even after the target list has
+settled; generation stamps prevent stale scratch deltas from affecting
+later dynamic contacts without scanning dormant actors.
+
+**Typed island-edge admission:** The source EdgeIndex pool and its paired
+speculative/accurate EdgeInstances now admit distinct
+`eCONSTRAINT` and `eCONTACT_MANAGER` slots. Accurate islands retain
+separate per-type intrusive lists and counts; adding and removing a
+constraint changes island connectivity without entering the Gu contact
+manager stream. A regression proves merger, split, retirement, and
+contact-handle reuse without type confusion. Kinematic endpoints keep their own rigid
+EdgeInstances and do not increment static-world touch counters during
+full graph reconciliation or incremental candidate publication.
+The admitted center-anchor equal-limit distance constraint additionally
+owns a separate recycled ScConstraintSim-style index (distinct from
+its IslandSim EdgeIndex) and generates the source's single hard 1D row,
+with independent geometric
+error, initial joint speed, biased/unbiased solver constants and
+impulse bounds. The row executes in the existing per-island Dy
+position/velocity iteration and motion snapshot, rather than a separate
+position projection. The source-enabled test executes the corresponding real PxDistanceJoint
+on an independent PhysX CPU scene, comparing the first PGS position
+and unbiased velocity publications with native output. Source-free
+CI tests the same production scene against its analytic invariants.
+The same typed Sc constraint and Dy 1D row now admit local body anchors.
+The source `ExtDistanceJointSolverPrep` Jacobians use rotated anchor
+offsets, angular baseline velocities and each dynamic body's world
+square-root inverse inertia, and `solve1D` publishes angular momentum
+deltas through the existing PGS state and motion integration. Native
+and original `PxDistanceJoint` regression cases compare off-center
+anchor angular response, including a moving kinematic endpoint and
+the subsequent postSolver target-pose handoff, without a second solver. Remaining
+constraint breadth now includes source task-local conflict partitioning of
+rigid 1D distance-joint and contact-manager descriptors through one Dy PGS
+solve stream. Remaining breadth includes additional joint types, full 1D
+writeback, springs, limits and articulation responses.
+
+**Public constraint lifecycle:** The admitted center-anchored,
+equal-limit 1D distance row is now available through
+`World::add_center_distance_constraint` and
+`World::remove_constraint`. Native execution owns the existing typed
+IslandSim EdgeIndex and Sc constraint record; the independent reference
+owns an actual `PxDistanceJoint` using the same source min/max/zero
+tolerance contract. Both retire joints with their incident actor.
+Both CPU backends issue generation-stamped public identities over
+recyclable source-owned constraint slots, so a stale ID cannot remove an
+unrelated constraint after ScConstraintSim or PxDistanceJoint retirement.
+The reference backend reuses its joint ownership slots and pre-reserves
+all release bookkeeping before actor destruction. Generation exhaustion
+rejects before graph mutation. Source-enabled conformance checks
+completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
+articulation constraints are not part of this admission.
+
+**Linked kinematic wake arbitration:** Source `PxsIslandSim::processLostEdges`
+traverses the intrusive EdgeInstances attached to active kinematics
+without requiring those edges to retain `eACTIVE`. Both native third
+passes therefore veto sleep through a live but inactive linked edge,
+and speculative kinematic settling revisits those links to retire an
+already-ready island without another Dy readiness transition. The
+existing adjacency lists and bounded candidate stream suffice; no
+dormant-island inventory scan is introduced.
+
+**Workload-aware third-pass admission:** Native ScPipeline and the
+collision-only repair path execute short route-only graph repairs
+serially when either IslandSim has fewer than 256 dirty route nodes.
+This avoids the worker wake/completion cost measured on small graphs
+without changing source findRoute, island handles, or completion edges.
+Real prior-Dy speculative sleep events remain eligible for concurrent
+execution regardless of lost-route size. The benchmark compares all
+three modes (serial, forced parallel, production adaptive) at several
+island counts, requiring exact per-body pose, velocity, sleeping state,
+and both island owner IDs, not just aggregate island counts. Timing
+alone never gates CI.
+
+**Third-pass scheduling measurements:** The native Release benchmark
+compares full Scene::step times using equivalent serial and parallel
+source IslandSims on two deterministic workloads: injected prior-Dy
+readiness and real lost-route split/remerge churn. Five trial medians,
+thread starts and dispatch counts are printed to the Linux CI log. It
+checks resulting body and island state parity, but does not impose
+timing thresholds on shared CI hardware. The reusable worker is
+allocated lazily outside the Scene stack frame; a scene with no
+concurrent work holds no synchronization bundle.
+
+**Independent Dy solver-task execution:** Actual source-derived
+Dy task groups retain disjoint accurate-island solver-body, contact,
+friction and distance-constraint ranges. After common contact/1D
+preparation, one reusable scene worker takes a contiguous source task
+range while the caller takes the other. The split balances prepared
+constraint descriptors and requires at least 256 descriptors with 64
+on each side; short workloads remain serial. A stack-local copy of the
+source zero-mass world solver body prevents concurrent static-row
+mutation. Active kinematic solver participants can be shared by
+distinct rigid islands, so their task stream remains serial.
+
+Each independent task proceeds directly through PGS,
+PxsSolverEndTask Gu normal/friction writeback, final solver-body
+velocity publication, integrateCore and Dy::sleepCheck. No
+scene-wide PGS barrier or second worker dispatch separates the
+solver and solver-end continuation. The original preIntegration
+journals every awake accurate-island actor before tasks can run;
+repeating that O(active body) checkpoint walk at dispatch is
+unnecessary. Its existing motion-generation marks make later
+per-task save_motion calls non-allocating and read-only.
+
+Each task signals its own generation-stamped PxsSolverEndTask
+completion as soon as integration and sleepCheck finish. A narrow
+completion mutex protects the shared outstanding counter while
+distinct task stamps remain range-owned. The reusable worker and
+caller accumulate next-frame sleep-ready candidates in separate
+buffers; these merge in original source task order after the worker
+joins. Sc::postSolver cannot run until both the lost-contact
+continuation and every real solver task completion have joined.
+An exception joins the worker before frame-checkpoint rollback;
+serial admission executes the identical task-local operations.
+
+Native regressions compare exact multiframe serial/concurrent body
+motion, sleep-energy state, next-frame readiness order, island
+ownership, Gu-indexed normal forces and 1D constraint impulses.
+They also verify one worker dispatch per concurrent Dy step,
+preIntegration motion journaling, shared-kinematic serial admission,
+and a worker-side overflow rollback followed by successful replay.
+Linux and Windows Release benchmarks measure serial, forced and
+adaptive scheduling without asserting timings on shared runners;
+third-pass benchmarks disable concurrent Dy execution to keep the
+two scheduler measurements independent.
+
+**Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
+unconstrained Dy preIntegration after the accurate ThirdPassTask has
+completed, while the speculative ThirdPassTask can still be running.
+The accurate graph's newly inactive nodes are reconciled before
+active-island iteration; Dy changes actor motion and its own preparation
+state, not the prior-Dy readiness consumed by the speculative
+IslandSim. Both tasks must join before postThirdPass interaction
+retirement or any Dy constraint preparation/solve. A throwing Dy
+preIntegration still joins speculative work before the frame's
+checkpoint rollback. Ordinary quiet frames create no worker. The
+PxsSolverEndTask producer lanes join before later shared Sc publication.
+
+**Single-dispatch third-pass ownership:** The production ScPipeline
+runs each source IslandSim third-pass task as one graph-local unit:
+lost-route repair, active-list reconciliation, then sleep/deactivation
+publication. Its paired speculative and accurate tasks execute
+concurrently and join before postThirdPass. Previously independent
+route-repair and sleep dispatches created two workers on some frames;
+the combined task needs only one and preserves rollback over all its
+stages. The shared EdgeIndex full-record undo copy now uses the same
+narrow activity lock as speculative/accurate edge deactivation, so
+source indexed-manager repairs cannot snapshot a partially mutated
+edge. Collision-only geometry publications retain their independent
+route-repair join and existing no-throw activity boundary.
+
+**Concurrent lost-route repair:** The two source IslandSim
+processLostEdges route searches now run concurrently on frames where
+both graph-specific dirty-node streams contain work. Structural graph
+snapshots and route-hint undo records are per-producer, so either task
+can split an island without racing the other's rollback journal or
+copying its island membership. Shared diagnostics accumulate atomically
+once per route pass, rather than per visited node. The threads join
+before active-node reconciliation and the subsequent independent sleep
+tasks. One-sided or quiet repair does not create a worker. A regression
+checks concurrent splits of one shared contact chain, exact rollback
+of both owner graphs, and deterministic retry.
+
+**Concurrent rigid third-pass execution:** The production native
+ScPipeline now runs the speculative IslandSim third-pass producer on
+a worker concurrently with accurate rigid sleep arbitration whenever
+a prior-Dy readiness, local split, or settling kinematic candidate
+needs speculative processing. Both graphs retain independent island
+node/edge ownership and ready-state inputs. Their only shared mutation
+boundary is the existing checkpoint's paired edge-state/reference undo
+record: a narrow mutex protects the original full-state snapshot and
+edge transition. Both producers finish before PostThirdPass consumes
+deactivation and before any Dy solver admission. On quiet frames, the
+existing serial no-worker path avoids thread startup. A rejected Dy
+frame rolls back both producers' graph state and the original readiness
+queue; a retry repeats source third-pass work. This implements real
+concurrent producer execution, not yet the separate later gate of
+overlapping the Dy solver task tree with island-generation work.
+
+**Independent speculative active-node lifecycle:** Source
+`PxsIslandSim::deactivateIsland` also retires that graph's active rigid
+nodes and island handle via swap-last, regardless of whether the
+accurate island has published `ScBodySim::sleeping`. Speculative active
+membership now follows its own source third-pass decision. A body may
+remain speculative-active after accurate sleep while a broader SAP-only
+island has an awake peer; once all members are ready, that graph
+publishes its own node/edge deactivations. Both active permutations and
+event streams are restored on rejected frames. This avoids recomputing
+speculative activity from the accurate actor sleep bit during the
+next island handoff.
+
+**Independent IslandSim readiness handoff:** Native Dy
+`sleepCheck` now queues only newly-ready rigid node IDs for the next
+speculative third pass, on the same source actor identities. Speculative
+`processLostEdges` evaluates its own island's previously published
+`isReadyForSleeping` flags, not `ScBodySim::sleeping` or the accurate
+task's deactivation list. The production serial lowering now completes speculative before accurate
+to exercise the opposite valid source producer order, while retaining
+reverse active-island contact-manager event order.
+Split and kinematic-settling candidates continue through the same
+graph-owned source paths. The transient prior-Dy readiness stream is
+failure-atomic under the existing scene checkpoint and reserves its
+live-rigid capacity before solver publication; idle frames do not scan
+historical nodes. This removes an implicit accurate-to-speculative
+task dependency, but does not itself launch parallel workers.
+
+**Kinematic active-island reference publication:** Speculative and
+accurate IslandSim graphs now keep separate indexed active-kinematic
+lists in addition to their dynamic rigid solver-node streams.
+Typed edge references and target/settling state update those lists
+incrementally. Source swap-last retirement, explicit type changes,
+structural rebuild and checkpoint rollback preserve their membership
+without a shadow body graph or hot-path historical-actor scan.
+
+**Remaining architectural responsibilities:** real `ScArticulationSim`
+and deformable/particle simulation owners, distinct node identities,
+type-indexed active/deactivation streams, heterogeneous edge endpoints
+and their shared visited-island split migration, and the associated Dy
+articulation/non-rigid solve and after-integration paths. Both IslandSims
+now retain per-node source type slots; island membership counts are
+derived from those slots during singleton admission, local splits and
+structural reconstruction, then combined on merges. The rigid task
+admission rejects unsupported heterogeneous islands rather than
+silently converting their members into rigid solver bodies.
+
+**Concurrent rigid-deactivation pose reconciliation:** Original
+`ScPipeline::afterIntegration` reads the accurate IslandSim's
+`mNodesToDeactivate[eRIGID_BODY_TYPE]` after Dy completion and restores
+`PxsRigidBody::mLastCCDTransform` on bodies deactivated concurrently with
+the solver. Native rigid actors now retain that pre-integration transform
+with a frame validity generation. The existing task-local Dy integration
+writes it before changing the pose; afterIntegration restores the pose,
+zeroes final linear/angular velocities and wake counter, and republishes
+bounds only for deactivated bodies that actually integrated in the same
+generation. The serial third-pass-first path performs no extra work
+beyond iterating its sleep-output list. Tests exercise the overlapped
+ordering, unaffected awake bodies, stale-generation suppression, and
+failure-atomic rollback. The concurrent rigid task chains and their completion joins are implemented
+for admitted active islands. This reconciliation remains restricted to
+rigid deactivation; it does not implement freeze or CCD behavior.
+
+The admitted rigid CPU path has source-style active island handles,
+source hop-priority witnesses, local split migration, typed contact/1D
+constraint partitions, both third-pass completion producers, task-local
+solve/writeback/integration and postSolver/finalization gates. Remaining work includes other joint families and articulation responses,
+full sleep/wake callback semantics, and asynchronous backend continuations
+outside the admitted CPU task chains. The existing concurrent CPU task
+execution and rigid `afterIntegration` reconciliation do not establish
+heterogeneous simulation parity.
+
+## Simulation-shape filtering and source manager lifetime
+
+The admitted one-shape-per-actor Scene implements
+`PxShapeFlag::eSIMULATION_SHAPE` on its existing actor-owned shape.
+Disabling the simulation flag removes the shape from the next SAP
+candidate publication (including the otherwise infinite floor), rather
+than deleting or deactivating its rigid actor. The same Sc contact-manager
+retirement path publishes overlap/touch loss, disconnects the existing
+speculative/accurate island edges and releases the manager after its
+consumers finish. Re-enabling the flag admits the shape through regular
+SAP, narrowphase, islands and PGS; both the actor state and BodyId survive.
+The independent PhysX CPU adapter forwards the flag to the sole PxShape.
+Reference-enabled and reference-free tests exercise the native lifecycle;
+source-enabled tests also compare contact response with original PhysX.
+Collision groups, custom filter shaders, triggers and multi-shape actors
+are not admitted by this single-shape flag subset.
+
+## Shape offsets and contact-slop source correspondence
+
+The admitted one-shape-per-actor native Scene now owns the shape's
+`contact_offset` and `rest_offset`, initially 0.02 m and 0 m.
+`World::set_body_shape_offsets` validates the same finite, nonnegative
+contact and strictly smaller rest constraints as `NpShape::setContactOffset`
+and `NpShape::setRestOffset`. The optional real PhysX CPU adapter edits
+the existing `PxShape` with a setter order valid for either transition;
+it does not create an alternate shape or material registry.
+
+The contact offset follows `ScShapeCore::setContactOffset` through
+the native `Scene::update_bounds` Gu AABB enlargement and the pair-summed
+contact distance in original `GuContactPlaneBox` and translated
+`GuContactBoxBox`. Raw Gu contact separation stays a geometric surface
+separation; `DyContactPrepShared::constructContactConstraint` subtracts
+the pair's **rest distance** when computing penetration and bias, and
+`DyContactPrep::growPatches` uses that same distance in its friction
+anchor admission threshold. Authoring an offset retires only affected
+friction patches and schedules a fresh Gu publication. Geometry-only
+queries retain the same failure-atomic publication boundary.
+
+`RigidBodyDynamics::contact_slop_coefficient` follows
+`NpRigidBodyTemplate::setContactSlopCoefficient`, its original
+`PxsBodyCore::offsetSlop`, and `ScShapeInteraction`'s maximum of
+the two rigid bodies. The production `Scene::prepare_constraints`
+suppresses small normal angular Jacobian components with the
+`DyContactPrepShared` relative-angular/linear velocity scale, and
+independently suppresses small friction angular Jacobians and tangent
+anchor-position errors following `DyContactPrep.cpp`. The independent
+reference backend forwards the coefficient to real `PxRigidDynamic`.
+Both parameters remain per-source actor/shape fields, not scene-global
+solver tunables.
+
+Production-path regressions exercise separated box-box broadphase and
+Gu touch found/lost, plane-box offset admission, nonzero rest-distance
+bias through native and optional original PhysX CPU World, invalid and
+reversed offset edits, and normal/friction prepared Jacobians under
+nonzero versus default contact slop. Multi-shape actors, CCD and per-
+contact modification remain separately unported admission boundaries.
+
+## Source rigid-pose authoring and shape alignment
+
+`World::set_body_pose` now lowers full `PxRigidActor::setGlobalPose`
+semantics into the authoritative native `Scene::set_pose` and independent
+reference PhysX CPU actor. `PxQuat::isSane` magnitude tolerance
+(1e-2), `PxTransform::getNormalized` quaternion publication, native
+actor wake, authoritative orientation, friction-anchor retirement,
+and Gu/SAP geometry invalidation share the existing position-edit
+transaction; translation-only edits retain the stored quaternion
+without roundoff-only discontinuities. The scene has no second
+transform registry. `Scene::prepare_solver_bodies` subsequently derives
+rotated world inertia from that same published actor quaternion.
+
+The currently admitted logical horizontal floor remains a +Y-normal
+primitive with identity user orientation; the reference adapter
+preserves `PxCreatePlane`'s private +X-to-+Y alignment on a pose edit.
+Arbitrary plane-normal rotation remains unsupported, rather than
+silently claiming general rotated plane geometry. Tests exercise
+quaternion rejection and normalization, translation preserving spin,
+rotated static-box SAP and original Gu SAT contact transitions, public
+World free-flight integration, and rejection of unsupported floor
+rotation across native and optional reference CPU backends.
+
+## Compliant spring-damper PGS correspondence and ownership
+
+`PxsMaterialCombiner.h::PxsCombineMaterials` consumes both actor-owned
+`Material` values when preparing the EXISTING `Scene::prepare_constraints`
+stream. A single compliant material (negative `restitution`) takes
+precedence over any rigid material regardless of ordinary restitution
+combine mode. Two compliant materials honor the higher-precedence
+restitution and damping combine modes; `Multiply` restores the
+negative stiffness sign. When exactly one of two compliant materials
+has `eCOMPLIANT_ACCELERATION_SPRING`, that material's stiffness and
+damping take precedence. The combined acceleration flag follows the
+original OR of both material flag sets.
+
+`DyContactPrepShared.h::computeCompliantDamping` zeroes damping only
+for a separated contact that is not closing within the timestep.
+`computeCompliantContactCoefficients` then computes `nrdt`, `a`,
+`b`, `x`, `velocityMultiplier`, `impulseMultiplier` and the
+equal compliant biased/unbiased errors; force-based springs use the
+unit response, while acceleration-based springs use its reciprocal
+for the mass factor. `Scene::solve_constraints` consumes that
+`impulseMultiplier` at every original PGS normal row iteration before
+clamping each source Gu contact's impulse. Ordinary noncompliant
+contacts retain an exact multiplier of one and their distinct
+position/velocity-phase bias.
+
+The same `Scene::FrictionPatch` cache stores the combined spring
+properties and checks their equivalence alongside friction/normal
+before correlating previous-frame anchors. Contact point order,
+indexed contact-manager scheduling, Gu-indexed force writeback,
+force-threshold changes and failed-step rollback retain their
+existing ownership. The reference adapter authors
+`PxMaterial::setDamping`, `setDampingCombineMode` and
+`eCOMPLIANT_ACCELERATION_SPRING` on the original material shape.
+
+Native regressions inspect the actual prepared normal constraints
+for force- and acceleration-spring equations, mixed compliant and
+rigid pairs in either body order, negative-stiffness multiply,
+precontact damping suppression and public World motion. The
+reference-enabled regression compares native and independent real
+PhysX CPU free-motion/contact results for the same authored material
+and timestep. Heterogeneous shape/triangle material IDs, packed
+`PxSolverConstraintDesc` layout, contact modification callbacks
+and complete island task continuations remain N1 requirements.
+
+## Signed compliant friction limits and actual production force
+
+The source `DySolverConstraintsShared.h::solveDynamicContacts`
+performs its one-sided normal-force cap after applying
+`impulseMultiplier`, leaving a possible negative compliant
+force-buffer value. Source `DySolverConstraints.cpp::writeBackContact`
+retains it unmodified, and the normal-force threshold stream does
+not treat it as an invalid numeric state. The signed result also
+feeds `DySolverConstraints.cpp::solveContact` and
+`solveContact_BStatic`'s per-patch friction bounds.
+
+Those original routines evaluate
+`FMin(maxDynamic, FMax(-maxDynamic, totalImpulse))` when
+friction saturates. A compliant patch can have negative
+`maxDynamic`: C++ `std::clamp` with reversed bounds is undefined
+behavior and does not reproduce the original nested SIMD expression.
+The native solver now uses the exact min/max ordering instead of
+inventing a nonnegative total or taking the absolute value.
+An 80-frame public-World reproduction, a source force-buffer
+writeback fixture, and a two-floor signed spring/damper regression
+exercise the real multiframe solver and require at least one
+negative Gu-indexed force generated by dynamics rather than
+injected by a test. The source `FMin/FMax` expression is also the actual inline
+operation used by production PGS, and its numerical regression
+exercises deterministic negative and positive friction bounds that
+distinguish the source result from an absolute-value clamp.
+The multiframe scene regression independently requires negative
+Gu-indexed normal forces generated by the actual solver. Since an
+individual negative contact does not imply the *sum* of a correlated
+friction patch is negative, final tangential rows are additionally
+checked whenever that separate case occurs, rather than making
+the test depend on a geometric condition the fixture cannot guarantee. This remains separate from strict packed-SIMD
+rounding parity and does not claim negative force is a normal
+noncompliant-contact condition.
+
+## Source contact-touch reporting publication
+
+`WorldOptions::contact_notifications` opts the admitted one-shape
+rigid-pair scene into `PxPairFlag::eNOTIFY_TOUCH_FOUND`,
+`eNOTIFY_TOUCH_PERSISTS`, `eNOTIFY_TOUCH_LOST` and
+`eNOTIFY_CONTACT_POINTS`. The original default no-notification
+filter remains unchanged. The public `World::contact_events()`
+returns a read-only span of `ContactEvent` outputs from the latest
+completed `World::step`: canonical actor IDs, event kind, current
+contact count, range into `World::contact_event_points()`, and summed
+signed per-Gu-contact normal impulses. The second published span
+holds each source Gu point's world-space position, normal, signed
+separation and associated signed normal force-buffer slot. Distinct
+contact managers share one contiguous arena but own nonoverlapping
+point ranges. The native source and original PhysX
+`PxContactPair::extractContacts` oracle use the same data contract;
+the reference callback gets its force slots directly from
+`PxContactPair::contactImpulses`. The SDK does not fabricate
+per-point tangential friction: PhysX's separate friction-anchor
+writeback remains distinct until its full report stream is admitted.
+
+Native `Scene::publish_contact_events` consumes the **existing**
+sorted Gu found/lost pairs, current manifold stream, per-Gu-point
+Dy force-writeback arena and actor activity; it does not invent an
+independent collision registry or a second source of touch state.
+Persistent touch events are emitted only when an involved rigid body
+is active, matching
+`ScNPhaseCore::processPersistentContactEvents`'s active-actor
+check. Zero maxContactImpulse does not suppress Sc touch reporting,
+because its Gu/accurate-island contact manager still exists. Output
+is prepared in a reusable temporary arena and published only after
+body integration and all exception-capable stages succeed. Failed
+frames preserve the prior event span's backing storage and content.
+
+The **independent** original PhysX CPU oracle now registers a real
+`PxSimulationEventCallback` at scene creation when opted in; a
+filter shader preserves `PxDefaultSimulationFilterShader` group
+behavior while requesting only the above additional contact flags.
+`onContact` consumes PhysX's actual pair-event and per-contact
+force data from `fetchResults`, with canonical actor IDs carried
+through the existing actor `userData` slot rather than an
+O(all-actors)-per-event reverse lookup. It reports no synthesized
+events from pose overlap and no events by default. The source
+callback's `eREMOVED_ACTOR_0/1` flags also enter the existing
+per-fetch retirement boundary: on explicit actor release, only
+the original `PxActor*` address and SDK BodyId token are retained,
+before destruction. A removal callback matches the pointer without
+ever dereferencing it and translates it to the same canonical
+actor IDs used in live reports. These tokens are discarded after
+`fetchResults`, not retained as another actor registry. The native
+scene consumes the same Gu lost-touch history on the next step.
+
+Regression coverage exercises found→persists→lost→found transitions,
+zero-response Gu touches, absent default notifications, independent
+legacy-Gu and default-PCM callbacks, and failure-atomic native event
+and per-point arena publication with a successful retry. A
+two-interaction regression places contact pairs eight metres apart,
+so an exchanged point window fails spatial and canonical-normal
+checks even when both impulse sums remain internally consistent.
+Retiring two dynamic actors before a source fetch, then retiring
+a static support actor, independently exercises the lifetime-safe
+removed-actor `Lost` notifications in native, original legacy Gu
+and default PCM reference modes. This is **not** complete
+`Sc::ShapeInteraction` callback parity: trigger reports,
+threshold-callback joining, CCD notifications, interaction flag
+mutations, filter edits and batched per-shape/multi-shape callbacks
+remain later N1 admission gates. The new stream is an admitted rigid contact-touch
+subset, not a replacement for the entire PhysX callback machinery.
+
+## Source ScBodySim spatial force and impulse lifecycle
+
+The single production native Scene now owns all four PhysX
+`PxForceMode` forms through the actor-owned VelocityMod state:
+per-step linear/angular velocity deltas, and per-second
+linear/angular accelerations. `NpRigidBodyTemplate::addSpatialForce`
+converts authored forces and impulses using the actor's inverse mass
+or rotated inverse-inertia tensor; acceleration and velocity-change
+modes already express the corresponding solver-space changes.
+`ScBodySim::updateForces` lowers the per-second accumulation by
+the current timestep at the `ScPipeline::beforeSolver` dependency,
+before damping/clamping and Dy PGS. Default per-frame clearing and
+the existing failure-atomic sparse motion checkpoint cover all four
+velocity-mod channels, without a second force integrator. Native tests
+distinguish per-second and per-step consumption, accumulated/cleared
+categories, rejected-frame replay and coupled contact PGS. Independent
+PhysX CPU tests compare both masses, angular inertia, mixed force modes
+and clear operations over 90 changing-timestep frames.
+
+`PxRigidBodyFlag::eRETAIN_ACCELERATIONS` now follows the original
+`ScBodySim::updateForces` / `setForcesToDefaults` branch: an active
+rigid body retains per-second linear/angular acceleration modifications
+over consecutive timesteps, while per-step velocity changes are always
+cleared after consumption. The flag is forwarded unchanged to the
+separate original PhysX reference adapter. Both modes clear retained
+per-second modifications upon explicit force/torque clearance, and
+island sleep retires every velocity-mod channel through
+`BodySim::putToSleep`. Native and independent PhysX CPU multi-frame
+regressions check retention, non-retention, one-shot changes and clearing
+without introducing an independent acceleration scheduler.
+
+## Source gyroscopic-force velocity update
+
+The existing actor-owned RigidBodyDynamics now forwards
+PxRigidBodyFlag::eENABLE_GYROSCOPIC_FORCES into the independent PhysX
+reference scene and applies the original
+DyRigidBodyToSolverBody::copyToSolverBodyData angular-momentum update
+in the native unconstrained/PGS input path. The local inverse-inertia
+tensor and body quaternion remain authoritative; no second solver-body
+or gyroscopic simulation is introduced. Both contact and no-contact
+islands consume one velocity correction per frame, after unconstrained
+velocity clamping and before axis locks. Source-free tests distinguish
+enabled and disabled anisotropic-body motion; reference-enabled tests
+compare the original CPU result and quaternion response across
+changing timesteps.
+
+## Source rigid dynamic world-axis locks
+
+The existing native Scene accepts the six PxRigidDynamicLockFlag axes
+through actor-owned RigidBodyDynamics. Following
+DyRigidBodyToSolverBody::copyToSolverBodyData, locked angular baseline
+velocity is suppressed without changing the world inverse-inertia
+tensor. DyBodyCoreIntegrator::integrateCore suppresses locked linear
+motion and solver-space angular components at integration and final-velocity
+publication, without discarding the pre-solver linear contact-relative
+velocity. Original contact Jacobians retain their inertia response.
+Native smoke covers no-contact motion, production PGS, flag rejection
+and lock release; reference-enabled smoke compares original PhysX CPU
+under changing timesteps, torque impulses and lock transitions.
 
 ## Initial integrated acceptance boundary: real CPU PGS
 
@@ -458,6 +2233,20 @@ CPU PGS admission, require these jointly:
   Vulkan/D3D12 builds. Verify memory lifetimes, duplicate owners and
   runtime cost before claiming full integration. Godot acceptance can
   be finalized once the native scene has the full state/API.
+
+The Godot GDExtension now selects `ExecutionMode::NativeCpu`
+explicitly with contact notifications enabled, without changing the
+standalone SDK's transitional default. Its event index API reads the
+existing completed-step Scene-owned `World::contact_events()` span,
+including canonical body IDs, Found/Persists/Lost classification,
+Gu point counts and final Dy normal-impulse totals. No separate
+contact history is maintained by the adapter. The headless runtime
+exercises plane/box support, actual per-step contact transitions,
+authored rigid orientation and angular velocity, rotational
+integration, actor retirement and continued simulation on Windows
+and Linux. It cannot silently pass by constructing the
+independent reference scene. Broader geometry, filtering, constraints,
+callbacks and GPU scheduling remain separately scoped.
 
 **Do not mark N1 complete** solely upon this first rigid-body PGS slice:
 exact narrowphase breadth, collision filtering, CCD, articulations,
@@ -513,3 +2302,78 @@ a substitute for this mapping.
 duplicate contact cache, per-stage scheduler, invented friction model or
 reference PhysX runtime dependency, stop and revise the extraction boundary
 instead of patching around it.
+
+
+## Rigid contact-manager eACTIVE/eACTIVATING source lifecycle
+
+The retained scene-owned EdgeIndex slots now hold independent speculative
+and accurate `IG::Edge::eACTIVE` and `eACTIVATING` state. Source
+`markEdgeActive` publishes the same EdgeIndex into that graph's
+`mActivatedEdges[eCONTACT_MANAGER]` on its inactive-to-active transition,
+updates `mActiveEdgeCount`, and does not re-emit an already active edge.
+The following `wakeIslands` publication clears prior `eACTIVATING`
+flags and worklists without clearing persistent `eACTIVE` state.
+
+Source `deactivateNodeInternal` emits a deactivating contact manager
+**only** when its edge was active; an already inactive edge produces no
+new event. Canceling a still pending activation uses source replace-with-
+last list removal. A retired SAP manager or lost Gu touch cancels its
+activity without manufacturing an island-sleep event. Accurate physical
+contacts and speculative SAP overlaps retain distinct histories across
+accurate-island sleep and subsequent speculative-only bridge splitting.
+Only touched source edge slots are journaled on failed publication;
+per-graph activity counts and activated-edge worklists are restored.
+Both graph owners now also carry `IslandSim::Node::mActiveRefCount` for
+the source's two-valid-endpoint rigid contact managers. Static-world
+contacts never increment a dynamic node's references. Activation,
+true deactivation, touch loss, retirement, retry and the checkpoint
+restore both graphs' independent reference counts without a parallel
+contact registry. A deduplicated per-node undo journal, rather than
+dense reference-array copies on every step, handles the failure boundary. The counters are source-owned prerequisites for
+later kinematic activation, not a claim that kinematics are admitted.
+Activity flags replay **after** the intrusive edge-undo records, which
+may contain post-deactivation bits. Quiet nontransactional publications
+clear expired activation flags without acquiring rollback records.
+Both local lost-edge splits and a retiring dynamic edge that disconnects
+an already sleeping rigid peer record the affected source node for the
+third-pass decision. The latter survives the first-pass ownership rebuild;
+there is no heuristic component-size inference or global island rescan. Separate regressions require exactly one
+retained-manager speculative sleep event after retiring an awake SAP-only
+peer, and failure-atomic eACTIVE/count restoration after Gu touch loss.
+
+The accurate and speculative island owners also retain separate
+source `mActivatingNodes` wake-event sequences, including authored
+reverse-order wakes and graph-specific SAP/Gu events. Generation-stamped
+node membership suppresses duplicate event insertion without quadratic
+wake-list scans or allocations in the no-throw publication. The rollback checkpoint pre-reserves active-handle and pending
+wake capacity in both owners before entering any no-throw publication.
+`mActiveIslands` dense handle lists and their `Island::mActiveIndex`
+reverse indices. Source swap-last removal and append preserve active
+handle order across sleep/wake, actor admission, split and merge;
+the serial `Dy::DynamicsContext::iterateIslandsNodes` handoff now
+resolves only active handles against the existing contiguous accurate
+island-node ranges, instead of scanning every dormant node range.
+These are not a second island registry or a separate task scheduler.
+
+ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) and
+postThirdPassIslandGen now consume the speculative island owner's
+activated/deactivating edge streams into persistent
+`Sc::InteractionFlag::eIS_ACTIVE` on the **same** source EdgeIndex
+contact-manager record. Source accurate sleep leaves the interaction
+active while a speculative SAP-only bridge remains awake. True
+speculative deactivation retires the interaction exactly once; SAP
+overlap destruction clears the flag via overlap retirement rather than
+fabricating a sleep-deactivation event. The aggregate count and the
+per-edge flag are failure-atomic under the existing sparse activity
+journal, including rejected Dy frames. This is the admitted rigid
+interaction-activity subset, not shape-interaction callback registration
+or persistent-contact event processing.
+
+The supported island graph also admits typed `eCONSTRAINT` edges,
+kinematic reference-driven activation and independent speculative/accurate
+third-pass and CPU solver task completions. The existing Sc interaction
+activity consumer remains specific to contact managers; it does not stand
+in for complete shape-interaction callbacks. Full filter/trigger and
+threshold-callback publication, articulation/non-rigid node semantics,
+additional constraint families, and packed solver/contact ABI coverage
+remain separately auditable. CCD is not admitted by this CPU slice.

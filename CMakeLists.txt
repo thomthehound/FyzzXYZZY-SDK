@@ -6,12 +6,18 @@ project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 # PhysX is a transitional CPU oracle and source-port test dependency, not a
 # prerequisite for the native SDK core or standalone GPU compute runtimes.
 # OFF must never fetch or compile the reference PhysX repository.
 option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
   "Build the transitional PhysX CPU reference and source-port conformance fixtures" ON)
+# Run the 48-frame coupled friction/rotation source oracle by default.
+# Windows and Linux source-enabled CI explicitly require this gate.
+# PhysX-independent builds never compile or link the reference fixture.
+option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
+  "Require 48-frame native/PhysX CPU coupled friction trajectory parity" ON)
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
@@ -105,9 +111,13 @@ endif()
 
 add_library(fyzzxyzzy_core STATIC
   src/world.cpp
-  src/native/scene.cpp)
+  src/native/scene.cpp
+  src/native/GuContactBoxBox.cpp
+  src/native/GuPCMContactBoxBox.cpp
+  src/native/GuPCMGjkEpa.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
+target_link_libraries(fyzzxyzzy_core PUBLIC Threads::Threads)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
@@ -128,6 +138,12 @@ endif()
 if(BUILD_TESTING AND FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_executable(fyzzxyzzy_headless_smoke tests/headless_smoke.cpp)
   target_link_libraries(fyzzxyzzy_headless_smoke PRIVATE FyzzXYZZY::Core)
+  # Strict source regression may compare public PhysX output with the
+  # production native Gu helper using identical input transforms.
+  target_include_directories(fyzzxyzzy_headless_smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_compile_definitions(fyzzxyzzy_headless_smoke PRIVATE
+    FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=$<BOOL:${FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE}>)
   add_test(NAME fyzzxyzzy_headless_smoke COMMAND fyzzxyzzy_headless_smoke)
 endif()
 
@@ -145,8 +161,24 @@ if(BUILD_TESTING)
   target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE FyzzXYZZY::Core)
+  target_compile_definitions(fyzzxyzzy_native_scene_smoke PRIVATE
+    FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
+  if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE physx_lib)
+  endif()
   add_test(NAME fyzzxyzzy_native_scene_smoke
     COMMAND fyzzxyzzy_native_scene_smoke)
+  add_executable(fyzzxyzzy_native_sap_benchmark
+    tests/native_sap_benchmark.cpp)
+  target_include_directories(fyzzxyzzy_native_sap_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_native_sap_benchmark PRIVATE FyzzXYZZY::Core)
+  add_executable(fyzzxyzzy_native_third_pass_benchmark
+    tests/native_third_pass_benchmark.cpp)
+  target_include_directories(fyzzxyzzy_native_third_pass_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_native_third_pass_benchmark PRIVATE
+    FyzzXYZZY::Core)
 endif()
 
 # Internal translation of PhysX's CUdeviceptr-style host addresses into
@@ -2938,37 +2970,7 @@ if(FYZZXYZZY_BUILD_GODOT)
       "Godot physics acceptance still requires the transitional PhysX CPU reference; "
       "native FyzzXYZZY scene is not yet implemented")
   endif()
-  # One dependency manifest drives the engine acceptance release, Godot's
-  # extension API and the exact godot-cpp revision on both CI platforms.
-  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/godot/dependency.json" FYZZXYZZY_GODOT_DEPENDENCY_JSON)
-  string(JSON FYZZXYZZY_GODOT_ENGINE_VERSION GET "${FYZZXYZZY_GODOT_DEPENDENCY_JSON}" engine_version)
-  string(JSON FYZZXYZZY_GODOT_API_VERSION GET "${FYZZXYZZY_GODOT_DEPENDENCY_JSON}" api_version)
-  string(JSON FYZZXYZZY_GODOT_CPP_COMMIT GET "${FYZZXYZZY_GODOT_DEPENDENCY_JSON}" godot_cpp_commit)
-  string(REGEX MATCH "^[0-9]+\\.[0-9]+" FYZZXYZZY_GODOT_ENGINE_API "${FYZZXYZZY_GODOT_ENGINE_VERSION}")
-  if(NOT FYZZXYZZY_GODOT_ENGINE_API STREQUAL FYZZXYZZY_GODOT_API_VERSION)
-    message(FATAL_ERROR "Godot dependency manifest engine/API version mismatch")
-  endif()
-  # The checked-in extension descriptor advertises which editor version
-  # can load the native binary. Do not claim compatibility with an older
-  # editor when the bindings API is upgraded for newer Godot features.
-  file(STRINGS
-    "${CMAKE_CURRENT_SOURCE_DIR}/godot/test_project/addons/fyzzxyzzy/fyzzxyzzy.gdextension"
-    FYZZXYZZY_GODOT_MINIMUM_DECLARATION REGEX "^compatibility_minimum =")
-  if(NOT FYZZXYZZY_GODOT_MINIMUM_DECLARATION STREQUAL
-     "compatibility_minimum = \"${FYZZXYZZY_GODOT_API_VERSION}\"")
-    message(FATAL_ERROR
-      "Update the .gdextension compatibility_minimum when changing godot/dependency.json api_version")
-  endif()
-  set(GODOTCPP_API_VERSION "${FYZZXYZZY_GODOT_API_VERSION}" CACHE STRING "Target Godot extension API version" FORCE)
-  # Use godot-cpp's complete supported API bindings until an upstream-compatible
-  # trimmed profile can cover its internal runtime dependencies.
-  set(GODOTCPP_BUILD_PROFILE "" CACHE FILEPATH "Godot binding profile" FORCE)
-  FetchContent_Declare(fyzzxyzzy_godot_cpp
-    GIT_REPOSITORY https://github.com/godotengine/godot-cpp.git
-    GIT_TAG "${FYZZXYZZY_GODOT_CPP_COMMIT}"
-    GIT_SHALLOW FALSE
-  )
-  FetchContent_MakeAvailable(fyzzxyzzy_godot_cpp)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GodotDependency.cmake")
 
   add_library(fyzzxyzzy_godot SHARED
     godot/src/fyzzxyzzy_godot_world.cpp
