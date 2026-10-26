@@ -1461,10 +1461,13 @@ collision graph or duplicate the physics actors. Finite broadphase overlaps are 
 and maximum endpoints on all three axes produce sparse crossing
 candidates. Multi-volume updates first preserve exact endpoint
 order where all final neighbor comparisons remain sorted. Bounded
-rank-local changes reuse indexed adjacent shifts; wider displacements
-retain the linked activity-pocket reorder. A per-volume three-axis
-change mask skips unmodified endpoint arrays. Both update paths report
-min/max crossings to the same hashed creation/removal state machine;
+rank-local changes reuse indexed adjacent shifts, independent
+of the body's displacement in world units; motion beyond the
+bounded old-rank envelope retains linked activity-pocket reordering.
+A per-volume three-axis change mask skips unmodified endpoint arrays.
+Only min/max crossings that can change the final three-axis
+overlap, or retire an existing pair, reach the hashed pair-state
+manager. Both update paths share this transition contract;
 bulk update selection changes work organization, not the source
 overlap definition or Sc contact-manager ownership.
 A complete pair sweep remains necessary for structural proxy changes.
