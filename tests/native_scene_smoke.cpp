@@ -10523,6 +10523,7 @@ int run_native_scene_smoke() {
     // must not checkpoint the complete edge/island state. It still
     // advances the publication frame, clears transient previous-step
     // results/events, and retains the original contact manager identity.
+    std::fprintf(stderr,"native scene fixture line 10526\\n"); std::fflush(stderr);
     {
         Scene quiet{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=quiet.add_static_floor(0.0f);
@@ -10562,6 +10563,7 @@ int run_native_scene_smoke() {
     // per SAP candidate; setEdgeDisconnected does not retire it on Gu
     // touch loss. removeConnection defers release until the joined
     // post-third-pass retirement, including overlapping found/lost pairs.
+    std::fprintf(stderr,"native scene fixture line 10565\\n"); std::fflush(stderr);
     {
         Scene handles{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=handles.add_static_floor(0.0f);
@@ -10614,6 +10616,7 @@ int run_native_scene_smoke() {
     // candidates build speculative connectivity, while only resolved
     // touching dynamic pairs join accurate solver islands. The static
     // world is never a dynamic connectivity bridge.
+    std::fprintf(stderr,"native scene fixture line 10617\\n"); std::fflush(stderr);
     {
         Scene connected{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=connected.add_dynamic_box(
@@ -11564,6 +11567,7 @@ int run_native_scene_smoke() {
 
     // The same scene must distinguish SAP candidate overlaps from actual
     // shape contacts, and preserve touch found/lost across quiet frames.
+    std::fprintf(stderr,"native scene fixture line 11567\\n"); std::fflush(stderr);
     {
         Scene contact_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto distant_floor = contact_scene.add_static_floor(0.0f);
@@ -11622,6 +11626,7 @@ int run_native_scene_smoke() {
         expect(has(contact_scene.lost_contacts(), distant_floor, falling),
                "Actor retirement failed to report lost physical touch");
     }
+    std::fprintf(stderr,"native scene fixture line 11625\\n"); std::fflush(stderr);
     {
         // The ordered pair must not determine which way gravity would
         // be opposed: creating the box before the floor reverses IDs
@@ -11649,6 +11654,7 @@ int run_native_scene_smoke() {
                reversed.lost_pairs().empty(),
                "Box-before-floor touch loss emitted wrong events");
     }
+    std::fprintf(stderr,"native scene fixture line 11652\\n"); std::fflush(stderr);
     {
         Scene box_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto fixed = box_scene.add_static_box(
@@ -11720,6 +11726,7 @@ int run_native_scene_smoke() {
 
 
 
+    std::fprintf(stderr,"native scene fixture line 11723\\n"); std::fflush(stderr);
     {
         // Direct production-path translation of the original PhysX
         // DyBodyCoreIntegrator closed-form quaternion step, limited to
@@ -11766,6 +11773,7 @@ int run_native_scene_smoke() {
     // Per-point Dy rigid-body normals must exert angular response at an
     // offset contact; the retired one-impulse-per-manifold solver could
     // not produce contact torque at any rigid-body geometry.
+    std::fprintf(stderr,"native scene fixture line 11769\\n"); std::fflush(stderr);
     {
         Scene angular_contact{Scene::ContactGenerator::DiagnosticLegacyGu};
         angular_contact.add_static_box({1,1,1},{0,0,0});
@@ -11782,6 +11790,7 @@ int run_native_scene_smoke() {
 
     // Original Gu box-box SAT/contact path must accept an oblique
     // body directly in the owning scene, not only the free-flight path.
+    std::fprintf(stderr,"native scene fixture line 11785\\n"); std::fflush(stderr);
     {
         Scene oblique{Scene::ContactGenerator::DiagnosticLegacyGu};
         auto moving=oblique.add_dynamic_box({0.5f,0.5f,0.5f},
@@ -11819,6 +11828,7 @@ int run_native_scene_smoke() {
     }
     // A pitched box has more than an AABB corner representation. The
     // source plane contact stream must carry its real rotated vertices.
+    std::fprintf(stderr,"native scene fixture line 11822\\n"); std::fflush(stderr);
     {
         Scene pitched{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto moving=pitched.add_dynamic_box(
@@ -11846,6 +11856,7 @@ int run_native_scene_smoke() {
     // The scene-owned source solver-body pool prepares only true contact
     // participants. An unrelated free-flight body must keep its original
     // unconstrained motion through repeated solver rounds and retirement.
+    std::fprintf(stderr,"native scene fixture line 11849\\n"); std::fflush(stderr);
     {
         Scene sparse{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor = sparse.add_static_floor(0.0f);
@@ -11874,6 +11885,7 @@ int run_native_scene_smoke() {
 
     // Two static contact managers must reference the same zero-mass world
     // solver body, without duplicating or accumulating static velocity.
+    std::fprintf(stderr,"native scene fixture line 11877\\n"); std::fflush(stderr);
     {
         Scene supports{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto left = supports.add_static_box(
@@ -11896,6 +11908,7 @@ int run_native_scene_smoke() {
     // moves, and the two source tangent constraints must dissipate
     // sliding motion with the reference material (0.5/0.5 friction).
     // A normal-only solver preserves almost all horizontal velocity.
+    std::fprintf(stderr,"native scene fixture line 11899\\n"); std::fflush(stderr);
     {
         Scene sliding{Scene::ContactGenerator::DiagnosticLegacyGu};
         sliding.add_static_floor(0);
@@ -11917,6 +11930,7 @@ int run_native_scene_smoke() {
     // penetration bias and friction-row relaxation. A shallow symmetric
     // overlap must receive source-scale positional correction, rather
     // than the earlier unrelated 0.2 normal-bias approximation.
+    std::fprintf(stderr,"native scene fixture line 11920\\n"); std::fflush(stderr);
     {
         Scene correction{Scene::ContactGenerator::DiagnosticLegacyGu};
         correction.add_static_floor(0.0f);
@@ -11932,6 +11946,7 @@ int run_native_scene_smoke() {
     // When the Coulomb limit is not reached, source friction relaxation
     // removes tangential slip more strongly than the old 0.2 multiplier.
     // Use a low sliding speed so the limit does not dominate this check.
+    std::fprintf(stderr,"native scene fixture line 11935\\n"); std::fflush(stderr);
     {
         Scene relaxation{Scene::ContactGenerator::DiagnosticLegacyGu};
         relaxation.add_static_floor(0.0f);
@@ -11949,6 +11964,7 @@ int run_native_scene_smoke() {
     // roll into a second wave when one dynamic body has >32 independent
     // dynamic/dynamic contacts. None of the leaf bodies touch each other;
     // the center is the one genuine per-partition conflict.
+    std::fprintf(stderr,"native scene fixture line 11952\\n"); std::fflush(stderr);
     {
         Scene crowded{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto center = crowded.add_dynamic_box(
@@ -12031,6 +12047,7 @@ int run_native_scene_smoke() {
     // The source zero-mass world solver body does not create a dynamic
     // conflict between distinct static-floor contacts; all may share
     // partition zero, even though they reference one world solver row.
+    std::fprintf(stderr,"native scene fixture line 12034\\n"); std::fflush(stderr);
     {
         Scene detached{Scene::ContactGenerator::DiagnosticLegacyGu};
         detached.add_static_floor(0.0f);
@@ -12047,6 +12064,7 @@ int run_native_scene_smoke() {
     // offsets even when DyConstraintPartition changes constraint order.
     // Two disjoint floor contacts with different masses independently
     // verify final per-point normal impulse sums against velocity change.
+    std::fprintf(stderr,"native scene fixture line 12050\\n"); std::fflush(stderr);
     {
         constexpr float dt=1.0f/120.0f;
         Scene reported{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -12110,6 +12128,7 @@ int run_native_scene_smoke() {
     // Dy execution is therefore (A,B), (D,E), (A,C). Detect any
     // writeback accidentally appended in solver order by checking each
     // unique leaf's momentum against its original Gu manager offset.
+    std::fprintf(stderr,"native scene fixture line 12113\\n"); std::fflush(stderr);
     {
         Scene reordered{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto a=reordered.add_dynamic_box({0.5f,0.5f,0.5f},
@@ -12156,6 +12175,7 @@ int run_native_scene_smoke() {
     // retained anchor impulse as tangent0*lambda0 + tangent1*lambda1.
     // Compare the aggregate world X impulse with each independent body's
     // tangential velocity change, and verify per-manager patch offsets.
+    std::fprintf(stderr,"native scene fixture line 12159\\n"); std::fflush(stderr);
     {
         Scene friction_report{Scene::ContactGenerator::DiagnosticLegacyGu};
         friction_report.add_static_floor(0.0f);
@@ -12221,6 +12241,7 @@ int run_native_scene_smoke() {
     // allocations of the previously published Gu pair/contact and
     // solved force streams. A finite static box can overflow its AABB
     // during source broadphase preparation without any solver step.
+    std::fprintf(stderr,"native scene fixture line 12224\\n"); std::fflush(stderr);
     {
         Scene geometry{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto floor=geometry.add_static_floor(0.0f);
@@ -12262,6 +12283,7 @@ int run_native_scene_smoke() {
     // descriptor metadata, not merely the contact-point span and pair
     // event streams. Put the overflowing contact manager second so
     // preparation has already advanced the solver offset of its row.
+    std::fprintf(stderr,"native scene fixture line 12265\\n"); std::fflush(stderr);
     {
         Scene rejected, clean;
         auto construct=[](Scene& s) {
@@ -12325,6 +12347,7 @@ int run_native_scene_smoke() {
     // only one attempts an overflowing material preparation. On retry,
     // their boxes are teleported out of contact and must follow the
     // identical unconstrained free-flight path.
+    std::fprintf(stderr,"native scene fixture line 12328\\n"); std::fflush(stderr);
     {
         constexpr float dt=1.0f/120.0f;
         Scene rejected, clean;
@@ -12471,6 +12494,7 @@ int run_native_scene_smoke() {
     // reproduce an identical scene which never attempted the failed step.
     // Material coefficients are individually finite at authoring, while
     // the source MULTIPLY combination can still overflow at contact prep.
+    std::fprintf(stderr,"native scene fixture line 12474\\n"); std::fflush(stderr);
     {
         constexpr float dt=1.0f/120.0f;
         Scene failed, clean;
@@ -12607,6 +12631,7 @@ int run_native_scene_smoke() {
     // The source EdgeInstance checkpoint is sparse. Stable contact
     // managers must not copy the historical handle watermark on every
     // simulation step merely to guarantee exception rollback.
+    std::fprintf(stderr,"native scene fixture line 12610\\n"); std::fflush(stderr);
     {
         Scene stable{Scene::ContactGenerator::DiagnosticLegacyGu};
         stable.add_static_floor(0.0f);
@@ -12626,6 +12651,7 @@ int run_native_scene_smoke() {
     // must restore both endpoint list links and the connected bit. A
     // second independent contact with invalid combined material forces
     // the failure in contact preparation, after Gu island publication.
+    std::fprintf(stderr,"native scene fixture line 12629\\n"); std::fflush(stderr);
     {
         auto initialize=[](Scene& scene) {
             const auto floor=scene.add_static_floor(0.0f);
@@ -12683,6 +12709,7 @@ int run_native_scene_smoke() {
     // edge. Rollback must not consume a handle or leave its accurate
     // connection bit in the scene. Retrying must produce the same edge
     // identity as a scene that never attempted the unsuccessful step.
+    std::fprintf(stderr,"native scene fixture line 12686\\n"); std::fflush(stderr);
     {
         auto make=[](Scene& scene) {
             const auto floor=scene.add_static_floor(0.0f);
@@ -12730,6 +12757,7 @@ int run_native_scene_smoke() {
     // Late integration failures also must not expose earlier body updates.
     // The second body's near-FLT_MAX origin plus the finite final motion
     // yields an unrepresentable position after the first body integrated.
+    std::fprintf(stderr,"native scene fixture line 12733\\n"); std::fflush(stderr);
     {
         Scene rollback_pose{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto first=rollback_pose.add_dynamic_box(
@@ -12766,6 +12794,7 @@ int run_native_scene_smoke() {
     // along the normal at zero, so Dy pointsAreClose alone cannot reject
     // it. Compare the next actual solve against an uncached Scene seeded
     // with the same physical state, for both collision participants.
+    std::fprintf(stderr,"native scene fixture line 12769\\n"); std::fflush(stderr);
     {
         constexpr float dt=1.0f/120.0f;
         for (const bool relocate_floor : {false,true}) {
@@ -12828,6 +12857,7 @@ int run_native_scene_smoke() {
     // during an earlier position iteration cannot justify "broken".
     // Exercise persistent anchors through a range of slip magnitudes so
     // false historical breaks also poison the next frame's cache.
+    std::fprintf(stderr,"native scene fixture line 12831\\n"); std::fflush(stderr);
     {
         bool observed_break=false, observed_unbroken=false;
         for (const float sliding_speed :
@@ -12879,6 +12909,7 @@ int run_native_scene_smoke() {
     // exceeded-force stream across unsolved collision-only queries.
     // Static contacts share the source world node, while dynamic/dynamic
     // contacts retain their canonical BodyId pair identity.
+    std::fprintf(stderr,"native scene fixture line 12882\\n"); std::fflush(stderr);
     {
         using Change=fyzz::native::ForceThresholdChange;
         constexpr float dt=1.0f/120.0f;
@@ -12952,6 +12983,7 @@ int run_native_scene_smoke() {
     // two dynamic bodies' thresholds for a rigid-body contact manager.
     // Raising the lower threshold beyond the solved pair force must
     // produce LOST without retiring the underlying Gu contact.
+    std::fprintf(stderr,"native scene fixture line 12955\\n"); std::fflush(stderr);
     {
         using Change=fyzz::native::ForceThresholdChange;
         Scene pair_threshold{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -12985,6 +13017,7 @@ int run_native_scene_smoke() {
     // a threshold strictly between the larger support impulse and their
     // SUM; aggregation by individual Gu shape Pair incorrectly emits
     // no Found event (or duplicates if each is above the threshold).
+    std::fprintf(stderr,"native scene fixture line 12988\\n"); std::fflush(stderr);
     {
         using Change=fyzz::native::ForceThresholdChange;
         constexpr float dt=1.0f/120.0f;
@@ -13092,6 +13125,7 @@ int run_native_scene_smoke() {
     // shape, not to a global/parallel material registry. The source uses
     // the higher-precedence combine mode: MAX beats MIN/AVERAGE. A disabled
     // friction flag on EITHER side wins and suppresses all tangent rows.
+    std::fprintf(stderr,"native scene fixture line 13095\\n"); std::fflush(stderr);
     {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
@@ -13154,6 +13188,7 @@ int run_native_scene_smoke() {
     // For ordinary nonnegative restitution, PxsCombineMaterials'
     // restitution mode uses the higher-precedence combine mode
     // independently of the friction mode.
+    std::fprintf(stderr,"native scene fixture line 13157\\n"); std::fflush(stderr);
     {
         using fyzz::Material;
         using Mode=fyzz::MaterialCombineMode;
@@ -13198,6 +13233,7 @@ int run_native_scene_smoke() {
 
     // Material authoring must flow through the real public World
     // NativeCpu backend, not just through native::Scene test fixtures.
+    std::fprintf(stderr,"native scene fixture line 13201\\n"); std::fflush(stderr);
     {
         fyzz::World world{
             fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu}};
@@ -13227,6 +13263,7 @@ int run_native_scene_smoke() {
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     // The reference adapter must bind a real PxMaterial to its existing
     // PxShape, preserving the very same public World authoring contract.
+    std::fprintf(stderr,"native scene fixture line 13230\\n"); std::fflush(stderr);
     {
         fyzz::World world{
             fyzz::WorldOptions{fyzz::ExecutionMode::ReferencePhysXCpu}};
@@ -13253,67 +13290,127 @@ int run_native_scene_smoke() {
     verify_source_mixed_split_and_sleep_order();
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13256\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    std::fprintf(stderr,"native scene fixture line 13257\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
+    std::fprintf(stderr,"native scene fixture line 13258\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_settled_kinematic_contact_solver_input();
+    std::fprintf(stderr,"native scene fixture line 13259\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
+    std::fprintf(stderr,"native scene fixture line 13260\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_node_is_not_a_solver_island();
+    std::fprintf(stderr,"native scene fixture line 13261\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
+    std::fprintf(stderr,"native scene fixture line 13262\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
+    std::fprintf(stderr,"native scene fixture line 13263\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_default_pcm_failure_atomic_cache();
+    std::fprintf(stderr,"native scene fixture line 13264\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_failed_pcm_regeneration_clears_retained_points();
+    std::fprintf(stderr,"native scene fixture line 13265\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
+    std::fprintf(stderr,"native scene fixture line 13266\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_joint_contact_partitions();
+    std::fprintf(stderr,"native scene fixture line 13267\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_partition_overflow_waves();
+    std::fprintf(stderr,"native scene fixture line 13268\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_task_local_writeback();
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    std::fprintf(stderr,"native scene fixture line 13270\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
 #endif
+    std::fprintf(stderr,"native scene fixture line 13272\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_prepublication_constraint_retirement();
+    std::fprintf(stderr,"native scene fixture line 13273\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
+    std::fprintf(stderr,"native scene fixture line 13274\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_island_node_type_counts();
+    std::fprintf(stderr,"native scene fixture line 13275\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
+    std::fprintf(stderr,"native scene fixture line 13276\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_post_third_pass_handle_retirement_rollback();
+    std::fprintf(stderr,"native scene fixture line 13277\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
+    std::fprintf(stderr,"native scene fixture line 13278\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
+    std::fprintf(stderr,"native scene fixture line 13279\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
+    std::fprintf(stderr,"native scene fixture line 13280\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
+    std::fprintf(stderr,"native scene fixture line 13281\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
+    std::fprintf(stderr,"native scene fixture line 13282\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_concurrent_lost_route_repair_rollback();
+    std::fprintf(stderr,"native scene fixture line 13283\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_single_dispatch_for_split_and_sleep();
+    std::fprintf(stderr,"native scene fixture line 13284\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
+    std::fprintf(stderr,"native scene fixture line 13285\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
+    std::fprintf(stderr,"native scene fixture line 13286\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_reused_worker_shutdown();
+    std::fprintf(stderr,"native scene fixture line 13287\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_parallel_third_pass_failure_rollback();
+    std::fprintf(stderr,"native scene fixture line 13288\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_active_island_ownership();
+    std::fprintf(stderr,"native scene fixture line 13289\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();
+    std::fprintf(stderr,"native scene fixture line 13290\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
+    std::fprintf(stderr,"native scene fixture line 13291\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
+    std::fprintf(stderr,"native scene fixture line 13292\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
+    std::fprintf(stderr,"native scene fixture line 13293\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_inactive_kinematic_link_sleep_arbitration();
+    std::fprintf(stderr,"native scene fixture line 13294\\n"); std::fflush(stderr);
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
+    std::fprintf(stderr,"native scene fixture line 13295\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13296\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13297\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_mixed_pcm_legacy_cache_ownership();
+    std::fprintf(stderr,"native scene fixture line 13298\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_legacy_gu_contact_cache();
+    std::fprintf(stderr,"native scene fixture line 13299\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_replaced_cached_friction_anchor();
+    std::fprintf(stderr,"native scene fixture line 13300\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_sleep_velocity_mod_retirement();
+    std::fprintf(stderr,"native scene fixture line 13301\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_after_integration_cached_shape_bounds();
+    std::fprintf(stderr,"native scene fixture line 13302\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_retained_acceleration_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13303\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_post_solver_continuations();
+    std::fprintf(stderr,"native scene fixture line 13304\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_enhanced_determinism_tasks();
+    std::fprintf(stderr,"native scene fixture line 13305\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_reversible_cache_checkpoint();
+    std::fprintf(stderr,"native scene fixture line 13306\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_gu_manager_lookup_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13307\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_friction_task_order();
+    std::fprintf(stderr,"native scene fixture line 13308\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_post_solver_manager_retirement();
+    std::fprintf(stderr,"native scene fixture line 13309\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_post_solver_lost_report_join();
+    std::fprintf(stderr,"native scene fixture line 13310\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_stream_compaction();
+    std::fprintf(stderr,"native scene fixture line 13311\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_zero_capped_dynamic_partition_lifecycle();
+    std::fprintf(stderr,"native scene fixture line 13312\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_compliant_contact_source();
+    std::fprintf(stderr,"native scene fixture line 13313\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
+    std::fprintf(stderr,"native scene fixture line 13314\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
+    std::fprintf(stderr,"native scene fixture line 13315\\n"); std::fflush(stderr);
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
+    std::fprintf(stderr,"native scene fixture line 13316\\n"); std::fflush(stderr);
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
+    std::fprintf(stderr,"native scene fixture line 13317\\n"); std::fflush(stderr);
     fyzz::native::SolverIterationSourceFixture::verify();
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
@@ -13364,18 +13461,31 @@ int run_native_scene_smoke() {
 
 int main() {
     try {
+    std::fprintf(stderr,"native scene fixture line 13367\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify();
+    std::fprintf(stderr,"native scene fixture line 13368\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
+    std::fprintf(stderr,"native scene fixture line 13369\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();
+    std::fprintf(stderr,"native scene fixture line 13370\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
+    std::fprintf(stderr,"native scene fixture line 13371\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
+    std::fprintf(stderr,"native scene fixture line 13372\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
+    std::fprintf(stderr,"native scene fixture line 13373\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
+    std::fprintf(stderr,"native scene fixture line 13374\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_bounded_bulk_shift_publication();
+    std::fprintf(stderr,"native scene fixture line 13375\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_orthogonal_bulk_crossing_filter();
+    std::fprintf(stderr,"native scene fixture line 13376\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_comoving_transient_crossings();
+    std::fprintf(stderr,"native scene fixture line 13377\\n"); std::fflush(stderr);
         fyzz::native::SourceSapEndpointFixture::verify_bounded_merge_pair_transitions();
+    std::fprintf(stderr,"native scene fixture line 13378\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
+    std::fprintf(stderr,"native scene fixture line 13379\\n"); std::fflush(stderr);
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
     } catch (const std::exception& e) {
