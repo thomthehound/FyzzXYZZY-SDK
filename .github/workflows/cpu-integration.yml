@@ -138,6 +138,7 @@ jobs:
       - name: Prove strict 48-frame coupled PGS conformance
         run: ctest --test-dir build -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
       - name: Measure native serial/concurrent third-pass scheduler
+        if: github.event_name == 'workflow_dispatch'
         run: |
           cmake --build build --target fyzzxyzzy_native_third_pass_benchmark --parallel 2
           ./build/fyzzxyzzy_native_third_pass_benchmark
@@ -300,6 +301,7 @@ jobs:
       - name: Prove strict 48-frame coupled PGS conformance
         run: ctest --test-dir build -C release -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
       - name: Measure native serial/concurrent third-pass scheduler
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           cmake --build build --config Release --target fyzzxyzzy_native_third_pass_benchmark --parallel 2
