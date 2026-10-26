@@ -39,7 +39,9 @@ enum class ExecutionMode : std::uint8_t {
 };
 
 struct WorldOptions {
-    ExecutionMode execution = ExecutionMode::ReferencePhysXCpu;
+    // Independent native PGS is the SDK default. Original PhysX is an
+    // explicit reference oracle, never an implicit production backend.
+    ExecutionMode execution = ExecutionMode::NativeCpu;
     // PxPairFlag eNOTIFY_TOUCH_{FOUND,PERSISTS,LOST} plus
     // eNOTIFY_CONTACT_POINTS. Disabled for original default filter policy.
     bool contact_notifications = false;
