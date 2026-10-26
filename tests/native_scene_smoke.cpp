@@ -565,6 +565,72 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Co-moving SAP batch did not exercise bounded endpoint merge");
     }
+    static void verify_bounded_merge_pair_transitions() {
+        // Dense updates on a predominantly unchanged endpoint stream
+        // must produce exactly the final overlap deltas, including Lost
+        // pairs, without depending on intermediate endpoint crossings.
+        Scene scene;
+        constexpr unsigned fixed=192,moving=64;
+        for(unsigned i=0;i<fixed;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0});
+        std::array<BodyId,moving> dynamic{};
+        for(unsigned i=0;i<moving;++i)
+            dynamic[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,1000},1.0f);
+        scene.advance_collision();
+        std::vector<Pair> previous;
+        const auto before=scene.broadphase_batch_merge_count();
+        for(unsigned frame=0;frame<16;++frame) {
+            const float dx=(frame&1u)?-3.25f:3.25f;
+            const float z=(frame%4==2)?1000.0f:0.0f;
+            for(unsigned i=0;i<moving;++i)
+                scene.set_position(dynamic[i],
+                    {float(i%32)*3.0f+dx,
+                     float(i/32)*3.0f,z});
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            std::vector<Pair> expected;
+            for(BodyId i=0;i<fixed+moving;++i)
+                for(BodyId j=i+1;j<fixed+moving;++j) {
+                    const auto& a=scene.actors_[i];
+                    const auto& b=scene.actors_[j];
+                    if(a.kind!=Kind::DynamicBox &&
+                       b.kind!=Kind::DynamicBox)continue;
+                    const auto& x=a.encoded_bounds;
+                    const auto& y=b.encoded_bounds;
+                    if(x[0]>y[3] || y[0]>x[3] ||
+                       x[1]>y[4] || y[1]>x[4] ||
+                       x[2]>y[5] || y[2]>x[5])continue;
+                    expected.push_back({i,j});
+                }
+            const auto actual=scene.pairs();
+            if(!std::equal(expected.begin(),expected.end(),
+                           actual.begin(),actual.end()))
+                throw std::runtime_error(
+                    "Bounded SAP merge diverged from three-axis overlap oracle");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto born=scene.found_pairs(),dead=scene.lost_pairs();
+            if(!std::equal(found.begin(),found.end(),
+                           born.begin(),born.end()) ||
+               !std::equal(lost.begin(),lost.end(),
+                           dead.begin(),dead.end()))
+                throw std::runtime_error(
+                    "Bounded SAP merge changed Found/Lost transitions");
+            previous=std::move(expected);
+        }
+        if(scene.broadphase_batch_merge_count()==before)
+            throw std::runtime_error(
+                "Bounded SAP merge transition regression missed merge route");
+    }
     static void verify_stable_multi_update_pair_lifetime() {
         // A large mUpdated batch can move without crossing any indexed
         // endpoints. Its finite SAP overlaps, source EdgeIndices and
@@ -12649,6 +12715,7 @@ int main() {
     fyzz::native::SourceSapEndpointFixture::verify_bounded_bulk_shift_publication();
     fyzz::native::SourceSapEndpointFixture::verify_orthogonal_bulk_crossing_filter();
     fyzz::native::SourceSapEndpointFixture::verify_comoving_transient_crossings();
+        fyzz::native::SourceSapEndpointFixture::verify_bounded_merge_pair_transitions();
     fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
