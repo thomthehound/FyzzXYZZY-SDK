@@ -6291,9 +6291,6 @@ void Scene::prepare_constraints(float seconds) {
         // for contact Jacobians, friction correlation or solver rows.
         const Actor& actor_a=actors_[manifold.pair.a];
         const Actor& actor_b=actors_[manifold.pair.b];
-        solver_kinematic_participant_ |=
-            actor_a.kind==Kind::KinematicBox ||
-            actor_b.kind==Kind::KinematicBox;
         const bool active_dynamic=
             (actor_a.kind==Kind::DynamicBox && !actor_a.sleeping) ||
             (actor_b.kind==Kind::DynamicBox && !actor_b.sleeping);
@@ -6305,6 +6302,12 @@ void Scene::prepare_constraints(float seconds) {
             // The independently Gu-indexed writeback provides zeros.
             continue;
         }
+        // Only an admitted active manager can share writable kinematic
+        // solver state across otherwise independent Dy task groups.
+        // Dormant Gu history must not suppress concurrent solving.
+        solver_kinematic_participant_ |=
+            actor_a.kind==Kind::KinematicBox ||
+            actor_b.kind==Kind::KinematicBox;
         // Preserve ScShapeInteraction's actual ordered actor pair
         // through DyContactPrep. A canonical pair key is only used
         // for Gu arena identity, and must not reorder the two
