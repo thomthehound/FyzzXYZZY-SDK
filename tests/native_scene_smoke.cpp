@@ -13598,10 +13598,14 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
+    std::fprintf(stderr,"N1 diagnose before solver fixtures\n");
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
+    std::fprintf(stderr,"N1 diagnose before parallel solver fixture\n");
     fyzz::native::SolverIterationSourceFixture::verify_parallel_pgs_groups();
+    std::fprintf(stderr,"N1 diagnose after parallel solver fixture\n");
     fyzz::native::SolverIterationSourceFixture::verify_parallel_solver_end_rollback();
+    std::fprintf(stderr,"N1 diagnose after parallel rollback fixture\n");
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
     verify_source_gyroscopic_motion();
@@ -13627,6 +13631,7 @@ int run_native_scene_smoke() {
     verify_source_activity_rollback();
     verify_sparse_motion_checkpoint();
     verify_native_rigid_integration_and_island_lifecycle();
+    std::fprintf(stderr,"N1 diagnose after entire smoke\n");
 
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
