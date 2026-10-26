@@ -7,11 +7,15 @@
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <exception>
+#include <stop_token>
+#include <thread>
 #include <span>
 #include <vector>
 
@@ -557,6 +561,7 @@ private:
     friend struct ConstraintIslandSourceFixture;
     friend struct SourceSapEndpointFixture;
     friend struct NativeSapTimingFixture;
+    friend struct NativeThirdPassTimingFixture;
     enum class Kind : std::uint8_t {
         StaticBox, DynamicBox, StaticPlane, KinematicBox
     };
@@ -787,6 +792,10 @@ private:
     void update_island_connectivity();
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
+    void run_third_pass_worker(std::stop_token stop) noexcept;
+    void dispatch_third_pass_worker(bool repair_only);
+    void join_third_pass_worker() noexcept;
+    bool complete_third_pass_worker();
     bool process_third_pass_island_task(bool accurate);
     void rebuild_accurate_island_offsets();
     // A dependency-ready, synchronous lowering of third-pass lost-edge
@@ -1101,6 +1110,8 @@ private:
     std::size_t concurrent_third_pass_dispatches_=0;
     std::size_t concurrent_lost_route_dispatches_=0;
     std::size_t overlapped_dy_preintegration_dispatches_=0;
+    std::size_t third_pass_worker_start_count_=0;
+    bool parallel_third_pass_enabled_=true;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
@@ -1604,6 +1615,18 @@ private:
     // slots; active node flags remain on the authoritative actors.
     bool authored_activation_pending_=false;
     bool dirty_ = true;
+
+    // Declared last: its stop-aware wait ends before any Scene graph,
+    // mutex or condition variable storage is destroyed.
+    std::mutex third_pass_work_mutex_;
+    std::condition_variable_any third_pass_work_cv_;
+    bool third_pass_work_pending_=false;
+    bool third_pass_work_done_=false;
+    bool third_pass_work_outstanding_=false;
+    bool third_pass_work_repair_only_=false;
+    bool third_pass_work_split_=false;
+    std::exception_ptr third_pass_work_error_;
+    std::jthread third_pass_worker_;
 };
 
 } // namespace fyzz::native

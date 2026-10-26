@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <stop_token>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -4995,29 +4996,85 @@ void Scene::activate_published_islands() noexcept {
     }
     authored_activation_pending_=false;
 }
+void Scene::run_third_pass_worker(std::stop_token stop) noexcept {
+    for(;;) {
+        std::unique_lock lock(third_pass_work_mutex_);
+        third_pass_work_cv_.wait(lock,stop,[this] {
+            return third_pass_work_pending_;
+        });
+        if(stop.stop_requested())return;
+        const bool repair_only=third_pass_work_repair_only_;
+        third_pass_work_pending_=false;
+        lock.unlock();
+        bool split=false;
+        std::exception_ptr error;
+        try {
+            split=repair_only
+                ? repair_lost_island_graph(false)
+                : process_third_pass_island_task(false);
+        } catch(...) {error=std::current_exception();}
+        lock.lock();
+        third_pass_work_split_=split;
+        third_pass_work_error_=error;
+        third_pass_work_done_=true;
+        lock.unlock();
+        third_pass_work_cv_.notify_one();
+    }
+}
+void Scene::dispatch_third_pass_worker(bool repair_only) {
+    if(third_pass_work_outstanding_)
+        throw std::logic_error("Native island worker dispatched twice");
+    if(!third_pass_worker_.joinable()) {
+        // Lazy initialization: no OS thread for serial-only scenes.
+        third_pass_worker_=std::jthread(
+            [this](std::stop_token stop) {run_third_pass_worker(stop);});
+        ++third_pass_worker_start_count_;
+    }
+    {
+        const std::lock_guard lock(third_pass_work_mutex_);
+        third_pass_work_repair_only_=repair_only;
+        third_pass_work_done_=false;
+        third_pass_work_split_=false;
+        third_pass_work_error_={};
+        third_pass_work_pending_=true;
+    }
+    third_pass_work_outstanding_=true;
+    third_pass_work_cv_.notify_one();
+}
+void Scene::join_third_pass_worker() noexcept {
+    if(!third_pass_work_outstanding_)return;
+    std::unique_lock lock(third_pass_work_mutex_);
+    third_pass_work_cv_.wait(lock,[this] {
+        return third_pass_work_done_;
+    });
+    third_pass_work_outstanding_=false;
+}
+bool Scene::complete_third_pass_worker() {
+    join_third_pass_worker();
+    if(third_pass_work_error_)
+        std::rethrow_exception(third_pass_work_error_);
+    return third_pass_work_split_;
+}
 bool Scene::repair_lost_island_graphs_concurrently() {
     // Process both source ThirdPassTask lost-route producers in parallel.
     // Edge topology is stable; accurate-only indexed-manager mutations
     // do not modify the speculative intrusive edge instances.
-    if(speculative_dirty_nodes_.empty() ||
+    if(!parallel_third_pass_enabled_ ||
+       speculative_dirty_nodes_.empty() ||
        accurate_dirty_nodes_.empty()) {
         const bool speculative=repair_lost_island_graph(false);
         const bool accurate=repair_lost_island_graph(true);
         return speculative || accurate;
     }
-    bool speculative_split=false;
-    std::exception_ptr speculative_error;
-    std::jthread speculative_task([&] {
-        try {
-            speculative_split=repair_lost_island_graph(false);
-        } catch(...) {
-            speculative_error=std::current_exception();
-        }
-    });
-    // The join also runs on accurate failure, before frame rollback.
-    const bool accurate_split=repair_lost_island_graph(true);
-    speculative_task.join();
-    if(speculative_error)std::rethrow_exception(speculative_error);
+    dispatch_third_pass_worker(true);
+    bool accurate_split=false;
+    try {
+        accurate_split=repair_lost_island_graph(true);
+    } catch(...) {
+        join_third_pass_worker();
+        throw;
+    }
+    const bool speculative_split=complete_third_pass_worker();
     ++concurrent_lost_route_dispatches_;
     return speculative_split || accurate_split;
 }
@@ -8419,35 +8476,26 @@ void Scene::step(float seconds) {
                           !accurate_dirty_nodes_.empty();
     bool speculative_split=false,accurate_split=false;
     bool dy_prepared=false;
-    if(speculative_work && accurate_work) {
-        std::exception_ptr speculative_error;
-        std::jthread speculative_task([&] {
-            try {
-                speculative_split=process_third_pass_island_task(false);
-            } catch(...) {
-                speculative_error=std::current_exception();
-            }
-        });
-        // std::jthread's destructor joins even if the accurate source
-        // producer throws. Only then can Scene::step roll back the frame.
-        accurate_split=process_third_pass_island_task(true);
-        join.finish_accurate_third_pass();
-        ++concurrent_third_pass_dispatches_;
-        // Accurate IslandSim has completed its source sleep decision.
-        // Reconcile its newly sleeping node stream before Dy consumes
-        // the accurate active island batches. Speculative IslandSim has
-        // separate activity ownership and can still be processing edges.
-        if(!accurate_islands_.nodes_to_deactivate.empty())
-            synchronize_active_island_nodes_for_graph(true);
-        // ScPipeline may begin Dy preIntegration after accurate
-        // ThirdPassTask completion without waiting for speculative
-        // processLostEdges. Contact-manager retirement and all actual
-        // Dy solver stages remain behind PostThirdPass.
-        prepare_unconstrained_velocities(seconds);
-        dy_prepared=true;
-        ++overlapped_dy_preintegration_dispatches_;
-        speculative_task.join();
-        if(speculative_error)std::rethrow_exception(speculative_error);
+    if(parallel_third_pass_enabled_ && speculative_work && accurate_work) {
+        dispatch_third_pass_worker(false);
+        try {
+            accurate_split=process_third_pass_island_task(true);
+            join.finish_accurate_third_pass();
+            ++concurrent_third_pass_dispatches_;
+            if(!accurate_islands_.nodes_to_deactivate.empty())
+                synchronize_active_island_nodes_for_graph(true);
+            // Dy preIntegration is safe after accurate third-pass
+            // completion while speculative IslandSim remains active.
+            prepare_unconstrained_velocities(seconds);
+            dy_prepared=true;
+            ++overlapped_dy_preintegration_dispatches_;
+        } catch(...) {
+            // The worker outlives the stack frame. Rollback cannot
+            // run while its speculative graph mutation is outstanding.
+            join_third_pass_worker();
+            throw;
+        }
+        speculative_split=complete_third_pass_worker();
         join.finish_speculative_third_pass();
         if(both_dirty)++concurrent_lost_route_dispatches_;
     } else {
