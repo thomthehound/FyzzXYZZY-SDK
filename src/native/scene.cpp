@@ -7078,12 +7078,18 @@ void Scene::RigidStepJoin::finish_after_integration() {
             "Native afterIntegration ran before postSolver or twice");
     after_integration_completed=true;
 }
-void Scene::RigidStepJoin::publish_results() {
-    // Sc final result visibility comes after afterIntegration and
-    // manager retirement, never from an individual island task.
-    if(!after_integration_completed || results_published)
+void Scene::RigidStepJoin::finish_finalization() {
+    // Finalization runs after afterIntegration and CPU reporting. A
+    // completed solver task alone cannot publish a finished World frame.
+    if(!after_integration_completed || finalization_completed)
         throw std::logic_error(
-            "Native ScPipeline published before afterIntegration or twice");
+            "Native ScPipeline finalized before afterIntegration or twice");
+    finalization_completed=true;
+}
+void Scene::RigidStepJoin::publish_results() {
+    if(!finalization_completed || results_published)
+        throw std::logic_error(
+            "Native ScPipeline published before finalization or twice");
     results_published=true;
 }
 
@@ -7263,7 +7269,6 @@ void Scene::step(float seconds) {
     prepare_constraints(seconds);
     solve_constraints();
     write_back_contacts();
-    update_threshold_stream(seconds);
     publish_solver_bodies();
     // PxsBodyCore::numCountedInteractions is maintained by original Sc
     // interaction edges. In this admitted contact-only subset each Gu
@@ -7438,9 +7443,12 @@ void Scene::step(float seconds) {
     after_integration_cached_bounds();
     retire_destroyed_contact_edges();
     join.finish_after_integration();
-    // ScNPhaseCore reports are derived only after final Gu/Dy force
-    // writeback, island reconciliation and contact-manager retirement.
+    // Threshold checks consume current Dy forces after the
+    // integration/cache phase, independently from task-local solve.
+    update_threshold_stream(seconds);
+    // Reports consume completed writeback and retired manager state.
     publish_contact_events();
+    join.finish_finalization();
     join.publish_results();
     // Source BF_KINEMATIC_SETTLING consumes one subsequent zero-motion
     // update; prune those no longer target-driven only after commit.

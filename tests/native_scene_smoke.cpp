@@ -2212,6 +2212,7 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ join.finish_lost_contacts(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_after_integration(); }) ||
+           !rejected([&]{ join.finish_finalization(); }) ||
            !rejected([&]{ join.publish_results(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver accepted an uncompleted producer");
@@ -2235,8 +2236,13 @@ struct ContactCorrelationSourceFixture {
         join.finish_solver_task(0);
         join.finish_post_solver();
         join.finish_after_integration();
+        if(!rejected([&]{ join.publish_results(); }))
+            throw std::runtime_error(
+                "ScPipeline published results before finalization");
+        join.finish_finalization();
         join.publish_results();
-        if(!rejected([&]{ join.finish_after_integration(); }) ||
+        if(!rejected([&]{ join.finish_finalization(); }) ||
+           !rejected([&]{ join.finish_after_integration(); }) ||
            !rejected([&]{ join.publish_results(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_lost_contacts(); }) ||
@@ -2262,6 +2268,7 @@ struct ContactCorrelationSourceFixture {
         empty.finish_lost_contacts();
         empty.finish_post_solver();
         empty.finish_after_integration();
+        empty.finish_finalization();
         empty.publish_results();
 
         // Real Scene task IDs remain safe across uint32 stamp rollover;

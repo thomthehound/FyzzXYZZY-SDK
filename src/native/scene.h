@@ -1261,6 +1261,7 @@ private:
         bool solver_dispatched=false;
         bool post_solver_completed=false;
         bool after_integration_completed=false;
+        bool finalization_completed=false;
         bool results_published=false;
         void finish_third_pass();
         void finish_lost_contacts();
@@ -1270,6 +1271,7 @@ private:
         void require_post_solver() const;
         void finish_post_solver();
         void finish_after_integration();
+        void finish_finalization();
         void publish_results();
     };
     std::vector<SolverTask> solver_tasks_;
