@@ -280,6 +280,79 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Three-axis SAP stress oracle lacked source endpoint crossings");
     }
+    static void verify_adversarial_activity_pockets() {
+        // Reorder many endpoints on all three axes in every frame.
+        // Reverse direction, share encoded keys, and teleport across
+        // multiple pocket ranges. The encoded AABB set is independent
+        // of the linked reorder under test.
+        Scene scene;
+        for(int i=0;i<40;++i)
+            scene.add_static_box({0.48f,0.43f,0.47f},
+                {float(i%8-4)*1.2f,float(i/8-2)*1.1f,0});
+        std::array<BodyId,32> moving{};
+        for(int i=0;i<32;++i)
+            moving[i]=scene.add_dynamic_box(
+                {0.36f,0.39f,0.35f},
+                {float(i%8-4)*1.2f,float(i/8-2)*1.1f,0},1.0f);
+        scene.advance_collision();
+        check(scene);
+        std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
+        const auto original_sorts=scene.broadphase_endpoint_full_sort_count();
+        const auto original_pockets=scene.broadphase_activity_pocket_count();
+        for(int frame=0;frame<80;++frame) {
+            for(int i=0;i<32;++i) {
+                const int phase=(frame&1)?1:-1;
+                const float x=float(((frame*7+i*13)%27)-13)*0.42f*phase;
+                const float y=float(((frame*11+i*5)%23)-11)*0.34f;
+                const float z=float(((frame*3+i*9)%15)-7)*0.23f;
+                const float angle=float((frame+i)%9-4)*0.13f;
+                const fyzz::Quat q{0,0,std::sin(angle),std::cos(angle)};
+                scene.set_pose(moving[static_cast<std::size_t>(i)],
+                               {x,y,z},q);
+            }
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            std::vector<Pair> expected;
+            for(BodyId i=0;i<scene.actors_.size();++i)
+                for(BodyId j=i+1;j<scene.actors_.size();++j) {
+                    const auto& a=scene.actors_[i];
+                    const auto& b=scene.actors_[j];
+                    if(a.kind!=Scene::Kind::DynamicBox &&
+                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    const auto& aa=a.encoded_bounds;
+                    const auto& bb=b.encoded_bounds;
+                    if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                       aa[1]>bb[4] || bb[1]>aa[4] ||
+                       aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    expected.push_back({i,j});
+                }
+            const auto published=scene.pairs();
+            if(!std::equal(expected.begin(),expected.end(),
+                           published.begin(),published.end()))
+                throw std::runtime_error(
+                    "Linked pocket reorder changed encoded AABB membership");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto born=scene.found_pairs(),dead=scene.lost_pairs();
+            if(!std::equal(found.begin(),found.end(),
+                           born.begin(),born.end()) ||
+               !std::equal(lost.begin(),lost.end(),
+                           dead.begin(),dead.end()))
+                throw std::runtime_error(
+                    "Linked pocket reorder changed SAP Found/Lost publication");
+            previous=std::move(expected);
+        }
+        if(scene.broadphase_activity_pocket_count()==original_pockets ||
+           scene.broadphase_endpoint_full_sort_count()!=original_sorts)
+            throw std::runtime_error(
+                "Adversarial multi-volume changes bypassed activity pockets");
+    }
     static void verify_source_activity_pockets() {
         Scene scene;
         std::array<BodyId,72> statics{};
@@ -11232,6 +11305,7 @@ int run_native_scene_smoke() {
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
+    fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_wake_before_lost_edge_split();
     fyzz::native::ContactCorrelationSourceFixture::verify_default_native_pcm_scene();
