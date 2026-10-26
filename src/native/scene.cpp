@@ -8181,16 +8181,15 @@ void Scene::step(float seconds) {
     // no island is ready, so the deactivation pass touches active roots
     // rather than the entire island-handle inventory.
     synchronize_active_island_nodes(true);
-    // Source third pass tests readiness from the prior Dy sleepCheck,
-    // before this frame's unconstrained velocity/PGS processing.
-    deactivate_ready_accurate_islands();
-    // This producer owns rigid sleep decisions and accurate edge
-    // deactivation. Do not announce its completion from a combined
-    // task-count decrement.
-    join.finish_accurate_third_pass();
+    // Both third-pass IslandSims read prior Dy readiness. Exercise the
+    // opposite valid completion order in the production serial lowering:
+    // the speculative producer must NOT consume accurate mNodesToPutToSleep.
     deactivate_ready_speculative_islands();
-    // This independent producer owns speculative interaction retirement.
     join.finish_speculative_third_pass();
+    // The independent accurate producer owns rigid Sc sleep state and
+    // its connected constraint/contact deactivation list.
+    deactivate_ready_accurate_islands();
+    join.finish_accurate_third_pass();
     // Accurate deactivation removes nodes and islands from active lists.
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();

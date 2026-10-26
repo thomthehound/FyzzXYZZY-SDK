@@ -1654,8 +1654,9 @@ articulation constraints are not part of this admission.
 speculative third pass, on the same source actor identities. Speculative
 `processLostEdges` evaluates its own island's previously published
 `isReadyForSleeping` flags, not `ScBodySim::sleeping` or the accurate
-task's deactivation list. The two producers can execute in either
-order while retaining reverse active-island contact-manager event order.
+task's deactivation list. The production serial lowering now completes speculative before accurate
+to exercise the opposite valid source producer order, while retaining
+reverse active-island contact-manager event order.
 Split and kinematic-settling candidates continue through the same
 graph-owned source paths. The transient prior-Dy readiness stream is
 failure-atomic under the existing scene checkpoint and reserves its
