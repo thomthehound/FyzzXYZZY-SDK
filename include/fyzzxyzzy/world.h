@@ -129,8 +129,9 @@ using BodyId = std::uint32_t;
 using ConstraintId = std::uint64_t;
 
 // DyThresholdTable / PxsForceThresholdTask reports changes in the
-// exceeded normal-force stream after source solver writeback. Dynamic
-// contacts use canonical body IDs; static supports share a world key.
+// exceeded normal-force stream after source solver writeback. Rigid
+// dynamic/kinematic pairs retain both canonical actor IDs. Only actual
+// static-world contacts share the one source world-node key.
 enum class ForceThresholdChange : std::uint8_t { Found, Persists, Lost };
 struct ForceThresholdKey {
     BodyId actor0=0;
