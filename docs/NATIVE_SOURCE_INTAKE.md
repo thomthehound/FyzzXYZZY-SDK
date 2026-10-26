@@ -1692,18 +1692,32 @@ to prevent concurrent writes through a shared static participant.
 A task stream containing a kinematic solver endpoint remains serial:
 that endpoint can be referenced from more than one rigid island and
 must not acquire unsynchronized cross-task row mutations.
-All solver groups join before Gu force writeback, actor integration,
-sleep readiness, and postSolver completion. The separate source
-PxsSolverEndTask integration/sleepCheck continuations have not yet
-been parallelized. Native regressions compare successive frames against
-serial execution for independent static-contact islands and separately
-for mixed contact/1D distance-constraint island groups, including exact
-body state, island identity, normal impulses, and 1D row writeback.
-Release benchmark trials compare serial, forced concurrent and
-production-adaptive scheduling for contact-only and mixed contact/1D
-workloads on Linux and Windows, without a CI timing threshold. The
-third-pass benchmark explicitly disables concurrent Dy solving so its
-worker counts and route-repair measurements remain stage-specific.
+Each PxsSolverEndTask continuation now runs its own contiguous
+Gu normal/friction writeback, final solver-body velocity publication,
+integrateCore and Dy::sleepCheck. The caller and reusable worker
+execute disjoint task ranges after source PGS completion; integration
+is not a synthetic post-processing pass over all scene actors.
+Before either lane starts, the scene checkpoint journals the active
+rigid motion it may mutate. The two tasks accumulate sleep-ready
+candidates into separate reusable lanes and merge them in source task
+order after the worker joins. Per-task completion stamps are published
+only after both execution lanes have completed, before postSolver,
+afterIntegration, reporting and completed frame publication. An
+exception from either lane joins outstanding work before transaction
+rollback. Serial admission executes the same source task continuation
+in descriptor order, without worker allocation.
+
+Native regressions compare successive frames against serial execution
+for independent static-contact islands and for mixed contact/1D
+distance-constraint island groups, including exact body motion,
+sleep-energy accumulators, next-frame ready-node order, island
+identity, Gu-indexed normal impulses, and 1D row writeback. A
+worker-side integration overflow fixture rejects a partially completed
+frame, verifies rollback and replays a successful frame. Release
+benchmarks compare serial, forced concurrent and production-adaptive
+scheduling on Linux and Windows without imposing a shared-runner
+timing threshold. Third-pass benchmarks disable Dy concurrency so
+each scheduler's worker counts and timings remain stage-specific.
 
 **Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
 unconstrained Dy preIntegration after the accurate ThirdPassTask has
@@ -1715,7 +1729,7 @@ IslandSim. Both tasks must join before postThirdPass interaction
 retirement or any Dy constraint preparation/solve. A throwing Dy
 preIntegration still joins speculative work before the frame's
 checkpoint rollback. Ordinary quiet frames create no worker. The
-later complete Dy solver-task-tree overlap remains a separate gate.
+PxsSolverEndTask producer lanes join before later shared Sc publication.
 
 **Single-dispatch third-pass ownership:** The production ScPipeline
 runs each source IslandSim third-pass task as one graph-local unit:
