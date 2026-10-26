@@ -496,6 +496,43 @@ struct SourceSapEndpointFixture {
                     "Orthogonally separated SAP batch retained crossing candidates");
         }
     }
+    static void verify_comoving_transient_crossings() {
+        // Sequential indexed insertion may pass a not-yet-updated
+        // neighbor, despite both bodies retaining their relative
+        // order in final source bounds. Such intermediate crossings
+        // cannot create net Sc contact managers.
+        Scene scene;
+        constexpr unsigned fixed=192,moving=64;
+        for(unsigned i=0;i<fixed;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0});
+        std::array<BodyId,moving> ids{};
+        for(unsigned i=0;i<moving;++i)
+            ids[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,1000},1.0f);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        const auto initial_crossings=
+            scene.broadphase_endpoint_crossing_count();
+        for(unsigned frame=0;frame<12;++frame) {
+            const float dx=frame&1u?-3.25f:3.25f;
+            for(unsigned i=0;i<moving;++i)
+                scene.set_position(ids[i],
+                    {float(i%32)*3.0f+dx,
+                     float(i/32)*3.0f,1000});
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            if(!scene.pairs().empty() ||
+               !scene.found_pairs().empty() ||
+               !scene.lost_pairs().empty() ||
+               scene.broadphase_endpoint_crossing_count()!=initial_crossings)
+                throw std::runtime_error(
+                    "Co-moving SAP batch leaked temporary crossing candidates");
+        }
+    }
     static void verify_stable_multi_update_pair_lifetime() {
         // A large mUpdated batch can move without crossing any indexed
         // endpoints. Its finite SAP overlaps, source EdgeIndices and
@@ -12579,6 +12616,7 @@ int main() {
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
     fyzz::native::SourceSapEndpointFixture::verify_bounded_bulk_shift_publication();
     fyzz::native::SourceSapEndpointFixture::verify_orthogonal_bulk_crossing_filter();
+    fyzz::native::SourceSapEndpointFixture::verify_comoving_transient_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
