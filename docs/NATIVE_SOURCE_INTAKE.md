@@ -3,7 +3,7 @@
 
 # N1 source-faithful native dynamics intake
 
-**Status: source-derived Gu contact geometry, Dy per-point normal/friction constraints and rigid-body constraint partition ordering active in the native scene. Per-shape compliant spring-damper PGS is connected; heterogeneous per-contact material correlation, island task execution, shape-interaction reports and full N1 acceptance remain open.**
+**N1 admitted CPU status:** The native scene owns source-derived SAP/Gu/PCM contact managers, both island graphs, typed 1D constraints, Dy CPU PGS task chains, sleep/kinematic handoffs, force/contact reporting, and completed-result rollback. Original CPU source correspondence is exercised by the tests below; the admitted production slice excludes articulations, CCD, TGS, arbitrary/multishape geometry and GPU dynamics. Final N1 acceptance still requires the current matrix and platform CI to pass.
 
 ## Objective: port an execution system, not a collection of formulas
 
@@ -25,6 +25,44 @@ This source contract complements
 [ARCHITECTURE_CONTRACT.md](ARCHITECTURE_CONTRACT.md), and is constrained
 by the source-derived GPU/AABB integration in
 [GPU_BROADPHASE_TRACE.md](GPU_BROADPHASE_TRACE.md).
+
+## N1 admitted CPU correspondence matrix
+
+This is the merger boundary for `World(ExecutionMode::NativeCpu)`,
+not a claim that all of PhysX has been ported. Each row names the
+**original source owner**, its lowering within the **single native
+`Scene`**, and an executable witness. The independent source-enabled
+CPU reference is a test oracle, not a runtime fallback. The CPU PGS
+admission is limited to single-shape rigid plane/box and box/box
+contacts (default PCM and explicit legacy Gu), rigid/kinematic boxes,
+and the admitted equal-limit distance joint.
+
+| Original source phase / owner | Native Scene owner and boundary | Acceptance witnesses |
+| --- | --- | --- |
+| `ScPipeline::postBroadPhase`, `postNarrowPhase`, `setEdgesConnected`; `PxsNphaseImplementationContext` | `advance_collision_internal`, `update_pairs`, `publish_pairs`, `update_contacts`: surviving candidate, contact and shape-manager lifetimes are distinct | `verify_source_pcm_box_box_lifecycle`, `verify_source_pcm_plane_box_lifecycle`, `verify_source_simulation_shape_flag_lifecycle` |
+| `PxsSimpleIslandManager` first/second/third passes; `PxsIslandSim::findRoute/processLostEdges` | `update_island_connectivity`, `activate_published_islands`, `process_third_pass_island_task`: persistent speculative and accurate node, typed edge, witness and awake owners | `verify_source_dirty_witness_split`, `verify_route_repair_continues_after_split`, `verify_source_speculative_reverse_sleep_order` |
+| `ScPipeline::updateDynamics`, `DyDynamics::update/updatePostKinematic`, `DyConstraintPartition` | `prepare_unconstrained_velocities`, `prepare_solver_bodies`, `partition_constraints`: source accurate-island body and descriptor ranges, never a second world | `verify_source_solver_task_batch_partitioning`, `verify_parallel_pgs_groups`, `verify_enhanced_determinism_tasks` |
+| `DyContactPrep`, `DySolverConstraints`, `DySolverControl` | `prepare_constraints`, `solve_constraint_task`, `write_back_contacts`: source normal and correlated friction rows, separate position/velocity results and Gu-indexed writeback | Strict 48-frame coupled PGS conformance (both generators and mass orders), `verify_source_correlated_friction_patch_lifecycle`, `verify_source_combined_lifecycle_matrix` |
+| `ScConstraintSim`, `ExtDistanceJointSolverPrep`; Dy hard 1D rows | Public `World::add_{center,anchored}_distance_constraint/remove_constraint` lower into the same typed edge and per-island Dy solver chain | `verify_public_center_distance_constraint_lifecycle`, `verify_anchored_distance_constraint_angular_jacobians`, `verify_source_combined_lifecycle_matrix` |
+| `ScKinematics`, `PxsIslandSim::deactivateIsland`, `ScPipeline::postSolver/afterIntegration` | `calculate_kinematic_velocities`, `publish_kinematic_targets`, `reconcile_integrated_deactivations`, `after_integration_cached_bounds` | `verify_source_sleep_wake_generator_matrix`, `verify_kinematic_target_source_reference_parity`, `verify_after_integration_deactivation_reconciliation` |
+| `ScNPhaseCore::processPersistentContactEvents`, `DySolverConstraints::writeBackContact`, `PxsForceThresholdTask` | `publish_contact_events`, `update_threshold_stream`, `write_back_contacts`: active kinematic touch reports, distinct kinematic node threshold identities, one actual static-world key | `verify_kinematic_contact_reporting_source_lifetime`, `verify_kinematic_threshold_source_pairs`, `verify_source_contact_notification_world` |
+| `ScPipeline::postSolver/finalizationPhase`; `NpScene::fetchResults` | `RigidStepJoin`, `StepCheckpoint`, `solved_result_frame_`: no completed result, event or retired handle is published on a rejected frame | `verify_source_multiframe_completion`, `verify_parallel_solver_end_rollback`, `verify_post_third_pass_handle_retirement_rollback` |
+
+The combined-lifecycle witness is an independently executed 12-frame
+source/native comparison under **both** PCM and legacy Gu, in **both**
+mass/actor creation orders. It preserves one `World` across 1D joint
+creation/retirement, changing timesteps, frictional contact and
+Found/Persists/Lost reporting. The separate sleep/wake witness runs both
+source contact generators through full island deactivation, user wake
+and subsequent shape-contact loss. Neither uses a native-only synthetic
+scene as a substitute for the original CPU reference.
+
+The final acceptance requirement is that these tests, the strict
+coupled-friction witness, and the existing backend/architecture suites
+pass on Linux and Windows. Unsupported geometry, triggers, CCD,
+articulations, GPU dynamics and unadmitted constraint families are
+not silently routed to reference PhysX; they remain explicit future
+admissions rather than N1 CPU parity claims.
 
 ## Original code paths and required behavior
 
