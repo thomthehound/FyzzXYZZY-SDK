@@ -1852,8 +1852,8 @@ struct ConstraintIslandSourceFixture {
         scene.deactivate_ready_accurate_islands();
         scene.synchronize_active_island_nodes();
         if(!scene.body_is_sleeping(a) || scene.body_is_sleeping(b) ||
-           scene.speculative_islands_.active_node_index[a]==invalid_instance ||
-           scene.speculative_islands_.active_node_index[b]==invalid_instance ||
+           scene.speculative_islands_.active_node_index[a]==Scene::invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]==Scene::invalid_instance ||
            scene.speculative_islands_.active_islands.size()!=1 ||
            !(scene.island_edges_[edge].speculative_state&1u))
             throw std::runtime_error(
@@ -1861,8 +1861,8 @@ struct ConstraintIslandSourceFixture {
         scene.actors_[b].ready_for_sleep=true;
         scene.speculative_ready_nodes_.push_back(b);
         scene.deactivate_ready_speculative_islands();
-        if(scene.speculative_islands_.active_node_index[a]!=invalid_instance ||
-           scene.speculative_islands_.active_node_index[b]!=invalid_instance ||
+        if(scene.speculative_islands_.active_node_index[a]!=Scene::invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]!=Scene::invalid_instance ||
            !scene.speculative_islands_.active_islands.empty() ||
            scene.speculative_islands_.nodes_to_deactivate.size()!=2 ||
            scene.island_edges_[edge].speculative_state&1u)
@@ -1871,8 +1871,8 @@ struct ConstraintIslandSourceFixture {
         scene.step_checkpoint_.rollback(scene);
         if(scene.speculative_islands_.active_nodes.size()!=2 ||
            scene.speculative_islands_.active_islands.size()!=1 ||
-           scene.speculative_islands_.active_node_index[a]==invalid_instance ||
-           scene.speculative_islands_.active_node_index[b]==invalid_instance ||
+           scene.speculative_islands_.active_node_index[a]==Scene::invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]==Scene::invalid_instance ||
            !(scene.island_edges_[edge].speculative_state&1u))
             throw std::runtime_error(
                 "Failed speculative deactivation failed to restore graph activity");
@@ -2075,7 +2075,7 @@ struct ConstraintIslandSourceFixture {
         if(!scene.body_is_sleeping(a) ||
            !(scene.island_edges_[edge].speculative_state&1u) ||
            scene.speculative_islands_.active_node_index[a]==
-               invalid_instance ||
+               Scene::invalid_instance ||
            !scene.speculative_islands_.deactivating_edges.empty())
             throw std::runtime_error(
                 "Speculative active kinematic failed to protect SAP edge");
@@ -2091,7 +2091,7 @@ struct ConstraintIslandSourceFixture {
                 "Accurate third pass retired speculative activity early");
         scene.deactivate_ready_speculative_islands();
         if(scene.island_edges_[edge].speculative_state&1u ||
-           scene.speculative_islands_.active_node_index[a]!=invalid_instance ||
+           scene.speculative_islands_.active_node_index[a]!=Scene::invalid_instance ||
            scene.speculative_islands_.nodes_to_deactivate.size()!=1 ||
            scene.speculative_islands_.nodes_to_deactivate[0]!=a ||
            scene.speculative_islands_.deactivating_edges.size()!=1 ||
