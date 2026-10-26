@@ -1213,11 +1213,19 @@ seeds in that same orphan incur no extra route searches. Source
 `IslandSim::findRoute` also reuses confirmed witnesses from earlier
 successful searches and validates cached paths; those root-witness
 and off-path branch operations are now translated for the rigid graph.
-The full source typed/invalid island witness-state transitions,
-optional dirty-node work budget, and full sleep/activation semantics
-are **not yet fully ported**.
-The current queue implements the source's hop-priority traversal for
-the admitted all-awake rigid graph, not the entire island algorithm.
+For admitted rigid/kinematic/constraint graph traversal, source
+`mVisitedState` and the temporary `IG_INVALID_ISLAND` designation for
+unconfirmed search nodes are lowered into generation-stamped visited
+and confirmed witnesses. Authoritative persistent island handles remain
+valid throughout the task and are changed only by local split migration.
+The same hop-priority queue, dirty-map index order, root/witness
+termination and visited-node migration order drive the native graph.
+Regressions cover branch witnesses, hop priorities, multi-split order,
+stale-route recovery, concurrent graph repairs and rollback.
+The optional source dirty-node budget is disabled in the original
+configuration (`IG_LIMIT_DIRTY_NODES=0`) and is not a default-CPU
+admission requirement. Articulation/non-rigid node transitions and
+their independent activation/solver consumers remain unsupported.
 The full-rebuild instrumentation differentiates redundant edge
 removal from a true split; allocations are retained between frames.
 
