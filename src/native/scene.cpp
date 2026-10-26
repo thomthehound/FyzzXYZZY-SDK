@@ -1203,26 +1203,35 @@ void Scene::update_bounds() {
                             actors_[passed.id].kind==Kind::DynamicBox)) {
                             const Actor& a=actors_[moving.id];
                             const Actor& b=actors_[passed.id];
-                            const Pair pair=ordered_pair(moving.id,passed.id);
-                            // Only final 3D overlaps and existing
-                            // Sc pairs can produce net Found/Lost. A
-                            // transient crossing between co-moving
-                            // proxies needs no pair-manager mutation.
+                            // A crossing on this axis changes the
+                            // pair state only if its orthogonal extents
+                            // also overlap, or it had a published pair.
+                            // Test those axes first to avoid work for
+                            // proxies separated in another dimension.
+                            const auto& aa=a.encoded_bounds;
+                            const auto& bb=b.encoded_bounds;
+                            const std::array<unsigned,3> check_axes{
+                                (axis+2)%3,(axis+1)%3,axis};
                             bool final_overlap=true;
-                            for(unsigned dim=0;dim<3;++dim) {
-                                if(a.encoded_bounds[dim]>
-                                       b.encoded_bounds[dim+3] ||
-                                   b.encoded_bounds[dim]>
-                                       a.encoded_bounds[dim+3]) {
+                            for(unsigned dim:check_axes) {
+                                if(aa[dim]>bb[dim+3] ||
+                                   bb[dim]>aa[dim+3]) {
                                     final_overlap=false;
                                     break;
                                 }
                             }
-                            if(final_overlap ||
-                               std::binary_search(previous_pairs_.begin(),
-                                                  previous_pairs_.end(),pair)) {
-                                broadphase_crossed_pairs_.push_back(pair);
+                            if(final_overlap) {
+                                broadphase_crossed_pairs_.push_back(
+                                    ordered_pair(moving.id,passed.id));
                                 ++broadphase_endpoint_crossing_count_;
+                            } else {
+                                const Pair pair=ordered_pair(
+                                    moving.id,passed.id);
+                                if(std::binary_search(previous_pairs_.begin(),
+                                                      previous_pairs_.end(),pair)) {
+                                    broadphase_crossed_pairs_.push_back(pair);
+                                    ++broadphase_endpoint_crossing_count_;
+                                }
                             }
                         }
                         start_index=std::min(start_index,previous);
@@ -1314,20 +1323,20 @@ void Scene::update_bounds() {
             const Actor& other=actors_[neighbor.id];
             if(a.kind!=Kind::DynamicBox &&
                other.kind!=Kind::DynamicBox)return;
-            const Pair pair=ordered_pair(moving.id,neighbor.id);
-            // Source batchUpdateFewUpdates filters the orthogonal
-            // axes. Net Sc publication can also discard temporary
-            // crossings on the moving axis itself when no final 3D
-            // overlap or previously published pair exists.
+            // Reject non-overlapping orthogonal extents before
+            // spending work on the moving axis or pair lookup.
             const auto& aa=a.encoded_bounds;
             const auto& bb=other.encoded_bounds;
+            const std::array<unsigned,3> check_axes{
+                (axis+2)%3,(axis+1)%3,axis};
             bool final_overlap=true;
-            for(unsigned dim=0;dim<3;++dim) {
+            for(unsigned dim:check_axes) {
                 if(aa[dim]>bb[dim+3] || bb[dim]>aa[dim+3]) {
                     final_overlap=false;
                     break;
                 }
             }
+            const Pair pair=ordered_pair(moving.id,neighbor.id);
             if(!final_overlap &&
                !std::binary_search(previous_pairs_.begin(),
                                    previous_pairs_.end(),pair))
