@@ -18,6 +18,7 @@ struct NativeThirdPassTimingFixture {
     struct Result {
         std::vector<BodyState> bodies;
         std::vector<std::uint32_t> speculative_owners,accurate_owners;
+        std::vector<double> impulses;
         double median_us=0, checksum=0;
         std::size_t asleep=0, spec_islands=0, acc_islands=0;
         std::size_t starts=0, dispatched=0;
@@ -134,7 +135,8 @@ struct NativeThirdPassTimingFixture {
            a.spec_islands!=b.spec_islands ||
            a.bodies.size()!=b.bodies.size() ||
            a.speculative_owners!=b.speculative_owners ||
-           a.accurate_owners!=b.accurate_owners)
+           a.accurate_owners!=b.accurate_owners ||
+           a.impulses!=b.impulses)
             throw std::runtime_error(
                 "Native serial and concurrent third-pass trial ownership differs");
         const auto same_vec=[](Vec3 x,Vec3 y) {
@@ -154,6 +156,91 @@ struct NativeThirdPassTimingFixture {
                 throw std::runtime_error(
                     "Native serial/concurrent third-pass trial state differs");
         }
+    }
+
+    static Result profile_solver(Mode mode,std::size_t body_count) {
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        scene.parallel_third_pass_enabled_=false;
+        scene.parallel_solver_enabled_=mode!=Mode::Serial;
+        if(mode==Mode::ForcedParallel)
+            scene.parallel_solver_min_descriptors_=0;
+        scene.add_static_floor(0.0f);
+        std::vector<BodyId> ids;
+        ids.reserve(body_count);
+        for(std::size_t i=0;i<body_count;++i) {
+            const auto id=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},
+                {float(i)*3.0f,0.48f,0.0f},1.0f);
+            scene.actors_[id].dynamics.gravity_enabled=false;
+            ids.push_back(id);
+        }
+        constexpr std::size_t warmup=16,trials=5,frames=32;
+        std::array<double,trials> times{};
+        Result result;
+        result.bodies.reserve(trials*body_count);
+        result.speculative_owners.reserve(trials*body_count);
+        result.accurate_owners.reserve(trials*body_count);
+        for(std::size_t step=0;step<warmup+trials*frames;++step) {
+            // Identical incoming contact geometry and downward motion
+            // keep all island groups active through the measured window.
+            // Authored inputs remain outside the timed native step.
+            for(std::size_t i=0;i<ids.size();++i) {
+                scene.set_position(ids[i],{float(i)*3.0f,0.48f,0.0f});
+                scene.set_velocity(ids[i],{0.0f,-1.0f,0.0f});
+            }
+            const auto start=std::chrono::steady_clock::now();
+            scene.step(1.0f/120.0f);
+            const double us=std::chrono::duration<double,std::micro>(
+                std::chrono::steady_clock::now()-start).count();
+            if(step>=warmup)times[(step-warmup)/frames]+=us;
+            if(step>=warmup && (step-warmup+1)%frames==0) {
+                for(BodyId id:ids) {
+                    result.bodies.push_back(scene.body_state(id));
+                    result.speculative_owners.push_back(
+                        scene.speculative_island_id(id));
+                    result.accurate_owners.push_back(
+                        scene.accurate_island_id(id));
+                }
+                const auto impulses=scene.solved_normal_impulses();
+                result.impulses.insert(result.impulses.end(),
+                                       impulses.begin(),impulses.end());
+            }
+        }
+        for(double& v:times)v/=frames;
+        std::sort(times.begin(),times.end());
+        result.median_us=times[trials/2];
+        result.starts=scene.third_pass_worker_start_count_;
+        result.dispatched=scene.concurrent_solver_dispatches_;
+        result.spec_islands=scene.speculative_island_count();
+        result.acc_islands=scene.accurate_island_count();
+        for(BodyId id:ids) {
+            const auto body=scene.body_state(id);
+            result.asleep+=body.sleeping;
+            result.checksum+=body.position.y+body.velocity.y;
+        }
+        if(mode==Mode::Serial && (result.starts || result.dispatched))
+            throw std::runtime_error("Serial Dy PGS unexpectedly launched work");
+        if(mode!=Mode::Serial && (result.starts!=1 || !result.dispatched))
+            throw std::runtime_error("Independent Dy PGS worker did not run");
+        return result;
+    }
+    static void compare_solver(std::size_t body_count) {
+        const auto serial=profile_solver(Mode::Serial,body_count);
+        const auto forced=profile_solver(Mode::ForcedParallel,body_count);
+        const auto adaptive=profile_solver(Mode::Adaptive,body_count);
+        verify_same_state(serial,forced);
+        verify_same_state(serial,adaptive);
+        std::printf(
+            "dy_pgs bodies=%zu serial_median_us=%.3f"
+            " forced_parallel_median_us=%.3f adaptive_median_us=%.3f"
+            " forced_speedup=%.3fx adaptive_speedup=%.3fx"
+            " forced_starts=%zu forced_dispatches=%zu"
+            " adaptive_starts=%zu adaptive_dispatches=%zu\\n",
+            body_count,serial.median_us,forced.median_us,
+            adaptive.median_us,serial.median_us/forced.median_us,
+            serial.median_us/adaptive.median_us,
+            forced.starts,forced.dispatched,
+            adaptive.starts,adaptive.dispatched);
     }
     static void compare(bool split_churn,std::size_t chains=16,
                         bool deep_chain=false) {
@@ -192,6 +279,8 @@ int main() {
         fyzz::native::NativeThirdPassTimingFixture::compare(true,64,true);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,256,true);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,512,true);
+        fyzz::native::NativeThirdPassTimingFixture::compare_solver(256);
+        fyzz::native::NativeThirdPassTimingFixture::compare_solver(512);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
         return 1;
