@@ -799,7 +799,8 @@ private:
     void dispatch_third_pass_worker(bool repair_only,
                                     std::size_t solver_first=invalid_instance,
                                     bool integrate_solver=false,
-                                    float seconds=0.0f);
+                                    float seconds=0.0f,
+                                    RigidStepJoin* solver_join=nullptr);
     void join_third_pass_worker() noexcept;
     bool complete_third_pass_worker();
     bool process_third_pass_island_task(bool accurate);
@@ -1403,6 +1404,9 @@ private:
         std::span<std::uint32_t> solver_completion_stamps{};
         std::uint32_t completion_generation=0;
         std::size_t outstanding_solver_tasks=0;
+        // The caller and source task worker may finish different Dy
+        // chains in either order; serialize only the completion edge.
+        std::mutex solver_completion_mutex;
         bool accurate_third_pass_joined=false;
         bool speculative_third_pass_joined=false;
         bool third_pass_joined=false;
@@ -1652,6 +1656,7 @@ private:
         bool outstanding=false, repair_only=false, split=false;
         bool integrate_solver=false;
         float seconds=0.0f;
+        RigidStepJoin* solver_join=nullptr;
         std::size_t solver_first=invalid_instance, solver_end=0;
         std::exception_ptr error;
         std::jthread worker;
