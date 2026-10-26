@@ -773,6 +773,8 @@ struct ConstraintIslandSourceFixture {
         scene.advance_collision(true);
         const auto edge=scene.contact_edge_index({a,k});
         if(edge==Scene::invalid_edge || scene.contacts().size()!=0 ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1 ||
            scene.speculative_island_count()!=1 ||
            scene.accurate_island_count()!=1 ||
            scene.speculative_islands_.active_kinematic_nodes.size()!=1)
@@ -797,9 +799,50 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Settled kinematic did not release speculative-only edge");
         scene.deactivate_ready_islands();
-        if(!scene.speculative_islands_.deactivating_edges.empty())
+        if(!scene.speculative_islands_.deactivating_edges.empty() ||
+           scene.actors_[a].num_counted_interactions!=1 ||
+           scene.actors_[k].num_counted_interactions!=1)
             throw std::runtime_error(
-                "Speculative kinematic retirement replayed in quiet third pass");
+                "Sleep-deactivated SAP edge lost its attached body count");
+        scene.set_position(k,{0.6f,0.1f,6.0f});
+        scene.advance_collision(true);
+        if(scene.actors_[a].num_counted_interactions!=0 ||
+           scene.actors_[k].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Retired SAP-only edge retained counted interactions");
+    }
+    static void verify_joint_counted_sleep_energy() {
+        // DySleep uses the source lifetime interaction count, even
+        // when a joint has no contact manager. For the same sub-threshold
+        // motion, one counted joint raises the energy threshold while
+        // an unconstrained body resets its wake counter.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto anchor=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{4,6,0});
+        const auto constrained=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,6,0},1.0f);
+        const auto free=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8,6,0},1.0f);
+        RigidBodyDynamics dynamics{};
+        dynamics.gravity_enabled=false;
+        dynamics.linear_damping=0.0f;
+        dynamics.angular_damping=0.0f;
+        scene.set_dynamics(constrained,dynamics);
+        scene.set_dynamics(free,dynamics);
+        scene.create_center_distance_constraint(constrained,anchor,4.0f);
+        for(BodyId id:{constrained,free}) {
+            scene.set_velocity(id,{0,0.12f,0});
+            scene.actors_[id].wake_counter=0.01f;
+        }
+        if(scene.actors_[constrained].num_counted_interactions!=1 ||
+           scene.actors_[free].num_counted_interactions!=0)
+            throw std::runtime_error(
+                "Sc joint-only sleep fixture lacks source interaction counts");
+        scene.step(1.0f/120.0f);
+        if(scene.actors_[constrained].wake_counter>=0.05f ||
+           scene.actors_[free].wake_counter<0.3f)
+            throw std::runtime_error(
+                "Dy sleep energy ignored Sc constraint lifetime interaction");
     }
     static void verify_graph_owned_kinematic_active_references() {
         Scene scene{};
@@ -11683,6 +11726,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_post_third_pass_handle_retirement_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
+    fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
