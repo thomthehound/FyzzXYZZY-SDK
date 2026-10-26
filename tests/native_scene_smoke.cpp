@@ -2481,6 +2481,92 @@ struct ConstraintIslandSourceFixture {
 };
 
 struct ContactCorrelationSourceFixture {
+    static void verify_kinematic_threshold_source_pairs() {
+        // Dy::writeBackContact uses both PxsSolverBodyData::nodeIndex
+        // values. A kinematic endpoint is eKINEMATIC, not eWORLD, and
+        // contributes its own reportThreshold to the source MIN rule.
+        // The same dynamic resting between two DIFFERENT kinematics
+        // must publish two exceeded pairs, not one aggregated world pair.
+        constexpr float dt=1.0f/120.0f;
+        constexpr Vec3 half{0.5f,0.5f,0.5f};
+        for(const bool legacy:{false,true}) {
+            for(const bool kinematics_first:{false,true}) {
+                Scene scene{legacy
+                    ? Scene::ContactGenerator::DiagnosticLegacyGu
+                    : Scene::ContactGenerator::DefaultPcm};
+                BodyId dynamic=0,bottom=0,side=0;
+                const auto add_dynamic=[&] {
+                    dynamic=scene.add_dynamic_box(
+                        half,{0,7,0},1.0f);
+                };
+                const auto add_kinematics=[&] {
+                    bottom=scene.add_dynamic_box(
+                        half,{0,6.08f,0},1.0f);
+                    side=scene.add_dynamic_box(
+                        half,{0.92f,7,0},1.0f);
+                    scene.set_kinematic(bottom,true);
+                    scene.set_kinematic(side,true);
+                };
+                if(kinematics_first) {add_kinematics();add_dynamic();}
+                else {add_dynamic();add_kinematics();}
+                RigidBodyDynamics d{};
+                d.gravity_enabled=false;
+                d.linear_damping=0.0f;
+                d.angular_damping=0.0f;
+                scene.set_dynamics(dynamic,d);
+                scene.set_velocity(dynamic,{1,-1,0});
+                // PxRigidDynamic retains the threshold API even after
+                // eKINEMATIC is set. The ordinary dynamic has MAX_REAL,
+                // so source writeback must use each kinematic's zero.
+                scene.set_contact_report_threshold(bottom,0.0f);
+                scene.set_contact_report_threshold(side,0.0f);
+                scene.step(dt);
+                if(scene.contacts().size()!=2)
+                    throw std::runtime_error(
+                        "Dy kinematic threshold fixture lacks two Gu managers");
+                const auto pairs=scene.force_threshold_changes();
+                const auto matches=[&](ForceThresholdKey key,
+                                       ForceThresholdChange change) {
+                    return std::count_if(pairs.begin(),pairs.end(),
+                        [&](const ForceThresholdReport& report) {
+                            return report.key==key &&
+                                   report.change==change &&
+                                   report.threshold==0.0f &&
+                                   report.normal_impulse>0.0;
+                        });
+                };
+                const auto first=ForceThresholdKey{
+                    std::min(dynamic,bottom),std::max(dynamic,bottom),false};
+                const auto second=ForceThresholdKey{
+                    std::min(dynamic,side),std::max(dynamic,side),false};
+                if(pairs.size()!=2 ||
+                   matches(first,ForceThresholdChange::Found)!=1 ||
+                   matches(second,ForceThresholdChange::Found)!=1)
+                    throw std::runtime_error(
+                        "Dy conflated distinct kinematic threshold pair identities");
+                // Raising just one endpoint's threshold must retire its
+                // exceeded pair while the other remains independently
+                // monitored. Neither transition can use eWORLD.
+                scene.set_contact_report_threshold(bottom,
+                    std::numeric_limits<float>::max());
+                scene.step(dt);
+                const auto next=scene.force_threshold_changes();
+                const auto has=[&](ForceThresholdKey key,
+                                  ForceThresholdChange change) {
+                    return std::count_if(next.begin(),next.end(),
+                        [&](const ForceThresholdReport& report) {
+                            return report.key==key &&
+                                   report.change==change;
+                        })==1;
+                };
+                if(next.size()!=2 ||
+                   !has(first,ForceThresholdChange::Lost) ||
+                   !has(second,ForceThresholdChange::Persists))
+                    throw std::runtime_error(
+                        "Dy kinematic force thresholds did not retire independently");
+            }
+        }
+    }
     static void verify_kinematic_contact_manager_source_order() {
         // The kinematic flag changes PxRigidDynamic's contact-manager
         // orientation: a dynamic/kinematic pair keeps the ordinary
@@ -13693,6 +13779,7 @@ int run_native_scene_smoke() {
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_contact_manager_source_order();
+    fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_threshold_source_pairs();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
     fyzz::native::ContactCorrelationSourceFixture::verify_settled_kinematic_contact_solver_input();
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
