@@ -227,6 +227,12 @@ public:
     std::size_t broadphase_activity_pocket_endpoint_count() const noexcept {
         return broadphase_activity_pocket_endpoint_count_;
     }
+    std::size_t broadphase_activity_pocket_comparison_count() const noexcept {
+        return broadphase_activity_pocket_comparisons_;
+    }
+    std::size_t broadphase_activity_pocket_relocation_count() const noexcept {
+        return broadphase_activity_pocket_relocations_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1244,6 +1250,10 @@ private:
         std::size_t start=0,end=0;
     };
     std::vector<ActivityPocket> sap_activity_pockets_;
+    std::vector<std::size_t> sap_list_next_, sap_list_prev_;
+    std::vector<Endpoint> sap_pocket_workspace_;
+    std::size_t broadphase_activity_pocket_comparisons_=0;
+    std::size_t broadphase_activity_pocket_relocations_=0;
     std::size_t broadphase_activity_pocket_count_=0;
     std::size_t broadphase_activity_pocket_endpoint_count_=0;
     std::size_t broadphase_incremental_pair_update_count_=0;
