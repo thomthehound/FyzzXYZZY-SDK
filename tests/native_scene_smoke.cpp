@@ -1781,6 +1781,40 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Production Dy pre-integration pose witness failed after rollback");
     }
+    static void verify_dy_ready_event_reaches_both_islands() {
+        // Unlike directly setting Node::isReadyForSleeping, this runs
+        // the real Dy sleepCheck and checks its following-frame handoff.
+        // A zero-gravity free body reaches readiness without a Gu touch
+        // or constraint; both IslandSim producers must consume that one
+        // transition, even with no speculative contact edge.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto id=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,12,0},1.0f);
+        scene.actors_[id].dynamics.gravity_enabled=false;
+        scene.actors_[id].wake_counter=0.001f;
+        scene.actors_[id].ready_for_sleep=false;
+        scene.step(0.02f);
+        if(scene.body_is_sleeping(id) ||
+           !scene.actors_[id].ready_for_sleep ||
+           scene.speculative_ready_nodes_.size()!=1 ||
+           scene.speculative_ready_nodes_.front()!=id ||
+           scene.accurate_islands_.nodes_to_deactivate.size()!=0)
+            throw std::runtime_error(
+                "Dy sleepCheck did not queue next-frame speculative readiness");
+        scene.step(0.02f);
+        if(!scene.body_is_sleeping(id) ||
+           !scene.speculative_ready_nodes_.empty() ||
+           scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.accurate_islands_.nodes_to_deactivate.front()!=id)
+            throw std::runtime_error(
+                "Independent IslandSims did not consume prior Dy readiness once");
+        scene.step(0.02f);
+        if(!scene.body_is_sleeping(id) ||
+           !scene.speculative_ready_nodes_.empty() ||
+           !scene.accurate_islands_.nodes_to_deactivate.empty())
+            throw std::runtime_error(
+                "Quiet Dy frame replayed the consumed readiness transition");
+    }
     static void verify_speculative_ready_is_independent() {
         // The two PxsIslandSim::ThirdPassTasks have no dependency on
         // one another. Dy publishes readiness in the preceding step;
@@ -12926,6 +12960,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
+    fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
