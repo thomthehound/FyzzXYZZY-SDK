@@ -1602,6 +1602,50 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Dy retry failed to register its Gu counted interactions");
     }
+    static void verify_sc_activity_third_pass_publication() {
+        // Activation and third-pass deactivation have distinct Sc
+        // consumers. Neither an accurate sleep result nor an inactive
+        // speculative EdgeInstance is itself a published eIS_ACTIVE
+        // transition before postThirdPassIslandGen consumes that output.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto world=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,5,0});
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,5.9f,0},1.0f);
+        const Pair pair{world,dynamic};
+        scene.advance_collision();
+        const auto edge=scene.contact_edge_index(pair);
+        if(edge==Scene::invalid_edge ||
+           !scene.island_edges_[edge].interaction_active ||
+           scene.active_contact_interaction_count()!=1)
+            throw std::runtime_error(
+                "Sc first/second-pass contact activity was not published");
+        scene.actors_[dynamic].ready_for_sleep=true;
+        scene.deactivate_ready_accurate_islands();
+        if(!scene.body_is_sleeping(dynamic) ||
+           !scene.island_edges_[edge].interaction_active ||
+           !(scene.island_edges_[edge].speculative_state&1u) ||
+           !scene.speculative_islands_.deactivating_edges.empty())
+            throw std::runtime_error(
+                "Accurate rigid sleep published speculative Sc retirement");
+        scene.deactivate_ready_speculative_islands();
+        if((scene.island_edges_[edge].speculative_state&1u) ||
+           !scene.island_edges_[edge].interaction_active ||
+           scene.speculative_islands_.deactivating_edges.size()!=1 ||
+           scene.speculative_islands_.deactivating_edges[0]!=edge ||
+           scene.active_contact_interaction_count()!=1)
+            throw std::runtime_error(
+                "Speculative island completion bypassed Sc post-third-pass join");
+        scene.consume_deactivated_contact_interactions();
+        if(scene.island_edges_[edge].interaction_active ||
+           scene.active_contact_interaction_count()!=0)
+            throw std::runtime_error(
+                "Sc post-third-pass failed to retire speculative interaction");
+        scene.consume_deactivated_contact_interactions();
+        if(scene.active_contact_interaction_count()!=0)
+            throw std::runtime_error(
+                "Sc third-pass deactivation was consumed twice");
+    }
     static void verify_active_kinematic_guards_rigid_island_sleep() {
         // PhysX marks islands touched by an active kinematic before
         // testing already-published Dy sleep readiness. A kinematic
@@ -12642,6 +12686,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
+    fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
