@@ -429,6 +429,56 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Adversarial multi-volume changes bypassed activity pockets");
     }
+    static void verify_stable_multi_update_pair_lifetime() {
+        // A large mUpdated batch can move without crossing any indexed
+        // endpoints. Its finite SAP overlaps, source EdgeIndices and
+        // Found/Lost streams must remain unchanged; no linked pocket
+        // reconstruction or full pair sweep is needed.
+        Scene scene;
+        constexpr unsigned fixed=192,moving=64;
+        for(unsigned i=0;i<fixed;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0});
+        std::array<BodyId,moving> ids{};
+        for(unsigned i=0;i<moving;++i)
+            ids[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0},1.0f);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=moving)
+            throw std::runtime_error(
+                "Stable SAP batch fixture has wrong initial overlap set");
+        const std::vector<Pair> initial(scene.pairs().begin(),
+                                        scene.pairs().end());
+        std::vector<Scene::EdgeIndex> handles;
+        for(Pair pair:initial)handles.push_back(scene.contact_edge_index(pair));
+        const auto first=scene.broadphase_batch_stable_order_count();
+        const auto pockets=scene.broadphase_activity_pocket_count();
+        for(unsigned frame=0;frame<32;++frame) {
+            const float dx=(frame&1u)?0.22f:-0.22f;
+            for(unsigned i=0;i<moving;++i)
+                scene.set_position(ids[i],
+                    {float(i%32)*3.0f+dx,float(i/32)*3.0f,0});
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            if(!std::equal(initial.begin(),initial.end(),
+                           scene.pairs().begin(),scene.pairs().end()) ||
+               !scene.found_pairs().empty() || !scene.lost_pairs().empty())
+                throw std::runtime_error(
+                    "Coherent SAP batch published spurious overlap changes");
+            for(std::size_t i=0;i<initial.size();++i)
+                if(handles[i]!=scene.contact_edge_index(initial[i]))
+                    throw std::runtime_error(
+                        "Coherent SAP batch replaced an unchanged Sc EdgeIndex");
+        }
+        if(scene.broadphase_batch_stable_order_count()!=first+32 ||
+           scene.broadphase_activity_pocket_count()!=pockets)
+            throw std::runtime_error(
+                "Coherent SAP batch rebuilt unnecessary activity pockets");
+    }
     static void verify_source_activity_pockets() {
         Scene scene;
         std::array<BodyId,72> statics{};
@@ -12406,6 +12456,7 @@ int main() {
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
+    fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
     } catch (const std::exception& e) {
