@@ -802,17 +802,17 @@ void Scene::set_dynamics(BodyId id, RigidBodyDynamics d) {
 }
 
 void Scene::set_contact_report_threshold(BodyId id, float force) {
-    // ScBodyCore::contactReportThreshold and
-    // DySolverConstraints::writeBackContact's finite threshold gate.
-    // PX_MAX_REAL is the source disabled default; negative, NaN and
-    // infinity are not valid report-threshold values.
+    // ScBodyCore::contactReportThreshold belongs to PxRigidDynamic,
+    // including one carrying eKINEMATIC. Both live node indices and
+    // both thresholds reach DySolverConstraints::writeBackContact.
+    // PX_MAX_REAL disables reporting; reject negative/nonfinite values.
     if (!std::isfinite(force) || force < 0.0f)
         throw std::invalid_argument(
             "Native contact report threshold must be nonnegative and finite");
     auto& actor=require(id);
-    if (actor.kind!=Kind::DynamicBox)
+    if (!rigid_node(actor.kind))
         throw std::logic_error(
-            "Source contact report threshold belongs to dynamic rigid bodies");
+            "Source contact report threshold requires PxRigidDynamic");
     actor.contact_report_threshold=force;
 }
 void Scene::remove(BodyId id) {
@@ -7413,10 +7413,11 @@ void Scene::update_threshold_stream(float seconds) {
     // DySolverConstraints.cpp::writeBackContact emits a threshold element
     // only for a supported rigid-body manager with a nonzero final
     // normal impulse and an enabled reportThreshold on either body.
-    // DyThresholdTable groups all static contacts against a dynamic body
-    // using the SAME source world solver node. Do not key by the Gu
-    // contact pair: distinct static shapes must sum before comparison.
-    // A dynamic/dynamic contact retains its canonical body-pair key.
+    // DyThresholdTable groups genuine static contacts against a dynamic
+    // body using the SAME source world solver node. A kinematic rigid
+    // body has its OWN source PxNodeIndex and PxsSolverBodyData, so
+    // dynamic/kinematic pairs retain both actor indices and both report
+    // thresholds. Never merge two kinematic supports into one world key.
     //
     // DyThresholdTable::build aggregates impulses by rigid-body pair and
     // PxsForceThresholdTask::createForceChangeThresholdStream compares
@@ -7435,8 +7436,10 @@ void Scene::update_threshold_stream(float seconds) {
         const bool dynamic_a=actors_[pair.a].kind==Kind::DynamicBox;
         const bool dynamic_b=actors_[pair.b].kind==Kind::DynamicBox;
         if (!dynamic_a && !dynamic_b)
-            continue;
-        const bool static_world=!(dynamic_a && dynamic_b);
+            continue; // no admitted response chain without a dynamic
+        const bool static_world=
+            !rigid_node(actors_[pair.a].kind) ||
+            !rigid_node(actors_[pair.b].kind);
         const ForceThresholdKey key=static_world
             ? ForceThresholdKey{dynamic_a ? pair.a : pair.b,0,true}
             : ForceThresholdKey{pair.a,pair.b,false};
@@ -7461,10 +7464,11 @@ void Scene::update_threshold_stream(float seconds) {
             continue;
         threshold_current_.push_back({key,sum,threshold});
     }
-    // Map Gu manager pairs onto the shared static-world identity BEFORE
-    // DyThresholdTable aggregation. The mapped sequence is no longer
-    // necessarily ordered (different static actors interleave), so sort
-    // only these active threshold candidates, in the reusable arena.
+    // Only actual static endpoints map to the shared world identity
+    // before DyThresholdTable aggregation. Kinematic contacts retain
+    // their individually indexed source pair identities. Sort the
+    // reusable candidate arena because the static-world mapping can
+    // disrupt Gu manager order.
     // Do not allocate a parallel hash table or reorder Gu contacts.
     std::sort(threshold_current_.begin(),threshold_current_.end(),
         [](const ThresholdPair& a, const ThresholdPair& b) {
