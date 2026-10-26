@@ -6441,7 +6441,7 @@ void verify_source_combined_lifecycle_matrix() {
                             <<" reversed="<<reversed
                             <<" frame="<<frame<<" body="<<side
                             <<" position="<<pos<<" velocity="<<vel
-                            <<" angular="<<ang<<" dot="<<dot<<'\\n';
+                            <<" angular="<<ang<<" dot="<<dot<<'\n';
                         throw std::runtime_error(
                             "Native coupled source lifecycle diverged from PhysX");
                     }
