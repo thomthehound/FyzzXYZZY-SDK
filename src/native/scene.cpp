@@ -5023,15 +5023,16 @@ void Scene::run_third_pass_worker() noexcept {
         std::exception_ptr error;
         try {
             if(solver_first!=invalid_instance) {
-                // Source task groups own disjoint accurate rigid islands.
-                // The same persistent worker executes either PGS or the
-                // post-PGS integrateCore/sleepCheck continuation.
-                for(std::size_t i=solver_first;i<solver_end;++i)
+                // Each independent source Dy task chain can progress
+                // directly from PGS to PxsSolverEndTask: no other island's
+                // solve must finish before this group's writeback,
+                // integration and sleepCheck.
+                for(std::size_t i=solver_first;i<solver_end;++i) {
+                    solve_constraint_task(i);
                     if(integrate_solver)
                         complete_solver_end_task(
                             i,seconds,solver_ready_worker_);
-                    else
-                        solve_constraint_task(i);
+                }
             } else {
                 split=repair_only
                     ? repair_lost_island_graph(false)
@@ -8743,10 +8744,10 @@ void Scene::step(float seconds) {
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     begin_contact_writeback();
-    // Each source Dy task group owns independent accurate islands and
-    // disjoint contact, friction, distance and solver-body rows. Overlap
-    // their PGS work only when both descriptor ranges are worthwhile.
-    // Completion must join before any shared actor/writeback publication.
+    // Each source Dy group owns independent accurate islands and disjoint
+    // contact, friction, distance and solver-body rows. Admit complete
+    // PGS -> PxsSolverEndTask chains when both ranges justify the worker.
+    // All chains join before Sc postSolver/afterIntegration publication.
     std::size_t parallel_solver_split=0;
     if(parallel_solver_enabled_ && !solver_kinematic_participant_ &&
        solver_tasks_.size()>1 &&
@@ -8770,23 +8771,6 @@ void Scene::step(float seconds) {
             }
         }
     }
-    if(parallel_solver_split) {
-        dispatch_third_pass_worker(false,parallel_solver_split);
-        try {
-            for(std::size_t i=0;i<parallel_solver_split;++i)
-                solve_constraint_task(i);
-        } catch(...) {
-            join_third_pass_worker();
-            throw;
-        }
-        // Propagate worker exceptions before any Dy force, actor motion,
-        // or Sc event becomes visible; the frame checkpoint remains live.
-        complete_third_pass_worker();
-        ++concurrent_solver_dispatches_;
-    } else {
-        for(std::size_t i=0;i<solver_tasks_.size();++i)
-            solve_constraint_task(i);
-    }
     // ScBodySim counted interactions are updated on Gu overlap and Sc
     // constraint attachment/retirement. DySleep consumes the lifetime
     // count, including non-touching managers and joint-only islands,
@@ -8808,9 +8792,9 @@ void Scene::step(float seconds) {
     if(parallel_solver_split) {
         // The checkpoint motion vector and its generation marks are not
         // concurrent containers. Journal every currently active rigid
-        // island node, on the caller, before either integration producer
-        // writes a pose or a wake counter. Per-task save_motion() then
-        // becomes a read-only generation check with no allocation.
+        // island node before either chain starts solving and subsequently
+        // writing motion. Per-task save_motion() then becomes a read-only
+        // generation check with no allocation.
         for(std::size_t island:active_accurate_island_batches_)
             for(std::size_t index=accurate_island_offsets_[island];
                 index<accurate_island_offsets_[island+1];++index) {
@@ -8824,8 +8808,10 @@ void Scene::step(float seconds) {
         solver_ready_worker_.reserve(live_dynamic_count_);
         dispatch_third_pass_worker(false,parallel_solver_split,true,seconds);
         try {
-            for(std::size_t i=0;i<parallel_solver_split;++i)
+            for(std::size_t i=0;i<parallel_solver_split;++i) {
+                solve_constraint_task(i);
                 complete_solver_end_task(i,seconds,solver_ready_caller_);
+            }
         } catch(...) {
             // No checkpoint restoration while another source chain
             // still mutates disjoint actor motion.
@@ -8834,15 +8820,19 @@ void Scene::step(float seconds) {
         }
         complete_third_pass_worker();
         // Dy sleepCheck supplies next-frame speculative candidates in
-        // original task order, regardless of which worker ran first.
+        // original task order, regardless of which complete task chain
+        // finished first.
         speculative_ready_nodes_.insert(speculative_ready_nodes_.end(),
             solver_ready_caller_.begin(),solver_ready_caller_.end());
         speculative_ready_nodes_.insert(speculative_ready_nodes_.end(),
             solver_ready_worker_.begin(),solver_ready_worker_.end());
+        ++concurrent_solver_dispatches_;
         ++concurrent_integration_dispatches_;
     } else {
-        for(std::size_t i=0;i<solver_tasks_.size();++i)
+        for(std::size_t i=0;i<solver_tasks_.size();++i) {
+            solve_constraint_task(i);
             complete_solver_end_task(i,seconds,speculative_ready_nodes_);
+        }
     }
     if(!solver_tasks_.empty())dirty_=true;
     // PxsSolverEndTask signals mPostSolver only after integrateCore and
