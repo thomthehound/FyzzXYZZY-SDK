@@ -1658,6 +1658,19 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Single-dispatch third-pass ownership:** The production ScPipeline
+runs each source IslandSim third-pass task as one graph-local unit:
+lost-route repair, active-list reconciliation, then sleep/deactivation
+publication. Its paired speculative and accurate tasks execute
+concurrently and join before postThirdPass. Previously independent
+route-repair and sleep dispatches created two workers on some frames;
+the combined task needs only one and preserves rollback over all its
+stages. The shared EdgeIndex full-record undo copy now uses the same
+narrow activity lock as speculative/accurate edge deactivation, so
+source indexed-manager repairs cannot snapshot a partially mutated
+edge. Collision-only geometry publications retain their independent
+route-repair join and existing no-throw activity boundary.
+
 **Concurrent lost-route repair:** The two source IslandSim
 processLostEdges route searches now run concurrently on frames where
 both graph-specific dirty-node streams contain work. Structural graph

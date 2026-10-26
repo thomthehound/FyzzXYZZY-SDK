@@ -786,6 +786,7 @@ private:
     void update_island_connectivity();
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
+    bool process_third_pass_island_task(bool accurate);
     void rebuild_accurate_island_offsets();
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // repair. Source activation and whole-island deactivation consume
@@ -809,6 +810,8 @@ private:
     void activate_node_contact_edges(BodyId node) noexcept;
     void synchronize_active_island_nodes(
         bool capture_speculative_order=false) noexcept;
+    void synchronize_active_island_nodes_for_graph(
+        bool accurate,bool capture_speculative_order=false) noexcept;
     void prepare_active_accurate_island_batches();
     // IslandSim::wakeIslands lowering, shared by collision-only and
     // full-frame source publications. No duplicated activation owner.

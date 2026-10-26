@@ -5021,19 +5021,30 @@ bool Scene::repair_lost_island_graphs_concurrently() {
     ++concurrent_lost_route_dispatches_;
     return speculative_split || accurate_split;
 }
+bool Scene::process_third_pass_island_task(bool accurate) {
+    // The single source ThirdPassTask for this IslandSim owns its
+    // route repair, active-node reconciliation, and sleep decision in
+    // that order. Neither task waits for the OTHER graph's result.
+    const bool split=repair_lost_island_graph(accurate);
+    synchronize_active_island_nodes_for_graph(accurate,!accurate);
+    if(accurate)deactivate_ready_accurate_islands();
+    else deactivate_ready_speculative_islands();
+    return split;
+}
 void Scene::third_pass_island_gen() {
-    const bool speculative_split=repair_lost_island_graph(false);
-    const bool accurate_split=repair_lost_island_graph(true);
-    if(speculative_split || accurate_split)++island_topology_revision_;
+    // Collision-only entry point repairs routes before its no-throw
+    // activity publication. Reuse the same independent repair producers
+    // without scheduling redundant workers in the normal Scene::step.
+    if(repair_lost_island_graphs_concurrently())
+        ++island_topology_revision_;
 }
 // PxsIslandSim.cpp::IslandSim::processLostEdges(allowDeactivation) tests
 // *previously published* Node::isReadyForSleeping flags in its third pass.
 // Dy::sleepCheck updates those flags only after the current solver step,
 // so a newly ready island cannot sleep until the next island pass.
-// The source may run the two tasks concurrently and then repair a body
-// integrated after deactivation in Sc::Scene::afterIntegration. Our serial
-// CPU lowering establishes the same observable dependency by deactivating
-// before the solver: no concurrently integrated pose needs restoration.
+// Sc::Scene::afterIntegration can restore a body integrated during the
+// source's third-pass work. Native third-pass tasks now run concurrently
+// with one another; their later overlap with Dy is a separate dependency.
 // Both accurate and speculative contact graphs retain their existing
 // persistent handles and node membership while bodies are inactive.
 void Scene::deactivate_ready_islands() noexcept {
@@ -5360,6 +5371,11 @@ void Scene::consume_deactivated_contact_interactions() noexcept {
 // island is retained, with reusable allocation across frames.
 void Scene::synchronize_active_island_nodes(
     bool capture_speculative_order) noexcept {
+    synchronize_active_island_nodes_for_graph(false,capture_speculative_order);
+    synchronize_active_island_nodes_for_graph(true,false);
+}
+void Scene::synchronize_active_island_nodes_for_graph(
+    bool accurate,bool capture_speculative_order) noexcept {
     // The source third pass iterates each IslandSim's active list in
     // reverse. Capture its pre-reconciliation positions before the
     // active-node sweep can drop a detached sleeping split or swap
@@ -5391,9 +5407,7 @@ void Scene::synchronize_active_island_nodes(
     // ScBodySim::sleeping. Only the accurate graph's active nodes are
     // removed when Sc rigid sleep is published; speculative nodes are
     // retired by their own third pass instead.
-    for(IslandGraph* owner:{&speculative_islands_,&accurate_islands_}) {
-    auto& graph=*owner;
-    const bool accurate=owner==&accurate_islands_;
+    auto& graph=accurate?accurate_islands_:speculative_islands_;
     for(std::size_t index=0;index<graph.active_nodes.size();) {
         const BodyId id=graph.active_nodes[index];
         if(actors_[id].alive &&
@@ -5492,7 +5506,6 @@ void Scene::synchronize_active_island_nodes(
         if(island.active_index!=invalid_instance)continue;
         island.active_index=graph.active_islands.size();
         graph.active_islands.push_back(handle);
-    }
     }
 }
 void Scene::prepare_active_accurate_island_batches() {
@@ -7464,12 +7477,15 @@ void Scene::StepCheckpoint::save_manifold_solver_metadata(
         scene.manifold_undo_generation_;
 }
 void Scene::StepCheckpoint::save_edge(const Scene& scene, EdgeIndex id) {
-    // Entries are recorded immediately before mutation. Multiple writes
-    // to the same slot are permitted; reverse replay restores its original
-    // contents without a search, a dirty bitmap or per-frame clearing of
-    // a high-watermark array. Newly allocated slots are simply discarded.
-    if(id<initial_edges)
+    // Accurate splitEdges copies the entire indexed-manager EdgeIndex,
+    // including speculative activity fields. A speculative third pass
+    // can retire those fields concurrently; its sparse activity journal
+    // and this full-record copy must observe an indivisible edge state.
+    // Neither graph traversal nor indexed-manager rewiring is locked.
+    if(id<initial_edges) {
+        const std::scoped_lock lock(scene.third_pass_edge_mutex_);
         edge_undo.push_back({id,scene.island_edges_[id]});
+    }
 }
 void Scene::StepCheckpoint::save_activity(
     Scene& scene, EdgeIndex id) noexcept {
@@ -8257,12 +8273,11 @@ void Scene::step(float seconds) {
         ++rigid_integration_generation_;
     RigidStepJoin join;
     try {
-    // ScPipeline: the Gu second pass and shared IslandSim wake stage
-    // must publish the rigid solver inputs before Dy starts. The lost-
-    // contact third pass may overlap Dy in the original parallel CPU
-    // pipeline; our serial lowering runs it first so afterIntegration
-    // does not need concurrent-deactivation pose repair. The two task
-    // producer branches still join independently at postSolver.
+    // ScPipeline: Gu second pass and wakeIslands publish the source
+    // third-pass inputs. Each subsequent IslandSim ThirdPassTask owns
+    // a complete independent route-repair and sleep arbitration branch.
+    // PostThirdPass joins both before the Dy solver admission boundary.
+    // Overlapping this join with Dy remains a distinct dependency gate.
     // IslandSim::wakeIslands snapshots the existing active prefix before
     // activation. Preserve the same boundary when source contact
     // publication subsequently rebuilds island handles.
@@ -8275,21 +8290,13 @@ void Scene::step(float seconds) {
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
     consume_activated_contact_interactions();
-    if(repair_lost_island_graphs_concurrently())
-        ++island_topology_revision_;
-    // Source wakeIslands publishes active island membership BEFORE
-    // processLostEdges tests sleep readiness. Reconcile once even when
-    // no island is ready, so the deactivation pass touches active roots
-    // rather than the entire island-handle inventory.
-    synchronize_active_island_nodes(true);
-    // The two original ThirdPassTasks are independent producers. When
-    // speculative readiness, a split, or kinematic settling actually
-    // requires work, run that graph on a worker while accurate IslandSim
-    // makes its own sleep decision on the calling thread. The worker is
-    // joined before either producer's completion is exposed to Sc; a
-    // failing thread launch remains inside the frame rollback boundary.
-    // Avoid thread launch costs on the common quiet PGS frame.
-    bool speculative_work=!speculative_ready_nodes_.empty() ||
+    // PxsSimpleIslandManager schedules TWO complete independent
+    // ThirdPassTasks. Each producer repairs its lost routes, reconciles
+    // its own active IslandSim, and makes its own sleep decision.
+    // Dispatch once per frame when both graph tasks have actual work,
+    // rather than launching separate workers for repair and sleep.
+    bool speculative_work=!speculative_dirty_nodes_.empty() ||
+                          !speculative_ready_nodes_.empty() ||
                           !speculative_split_sleep_candidates_.empty();
     if(!speculative_work)
         for(BodyId id:speculative_islands_.active_kinematic_nodes)
@@ -8298,19 +8305,32 @@ void Scene::step(float seconds) {
                 speculative_work=true;
                 break;
             }
-    if(speculative_work && !accurate_islands_.active_islands.empty()) {
-        std::jthread speculative_task(
-            [this] { deactivate_ready_speculative_islands(); });
-        // The speculative worker reads prior-Dy readiness and owns
-        // only speculative graph data. Accurate sleep publication
-        // mutates actor state but does not change those readiness bits.
-        deactivate_ready_accurate_islands();
+    const bool accurate_work=!accurate_dirty_nodes_.empty() ||
+                             !accurate_islands_.active_islands.empty();
+    const bool both_dirty=!speculative_dirty_nodes_.empty() &&
+                          !accurate_dirty_nodes_.empty();
+    bool speculative_split=false,accurate_split=false;
+    if(speculative_work && accurate_work) {
+        std::exception_ptr speculative_error;
+        std::jthread speculative_task([&] {
+            try {
+                speculative_split=process_third_pass_island_task(false);
+            } catch(...) {
+                speculative_error=std::current_exception();
+            }
+        });
+        // std::jthread's destructor joins even if the accurate source
+        // producer throws. Only then can Scene::step roll back the frame.
+        accurate_split=process_third_pass_island_task(true);
         speculative_task.join();
+        if(speculative_error)std::rethrow_exception(speculative_error);
         ++concurrent_third_pass_dispatches_;
+        if(both_dirty)++concurrent_lost_route_dispatches_;
     } else {
-        deactivate_ready_speculative_islands();
-        deactivate_ready_accurate_islands();
+        speculative_split=process_third_pass_island_task(false);
+        accurate_split=process_third_pass_island_task(true);
     }
+    if(speculative_split || accurate_split)++island_topology_revision_;
     join.finish_speculative_third_pass();
     join.finish_accurate_third_pass();
     // Accurate deactivation removes nodes and islands from active lists.
