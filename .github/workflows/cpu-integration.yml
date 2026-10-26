@@ -52,7 +52,7 @@ jobs:
               '    friend struct ConstraintIslandSourceFixture;\n'
               '    friend struct NativeSapTimingFixture;'))
           bench=Path('tests/native_sap_benchmark.cpp').read_text()
-          bench=re.sub(r'scene\\.broadphase_[A-Za-z_]+_count\\(\\)',
+          bench=re.sub(r'scene\.broadphase_[A-Za-z_]+_count\(\)',
                        'std::size_t{0}',bench)
           (old/'tests/native_sap_benchmark.cpp').write_text(bench)
           PY
