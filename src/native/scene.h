@@ -795,6 +795,7 @@ private:
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
     bool worthwhile_parallel_route_work() const noexcept;
+    struct RigidStepJoin;
     void run_third_pass_worker() noexcept;
     void dispatch_third_pass_worker(bool repair_only,
                                     std::size_t solver_first=invalid_instance,
