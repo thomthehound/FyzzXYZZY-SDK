@@ -846,74 +846,97 @@ void Scene::update_bounds() {
         const bool sparse=broadphase_updated_volume_slots_.size()*5<
                           sap_volumes_.size();
         if(!sparse) {
-            // Source batchUpdate maintains activity pockets around the
-            // endpoint regions affected by moving proxies. Compute the
-            // same closed index intervals before altering the old sorted
-            // keys, coalesce overlapping/adjacent pockets, then reorder
-            // only those segments and repair their SapBox1D indices.
-            // The x/y/z full pair sweep remains the source authority for
-            // this many-update path; crossing candidates belong only to
-            // batchUpdateFewUpdates.
+            // BpBroadPhaseSap::batchUpdate: update the encoded keys in
+            // their original slots, then reorder linked endpoint indices.
+            // Materialize only the affected activity pockets.
             for(unsigned axis=0;axis<3;++axis) {
                 auto& endpoints=sap_axis_endpoints_[axis];
+                const std::size_t n=endpoints.size();
+                if(!n)continue;
+                bool changed=false;
+                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                    for(unsigned side=0;side<2;++side) {
+                        const auto index=sap_volumes_[slot].
+                            endpoint_positions[axis][side];
+                        Endpoint& ep=endpoints[index];
+                        const auto value=actors_[ep.id].encoded_bounds[
+                            axis+(side?3:0)];
+                        changed|=ep.value!=value;
+                        ep.value=value;
+                    }
+                }
+                if(!changed)continue;
+                sap_list_next_.resize(n+1);
+                sap_list_prev_.resize(n+1);
+                const std::size_t sentinel=n;
+                for(std::size_t i=0;i<n;++i) {
+                    sap_list_prev_[i]=i?i-1:sentinel;
+                    sap_list_next_[i]=i+1<n?i+1:sentinel;
+                }
+                sap_list_next_[sentinel]=0;
+                sap_list_prev_[sentinel]=n-1;
                 auto& pockets=sap_activity_pockets_;
                 pockets.clear();
                 pockets.reserve(broadphase_updated_volume_slots_.size()*2);
-                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
-                    for(unsigned side=0;side<2;++side) {
-                        const auto pos=sap_volumes_[slot].
-                            endpoint_positions[axis][side];
-                        Endpoint moving=endpoints[pos];
-                        moving.value=actors_[moving.id].encoded_bounds[
-                            axis+(side?3:0)];
-                        // mUpdated is a volume worklist, not six changed
-                        // keys. Skip endpoints whose encoded value did not
-                        // move; no activity pocket is needed on that axis.
-                        if(moving.value==endpoints[pos].value)continue;
-                        const auto insertion=static_cast<std::size_t>(
-                            std::lower_bound(endpoints.begin(),
-                                             endpoints.end(),moving,less)-
-                            endpoints.begin());
-                        const auto target=std::min(insertion,
-                            endpoints.size()-1);
-                        pockets.push_back({std::min<std::size_t>(pos,target),
-                                           std::max<std::size_t>(pos,target)});
+                // Insertion into the linked index order follows the
+                // old endpoint sequence. Later nodes moving left
+                // naturally displace earlier nodes moving right.
+                for(std::size_t i=0;i<n;++i) {
+                    const Endpoint moving=endpoints[i];
+                    std::size_t previous=sap_list_prev_[i];
+                    std::size_t start_index=i;
+                    while(previous!=sentinel) {
+                        ++broadphase_activity_pocket_comparisons_;
+                        if(!less(moving,endpoints[previous]))break;
+                        start_index=std::min(start_index,previous);
+                        previous=sap_list_prev_[previous];
                     }
-                }
-                if(pockets.empty())continue;
-                std::sort(pockets.begin(),pockets.end(),
-                          [](ActivityPocket a,ActivityPocket b) {
-                              return a.start<b.start ||
-                                     (a.start==b.start && a.end<b.end);
-                          });
-                std::size_t merged=0;
-                for(const ActivityPocket pocket:pockets) {
-                    if(merged && pocket.start<=pockets[merged-1].end+1)
-                        pockets[merged-1].end=
-                            std::max(pockets[merged-1].end,pocket.end);
-                    else pockets[merged++]=pocket;
-                }
-                pockets.resize(merged);
-                for(std::uint32_t slot:broadphase_updated_volume_slots_)
-                    for(unsigned side=0;side<2;++side) {
-                        const auto pos=sap_volumes_[slot].
-                            endpoint_positions[axis][side];
-                        endpoints[pos].value=actors_[endpoints[pos].id].
-                            encoded_bounds[axis+(side?3:0)];
+                    if(previous==sap_list_prev_[i])continue;
+                    const std::size_t old_prev=sap_list_prev_[i];
+                    const std::size_t old_next=sap_list_next_[i];
+                    sap_list_next_[old_prev]=old_next;
+                    sap_list_prev_[old_next]=old_prev;
+                    const std::size_t new_next=sap_list_next_[previous];
+                    sap_list_next_[previous]=i;
+                    sap_list_prev_[i]=previous;
+                    sap_list_next_[i]=new_next;
+                    sap_list_prev_[new_next]=i;
+                    ++broadphase_activity_pocket_relocations_;
+                    std::size_t pocket_end=i;
+                    while(!pockets.empty() &&
+                          start_index<=pockets.back().end+1) {
+                        start_index=std::min(
+                            start_index,pockets.back().start);
+                        pocket_end=std::max(pocket_end,pockets.back().end);
+                        pockets.pop_back();
                     }
+                    pockets.push_back({start_index,pocket_end});
+                }
+                // The final linked order can differ from the old array
+                // only within the recorded, coalesced activity pockets.
                 for(const ActivityPocket pocket:pockets) {
-                    std::sort(endpoints.begin()+pocket.start,
-                              endpoints.begin()+pocket.end+1,less);
-                    for(std::size_t index=pocket.start;
-                        index<=pocket.end;++index) {
-                        const Endpoint ep=endpoints[index];
+                    const std::size_t length=pocket.end-pocket.start+1;
+                    sap_pocket_workspace_.resize(length);
+                    std::size_t index=pocket.start==0
+                        ? sap_list_next_[sentinel]
+                        : sap_list_next_[pocket.start-1];
+                    for(std::size_t j=0;j<length;++j) {
+                        if(index==sentinel)
+                            throw std::logic_error(
+                                "SAP activity pocket index chain ended early");
+                        sap_pocket_workspace_[j]=endpoints[index];
+                        index=sap_list_next_[index];
+                    }
+                    for(std::size_t j=0;j<length;++j) {
+                        const auto index_in_array=pocket.start+j;
+                        const Endpoint ep=sap_pocket_workspace_[j];
+                        endpoints[index_in_array]=ep;
                         sap_volumes_[ep.volume_slot].
                             endpoint_positions[axis][ep.is_max?1u:0u]=
-                            static_cast<std::uint32_t>(index);
+                            static_cast<std::uint32_t>(index_in_array);
                     }
                     ++broadphase_activity_pocket_count_;
-                    broadphase_activity_pocket_endpoint_count_+=
-                        pocket.end-pocket.start+1;
+                    broadphase_activity_pocket_endpoint_count_+=length;
                 }
             }
             return;
