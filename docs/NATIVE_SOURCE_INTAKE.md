@@ -1668,6 +1668,21 @@ structural reconstruction, then combined on merges. The rigid task
 admission rejects unsupported heterogeneous islands rather than
 silently converting their members into rigid solver bodies.
 
+**Concurrent rigid-deactivation pose reconciliation:** Original
+`ScPipeline::afterIntegration` reads the accurate IslandSim's
+`mNodesToDeactivate[eRIGID_BODY_TYPE]` after Dy completion and restores
+`PxsRigidBody::mLastCCDTransform` on bodies deactivated concurrently with
+the solver. Native rigid actors now retain that pre-integration transform
+with a frame validity generation. The existing task-local Dy integration
+writes it before changing the pose; afterIntegration restores the pose,
+zeroes final linear/angular velocities and wake counter, and republishes
+bounds only for deactivated bodies that actually integrated in the same
+generation. The serial third-pass-first path performs no extra work
+beyond iterating its sleep-output list. Tests exercise the overlapped
+ordering, unaffected awake bodies, stale-generation suppression, and
+failure-atomic rollback. This is the required *reconciliation mechanism*,
+not proof of concurrent task scheduling or full PhysX freeze/CCD flags.
+
 The admitted rigid CPU path has source-style active island handles,
 source hop-priority witnesses, local split migration, typed contact/1D
 constraint partitions, both third-pass completion producers, task-local

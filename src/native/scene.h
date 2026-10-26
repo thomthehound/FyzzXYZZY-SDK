@@ -633,6 +633,12 @@ private:
         // shape AABB after each active rigid body's pose integration.
         // The following broadphase consumes it without recomputation.
         bool cached_bounds_current=false;
+        // PxsRigidBody::mLastCCDTransform: the pose at the start of
+        // this frame's Dy integration. afterIntegration uses it only
+        // when third-pass IslandSim deactivated this body concurrently.
+        Vec3 last_ccd_position{};
+        Quat last_ccd_orientation{};
+        std::uint64_t last_ccd_generation=0;
     };
     // DyRigidBodyToSolverBody.cpp::copyToSolverBodyData and
     // PxSolverDefs.h::PxSolverBody/PxSolverBodyData. These are
@@ -755,6 +761,8 @@ private:
     void update_actor_bounds(Actor& actor);
     void update_bounds();
     void after_integration_cached_bounds();
+    void remember_pre_integration_pose(BodyId id) noexcept;
+    void reconcile_integrated_deactivations() noexcept;
     void calculate_kinematic_velocities(float inverse_dt);
     void publish_kinematic_targets();
     void update_pairs();
@@ -1261,6 +1269,9 @@ private:
     StepCheckpoint step_checkpoint_;
     std::vector<std::uint64_t> motion_undo_generations_;
     std::uint64_t motion_undo_generation_=0;
+    // Frame-local validity for source mLastCCDTransform on the rigid
+    // Actor itself. Avoid a second per-body index or frame-wide reset.
+    std::uint64_t rigid_integration_generation_=0;
     std::vector<std::uint64_t> manifold_undo_generations_;
     std::uint64_t manifold_undo_generation_=0;
     // Only changed EdgeIndex states are journaled for frame rollback.

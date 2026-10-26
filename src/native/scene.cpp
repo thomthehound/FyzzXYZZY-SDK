@@ -1642,6 +1642,40 @@ void Scene::publish_kinematic_targets() {
         body.ready_for_sleep=true;
     }
 }
+void Scene::remember_pre_integration_pose(BodyId id) noexcept {
+    // DyBodyCoreIntegrator stores mLastCCDTransform before integrateCore
+    // updates position/orientation. Use the original actor state, not a
+    // copied solver-world body or a dense rollback array.
+    Actor& body=actors_[id];
+    body.last_ccd_position=body.position;
+    body.last_ccd_orientation=body.orientation;
+    body.last_ccd_generation=rigid_integration_generation_;
+}
+void Scene::reconcile_integrated_deactivations() noexcept {
+    // ScPipeline::afterIntegration repairs rigid bodies that Dy already
+    // integrated while the accurate IslandSim independently put their
+    // islands to sleep. Serial third-pass-first execution has no such
+    // entries: this is proportional to deactivated nodes, never all
+    // historical actors, and shares source mLastCCDTransform ownership.
+    for(BodyId id:accurate_islands_.nodes_to_deactivate) {
+        Actor& body=actors_[id];
+        if(body.last_ccd_generation!=rigid_integration_generation_)
+            continue;
+        // IslandSim is authoritative over Dy's later sleepCheck and
+        // final integrated velocities on this same frame.
+        body.position=body.last_ccd_position;
+        body.orientation=body.last_ccd_orientation;
+        body.velocity={};
+        body.angular_velocity={};
+        body.wake_counter=0.0f;
+        body.ready_for_sleep=true;
+        body.sleep_linear_acc={};
+        body.sleep_angular_acc={};
+        body.cached_bounds_current=false;
+        update_actor_bounds(body);
+        dirty_=true;
+    }
+}
 void Scene::after_integration_cached_bounds() {
     // ScPipeline::afterIntegration::updateScBodyAndShapeSim refreshes
     // shape bounds from integrated poses. Consume the SAME task-owned
@@ -8104,6 +8138,8 @@ void Scene::step(float seconds) {
     // contacts, island nodes, body motion or result streams. Snapshot only
     // authoritative state; all per-step Dy work buffers remain reusable.
     step_checkpoint_.capture(*this);
+    if(++rigid_integration_generation_==0)
+        ++rigid_integration_generation_;
     RigidStepJoin join;
     try {
     // ScPipeline: the Gu second pass and shared IslandSim wake stage
@@ -8353,6 +8389,7 @@ void Scene::step(float seconds) {
             if (!finite(q))
                 throw std::overflow_error("Native CPU orientation overflow");
             step_checkpoint_.save_motion(*this,id);
+            remember_pre_integration_pose(id);
             actor.position = p;
             actor.orientation = q;
             // DySleep.cpp::updateWakeCounter (default scene, without
@@ -8436,6 +8473,10 @@ void Scene::step(float seconds) {
     // failed frames roll back the existing single-scene checkpoint.
     join.finish_post_solver();
     publish_kinematic_targets();
+    // Concurrent IslandSim/Dy schedules can integrate bodies that the
+    // accurate third pass deactivated; restore their original rigid
+    // poses before Sc publishes cached body/shape transforms.
+    reconcile_integrated_deactivations();
     // The current Dy motion and island ownership are committed only
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
