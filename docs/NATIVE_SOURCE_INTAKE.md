@@ -1680,44 +1680,48 @@ timing thresholds on shared CI hardware. The reusable worker is
 allocated lazily outside the Scene stack frame; a scene with no
 concurrent work holds no synchronization bundle.
 
-**Independent Dy PGS execution:** The actual source-derived
-Dy task groups use disjoint accurate-island solver-body and constraint
-ranges. After all constraints are prepared, the scene-owned reusable
-worker solves one contiguous group range while the caller solves the
-other. The split balances prepared descriptor counts and is admitted
-only when at least 256 descriptors exist and both ranges contain at
-least 64; isolated small workloads remain serial. The zero-mass
-static-world solver body is copied into each task's local stack frame
-to prevent concurrent writes through a shared static participant.
-A task stream containing a kinematic solver endpoint remains serial:
-that endpoint can be referenced from more than one rigid island and
-must not acquire unsynchronized cross-task row mutations.
-Each PxsSolverEndTask continuation now runs its own contiguous
-Gu normal/friction writeback, final solver-body velocity publication,
-integrateCore and Dy::sleepCheck. The caller and reusable worker
-execute disjoint task ranges after source PGS completion; integration
-is not a synthetic post-processing pass over all scene actors.
-Before either lane starts, the scene checkpoint journals the active
-rigid motion it may mutate. The two tasks accumulate sleep-ready
-candidates into separate reusable lanes and merge them in source task
-order after the worker joins. Per-task completion stamps are published
-only after both execution lanes have completed, before postSolver,
-afterIntegration, reporting and completed frame publication. An
-exception from either lane joins outstanding work before transaction
-rollback. Serial admission executes the same source task continuation
-in descriptor order, without worker allocation.
+**Independent Dy solver-task execution:** Actual source-derived
+Dy task groups retain disjoint accurate-island solver-body, contact,
+friction and distance-constraint ranges. After common contact/1D
+preparation, one reusable scene worker takes a contiguous source task
+range while the caller takes the other. The split balances prepared
+constraint descriptors and requires at least 256 descriptors with 64
+on each side; short workloads remain serial. A stack-local copy of the
+source zero-mass world solver body prevents concurrent static-row
+mutation. Active kinematic solver participants can be shared by
+distinct rigid islands, so their task stream remains serial.
 
-Native regressions compare successive frames against serial execution
-for independent static-contact islands and for mixed contact/1D
-distance-constraint island groups, including exact body motion,
-sleep-energy accumulators, next-frame ready-node order, island
-identity, Gu-indexed normal impulses, and 1D row writeback. A
-worker-side integration overflow fixture rejects a partially completed
-frame, verifies rollback and replays a successful frame. Release
-benchmarks compare serial, forced concurrent and production-adaptive
-scheduling on Linux and Windows without imposing a shared-runner
-timing threshold. Third-pass benchmarks disable Dy concurrency so
-each scheduler's worker counts and timings remain stage-specific.
+Each independent task proceeds directly through PGS,
+PxsSolverEndTask Gu normal/friction writeback, final solver-body
+velocity publication, integrateCore and Dy::sleepCheck. No
+scene-wide PGS barrier or second worker dispatch separates the
+solver and solver-end continuation. The original preIntegration
+journals every awake accurate-island actor before tasks can run;
+repeating that O(active body) checkpoint walk at dispatch is
+unnecessary. Its existing motion-generation marks make later
+per-task save_motion calls non-allocating and read-only.
+
+Each task signals its own generation-stamped PxsSolverEndTask
+completion as soon as integration and sleepCheck finish. A narrow
+completion mutex protects the shared outstanding counter while
+distinct task stamps remain range-owned. The reusable worker and
+caller accumulate next-frame sleep-ready candidates in separate
+buffers; these merge in original source task order after the worker
+joins. Sc::postSolver cannot run until both the lost-contact
+continuation and every real solver task completion have joined.
+An exception joins the worker before frame-checkpoint rollback;
+serial admission executes the identical task-local operations.
+
+Native regressions compare exact multiframe serial/concurrent body
+motion, sleep-energy state, next-frame readiness order, island
+ownership, Gu-indexed normal forces and 1D constraint impulses.
+They also verify one worker dispatch per concurrent Dy step,
+preIntegration motion journaling, shared-kinematic serial admission,
+and a worker-side overflow rollback followed by successful replay.
+Linux and Windows Release benchmarks measure serial, forced and
+adaptive scheduling without asserting timings on shared runners;
+third-pass benchmarks disable concurrent Dy execution to keep the
+two scheduler measurements independent.
 
 **Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
 unconstrained Dy preIntegration after the accurate ThirdPassTask has
