@@ -8799,18 +8799,11 @@ void Scene::step(float seconds) {
         throw std::logic_error(
             "Native Dy task ranges did not cover prepared solver bodies/Gu managers");
     if(parallel_solver_split) {
-        // The checkpoint motion vector and its generation marks are not
-        // concurrent containers. Journal every currently active rigid
-        // island node before either chain starts solving and subsequently
-        // writing motion. Per-task save_motion() then becomes a read-only
-        // generation check with no allocation.
-        for(std::size_t island:active_accurate_island_batches_)
-            for(std::size_t index=accurate_island_offsets_[island];
-                index<accurate_island_offsets_[island+1];++index) {
-                const BodyId id=accurate_island_nodes_[index];
-                if(!actors_[id].sleeping)
-                    step_checkpoint_.save_motion(*this,id);
-            }
+        // Dy preIntegration already journaled every awake body in these
+        // exact accurate-island task ranges before touching its velocity.
+        // Do not duplicate that O(active rigid) scan here. Subsequent
+        // per-task save_motion() calls observe the existing generation
+        // mark and cannot append to the checkpoint from either worker.
         solver_ready_caller_.clear();
         solver_ready_worker_.clear();
         solver_ready_caller_.reserve(live_dynamic_count_);
