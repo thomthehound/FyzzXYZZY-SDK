@@ -1602,6 +1602,88 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Dy retry failed to register its Gu counted interactions");
     }
+    static void verify_independent_lost_route_producers() {
+        // Both IslandSims begin with one three-node contact chain. Remove
+        // both links but run one graph's third-pass route repair at a time.
+        // Neither source producer may mutate the other graph's handles,
+        // dirty-node stream, or Dy's accurate solver-node offsets.
+        for(bool accurate_first:{false,true}) {
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+            const auto a=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,15,0},1.0f);
+            const auto b=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0.85f,15,0},1.0f);
+            const auto c=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{1.7f,15,0},1.0f);
+            scene.advance_collision();
+            if(scene.accurate_island_count()!=1 ||
+               scene.speculative_island_count()!=1)
+                throw std::runtime_error(
+                    "Independent third-pass fixture lacks merged source islands");
+            const auto original_accurate=scene.accurate_island_id(a);
+            const auto original_speculative=scene.speculative_island_id(a);
+            const auto revision=scene.island_topology_revision();
+            const auto node_offsets=scene.accurate_island_offsets_;
+            scene.set_position(b,{5,15,0});
+            scene.step_checkpoint_.capture(scene,false);
+            scene.advance_collision_internal(false,true);
+            if(scene.speculative_dirty_nodes_.empty() ||
+               scene.accurate_dirty_nodes_.empty() ||
+               scene.accurate_island_count()!=1 ||
+               scene.speculative_island_count()!=1)
+                throw std::runtime_error(
+                    "First-pass contact removal repaired a third-pass route early");
+            const bool first=scene.repair_lost_island_graph(accurate_first);
+            if(!first)throw std::runtime_error(
+                "First IslandSim did not migrate its disconnected source component");
+            if(accurate_first) {
+                if(scene.accurate_island_count()!=3 ||
+                   scene.speculative_island_count()!=1 ||
+                   scene.speculative_island_id(a)!=original_speculative ||
+                   scene.speculative_dirty_nodes_.empty() ||
+                   scene.accurate_island_offsets_==node_offsets)
+                    throw std::runtime_error(
+                        "Accurate third pass changed speculative graph ownership");
+            } else if(scene.speculative_island_count()!=3 ||
+                      scene.accurate_island_count()!=1 ||
+                      scene.accurate_island_id(a)!=original_accurate ||
+                      scene.accurate_dirty_nodes_.empty() ||
+                      scene.accurate_island_offsets_!=node_offsets)
+                throw std::runtime_error(
+                    "Speculative third pass changed Dy accurate batch offsets");
+            const bool second=scene.repair_lost_island_graph(!accurate_first);
+            if(!second || scene.accurate_island_count()!=3 ||
+               scene.speculative_island_count()!=3 ||
+               scene.accurate_island_offsets_==node_offsets ||
+               scene.repair_lost_island_graph(true) ||
+               scene.repair_lost_island_graph(false) ||
+               scene.island_topology_revision()!=revision)
+                throw std::runtime_error(
+                    "Independent source island repair replayed consumed lost routes");
+            // Once both original tasks have completed, their shared
+            // publication advances the scene's topology epoch only once.
+            ++scene.island_topology_revision_;
+            if(scene.island_topology_revision()!=revision+1)
+                throw std::runtime_error(
+                    "Third-pass producer order changed shared topology generation");
+            scene.step_checkpoint_.rollback(scene);
+            if(scene.accurate_island_count()!=1 ||
+               scene.speculative_island_count()!=1 ||
+               scene.accurate_island_id(a)!=original_accurate ||
+               scene.speculative_island_id(a)!=original_speculative ||
+               scene.island_topology_revision()!=revision)
+                throw std::runtime_error(
+                    "Failed third-pass publication retained split island ownership");
+            // A successful ordinary publication must still complete
+            // both graph repairs after the same rollback checkpoint.
+            scene.advance_collision();
+            if(scene.accurate_island_count()!=3 ||
+               scene.speculative_island_count()!=3 ||
+               scene.accurate_island_id(a)==scene.accurate_island_id(c))
+                throw std::runtime_error(
+                    "Rolled-back graph split did not repair on subsequent publication");
+        }
+    }
     static void verify_sc_activity_third_pass_publication() {
         // Activation and third-pass deactivation have distinct Sc
         // consumers. Neither an accurate sleep result nor an inactive
@@ -12686,6 +12768,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_counted_interaction_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
+    fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
