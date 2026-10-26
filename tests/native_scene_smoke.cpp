@@ -497,6 +497,55 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Coherent SAP batch rebuilt unnecessary activity pockets");
     }
+    static void verify_bounded_bulk_shift_publication() {
+        // More than a fifth of the SAP volumes move, but each moved
+        // endpoint crosses only a bounded group of rank neighbors.
+        // This exercises the source-equivalent indexed shift route
+        // independently from both the stable and linked-pocket routes.
+        Scene scene;
+        constexpr unsigned static_count=18, moving_count=6;
+        for(unsigned i=0;i<static_count;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i)*3.0f,0,0});
+        std::array<BodyId,moving_count> dynamic{};
+        for(unsigned i=0;i<moving_count;++i)
+            dynamic[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},{float(i)*3.0f,0,0},1.0f);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        const auto old_pairs=std::vector<Pair>(
+            scene.pairs().begin(),scene.pairs().end());
+        std::vector<Scene::EdgeIndex> handles;
+        for(Pair pair:old_pairs)
+            handles.push_back(scene.contact_edge_index(pair));
+        const auto old_direct=scene.broadphase_batch_direct_update_count();
+        const auto old_pockets=scene.broadphase_activity_pocket_count();
+        const auto old_sorts=scene.broadphase_endpoint_full_sort_count();
+        for(unsigned frame=0;frame<32;++frame) {
+            const float dx=(frame&1u)?0.25f:-0.25f;
+            for(unsigned i=0;i<moving_count;++i)
+                scene.set_position(dynamic[i],{float(i)*3.0f+dx,0,0});
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            if(!std::equal(old_pairs.begin(),old_pairs.end(),
+                           scene.pairs().begin(),scene.pairs().end()) ||
+               !scene.found_pairs().empty() ||
+               !scene.lost_pairs().empty())
+                throw std::runtime_error(
+                    "Bounded SAP batch altered persistent overlap publication");
+            for(std::size_t i=0;i<old_pairs.size();++i)
+                if(handles[i]!=scene.contact_edge_index(old_pairs[i]))
+                    throw std::runtime_error(
+                        "Bounded SAP batch replaced persistent Sc EdgeIndex");
+        }
+        if(scene.broadphase_batch_direct_update_count()==old_direct ||
+           scene.broadphase_activity_pocket_count()!=old_pockets ||
+           scene.broadphase_endpoint_full_sort_count()!=old_sorts)
+            throw std::runtime_error(
+                "Bounded SAP motion did not retain indexed shift ownership");
+    }
     static void verify_source_activity_pockets() {
         Scene scene;
         std::array<BodyId,72> statics{};
@@ -12477,6 +12526,7 @@ int main() {
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
+    fyzz::native::SourceSapEndpointFixture::verify_bounded_bulk_shift_publication();
     fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();

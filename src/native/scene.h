@@ -262,6 +262,9 @@ public:
     std::size_t broadphase_batch_stable_order_count() const noexcept {
         return broadphase_batch_stable_order_count_;
     }
+    std::size_t broadphase_batch_direct_update_count() const noexcept {
+        return broadphase_batch_direct_update_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1404,6 +1407,7 @@ private:
     bool broadphase_batch_pair_set_unchanged_=false;
     bool broadphase_batch_crossings_complete_=false;
     std::size_t broadphase_batch_stable_order_count_=0;
+    std::size_t broadphase_batch_direct_update_count_=0;
     // Bp SAP activity pockets bound multi-update endpoint reorder work.
     struct ActivityPocket {
         std::size_t start=0,end=0;

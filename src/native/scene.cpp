@@ -1419,6 +1419,7 @@ void Scene::update_bounds() {
         if(full_sort)++broadphase_endpoint_full_sort_count_;
         broadphase_endpoint_local_shift_count_+=total_shifts;
         if(localized_bulk) {
+            ++broadphase_batch_direct_update_count_;
             broadphase_batch_crossings_complete_=true;
             broadphase_batch_pair_set_unchanged_=
                 broadphase_crossed_pairs_.empty();
