@@ -5013,14 +5013,25 @@ void Scene::run_third_pass_worker() noexcept {
         work.cv.wait(lock,[&work] {return work.pending || work.stopping;});
         if(work.stopping)return;
         const bool repair_only=work.repair_only;
+        const auto solver_first=work.solver_first;
+        const auto solver_end=work.solver_end;
         work.pending=false;
         lock.unlock();
         bool split=false;
         std::exception_ptr error;
         try {
-            split=repair_only
-                ? repair_lost_island_graph(false)
-                : process_third_pass_island_task(false);
+            if(solver_first!=invalid_instance) {
+                // Disjoint Dy task descriptors own independent rigid islands.
+                // Only their PGS rows are mutated on this worker; Sc actor
+                // integration, sleep and result publication join on the
+                // main thread after both solve producers have completed.
+                for(std::size_t i=solver_first;i<solver_end;++i)
+                    solve_constraint_task(i);
+            } else {
+                split=repair_only
+                    ? repair_lost_island_graph(false)
+                    : process_third_pass_island_task(false);
+            }
         } catch(...) {error=std::current_exception();}
         lock.lock();
         work.split=split;
@@ -5030,7 +5041,8 @@ void Scene::run_third_pass_worker() noexcept {
         work.cv.notify_one();
     }
 }
-void Scene::dispatch_third_pass_worker(bool repair_only) {
+void Scene::dispatch_third_pass_worker(
+    bool repair_only,std::size_t solver_first) {
     if(!third_pass_worker_state_)
         third_pass_worker_state_=std::make_unique<ThirdPassWorkerState>();
     auto& work=*third_pass_worker_state_;
@@ -5043,6 +5055,9 @@ void Scene::dispatch_third_pass_worker(bool repair_only) {
     {
         const std::lock_guard lock(work.mutex);
         work.repair_only=repair_only;
+        work.solver_first=solver_first;
+        work.solver_end=solver_first==invalid_instance
+            ? 0:solver_tasks_.size();
         work.done=false;
         work.split=false;
         work.error={};
@@ -6846,6 +6861,10 @@ void Scene::solve_constraint_task(std::size_t task_index) {
     // Source task groups carry their own maximum of constituent
     // PxsBodyCore solverIterationCounts. In particular, an unrelated
     // high-iteration island must never increase another group's solve.
+    // Static-world solver data must not be written by independent island
+    // workers through the shared source zero-mass body. Each task uses a
+    // stack-local copy of that same prepared zero-response state.
+    SolverBodyRow local_world_solver_row=world_solver_row_;
     constexpr double max_float =
         static_cast<double>(std::numeric_limits<float>::max());
     const auto dot = [](Vec3 u, Vec3 v) {
@@ -6885,10 +6904,10 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 auto& row=distance_rows_[index];
                 auto& a=actors_[row.a].kind==Kind::StaticBox ||
                         actors_[row.a].kind==Kind::StaticPlane
-                    ? world_solver_row_:solver_rows_[row.a];
+                    ? local_world_solver_row:solver_rows_[row.a];
                 auto& b=actors_[row.b].kind==Kind::StaticBox ||
                         actors_[row.b].kind==Kind::StaticPlane
-                    ? world_solver_row_:solver_rows_[row.b];
+                    ? local_world_solver_row:solver_rows_[row.b];
                 const double normal_delta=
                     static_cast<double>(row.axis.x)*
                         (a.solver.linear_velocity_delta.x-
@@ -6948,9 +6967,9 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
                 const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
                 auto& a = rigid_node(actors_[id0].kind)
-                    ? solver_rows_[id0] : world_solver_row_;
+                    ? solver_rows_[id0] : local_world_solver_row;
                 auto& b = rigid_node(actors_[id1].kind)
-                    ? solver_rows_[id1] : world_solver_row_;
+                    ? solver_rows_[id1] : local_world_solver_row;
                 // A zero source maxContactImpulse is omitted by
                 // DyContactPrepShared::extractContacts; there is no packed
                 // solver header to execute. Gu touch state and its indexed
@@ -8557,6 +8576,46 @@ void Scene::step(float seconds) {
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     begin_contact_writeback();
+    // Each source Dy task group owns independent accurate islands and
+    // disjoint contact, friction, distance and solver-body rows. Overlap
+    // their PGS work only when both descriptor ranges are worthwhile.
+    // Completion must join before any shared actor/writeback publication.
+    std::size_t parallel_solver_split=0;
+    if(parallel_solver_enabled_ && solver_tasks_.size()>1 &&
+       ordered_constraints_.size()>=parallel_solver_min_descriptors_) {
+        const std::size_t total=ordered_constraints_.size();
+        const std::size_t minimum=parallel_solver_min_descriptors_
+            ? std::max<std::size_t>(1,parallel_solver_min_descriptors_/4)
+            : 1;
+        std::size_t best_balance=total;
+        for(std::size_t i=1;i<solver_tasks_.size();++i) {
+            const auto left=solver_tasks_[i-1].constraint_end;
+            const auto right=total-left;
+            if(left<minimum || right<minimum)continue;
+            const auto imbalance=left>right?left-right:right-left;
+            if(!parallel_solver_split || imbalance<best_balance) {
+                parallel_solver_split=i;
+                best_balance=imbalance;
+            }
+        }
+    }
+    if(parallel_solver_split) {
+        dispatch_third_pass_worker(false,parallel_solver_split);
+        try {
+            for(std::size_t i=0;i<parallel_solver_split;++i)
+                solve_constraint_task(i);
+        } catch(...) {
+            join_third_pass_worker();
+            throw;
+        }
+        // Propagate worker exceptions before any Dy force, actor motion,
+        // or Sc event becomes visible; the frame checkpoint remains live.
+        complete_third_pass_worker();
+        ++concurrent_solver_dispatches_;
+    } else {
+        for(std::size_t i=0;i<solver_tasks_.size();++i)
+            solve_constraint_task(i);
+    }
     // ScBodySim counted interactions are updated on Gu overlap and Sc
     // constraint attachment/retirement. DySleep consumes the lifetime
     // count, including non-touching managers and joint-only islands,
@@ -8572,7 +8631,6 @@ void Scene::step(float seconds) {
         // The source group now owns its full solve/writeback/integration
         // continuation. Its completion cannot publish any other group's
         // solver bodies or Gu contact windows.
-        solve_constraint_task(task_index);
         write_back_contacts(published_manager_end,task.manager_end);
         published_manager_end=task.manager_end;
         publish_solver_bodies(
