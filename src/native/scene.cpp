@@ -1179,6 +1179,10 @@ void Scene::update_bounds() {
                 // old endpoint sequence. Later nodes moving left
                 // naturally displace earlier nodes moving right.
                 bool predecessor_updated=false;
+                // Evaluate orthogonal separation first, with the axis
+                // order determined once for this whole batch.
+                const std::array<unsigned,3> check_axes{
+                    (axis+2)%3,(axis+1)%3,axis};
                 for(std::size_t i=0;i<n;++i) {
                     const bool updated=sap_endpoint_updated_[i]!=0;
                     if(!updated && !predecessor_updated)continue;
@@ -1210,8 +1214,6 @@ void Scene::update_bounds() {
                             // proxies separated in another dimension.
                             const auto& aa=a.encoded_bounds;
                             const auto& bb=b.encoded_bounds;
-                            const std::array<unsigned,3> check_axes{
-                                (axis+2)%3,(axis+1)%3,axis};
                             bool final_overlap=true;
                             for(unsigned dim:check_axes) {
                                 if(aa[dim]>bb[dim+3] ||
