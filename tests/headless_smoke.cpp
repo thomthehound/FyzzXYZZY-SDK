@@ -2461,10 +2461,10 @@ int main() {
                     const auto [pl,pu]=initialize(source_friction,true);
                     const auto [ql,qu]=initialize(source_no_friction,false);
                     float source_effect=0.0f,source_rotation=0.0f;
-                    // The early contact/impulse window is an enforced
-                    // regression. The extended source-parity acceptance
-                    // scenario is retained intact and explicitly selectable
-                    // while its observed N1 discrepancy is being repaired.
+                    // The full 48-frame coupled PGS comparison is a
+                    // source-enabled acceptance gate on Windows and Linux.
+                    // Frame-specific witnesses preserve the resolved
+                    // actor-ordering and first-impact regressions.
 
 #if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
                     constexpr int frames=48;
@@ -2475,42 +2475,6 @@ int main() {
                     for(int frame=0;frame<frames;++frame) {
                         const float dt=frame<24?1.0f/240.0f:1.0f/120.0f;
 
-#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                        if(!use_pcm && reversed && (frame==11 || frame==12)) {
-                            const auto probe=[&](const char* name,
-                                fyzz::World& w,fyzz::BodyId bottom,fyzz::BodyId top) {
-                                const auto lo=w.body_state(bottom);
-                                const auto up=w.body_state(top);
-                                std::cerr<<"N1GU frame="<<frame+1<<" "<<name
-                                         <<" lower_p=("<<lo.position.x<<","
-                                         <<lo.position.y<<","<<lo.position.z<<")"
-                                         <<" upper_p=("<<up.position.x<<","
-                                         <<up.position.y<<","<<up.position.z<<")\n";
-                                for(unsigned initial=0;initial<=6;++initial) {
-                                    std::array<fyzz::native::ContactPoint,255> points{};
-                                    std::uint8_t axis=static_cast<std::uint8_t>(initial);
-                                    const auto count=fyzz::native::source_box_box_contacts(
-                                        half,lo.position,lo.orientation,
-                                        half,up.position,up.orientation,
-                                        0.04f,axis,points);
-                                    if(!count)continue;
-                                    const auto& cp=points[0];
-                                    std::cerr<<"N1GU "<<name
-                                             <<" before="<<initial
-                                             <<" after="<<unsigned(axis)
-                                             <<" n=("<<cp.normal.x<<","
-                                             <<cp.normal.y<<","<<cp.normal.z<<")"
-                                             <<" p0=("<<cp.position.x<<","
-                                             <<cp.position.y<<","
-                                             <<cp.position.z<<")"
-                                             <<" sep="<<cp.separation
-                                             <<" count="<<unsigned(count)<<"\n";
-                                }
-                            };
-                            probe("native",native_friction,nl,nu);
-                            probe("physx",source_friction,pl,pu);
-                        }
-#endif
 
                         native_friction.step(dt);
                         source_friction.step(dt);
@@ -2547,55 +2511,6 @@ int main() {
                             }
                         }
 
-#if FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
-                        if(!use_pcm && reversed && frame<25) {
-                            const auto line=[&](const char* name,fyzz::World& w,
-                                                fyzz::BodyId lower,fyzz::BodyId upper) {
-                                const auto lo=w.body_state(lower);
-                                const auto up=w.body_state(upper);
-                                std::cerr<<"N1TRACE frame="<<frame+1
-                                         <<" "<<name
-                                         <<" lower_y="<<lo.position.y
-                                         <<" lower_v=("<<lo.velocity.x<<","<<lo.velocity.y
-                                         <<","<<lo.velocity.z<<")"
-                                         <<" lower_q=("<<lo.orientation.x<<","
-                                         <<lo.orientation.y<<","<<lo.orientation.z
-                                         <<","<<lo.orientation.w<<")"
-                                         <<" upper_p=("<<up.position.x<<","
-                                         <<up.position.y<<","<<up.position.z<<")"
-                                         <<" upper_v=("<<up.velocity.x<<","
-                                         <<up.velocity.y<<","<<up.velocity.z<<")"
-                                         <<" upper_w=("<<up.angular_velocity.x<<","
-                                         <<up.angular_velocity.y<<","
-                                         <<up.angular_velocity.z<<")"
-                                         <<" q=("<<up.orientation.x<<","
-                                         <<up.orientation.y<<","<<up.orientation.z
-                                         <<","<<up.orientation.w<<")";
-                                for(const auto& evt:w.contact_events()) {
-                                    if(evt.contact_count==0)continue;
-                                    const auto& cp=w.contact_event_points()[evt.point_offset];
-                                    std::cerr<<" contact("<<evt.body0<<","<<evt.body1
-                                             <<") n=("<<cp.normal.x<<","
-                                             <<cp.normal.y<<","<<cp.normal.z
-                                             <<") sep="<<cp.separation
-                                             <<" impulse="<<evt.normal_impulse;
-                                    if(frame<=13) {
-                                        const auto points=w.contact_event_points();
-                                        for(std::size_t i=0;i<evt.contact_count;++i) {
-                                            const auto& p=points[evt.point_offset+i];
-                                            std::cerr<<" p"<<i<<"=("<<p.position.x<<","
-                                                     <<p.position.y<<","
-                                                     <<p.position.z<<")"
-                                                     <<" J="<<p.normal_impulse;
-                                        }
-                                    }
-                                }
-                                std::cerr<<'\n';
-                            };
-                            line("native",native_friction,nl,nu);
-                            line("physx",source_friction,pl,pu);
-                        }
-#endif
 
                         const auto horizontal_delta=[](fyzz::Vec3 a,
                                                        fyzz::Vec3 b) {
@@ -2637,6 +2552,19 @@ int main() {
                                 std::abs(orientation_dot)<0.9999f))
                                 throw std::runtime_error(
                                     "First-impact PhysX angular source witness failed");
+                            // Preserve the original coupled-friction
+                            // regression at its frame-20 failure point.
+                            // Both dynamic actors must follow the independent
+                            // legacy-Gu source, not merely remain within the
+                            // broader 48-frame trajectory drift envelope.
+                            if(!use_pcm && reversed && frame==19 &&
+                               (position_error>0.005f ||
+                                linear_error>0.005f ||
+                                angular_error>0.005f ||
+                                !std::isfinite(orientation_dot) ||
+                                std::abs(orientation_dot)<0.99999f))
+                                throw std::runtime_error(
+                                    "Reversed-mass coupled PGS source witness failed");
                             if(!std::isfinite(orientation_dot) ||
                                !std::isfinite(position_error) ||
                                !std::isfinite(linear_error) ||
