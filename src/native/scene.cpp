@@ -5674,7 +5674,7 @@ void Scene::prepare_constraints(float seconds) {
     friction_by_edge_.swap(next_friction_by_edge_);
     friction_cache_epoch_=next_cache_epoch;
 }
-void Scene::solve_constraints() {
+void Scene::solve_constraint_task(std::size_t task_index) {
     // DySolverConstraintsShared.h::solveDynamicContacts /
     // solveStaticContacts and DySolverConstraints.cpp friction patch solve,
     // with the PhysX default of four position
@@ -5691,9 +5691,21 @@ void Scene::solve_constraints() {
     const auto dot = [](Vec3 u, Vec3 v) {
         return u.x*v.x + u.y*v.y + u.z*v.z;
     };
-    std::size_t task_constraint_begin=0;
-    std::size_t task_solver_begin=0;
-    for(const auto& task:solver_tasks_) {
+    // Dy task groups own disjoint accurate islands. Derive exclusive
+    // ranges from the source cumulative task descriptors; no per-task
+    // contact/solver-body copies or alternate owner are allocated.
+    if(task_index>=solver_tasks_.size())
+        throw std::out_of_range("Unknown source Dy solver task");
+    const auto& task=solver_tasks_[task_index];
+    const std::size_t task_constraint_begin=task_index
+        ? solver_tasks_[task_index-1].constraint_end:0;
+    const std::size_t task_solver_begin=task_index
+        ? solver_tasks_[task_index-1].solver_body_end:0;
+    if(task.constraint_end<task_constraint_begin ||
+       task.constraint_end>ordered_constraints_.size() ||
+       task.solver_body_end<task_solver_begin ||
+       task.solver_body_end>solver_active_ids_.size())
+        throw std::logic_error("Native Dy task owns an invalid descriptor range");
     const unsigned position_iterations=task.position_iterations;
     // DySolverControl::solveV_Blocks executes max(requested, 1):
     // a zero requested velocity count skips optional velocity passes,
@@ -5968,10 +5980,7 @@ void Scene::solve_constraints() {
             }
         }
     }
-    task_constraint_begin=task.constraint_end;
-    task_solver_begin=task.solver_body_end;
     }
-}
 void Scene::publish_contact_events() {
     if(!contact_notifications_)return;
     // ScNPhaseCore::processPersistentContactEvents reports touching
@@ -6070,7 +6079,7 @@ void Scene::publish_contact_events() {
     contact_event_points_.swap(next_contact_event_points_);
     contact_events_.swap(next_contact_events_);
 }
-void Scene::write_back_contacts() {
+void Scene::begin_contact_writeback() {
     // DySolverConstraints.cpp::writeBackContact copies final forceBuffer
     // impulses after the last velocity/writeback solve. Gu contact order,
     // not the reordered Dy partition list, owns output offsets. Here the
@@ -6102,11 +6111,16 @@ void Scene::write_back_contacts() {
         old.friction_patch_count=0;
         old.prepared_friction_epoch=0;
     }
-    // Both the original contact-force offsets and patch ownership are
-    // checked only for managers actually admitted to current Dy tasks.
-    // This is O(active contact points + prior active managers) besides
-    // the unavoidable dense Gu output zero-fill.
-    for(std::size_t manifold_index:indexed_managers_) {
+}
+
+void Scene::write_back_contacts(std::size_t first,std::size_t last) {
+    // PxsSolverEndTask writes the Gu-indexed force/patch windows owned
+    // by this source island task before the task completion edge. The
+    // zeroed Gu arena is prepared once, not once per task.
+    if(first>last || last>indexed_managers_.size())
+        throw std::logic_error("Native Dy task owns an invalid Gu manager range");
+    for(std::size_t manager=first;manager<last;++manager) {
+        const std::size_t manifold_index=indexed_managers_[manager];
         const auto& manifold=manifolds_[manifold_index];
         if(manifold.prepared_friction_epoch!=friction_cache_epoch_ ||
            manifold.contact_offset>contact_points_.size() ||
@@ -7268,8 +7282,7 @@ void Scene::step(float seconds) {
     join.dispatch_solver_tasks(
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
-    solve_constraints();
-    write_back_contacts();
+    begin_contact_writeback();
     // PxsBodyCore::numCountedInteractions is maintained by original Sc
     // interaction edges. In this admitted contact-only subset each Gu
     // contact manager contributes one interaction to each dynamic body.
@@ -7299,8 +7312,15 @@ void Scene::step(float seconds) {
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
     std::size_t published_solver_body_end=0;
+    std::size_t published_manager_end=0;
     for(std::size_t task_index=0;task_index<solver_tasks_.size();++task_index) {
         const auto& task=solver_tasks_[task_index];
+        // The source group now owns its full solve/writeback/integration
+        // continuation. Its completion cannot publish any other group's
+        // solver bodies or Gu contact windows.
+        solve_constraint_task(task_index);
+        write_back_contacts(published_manager_end,task.manager_end);
+        published_manager_end=task.manager_end;
         publish_solver_bodies(
             published_solver_body_end,task.solver_body_end);
         published_solver_body_end=task.solver_body_end;
@@ -7431,9 +7451,10 @@ void Scene::step(float seconds) {
         }
         join.finish_solver_task(task_index);
     }
-    if(published_solver_body_end!=solver_active_ids_.size())
+    if(published_solver_body_end!=solver_active_ids_.size() ||
+       published_manager_end!=indexed_managers_.size())
         throw std::logic_error(
-            "Native Dy task ranges did not consume every prepared solver body");
+            "Native Dy task ranges did not consume every prepared solver body/Gu manager");
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.

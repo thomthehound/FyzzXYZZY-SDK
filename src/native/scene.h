@@ -740,8 +740,9 @@ private:
     void partition_constraints();
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(BodyId id);
-    void solve_constraints();
-    void write_back_contacts();
+    void solve_constraint_task(std::size_t task_index);
+    void begin_contact_writeback();
+    void write_back_contacts(std::size_t first,std::size_t last);
     void update_threshold_stream(float seconds);
     void publish_contact_events();
     void publish_solver_bodies(std::size_t first,std::size_t last);
