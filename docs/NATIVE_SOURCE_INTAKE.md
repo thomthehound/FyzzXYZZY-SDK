@@ -1132,13 +1132,16 @@ the rigid contact-manager `Edge::eACTIVE/eACTIVATING` flags and
 activated-edge worklists are now independently owned by the speculative
 and accurate graphs. Rigid two-dynamic-endpoint
 `IslandSim::Node::mActiveRefCount` bookkeeping is also implemented.
-The remaining unsupported non-rigid node-type activation queues,
-kinematic consumption of active references, stabilization/freeze state,
-deferred deactivation continuations, complete sleep/wake callbacks and
-exact `ScPipeline::afterIntegration` task semantics are still not implemented. Independent *rigid* active-index maps, their
-prefix/suffix and swap-last behavior are already implemented in both
-graphs; this is not a claim of their complete non-rigid lifecycle. The active
-subset has no joints or CCD and cannot establish those dependencies.
+The supported rigid/kinematic path now also consumes active references
+for kinematic endpoints, retains independent per-graph active indices,
+executes concurrent third-pass and per-island Dy solver tasks, and
+reconciles deactivated bodies against their pre-integration poses at
+`ScPipeline::afterIntegration`. Rigid and kinematic distance-constraint
+endpoints use typed island edges and source-derived 1D PGS rows.
+Unsupported non-rigid node types, stabilization/freeze features, full
+sleep/wake callback breadth and CCD remain outside this admission.
+The implemented rigid task joins do not establish general asynchronous
+GPU or articulation execution.
 
 **Cost:** unchanged dynamic connectivity and static-only topology
 changes incur no component reconstruction. A newly found
@@ -1579,10 +1582,9 @@ island membership and Dy integration while preserving their Gu box
 geometry and live contact-manager endpoints. The independent reference
 backend authors the source `PxRigidBodyFlag`. Native conformance
 exercises dynamic-to-kinematic and reverse membership transitions,
-stable rigid IDs and stationary kinematic contact response. Kinematic
-target velocities/pose integration, active-reference kinematic lists,
-kinematic-kinematic contacts under nondefault filtering, articulation
-nodes and typed constraint edges remain unported.
+stable rigid IDs and stationary kinematic contact response. Kinematic-kinematic contacts under nondefault filtering and articulation
+nodes remain unsupported; kinematic targets, active-reference lists and
+typed constraint edges are admitted as detailed below.
 
 Moving kinematic boxes now accept a source-style target pose. The
 existing rigid actor retains that target until a timestep is known;
@@ -1834,18 +1836,18 @@ bounds only for deactivated bodies that actually integrated in the same
 generation. The serial third-pass-first path performs no extra work
 beyond iterating its sleep-output list. Tests exercise the overlapped
 ordering, unaffected awake bodies, stale-generation suppression, and
-failure-atomic rollback. This is the required *reconciliation mechanism*,
-not proof of concurrent task scheduling or full PhysX freeze/CCD flags.
+failure-atomic rollback. The concurrent rigid task chains and their completion joins are implemented
+for admitted active islands. This reconciliation remains restricted to
+rigid deactivation; it does not implement freeze or CCD behavior.
 
 The admitted rigid CPU path has source-style active island handles,
 source hop-priority witnesses, local split migration, typed contact/1D
 constraint partitions, both third-pass completion producers, task-local
-solve/writeback/integration and postSolver/finalization gates. Remaining
-work includes other joint families and articulation responses, full
-sleep/wake callback semantics, actual asynchronous backend continuations,
-and `afterIntegration` deactivation reconciliation when the island and
-Dy branches execute concurrently. Successful serial rigid execution
-does not establish N1-level heterogeneous simulation parity.
+solve/writeback/integration and postSolver/finalization gates. Remaining work includes other joint families and articulation responses,
+full sleep/wake callback semantics, and asynchronous backend continuations
+outside the admitted CPU task chains. The existing concurrent CPU task
+execution and rigid `afterIntegration` reconciliation do not establish
+heterogeneous simulation parity.
 
 ## Simulation-shape filtering and source manager lifetime
 
@@ -2305,13 +2307,11 @@ journal, including rejected Dy frames. This is the admitted rigid
 interaction-activity subset, not shape-interaction callback registration
 or persistent-contact event processing.
 
-The implemented scope is rigid `eCONTACT_MANAGER`. Kinematic,
-articulation and constraint edges, kinematic consumption of the now
-implemented rigid contact-manager active references, per-type bitmap
-partitions, full shape-interaction activation/notification
-semantics, persistent contact events, callback publication and full
-island task continuations still require source-derived N1 integration.
-The rigid speculative contact-manager interaction-activity consumer
-is already implemented; it is not a remaining general interaction
-callback pipeline. Packed solver/contact admission and CCD
-remain separate gates; the new activity lifecycle alone does not close N1.
+The supported island graph also admits typed `eCONSTRAINT` edges,
+kinematic reference-driven activation and independent speculative/accurate
+third-pass and CPU solver task completions. The existing Sc interaction
+activity consumer remains specific to contact managers; it does not stand
+in for complete shape-interaction callbacks. Full filter/trigger and
+threshold-callback publication, articulation/non-rigid node semantics,
+additional constraint families, and packed solver/contact ABI coverage
+remain separately auditable. CCD is not admitted by this CPU slice.
