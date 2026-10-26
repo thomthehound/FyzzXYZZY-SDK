@@ -7,7 +7,6 @@ on:
   push:
     branches:
       - main
-      - integration/sap-audit-n1
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -27,77 +26,6 @@ concurrency:
 # Cache identity follows that manifest, cmake/GodotDependency.cmake and
 # the compiler toolchain; unrelated SDK CMake edits do not rebuild bindings.
 jobs:
-  sap-integration-performance:
-    name: Matched native SAP performance
-    if: github.ref == 'refs/heads/integration/sap-audit-n1'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Build matched N1 broadphase profiles
-        shell: bash
-        run: |
-          git worktree add --detach ../sap-n1-base 49437341c03d031cb508e24f476654e991f16aa0
-          python - <<'PY'
-          import re
-          from pathlib import Path
-          old=Path('../sap-n1-base')
-          old.joinpath('CMakeLists.txt').write_text(
-              Path('CMakeLists.txt').read_text())
-          header=old/'src/native/scene.h'
-          header.write_text(header.read_text().replace(
-              '    friend struct ConstraintIslandSourceFixture;',
-              '    friend struct ConstraintIslandSourceFixture;\n'
-              '    friend struct NativeSapTimingFixture;'))
-          bench=Path('tests/native_sap_benchmark.cpp').read_text()
-          bench=re.sub(r'scene\.broadphase_[A-Za-z_]+_count\(\)',
-                       'std::size_t{0}',bench)
-          (old/'tests/native_sap_benchmark.cpp').write_text(bench)
-          PY
-          flags=(
-            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-            -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF
-            -DFYZZXYZZY_BUILD_GODOT=OFF
-            -DFYZZXYZZY_BUILD_VULKAN=OFF
-            -DFYZZXYZZY_BUILD_D3D12=OFF
-            -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-          )
-          cmake -S ../sap-n1-base -B ../sap-n1-base-build "${flags[@]}"
-          cmake -S . -B build-sap-integration "${flags[@]}"
-          cmake --build ../sap-n1-base-build --target fyzzxyzzy_native_sap_benchmark --parallel 4
-          cmake --build build-sap-integration --target fyzzxyzzy_native_sap_benchmark --parallel 4
-      - name: Measure paired collision and endpoint workloads
-        shell: bash
-        run: |
-          for trial in 1 2 3 4 5 6 7; do
-            if ((trial % 2)); then
-              ../sap-n1-base-build/fyzzxyzzy_native_sap_benchmark >> before.txt
-              build-sap-integration/fyzzxyzzy_native_sap_benchmark >> after.txt
-            else
-              build-sap-integration/fyzzxyzzy_native_sap_benchmark >> after.txt
-              ../sap-n1-base-build/fyzzxyzzy_native_sap_benchmark >> before.txt
-            fi
-          done
-          python - <<'PY'
-          from statistics import median
-          def collect(path):
-              out={}
-              for line in open(path):
-                  if not line.startswith('native_sap mode='): continue
-                  data=dict(part.split('=',1) for part in line.split()
-                            if '=' in part)
-                  out.setdefault(data['mode'],[]).append(
-                      float(data['median_us_per_query']))
-              return out
-          base,new=collect('before.txt'),collect('after.txt')
-          for name in base:
-              a,b=median(base[name]),median(new[name])
-              print(f'{name:32s} N1={a:9.3f} us '
-                    f'integrated={b:9.3f} us ratio={a/b:6.2f}x')
-          PY
-
   linux:
     runs-on: ubuntu-26.04
     timeout-minutes: 35
