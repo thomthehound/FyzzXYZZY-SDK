@@ -2272,6 +2272,7 @@ struct ContactCorrelationSourceFixture {
         };
         if(!rejected([&]{ join.require_post_solver(); }) ||
            !rejected([&]{ join.finish_solver_task(0); }) ||
+           !rejected([&]{ join.finish_third_pass(); }) ||
            !rejected([&]{ join.finish_lost_contacts(); }) ||
            !rejected([&]{ join.finish_post_solver(); }) ||
            !rejected([&]{ join.finish_after_integration(); }) ||
@@ -2290,10 +2291,18 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ join.require_post_solver(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver retired an incomplete lost-touch branch");
+        join.finish_speculative_third_pass();
+        if(!rejected([&]{ join.finish_third_pass(); }) ||
+           !rejected([&]{ join.finish_lost_contacts(); }) ||
+           !rejected([&]{ join.finish_speculative_third_pass(); }))
+            throw std::runtime_error(
+                "ScPipeline postThirdPassTask ran before accurate IslandSim completion");
+        join.finish_accurate_third_pass();
         join.finish_third_pass();
         join.finish_lost_contacts();
         if(!rejected([&]{ join.require_post_solver(); }) ||
-           !rejected([&]{ join.finish_third_pass(); }))
+           !rejected([&]{ join.finish_third_pass(); }) ||
+           !rejected([&]{ join.finish_accurate_third_pass(); }))
             throw std::runtime_error(
                 "ScPipeline postSolver omitted the final Dy task completion");
         join.finish_solver_task(0);
@@ -2327,6 +2336,13 @@ struct ContactCorrelationSourceFixture {
            !rejected([&]{ empty.finish_post_solver(); }))
             throw std::runtime_error(
                 "Empty source task stream bypassed third-pass completion");
+        // Independent island completions may arrive in the opposite
+        // order, even when no rigid solver tasks are admitted.
+        empty.finish_accurate_third_pass();
+        if(!rejected([&]{ empty.finish_third_pass(); }))
+            throw std::runtime_error(
+                "Empty source task stream skipped speculative IslandSim");
+        empty.finish_speculative_third_pass();
         empty.finish_third_pass();
         empty.finish_lost_contacts();
         empty.finish_post_solver();

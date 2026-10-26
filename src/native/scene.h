@@ -1257,6 +1257,8 @@ private:
         std::span<std::uint32_t> solver_completion_stamps{};
         std::uint32_t completion_generation=0;
         std::size_t outstanding_solver_tasks=0;
+        bool accurate_third_pass_joined=false;
+        bool speculative_third_pass_joined=false;
         bool third_pass_joined=false;
         bool lost_contacts_joined=false;
         bool solver_dispatched=false;
@@ -1264,6 +1266,8 @@ private:
         bool after_integration_completed=false;
         bool finalization_completed=false;
         bool results_published=false;
+        void finish_accurate_third_pass();
+        void finish_speculative_third_pass();
         void finish_third_pass();
         void finish_lost_contacts();
         void dispatch_solver_tasks(std::span<std::uint32_t> stamps,

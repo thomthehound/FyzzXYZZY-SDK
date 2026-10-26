@@ -7029,12 +7029,28 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.authored_activation_pending_=authored_activation_pending;
  }
 
-void Scene::RigidStepJoin::finish_third_pass() {
-    // PostThirdPassIslandGenTask is an explicit dependency of the
-    // processLostContacts3 continuation, independent of Dy solve tasks.
-    if(third_pass_joined)
+void Scene::RigidStepJoin::finish_accurate_third_pass() {
+    // The accurate and speculative IslandSims run independent
+    // ThirdPassTask continuations into the SAME PostThirdPassTask.
+    if(accurate_third_pass_joined || third_pass_joined)
         throw std::logic_error(
-            "Native ScPipeline completed postThirdPassIslandGen twice");
+            "Native ScPipeline completed accurate third pass twice/out of order");
+    accurate_third_pass_joined=true;
+}
+void Scene::RigidStepJoin::finish_speculative_third_pass() {
+    if(speculative_third_pass_joined || third_pass_joined)
+        throw std::logic_error(
+            "Native ScPipeline completed speculative third pass twice/out of order");
+    speculative_third_pass_joined=true;
+}
+void Scene::RigidStepJoin::finish_third_pass() {
+    // PxsSimpleIslandManager::thirdPassIslandGen wires BOTH island task
+    // completions into PostThirdPassTask. Its handle retirement and
+    // postThirdPassIslandGen continuation cannot run after only one.
+    if(!accurate_third_pass_joined || !speculative_third_pass_joined ||
+       third_pass_joined)
+        throw std::logic_error(
+            "Native ScPipeline postThirdPassIslandGen missing island producer");
     third_pass_joined=true;
 }
 void Scene::RigidStepJoin::finish_lost_contacts() {
@@ -7162,6 +7178,8 @@ void Scene::step(float seconds) {
     // third-pass sleep, and Sc interaction-state consumption.
     // PhysX can overlap this branch with Dy; serial CPU execution
     // resolves it first without changing the dependency edge.
+    join.finish_accurate_third_pass();
+    join.finish_speculative_third_pass();
     join.finish_third_pass();
     join.finish_lost_contacts();
     calculate_kinematic_velocities(1.0f/seconds);
