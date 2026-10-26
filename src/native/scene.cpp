@@ -1023,7 +1023,7 @@ void Scene::update_bounds() {
             // endpoint ranks per volume. Probe bounded old-rank neighbors
             // without allocating or sorting a new worklist. Wide reorder
             // spans retain PhysX's linked activity-pocket batch route.
-            constexpr std::size_t local_span=64;
+            constexpr std::size_t local_span=24;
             bool localized=true;
             bool stable=true;
             const auto final_key=[&](Endpoint ep,unsigned axis) {
