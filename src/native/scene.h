@@ -796,7 +796,8 @@ private:
     bool repair_lost_island_graphs_concurrently();
     bool worthwhile_parallel_route_work() const noexcept;
     void run_third_pass_worker() noexcept;
-    void dispatch_third_pass_worker(bool repair_only);
+    void dispatch_third_pass_worker(bool repair_only,
+                                    std::size_t solver_first=invalid_instance);
     void join_third_pass_worker() noexcept;
     bool complete_third_pass_worker();
     bool process_third_pass_island_task(bool accurate);
@@ -1114,6 +1115,11 @@ private:
     std::size_t concurrent_lost_route_dispatches_=0;
     std::size_t overlapped_dy_preintegration_dispatches_=0;
     std::size_t third_pass_worker_start_count_=0;
+    std::size_t concurrent_solver_dispatches_=0;
+    bool parallel_solver_enabled_=true;
+    // Admit independent source PGS task groups only when both ranges
+    // contain useful work; small tasks avoid the worker handoff.
+    std::size_t parallel_solver_min_descriptors_=256;
     bool parallel_third_pass_enabled_=true;
     // Two route searches need enough graph-local endpoints to amortize
     // waking a second CPU worker. The source graph algorithms remain
@@ -1630,6 +1636,7 @@ private:
         std::condition_variable cv;
         bool stopping=false, pending=false, done=false;
         bool outstanding=false, repair_only=false, split=false;
+        std::size_t solver_first=invalid_instance, solver_end=0;
         std::exception_ptr error;
         std::jthread worker;
         ~ThirdPassWorkerState() noexcept;
