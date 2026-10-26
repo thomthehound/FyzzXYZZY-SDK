@@ -842,6 +842,8 @@ private:
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
+    void complete_solver_end_task(std::size_t task_index,float seconds,
+                                  std::vector<BodyId>& ready_nodes);
     void begin_contact_writeback();
     void write_back_contacts(std::size_t first,std::size_t last);
     void update_threshold_stream(float seconds);
