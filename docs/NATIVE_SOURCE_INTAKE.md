@@ -1695,11 +1695,15 @@ must not acquire unsynchronized cross-task row mutations.
 All solver groups join before Gu force writeback, actor integration,
 sleep readiness, and postSolver completion. The separate source
 PxsSolverEndTask integration/sleepCheck continuations have not yet
-been parallelized. Native regressions compare six successive frames
-against serial execution, including exact body state, island identity,
-and Gu-indexed normal impulses. Release benchmark trials compare
-serial, forced concurrent and production-adaptive scheduling on both
-supported CPU platforms, without a CI timing threshold.
+been parallelized. Native regressions compare successive frames against
+serial execution for independent static-contact islands and separately
+for mixed contact/1D distance-constraint island groups, including exact
+body state, island identity, normal impulses, and 1D row writeback.
+Release benchmark trials compare serial, forced concurrent and
+production-adaptive scheduling for contact-only and mixed contact/1D
+workloads on Linux and Windows, without a CI timing threshold. The
+third-pass benchmark explicitly disables concurrent Dy solving so its
+worker counts and route-repair measurements remain stage-specific.
 
 **Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
 unconstrained Dy preIntegration after the accurate ThirdPassTask has
