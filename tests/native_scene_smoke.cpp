@@ -366,6 +366,65 @@ struct ConstraintIslandSourceFixture {
                     "Prepublication constraint retirement leaked island ownership");
         }
     }
+    static void verify_post_third_pass_handle_retirement_rollback() {
+        // PostThirdPassTask may recycle a removed source EdgeIndex
+        // before the Dy continuation completes. A rejected later Dy
+        // integration must restore the retiring edge and allocator,
+        // including its prior published simulation result.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,10,0},1.0f);
+        const float dt=1.0f/120.0f;
+        scene.step(dt);
+        const auto edge=scene.add_distance_constraint(a,b,3.0f);
+        scene.advance_collision();
+        scene.remove_constraint_edge(edge);
+        const auto frame=scene.frame_index();
+        const auto state=scene.body_state(a);
+        if(scene.retired_edge_handles_.empty() ||
+           !scene.island_edges_[edge].retiring)
+            throw std::runtime_error(
+                "PostThirdPass retirement fixture lacks a pending edge");
+        RigidBodyDynamics extreme{};
+        extreme.gravity_enabled=false;
+        extreme.max_linear_velocity=1.0e20f;
+        extreme.max_angular_velocity=1.0e20f;
+        scene.set_dynamics(a,extreme);
+        scene.set_velocity(a,{1.0e17f,0,0});
+        bool failed=false;
+        try {scene.step(1.0e23f);}
+        catch(const std::overflow_error&) {failed=true;}
+        if(!failed || scene.frame_index()!=frame ||
+           !scene.island_edges_[edge].live ||
+           !scene.island_edges_[edge].retiring ||
+           std::find(scene.retired_edge_handles_.begin(),
+                     scene.retired_edge_handles_.end(),edge)==
+               scene.retired_edge_handles_.end() ||
+           std::find(scene.free_edge_handles_.begin(),
+                     scene.free_edge_handles_.end(),edge)!=
+               scene.free_edge_handles_.end())
+            throw std::runtime_error(
+                "Failed postThirdPass/Dy frame leaked a recycled edge handle");
+        // A retry consumes the SAME pending retiring source edge once,
+        // with no extra allocator entry or new owner.
+        scene.set_velocity(a,{});
+        scene.step(dt);
+        if(scene.solved_result_frame()!=scene.frame_index() ||
+           scene.island_edges_[edge].live ||
+           !scene.retired_edge_handles_.empty() ||
+           std::count(scene.free_edge_handles_.begin(),
+                      scene.free_edge_handles_.end(),edge)!=1)
+            throw std::runtime_error(
+                "PostThirdPass retry did not commit exactly one edge retirement");
+        const auto replacement=scene.add_distance_constraint(a,b,3.0f);
+        if(replacement!=edge || !scene.island_edges_[edge].live ||
+           scene.island_edges_[edge].retiring)
+            throw std::runtime_error(
+                "PostThirdPass recycled edge identity before successful commit");
+        (void)state;
+    }
     static void verify_constraint_sleep_deactivation_generations() {
         // Real ScConstraintSim and Dy PGS work through sleepCheck into
         // the following IslandSim third pass. Its typed eCONSTRAINT
@@ -11550,6 +11609,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_typed_constraint_edge_lifetime();
     fyzz::native::ConstraintIslandSourceFixture::verify_island_node_type_counts();
     fyzz::native::ConstraintIslandSourceFixture::verify_constraint_sleep_deactivation_generations();
+    fyzz::native::ConstraintIslandSourceFixture::verify_post_third_pass_handle_retirement_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_actor_retirement();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();

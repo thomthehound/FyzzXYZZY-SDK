@@ -7181,6 +7181,11 @@ void Scene::step(float seconds) {
     join.finish_accurate_third_pass();
     join.finish_speculative_third_pass();
     join.finish_third_pass();
+    // PxsSimpleIslandManager::PostThirdPassTask returns destroyed
+    // EdgeIndex handles to its allocator only after both IslandSims'
+    // processLostEdges consumers have completed. The lifetime remains
+    // checkpointed until the whole frame succeeds.
+    retire_destroyed_contact_edges();
     join.finish_lost_contacts();
     calculate_kinematic_velocities(1.0f/seconds);
     // Dy::DynamicsContext takes the accurate *active* island ranges,
@@ -7487,7 +7492,6 @@ void Scene::step(float seconds) {
     // after the original Sc afterIntegration shape-cache publication.
     // Its bounds updates participate in the same motion undo journal.
     after_integration_cached_bounds();
-    retire_destroyed_contact_edges();
     join.finish_after_integration();
     // Threshold checks consume current Dy forces after the
     // integration/cache phase, independently from task-local solve.
