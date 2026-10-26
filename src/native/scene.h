@@ -5,6 +5,7 @@
 #include "fyzzxyzzy/world.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -784,6 +785,7 @@ private:
     void remove_accurate_island_edge(std::uint32_t id);
     void update_island_connectivity();
     bool repair_lost_island_graph(bool accurate);
+    bool repair_lost_island_graphs_concurrently();
     void rebuild_accurate_island_offsets();
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // repair. Source activation and whole-island deactivation consume
@@ -1093,6 +1095,7 @@ private:
     std::mutex third_pass_edge_mutex_;
     // Counts actual worker dispatches; quiet frames do not create a thread.
     std::size_t concurrent_third_pass_dispatches_=0;
+    std::size_t concurrent_lost_route_dispatches_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
@@ -1216,7 +1219,8 @@ private:
         std::vector<ReferenceUndo> reference_undo;
         std::size_t initial_speculative_references=0;
         std::size_t initial_accurate_references=0;
-        std::vector<HintUndo> hint_undo;
+        // Each source IslandSim records and rolls back its own route hints.
+        std::vector<HintUndo> speculative_hint_undo, accurate_hint_undo;
         std::vector<HeadUndo> head_undo;
         std::size_t initial_edges=0;
         std::size_t initial_active_interactions=0;
@@ -1249,7 +1253,8 @@ private:
         // mutation, never on a quiet step. Active-node publication
         // remains a separate per-frame rollback concern.
         IslandGraph speculative_islands, accurate_islands;
-        bool graph_ownership_saved=false;
+        // Bit 0 is speculative, bit 1 accurate; published after copy.
+        std::atomic<std::uint8_t> graph_ownership_mask{0};
         std::vector<BodyId> accurate_nodes;
         std::vector<std::size_t> accurate_offsets;
         // Swap-only checkpoint for the transient active Dy batch view:
@@ -1280,6 +1285,7 @@ private:
         void save_head(const Scene& scene, BodyId node, bool accurate);
         void save_handle_lists(const Scene& scene);
         void save_graph_ownership(Scene& scene);
+        void save_graph_ownership(Scene& scene, bool accurate);
         void rollback(Scene& scene) noexcept;
     };
     StepCheckpoint step_checkpoint_;

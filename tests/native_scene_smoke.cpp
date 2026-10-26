@@ -1684,6 +1684,53 @@ struct ConstraintIslandSourceFixture {
                     "Rolled-back graph split did not repair on subsequent publication");
         }
     }
+    static void verify_concurrent_lost_route_repair_rollback() {
+        // Both graph-owned findRoute tasks split the same contact chain
+        // concurrently, then rejection must restore each original owner.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,15,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,15,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.7f,15,0},1.0f);
+        scene.advance_collision();
+        const auto speculative=scene.speculative_island_id(a);
+        const auto accurate=scene.accurate_island_id(a);
+        const auto offsets=scene.accurate_island_offsets_;
+        scene.set_position(b,{5,15,0});
+        scene.step_checkpoint_.capture(scene,false);
+        scene.advance_collision_internal(false,true);
+        if(scene.speculative_dirty_nodes_.empty() ||
+           scene.accurate_dirty_nodes_.empty())
+            throw std::runtime_error(
+                "Parallel source fixture lacks both dirty worklists");
+        const auto revision=scene.island_topology_revision();
+        if(!scene.repair_lost_island_graphs_concurrently() ||
+           scene.concurrent_lost_route_dispatches_!=1 ||
+           scene.speculative_island_count()!=3 ||
+           scene.accurate_island_count()!=3 ||
+           scene.accurate_island_offsets_==offsets ||
+           scene.step_checkpoint_.graph_ownership_mask.load()!=3u)
+            throw std::runtime_error(
+                "Concurrent lost-route repair changed producer ownership");
+        ++scene.island_topology_revision_;
+        scene.step_checkpoint_.rollback(scene);
+        if(scene.speculative_island_count()!=1 ||
+           scene.accurate_island_count()!=1 ||
+           scene.speculative_island_id(a)!=speculative ||
+           scene.accurate_island_id(a)!=accurate ||
+           scene.island_topology_revision()!=revision)
+            throw std::runtime_error(
+                "Concurrent lost-route rollback retained split membership");
+        scene.advance_collision();
+        if(scene.speculative_island_count()!=3 ||
+           scene.accurate_island_count()!=3 ||
+           scene.speculative_island_id(a)==scene.speculative_island_id(c) ||
+           scene.accurate_island_id(a)==scene.accurate_island_id(c))
+            throw std::runtime_error(
+                "Concurrent lost-route retry failed after graph rollback");
+    }
     static void verify_after_integration_deactivation_reconciliation() {
         // ScPipeline::afterIntegration restores lastCCDTransform when Dy
         // integrated a body concurrently with the accurate third pass.
@@ -13163,6 +13210,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_joint_counted_sleep_energy();
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
+    fyzz::native::ConstraintIslandSourceFixture::verify_concurrent_lost_route_repair_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
     fyzz::native::ConstraintIslandSourceFixture::verify_parallel_third_pass_failure_rollback();

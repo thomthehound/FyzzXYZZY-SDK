@@ -6,6 +6,8 @@
 #include "native/scene.h"
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <bit>
 #include <cmath>
 #include <iterator>
@@ -3581,6 +3583,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
     }
     const auto confirmed_stamp=route.confirmed_stamp;
     bool split_occurred=false;
+    std::size_t dirty_route_checks=0, fast_route_hits=0;
 
     // A cached source EdgeIndex is stable until retirement, and never
     // aliases an unrelated route just because its slot is later reused:
@@ -3607,7 +3610,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
         if(!actors_[node].alive || actors_[node].kind!=Kind::DynamicBox ||
            route.confirmed[node]==confirmed_stamp)
             continue;
-        ++island_dirty_route_checks_;
+        ++dirty_route_checks;
         const BodyId root=root_for(node);
         if(root==node) {
             route.confirmed[node]=confirmed_stamp;
@@ -3639,7 +3642,7 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             probe=next;
         }
         if(fast_found) {
-            ++island_fast_route_hits_;
+            ++fast_route_hits;
             // Source tryFastPath retains valid witnesses along every
             // root-directed step, not just at the starting dirty node.
             for(BodyId visited:route.split_members)
@@ -3750,6 +3753,11 @@ bool Scene::lost_island_edges_retain_routes(bool accurate) {
             route.confirmed[visited]=confirmed_stamp;
         }
     }
+    // Aggregate after this task's route search, not per visited node.
+    std::atomic_ref(island_dirty_route_checks_)
+        .fetch_add(dirty_route_checks,std::memory_order_relaxed);
+    std::atomic_ref(island_fast_route_hits_)
+        .fetch_add(fast_route_hits,std::memory_order_relaxed);
     return !split_occurred;
 }
 
@@ -3783,7 +3791,7 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
        route.seen[root]==route.visit_stamp ||
        route.split_members.size()>=graph.islands[owner].count)
         throw std::logic_error("Source failed-route split invariant lost");
-    step_checkpoint_.save_graph_ownership(*this);
+    step_checkpoint_.save_graph_ownership(*this,accurate);
 
         // Source removeEdgeFromIsland uses swap-last on the old indexed
         // contact-manager array. Remove exactly once, in visited-node
@@ -3890,7 +3898,8 @@ void Scene::split_lost_island(bool accurate,BodyId seed) {
             speculative_split_sleep_candidates_.push_back(root);
             speculative_split_sleep_candidates_.push_back(seed);
         }
-        ++island_local_split_count_;
+        std::atomic_ref(island_local_split_count_)
+            .fetch_add(1,std::memory_order_relaxed);
 }
 
 void Scene::update_island_connectivity() {
@@ -4985,6 +4994,32 @@ void Scene::activate_published_islands() noexcept {
             activate_contact_edge(id,true);
     }
     authored_activation_pending_=false;
+}
+bool Scene::repair_lost_island_graphs_concurrently() {
+    // Process both source ThirdPassTask lost-route producers in parallel.
+    // Edge topology is stable; accurate-only indexed-manager mutations
+    // do not modify the speculative intrusive edge instances.
+    if(speculative_dirty_nodes_.empty() ||
+       accurate_dirty_nodes_.empty()) {
+        const bool speculative=repair_lost_island_graph(false);
+        const bool accurate=repair_lost_island_graph(true);
+        return speculative || accurate;
+    }
+    bool speculative_split=false;
+    std::exception_ptr speculative_error;
+    std::jthread speculative_task([&] {
+        try {
+            speculative_split=repair_lost_island_graph(false);
+        } catch(...) {
+            speculative_error=std::current_exception();
+        }
+    });
+    // The join also runs on accurate failure, before frame rollback.
+    const bool accurate_split=repair_lost_island_graph(true);
+    speculative_task.join();
+    if(speculative_error)std::rethrow_exception(speculative_error);
+    ++concurrent_lost_route_dispatches_;
+    return speculative_split || accurate_split;
 }
 void Scene::third_pass_island_gen() {
     const bool speculative_split=repair_lost_island_graph(false);
@@ -7476,8 +7511,8 @@ void Scene::StepCheckpoint::save_hint(
     // Record before the first store. A failing journal allocation leaves
     // the previous hint untouched. Slots added after capture are truncated.
     if(node<initial)
-        hint_undo.push_back({node,routes[node],edges[node],
-                             hops[node],stamps[node],accurate});
+        (accurate?accurate_hint_undo:speculative_hint_undo).push_back(
+            {node,routes[node],edges[node],hops[node],stamps[node],accurate});
 }
 void Scene::StepCheckpoint::save_head(
     const Scene& scene, BodyId node, bool accurate) {
@@ -7502,9 +7537,17 @@ void Scene::StepCheckpoint::save_handle_lists(const Scene& scene) {
     handles_saved=true;
 }
 void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
-    if(graph_ownership_saved)return;
-    // Snapshot the single authoritative source island owner only before
-    // its first mutation; quiet frames should never copy node chains.
+    save_graph_ownership(scene,false);
+    save_graph_ownership(scene,true);
+}
+void Scene::StepCheckpoint::save_graph_ownership(
+    Scene& scene, bool accurate) {
+    const std::uint8_t bit=accurate?2u:1u;
+    if(graph_ownership_mask.load(std::memory_order_acquire)&bit)return;
+    // Source IslandSims have disjoint structural graph owners. A
+    // parallel findRoute split snapshots only its own owner, before
+    // changing its node chains or handle lists. Retry uses the same
+    // graph-local checkpoint; quiet frames copy neither owner.
     const auto save=[](IslandGraph& saved,const IslandGraph& live) {
         saved.islands.assign(live.islands.begin(),live.islands.end());
         saved.node_island.assign(live.node_island.begin(),live.node_island.end());
@@ -7515,21 +7558,24 @@ void Scene::StepCheckpoint::save_graph_ownership(Scene& scene) {
                                           live.node_static_touches.end());
         saved.free_handles.assign(live.free_handles.begin(),
                                    live.free_handles.end());
-        // A rejected structural rebuild must also restore the stamp
-        // storage to the PREVIOUS island-handle watermark. Otherwise a
-        // later no-throw active-node handoff may index a shorter array.
         saved.active_island_seen.assign(live.active_island_seen.begin(),
                                         live.active_island_seen.end());
         saved.active_island_visit_stamp=live.active_island_visit_stamp;
     };
-    save(speculative_islands,scene.speculative_islands_);
-    save(accurate_islands,scene.accurate_islands_);
-    accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
-                           scene.accurate_island_nodes_.end());
-    accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
-                             scene.accurate_island_offsets_.end());
-    graph_ownership_saved=true;
-    ++scene.island_graph_checkpoint_count_;
+    if(accurate) {
+        save(accurate_islands,scene.accurate_islands_);
+        accurate_nodes.assign(scene.accurate_island_nodes_.begin(),
+                               scene.accurate_island_nodes_.end());
+        accurate_offsets.assign(scene.accurate_island_offsets_.begin(),
+                                 scene.accurate_island_offsets_.end());
+    } else save(speculative_islands,scene.speculative_islands_);
+    // One checkpoint event per frame even if both producer copies
+    // complete simultaneously. The mask records successful copies only.
+    const auto previous=graph_ownership_mask.fetch_or(
+        bit,std::memory_order_acq_rel);
+    if(!previous)
+        std::atomic_ref(scene.island_graph_checkpoint_count_)
+            .fetch_add(1,std::memory_order_relaxed);
 }
 void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Reuse capacities across frames. The checkpoint contains only state
@@ -7585,7 +7631,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         scene.island_edges_.size());
     accurate_islands.activated_edges.reserve(
         scene.island_edges_.size());
-    hint_undo.clear();
+    speculative_hint_undo.clear();
+    accurate_hint_undo.clear();
     head_undo.clear();
     initial_edges=scene.island_edges_.size();
     initial_active_interactions=scene.active_contact_interaction_count_;
@@ -7596,7 +7643,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     initial_speculative_heads=scene.speculative_node_first_.size();
     initial_accurate_heads=scene.accurate_node_first_.size();
     handles_saved=false;
-    graph_ownership_saved=false;
+    graph_ownership_mask.store(0,std::memory_order_release);
     // Source sleep-edge publication is noexcept after successful Gu
     // commit. Resize the generation scratch before any scene mutation.
     scene.speculative_sleep_seen_.resize(scene.actors_.size(),0);
@@ -7790,20 +7837,24 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // Restore the exact pre-publication route cache and epochs so retries
     // reuse valid prior paths. Only written hint slots were journaled;
     // replay and shrinking newly admitted slots cannot allocate.
-    for(auto it=hint_undo.rbegin();it!=hint_undo.rend();++it) {
-        auto& routes=it->accurate?scene.accurate_fast_route_:
-                                   scene.speculative_fast_route_;
-        auto& edges=it->accurate?scene.accurate_fast_edge_:
-                                  scene.speculative_fast_edge_;
-        auto& hops=it->accurate?scene.accurate_hops_:
-                                 scene.speculative_hops_;
-        auto& stamps=it->accurate?scene.accurate_hint_stamps_:
-                                   scene.speculative_hint_stamps_;
-        routes[it->node]=it->next;
-        edges[it->node]=it->edge;
-        hops[it->node]=it->hops;
-        stamps[it->node]=it->stamp;
-    }
+    const auto restore_hints=[&](const std::vector<HintUndo>& undo) {
+        for(auto it=undo.rbegin();it!=undo.rend();++it) {
+            auto& routes=it->accurate?scene.accurate_fast_route_:
+                                       scene.speculative_fast_route_;
+            auto& edges=it->accurate?scene.accurate_fast_edge_:
+                                      scene.speculative_fast_edge_;
+            auto& hops=it->accurate?scene.accurate_hops_:
+                                     scene.speculative_hops_;
+            auto& stamps=it->accurate?scene.accurate_hint_stamps_:
+                                       scene.speculative_hint_stamps_;
+            routes[it->node]=it->next;
+            edges[it->node]=it->edge;
+            hops[it->node]=it->hops;
+            stamps[it->node]=it->stamp;
+        }
+    };
+    restore_hints(speculative_hint_undo);
+    restore_hints(accurate_hint_undo);
     scene.speculative_fast_route_.resize(initial_speculative_hints);
     scene.speculative_fast_edge_.resize(initial_speculative_hints);
     scene.speculative_hops_.resize(initial_speculative_hints);
@@ -7940,7 +7991,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.threshold_changes_.swap(threshold_changes);
     if(includes_solver_state)
         scene.partition_ends_.swap(partition_ends);
-    if(graph_ownership_saved) {
+    const auto graph_mask=graph_ownership_mask.load(std::memory_order_acquire);
+    if(graph_mask&1u) {
         scene.speculative_islands_.islands.swap(speculative_islands.islands);
         scene.speculative_islands_.node_island.swap(speculative_islands.node_island);
         scene.speculative_islands_.node_type.swap(speculative_islands.node_type);
@@ -7960,7 +8012,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     // The structural island snapshot restores mActiveIndex itself.
     // A quiet step has no such snapshot: clear its current live slots,
     // then restore the previous ordered active list and reverse slots.
-    if(!graph_ownership_saved)
+    if(!(graph_mask&1u))
         for(auto handle:scene.speculative_islands_.active_islands)
             if(handle<scene.speculative_islands_.islands.size())
                 scene.speculative_islands_.islands[handle].active_index=
@@ -7969,7 +8021,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.active_islands);
     scene.speculative_islands_.activating_nodes.swap(
         speculative_islands.activating_nodes);
-    if(!graph_ownership_saved)
+    if(!(graph_mask&1u))
         for(std::size_t i=0;i<scene.speculative_islands_.active_islands.size();++i)
             scene.speculative_islands_.islands[
                 scene.speculative_islands_.active_islands[i]].active_index=i;
@@ -7989,7 +8041,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         speculative_islands.active_constraint_edge_count;
     scene.speculative_islands_.initial_active_node_count=
         speculative_islands.initial_active_node_count;
-    if(graph_ownership_saved) {
+    if(graph_mask&2u) {
         scene.accurate_islands_.islands.swap(accurate_islands.islands);
         scene.accurate_islands_.node_island.swap(accurate_islands.node_island);
         scene.accurate_islands_.node_type.swap(accurate_islands.node_type);
@@ -8006,7 +8058,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.accurate_islands_.active_nodes.swap(accurate_islands.active_nodes);
     scene.accurate_islands_.active_node_index.swap(
         accurate_islands.active_node_index);
-    if(!graph_ownership_saved)
+    if(!(graph_mask&2u))
         for(auto handle:scene.accurate_islands_.active_islands)
             if(handle<scene.accurate_islands_.islands.size())
                 scene.accurate_islands_.islands[handle].active_index=
@@ -8015,7 +8067,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
         accurate_islands.active_islands);
     scene.accurate_islands_.activating_nodes.swap(
         accurate_islands.activating_nodes);
-    if(!graph_ownership_saved)
+    if(!(graph_mask&2u))
         for(std::size_t i=0;i<scene.accurate_islands_.active_islands.size();++i)
             scene.accurate_islands_.islands[
                 scene.accurate_islands_.active_islands[i]].active_index=i;
@@ -8064,7 +8116,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     };
     restore_kinematics(scene.speculative_islands_,speculative_islands);
     restore_kinematics(scene.accurate_islands_,accurate_islands);
-    if(graph_ownership_saved) {
+    if(graph_mask&2u) {
         scene.accurate_island_nodes_.swap(accurate_nodes);
         scene.accurate_island_offsets_.swap(accurate_offsets);
     }
@@ -8223,9 +8275,8 @@ void Scene::step(float seconds) {
     // third-pass processLostEdges, preserving old-island wake reach.
     activate_published_islands();
     consume_activated_contact_interactions();
-    const bool speculative_split=repair_lost_island_graph(false);
-    const bool accurate_split=repair_lost_island_graph(true);
-    if(speculative_split || accurate_split)++island_topology_revision_;
+    if(repair_lost_island_graphs_concurrently())
+        ++island_topology_revision_;
     // Source wakeIslands publishes active island membership BEFORE
     // processLostEdges tests sleep readiness. Reconcile once even when
     // no island is ready, so the deactivation pass touches active roots

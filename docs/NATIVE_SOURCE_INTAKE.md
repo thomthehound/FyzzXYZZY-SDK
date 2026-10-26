@@ -1658,6 +1658,18 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Concurrent lost-route repair:** The two source IslandSim
+processLostEdges route searches now run concurrently on frames where
+both graph-specific dirty-node streams contain work. Structural graph
+snapshots and route-hint undo records are per-producer, so either task
+can split an island without racing the other's rollback journal or
+copying its island membership. Shared diagnostics accumulate atomically
+once per route pass, rather than per visited node. The threads join
+before active-node reconciliation and the subsequent independent sleep
+tasks. One-sided or quiet repair does not create a worker. A regression
+checks concurrent splits of one shared contact chain, exact rollback
+of both owner graphs, and deterministic retry.
+
 **Concurrent rigid third-pass execution:** The production native
 ScPipeline now runs the speculative IslandSim third-pass producer on
 a worker concurrently with accurate rigid sleep arbitration whenever
