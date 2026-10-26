@@ -1018,48 +1018,15 @@ void Scene::update_bounds() {
         bool sparse=broadphase_updated_volume_slots_.size()*5<
                     sap_volumes_.size();
         bool localized_bulk=false;
-        bool wide_bulk=false;
         if(!sparse) {
-            // A shape shifting by several of its own encoded AABB
-            // widths cannot be a cheap local insertion. Skip the local
-            // rank preflight and enter source activity-pocket processing.
-            // All subtraction is promoted to 64 bits before comparing
-            // signed-position-encoded endpoints, avoiding overflow.
-            for(std::size_t updated=0;
-                updated<broadphase_updated_volume_slots_.size() &&
-                !wide_bulk;++updated) {
-                const auto slot=broadphase_updated_volume_slots_[updated];
-                const auto& volume=sap_volumes_[slot];
-                const auto& bounds=actors_[volume.id].encoded_bounds;
-                for(unsigned axis=0;axis<3;++axis) {
-                    if(!(broadphase_updated_axis_masks_[updated]&(1u<<axis)))
-                        continue;
-                    const auto& endpoints=sap_axis_endpoints_[axis];
-                    const std::uint64_t old_min=endpoints[
-                        volume.endpoint_positions[axis][0]].value;
-                    const std::uint64_t old_max=endpoints[
-                        volume.endpoint_positions[axis][1]].value;
-                    const std::uint64_t span=old_max-old_min;
-                    if(!span)continue;
-                    const std::uint64_t new_min=bounds[axis];
-                    const std::uint64_t new_max=bounds[axis+3];
-                    const auto distance=[](std::uint64_t a,
-                                           std::uint64_t b) {
-                        return a>b?a-b:b-a;
-                    };
-                    if(distance(old_min,new_min)>span*2 ||
-                       distance(old_max,new_max)>span*2) {
-                        wide_bulk=true;
-                        break;
-                    }
-                }
-            }
-        }
-        if(!sparse && !wide_bulk) {
-            // A large mUpdated set can still touch only a handful of
-            // endpoint ranks per volume. Probe bounded old-rank neighbors
-            // without allocating or sorting a new worklist. Wide reorder
-            // spans retain PhysX's linked activity-pocket batch route.
+            // Choose the source indexed update for bounded rank motion,
+            // regardless of world-space distance. A sparsely populated
+            // axis can admit a long translation across only a handful
+            // of endpoint neighbors; using shape width to reject that
+            // update needlessly pays for linked pocket construction.
+            // The old sorted keys bound the preflight work. A move
+            // outside that rank envelope uses linked activity pockets.
+            // Probe old-rank neighbors without allocating a worklist.
             constexpr std::size_t local_span=24;
             bool localized=true;
             bool stable=true;
