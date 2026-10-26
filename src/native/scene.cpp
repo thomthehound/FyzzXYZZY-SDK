@@ -7243,12 +7243,23 @@ void Scene::publish_contact_events() {
               found_contacts_[found]<manifold.pair)++found;
         const bool is_new=found<found_contacts_.size() &&
             found_contacts_[found]==manifold.pair;
-        const auto& first=actors_[manifold.pair.a];
-        const auto& second=actors_[manifold.pair.b];
-        const bool active=
-            (first.kind==Kind::DynamicBox && !first.sleeping) ||
-            (second.kind==Kind::DynamicBox && !second.sleeping);
-        if(!is_new && !active)continue;
+        // ScNPhaseCore::processPersistentContactEvents tests each
+        // ShapeInteraction actor's Sc::ActorSim::isActive state. Kinematic
+        // BodySims are active during target motion and their subsequent
+        // settling update, even though they are not Dy dynamic bodies.
+        // An active kinematic alone can authorize a persistent report;
+        // an idle kinematic only retained by graph references cannot.
+        const auto sc_actor_active=[&](BodyId id) {
+            const auto& actor=actors_[id];
+            return (actor.kind==Kind::DynamicBox && !actor.sleeping) ||
+                   (actor.kind==Kind::KinematicBox &&
+                    (actor.kinematic_target_pending ||
+                     actor.kinematic_settling));
+        };
+        if(!is_new &&
+           !sc_actor_active(manifold.pair.a) &&
+           !sc_actor_active(manifold.pair.b))
+            continue;
         if(manifold.contact_offset>normal_impulse_writeback_.size() ||
            manifold.count>normal_impulse_writeback_.size()-
                               manifold.contact_offset)
