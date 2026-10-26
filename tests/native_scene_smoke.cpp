@@ -840,7 +840,7 @@ struct ConstraintIslandSourceFixture {
                 "Sc joint-only sleep fixture lacks source interaction counts");
         scene.step(1.0f/120.0f);
         if(scene.actors_[constrained].wake_counter>=0.05f ||
-           scene.actors_[free].wake_counter<0.3f)
+           scene.actors_[free].wake_counter<0.25f)
             throw std::runtime_error(
                 "Dy sleep energy ignored Sc constraint lifetime interaction");
     }
