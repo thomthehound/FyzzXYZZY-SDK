@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - integration/sap-audit-n1
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -26,6 +27,86 @@ concurrency:
 # Cache identity follows that manifest, cmake/GodotDependency.cmake and
 # the compiler toolchain; unrelated SDK CMake edits do not rebuild bindings.
 jobs:
+  sap-batch-ab:
+    name: Three-way native SAP batch performance
+    if: github.ref == 'refs/heads/integration/sap-audit-n1'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build three matched SAP profiles
+        shell: bash
+        run: |
+          git worktree add --detach ../sap-old-n1 2e8a8ed2f4f7eb63b6e0a5b78e3d00ac67b651b2
+          git worktree add --detach ../sap-previous 530e038e38d22a33d5836cf58a15986d56fabefd
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          base=Path('../sap-old-n1')
+          cmake=base/'CMakeLists.txt'
+          cmake.write_text(Path('CMakeLists.txt').read_text())
+          h=base/'src/native/scene.h'
+          h.write_text(h.read_text().replace(
+              '    friend struct ConstraintIslandSourceFixture;',
+              '    friend struct ConstraintIslandSourceFixture;\n'
+              '    friend struct NativeSapTimingFixture;'))
+          bench=Path('tests/native_sap_benchmark.cpp').read_text()
+          bench=re.sub(r'scene\.broadphase_[A-Za-z_]+_count\(\)',
+                       'std::size_t{0}',bench)
+          (base/'tests/native_sap_benchmark.cpp').write_text(bench)
+          PY
+          flags=(
+            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF
+            -DFYZZXYZZY_BUILD_GODOT=OFF
+            -DFYZZXYZZY_BUILD_VULKAN=OFF
+            -DFYZZXYZZY_BUILD_D3D12=OFF
+            -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+          )
+          for id in old-n1 previous current; do
+            case "$id" in
+              old-n1) src=../sap-old-n1 ;;
+              previous) src=../sap-previous ;;
+              current) src=. ;;
+            esac
+            cmake -S "$src" -B "build-${id}" "${flags[@]}"
+            cmake --build "build-${id}" --target fyzzxyzzy_native_sap_benchmark --parallel 4
+          done
+      - name: Compare matched work on one runner
+        shell: bash
+        run: |
+          for trial in 1 2 3 4 5 6 7; do
+            case $((trial%3)) in
+              0) order="current previous old-n1";;
+              1) order="old-n1 current previous";;
+              2) order="previous old-n1 current";;
+            esac
+            for mode in $order; do
+              "build-${mode}/fyzzxyzzy_native_sap_benchmark" >> "${mode}.txt"
+            done
+          done
+          python - <<'PY'
+          from statistics import median
+          def read(name):
+              result={}
+              for line in open(name+'.txt'):
+                  if not line.startswith('native_sap mode='):continue
+                  fields=dict(x.split('=',1) for x in line.split()
+                              if '=' in x)
+                  result.setdefault(fields['mode'],[]).append(
+                      float(fields['median_us_per_query']))
+              return result
+          a,b,c=read('old-n1'),read('previous'),read('current')
+          print('Matched Release CPU SAP medians (seven alternating trials)')
+          for mode in c:
+              x,y,z=median(a[mode]),median(b[mode]),median(c[mode])
+              print(f'{mode:32s} N1={x:9.3f} us '
+                    f'prior={y:9.3f} us current={z:9.3f} us '
+                    f'vs-N1={x/z:6.2f}x vs-prior={y/z:6.2f}x')
+          PY
+
   linux:
     runs-on: ubuntu-26.04
     timeout-minutes: 35
