@@ -1204,24 +1204,21 @@ void Scene::update_bounds() {
                             const Actor& a=actors_[moving.id];
                             const Actor& b=actors_[passed.id];
                             const Pair pair=ordered_pair(moving.id,passed.id);
-                            // A one-axis crossing cannot change a 3D
-                            // overlap if the other two axes remain
-                            // separated. Preserve already published
-                            // candidates, however: simultaneous motion
-                            // can require a Lost even when final
-                            // orthogonal bounds are disjoint.
-                            bool orthogonal_overlap=true;
-                            for(unsigned other=0;other<3;++other) {
-                                if(other==axis)continue;
-                                if(a.encoded_bounds[other]>
-                                       b.encoded_bounds[other+3] ||
-                                   b.encoded_bounds[other]>
-                                       a.encoded_bounds[other+3]) {
-                                    orthogonal_overlap=false;
+                            // Only final 3D overlaps and existing
+                            // Sc pairs can produce net Found/Lost. A
+                            // transient crossing between co-moving
+                            // proxies needs no pair-manager mutation.
+                            bool final_overlap=true;
+                            for(unsigned dim=0;dim<3;++dim) {
+                                if(a.encoded_bounds[dim]>
+                                       b.encoded_bounds[dim+3] ||
+                                   b.encoded_bounds[dim]>
+                                       a.encoded_bounds[dim+3]) {
+                                    final_overlap=false;
                                     break;
                                 }
                             }
-                            if(orthogonal_overlap ||
+                            if(final_overlap ||
                                std::binary_search(previous_pairs_.begin(),
                                                   previous_pairs_.end(),pair)) {
                                 broadphase_crossed_pairs_.push_back(pair);
@@ -1318,24 +1315,20 @@ void Scene::update_bounds() {
             if(a.kind!=Kind::DynamicBox &&
                other.kind!=Kind::DynamicBox)return;
             const Pair pair=ordered_pair(moving.id,neighbor.id);
-            // BpBroadPhaseSap::batchUpdateFewUpdates calls
-            // Intersect2D_Handle on the other two axes before
-            // emitting a potential creation. A previously published
-            // pair must also survive this filter when a crossing
-            // signifies removal after simultaneous multi-axis
-            // movement; otherwise a Lost edge could be suppressed.
+            // Source batchUpdateFewUpdates filters the orthogonal
+            // axes. Net Sc publication can also discard temporary
+            // crossings on the moving axis itself when no final 3D
+            // overlap or previously published pair exists.
             const auto& aa=a.encoded_bounds;
             const auto& bb=other.encoded_bounds;
-            bool other_axes_overlap=true;
-            for(unsigned other_axis=0;other_axis<3;++other_axis) {
-                if(other_axis==axis)continue;
-                if(aa[other_axis]>bb[other_axis+3] ||
-                   bb[other_axis]>aa[other_axis+3]) {
-                    other_axes_overlap=false;
+            bool final_overlap=true;
+            for(unsigned dim=0;dim<3;++dim) {
+                if(aa[dim]>bb[dim+3] || bb[dim]>aa[dim+3]) {
+                    final_overlap=false;
                     break;
                 }
             }
-            if(!other_axes_overlap &&
+            if(!final_overlap &&
                !std::binary_search(previous_pairs_.begin(),
                                    previous_pairs_.end(),pair))
                 return;
