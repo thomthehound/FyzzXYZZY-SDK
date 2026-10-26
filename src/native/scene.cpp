@@ -5028,7 +5028,8 @@ void Scene::run_third_pass_worker() noexcept {
                 // post-PGS integrateCore/sleepCheck continuation.
                 for(std::size_t i=solver_first;i<solver_end;++i)
                     if(integrate_solver)
-                        integrate_solver_task(i,seconds,solver_ready_worker_);
+                        complete_solver_end_task(
+                            i,seconds,solver_ready_worker_);
                     else
                         solve_constraint_task(i);
             } else {
@@ -8604,6 +8605,23 @@ void Scene::integrate_solver_task(
         }
         }
 }
+void Scene::complete_solver_end_task(
+    std::size_t task_index,float seconds,std::vector<BodyId>& ready_nodes) {
+    // PxsSolverEndTask owns the contiguous source task chain through
+    // writeback, final-velocity publication, integrateCore and
+    // sleepCheck. Task boundaries already reflect accurate island
+    // ownership; no actor or Gu manager may appear in a second chain.
+    if(task_index>=solver_tasks_.size())
+        throw std::out_of_range("Unknown source PxsSolverEndTask");
+    const auto& task=solver_tasks_[task_index];
+    const std::size_t first_manager=task_index
+        ? solver_tasks_[task_index-1].manager_end:0;
+    const std::size_t first_body=task_index
+        ? solver_tasks_[task_index-1].solver_body_end:0;
+    write_back_contacts(first_manager,task.manager_end);
+    publish_solver_bodies(first_body,task.solver_body_end);
+    integrate_solver_task(task_index,seconds,ready_nodes);
+}
 void Scene::step(float seconds) {
     for(EdgeIndex edge:active_constraint_handles_)
         if(island_edges_[edge].constraint_id==invalid_edge)
@@ -8777,19 +8795,16 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
-    // Gu force/patch writeback and final solver-body velocities remain
-    // source task-local. Publish their ranges before concurrent pose
-    // integration: each island is independent and writeback must see
-    // its pre-integration anchor transforms.
-    std::size_t published_solver_body_end=0;
-    std::size_t published_manager_end=0;
-    for(const auto& task:solver_tasks_) {
-        write_back_contacts(published_manager_end,task.manager_end);
-        published_manager_end=task.manager_end;
-        publish_solver_bodies(
-            published_solver_body_end,task.solver_body_end);
-        published_solver_body_end=task.solver_body_end;
-    }
+    // Source Dy task descriptors partition the same stable Gu manager
+    // and solver-body ranges. Their final cumulative ends must cover
+    // the authoritative active input streams before any task can
+    // publish completion, whether serial or concurrent.
+    if((solver_tasks_.empty()
+            ? !solver_active_ids_.empty() || !indexed_managers_.empty()
+            : solver_tasks_.back().solver_body_end!=solver_active_ids_.size() ||
+              solver_tasks_.back().manager_end!=indexed_managers_.size()))
+        throw std::logic_error(
+            "Native Dy task ranges did not cover prepared solver bodies/Gu managers");
     if(parallel_solver_split) {
         // The checkpoint motion vector and its generation marks are not
         // concurrent containers. Journal every currently active rigid
@@ -8810,7 +8825,7 @@ void Scene::step(float seconds) {
         dispatch_third_pass_worker(false,parallel_solver_split,true,seconds);
         try {
             for(std::size_t i=0;i<parallel_solver_split;++i)
-                integrate_solver_task(i,seconds,solver_ready_caller_);
+                complete_solver_end_task(i,seconds,solver_ready_caller_);
         } catch(...) {
             // No checkpoint restoration while another source chain
             // still mutates disjoint actor motion.
@@ -8827,17 +8842,13 @@ void Scene::step(float seconds) {
         ++concurrent_integration_dispatches_;
     } else {
         for(std::size_t i=0;i<solver_tasks_.size();++i)
-            integrate_solver_task(i,seconds,speculative_ready_nodes_);
+            complete_solver_end_task(i,seconds,speculative_ready_nodes_);
     }
     if(!solver_tasks_.empty())dirty_=true;
     // PxsSolverEndTask signals mPostSolver only after integrateCore and
     // sleepCheck complete. Both independent lanes have joined here.
     for(std::size_t i=0;i<solver_tasks_.size();++i)
         join.finish_solver_task(i);
-    if(published_solver_body_end!=solver_active_ids_.size() ||
-       published_manager_end!=indexed_managers_.size())
-        throw std::logic_error(
-            "Native Dy task ranges did not consume every prepared solver body/Gu manager");
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.
