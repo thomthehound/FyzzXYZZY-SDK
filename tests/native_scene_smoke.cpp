@@ -5262,6 +5262,65 @@ struct SolverIterationSourceFixture {
             throw std::runtime_error(
                 "Source active manager admission failed after response reenable");
     }
+    static void verify_parallel_solver_end_rollback() {
+        // Force overflow inside the worker-owned integrateCore rather
+        // than during PGS. A completed serial task and an outstanding
+        // worker must both join before the single scene checkpoint can
+        // roll back motion and the preceding published Gu result.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        scene.set_enhanced_determinism(true);
+        scene.parallel_third_pass_enabled_=false;
+        scene.parallel_solver_min_descriptors_=0;
+        scene.add_static_floor(0.0f);
+        std::array<BodyId,8> ids{};
+        for(std::size_t i=0;i<ids.size();++i) {
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},
+                {float(i)*3.0f,i==7?10.0f:0.48f,0},1.0f);
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            if(i==7)d.max_linear_velocity=1.0e18f;
+            scene.set_dynamics(ids[i],d);
+        }
+        scene.set_velocity(ids.back(),{1.0e18f,0,0});
+        const auto frame=scene.frame_index();
+        std::array<BodyState,8> before{};
+        for(std::size_t i=0;i<ids.size();++i)
+            before[i]=scene.body_state(ids[i]);
+        bool rejected=false;
+        try {scene.step(1.0e25f);}
+        catch(const std::overflow_error& e) {
+            rejected=std::string_view(e.what())==
+                "Native position-iteration motion overflow";
+        }
+        if(!rejected || scene.frame_index()!=frame ||
+           scene.solved_result_frame()!=0 ||
+           !scene.speculative_ready_nodes_.empty() ||
+           (scene.third_pass_worker_state_ &&
+            scene.third_pass_worker_state_->outstanding))
+            throw std::runtime_error(
+                "Concurrent source solver-end overflow was not failure-atomic");
+        for(std::size_t i=0;i<ids.size();++i) {
+            const auto after=scene.body_state(ids[i]);
+            const auto& old=before[i];
+            if(after.position.x!=old.position.x ||
+               after.position.y!=old.position.y ||
+               after.position.z!=old.position.z ||
+               after.velocity.x!=old.velocity.x ||
+               after.velocity.y!=old.velocity.y ||
+               after.velocity.z!=old.velocity.z ||
+               after.sleeping!=old.sleeping)
+                throw std::runtime_error(
+                    "Concurrent solver-end rejection retained partial rigid motion");
+        }
+        scene.set_velocity(ids.back(),{});
+        scene.step(1.0f/120.0f);
+        if(scene.concurrent_integration_dispatches_!=1 ||
+           scene.solved_result_frame()!=scene.frame_index() ||
+           scene.solver_tasks_.size()!=ids.size())
+            throw std::runtime_error(
+                "Concurrent source solver-end retry did not complete every task");
+    }
     static void verify_parallel_pgs_groups() {
         constexpr float dt=1.0f/120.0f;
         constexpr std::size_t count=12;
@@ -13541,6 +13600,7 @@ int run_native_scene_smoke() {
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
     fyzz::native::SolverIterationSourceFixture::verify_parallel_pgs_groups();
+    fyzz::native::SolverIterationSourceFixture::verify_parallel_solver_end_rollback();
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
     verify_source_gyroscopic_motion();
