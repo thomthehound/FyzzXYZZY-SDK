@@ -1536,9 +1536,17 @@ Tests verify a stable multi-contact solve journals zero edge records,
 and an exception after removing an existing accurate edge restores
 both published contact storage and the original intrusive connectivity.
 The admitted rigid CPU ScPipeline now has independent accurate and
-speculative third-pass completion edges into `PostThirdPassTask`,
-checkpointed EdgeIndex reclamation at that join, the lost-contact
-producer, and cumulative task-local Dy solve/writeback/integration/
+speculative third-pass completion edges into `PostThirdPassTask`.
+Lost-edge repair consumes per-IslandSim dirty-node streams and route
+scratch, including separate visit generations, heap witnesses and split
+migration work. Only accurate splits refresh the indexed Dy island-node
+offsets; speculative-only SAP splits preserve the existing accurate
+solver order. The shared topology publication advances once after both
+owners' repairs, regardless of their serial completion order. Source
+handles and graph ownership remain failure-atomic across either pass,
+with targeted reversed-order, rollback and retry regressions.
+The same ScPipeline continuation retains checkpointed EdgeIndex
+reclamation at that join, the lost-contact producer, and cumulative task-local Dy solve/writeback/integration/
 sleep-check completion edges into `postSolver`. Accurate rigid sleep
 deactivation and speculative edge retirement now execute as separate
 IslandSim producer stages. Sc speculative contact activation is consumed
