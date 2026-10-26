@@ -4555,7 +4555,7 @@ void Scene::update_island_connectivity() {
     };
 
 
-    const bool order_changed=rebuild;
+    bool order_changed=rebuild;
     if(rebuild) {
         step_checkpoint_.save_graph_ownership(*this);
         ++island_full_rebuild_count_;
