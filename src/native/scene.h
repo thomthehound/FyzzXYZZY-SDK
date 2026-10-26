@@ -1417,6 +1417,10 @@ private:
     // the sole authoritative broadphase representation.
     std::vector<Endpoint> sap_merge_changed_, sap_merge_output_;
     std::vector<BodyId> sap_merge_updated_ids_;
+    std::vector<std::uint8_t> sap_merge_updated_flags_;
+    std::vector<std::uint32_t> sap_merge_active_updated_;
+    std::vector<std::uint32_t> sap_merge_active_unchanged_;
+    std::vector<std::uint32_t> sap_merge_active_positions_;
     // Bp SAP activity pockets bound multi-update endpoint reorder work.
     struct ActivityPocket {
         std::size_t start=0,end=0;
