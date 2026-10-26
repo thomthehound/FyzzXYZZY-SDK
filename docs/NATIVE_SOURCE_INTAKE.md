@@ -1680,6 +1680,24 @@ timing thresholds on shared CI hardware. The reusable worker is
 allocated lazily outside the Scene stack frame; a scene with no
 concurrent work holds no synchronization bundle.
 
+**Independent Dy PGS execution:** The actual source-derived
+Dy task groups use disjoint accurate-island solver-body and constraint
+ranges. After all constraints are prepared, the scene-owned reusable
+worker solves one contiguous group range while the caller solves the
+other. The split balances prepared descriptor counts and is admitted
+only when at least 256 descriptors exist and both ranges contain at
+least 64; isolated small workloads remain serial. The zero-mass
+static-world solver body is copied into each task's local stack frame
+to prevent concurrent writes through a shared static participant.
+All solver groups join before Gu force writeback, actor integration,
+sleep readiness, and postSolver completion. The separate source
+PxsSolverEndTask integration/sleepCheck continuations have not yet
+been parallelized. Native regressions compare six successive frames
+against serial execution, including exact body state, island identity,
+and Gu-indexed normal impulses. Release benchmark trials compare
+serial, forced concurrent and production-adaptive scheduling on both
+supported CPU platforms, without a CI timing threshold.
+
 **Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
 unconstrained Dy preIntegration after the accurate ThirdPassTask has
 completed, while the speculative ThirdPassTask can still be running.
