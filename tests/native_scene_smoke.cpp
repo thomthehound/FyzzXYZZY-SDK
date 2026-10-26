@@ -1708,9 +1708,11 @@ struct ConstraintIslandSourceFixture {
         scene.speculative_ready_nodes_.push_back(a);
         const auto prior_workers=scene.concurrent_third_pass_dispatches_;
         const auto prior_routes=scene.concurrent_lost_route_dispatches_;
+        const auto prior_dy=scene.overlapped_dy_preintegration_dispatches_;
         scene.step(1.0f/120.0f);
         if(scene.concurrent_third_pass_dispatches_!=prior_workers+1 ||
            scene.concurrent_lost_route_dispatches_!=prior_routes+1 ||
+           scene.overlapped_dy_preintegration_dispatches_!=prior_dy+1 ||
            scene.accurate_island_count()!=3 ||
            scene.speculative_island_count()!=3 ||
            scene.accurate_island_id(a)==scene.accurate_island_id(c) ||
@@ -1886,6 +1888,7 @@ struct ConstraintIslandSourceFixture {
         scene.step(0.02f);
         if(!scene.body_is_sleeping(id) ||
            scene.concurrent_third_pass_dispatches_!=1 ||
+           scene.overlapped_dy_preintegration_dispatches_!=1 ||
            !scene.speculative_ready_nodes_.empty() ||
            scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
            scene.accurate_islands_.nodes_to_deactivate.front()!=id)
@@ -1894,6 +1897,7 @@ struct ConstraintIslandSourceFixture {
         scene.step(0.02f);
         if(!scene.body_is_sleeping(id) ||
            scene.concurrent_third_pass_dispatches_!=1 ||
+           scene.overlapped_dy_preintegration_dispatches_!=1 ||
            !scene.speculative_ready_nodes_.empty() ||
            !scene.speculative_islands_.nodes_to_deactivate.empty() ||
            !scene.accurate_islands_.nodes_to_deactivate.empty())

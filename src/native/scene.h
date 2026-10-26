@@ -766,6 +766,7 @@ private:
     void remember_pre_integration_pose(BodyId id) noexcept;
     void reconcile_integrated_deactivations();
     void calculate_kinematic_velocities(float inverse_dt);
+    void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
     void publish_pairs();
@@ -1099,6 +1100,7 @@ private:
     // Counts actual worker dispatches; quiet frames do not create a thread.
     std::size_t concurrent_third_pass_dispatches_=0;
     std::size_t concurrent_lost_route_dispatches_=0;
+    std::size_t overlapped_dy_preintegration_dispatches_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.

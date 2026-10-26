@@ -1658,6 +1658,18 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Sc/Dy preIntegration overlap:** Native ScPipeline now begins actual
+unconstrained Dy preIntegration after the accurate ThirdPassTask has
+completed, while the speculative ThirdPassTask can still be running.
+The accurate graph's newly inactive nodes are reconciled before
+active-island iteration; Dy changes actor motion and its own preparation
+state, not the prior-Dy readiness consumed by the speculative
+IslandSim. Both tasks must join before postThirdPass interaction
+retirement or any Dy constraint preparation/solve. A throwing Dy
+preIntegration still joins speculative work before the frame's
+checkpoint rollback. Ordinary quiet frames create no worker. The
+later complete Dy solver-task-tree overlap remains a separate gate.
+
 **Single-dispatch third-pass ownership:** The production ScPipeline
 runs each source IslandSim third-pass task as one graph-local unit:
 lost-route repair, active-list reconciliation, then sleep/deactivation
