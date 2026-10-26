@@ -5112,6 +5112,7 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
     // Speculative processLostEdges owns its separate contact/constraint
     // deactivation output. The serial lowering uses the prior accurate
     // sleep result as its candidate stream; no additional graph scan.
+    speculative_islands_.nodes_to_deactivate.clear();
     speculative_islands_.deactivating_edges.clear();
     speculative_islands_.deactivating_constraint_edges.clear();
     const auto speculative_kinematic_awake_stamp=
@@ -5232,6 +5233,40 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
                     speculative_sleep_seen_[other]==stamp))
                     deactivate_contact_edge(edge_id,false,true);
             }
+            // PxsIslandSim::deactivateIsland retires each graph's own
+            // active node, not the shared ScBodySim sleep flag. A body
+            // already asleep accurately can remain speculative-active
+            // while its SAP island still has an awake neighbor.
+            auto& graph=speculative_islands_;
+            if(graph.active_node_index[node]==invalid_instance)continue;
+            graph.nodes_to_deactivate.push_back(node);
+            std::size_t at=graph.active_node_index[node];
+            if(at<graph.initial_active_node_count) {
+                const std::size_t tail=graph.initial_active_node_count-1;
+                const BodyId previous=graph.active_nodes[tail];
+                graph.active_nodes[at]=previous;
+                graph.active_node_index[previous]=at;
+                graph.active_nodes[tail]=node;
+                graph.active_node_index[node]=tail;
+                --graph.initial_active_node_count;
+                at=tail;
+            }
+            const BodyId replacement=graph.active_nodes.back();
+            graph.active_nodes[at]=replacement;
+            graph.active_node_index[replacement]=at;
+            graph.active_nodes.pop_back();
+            graph.active_node_index[node]=invalid_instance;
+        }
+        // markIslandInactive uses replace-with-last, not a full active
+        // island inventory rebuild or a Sc actor sleep scan.
+        auto& graph=speculative_islands_;
+        const std::size_t at=graph.islands[candidate.handle].active_index;
+        if(at!=invalid_instance) {
+            const auto moved=graph.active_islands.back();
+            graph.active_islands[at]=moved;
+            graph.islands[moved].active_index=at;
+            graph.active_islands.pop_back();
+            graph.islands[candidate.handle].active_index=invalid_instance;
         }
     }}
 // ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) consumes the
@@ -5309,14 +5344,17 @@ void Scene::synchronize_active_island_nodes(
     // Actor admission cannot reach this path without rebuilding, so
     // neither active-list append nor index lookup allocates here. This
     // matters for the failure-atomic geometry-only commit boundary.
-    // Original SimpleIslandManager has two independent IslandSim owners.
-    // The currently admitted rigid actors share the Sc sleep state,
-    // but each graph retains its own source active-list permutation.
+    // The speculative IslandSim's eACTIVE state is independent of
+    // ScBodySim::sleeping. Only the accurate graph's active nodes are
+    // removed when Sc rigid sleep is published; speculative nodes are
+    // retired by their own third pass instead.
     for(IslandGraph* owner:{&speculative_islands_,&accurate_islands_}) {
     auto& graph=*owner;
+    const bool accurate=owner==&accurate_islands_;
     for(std::size_t index=0;index<graph.active_nodes.size();) {
         const BodyId id=graph.active_nodes[index];
-        if(actors_[id].alive && !actors_[id].sleeping &&
+        if(actors_[id].alive &&
+           (!accurate || !actors_[id].sleeping) &&
            graph.node_island[id]!=IslandGraph::invalid) {
             ++index;
             continue;
@@ -5361,7 +5399,8 @@ void Scene::synchronize_active_island_nodes(
         for(BodyId id=graph.islands[handle].root;
             id!=std::numeric_limits<BodyId>::max();
             id=graph.node_next[id]) {
-            if(!actors_[id].alive || actors_[id].sleeping ||
+            if(!actors_[id].alive ||
+               (accurate && actors_[id].sleeping) ||
                graph.active_node_index[id]!=invalid_instance)continue;
             graph.active_node_index[id]=graph.active_nodes.size();
             graph.active_nodes.push_back(id);
@@ -7629,6 +7668,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // Reserve only the working copies, never the published arrays:
     // rejected frames restore the exact original active-island storage.
     accurate_islands.nodes_to_deactivate.reserve(scene.actors_.size());
+    speculative_islands.nodes_to_deactivate.reserve(scene.actors_.size());
     speculative_islands.deactivating_edges.reserve(
         scene.island_edges_.size());
     accurate_islands.deactivating_edges.reserve(
@@ -7694,6 +7734,8 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
         accurate_islands.activating_nodes);
     scene.accurate_islands_.nodes_to_deactivate.swap(
         accurate_islands.nodes_to_deactivate);
+    scene.speculative_islands_.nodes_to_deactivate.swap(
+        speculative_islands.nodes_to_deactivate);
     scene.speculative_islands_.deactivating_edges.swap(
         speculative_islands.deactivating_edges);
     scene.accurate_islands_.deactivating_edges.swap(

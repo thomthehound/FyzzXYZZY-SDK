@@ -1815,6 +1815,55 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Quiet Dy frame replayed the consumed readiness transition");
     }
+    static void verify_speculative_active_island_ownership() {
+        // Source accurate sleep does not forcibly deactivate a larger
+        // speculative AABB-only island while another rigid stays awake.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.9f,10,0.9f},1.0f);
+        scene.advance_collision(true);
+        const Pair pair{a,b};
+        const auto edge=scene.contact_edge_index(pair);
+        if(edge==Scene::invalid_edge || scene.contact_edge_connected(pair) ||
+           scene.speculative_island_count()!=1 ||
+           scene.accurate_island_count()!=2)
+            throw std::runtime_error(
+                "Speculative activity fixture lacks SAP-only rigid bridge");
+        scene.actors_[a].ready_for_sleep=true;
+        scene.actors_[b].ready_for_sleep=false;
+        scene.speculative_ready_nodes_.push_back(a);
+        scene.step_checkpoint_.capture(scene);
+        scene.deactivate_ready_speculative_islands();
+        scene.deactivate_ready_accurate_islands();
+        scene.synchronize_active_island_nodes();
+        if(!scene.body_is_sleeping(a) || scene.body_is_sleeping(b) ||
+           scene.speculative_islands_.active_node_index[a]==invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]==invalid_instance ||
+           scene.speculative_islands_.active_islands.size()!=1 ||
+           !(scene.island_edges_[edge].speculative_state&1u))
+            throw std::runtime_error(
+                "Accurate sleep retired a still-awake speculative bridge");
+        scene.actors_[b].ready_for_sleep=true;
+        scene.speculative_ready_nodes_.push_back(b);
+        scene.deactivate_ready_speculative_islands();
+        if(scene.speculative_islands_.active_node_index[a]!=invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]!=invalid_instance ||
+           !scene.speculative_islands_.active_islands.empty() ||
+           scene.speculative_islands_.nodes_to_deactivate.size()!=2 ||
+           scene.island_edges_[edge].speculative_state&1u)
+            throw std::runtime_error(
+                "Speculative IslandSim failed to retire its own node and island activity");
+        scene.step_checkpoint_.rollback(scene);
+        if(scene.speculative_islands_.active_nodes.size()!=2 ||
+           scene.speculative_islands_.active_islands.size()!=1 ||
+           scene.speculative_islands_.active_node_index[a]==invalid_instance ||
+           scene.speculative_islands_.active_node_index[b]==invalid_instance ||
+           !(scene.island_edges_[edge].speculative_state&1u))
+            throw std::runtime_error(
+                "Failed speculative deactivation failed to restore graph activity");
+    }
     static void verify_speculative_ready_is_independent() {
         // The two PxsIslandSim::ThirdPassTasks have no dependency on
         // one another. Dy publishes readiness in the preceding step;
@@ -2012,6 +2061,8 @@ struct ConstraintIslandSourceFixture {
         scene.deactivate_ready_islands();
         if(!scene.body_is_sleeping(a) ||
            !(scene.island_edges_[edge].speculative_state&1u) ||
+           scene.speculative_islands_.active_node_index[a]==
+               invalid_instance ||
            !scene.speculative_islands_.deactivating_edges.empty())
             throw std::runtime_error(
                 "Speculative active kinematic failed to protect SAP edge");
@@ -2027,6 +2078,9 @@ struct ConstraintIslandSourceFixture {
                 "Accurate third pass retired speculative activity early");
         scene.deactivate_ready_speculative_islands();
         if(scene.island_edges_[edge].speculative_state&1u ||
+           scene.speculative_islands_.active_node_index[a]!=invalid_instance ||
+           scene.speculative_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.speculative_islands_.nodes_to_deactivate[0]!=a ||
            scene.speculative_islands_.deactivating_edges.size()!=1 ||
            scene.speculative_islands_.deactivating_edges[0]!=edge)
             throw std::runtime_error(
@@ -12964,6 +13018,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
+    fyzz::native::ConstraintIslandSourceFixture::verify_speculative_active_island_ownership();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();

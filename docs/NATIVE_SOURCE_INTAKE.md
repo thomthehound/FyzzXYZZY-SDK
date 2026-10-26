@@ -1649,6 +1649,18 @@ rejects before graph mutation. Source-enabled conformance checks
 completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
 
+**Independent speculative active-node lifecycle:** Source
+`PxsIslandSim::deactivateIsland` also retires that graph's active rigid
+nodes and island handle via swap-last, regardless of whether the
+accurate island has published `ScBodySim::sleeping`. Speculative active
+membership now follows its own source third-pass decision. A body may
+remain speculative-active after accurate sleep while a broader SAP-only
+island has an awake peer; once all members are ready, that graph
+publishes its own node/edge deactivations. Both active permutations and
+event streams are restored on rejected frames. This avoids recomputing
+speculative activity from the accurate actor sleep bit during the
+next island handoff.
+
 **Independent IslandSim readiness handoff:** Native Dy
 `sleepCheck` now queues only newly-ready rigid node IDs for the next
 speculative third pass, on the same source actor identities. Speculative
