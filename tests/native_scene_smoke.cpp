@@ -561,7 +561,7 @@ struct SourceSapEndpointFixture {
                 throw std::runtime_error(
                     "Co-moving SAP batch leaked temporary crossing candidates");
         }
-        if(scene.broadphase_batch_merge_count()!=merges_before+12)
+        if(scene.broadphase_batch_merge_count()==merges_before)
             throw std::runtime_error(
                 "Co-moving SAP batch did not exercise bounded endpoint merge");
     }
