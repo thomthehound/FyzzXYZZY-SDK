@@ -1133,8 +1133,13 @@ void Scene::update_bounds() {
                         sap_merge_changed_.push_back(ep);
                     }
                 }
-                std::sort(sap_merge_changed_.begin(),
-                          sap_merge_changed_.end(),less);
+                // Coherent translation preserves the order within
+                // the updated set, even if those endpoints crossed many
+                // unchanged keys. Avoid re-sorting that common case.
+                if(!std::is_sorted(sap_merge_changed_.begin(),
+                                   sap_merge_changed_.end(),less))
+                    std::sort(sap_merge_changed_.begin(),
+                              sap_merge_changed_.end(),less);
                 sap_merge_output_.clear();
                 sap_merge_output_.reserve(n);
                 std::size_t changed=0;
