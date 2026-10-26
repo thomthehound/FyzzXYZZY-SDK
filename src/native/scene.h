@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <exception>
 #include <stop_token>
@@ -1619,16 +1620,18 @@ private:
 
     // Declared last: its stop-aware wait ends before any Scene graph,
     // mutex or condition variable storage is destroyed.
-    std::mutex third_pass_work_mutex_;
-    std::condition_variable third_pass_work_cv_;
-    bool third_pass_work_stopping_=false;
-    bool third_pass_work_pending_=false;
-    bool third_pass_work_done_=false;
-    bool third_pass_work_outstanding_=false;
-    bool third_pass_work_repair_only_=false;
-    bool third_pass_work_split_=false;
-    std::exception_ptr third_pass_work_error_;
-    std::jthread third_pass_worker_;
+    struct ThirdPassWorkerState {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool stopping=false, pending=false, done=false;
+        bool outstanding=false, repair_only=false, split=false;
+        std::exception_ptr error;
+        std::jthread worker;
+        ~ThirdPassWorkerState() noexcept;
+    };
+    // Deferred allocation for scenes needing genuinely concurrent work.
+    // Destroyed first, before the graph/checkpoint state it accesses.
+    std::unique_ptr<ThirdPassWorkerState> third_pass_worker_state_;
 };
 
 } // namespace fyzz::native

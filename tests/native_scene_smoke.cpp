@@ -1923,7 +1923,8 @@ struct ConstraintIslandSourceFixture {
             scene.step(1.0f/120.0f);
             if(scene.third_pass_worker_start_count_!=1 ||
                scene.concurrent_third_pass_dispatches_!=i+1 ||
-               scene.third_pass_work_outstanding_ ||
+               !scene.third_pass_worker_state_ ||
+               scene.third_pass_worker_state_->outstanding ||
                !scene.body_is_sleeping(id))
                 throw std::runtime_error(
                     "Reusable source ThirdPassTask worker lost a handoff");

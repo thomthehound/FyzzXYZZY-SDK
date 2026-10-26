@@ -4996,25 +4996,24 @@ void Scene::activate_published_islands() noexcept {
     }
     authored_activation_pending_=false;
 }
-Scene::~Scene() noexcept {
-    if(!third_pass_worker_.joinable())return;
+Scene::~Scene() noexcept = default;
+Scene::ThirdPassWorkerState::~ThirdPassWorkerState() noexcept {
+    if(!worker.joinable())return;
     {
-        const std::lock_guard lock(third_pass_work_mutex_);
-        third_pass_work_stopping_=true;
+        const std::lock_guard lock(mutex);
+        stopping=true;
     }
-    third_pass_work_cv_.notify_all();
-    // End the worker before its graph and checkpoint storage is destroyed.
-    third_pass_worker_.join();
+    cv.notify_all();
+    worker.join();
 }
 void Scene::run_third_pass_worker() noexcept {
+    auto& work=*third_pass_worker_state_;
     for(;;) {
-        std::unique_lock lock(third_pass_work_mutex_);
-        third_pass_work_cv_.wait(lock,[this] {
-            return third_pass_work_pending_ || third_pass_work_stopping_;
-        });
-        if(third_pass_work_stopping_)return;
-        const bool repair_only=third_pass_work_repair_only_;
-        third_pass_work_pending_=false;
+        std::unique_lock lock(work.mutex);
+        work.cv.wait(lock,[&work] {return work.pending || work.stopping;});
+        if(work.stopping)return;
+        const bool repair_only=work.repair_only;
+        work.pending=false;
         lock.unlock();
         bool split=false;
         std::exception_ptr error;
@@ -5024,46 +5023,47 @@ void Scene::run_third_pass_worker() noexcept {
                 : process_third_pass_island_task(false);
         } catch(...) {error=std::current_exception();}
         lock.lock();
-        third_pass_work_split_=split;
-        third_pass_work_error_=error;
-        third_pass_work_done_=true;
+        work.split=split;
+        work.error=error;
+        work.done=true;
         lock.unlock();
-        third_pass_work_cv_.notify_one();
+        work.cv.notify_one();
     }
 }
 void Scene::dispatch_third_pass_worker(bool repair_only) {
-    if(third_pass_work_outstanding_)
+    if(!third_pass_worker_state_)
+        third_pass_worker_state_=std::make_unique<ThirdPassWorkerState>();
+    auto& work=*third_pass_worker_state_;
+    if(work.outstanding)
         throw std::logic_error("Native island worker dispatched twice");
-    if(!third_pass_worker_.joinable()) {
-        // Lazy initialization: no OS thread for serial-only scenes.
-        third_pass_worker_=std::jthread(
-            [this] {run_third_pass_worker();});
+    if(!work.worker.joinable()) {
+        work.worker=std::jthread([this] {run_third_pass_worker();});
         ++third_pass_worker_start_count_;
     }
     {
-        const std::lock_guard lock(third_pass_work_mutex_);
-        third_pass_work_repair_only_=repair_only;
-        third_pass_work_done_=false;
-        third_pass_work_split_=false;
-        third_pass_work_error_={};
-        third_pass_work_pending_=true;
+        const std::lock_guard lock(work.mutex);
+        work.repair_only=repair_only;
+        work.done=false;
+        work.split=false;
+        work.error={};
+        work.pending=true;
     }
-    third_pass_work_outstanding_=true;
-    third_pass_work_cv_.notify_one();
+    work.outstanding=true;
+    work.cv.notify_one();
 }
 void Scene::join_third_pass_worker() noexcept {
-    if(!third_pass_work_outstanding_)return;
-    std::unique_lock lock(third_pass_work_mutex_);
-    third_pass_work_cv_.wait(lock,[this] {
-        return third_pass_work_done_;
-    });
-    third_pass_work_outstanding_=false;
+    if(!third_pass_worker_state_)return;
+    auto& work=*third_pass_worker_state_;
+    if(!work.outstanding)return;
+    std::unique_lock lock(work.mutex);
+    work.cv.wait(lock,[&work] {return work.done;});
+    work.outstanding=false;
 }
 bool Scene::complete_third_pass_worker() {
     join_third_pass_worker();
-    if(third_pass_work_error_)
-        std::rethrow_exception(third_pass_work_error_);
-    return third_pass_work_split_;
+    const auto& work=*third_pass_worker_state_;
+    if(work.error)std::rethrow_exception(work.error);
+    return work.split;
 }
 bool Scene::repair_lost_island_graphs_concurrently() {
     // Process both source ThirdPassTask lost-route producers in parallel.
