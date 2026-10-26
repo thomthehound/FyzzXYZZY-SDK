@@ -242,6 +242,34 @@ struct SourceSapEndpointFixture {
            manager.find(novel)==Scene::SapPairManager::invalid)
             throw std::runtime_error(
                 "SAP full-update pair-state reconciliation diverged");
+
+        // Full-width actor IDs must not collapse into the same hash
+        // simply because they share their low 16 bits.
+        constexpr std::array<Pair,4> high_ids{{
+            {1,2},{1,65538},{1,131074},{65537,131074}}};
+        Scene::SapPairManager wide;
+        for(std::size_t i=0;i<high_ids.size();++i) {
+            for(std::size_t j=0;j<i;++j)
+                if(Scene::SapPairManager::hash(high_ids[i])==
+                   Scene::SapPairManager::hash(high_ids[j]))
+                    throw std::runtime_error(
+                        "SAP full-width actor IDs collapsed into one hash");
+            wide.add(high_ids[i]);
+        }
+        wide.finish(created,deleted);
+        if(created.size()!=high_ids.size() || !deleted.empty())
+            throw std::runtime_error(
+                "SAP full-width pair creation lost publication");
+        wide.remove(high_ids[1]);
+        wide.remove(high_ids[3]);
+        wide.finish(created,deleted);
+        if(!created.empty() || deleted.size()!=2 ||
+           wide.find(high_ids[0])==Scene::SapPairManager::invalid ||
+           wide.find(high_ids[2])==Scene::SapPairManager::invalid ||
+           wide.find(high_ids[1])!=Scene::SapPairManager::invalid ||
+           wide.find(high_ids[3])!=Scene::SapPairManager::invalid)
+            throw std::runtime_error(
+                "SAP full-width pair retirement corrupted a hash chain");
     }
     static void check_pair_registry(const Scene& scene) {
         if(scene.sap_pair_registry_dirty_)
