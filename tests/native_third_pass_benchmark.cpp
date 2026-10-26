@@ -22,13 +22,23 @@ struct NativeThirdPassTimingFixture {
         std::size_t asleep=0, spec_islands=0, acc_islands=0;
         std::size_t starts=0, dispatched=0;
     };
-    static Result profile(bool split_churn,Mode mode,std::size_t chains) {
+    static Result profile(bool split_churn,Mode mode,std::size_t chains,
+                          bool deep_chain=false) {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.parallel_third_pass_enabled_=mode!=Mode::Serial;
         if(mode==Mode::ForcedParallel)
             scene.parallel_third_pass_min_dirty_nodes_=0;
         std::vector<BodyId> ids,bridges;
-        const std::size_t count=split_churn?chains:96;
+        // A long source island exercises expensive findRoute searches
+        // with very few dirty endpoints. Independent three-body chains
+        // instead exercise many cheap, unrelated lost-edge repairs.
+        if(deep_chain) {
+            for(std::size_t i=0;i<chains;++i)
+                ids.push_back(scene.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{float(i)*0.85f,20,0},1.0f));
+            bridges.push_back(ids[chains/2]);
+        }
+        const std::size_t count=deep_chain?0:(split_churn?chains:96);
         for(std::size_t i=0;i<count;++i) {
             const float x=float(i)*(split_churn?20.0f:3.0f);
             if(split_churn) {
@@ -56,7 +66,10 @@ struct NativeThirdPassTimingFixture {
         for(std::size_t step=0;step<warmup+trials*frames;++step) {
             if(split_churn) {
                 const bool linked=(step&1)!=0;
-                for(std::size_t i=0;i<bridges.size();++i)
+                if(deep_chain) {
+                    scene.set_position(bridges.front(),
+                        {float(chains/2)*0.85f,linked?20.0f:25.0f,0});
+                } else for(std::size_t i=0;i<bridges.size();++i)
                     scene.set_position(bridges[i],
                         {float(i)*20.0f+(linked?0.85f:5.0f),20,0});
             } else {
@@ -71,7 +84,8 @@ struct NativeThirdPassTimingFixture {
                 }
             }
             const auto t0=std::chrono::steady_clock::now();
-            scene.step(1.0f/120.0f);
+            if(deep_chain)scene.advance_collision();
+            else scene.step(1.0f/120.0f);
             const double us=std::chrono::duration<double,std::micro>(
                 std::chrono::steady_clock::now()-t0).count();
             if(step>=warmup)times[(step-warmup)/frames]+=us;
@@ -93,7 +107,9 @@ struct NativeThirdPassTimingFixture {
         result.spec_islands=scene.speculative_island_count();
         result.acc_islands=scene.accurate_island_count();
         result.starts=scene.third_pass_worker_start_count_;
-        result.dispatched=scene.concurrent_third_pass_dispatches_;
+        result.dispatched=deep_chain
+            ? scene.concurrent_lost_route_dispatches_
+            : scene.concurrent_third_pass_dispatches_;
         for(auto id:ids) {
             const auto body=scene.body_state(id);
             result.checksum+=body.position.x*0.25+body.position.y+
@@ -105,10 +121,10 @@ struct NativeThirdPassTimingFixture {
             throw std::runtime_error("Forced parallel worker was not reused");
         if(mode==Mode::Serial && (result.starts || result.dispatched))
             throw std::runtime_error("Serial third-pass launched a worker");
-        if(mode==Mode::Adaptive && split_churn && chains<=64 &&
+        if(mode==Mode::Adaptive && split_churn && !deep_chain && chains<=64 &&
            (result.starts || result.dispatched))
             throw std::runtime_error("Short lost-route work launched a worker");
-        if(mode==Mode::Adaptive && split_churn && chains>=256 &&
+        if(mode==Mode::Adaptive && split_churn && !deep_chain && chains>=256 &&
            (result.starts!=1 || !result.dispatched))
             throw std::runtime_error("Large lost-route work was not parallelized");
         return result;
@@ -139,10 +155,11 @@ struct NativeThirdPassTimingFixture {
                     "Native serial/concurrent third-pass trial state differs");
         }
     }
-    static void compare(bool split_churn,std::size_t chains=16) {
-        const auto serial=profile(split_churn,Mode::Serial,chains);
-        const auto forced=profile(split_churn,Mode::ForcedParallel,chains);
-        const auto adaptive=profile(split_churn,Mode::Adaptive,chains);
+    static void compare(bool split_churn,std::size_t chains=16,
+                        bool deep_chain=false) {
+        const auto serial=profile(split_churn,Mode::Serial,chains,deep_chain);
+        const auto forced=profile(split_churn,Mode::ForcedParallel,chains,deep_chain);
+        const auto adaptive=profile(split_churn,Mode::Adaptive,chains,deep_chain);
         verify_same_state(serial,forced);
         verify_same_state(serial,adaptive);
         std::printf(
@@ -152,7 +169,8 @@ struct NativeThirdPassTimingFixture {
             " forced_starts=%zu forced_dispatches=%zu"
             " adaptive_starts=%zu adaptive_dispatches=%zu"
             " asleep=%zu accurate_islands=%zu speculative_islands=%zu\n",
-            split_churn?"lost-route-churn":"readiness-drain",chains,
+            deep_chain?"deep-route-only":
+                (split_churn?"lost-route-churn":"readiness-drain"),chains,
             serial.median_us,forced.median_us,adaptive.median_us,
             serial.median_us/forced.median_us,
             serial.median_us/adaptive.median_us,
@@ -171,6 +189,9 @@ int main() {
         fyzz::native::NativeThirdPassTimingFixture::compare(true,256);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,512);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,1024);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,64,true);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,256,true);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,512,true);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
         return 1;
