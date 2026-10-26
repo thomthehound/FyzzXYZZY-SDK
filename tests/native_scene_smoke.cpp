@@ -2112,6 +2112,74 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Retired SAP-only edge retained counted interactions");
     }
+    static void verify_inactive_kinematic_link_sleep_arbitration() {
+        // Source processLostEdges walks attached kinematic edges even
+        // when Edge::eACTIVE is clear. A target vetoes sleep, while its
+        // later settling must recheck the same inactive linked edge.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto rigid=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto kinematic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{3,7,0},1.0f);
+        scene.set_kinematic(kinematic,true);
+        const auto edge=scene.add_distance_constraint(
+            rigid,kinematic,2.0f);
+        scene.advance_collision(true);
+        if(scene.accurate_island_count()!=1 ||
+           scene.speculative_island_count()!=1 ||
+           !(scene.island_edges_[edge].accurate_state&1u) ||
+           !(scene.island_edges_[edge].speculative_state&1u))
+            throw std::runtime_error(
+                "Inactive kinematic link fixture lacks attached source edge");
+        const auto pose=scene.body_state(kinematic);
+        scene.set_kinematic_target(
+            kinematic,{3.1f,7,0},pose.orientation);
+        scene.actors_[rigid].ready_for_sleep=true;
+        // The EdgeInstance remains in both intrusive lists while its
+        // active solver/interaction state is independently cleared.
+        scene.deactivate_contact_edge(edge,false,false);
+        scene.deactivate_contact_edge(edge,true,false);
+        if(scene.island_edges_[edge].accurate_state!=0 ||
+           scene.island_edges_[edge].speculative_state!=0 ||
+           !scene.island_edges_[edge].accurate[0].linked ||
+           !scene.island_edges_[edge].speculative[0].linked ||
+           scene.accurate_islands_.active_kinematic_nodes.empty() ||
+           scene.speculative_islands_.active_kinematic_nodes.empty())
+            throw std::runtime_error(
+                "Inactive kinematic edge was unlinked or lost active target");
+        // Previous Dy sleepCheck has nominated this rigid. Both source
+        // producers must still honor the moving kinematic veto.
+        scene.speculative_ready_nodes_.push_back(rigid);
+        scene.deactivate_ready_speculative_islands();
+        scene.deactivate_ready_accurate_islands();
+        if(scene.body_is_sleeping(rigid) ||
+           scene.speculative_islands_.active_node_index[rigid]==
+               Scene::invalid_instance ||
+           !scene.speculative_islands_.nodes_to_deactivate.empty() ||
+           !scene.accurate_islands_.nodes_to_deactivate.empty() ||
+           !scene.speculative_ready_nodes_.empty())
+            throw std::runtime_error(
+                "Moving kinematic failed to veto sleep through inactive link");
+        // Readiness remains true, so no second Dy readiness transition
+        // exists. The speculative producer must discover the island
+        // through the settling kinematic's linked adjacency instead.
+        scene.actors_[kinematic].kinematic_target_pending=false;
+        scene.actors_[kinematic].kinematic_settling=true;
+        scene.actors_[kinematic].ready_for_sleep=true;
+        scene.deactivate_ready_speculative_islands();
+        if(scene.speculative_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.speculative_islands_.nodes_to_deactivate[0]!=rigid ||
+           scene.speculative_islands_.active_node_index[rigid]!=
+               Scene::invalid_instance)
+            throw std::runtime_error(
+                "Settled kinematic failed to revisit inactive speculative link");
+        scene.deactivate_ready_accurate_islands();
+        if(!scene.body_is_sleeping(rigid) ||
+           scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.accurate_islands_.nodes_to_deactivate[0]!=rigid)
+            throw std::runtime_error(
+                "Accurate sleep failed after linked kinematic settled");
+    }
     static void verify_joint_counted_sleep_energy() {
         // DySleep uses the source lifetime interaction count, even
         // when a joint has no contact manager. For the same sub-threshold
@@ -13037,6 +13105,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
+    fyzz::native::ConstraintIslandSourceFixture::verify_inactive_kinematic_link_sleep_arbitration();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_endpoint_not_static_world();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_box_box_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_pcm_plane_box_lifecycle();

@@ -1649,6 +1649,15 @@ rejects before graph mutation. Source-enabled conformance checks
 completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
 
+**Linked kinematic wake arbitration:** Source `PxsIslandSim::processLostEdges`
+traverses the intrusive EdgeInstances attached to active kinematics
+without requiring those edges to retain `eACTIVE`. Both native third
+passes therefore veto sleep through a live but inactive linked edge,
+and speculative kinematic settling revisits those links to retire an
+already-ready island without another Dy readiness transition. The
+existing adjacency lists and bounded candidate stream suffice; no
+dormant-island inventory scan is introduced.
+
 **Independent speculative active-node lifecycle:** Source
 `PxsIslandSim::deactivateIsland` also retires that graph's active rigid
 nodes and island handle via swap-last, regardless of whether the

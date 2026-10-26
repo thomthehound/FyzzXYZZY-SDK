@@ -5019,11 +5019,10 @@ std::uint32_t Scene::mark_kinematic_awake(
                 const auto& instance=(accurate?edge.accurate:
                                               edge.speculative)[index&1u];
                 index=instance.next;
-                if(!edge.live || edge.retiring ||
-                   (accurate && !edge.connected) ||
-                   !((accurate?edge.accurate_state:
-                               edge.speculative_state)&1u))
-                    continue;
+                // PxsIslandSim::processLostEdges visits all live linked
+                // kinematic EdgeInstances, independently of eACTIVE.
+                // An inactive edge can still veto rigid deactivation.
+                if(!edge.live || edge.retiring)continue;
                 const BodyId other=edge.pair.a==kinematic
                     ? edge.pair.b:edge.pair.a;
                 if(other>=graph.node_island.size() ||
@@ -5162,8 +5161,9 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
             const auto& edge=island_edges_[index/2];
             const auto& instance=edge.speculative[index&1u];
             index=instance.next;
-            if(!edge.live || edge.retiring ||
-               !(edge.speculative_state&1u))continue;
+            // Source kinematic settling traverses linked EdgeInstances,
+            // including those already inactive after a sleep pass.
+            if(!edge.live || edge.retiring)continue;
             const BodyId other=edge.pair.a==kinematic
                 ? edge.pair.b:edge.pair.a;
             if(other<actors_.size() &&
