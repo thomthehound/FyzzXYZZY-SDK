@@ -74,11 +74,14 @@ cmake --build build-native --config Release --target fyzzxyzzy_native_sap_benchm
 .\\build-native\\Release\\fyzzxyzzy_native_sap_benchmark.exe
 ```
 
-A benchmark row measures the full native collision-only query, including
-source pair and Gu publication; it is not a GPU kernel timer or a pure
-endpoint-sort timer. Compare matching scenarios and optimized builds on
-the same hardware and toolchain. CI runner timings are diagnostic only,
-never pass/fail performance thresholds.
+Most benchmark rows measure the native collision-only query, including
+pair and Gu publication. The `endpoint-only-local` and
+`endpoint-only-crossings` rows instead time encoded AABB and endpoint
+maintenance directly, without Gu, Sc pair publication or island processing.
+Activity-pocket counters distinguish linked comparisons, relocations and
+materialized endpoint spans. Compare matching scenarios and optimized
+builds on the same hardware and toolchain; CI timings are diagnostic only,
+not pass/fail performance thresholds.
 
 ## C++ toolchain requirement
 
