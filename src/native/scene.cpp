@@ -938,6 +938,7 @@ void Scene::update_bounds() {
     broadphase_updated_volume_slots_.clear();
     broadphase_crossed_pairs_.clear();
     broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
+    broadphase_batch_pair_set_unchanged_=false;
     try {
         if(broadphase_endpoint_membership_dirty_) {
             sap_volumes_.clear();
@@ -1002,6 +1003,7 @@ void Scene::update_bounds() {
         const bool sparse=broadphase_updated_volume_slots_.size()*5<
                           sap_volumes_.size();
         if(!sparse) {
+            bool all_axes_stable=true;
             // BpBroadPhaseSap::batchUpdate: update the encoded keys in
             // their original slots, then reorder linked endpoint indices.
             // Materialize only the affected activity pockets.
@@ -1010,9 +1012,6 @@ void Scene::update_bounds() {
                 const std::size_t n=endpoints.size();
                 if(!n)continue;
                 bool changed=false;
-                sap_endpoint_updated_.resize(n);
-                std::fill(sap_endpoint_updated_.begin(),
-                          sap_endpoint_updated_.end(),0);
                 for(std::uint32_t slot:broadphase_updated_volume_slots_) {
                     for(unsigned side=0;side<2;++side) {
                         const auto index=sap_volumes_[slot].
@@ -1020,14 +1019,39 @@ void Scene::update_bounds() {
                         Endpoint& ep=endpoints[index];
                         const auto value=actors_[ep.id].encoded_bounds[
                             axis+(side?3:0)];
-                        if(ep.value!=value) {
-                            changed=true;
-                            sap_endpoint_updated_[index]=1;
-                        }
+                        changed|=ep.value!=value;
                         ep.value=value;
                     }
                 }
                 if(!changed)continue;
+                // A source batchUpdate only needs an activity pocket
+                // where endpoint order actually changes. Since the old
+                // stream was sorted, any new inversion must touch a
+                // changed endpoint. Test those immediate neighbors in
+                // O(mUpdated), without initializing the n-element linked
+                // workspace on ordinary coherent bulk movement.
+                bool ordering_changed=false;
+                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                    for(unsigned side=0;side<2;++side) {
+                        const auto index=sap_volumes_[slot].
+                            endpoint_positions[axis][side];
+                        if((index && less(endpoints[index],endpoints[index-1])) ||
+                           (index+1<n && less(endpoints[index+1],endpoints[index]))) {
+                            ordering_changed=true;
+                            break;
+                        }
+                    }
+                    if(ordering_changed)break;
+                }
+                if(!ordering_changed)continue;
+                all_axes_stable=false;
+                sap_endpoint_updated_.resize(n);
+                std::fill(sap_endpoint_updated_.begin(),
+                          sap_endpoint_updated_.end(),0);
+                for(std::uint32_t slot:broadphase_updated_volume_slots_)
+                    for(unsigned side=0;side<2;++side)
+                        sap_endpoint_updated_[sap_volumes_[slot].
+                            endpoint_positions[axis][side]]=1;
                 sap_list_next_.resize(n+1);
                 sap_list_prev_.resize(n+1);
                 const std::size_t sentinel=n;
@@ -1109,6 +1133,10 @@ void Scene::update_bounds() {
                     ++broadphase_activity_pocket_count_;
                     broadphase_activity_pocket_endpoint_count_+=length;
                 }
+            }
+            if(all_axes_stable) {
+                broadphase_batch_pair_set_unchanged_=true;
+                ++broadphase_batch_stable_order_count_;
             }
             return;
         }
@@ -1474,6 +1502,11 @@ void Scene::update_pairs() {
     sap_created_pairs_.clear();
     sap_deleted_pairs_.clear();
     broadphase_pair_membership_changed_=false;
+    // No encoded endpoint changed order in any SAP axis; therefore
+    // no finite overlap could transition. Planes retain their existing
+    // candidate membership. Do not revisit all active BP pairs.
+    if(broadphase_batch_pair_set_unchanged_ && !broadphase_full_pair_update_)
+        return;
     const bool few_updates=!broadphase_full_pair_update_ &&
         broadphase_updated_ids_.size()*5<sap_volumes_.size();
     if(few_updates) {

@@ -259,6 +259,9 @@ public:
     std::size_t broadphase_activity_pocket_relocation_count() const noexcept {
         return broadphase_activity_pocket_relocations_;
     }
+    std::size_t broadphase_batch_stable_order_count() const noexcept {
+        return broadphase_batch_stable_order_count_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1396,6 +1399,10 @@ private:
     // Bounded native CPU pair updates retain the source pair registry
     // and its Found/Lost edge publication, not a second pair owner.
     bool broadphase_full_pair_update_=true;
+    // Multi-update SAP can retain every BP pair when all six changed
+    // endpoint keys remain in their prior per-axis ordering.
+    bool broadphase_batch_pair_set_unchanged_=false;
+    std::size_t broadphase_batch_stable_order_count_=0;
     // Bp SAP activity pockets bound multi-update endpoint reorder work.
     struct ActivityPocket {
         std::size_t start=0,end=0;
