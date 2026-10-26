@@ -47,6 +47,12 @@ struct NativeThirdPassTimingFixture {
         scene.advance_collision();
         constexpr std::size_t warmup=24, trials=5, frames=72;
         std::array<double,trials> times{};
+        Result result;
+        // Compare exact actor and island ownership at each measured trial
+        // boundary, not only after a split/remerge sequence reconverges.
+        result.bodies.reserve(ids.size()*trials);
+        result.speculative_owners.reserve(ids.size()*trials);
+        result.accurate_owners.reserve(ids.size()*trials);
         for(std::size_t step=0;step<warmup+trials*frames;++step) {
             if(split_churn) {
                 const bool linked=(step&1)!=0;
@@ -69,23 +75,27 @@ struct NativeThirdPassTimingFixture {
             const double us=std::chrono::duration<double,std::micro>(
                 std::chrono::steady_clock::now()-t0).count();
             if(step>=warmup)times[(step-warmup)/frames]+=us;
+            if(step>=warmup && (step-warmup+1)%frames==0) {
+                // Capture outside the timed region. Each mode starts from
+                // identical authored state and must agree across trials.
+                for(auto id:ids) {
+                    result.bodies.push_back(scene.body_state(id));
+                    result.speculative_owners.push_back(
+                        scene.speculative_island_id(id));
+                    result.accurate_owners.push_back(
+                        scene.accurate_island_id(id));
+                }
+            }
         }
         for(auto& v:times)v/=frames;
         std::sort(times.begin(),times.end());
-        Result result;
         result.median_us=times[trials/2];
         result.spec_islands=scene.speculative_island_count();
         result.acc_islands=scene.accurate_island_count();
         result.starts=scene.third_pass_worker_start_count_;
         result.dispatched=scene.concurrent_third_pass_dispatches_;
-        result.bodies.reserve(ids.size());
-        result.speculative_owners.reserve(ids.size());
-        result.accurate_owners.reserve(ids.size());
         for(auto id:ids) {
             const auto body=scene.body_state(id);
-            result.bodies.push_back(body);
-            result.speculative_owners.push_back(scene.speculative_island_id(id));
-            result.accurate_owners.push_back(scene.accurate_island_id(id));
             result.checksum+=body.position.x*0.25+body.position.y+
                              body.velocity.y*0.125;
             result.asleep+=body.sleeping;
@@ -110,7 +120,7 @@ struct NativeThirdPassTimingFixture {
            a.speculative_owners!=b.speculative_owners ||
            a.accurate_owners!=b.accurate_owners)
             throw std::runtime_error(
-                "Native serial and concurrent third-pass ownership differs");
+                "Native serial and concurrent third-pass trial ownership differs");
         const auto same_vec=[](Vec3 x,Vec3 y) {
             return x.x==y.x && x.y==y.y && x.z==y.z;
         };
@@ -126,7 +136,7 @@ struct NativeThirdPassTimingFixture {
                x.orientation.w!=y.orientation.w ||
                x.sleeping!=y.sleeping)
                 throw std::runtime_error(
-                    "Native serial/concurrent third-pass body state differs");
+                    "Native serial/concurrent third-pass trial state differs");
         }
     }
     static void compare(bool split_churn,std::size_t chains=16) {
@@ -141,7 +151,7 @@ struct NativeThirdPassTimingFixture {
             " forced_speedup=%.3fx adaptive_speedup=%.3fx"
             " forced_starts=%zu forced_dispatches=%zu"
             " adaptive_starts=%zu adaptive_dispatches=%zu"
-            " asleep=%zu accurate_islands=%zu speculative_islands=%zu\\n",
+            " asleep=%zu accurate_islands=%zu speculative_islands=%zu\n",
             split_churn?"lost-route-churn":"readiness-drain",chains,
             serial.median_us,forced.median_us,adaptive.median_us,
             serial.median_us/forced.median_us,
@@ -157,7 +167,9 @@ int main() {
         fyzz::native::NativeThirdPassTimingFixture::compare(false);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,16);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,64);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,128);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,256);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,512);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,1024);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
