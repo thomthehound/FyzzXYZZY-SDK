@@ -1070,21 +1070,21 @@ void Scene::update_bounds() {
                 // order. A displaced successor continues the current
                 // activity walk; unchanged nonparticipants need no
                 // lookup, mark array, or full-endpoint scan.
-                auto& changed=sap_changed_endpoint_positions_;
-                changed.clear();
-                changed.reserve(broadphase_updated_volume_slots_.size()*2);
+                auto& changed_indices=sap_changed_endpoint_positions_;
+                changed_indices.clear();
+                changed_indices.reserve(broadphase_updated_volume_slots_.size()*2);
                 for(std::size_t updated=0;
                     updated<broadphase_updated_volume_slots_.size();++updated) {
                     if(!(broadphase_updated_axis_masks_[updated]&axis_bit))
                         continue;
                     const auto slot=broadphase_updated_volume_slots_[updated];
                     for(unsigned side=0;side<2;++side)
-                        changed.push_back(sap_volumes_[slot].
+                        changed_indices.push_back(sap_volumes_[slot].
                             endpoint_positions[axis][side]);
                 }
-                std::sort(changed.begin(),changed.end());
-                changed.erase(std::unique(changed.begin(),changed.end()),
-                              changed.end());
+                std::sort(changed_indices.begin(),changed_indices.end());
+                changed_indices.erase(std::unique(changed_indices.begin(),changed_indices.end()),
+                              changed_indices.end());
                 const std::size_t sentinel=n;
                 // BpBroadPhaseSap's mListPrev/mListNext persist between
                 // updates. They return to identity after each rebuilt
@@ -1109,17 +1109,17 @@ void Scene::update_bounds() {
                 // naturally displace earlier nodes moving right.
                 bool predecessor_updated=false;
                 std::size_t cursor=0;
-                for(std::size_t i=changed.front();i<n;) {
-                    const bool updated=cursor<changed.size() &&
-                                       changed[cursor]==i;
+                for(std::size_t i=changed_indices.front();i<n;) {
+                    const bool updated=cursor<changed_indices.size() &&
+                                       changed_indices[cursor]==i;
                     if(updated)++cursor;
                     // Continue to an unchanged next index only if the
-                    // preceding changed/displaced index could still
+                    // preceding changed_indices/displaced index could still
                     // affect its order. Otherwise jump to the next
-                    // changed endpoint with no intervening iteration.
+                    // changed_indices endpoint with no intervening iteration.
                     if(!updated && !predecessor_updated) {
-                        if(cursor==changed.size())break;
-                        i=changed[cursor];
+                        if(cursor==changed_indices.size())break;
+                        i=changed_indices[cursor];
                         continue;
                     }
                     predecessor_updated=updated;
@@ -1146,7 +1146,7 @@ void Scene::update_bounds() {
                     }
                     if(previous==sap_list_prev_[i]) {
                         if(predecessor_updated)++i;
-                        else if(cursor<changed.size())i=changed[cursor];
+                        else if(cursor<changed_indices.size())i=changed_indices[cursor];
                         else break;
                         continue;
                     }
