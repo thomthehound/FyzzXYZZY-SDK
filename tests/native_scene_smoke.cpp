@@ -5327,6 +5327,34 @@ struct SolverIterationSourceFixture {
            !same(concurrent.world_solver_row_.solver.angular_state,{}))
             throw std::runtime_error(
                 "Concurrent Dy PGS modified the shared static solver body");
+
+        // Unlike the source static-world body, a kinematic actor has an
+        // individually prepared row and may touch two separate accurate
+        // rigid islands. Do not concurrently solve those shared rows.
+        Scene mixed{Scene::ContactGenerator::DiagnosticLegacyGu};
+        mixed.set_enhanced_determinism(true);
+        mixed.parallel_third_pass_enabled_=false;
+        mixed.parallel_solver_min_descriptors_=0;
+        mixed.add_static_floor(0.0f);
+        const auto kinematic=mixed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0.48f,0},1.0f);
+        mixed.set_kinematic(kinematic,true);
+        for(float x:{-0.85f,0.85f,4.0f,8.0f})
+            mixed.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,0.48f,0},1.0f);
+        mixed.step(dt);
+        bool found_kinematic_constraint=false;
+        for(const auto& descriptor:mixed.ordered_constraints_) {
+            if(descriptor.distance)continue;
+            const auto pair=mixed.manifolds_[descriptor.index].pair;
+            found_kinematic_constraint |=
+                pair.a==kinematic || pair.b==kinematic;
+        }
+        if(!found_kinematic_constraint || mixed.solver_tasks_.size()<2 ||
+           mixed.concurrent_solver_dispatches_!=0 ||
+           mixed.third_pass_worker_start_count_!=0)
+            throw std::runtime_error(
+                "Shared kinematic solver row escaped serial task admission");
     }
     static void verify() {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
