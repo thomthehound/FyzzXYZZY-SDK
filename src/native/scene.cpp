@@ -4979,31 +4979,13 @@ void Scene::third_pass_island_gen() {
 // Both accurate and speculative contact graphs retain their existing
 // persistent handles and node membership while bodies are inactive.
 void Scene::deactivate_ready_islands() noexcept {
-    constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
-    // PxsSimpleIslandManager::thirdPassIslandGen clears the previous
-    // accurate rigid deactivations. A now-ready node belongs to this
-    // stage's output only when its accurate island actually deactivates.
-    // Rebuild-time capacity was reserved before collision commit.
-    accurate_islands_.nodes_to_deactivate.clear();
-    speculative_islands_.deactivating_edges.clear();
-    accurate_islands_.deactivating_edges.clear();
-    // Both EdgeType streams are frame-local third-pass publications.
-    // A previous constraint deactivation must not survive a quiet
-    // following pass or contaminate a later wake/sleep generation.
-    speculative_islands_.deactivating_constraint_edges.clear();
-    accurate_islands_.deactivating_constraint_edges.clear();
-    // PhysX uses accurate-island deactivations for rigid-body state in
-    // ScPipeline::afterIntegration. The speculative third-pass list
-    // controls contact interaction activity, not rigid sleep admission.
-    // PxsIslandSim::processLostEdges walks mActiveIslands in reverse,
-    // after wakeIslands has published the active-index changes. A long-
-    // sleeping scene must not revisit every dormant historical handle
-    // on each solver frame, nor reverse the source deactivation order.
-    // Each IslandSim first excludes islands touched by its own ACTIVE
-    // kinematics from sleep admission. Share the source walk, not the
-    // output or island owners: speculative SAP links and accurate touch
-    // links have independent adjacency and mActiveIslands permutations.
-    const auto mark_kinematic_awake=[&](IslandGraph& graph,bool accurate) {
+    // The collision-only path and source conformance probes consume the
+    // same two owned stages, without a synthetic solver/task dispatcher.
+    deactivate_ready_accurate_islands();
+    deactivate_ready_speculative_islands();
+}
+std::uint32_t Scene::mark_kinematic_awake(
+    IslandGraph& graph, bool accurate) noexcept {
         if(++graph.active_island_visit_stamp==0) {
             std::fill(graph.active_island_seen.begin(),
                       graph.active_island_seen.end(),0);
@@ -5037,11 +5019,17 @@ void Scene::deactivate_ready_islands() noexcept {
             }
         }
         return stamp;
-    };
+ }
+void Scene::deactivate_ready_accurate_islands() noexcept {
+    constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
+    // Accurate processLostEdges owns rigid sleep/deactivation. This
+    // producer may finish before the speculative graph's interaction
+    // retirement pass, even in the serial CPU lowering.
+    accurate_islands_.nodes_to_deactivate.clear();
+    accurate_islands_.deactivating_edges.clear();
+    accurate_islands_.deactivating_constraint_edges.clear();
     const auto accurate_kinematic_awake_stamp=
         mark_kinematic_awake(accurate_islands_,true);
-    const auto speculative_kinematic_awake_stamp=
-        mark_kinematic_awake(speculative_islands_,false);
     for(std::size_t index=accurate_islands_.active_islands.size();
         index>0;--index) {
         const auto handle=accurate_islands_.active_islands[index-1];
@@ -5103,6 +5091,16 @@ void Scene::deactivate_ready_islands() noexcept {
             }
         }
     }
+}
+void Scene::deactivate_ready_speculative_islands() noexcept {
+    constexpr BodyId invalid=std::numeric_limits<BodyId>::max();
+    // Speculative processLostEdges owns its separate contact/constraint
+    // deactivation output. The serial lowering uses the prior accurate
+    // sleep result as its candidate stream; no additional graph scan.
+    speculative_islands_.deactivating_edges.clear();
+    speculative_islands_.deactivating_constraint_edges.clear();
+    const auto speculative_kinematic_awake_stamp=
+        mark_kinematic_awake(speculative_islands_,false);
     // A target that just settled may release a speculative SAP-only
     // island even when accurate IslandSim had already slept its rigid
     // members on an earlier frame. Its still-live source EdgeInstance
@@ -5217,8 +5215,7 @@ void Scene::deactivate_ready_islands() noexcept {
                     deactivate_contact_edge(edge_id,false,true);
             }
         }
-    }
-}
+    }}
 // ScPipeline.cpp::activateEdgesInternal(eCONTACT_MANAGER) consumes the
 // speculative graph's mActivatedEdges, then postThirdPassIslandGen
 // consumes mDeactivatingEdges after both lost-edge tasks have joined.
@@ -8143,20 +8140,21 @@ void Scene::step(float seconds) {
     synchronize_active_island_nodes(true);
     // Source third pass tests readiness from the prior Dy sleepCheck,
     // before this frame's unconstrained velocity/PGS processing.
-    deactivate_ready_islands();
-    consume_contact_interaction_activity();
-    // Deactivation removes nodes and islands from the active lists;
-    // ordinary awake frames do not need this second traversal.
+    deactivate_ready_accurate_islands();
+    // This producer owns rigid sleep decisions and accurate edge
+    // deactivation. Do not announce its completion from a combined
+    // task-count decrement.
+    join.finish_accurate_third_pass();
+    deactivate_ready_speculative_islands();
+    // This independent producer owns speculative interaction retirement.
+    join.finish_speculative_third_pass();
+    // Accurate deactivation removes nodes and islands from active lists.
     if(!accurate_islands_.nodes_to_deactivate.empty())
         synchronize_active_island_nodes();
-    // mProcessLostContactsTask3's admitted rigid dependencies are now
-    // complete: Gu lost-touch publication, both island passes, wake,
-    // third-pass sleep, and Sc interaction-state consumption.
-    // PhysX can overlap this branch with Dy; serial CPU execution
-    // resolves it first without changing the dependency edge.
-    join.finish_accurate_third_pass();
-    join.finish_speculative_third_pass();
+    // PxsSimpleIslandManager::PostThirdPassTask may consume deactivations
+    // only after both producer edges have joined.
     join.finish_third_pass();
+    consume_contact_interaction_activity();
     // PxsSimpleIslandManager::PostThirdPassTask returns destroyed
     // EdgeIndex handles to its allocator only after both IslandSims'
     // processLostEdges consumers have completed. The lifetime remains

@@ -1643,7 +1643,12 @@ struct ConstraintIslandSourceFixture {
         // deactivate the same island without losing the constraint.
         scene.actors_[k].kinematic_target_pending=false;
         scene.actors_[k].ready_for_sleep=true;
-        scene.deactivate_ready_islands();
+        scene.deactivate_ready_accurate_islands();
+        if(!scene.body_is_sleeping(a) || !scene.body_is_sleeping(b) ||
+           !scene.speculative_islands_.deactivating_constraint_edges.empty())
+            throw std::runtime_error(
+                "Accurate IslandSim completion failed to isolate rigid deactivation");
+        scene.deactivate_ready_speculative_islands();
         if(!scene.body_is_sleeping(a) || !scene.body_is_sleeping(b) ||
            scene.accurate_islands_.active_constraint_edge_count!=0 ||
            scene.accurate_islands_.deactivating_constraint_edges.size()!=2)
@@ -1694,7 +1699,14 @@ struct ConstraintIslandSourceFixture {
         scene.actors_[k].kinematic_target_pending=false;
         scene.actors_[k].kinematic_settling=true;
         scene.actors_[k].ready_for_sleep=true;
-        scene.deactivate_ready_islands();
+        scene.deactivate_ready_accurate_islands();
+        // Completing the accurate producer must not consume the
+        // speculative SAP-only interaction or publish its retirement.
+        if(!(scene.island_edges_[edge].speculative_state&1u) ||
+           !scene.speculative_islands_.deactivating_edges.empty())
+            throw std::runtime_error(
+                "Accurate third pass retired speculative activity early");
+        scene.deactivate_ready_speculative_islands();
         if(scene.island_edges_[edge].speculative_state&1u ||
            scene.speculative_islands_.deactivating_edges.size()!=1 ||
            scene.speculative_islands_.deactivating_edges[0]!=edge)

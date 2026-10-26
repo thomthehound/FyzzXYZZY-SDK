@@ -781,6 +781,8 @@ private:
     // remain open. Contact-manager deactivation lists are active.
     void third_pass_island_gen();
     void deactivate_ready_islands() noexcept;
+    void deactivate_ready_accurate_islands() noexcept;
+    void deactivate_ready_speculative_islands() noexcept;
     // Serial ScPipeline::activateEdgesInternal/postThirdPassIslandGen
     // consumption for rigid eCONTACT_MANAGER, using source edge outputs.
     void consume_contact_interaction_activity() noexcept;
@@ -1007,6 +1009,10 @@ private:
         std::vector<std::uint32_t> active_reference_counts;
     };
     IslandGraph speculative_islands_, accurate_islands_;
+    // Each third-pass IslandSim independently excludes islands touched
+    // by an active kinematic before examining prior Dy sleep readiness.
+    std::uint32_t mark_kinematic_awake(IslandGraph& graph,
+                                       bool accurate) noexcept;
     // Bound the noexcept motion journal by living rigid actors rather
     // than the historical BodyId watermark that includes retired actors.
     std::size_t live_dynamic_count_=0;
