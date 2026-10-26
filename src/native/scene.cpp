@@ -1027,10 +1027,10 @@ void Scene::update_bounds() {
             // The old sorted keys bound the preflight work. A move
             // outside that rank envelope uses linked activity pockets.
             // Probe old-rank neighbors without allocating a worklist.
-            // A pair of adjacent min/max groups can occupy dozens
-            // of ranks in a dense sweep. Bound direct insertion by
-            // endpoint ranks, not by proxy count or AABB displacement.
-            constexpr std::size_t local_span=48;
+            // Restrict indexed bulk shifts to narrow rank-local
+            // changes. Wider crossing groups cost less through the
+            // linked source activity-pocket path.
+            constexpr std::size_t local_span=24;
             bool localized=true;
             bool stable=true;
             const auto final_key=[&](Endpoint ep,unsigned axis) {
