@@ -794,6 +794,7 @@ private:
     void update_island_connectivity();
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
+    bool worthwhile_parallel_route_work() const noexcept;
     void run_third_pass_worker() noexcept;
     void dispatch_third_pass_worker(bool repair_only);
     void join_third_pass_worker() noexcept;
@@ -1114,6 +1115,10 @@ private:
     std::size_t overlapped_dy_preintegration_dispatches_=0;
     std::size_t third_pass_worker_start_count_=0;
     bool parallel_third_pass_enabled_=true;
+    // Two route searches need enough graph-local endpoints to amortize
+    // waking a second CPU worker. The source graph algorithms remain
+    // unchanged; benchmarks can set this floor to zero for raw scaling.
+    std::size_t parallel_third_pass_min_dirty_nodes_=256;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.

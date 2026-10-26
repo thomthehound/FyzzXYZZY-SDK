@@ -1658,6 +1658,18 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Workload-aware third-pass admission:** Native ScPipeline and the
+collision-only repair path execute short route-only graph repairs
+serially when either IslandSim has fewer than 256 dirty route nodes.
+This avoids the worker wake/completion cost measured on small graphs
+without changing source findRoute, island handles, or completion edges.
+Real prior-Dy speculative sleep events remain eligible for concurrent
+execution regardless of lost-route size. The benchmark compares all
+three modes (serial, forced parallel, production adaptive) at several
+island counts, requiring exact per-body pose, velocity, sleeping state,
+and both island owner IDs, not just aggregate island counts. Timing
+alone never gates CI.
+
 **Third-pass scheduling measurements:** The native Release benchmark
 compares full Scene::step times using equivalent serial and parallel
 source IslandSims on two deterministic workloads: injected prior-Dy

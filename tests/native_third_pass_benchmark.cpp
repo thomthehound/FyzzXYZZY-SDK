@@ -14,14 +14,19 @@
 
 namespace fyzz::native {
 struct NativeThirdPassTimingFixture {
+    enum class Mode { Serial, ForcedParallel, Adaptive };
     struct Result {
+        std::vector<BodyState> bodies;
+        std::vector<std::uint32_t> speculative_owners,accurate_owners;
         double median_us=0, checksum=0;
         std::size_t asleep=0, spec_islands=0, acc_islands=0;
         std::size_t starts=0, dispatched=0;
     };
-    static Result profile(bool split_churn,bool concurrent,std::size_t chains) {
+    static Result profile(bool split_churn,Mode mode,std::size_t chains) {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
-        scene.parallel_third_pass_enabled_=concurrent;
+        scene.parallel_third_pass_enabled_=mode!=Mode::Serial;
+        if(mode==Mode::ForcedParallel)
+            scene.parallel_third_pass_min_dirty_nodes_=0;
         std::vector<BodyId> ids,bridges;
         const std::size_t count=split_churn?chains:96;
         for(std::size_t i=0;i<count;++i) {
@@ -73,36 +78,77 @@ struct NativeThirdPassTimingFixture {
         result.acc_islands=scene.accurate_island_count();
         result.starts=scene.third_pass_worker_start_count_;
         result.dispatched=scene.concurrent_third_pass_dispatches_;
+        result.bodies.reserve(ids.size());
+        result.speculative_owners.reserve(ids.size());
+        result.accurate_owners.reserve(ids.size());
         for(auto id:ids) {
-            auto body=scene.body_state(id);
+            const auto body=scene.body_state(id);
+            result.bodies.push_back(body);
+            result.speculative_owners.push_back(scene.speculative_island_id(id));
+            result.accurate_owners.push_back(scene.accurate_island_id(id));
             result.checksum+=body.position.x*0.25+body.position.y+
                              body.velocity.y*0.125;
-            result.asleep+=scene.body_is_sleeping(id);
+            result.asleep+=body.sleeping;
         }
-        if(concurrent && (result.starts!=1 || !result.dispatched))
-            throw std::runtime_error("Parallel third-pass did not reuse its worker");
-        if(!concurrent && (result.starts || result.dispatched))
-            throw std::runtime_error("Serial third-pass unexpectedly launched work");
+        if(mode==Mode::ForcedParallel &&
+           (result.starts!=1 || !result.dispatched))
+            throw std::runtime_error("Forced parallel worker was not reused");
+        if(mode==Mode::Serial && (result.starts || result.dispatched))
+            throw std::runtime_error("Serial third-pass launched a worker");
+        if(mode==Mode::Adaptive && split_churn && chains<=64 &&
+           (result.starts || result.dispatched))
+            throw std::runtime_error("Short lost-route work launched a worker");
+        if(mode==Mode::Adaptive && split_churn && chains>=256 &&
+           (result.starts!=1 || !result.dispatched))
+            throw std::runtime_error("Large lost-route work was not parallelized");
         return result;
     }
+    static void verify_same_state(const Result& a,const Result& b) {
+        if(a.asleep!=b.asleep || a.acc_islands!=b.acc_islands ||
+           a.spec_islands!=b.spec_islands ||
+           a.bodies.size()!=b.bodies.size() ||
+           a.speculative_owners!=b.speculative_owners ||
+           a.accurate_owners!=b.accurate_owners)
+            throw std::runtime_error(
+                "Native serial and concurrent third-pass ownership differs");
+        const auto same_vec=[](Vec3 x,Vec3 y) {
+            return x.x==y.x && x.y==y.y && x.z==y.z;
+        };
+        for(std::size_t i=0;i<a.bodies.size();++i) {
+            const auto& x=a.bodies[i];
+            const auto& y=b.bodies[i];
+            if(!same_vec(x.position,y.position) ||
+               !same_vec(x.velocity,y.velocity) ||
+               !same_vec(x.angular_velocity,y.angular_velocity) ||
+               x.orientation.x!=y.orientation.x ||
+               x.orientation.y!=y.orientation.y ||
+               x.orientation.z!=y.orientation.z ||
+               x.orientation.w!=y.orientation.w ||
+               x.sleeping!=y.sleeping)
+                throw std::runtime_error(
+                    "Native serial/concurrent third-pass body state differs");
+        }
+    }
     static void compare(bool split_churn,std::size_t chains=16) {
-        const auto serial=profile(split_churn,false,chains);
-        const auto parallel=profile(split_churn,true,chains);
-        if(serial.asleep!=parallel.asleep ||
-           serial.acc_islands!=parallel.acc_islands ||
-           serial.spec_islands!=parallel.spec_islands ||
-           std::abs(serial.checksum-parallel.checksum)>1e-4)
-            throw std::runtime_error("Serial and concurrent island results diverged");
+        const auto serial=profile(split_churn,Mode::Serial,chains);
+        const auto forced=profile(split_churn,Mode::ForcedParallel,chains);
+        const auto adaptive=profile(split_churn,Mode::Adaptive,chains);
+        verify_same_state(serial,forced);
+        verify_same_state(serial,adaptive);
         std::printf(
             "third_pass workload=%s chains=%zu serial_median_us=%.3f"
-            " concurrent_median_us=%.3f speedup=%.3fx"
-            " worker_starts=%zu dispatches=%zu asleep=%zu"
-            " accurate_islands=%zu speculative_islands=%zu\n",
-            split_churn?"lost-route-churn":"readiness-events",chains,
-            serial.median_us,parallel.median_us,
-            serial.median_us/parallel.median_us,
-            parallel.starts,parallel.dispatched,parallel.asleep,
-            parallel.acc_islands,parallel.spec_islands);
+            " forced_parallel_median_us=%.3f adaptive_median_us=%.3f"
+            " forced_speedup=%.3fx adaptive_speedup=%.3fx"
+            " forced_starts=%zu forced_dispatches=%zu"
+            " adaptive_starts=%zu adaptive_dispatches=%zu"
+            " asleep=%zu accurate_islands=%zu speculative_islands=%zu\\n",
+            split_churn?"lost-route-churn":"readiness-drain",chains,
+            serial.median_us,forced.median_us,adaptive.median_us,
+            serial.median_us/forced.median_us,
+            serial.median_us/adaptive.median_us,
+            forced.starts,forced.dispatched,
+            adaptive.starts,adaptive.dispatched,
+            adaptive.asleep,adaptive.acc_islands,adaptive.spec_islands);
     }
 };
 }
@@ -112,6 +158,7 @@ int main() {
         fyzz::native::NativeThirdPassTimingFixture::compare(true,16);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,64);
         fyzz::native::NativeThirdPassTimingFixture::compare(true,256);
+        fyzz::native::NativeThirdPassTimingFixture::compare(true,1024);
     } catch(const std::exception& e) {
         std::fprintf(stderr,"native third-pass benchmark: %s\n",e.what());
         return 1;

@@ -5065,13 +5065,19 @@ bool Scene::complete_third_pass_worker() {
     if(work.error)std::rethrow_exception(work.error);
     return work.split;
 }
+bool Scene::worthwhile_parallel_route_work() const noexcept {
+    return std::min(speculative_dirty_nodes_.size(),
+                    accurate_dirty_nodes_.size()) >=
+           parallel_third_pass_min_dirty_nodes_;
+}
 bool Scene::repair_lost_island_graphs_concurrently() {
     // Process both source ThirdPassTask lost-route producers in parallel.
     // Edge topology is stable; accurate-only indexed-manager mutations
     // do not modify the speculative intrusive edge instances.
     if(!parallel_third_pass_enabled_ ||
        speculative_dirty_nodes_.empty() ||
-       accurate_dirty_nodes_.empty()) {
+       accurate_dirty_nodes_.empty() ||
+       !worthwhile_parallel_route_work()) {
         const bool speculative=repair_lost_island_graph(false);
         const bool accurate=repair_lost_island_graph(true);
         return speculative || accurate;
@@ -8486,7 +8492,15 @@ void Scene::step(float seconds) {
                           !accurate_dirty_nodes_.empty();
     bool speculative_split=false,accurate_split=false;
     bool dy_prepared=false;
-    if(parallel_third_pass_enabled_ && speculative_work && accurate_work) {
+    // Route-only work over short independent components loses time to
+    // the wake/complete handoff even with a persistent worker. Keep
+    // source-order serial execution below the measured work floor.
+    // Prior-Dy sleep events remain eligible without a route-size gate.
+    const bool independent_sleep_work=
+        !speculative_ready_nodes_.empty() ||
+        !speculative_split_sleep_candidates_.empty();
+    if(parallel_third_pass_enabled_ && speculative_work && accurate_work &&
+       (independent_sleep_work || worthwhile_parallel_route_work())) {
         dispatch_third_pass_worker(false);
         try {
             accurate_split=process_third_pass_island_task(true);

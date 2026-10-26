@@ -1721,10 +1721,38 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Combined third-pass task lost route/sleep ownership");
     }
+    static void verify_short_route_repairs_stay_serial() {
+        // Both source owners must repair their true lost edges without
+        // paying a worker roundtrip for a three-node chain. No sleep
+        // event was produced by Dy on this geometry-only admission.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,15,0},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.85f,15,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{1.7f,15,0},1.0f);
+        for(BodyId id:{a,b,c})
+            scene.actors_[id].dynamics.gravity_enabled=false;
+        scene.advance_collision();
+        scene.set_position(b,{5,15,0});
+        scene.step(1.0f/120.0f);
+        if(scene.third_pass_worker_start_count_!=0 ||
+           scene.concurrent_third_pass_dispatches_!=0 ||
+           scene.accurate_island_count()!=3 ||
+           scene.speculative_island_count()!=3 ||
+           scene.accurate_island_id(a)==scene.accurate_island_id(c) ||
+           scene.speculative_island_id(a)==scene.speculative_island_id(c))
+            throw std::runtime_error(
+                "Short serial lost-route task failed source island parity");
+    }
     static void verify_concurrent_lost_route_repair_rollback() {
+        // Test the genuinely concurrent path even on a three-body
+        // diagnostic scene; production scheduling avoids small jobs.
         // Both graph-owned findRoute tasks split the same contact chain
         // concurrently, then rejection must restore each original owner.
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        scene.parallel_third_pass_min_dirty_nodes_=0;
         const auto a=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{0,15,0},1.0f);
         const auto b=scene.add_dynamic_box(
@@ -13281,6 +13309,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_concurrent_lost_route_repair_rollback();
+    fyzz::native::ConstraintIslandSourceFixture::verify_short_route_repairs_stay_serial();
     fyzz::native::ConstraintIslandSourceFixture::verify_single_dispatch_for_split_and_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
