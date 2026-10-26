@@ -1012,7 +1012,7 @@ void Scene::update_bounds() {
             // n-element linked arrays. Far motion continues through
             // the source-style linked activity-pocket reorder.
             const std::size_t direct_budget=
-                std::max<std::size_t>(48,sap_volumes_.size());
+                std::max<std::size_t>(48,sap_volumes_.size()*6);
             std::size_t predicted_shifts=0;
             for(unsigned axis=0;axis<3 && predicted_shifts<=direct_budget;
                 ++axis) {
@@ -1089,6 +1089,7 @@ void Scene::update_bounds() {
                         }
                 }
                 broadphase_endpoint_local_shift_count_+=actual_shifts;
+                ++broadphase_batch_direct_update_count_;
                 broadphase_batch_crossings_complete_=true;
                 broadphase_batch_pair_set_unchanged_=
                     broadphase_crossed_pairs_.empty();
