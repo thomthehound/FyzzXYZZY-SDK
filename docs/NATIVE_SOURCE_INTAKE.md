@@ -1305,10 +1305,12 @@ changed encoded bounds and shifts just their six indexed endpoints,
 repairing moved index entries as each crosses its neighbors. Source's
 `mUpdatedSize*5 < mBoxesSize` sparse-update branch retains endpoint
 shifts even for a lone body teleporting across many neighbors.
-Larger update sets build coalesced activity pockets from each changed
-endpoint's old and final index, reorder only those closed intervals,
-and update their direct index mappings. Membership changes still rebuild
-the complete endpoint lists. Unchanged axes incur no full scan. A rejected
+Larger update sets update the encoded keys at their old positions,
+relocate endpoint indices through a reusable linked ordering, and coalesce
+the old-array intervals affected by those relocations into activity pockets.
+Only those pockets are copied back into contiguous sorted arrays and their
+direct min/max indices repaired. Membership changes still rebuild the
+complete endpoint lists; axes with unchanged encoded keys are skipped. A rejected
 collision or solver transaction invalidates this derived state for
 a subsequent rebuild without adding a dense endpoint snapshot to
 the per-frame checkpoint. Each live volume retains exactly one
@@ -1339,14 +1341,17 @@ together with coalesced endpoint activity pockets. Actor membership
 changes rebuild all endpoints. Rejected Gu/Dy transactions invalidate
 the derived pair hash for reconstruction from the previously committed
 Sc pair stream; no per-frame dense hash snapshot is required.
-Original linked-list pocket reorder operations, exact pair-manager
-scratch-index ordering and CPU-GPU performance parity remain open.
+The linked ordering follows the source's activity-pocket mechanism,
+while its original sorted-update worklist and exact pair-manager
+scratch-index ordering remain separate refinement targets. CPU-GPU
+performance parity remains unproven.
 Native tests verify three-axis endpoint/index invariants, sparse
 teleports, pair-state cancellation and hash-chain compaction, stable
 contact-manager handles, exact 104-frame candidate/event comparison,
-and 48-frame multi-volume activity-pocket oracle coverage. Benchmarks
-include stationary, local, contacting, teleport, retired-history,
-persistent-pair, static-membership and activity-pocket workloads;
+48-frame multi-volume activity-pocket oracle coverage and an additional
+80-frame multi-axis reorder/reversal oracle. Benchmarks include stationary,
+local, contacting, teleport, retired-history, persistent-pair,
+static-membership, activity-pocket and isolated endpoint-only workloads;
 CI timings are diagnostic, not conformance thresholds.
 `ScBodySim::deactivate` and `BodySim::putToSleep` also clear both
 per-step velocity changes and per-second accelerations in the same
