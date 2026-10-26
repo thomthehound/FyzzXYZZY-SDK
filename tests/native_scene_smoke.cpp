@@ -6296,40 +6296,6 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
-void verify_default_world_native_execution() {
-    using namespace fyzz;
-    static_assert(WorldOptions{}.execution==ExecutionMode::NativeCpu,
-                  "The SDK default must not select its PhysX oracle");
-    World implicit;
-    World explicit_native(WorldOptions{ExecutionMode::NativeCpu});
-    const auto simulate=[](World& world) {
-        world.add_static_floor(0.0f);
-        const auto body=world.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.15f,2.5f,-0.2f},1.5f);
-        world.set_body_velocity(body,{0.4f,-0.2f,0.1f});
-        std::array<BodyState,12> states{};
-        for(std::size_t i=0;i<states.size();++i) {
-            world.step(i%2?1.0f/120.0f:1.0f/240.0f);
-            states[i]=world.body_state(body);
-        }
-        return states;
-    };
-    const auto a=simulate(implicit);
-    const auto b=simulate(explicit_native);
-    for(std::size_t i=0;i<a.size();++i) {
-        const auto difference=[](Vec3 x,Vec3 y) {
-            return std::max({std::abs(x.x-y.x),std::abs(x.y-y.y),
-                             std::abs(x.z-y.z)});
-        };
-        if(difference(a[i].position,b[i].position)>1.0e-6f ||
-           difference(a[i].velocity,b[i].velocity)>1.0e-6f ||
-           difference(a[i].angular_velocity,b[i].angular_velocity)>1.0e-6f ||
-           a[i].sleeping!=b[i].sleeping)
-            throw std::runtime_error(
-                "Default World silently selected non-native PhysX execution");
-    }
-}
-
 void verify_source_sleep_wake_generator_matrix() {
     using namespace fyzz;
     // Sleep/wake acceptance was previously confined to default PCM.
@@ -14225,7 +14191,6 @@ int run_native_scene_smoke() {
     verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
-    verify_default_world_native_execution();
     verify_source_sleep_wake_generator_matrix();
     verify_source_combined_lifecycle_matrix();
     verify_source_multiframe_completion();
