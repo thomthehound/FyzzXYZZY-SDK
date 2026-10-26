@@ -26,6 +26,528 @@
 // exact normal, so a purely geometric fixture would miss the source
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
+struct SourceSapEndpointFixture {
+    static void check(Scene& scene) {
+        const auto& actors=scene.actors_;
+        std::vector<std::array<unsigned,2>> counts(actors.size());
+        std::size_t admitted=0;
+        for(const auto& actor:actors)
+            if(actor.alive && actor.simulation_shape_enabled &&
+               actor.kind!=Scene::Kind::StaticPlane)
+                ++admitted;
+        if(scene.sap_volumes_.size()!=admitted)
+            throw std::runtime_error(
+                "Source SAP previous-bounds registry diverged from live boxes");
+        for(const auto& volume:scene.sap_volumes_)
+            if(!actors[volume.id].alive ||
+               !actors[volume.id].simulation_shape_enabled ||
+               volume.published_bounds!=actors[volume.id].encoded_bounds)
+                throw std::runtime_error(
+                    "Source SAP AABB witness not owned by live box");
+        for(unsigned axis=0;axis<3;++axis) {
+            const auto& endpoints=scene.sap_axis_endpoints_[axis];
+            if(endpoints.size()!=admitted*2)
+                throw std::runtime_error(
+                    "Source SAP axis missing min/max endpoints");
+            for(std::size_t index=0;index<endpoints.size();++index) {
+                const auto& ep=endpoints[index];
+                if(ep.id>=actors.size() ||
+                   !actors[ep.id].alive ||
+                   !actors[ep.id].simulation_shape_enabled ||
+                   actors[ep.id].kind==Scene::Kind::StaticPlane ||
+                   ep.value!=actors[ep.id].encoded_bounds[
+                       axis+(ep.is_max?3:0)])
+                    throw std::runtime_error(
+                        "Source SAP axis endpoint differs from encoded AABB");
+                if(ep.volume_slot>=scene.sap_volumes_.size() ||
+                   scene.sap_volumes_[ep.volume_slot].id!=ep.id ||
+                   scene.sap_volumes_[ep.volume_slot].
+                       endpoint_positions[axis][ep.is_max?1u:0u]!=index)
+                    throw std::runtime_error(
+                        "PhysX SapBox1D min/max index mapping is stale");
+                if(index>0) {
+                    const auto& prev=endpoints[index-1];
+                    const bool wrong_key=prev.value>ep.value;
+                    const bool wrong_type=prev.value==ep.value &&
+                        prev.is_max && !ep.is_max;
+                    const bool wrong_id=prev.value==ep.value &&
+                        prev.is_max==ep.is_max && prev.id>=ep.id;
+                    if(wrong_key || wrong_type || wrong_id)
+                        throw std::runtime_error(
+                            "Source SAP min/max endpoint order broken");
+                }
+                ++counts[ep.id][ep.is_max?1:0];
+            }
+            for(std::size_t id=0;id<actors.size();++id) {
+                const auto& actor=actors[id];
+                const unsigned expected=
+                    actor.alive && actor.simulation_shape_enabled &&
+                    actor.kind!=Scene::Kind::StaticPlane ? 1u:0u;
+                if(counts[id][0]!=expected* (axis+1) ||
+                   counts[id][1]!=expected* (axis+1))
+                    throw std::runtime_error(
+                        "Source SAP min/max owner multiplicity diverged");
+            }
+        }
+    }
+    static void verify_pair_manager_states() {
+        // Exercise source PAIR_NEW/PAIR_REMOVED cancellation and the
+        // packed hash-chain swap-last removal directly. This catches
+        // state-machine regressions that final AABB equality cannot.
+        Scene::SapPairManager manager;
+        std::vector<Pair> collisions;
+        for(BodyId id=1;id<20000 && collisions.size()<40;++id) {
+            const Pair pair{0,id};
+            if((Scene::SapPairManager::hash(pair)&63u)==0u)
+                collisions.push_back(pair);
+        }
+        if(collisions.size()!=40)
+            throw std::runtime_error(
+                "SAP hash-chain fixture did not find enough collisions");
+        std::vector<Pair> created,deleted;
+        for(Pair pair:collisions)manager.add(pair);
+        manager.finish(created,deleted);
+        if(created.size()!=collisions.size() || !deleted.empty())
+            throw std::runtime_error(
+                "SAP new-pair publication did not preserve collisions");
+        // Remove then re-add in one update leaves an old pair alive.
+        for(std::size_t i=0;i<collisions.size();i+=2) {
+            manager.remove(collisions[i]);
+            manager.add(collisions[i]);
+        }
+        // Created and removed before publication never enter Sc.
+        const Pair transient{1,19999};
+        manager.add(transient);
+        manager.remove(transient);
+        manager.finish(created,deleted);
+        if(!created.empty() || !deleted.empty() ||
+           manager.find(transient)!=Scene::SapPairManager::invalid)
+            throw std::runtime_error(
+                "SAP same-frame pair cancellation leaked an event");
+        // Force removal from middle of a long collision chain. Its last
+        // packed pair must relink at the moved index, not the old slot.
+        for(std::size_t i=0;i<collisions.size();i+=2)
+            manager.remove(collisions[i]);
+        manager.finish(created,deleted);
+        if(!created.empty() || deleted.size()!=collisions.size()/2)
+            throw std::runtime_error(
+                "SAP collision-chain retirement lost deletion reports");
+        for(std::size_t i=0;i<collisions.size();++i) {
+            const auto index=manager.find(collisions[i]);
+            if((index!=Scene::SapPairManager::invalid)!=(i%2==1))
+                throw std::runtime_error(
+                    "SAP swap-last retirement corrupted the hash chain");
+        }
+        // A full update removes unmatched old pairs and retains only
+        // specifically reaffirmed members with their persistent keys.
+        manager.begin_full();
+        const Pair novel{2,19998};
+        manager.add(collisions[1]);
+        manager.add(novel);
+        manager.finish(created,deleted);
+        if(created.size()!=1 || created[0]!=novel ||
+           deleted.size()!=collisions.size()/2-1 ||
+           manager.active_pairs.size()!=2 ||
+           manager.find(collisions[1])==Scene::SapPairManager::invalid ||
+           manager.find(novel)==Scene::SapPairManager::invalid)
+            throw std::runtime_error(
+                "SAP full-update pair-state reconciliation diverged");
+    }
+    static void check_pair_registry(const Scene& scene) {
+        if(scene.sap_pair_registry_dirty_)
+            throw std::runtime_error(
+                "SAP hash not synchronized with completed publication");
+        std::vector<Pair> expected;
+        for(const auto pair:scene.pairs())
+            if(scene.actors_[pair.a].kind!=Scene::Kind::StaticPlane &&
+               scene.actors_[pair.b].kind!=Scene::Kind::StaticPlane)
+                expected.push_back(pair);
+        auto actual=scene.sap_pairs_.active_pairs;
+        std::sort(actual.begin(),actual.end());
+        if(actual!=expected)
+            throw std::runtime_error(
+                "Hashed SAP pair ownership differs from Sc edge publication");
+        for(std::size_t i=0;i<expected.size();++i) {
+            const auto index=scene.sap_pairs_.find(expected[i]);
+            if(index==Scene::SapPairManager::invalid ||
+               scene.sap_pairs_.states[index]!=0)
+                throw std::runtime_error(
+                    "SAP persistent pair missing or retains transient state");
+        }
+        if(!scene.sap_pairs_.touched.empty())
+            throw std::runtime_error(
+                "SAP pair manager retained an uncommitted activity entry");
+        for(std::size_t i=0;i<scene.sap_pairs_.active_pairs.size();++i)
+            if(scene.sap_pairs_.find(scene.sap_pairs_.active_pairs[i])!=i)
+                throw std::runtime_error(
+                    "SAP compacted pair hash chain has stale slot index");
+    }
+    static void verify_crossing_stress() {
+        // Independent final-state oracle derived directly from source
+        // BpIntegerAABB encoded bounds, rather than invoking the SAP
+        // candidate generator under test. Rotate and move several
+        // source volumes at once, forcing sparse crossing events,
+        // multi-axis changes, and full-update fallback in one test.
+        Scene scene;
+        std::vector<BodyId> statics,dynamics;
+        for(int i=0;i<12;++i)
+            statics.push_back(scene.add_static_box(
+                {0.35f+0.08f*float(i%3),0.4f,0.35f},
+                {float((i%4)-2)*2.0f,float(i/4-1)*2.0f,0}));
+        for(int i=0;i<9;++i)
+            dynamics.push_back(scene.add_dynamic_box(
+                {0.32f+0.06f*float(i%4),0.4f,0.35f},
+                {float((i%3)-1)*1.6f,float(i/3-1)*1.6f,0},1.0f));
+        const BodyId floor=scene.add_static_floor(-5.0f);
+        scene.advance_collision();
+        std::vector<Pair> previous;
+        const auto verify_pairs=[&]() {
+            std::vector<Pair> expected;
+            for(std::size_t i=0;i<scene.actors_.size();++i) {
+                const auto& a=scene.actors_[i];
+                if(!a.alive || !a.simulation_shape_enabled)continue;
+                for(std::size_t j=i+1;j<scene.actors_.size();++j) {
+                    const auto& c=scene.actors_[j];
+                    if(!c.alive || !c.simulation_shape_enabled ||
+                       (a.kind!=Scene::Kind::DynamicBox &&
+                        c.kind!=Scene::Kind::DynamicBox))continue;
+                    if(a.kind!=Scene::Kind::StaticPlane &&
+                       c.kind!=Scene::Kind::StaticPlane) {
+                        const auto& aa=a.encoded_bounds;
+                        const auto& bb=c.encoded_bounds;
+                        if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                           aa[1]>bb[4] || bb[1]>aa[4] ||
+                           aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    }
+                    expected.push_back({
+                        static_cast<BodyId>(i),static_cast<BodyId>(j)});
+                }
+            }
+            std::sort(expected.begin(),expected.end());
+            const auto actual=scene.pairs();
+            check_pair_registry(scene);
+            if(!std::equal(actual.begin(),actual.end(),
+                           expected.begin(),expected.end()))
+                throw std::runtime_error(
+                    "Three-axis source crossing pairs differ from encoded AABB oracle");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto created=scene.found_pairs();
+            const auto removed=scene.lost_pairs();
+            if(!std::equal(created.begin(),created.end(),
+                           found.begin(),found.end()) ||
+               !std::equal(removed.begin(),removed.end(),
+                           lost.begin(),lost.end()))
+                throw std::runtime_error(
+                    "Three-axis source crossing Found/Lost differs from encoded AABB oracle");
+            previous=std::move(expected);
+        };
+        verify_pairs();
+        const auto initial_crosses=
+            scene.broadphase_endpoint_crossing_count();
+        for(int frame=0;frame<104;++frame) {
+            for(int i=0;i<9;++i) {
+                if(frame%13!=0 && (frame+3*i)%9!=0)continue;
+                const float x=float((frame*7+i*11)%21-10)*0.57f;
+                const float y=float((frame*5+i*13)%17-8)*0.55f;
+                const float z=float((frame*3+i*7)%9-4)*0.34f;
+                const float a=float((frame*3+i*5)%17-8)*0.1f;
+                const fyzz::Quat q{0,0,std::sin(a),std::cos(a)};
+                scene.set_pose(dynamics[static_cast<std::size_t>(i)],
+                               {x,y,z},q);
+            }
+            if(frame%19==0) {
+                const auto id=statics[3];
+                scene.set_position(id,{float(frame%5-2)*0.65f,0,0});
+            }
+            if(frame==29 || frame==37)
+                scene.set_shape_simulation_enabled(
+                    dynamics[5],frame==37);
+            if(frame==48 || frame==53)
+                scene.set_shape_simulation_enabled(
+                    floor,frame==53);
+            if(frame==71)scene.remove(statics[10]);
+            if(frame==72)scene.add_static_box(
+                {0.5f,0.5f,0.5f},{0,0,0});
+            scene.advance_collision();
+            check(scene);
+            verify_pairs();
+        }
+        if(scene.broadphase_endpoint_crossing_count()==initial_crosses)
+            throw std::runtime_error(
+                "Three-axis SAP stress oracle lacked source endpoint crossings");
+    }
+    static void verify_adversarial_activity_pockets() {
+        // Reorder many endpoints on all three axes in every frame.
+        // Reverse direction, share encoded keys, and teleport across
+        // multiple pocket ranges. The encoded AABB set is independent
+        // of the linked reorder under test.
+        Scene scene;
+        for(int i=0;i<40;++i)
+            scene.add_static_box({0.48f,0.43f,0.47f},
+                {float(i%8-4)*1.2f,float(i/8-2)*1.1f,0});
+        std::array<BodyId,32> moving{};
+        for(int i=0;i<32;++i)
+            moving[i]=scene.add_dynamic_box(
+                {0.36f,0.39f,0.35f},
+                {float(i%8-4)*1.2f,float(i/8-2)*1.1f,0},1.0f);
+        scene.advance_collision();
+        check(scene);
+        std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
+        const auto original_sorts=scene.broadphase_endpoint_full_sort_count();
+        const auto original_pockets=scene.broadphase_activity_pocket_count();
+        for(int frame=0;frame<80;++frame) {
+            for(int i=0;i<32;++i) {
+                const int phase=(frame&1)?1:-1;
+                const float x=float(((frame*7+i*13)%27)-13)*0.42f*phase;
+                const float y=float(((frame*11+i*5)%23)-11)*0.34f;
+                const float z=float(((frame*3+i*9)%15)-7)*0.23f;
+                const float angle=float((frame+i)%9-4)*0.13f;
+                const fyzz::Quat q{0,0,std::sin(angle),std::cos(angle)};
+                scene.set_pose(moving[static_cast<std::size_t>(i)],
+                               {x,y,z},q);
+            }
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            std::vector<Pair> expected;
+            for(BodyId i=0;i<scene.actors_.size();++i)
+                for(BodyId j=i+1;j<scene.actors_.size();++j) {
+                    const auto& a=scene.actors_[i];
+                    const auto& b=scene.actors_[j];
+                    if(a.kind!=Scene::Kind::DynamicBox &&
+                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    const auto& aa=a.encoded_bounds;
+                    const auto& bb=b.encoded_bounds;
+                    if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                       aa[1]>bb[4] || bb[1]>aa[4] ||
+                       aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    expected.push_back({i,j});
+                }
+            const auto published=scene.pairs();
+            if(!std::equal(expected.begin(),expected.end(),
+                           published.begin(),published.end()))
+                throw std::runtime_error(
+                    "Linked pocket reorder changed encoded AABB membership");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto born=scene.found_pairs(),dead=scene.lost_pairs();
+            if(!std::equal(found.begin(),found.end(),
+                           born.begin(),born.end()) ||
+               !std::equal(lost.begin(),lost.end(),
+                           dead.begin(),dead.end()))
+                throw std::runtime_error(
+                    "Linked pocket reorder changed SAP Found/Lost publication");
+            previous=std::move(expected);
+        }
+        if(scene.broadphase_activity_pocket_count()==original_pockets ||
+           scene.broadphase_endpoint_full_sort_count()!=original_sorts)
+            throw std::runtime_error(
+                "Adversarial multi-volume changes bypassed activity pockets");
+    }
+    static void verify_source_activity_pockets() {
+        Scene scene;
+        std::array<BodyId,72> statics{};
+        std::array<BodyId,28> moving{};
+        for(std::size_t i=0;i<statics.size();++i)
+            statics[i]=scene.add_static_box(
+                {0.45f,0.45f,0.45f},
+                {float(i%12)*2.0f,float(i/12)*2.0f,0});
+        for(std::size_t i=0;i<moving.size();++i)
+            moving[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%12)*2.0f,float(i/12)*2.0f,0},1.0f);
+        scene.advance_collision();
+        const auto prior_pockets=scene.broadphase_activity_pocket_count();
+        const auto prior_full=scene.broadphase_endpoint_full_sort_count();
+        std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
+        for(unsigned frame=0;frame<48;++frame) {
+            for(std::size_t i=0;i<moving.size();++i) {
+                const float x=float(int((frame*3+i*11)%13)-6)*0.23f;
+                const float y=float(int((frame*7+i*3)%17)-8)*0.19f;
+                scene.set_position(moving[i],
+                    {float(i%12)*2.0f+x,
+                     float(i/12)*2.0f+y,0});
+            }
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            std::vector<Pair> expected;
+            for(BodyId i=0;i<scene.actors_.size();++i)
+                for(BodyId j=i+1;j<scene.actors_.size();++j) {
+                    const auto& a=scene.actors_[i];
+                    const auto& b=scene.actors_[j];
+                    if(a.kind!=Scene::Kind::DynamicBox &&
+                       b.kind!=Scene::Kind::DynamicBox)continue;
+                    const auto& aa=a.encoded_bounds;
+                    const auto& bb=b.encoded_bounds;
+                    if(aa[0]>bb[3] || bb[0]>aa[3] ||
+                       aa[1]>bb[4] || bb[1]>aa[4] ||
+                       aa[2]>bb[5] || bb[2]>aa[5])continue;
+                    expected.push_back({i,j});
+                }
+            const auto actual=scene.pairs();
+            if(!std::equal(expected.begin(),expected.end(),
+                           actual.begin(),actual.end()))
+                throw std::runtime_error(
+                    "Source activity pockets changed encoded-AABB pair membership");
+            std::vector<Pair> found,lost;
+            std::set_difference(expected.begin(),expected.end(),
+                                previous.begin(),previous.end(),
+                                std::back_inserter(found));
+            std::set_difference(previous.begin(),previous.end(),
+                                expected.begin(),expected.end(),
+                                std::back_inserter(lost));
+            const auto new_pairs=scene.found_pairs();
+            const auto retired_pairs=scene.lost_pairs();
+            if(!std::equal(found.begin(),found.end(),
+                           new_pairs.begin(),new_pairs.end()) ||
+               !std::equal(lost.begin(),lost.end(),
+                           retired_pairs.begin(),retired_pairs.end()))
+                throw std::runtime_error(
+                    "Source activity pocket pair reports diverged");
+            previous=std::move(expected);
+        }
+        if(scene.broadphase_activity_pocket_count()==prior_pockets ||
+           scene.broadphase_endpoint_full_sort_count()!=prior_full)
+            throw std::runtime_error(
+                "Batch SAP updates bypassed local activity pockets");
+    }
+    static void verify_static_only_full_sweep() {
+        // Source group filtering must reject static/static pairs even
+        // when every encoded bound overlaps. Membership changes force
+        // complete endpoint sweeps, not the sparse crossing path.
+        Scene scene;
+        for(unsigned i=0;i<96;++i)
+            scene.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+        const BodyId toggle=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0,0});
+        scene.advance_collision();
+        const auto initial_sorts=
+            scene.broadphase_endpoint_full_sort_count();
+        for(unsigned frame=0;frame<16;++frame) {
+            scene.set_shape_simulation_enabled(toggle,frame%2!=0);
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            if(!scene.pairs().empty() ||
+               !scene.found_pairs().empty() ||
+               !scene.lost_pairs().empty())
+                throw std::runtime_error(
+                    "Static-only SAP full sweep published filtered pairs");
+        }
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts+16)
+            throw std::runtime_error(
+                "Static membership changes skipped required SAP rebuilds");
+    }
+    static void verify_persistent_overlap_crossings() {
+        // A large published contact-manager set with one sparse mover
+        // exercises interleaved old/new pair keys. Endpoint crossings
+        // must not retire any unaffected pair or change its EdgeIndex.
+        Scene scene;
+        constexpr std::size_t count=96;
+        std::array<BodyId,count> statics{};
+        for(std::size_t i=0;i<count;++i)
+            statics[i]=scene.add_static_box(
+                {0.5f,0.5f,0.5f},{0,0,0});
+        const BodyId stable=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const BodyId mover=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{7,7,7},1.0f);
+        scene.advance_collision();
+        if(scene.pairs().size()!=count ||
+           scene.found_pairs().size()!=count)
+            throw std::runtime_error(
+                "SAP persistent-pair fixture failed initial admission");
+        std::array<std::uint32_t,count> handles{};
+        for(std::size_t i=0;i<count;++i) {
+            handles[i]=scene.contact_edge_index({statics[i],stable});
+            if(handles[i]==Scene::invalid_edge)
+                throw std::runtime_error(
+                    "SAP persistent manager missing its initial EdgeIndex");
+        }
+        const auto initial_sorts=
+            scene.broadphase_endpoint_full_sort_count();
+        for(unsigned frame=0;frame<24;++frame) {
+            const bool overlapping=(frame%2)==0;
+            scene.set_position(mover,overlapping
+                ? Vec3{0,0,0}:Vec3{7,7,7});
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            const auto published=scene.pairs();
+            if(published.size()!=count+(overlapping?count+1:0) ||
+               !std::is_sorted(published.begin(),published.end()))
+                throw std::runtime_error(
+                    "Sparse SAP pair merge lost sorted persistent managers");
+            if(scene.found_pairs().size()!=(overlapping?count+1:0) ||
+               scene.lost_pairs().size()!=(overlapping?0:count+1))
+                throw std::runtime_error(
+                    "Sparse SAP crossing published incorrect pair deltas");
+            for(std::size_t i=0;i<count;++i) {
+                if(scene.contact_edge_index({statics[i],stable})!=handles[i])
+                    throw std::runtime_error(
+                        "Sparse SAP replaced an unaffected contact manager");
+                const Pair new_pair{statics[i],mover};
+                if(std::binary_search(published.begin(),published.end(),
+                                      new_pair)!=overlapping)
+                    throw std::runtime_error(
+                        "Sparse SAP missed an interleaved crossing pair");
+            }
+            if(std::binary_search(published.begin(),published.end(),
+                                  Pair{stable,mover})!=overlapping)
+                throw std::runtime_error(
+                    "Sparse SAP missed the dynamic/dynamic crossing pair");
+        }
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts)
+            throw std::runtime_error(
+                "Sparse SAP reconstructed endpoints for one mover");
+    }
+    static void verify() {
+        Scene scene;
+        const auto a=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0,0});
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const auto c=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{4,0,0},1.0f);
+        const auto plane=scene.add_static_floor(0.0f);
+        scene.advance_collision();
+        check(scene); // equal encoded min/max keys across two boxes
+        const auto initial_sorts=scene.broadphase_endpoint_full_sort_count();
+        scene.set_position(c,{4,0.7f,-0.7f});
+        scene.advance_collision();
+        check(scene);
+        if(scene.broadphase_endpoint_full_sort_count()!=initial_sorts)
+            throw std::runtime_error(
+                "Small Y/Z AABB edits unnecessarily rebuilt full source SAP");
+        scene.set_position(c,{0,0,0});
+        scene.advance_collision();
+        check(scene);
+        scene.set_shape_simulation_enabled(b,false);
+        scene.advance_collision();
+        check(scene);
+        scene.set_shape_simulation_enabled(b,true);
+        scene.advance_collision();
+        check(scene);
+        scene.remove(a);
+        scene.advance_collision();
+        check(scene);
+        scene.remove(plane);
+        scene.advance_collision();
+        check(scene);
+    }
+};
 // Gu and PGS conformance fixtures select diagnostic legacy contact
 // generation explicitly; the default Scene constructor uses PCM.
 struct ConstraintIslandSourceFixture {
@@ -11546,6 +12068,13 @@ int run_native_scene_smoke() {
 
 int main() {
     try {
+    fyzz::native::SourceSapEndpointFixture::verify();
+    fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
+    fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
+    fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
+    fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
+    fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
+    fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "native scene smoke: %s\n", e.what());
