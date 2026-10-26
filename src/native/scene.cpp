@@ -936,6 +936,8 @@ void Scene::update_bounds() {
     };
     broadphase_updated_ids_.clear();
     broadphase_updated_volume_slots_.clear();
+    broadphase_updated_axis_masks_.clear();
+    broadphase_changed_axes_=0;
     broadphase_crossed_pairs_.clear();
     broadphase_full_pair_update_=broadphase_endpoint_membership_dirty_;
     broadphase_batch_pair_set_unchanged_=false;
@@ -983,9 +985,17 @@ void Scene::update_bounds() {
             if(!actor.cached_bounds_current)
                 update_actor_bounds(actor);
             if(volume.published_bounds!=actor.encoded_bounds) {
+                std::uint8_t axes=0;
+                for(unsigned axis=0;axis<3;++axis)
+                    if(volume.published_bounds[axis]!=actor.encoded_bounds[axis] ||
+                       volume.published_bounds[axis+3]!=
+                           actor.encoded_bounds[axis+3])
+                        axes|=static_cast<std::uint8_t>(1u<<axis);
                 broadphase_updated_ids_.push_back(volume.id);
                 broadphase_updated_volume_slots_.push_back(
                     static_cast<std::uint32_t>(slot));
+                broadphase_updated_axis_masks_.push_back(axes);
+                broadphase_changed_axes_|=axes;
                 volume.published_bounds=actor.encoded_bounds;
             }
         }
@@ -1004,109 +1014,20 @@ void Scene::update_bounds() {
         const bool sparse=broadphase_updated_volume_slots_.size()*5<
                           sap_volumes_.size();
         if(!sparse) {
-            // PhysX's many-updates route bounds work by the affected
-            // activity pockets, not the total number of mUpdated bodies.
-            // Probe old sorted endpoint ranks before changing any key.
-            // Narrow pockets can use the same indexed endpoint shifts
-            // as batchUpdateFewUpdates without building three full
-            // n-element linked arrays. Far motion continues through
-            // the source-style linked activity-pocket reorder.
-            const std::size_t direct_budget=
-                std::max<std::size_t>(48,sap_volumes_.size()*6);
-            std::size_t predicted_shifts=0;
-            for(unsigned axis=0;axis<3 && predicted_shifts<=direct_budget;
-                ++axis) {
-                const auto& endpoints=sap_axis_endpoints_[axis];
-                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
-                    for(unsigned side=0;side<2;++side) {
-                        const auto index=sap_volumes_[slot].
-                            endpoint_positions[axis][side];
-                        Endpoint moving=endpoints[index];
-                        moving.value=actors_[moving.id].encoded_bounds[
-                            axis+(side?3:0)];
-                        if(moving.value==endpoints[index].value)continue;
-                        const auto target=static_cast<std::size_t>(
-                            std::lower_bound(endpoints.begin(),
-                                             endpoints.end(),moving,less)-
-                            endpoints.begin());
-                        predicted_shifts+=target>index
-                            ? target-index:index-target;
-                    }
-                    if(predicted_shifts>direct_budget)break;
-                }
-            }
-            if(predicted_shifts<=direct_budget) {
-                std::size_t actual_shifts=0;
-                const auto record_crossing=[&](const Endpoint& moving,
-                                                const Endpoint& other) {
-                    if(moving.id==other.id ||
-                       moving.is_max==other.is_max)return;
-                    if(actors_[moving.id].kind!=Kind::DynamicBox &&
-                       actors_[other.id].kind!=Kind::DynamicBox)return;
-                    broadphase_crossed_pairs_.push_back(
-                        ordered_pair(moving.id,other.id));
-                    ++broadphase_endpoint_crossing_count_;
-                };
-                for(unsigned axis=0;axis<3;++axis) {
-                    auto& endpoints=sap_axis_endpoints_[axis];
-                    for(std::uint32_t slot:broadphase_updated_volume_slots_)
-                        for(unsigned side=0;side<2;++side) {
-                            auto& position=sap_volumes_[slot].
-                                endpoint_positions[axis][side];
-                            std::size_t index=position;
-                            Endpoint moving=endpoints[index];
-                            moving.value=actors_[moving.id].encoded_bounds[
-                                axis+(side?3:0)];
-                            if(moving.value==endpoints[index].value)continue;
-                            if(index && less(moving,endpoints[index-1])) {
-                                do {
-                                    record_crossing(moving,endpoints[index-1]);
-                                    endpoints[index]=endpoints[index-1];
-                                    const Endpoint shifted=endpoints[index];
-                                    sap_volumes_[shifted.volume_slot].
-                                        endpoint_positions[axis][
-                                            shifted.is_max?1u:0u]=
-                                        static_cast<std::uint32_t>(index);
-                                    --index;
-                                    ++actual_shifts;
-                                } while(index && less(moving,endpoints[index-1]));
-                            } else {
-                                while(index+1<endpoints.size() &&
-                                      less(endpoints[index+1],moving)) {
-                                    record_crossing(moving,endpoints[index+1]);
-                                    endpoints[index]=endpoints[index+1];
-                                    const Endpoint shifted=endpoints[index];
-                                    sap_volumes_[shifted.volume_slot].
-                                        endpoint_positions[axis][
-                                            shifted.is_max?1u:0u]=
-                                        static_cast<std::uint32_t>(index);
-                                    ++index;
-                                    ++actual_shifts;
-                                }
-                            }
-                            endpoints[index]=moving;
-                            position=static_cast<std::uint32_t>(index);
-                        }
-                }
-                broadphase_endpoint_local_shift_count_+=actual_shifts;
-                ++broadphase_batch_direct_update_count_;
-                broadphase_batch_crossings_complete_=true;
-                broadphase_batch_pair_set_unchanged_=
-                    broadphase_crossed_pairs_.empty();
-                if(!actual_shifts)
-                    ++broadphase_batch_stable_order_count_;
-                return;
-            }
             bool all_axes_stable=true;
             // BpBroadPhaseSap::batchUpdate: update the encoded keys in
             // their original slots, then reorder linked endpoint indices.
             // Materialize only the affected activity pockets.
             for(unsigned axis=0;axis<3;++axis) {
+                const std::uint8_t axis_bit=static_cast<std::uint8_t>(1u<<axis);
+                if(!(broadphase_changed_axes_&axis_bit))continue;
                 auto& endpoints=sap_axis_endpoints_[axis];
                 const std::size_t n=endpoints.size();
                 if(!n)continue;
                 bool changed=false;
-                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                for(std::size_t updated=0;updated<broadphase_updated_volume_slots_.size();++updated) {
+                    if(!(broadphase_updated_axis_masks_[updated]&axis_bit))continue;
+                    const std::uint32_t slot=broadphase_updated_volume_slots_[updated];
                     for(unsigned side=0;side<2;++side) {
                         const auto index=sap_volumes_[slot].
                             endpoint_positions[axis][side];
@@ -1125,7 +1046,9 @@ void Scene::update_bounds() {
                 // O(mUpdated), without initializing the n-element linked
                 // workspace on ordinary coherent bulk movement.
                 bool ordering_changed=false;
-                for(std::uint32_t slot:broadphase_updated_volume_slots_) {
+                for(std::size_t updated=0;updated<broadphase_updated_volume_slots_.size();++updated) {
+                    if(!(broadphase_updated_axis_masks_[updated]&axis_bit))continue;
+                    const std::uint32_t slot=broadphase_updated_volume_slots_[updated];
                     for(unsigned side=0;side<2;++side) {
                         const auto index=sap_volumes_[slot].
                             endpoint_positions[axis][side];
@@ -1142,10 +1065,15 @@ void Scene::update_bounds() {
                 sap_endpoint_updated_.resize(n);
                 std::fill(sap_endpoint_updated_.begin(),
                           sap_endpoint_updated_.end(),0);
-                for(std::uint32_t slot:broadphase_updated_volume_slots_)
+                for(std::size_t updated=0;
+                    updated<broadphase_updated_volume_slots_.size();++updated) {
+                    if(!(broadphase_updated_axis_masks_[updated]&axis_bit))
+                        continue;
+                    const auto slot=broadphase_updated_volume_slots_[updated];
                     for(unsigned side=0;side<2;++side)
                         sap_endpoint_updated_[sap_volumes_[slot].
                             endpoint_positions[axis][side]]=1;
+                }
                 sap_list_next_.resize(n+1);
                 sap_list_prev_.resize(n+1);
                 const std::size_t sentinel=n;
@@ -1176,6 +1104,18 @@ void Scene::update_bounds() {
                     while(previous!=sentinel) {
                         ++broadphase_activity_pocket_comparisons_;
                         if(!less(moving,endpoints[previous]))break;
+                        // Source SAP batchUpdate pair candidates are
+                        // crossings between min/max endpoints, not
+                        // movements of same-kind endpoint keys.
+                        const Endpoint& passed=endpoints[previous];
+                        if(moving.id!=passed.id &&
+                           moving.is_max!=passed.is_max &&
+                           (actors_[moving.id].kind==Kind::DynamicBox ||
+                            actors_[passed.id].kind==Kind::DynamicBox)) {
+                            broadphase_crossed_pairs_.push_back(
+                                ordered_pair(moving.id,passed.id));
+                            ++broadphase_endpoint_crossing_count_;
+                        }
                         start_index=std::min(start_index,previous);
                         previous=sap_list_prev_[previous];
                     }
@@ -1228,10 +1168,11 @@ void Scene::update_bounds() {
                     broadphase_activity_pocket_endpoint_count_+=length;
                 }
             }
-            if(all_axes_stable) {
-                broadphase_batch_pair_set_unchanged_=true;
+            broadphase_batch_crossings_complete_=true;
+            broadphase_batch_pair_set_unchanged_=
+                broadphase_crossed_pairs_.empty();
+            if(all_axes_stable)
                 ++broadphase_batch_stable_order_count_;
-            }
             return;
         }
         const std::size_t budget=sparse

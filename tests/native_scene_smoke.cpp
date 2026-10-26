@@ -443,7 +443,8 @@ struct SourceSapEndpointFixture {
         for(unsigned i=0;i<moving;++i)
             ids[i]=scene.add_dynamic_box(
                 {0.4f,0.4f,0.4f},
-                {float(i%32)*3.0f+0.25f,float(i/32)*3.0f,0},1.0f);
+                {float(i%32)*3.0f+(i<32?0.25f:0.45f),
+                 float(i/32)*3.0f,0},1.0f);
         scene.advance_collision();
         check(scene);
         check_pair_registry(scene);
@@ -455,13 +456,13 @@ struct SourceSapEndpointFixture {
         std::vector<Scene::EdgeIndex> handles;
         for(Pair pair:initial)handles.push_back(scene.contact_edge_index(pair));
         const auto first=scene.broadphase_batch_stable_order_count();
-        const auto direct=scene.broadphase_batch_direct_update_count();
         const auto pockets=scene.broadphase_activity_pocket_count();
         for(unsigned frame=0;frame<32;++frame) {
-            const float dx=(frame&1u)?0.35f:0.15f;
+            const float dx=(frame&1u)?0.32f:0.20f;
             for(unsigned i=0;i<moving;++i)
                 scene.set_position(ids[i],
-                    {float(i%32)*3.0f+dx,float(i/32)*3.0f,0});
+                    {float(i%32)*3.0f+dx+(i<32?0.0f:0.2f),
+                     float(i/32)*3.0f,0});
             scene.advance_collision();
             check(scene);
             check_pair_registry(scene);
@@ -475,8 +476,7 @@ struct SourceSapEndpointFixture {
                     throw std::runtime_error(
                         "Coherent SAP batch replaced an unchanged Sc EdgeIndex");
         }
-        if((scene.broadphase_batch_stable_order_count()-first)+
-           (scene.broadphase_batch_direct_update_count()-direct)!=32 ||
+        if(scene.broadphase_batch_stable_order_count()!=first+32 ||
            scene.broadphase_activity_pocket_count()!=pockets)
             throw std::runtime_error(
                 "Coherent SAP batch rebuilt unnecessary activity pockets");

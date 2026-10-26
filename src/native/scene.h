@@ -262,9 +262,6 @@ public:
     std::size_t broadphase_batch_stable_order_count() const noexcept {
         return broadphase_batch_stable_order_count_;
     }
-    std::size_t broadphase_batch_direct_update_count() const noexcept {
-        return broadphase_batch_direct_update_count_;
-    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -1405,10 +1402,7 @@ private:
     // Multi-update SAP can retain every BP pair when all six changed
     // endpoint keys remain in their prior per-axis ordering.
     bool broadphase_batch_pair_set_unchanged_=false;
-    // A bounded direct endpoint walk collects exact crossings for
-    // large worklists whose actual activity pockets are tiny.
     bool broadphase_batch_crossings_complete_=false;
-    std::size_t broadphase_batch_direct_update_count_=0;
     std::size_t broadphase_batch_stable_order_count_=0;
     // Bp SAP activity pockets bound multi-update endpoint reorder work.
     struct ActivityPocket {
@@ -1432,6 +1426,10 @@ private:
     // mUpdated's compact indices into the scene-owned SapBox1D
     // registry. Prevent six complete endpoint scans for one mover.
     std::vector<std::uint32_t> broadphase_updated_volume_slots_;
+    // Derived mUpdated axis mask: skip unchanged components without
+    // rebuilding their sorted endpoint order or activity links.
+    std::vector<std::uint8_t> broadphase_updated_axis_masks_;
+    std::uint8_t broadphase_changed_axes_=0;
     std::vector<Pair> broadphase_candidate_deltas_;
     // Full SAP sweep's transient active intervals, divided by source
     // filtering class. Compact SapVolume slots support O(1) swap-last
