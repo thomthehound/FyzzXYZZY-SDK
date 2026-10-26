@@ -445,6 +445,54 @@ struct SourceSapEndpointFixture {
             throw std::runtime_error(
                 "Adversarial multi-volume changes bypassed activity pockets");
     }
+    static void verify_orthogonal_bulk_crossing_filter() {
+        // A dense batch crosses many x-axis endpoints, but the
+        // orthogonal shape bounds reject all new finite pairs.
+        // A previously published pair must still report Lost when
+        // its own x and z intervals separate simultaneously.
+        Scene scene;
+        constexpr unsigned fixed=192,moving=64;
+        for(unsigned i=0;i<fixed;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0});
+        std::array<BodyId,moving> dynamic{};
+        for(unsigned i=0;i<moving;++i)
+            dynamic[i]=scene.add_dynamic_box(
+                {0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,
+                 i==0?0.0f:1000.0f},1.0f);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=1 ||
+           !(scene.pairs()[0]==Pair{0,dynamic[0]}))
+            throw std::runtime_error(
+                "Orthogonal SAP filter fixture failed initial admission");
+        const Pair prior=scene.pairs()[0];
+        for(unsigned frame=0;frame<20;++frame) {
+            const float dx=(frame&1u)?-3.25f:3.25f;
+            for(unsigned i=0;i<moving;++i)
+                scene.set_position(dynamic[i],
+                    {float(i%32)*3.0f+dx,
+                     float(i/32)*3.0f,1000.0f});
+            const auto crossings=scene.broadphase_endpoint_crossing_count();
+            scene.advance_collision();
+            check(scene);
+            check_pair_registry(scene);
+            if(!scene.pairs().empty() || !scene.found_pairs().empty())
+                throw std::runtime_error(
+                    "Orthogonal SAP bulk crossings created false 3D pairs");
+            if(frame==0) {
+                if(scene.lost_pairs().size()!=1 ||
+                   !(scene.lost_pairs()[0]==prior))
+                    throw std::runtime_error(
+                        "Orthogonal SAP filter suppressed required Lost pair");
+            } else if(!scene.lost_pairs().empty() ||
+                      scene.broadphase_endpoint_crossing_count()!=crossings)
+                throw std::runtime_error(
+                    "Orthogonally separated SAP batch retained crossing candidates");
+        }
+    }
     static void verify_stable_multi_update_pair_lifetime() {
         // A large mUpdated batch can move without crossing any indexed
         // endpoints. Its finite SAP overlaps, source EdgeIndices and
@@ -12527,6 +12575,7 @@ int main() {
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
     fyzz::native::SourceSapEndpointFixture::verify_source_activity_pockets();
     fyzz::native::SourceSapEndpointFixture::verify_bounded_bulk_shift_publication();
+    fyzz::native::SourceSapEndpointFixture::verify_orthogonal_bulk_crossing_filter();
     fyzz::native::SourceSapEndpointFixture::verify_stable_multi_update_pair_lifetime();
     fyzz::native::SourceSapEndpointFixture::verify_adversarial_activity_pockets();
         return run_native_scene_smoke();
