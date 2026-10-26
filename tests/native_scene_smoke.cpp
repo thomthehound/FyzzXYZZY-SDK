@@ -443,7 +443,7 @@ struct SourceSapEndpointFixture {
         for(unsigned i=0;i<moving;++i)
             ids[i]=scene.add_dynamic_box(
                 {0.4f,0.4f,0.4f},
-                {float(i%32)*3.0f,float(i/32)*3.0f,0},1.0f);
+                {float(i%32)*3.0f+0.25f,float(i/32)*3.0f,0},1.0f);
         scene.advance_collision();
         check(scene);
         check_pair_registry(scene);
@@ -457,7 +457,7 @@ struct SourceSapEndpointFixture {
         const auto first=scene.broadphase_batch_stable_order_count();
         const auto pockets=scene.broadphase_activity_pocket_count();
         for(unsigned frame=0;frame<32;++frame) {
-            const float dx=(frame&1u)?0.22f:-0.22f;
+            const float dx=(frame&1u)?0.35f:0.15f;
             for(unsigned i=0;i<moving;++i)
                 scene.set_position(ids[i],
                     {float(i%32)*3.0f+dx,float(i/32)*3.0f,0});
