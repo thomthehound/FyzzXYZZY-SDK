@@ -227,6 +227,38 @@ public:
     void set_dynamics(BodyId id, RigidBodyDynamics dynamics);
     void remove(BodyId id);
     BodyState body_state(BodyId id) const;
+    // Live source broadphase proxy ownership, excluding retired actor IDs.
+    // Simulation-disabled actors retain their proxy identity but are not
+    // admitted into an active SAP endpoint until re-enabled.
+    std::size_t broadphase_registered_actor_count() const noexcept {
+        return live_actor_ids_.size();
+    }
+    // BpBroadPhaseSap endpoint-motion diagnostics, derived from the
+    // authoritative scene-owned endpoint list.
+    std::size_t broadphase_endpoint_full_sort_count() const noexcept {
+        return broadphase_endpoint_full_sort_count_;
+    }
+    std::size_t broadphase_endpoint_local_shift_count() const noexcept {
+        return broadphase_endpoint_local_shift_count_;
+    }
+    std::size_t broadphase_incremental_pair_update_count() const noexcept {
+        return broadphase_incremental_pair_update_count_;
+    }
+    std::size_t broadphase_endpoint_crossing_count() const noexcept {
+        return broadphase_endpoint_crossing_count_;
+    }
+    std::size_t broadphase_activity_pocket_count() const noexcept {
+        return broadphase_activity_pocket_count_;
+    }
+    std::size_t broadphase_activity_pocket_endpoint_count() const noexcept {
+        return broadphase_activity_pocket_endpoint_count_;
+    }
+    std::size_t broadphase_activity_pocket_comparison_count() const noexcept {
+        return broadphase_activity_pocket_comparisons_;
+    }
+    std::size_t broadphase_activity_pocket_relocation_count() const noexcept {
+        return broadphase_activity_pocket_relocations_;
+    }
     // ScBodyCore/PxsBodyCore's authoritative counter and the
     // Dy::sleepCheck readiness output. These are not yet island sleep
     // states: only the subsequent island deactivation stage may exclude
@@ -512,6 +544,8 @@ private:
     friend struct ContactCorrelationSourceFixture;
     friend struct SolverIterationSourceFixture;
     friend struct ConstraintIslandSourceFixture;
+    friend struct SourceSapEndpointFixture;
+    friend struct NativeSapTimingFixture;
     enum class Kind : std::uint8_t {
         StaticBox, DynamicBox, StaticPlane, KinematicBox
     };
@@ -681,9 +715,25 @@ private:
         double target_velocity = 0.0;
         double applied_force = 0.0;
     };
+    // BpBroadPhaseSap::mEndPointValues/mEndPointDatas: both min
+    // and max for each of three axes, with the original encoded keys.
     struct Endpoint {
-        std::uint32_t min_x = 0;
-        BodyId id = 0;
+        std::uint32_t value=0;
+        BodyId id=0;
+        // PhysX SapBox1D::mMinMax gives direct index access to a
+        // volume's min/max endpoint in every axis. Store the ordinal
+        // in the compact live SapVolume registry, not the retired
+        // BodyId high-water arena.
+        std::uint32_t volume_slot=0;
+        bool is_max=false;
+    };
+    // BpBroadPhaseSap::mBoxBoundsMinMax retained for source mUpdated
+    // detection. Each live box has one owner, independent of its six
+    // axis endpoint entries.
+    struct SapVolume {
+        BodyId id=0;
+        std::array<std::uint32_t,6> published_bounds{};
+        std::array<std::array<std::uint32_t,2>,3> endpoint_positions{};
     };
     BodyId add(Actor actor);
     Actor& require(BodyId id);
@@ -1320,8 +1370,81 @@ private:
     // Sc::BodyCore::numCountedInteractions, derived once from the
     // authoritative contact manager stream for Dy::sleepCheck.
     std::vector<std::uint32_t> sleep_interaction_counts_;
-    std::vector<Endpoint> endpoints_;
-    std::vector<BodyId> active_;
+    // retired slots never participate in the SAP workload again. Keep
+    // registration in insertion order; retirement erases only its live
+    // proxy. This is derived from the authoritative Actor::alive state.
+    std::vector<BodyId> live_actor_ids_;
+    // BpBroadPhaseSap's 3 axes of sorted min/max endpoint keys.
+    // No second broadphase owner: volumes_ holds prior AABB witnesses,
+    // and live_actor_ids_ remains the authoritative volume membership.
+    std::array<std::vector<Endpoint>,3> sap_axis_endpoints_;
+    std::vector<SapVolume> sap_volumes_;
+    bool broadphase_endpoint_membership_dirty_=true;
+    std::size_t broadphase_endpoint_full_sort_count_=0;
+    std::size_t broadphase_endpoint_local_shift_count_=0;
+    // BpBroadPhaseSap's mUpdated handles and candidate pair scratch.
+    // Bounded native CPU pair updates retain the source pair registry
+    // and its Found/Lost edge publication, not a second pair owner.
+    bool broadphase_full_pair_update_=true;
+    // Bp SAP activity pockets bound multi-update endpoint reorder work.
+    struct ActivityPocket {
+        std::size_t start=0,end=0;
+    };
+    std::vector<ActivityPocket> sap_activity_pockets_;
+    std::vector<std::size_t> sap_list_next_, sap_list_prev_;
+    std::vector<Endpoint> sap_pocket_workspace_;
+    std::size_t broadphase_activity_pocket_comparisons_=0;
+    std::size_t broadphase_activity_pocket_relocations_=0;
+    std::size_t broadphase_activity_pocket_count_=0;
+    std::size_t broadphase_activity_pocket_endpoint_count_=0;
+    std::size_t broadphase_incremental_pair_update_count_=0;
+    std::size_t broadphase_endpoint_crossing_count_=0;
+    // BpBroadPhaseSap::batchUpdateFewUpdates emits candidate changes
+    // when min/max endpoints of different volumes cross on any axis.
+    // Sorted/deduplicated for publication; never a second pair owner.
+    std::vector<Pair> broadphase_crossed_pairs_;
+    std::vector<BodyId> broadphase_updated_ids_;
+    // mUpdated's compact indices into the scene-owned SapBox1D
+    // registry. Prevent six complete endpoint scans for one mover.
+    std::vector<std::uint32_t> broadphase_updated_volume_slots_;
+    std::vector<Pair> broadphase_candidate_deltas_;
+    // Full SAP sweep's transient active intervals, divided by source
+    // filtering class. Compact SapVolume slots support O(1) swap-last
+    // endpoint retirement without indexing retired actor history.
+    std::vector<std::uint32_t> sap_active_dynamic_slots_;
+    std::vector<std::uint32_t> sap_active_static_slots_;
+    std::vector<std::uint32_t> sap_active_positions_;
+
+    // Bp SAP pair ownership is distinct from the Sc contact-manager edge
+    // stream. Dense packed pairs, chained hash buckets and source pair-state
+    // bits retain overlap identity across sparse endpoint updates.
+    struct SapPairManager {
+        static constexpr std::uint32_t invalid=
+            std::numeric_limits<std::uint32_t>::max();
+        enum : std::uint8_t {
+            in_array=1, removed=2, newly_created=4, unknown=8
+        };
+        std::vector<Pair> active_pairs;
+        std::vector<std::uint8_t> states;
+        std::vector<std::uint32_t> next;
+        std::vector<std::uint32_t> hash_table;
+        std::vector<std::uint32_t> touched;
+        std::vector<Pair> actual_deleted;
+        static std::uint32_t hash(Pair pair) noexcept;
+        std::uint32_t find(Pair pair) const noexcept;
+        void rehash(std::size_t buckets);
+        void add(Pair pair);
+        void remove(Pair pair);
+        void begin_full();
+        void finish(std::vector<Pair>& created,std::vector<Pair>& deleted);
+        void remove_index(std::uint32_t index) noexcept;
+        void reset() noexcept;
+        void seed(std::span<const Pair> pairs);
+    };
+    SapPairManager sap_pairs_;
+    bool sap_pair_registry_dirty_=true;
+    bool broadphase_pair_membership_changed_=true;
+    std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
     // Publish swaps are reversible without copying the source-owned
