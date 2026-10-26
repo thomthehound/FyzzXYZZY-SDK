@@ -1231,9 +1231,32 @@ void Scene::update_bounds() {
                            moving.is_max!=passed.is_max &&
                            (actors_[moving.id].kind==Kind::DynamicBox ||
                             actors_[passed.id].kind==Kind::DynamicBox)) {
-                            broadphase_crossed_pairs_.push_back(
-                                ordered_pair(moving.id,passed.id));
-                            ++broadphase_endpoint_crossing_count_;
+                            const Actor& a=actors_[moving.id];
+                            const Actor& b=actors_[passed.id];
+                            const Pair pair=ordered_pair(moving.id,passed.id);
+                            // A one-axis crossing cannot change a 3D
+                            // overlap if the other two axes remain
+                            // separated. Preserve already published
+                            // candidates, however: simultaneous motion
+                            // can require a Lost even when final
+                            // orthogonal bounds are disjoint.
+                            bool orthogonal_overlap=true;
+                            for(unsigned other=0;other<3;++other) {
+                                if(other==axis)continue;
+                                if(a.encoded_bounds[other]>
+                                       b.encoded_bounds[other+3] ||
+                                   b.encoded_bounds[other]>
+                                       a.encoded_bounds[other+3]) {
+                                    orthogonal_overlap=false;
+                                    break;
+                                }
+                            }
+                            if(orthogonal_overlap ||
+                               std::binary_search(previous_pairs_.begin(),
+                                                  previous_pairs_.end(),pair)) {
+                                broadphase_crossed_pairs_.push_back(pair);
+                                ++broadphase_endpoint_crossing_count_;
+                            }
                         }
                         start_index=std::min(start_index,previous);
                         previous=sap_list_prev_[previous];
