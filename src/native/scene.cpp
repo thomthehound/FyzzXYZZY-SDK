@@ -1137,25 +1137,18 @@ void Scene::update_bounds() {
                 }
                 if(!ordering_changed)continue;
                 all_axes_stable=false;
-                // Visit actual updated indices in ascending source
-                // order. A displaced successor continues the current
-                // activity walk; unchanged nonparticipants need no
-                // lookup, mark array, or full-endpoint scan.
-                auto& changed_indices=sap_changed_endpoint_positions_;
-                changed_indices.clear();
-                changed_indices.reserve(broadphase_updated_volume_slots_.size()*2);
+                sap_endpoint_updated_.resize(n);
+                std::fill(sap_endpoint_updated_.begin(),
+                          sap_endpoint_updated_.end(),0);
                 for(std::size_t updated=0;
                     updated<broadphase_updated_volume_slots_.size();++updated) {
                     if(!(broadphase_updated_axis_masks_[updated]&axis_bit))
                         continue;
                     const auto slot=broadphase_updated_volume_slots_[updated];
                     for(unsigned side=0;side<2;++side)
-                        changed_indices.push_back(sap_volumes_[slot].
-                            endpoint_positions[axis][side]);
+                        sap_endpoint_updated_[sap_volumes_[slot].
+                            endpoint_positions[axis][side]]=1;
                 }
-                std::sort(changed_indices.begin(),changed_indices.end());
-                changed_indices.erase(std::unique(changed_indices.begin(),changed_indices.end()),
-                              changed_indices.end());
                 const std::size_t sentinel=n;
                 // BpBroadPhaseSap's mListPrev/mListNext persist between
                 // updates. They return to identity after each rebuilt
@@ -1179,20 +1172,13 @@ void Scene::update_bounds() {
                 // old endpoint sequence. Later nodes moving left
                 // naturally displace earlier nodes moving right.
                 bool predecessor_updated=false;
-                std::size_t cursor=0;
-                for(std::size_t i=changed_indices.front();i<n;) {
-                    const bool updated=cursor<changed_indices.size() &&
-                                       changed_indices[cursor]==i;
-                    if(updated)++cursor;
-                    // Continue to an unchanged next index only if the
-                    // preceding changed_indices/displaced index could still
-                    // affect its order. Otherwise jump to the next
-                    // changed_indices endpoint with no intervening iteration.
-                    if(!updated && !predecessor_updated) {
-                        if(cursor==changed_indices.size())break;
-                        i=changed_indices[cursor];
-                        continue;
-                    }
+                for(std::size_t i=0;i<n;++i) {
+                    const bool updated=sap_endpoint_updated_[i]!=0;
+                    if(!updated && !predecessor_updated)continue;
+                    // Original batchUpdate follows each changed endpoint
+                    // and the unchanged successors it displaces. Once
+                    // the chain is ordered again, skip to the next
+                    // changed endpoint instead of comparing every key.
                     predecessor_updated=updated;
                     const Endpoint moving=endpoints[i];
                     std::size_t previous=sap_list_prev_[i];
@@ -1215,12 +1201,7 @@ void Scene::update_bounds() {
                         start_index=std::min(start_index,previous);
                         previous=sap_list_prev_[previous];
                     }
-                    if(previous==sap_list_prev_[i]) {
-                        if(predecessor_updated)++i;
-                        else if(cursor<changed_indices.size())i=changed_indices[cursor];
-                        else break;
-                        continue;
-                    }
+                    if(previous==sap_list_prev_[i])continue;
                     predecessor_updated=true;
                     const std::size_t old_prev=sap_list_prev_[i];
                     const std::size_t old_next=sap_list_next_[i];
@@ -1241,7 +1222,6 @@ void Scene::update_bounds() {
                         pockets.pop_back();
                     }
                     pockets.push_back({start_index,pocket_end});
-                    ++i;
                 }
                 // The final linked order can differ from the old array
                 // only within the recorded, coalesced activity pockets.

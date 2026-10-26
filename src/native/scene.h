@@ -1410,7 +1410,7 @@ private:
     };
     std::vector<ActivityPocket> sap_activity_pockets_;
     std::vector<std::size_t> sap_list_next_, sap_list_prev_;
-    std::vector<std::uint32_t> sap_changed_endpoint_positions_;
+    std::vector<std::uint8_t> sap_endpoint_updated_;
     std::vector<Endpoint> sap_pocket_workspace_;
     std::size_t broadphase_activity_pocket_comparisons_=0;
     std::size_t broadphase_activity_pocket_relocations_=0;
