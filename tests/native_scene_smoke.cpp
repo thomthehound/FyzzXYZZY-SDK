@@ -3016,7 +3016,10 @@ struct ContactCorrelationSourceFixture {
         }
     }
     static void verify_source_pcm_box_box_lifecycle() {
+        std::fprintf(stderr,"PCM fixture entered\\n"); std::fflush(stderr);
+        std::fprintf(stderr,"PCM batch begin\\n"); std::fflush(stderr);
         verify_source_pcm_batch_reduction();
+        std::fprintf(stderr,"PCM batch done\\n"); std::fflush(stderr);
         // Independently exercise GJK and EPA for box support points in
         // B-local coordinates. Near separation produces GJK_CONTACT;
         // a penetrating pair requires EPA_CONTACT and signed depth.
@@ -3085,6 +3088,7 @@ struct ContactCorrelationSourceFixture {
                stale.count==0 || stale.count>4)
                 throw std::runtime_error(
                     "PCM box fallback did not discard stale GJK simplex");
+            std::fprintf(stderr,"PCM Scene 1\\n"); std::fflush(stderr);
             Scene actual{Scene::ContactGenerator::DiagnosticLegacyGu};
             actual.set_pcm_box_box(true);
             const auto fixed=actual.add_static_box(half,{0,0,0});
@@ -3145,6 +3149,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Sub-margin positive GJK gap was lost to EPA");
             }
+            std::fprintf(stderr,"PCM Scene 2\\n"); std::fflush(stderr);
             Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.set_pcm_box_box(true);
             const auto fixed=scene.add_static_box(half,{0,0,0});
@@ -3188,6 +3193,7 @@ struct ContactCorrelationSourceFixture {
                witness.normal_b.x<0.5f)
                 throw std::runtime_error(
                     "PCM source EPA edge/edge witness failed");
+            std::fprintf(stderr,"PCM Scene 3\\n"); std::fflush(stderr);
             Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.set_pcm_box_box(true);
             scene.add_static_box(half,{0,0,0});
@@ -3225,6 +3231,7 @@ struct ContactCorrelationSourceFixture {
                        2.0f*offset,direct,count) || count!=0)
                     throw std::runtime_error(
                         "Scaled rotated PCM probe did not reach GJK/EPA");
+                std::fprintf(stderr,"PCM Scene 4\\n"); std::fflush(stderr);
                 Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
                 scene.set_pcm_box_box(true);
                 BodyId moving{},fixed{};
@@ -3290,6 +3297,7 @@ struct ContactCorrelationSourceFixture {
                 const Vec3 position{0.892f*scale,1.091f*scale,0};
                 const Quat rotation{
                     0,0,std::sin(0.1f),std::cos(0.1f)};
+                std::fprintf(stderr,"PCM Scene 5\\n"); std::fflush(stderr);
                 Scene tiny{Scene::ContactGenerator::DiagnosticLegacyGu};
                 tiny.set_pcm_box_box(true);
                 BodyId moving{},fixed{};
@@ -3316,6 +3324,7 @@ struct ContactCorrelationSourceFixture {
         // PCM box-box SAT uses B-local contacts and four persistent
         // witnesses, unlike GuContactBoxBox's unreduced raw contact
         // stream and PxcCacheLocalContacts pose snapshots.
+        std::fprintf(stderr,"PCM Scene 6\\n"); std::fflush(stderr);
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.set_pcm_box_box(true);
         const auto fixed=scene.add_static_box(
@@ -3405,6 +3414,7 @@ struct ContactCorrelationSourceFixture {
         // then require the unmodified Sc/PGS contact stream to use the
         // source aggregate rather than the leading witness.
         {
+            std::fprintf(stderr,"PCM Scene 7\\n"); std::fflush(stderr);
             Scene mixed{Scene::ContactGenerator::DiagnosticLegacyGu};
             mixed.set_pcm_box_box(true);
             mixed.add_static_box({0.5f,0.5f,0.5f},{0,0.5f,0});
