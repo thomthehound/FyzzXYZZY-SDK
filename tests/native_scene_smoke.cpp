@@ -2481,6 +2481,87 @@ struct ConstraintIslandSourceFixture {
 };
 
 struct ContactCorrelationSourceFixture {
+    static void verify_kinematic_contact_reporting_source_lifetime() {
+        // ScNPhaseCore's touch notifications are keyed by a single live
+        // ShapeInteraction, including a target-driven kinematic actor.
+        // The target pose is integrated after Dy, so LOST belongs to
+        // the NEXT Gu frame, not the target-authoring frame.
+        constexpr float dt=1.0f/120.0f;
+        const auto run=[](ExecutionMode mode,bool legacy,
+                          bool kinematic_first) {
+            WorldOptions opts{mode};
+            opts.contact_notifications=true;
+            opts.pcm_box_box=!legacy;
+            World world(opts);
+            BodyId dynamic=0,kinematic=0;
+            const auto add_dynamic=[&] {
+                dynamic=world.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0,9,0},1.0f);
+            };
+            const auto add_kinematic=[&] {
+                kinematic=world.add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{0.95f,9,0},1.0f);
+            };
+            if(kinematic_first) {add_kinematic();add_dynamic();}
+            else {add_dynamic();add_kinematic();}
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            d.linear_damping=0.0f;
+            d.angular_damping=0.0f;
+            d.max_contact_impulse=0.0f;
+            world.set_body_dynamics(dynamic,d);
+            world.set_body_kinematic(kinematic,true);
+            std::array<int,6> timeline{};
+            for(std::size_t frame=0;frame<timeline.size();++frame) {
+                if(frame==1)
+                    world.set_body_kinematic_target(
+                        kinematic,{0.94f,9,0},{});
+                if(frame==3)
+                    world.set_body_kinematic_target(
+                        kinematic,{3,9,0},{});
+                world.step(dt);
+                const auto events=world.contact_events();
+                if(events.size()>1 ||
+                   (!events.empty() &&
+                    (events[0].body0!=std::min(dynamic,kinematic) ||
+                     events[0].body1!=std::max(dynamic,kinematic))))
+                    throw std::runtime_error(
+                        "Kinematic Sc contact reporter emitted unrelated pair");
+                timeline[frame]=events.empty() ? -1 :
+                    static_cast<int>(events.front().kind);
+                if(!events.empty() &&
+                   (events.front().kind==ContactEventKind::Lost
+                        ? events.front().contact_count!=0
+                        : events.front().contact_count==0))
+                    throw std::runtime_error(
+                        "Kinematic Sc touch callback has invalid Gu point range");
+            }
+            return timeline;
+        };
+        const std::array<int,6> expected{
+            static_cast<int>(ContactEventKind::Found),
+            static_cast<int>(ContactEventKind::Persists),
+            static_cast<int>(ContactEventKind::Persists),
+            static_cast<int>(ContactEventKind::Persists),
+            static_cast<int>(ContactEventKind::Lost),-1};
+        for(const bool legacy:{false,true})
+            for(const bool kinematic_first:{false,true}) {
+                const auto native=run(ExecutionMode::NativeCpu,
+                                      legacy,kinematic_first);
+                if(native!=expected)
+                    throw std::runtime_error(
+                        "Native target-driven kinematic touch sequence diverged");
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+                const auto reference=run(legacy
+                    ? ExecutionMode::ReferencePhysXCpuLegacyGu
+                    : ExecutionMode::ReferencePhysXCpu,
+                    legacy,kinematic_first);
+                if(native!=reference)
+                    throw std::runtime_error(
+                        "Kinematic Sc touch transitions differ from PhysX CPU");
+#endif
+            }
+    }
     static void verify_kinematic_threshold_source_pairs() {
         // Dy::writeBackContact uses both PxsSolverBodyData::nodeIndex
         // values. A kinematic endpoint is eKINEMATIC, not eWORLD, and
@@ -13780,6 +13861,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_contact_manager_source_order();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_threshold_source_pairs();
+    fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_contact_reporting_source_lifetime();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
     fyzz::native::ContactCorrelationSourceFixture::verify_settled_kinematic_contact_solver_input();
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
