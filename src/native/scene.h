@@ -1402,6 +1402,9 @@ private:
     // Multi-update SAP can retain every BP pair when all six changed
     // endpoint keys remain in their prior per-axis ordering.
     bool broadphase_batch_pair_set_unchanged_=false;
+    // A bounded direct endpoint walk collects exact crossings for
+    // large worklists whose actual activity pockets are tiny.
+    bool broadphase_batch_crossings_complete_=false;
     std::size_t broadphase_batch_stable_order_count_=0;
     // Bp SAP activity pockets bound multi-update endpoint reorder work.
     struct ActivityPocket {
