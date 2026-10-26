@@ -597,8 +597,8 @@ struct SourceSapEndpointFixture {
                 for(BodyId j=i+1;j<fixed+moving;++j) {
                     const auto& a=scene.actors_[i];
                     const auto& b=scene.actors_[j];
-                    if(a.kind!=Kind::DynamicBox &&
-                       b.kind!=Kind::DynamicBox)continue;
+                    if(a.kind!=Scene::Kind::DynamicBox &&
+                       b.kind!=Scene::Kind::DynamicBox)continue;
                     const auto& x=a.encoded_bounds;
                     const auto& y=b.encoded_bounds;
                     if(x[0]>y[3] || y[0]>x[3] ||
