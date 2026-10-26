@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -4104,6 +4105,35 @@ struct ContactCorrelationSourceFixture {
         empty.finish_finalization();
         empty.publish_results();
 
+        // Distinct real Dy end-task completions can arrive from two
+        // execution lanes concurrently, not merely in reverse serial
+        // order. The shared outstanding producer edge must account for
+        // every task exactly once before postSolver can publish.
+        {
+            Scene::RigidStepJoin concurrent_join;
+            std::array<std::uint32_t,64> generations{};
+            concurrent_join.dispatch_solver_tasks(generations,17);
+            concurrent_join.finish_accurate_third_pass();
+            concurrent_join.finish_speculative_third_pass();
+            concurrent_join.finish_third_pass();
+            concurrent_join.finish_lost_contacts();
+            std::jthread worker([&] {
+                for(std::size_t i=1;i<generations.size();i+=2)
+                    concurrent_join.finish_solver_task(i);
+            });
+            for(std::size_t i=0;i<generations.size();i+=2)
+                concurrent_join.finish_solver_task(i);
+            worker.join();
+            if(concurrent_join.outstanding_solver_tasks!=0 ||
+               !std::all_of(generations.begin(),generations.end(),
+                   [](std::uint32_t v){return v==17;}))
+                throw std::runtime_error(
+                    "Concurrent PxsSolverEndTask producers lost completion edges");
+            concurrent_join.finish_post_solver();
+            concurrent_join.finish_after_integration();
+            concurrent_join.finish_finalization();
+            concurrent_join.publish_results();
+        }
         // Real Scene task IDs remain safe across uint32 stamp rollover;
         // a completed old generation cannot mask a current completion.
         {
