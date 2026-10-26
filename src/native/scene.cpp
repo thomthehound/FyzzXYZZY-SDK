@@ -5015,18 +5015,22 @@ void Scene::run_third_pass_worker() noexcept {
         const bool repair_only=work.repair_only;
         const auto solver_first=work.solver_first;
         const auto solver_end=work.solver_end;
+        const bool integrate_solver=work.integrate_solver;
+        const float seconds=work.seconds;
         work.pending=false;
         lock.unlock();
         bool split=false;
         std::exception_ptr error;
         try {
             if(solver_first!=invalid_instance) {
-                // Disjoint Dy task descriptors own independent rigid islands.
-                // Only their PGS rows are mutated on this worker; Sc actor
-                // integration, sleep and result publication join on the
-                // main thread after both solve producers have completed.
+                // Source task groups own disjoint accurate rigid islands.
+                // The same persistent worker executes either PGS or the
+                // post-PGS integrateCore/sleepCheck continuation.
                 for(std::size_t i=solver_first;i<solver_end;++i)
-                    solve_constraint_task(i);
+                    if(integrate_solver)
+                        integrate_solver_task(i,seconds,solver_ready_worker_);
+                    else
+                        solve_constraint_task(i);
             } else {
                 split=repair_only
                     ? repair_lost_island_graph(false)
@@ -5042,7 +5046,8 @@ void Scene::run_third_pass_worker() noexcept {
     }
 }
 void Scene::dispatch_third_pass_worker(
-    bool repair_only,std::size_t solver_first) {
+    bool repair_only,std::size_t solver_first,
+    bool integrate_solver,float seconds) {
     if(!third_pass_worker_state_)
         third_pass_worker_state_=std::make_unique<ThirdPassWorkerState>();
     auto& work=*third_pass_worker_state_;
@@ -5055,6 +5060,8 @@ void Scene::dispatch_third_pass_worker(
     {
         const std::lock_guard lock(work.mutex);
         work.repair_only=repair_only;
+        work.integrate_solver=integrate_solver;
+        work.seconds=seconds;
         work.solver_first=solver_first;
         work.solver_end=solver_first==invalid_instance
             ? 0:solver_tasks_.size();
@@ -8465,6 +8472,138 @@ void Scene::prepare_unconstrained_velocities(float seconds) {
         dirty_ = true;
     }
 }
+void Scene::integrate_solver_task(
+    std::size_t task_index,float seconds,std::vector<BodyId>& ready_nodes) {
+    // One PxsSolverEndTask owns both integrateCore and sleepCheck for
+    // its accurate-island batch range. Caller and worker only mutate
+    // actors inside mutually exclusive task groups. The frame journal
+    // has pre-recorded every active rigid actor before parallel entry.
+    const auto& task=solver_tasks_[task_index];
+        for(std::size_t batch=task.first_batch;
+            batch<task.batch_end;++batch) {
+        const auto island=active_accurate_island_batches_[batch];
+        for(std::size_t index=accurate_island_offsets_[island];
+            index<accurate_island_offsets_[island+1];++index) {
+            const BodyId id=accurate_island_nodes_[index];
+            auto& actor=actors_[id];
+            if(actor.sleeping)continue;
+            // integrateCore applies world linear locks *after* the PGS
+            // solve. For no-contact bodies this is also their final
+            // velocity publication; active solver bodies were already
+            // masked by publish_solver_bodies().
+            lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
+            Vec3 motion_linear = actor.velocity;
+            Vec3 motion_angular = actor.angular_velocity;
+            // Scene clock increments in advance_collision_internal; only
+            // this frame's actual contact participants own motion snapshots.
+            const bool solved_contact = id < solver_rows_.size() &&
+                solver_rows_[id].prepared_generation == solver_preparation_generation_;
+            if (solved_contact) {
+                const auto& row = solver_rows_[id];
+                const Vec3& delta = row.motion_linear_delta;
+                motion_linear = {
+                    row.data.linear_velocity.x + delta.x,
+                    row.data.linear_velocity.y + delta.y,
+                    row.data.linear_velocity.z + delta.z};
+                const auto& i = row.data.sqrt_inverse_inertia;
+                Vec3 angular_delta=row.motion_angular_state;
+                lock_angular_axes(angular_delta,actor.dynamics.lock_flags);
+                motion_angular = {
+                    row.data.angular_velocity.x + i[0].x*angular_delta.x +
+                        i[1].x*angular_delta.y + i[2].x*angular_delta.z,
+                    row.data.angular_velocity.y + i[0].y*angular_delta.x +
+                        i[1].y*angular_delta.y + i[2].y*angular_delta.z,
+                    row.data.angular_velocity.z + i[0].z*angular_delta.x +
+                        i[1].z*angular_delta.y + i[2].z*angular_delta.z};
+            }
+            // integrateCore also locks position-phase motion separately
+            // from the final unbiased velocity publication.
+            lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
+            const Vec3 p{
+                static_cast<float>(static_cast<double>(actor.position.x) +
+                                   static_cast<double>(motion_linear.x)*seconds),
+                static_cast<float>(static_cast<double>(actor.position.y) +
+                                   static_cast<double>(motion_linear.y)*seconds),
+                static_cast<float>(static_cast<double>(actor.position.z) +
+                                   static_cast<double>(motion_linear.z)*seconds)};
+            if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
+                throw std::overflow_error("Native position-iteration motion overflow");
+            const Quat q = integrate_quaternion(
+                actor.orientation, motion_angular, seconds);
+            if (!finite(q))
+                throw std::overflow_error("Native CPU orientation overflow");
+            step_checkpoint_.save_motion(*this,id);
+            remember_pre_integration_pose(id);
+            actor.position = p;
+            actor.orientation = q;
+            // DySleep.cpp::updateWakeCounter (default scene, without
+            // stabilization). ScBodyCore::BodyCore and PxsBodyCore::init
+            // initialize sleepThreshold to 5e-5 * scale.speed^2.
+            // PxTolerancesScale's DEFAULT speed is 10 m/s, not 1 m/s.
+            // This only produces readiness; IslandSim owns deactivation.
+            constexpr float wake_reset_time=20.0f*0.02f;
+            constexpr float default_scale_speed=10.0f;
+            constexpr float energy_threshold=
+                5.0e-5f*default_scale_speed*default_scale_speed;
+            float wc=actor.wake_counter;
+            if(wc<wake_reset_time*0.5f || wc<seconds) {
+                const Vec3 local_angular=rotate_inverse(q,motion_angular);
+                const Vec3 linear_acc{
+                    actor.sleep_linear_acc.x+motion_linear.x,
+                    actor.sleep_linear_acc.y+motion_linear.y,
+                    actor.sleep_linear_acc.z+motion_linear.z};
+                const Vec3 angular_acc{
+                    actor.sleep_angular_acc.x+local_angular.x,
+                    actor.sleep_angular_acc.y+local_angular.y,
+                    actor.sleep_angular_acc.z+local_angular.z};
+                if(!finite(linear_acc) || !finite(angular_acc))
+                    throw std::overflow_error(
+                        "Native Dy sleep-energy accumulator overflow");
+                const Vec3 inverse_i=actor.inverse_inertia_local;
+                const Vec3 inertia{
+                    inverse_i.x>0.0f?1.0f/inverse_i.x:1.0f,
+                    inverse_i.y>0.0f?1.0f/inverse_i.y:1.0f,
+                    inverse_i.z>0.0f?1.0f/inverse_i.z:1.0f};
+                const float angular_energy=(
+                    angular_acc.x*angular_acc.x*inertia.x+
+                    angular_acc.y*angular_acc.y*inertia.y+
+                    angular_acc.z*angular_acc.z*inertia.z)*actor.inverse_mass;
+                // Source uses accumulated (not instantaneous) linear
+                // energy and a cluster threshold for the actual comparison.
+                const float accumulated_linear=
+                    linear_acc.x*linear_acc.x+
+                    linear_acc.y*linear_acc.y+
+                    linear_acc.z*linear_acc.z;
+                const float normalized_energy=
+                    0.5f*(angular_energy+accumulated_linear);
+                const float cluster=1.0f+
+                    static_cast<float>(actor.num_counted_interactions);
+                const float threshold=cluster*energy_threshold;
+                if(normalized_energy>=threshold) {
+                    actor.sleep_linear_acc={};
+                    actor.sleep_angular_acc={};
+                    const float factor=threshold==0.0f
+                        ? 2.0f:std::min(normalized_energy/threshold,2.0f);
+                    wc=factor*0.5f*wake_reset_time+
+                        seconds*(cluster-1.0f);
+                } else {
+                    actor.sleep_linear_acc=linear_acc;
+                    actor.sleep_angular_acc=angular_acc;
+                    wc=std::max(wc-seconds,0.0f);
+                }
+            } else wc=std::max(wc-seconds,0.0f);
+            actor.wake_counter=wc;
+            const bool was_ready=actor.ready_for_sleep;
+            actor.ready_for_sleep=(wc==0.0f);
+            if(actor.ready_for_sleep && !was_ready)
+                ready_nodes.push_back(id);
+            if(actor.ready_for_sleep) {
+                actor.sleep_linear_acc={};
+                actor.sleep_angular_acc={};
+            }
+        }
+        }
+}
 void Scene::step(float seconds) {
     for(EdgeIndex edge:active_constraint_handles_)
         if(island_edges_[edge].constraint_id==invalid_edge)
@@ -8638,149 +8777,63 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
+    // Gu force/patch writeback and final solver-body velocities remain
+    // source task-local. Publish their ranges before concurrent pose
+    // integration: each island is independent and writeback must see
+    // its pre-integration anchor transforms.
     std::size_t published_solver_body_end=0;
     std::size_t published_manager_end=0;
-    for(std::size_t task_index=0;task_index<solver_tasks_.size();++task_index) {
-        const auto& task=solver_tasks_[task_index];
-        // The source group now owns its full solve/writeback/integration
-        // continuation. Its completion cannot publish any other group's
-        // solver bodies or Gu contact windows.
+    for(const auto& task:solver_tasks_) {
         write_back_contacts(published_manager_end,task.manager_end);
         published_manager_end=task.manager_end;
         publish_solver_bodies(
             published_solver_body_end,task.solver_body_end);
         published_solver_body_end=task.solver_body_end;
-        // PxsSolverEndTask owns integration and Dy::sleepCheck for its
-        // contiguous range of accurate active islands, not just PGS.
-        // The task contributes to postSolver only after every rigid
-        // node in that same range has finished its integration.
-        for(std::size_t batch=task.first_batch;
-            batch<task.batch_end;++batch) {
-        const auto island=active_accurate_island_batches_[batch];
-        for(std::size_t index=accurate_island_offsets_[island];
-            index<accurate_island_offsets_[island+1];++index) {
-            const BodyId id=accurate_island_nodes_[index];
-            auto& actor=actors_[id];
-            if(actor.sleeping)continue;
-            // integrateCore applies world linear locks *after* the PGS
-            // solve. For no-contact bodies this is also their final
-            // velocity publication; active solver bodies were already
-            // masked by publish_solver_bodies().
-            lock_linear_axes(actor.velocity,actor.dynamics.lock_flags);
-            Vec3 motion_linear = actor.velocity;
-            Vec3 motion_angular = actor.angular_velocity;
-            // Scene clock increments in advance_collision_internal; only
-            // this frame's actual contact participants own motion snapshots.
-            const bool solved_contact = id < solver_rows_.size() &&
-                solver_rows_[id].prepared_generation == solver_preparation_generation_;
-            if (solved_contact) {
-                const auto& row = solver_rows_[id];
-                const Vec3& delta = row.motion_linear_delta;
-                motion_linear = {
-                    row.data.linear_velocity.x + delta.x,
-                    row.data.linear_velocity.y + delta.y,
-                    row.data.linear_velocity.z + delta.z};
-                const auto& i = row.data.sqrt_inverse_inertia;
-                Vec3 angular_delta=row.motion_angular_state;
-                lock_angular_axes(angular_delta,actor.dynamics.lock_flags);
-                motion_angular = {
-                    row.data.angular_velocity.x + i[0].x*angular_delta.x +
-                        i[1].x*angular_delta.y + i[2].x*angular_delta.z,
-                    row.data.angular_velocity.y + i[0].y*angular_delta.x +
-                        i[1].y*angular_delta.y + i[2].y*angular_delta.z,
-                    row.data.angular_velocity.z + i[0].z*angular_delta.x +
-                        i[1].z*angular_delta.y + i[2].z*angular_delta.z};
-            }
-            // integrateCore also locks position-phase motion separately
-            // from the final unbiased velocity publication.
-            lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
-            const Vec3 p{
-                static_cast<float>(static_cast<double>(actor.position.x) +
-                                   static_cast<double>(motion_linear.x)*seconds),
-                static_cast<float>(static_cast<double>(actor.position.y) +
-                                   static_cast<double>(motion_linear.y)*seconds),
-                static_cast<float>(static_cast<double>(actor.position.z) +
-                                   static_cast<double>(motion_linear.z)*seconds)};
-            if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
-                throw std::overflow_error("Native position-iteration motion overflow");
-            const Quat q = integrate_quaternion(
-                actor.orientation, motion_angular, seconds);
-            if (!finite(q))
-                throw std::overflow_error("Native CPU orientation overflow");
-            step_checkpoint_.save_motion(*this,id);
-            remember_pre_integration_pose(id);
-            actor.position = p;
-            actor.orientation = q;
-            // DySleep.cpp::updateWakeCounter (default scene, without
-            // stabilization). ScBodyCore::BodyCore and PxsBodyCore::init
-            // initialize sleepThreshold to 5e-5 * scale.speed^2.
-            // PxTolerancesScale's DEFAULT speed is 10 m/s, not 1 m/s.
-            // This only produces readiness; IslandSim owns deactivation.
-            constexpr float wake_reset_time=20.0f*0.02f;
-            constexpr float default_scale_speed=10.0f;
-            constexpr float energy_threshold=
-                5.0e-5f*default_scale_speed*default_scale_speed;
-            float wc=actor.wake_counter;
-            if(wc<wake_reset_time*0.5f || wc<seconds) {
-                const Vec3 local_angular=rotate_inverse(q,motion_angular);
-                const Vec3 linear_acc{
-                    actor.sleep_linear_acc.x+motion_linear.x,
-                    actor.sleep_linear_acc.y+motion_linear.y,
-                    actor.sleep_linear_acc.z+motion_linear.z};
-                const Vec3 angular_acc{
-                    actor.sleep_angular_acc.x+local_angular.x,
-                    actor.sleep_angular_acc.y+local_angular.y,
-                    actor.sleep_angular_acc.z+local_angular.z};
-                if(!finite(linear_acc) || !finite(angular_acc))
-                    throw std::overflow_error(
-                        "Native Dy sleep-energy accumulator overflow");
-                const Vec3 inverse_i=actor.inverse_inertia_local;
-                const Vec3 inertia{
-                    inverse_i.x>0.0f?1.0f/inverse_i.x:1.0f,
-                    inverse_i.y>0.0f?1.0f/inverse_i.y:1.0f,
-                    inverse_i.z>0.0f?1.0f/inverse_i.z:1.0f};
-                const float angular_energy=(
-                    angular_acc.x*angular_acc.x*inertia.x+
-                    angular_acc.y*angular_acc.y*inertia.y+
-                    angular_acc.z*angular_acc.z*inertia.z)*actor.inverse_mass;
-                // Source uses accumulated (not instantaneous) linear
-                // energy and a cluster threshold for the actual comparison.
-                const float accumulated_linear=
-                    linear_acc.x*linear_acc.x+
-                    linear_acc.y*linear_acc.y+
-                    linear_acc.z*linear_acc.z;
-                const float normalized_energy=
-                    0.5f*(angular_energy+accumulated_linear);
-                const float cluster=1.0f+
-                    static_cast<float>(actor.num_counted_interactions);
-                const float threshold=cluster*energy_threshold;
-                if(normalized_energy>=threshold) {
-                    actor.sleep_linear_acc={};
-                    actor.sleep_angular_acc={};
-                    const float factor=threshold==0.0f
-                        ? 2.0f:std::min(normalized_energy/threshold,2.0f);
-                    wc=factor*0.5f*wake_reset_time+
-                        seconds*(cluster-1.0f);
-                } else {
-                    actor.sleep_linear_acc=linear_acc;
-                    actor.sleep_angular_acc=angular_acc;
-                    wc=std::max(wc-seconds,0.0f);
-                }
-            } else wc=std::max(wc-seconds,0.0f);
-            actor.wake_counter=wc;
-            const bool was_ready=actor.ready_for_sleep;
-            actor.ready_for_sleep=(wc==0.0f);
-            if(actor.ready_for_sleep && !was_ready)
-                speculative_ready_nodes_.push_back(id);
-            if(actor.ready_for_sleep) {
-                actor.sleep_linear_acc={};
-                actor.sleep_angular_acc={};
-            }
-            dirty_ = true;
-        }
-        }
-        join.finish_solver_task(task_index);
     }
+    if(parallel_solver_split) {
+        // The checkpoint motion vector and its generation marks are not
+        // concurrent containers. Journal every currently active rigid
+        // island node, on the caller, before either integration producer
+        // writes a pose or a wake counter. Per-task save_motion() then
+        // becomes a read-only generation check with no allocation.
+        for(std::size_t island:active_accurate_island_batches_)
+            for(std::size_t index=accurate_island_offsets_[island];
+                index<accurate_island_offsets_[island+1];++index) {
+                const BodyId id=accurate_island_nodes_[index];
+                if(!actors_[id].sleeping)
+                    step_checkpoint_.save_motion(*this,id);
+            }
+        solver_ready_caller_.clear();
+        solver_ready_worker_.clear();
+        solver_ready_caller_.reserve(live_dynamic_count_);
+        solver_ready_worker_.reserve(live_dynamic_count_);
+        dispatch_third_pass_worker(false,parallel_solver_split,true,seconds);
+        try {
+            for(std::size_t i=0;i<parallel_solver_split;++i)
+                integrate_solver_task(i,seconds,solver_ready_caller_);
+        } catch(...) {
+            // No checkpoint restoration while another source chain
+            // still mutates disjoint actor motion.
+            join_third_pass_worker();
+            throw;
+        }
+        complete_third_pass_worker();
+        // Dy sleepCheck supplies next-frame speculative candidates in
+        // original task order, regardless of which worker ran first.
+        speculative_ready_nodes_.insert(speculative_ready_nodes_.end(),
+            solver_ready_caller_.begin(),solver_ready_caller_.end());
+        speculative_ready_nodes_.insert(speculative_ready_nodes_.end(),
+            solver_ready_worker_.begin(),solver_ready_worker_.end());
+        ++concurrent_integration_dispatches_;
+    } else {
+        for(std::size_t i=0;i<solver_tasks_.size();++i)
+            integrate_solver_task(i,seconds,speculative_ready_nodes_);
+    }
+    if(!solver_tasks_.empty())dirty_=true;
+    // PxsSolverEndTask signals mPostSolver only after integrateCore and
+    // sleepCheck complete. Both independent lanes have joined here.
+    for(std::size_t i=0;i<solver_tasks_.size();++i)
+        join.finish_solver_task(i);
     if(published_solver_body_end!=solver_active_ids_.size() ||
        published_manager_end!=indexed_managers_.size())
         throw std::logic_error(
