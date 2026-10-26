@@ -1010,6 +1010,9 @@ void Scene::update_bounds() {
                 const std::size_t n=endpoints.size();
                 if(!n)continue;
                 bool changed=false;
+                sap_endpoint_updated_.resize(n);
+                std::fill(sap_endpoint_updated_.begin(),
+                          sap_endpoint_updated_.end(),0);
                 for(std::uint32_t slot:broadphase_updated_volume_slots_) {
                     for(unsigned side=0;side<2;++side) {
                         const auto index=sap_volumes_[slot].
@@ -1017,7 +1020,10 @@ void Scene::update_bounds() {
                         Endpoint& ep=endpoints[index];
                         const auto value=actors_[ep.id].encoded_bounds[
                             axis+(side?3:0)];
-                        changed|=ep.value!=value;
+                        if(ep.value!=value) {
+                            changed=true;
+                            sap_endpoint_updated_[index]=1;
+                        }
                         ep.value=value;
                     }
                 }
@@ -1037,7 +1043,15 @@ void Scene::update_bounds() {
                 // Insertion into the linked index order follows the
                 // old endpoint sequence. Later nodes moving left
                 // naturally displace earlier nodes moving right.
+                bool predecessor_updated=false;
                 for(std::size_t i=0;i<n;++i) {
+                    const bool updated=sap_endpoint_updated_[i]!=0;
+                    if(!updated && !predecessor_updated)continue;
+                    // Original batchUpdate follows each changed endpoint
+                    // and the unchanged successors it displaces. Once
+                    // the chain is ordered again, skip to the next
+                    // changed endpoint instead of comparing every key.
+                    predecessor_updated=updated;
                     const Endpoint moving=endpoints[i];
                     std::size_t previous=sap_list_prev_[i];
                     std::size_t start_index=i;
@@ -1048,6 +1062,7 @@ void Scene::update_bounds() {
                         previous=sap_list_prev_[previous];
                     }
                     if(previous==sap_list_prev_[i])continue;
+                    predecessor_updated=true;
                     const std::size_t old_prev=sap_list_prev_[i];
                     const std::size_t old_next=sap_list_next_[i];
                     sap_list_next_[old_prev]=old_next;
