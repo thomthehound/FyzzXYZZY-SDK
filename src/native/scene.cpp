@@ -1095,6 +1095,118 @@ void Scene::update_bounds() {
             localized_bulk=localized;
             sparse=localized_bulk;
         }
+        // When a bounded fraction of a moderately sized SAP changes,
+        // merge the sorted updated endpoints into the unchanged ordered
+        // stream. This is the same final order as batchUpdate's linked
+        // insertion, without relocating untouched keys repeatedly.
+        // The bounded pair check below derives only net Found/Lost
+        // candidates for those updated volumes; the persistent source
+        // SapPairManager and Sc edge publication are not replaced.
+        const std::size_t updated_count=
+            broadphase_updated_volume_slots_.size();
+        const bool bounded_merge=!sparse &&
+            updated_count>=8 &&
+            updated_count<=sap_volumes_.size()/4 &&
+            sap_volumes_.size()<=65536/updated_count;
+        if(bounded_merge) {
+            for(unsigned axis=0;axis<3;++axis) {
+                const auto bit=static_cast<std::uint8_t>(1u<<axis);
+                if(!(broadphase_changed_axes_&bit))continue;
+                auto& endpoints=sap_axis_endpoints_[axis];
+                const std::size_t n=endpoints.size();
+                sap_endpoint_updated_.resize(n);
+                std::fill(sap_endpoint_updated_.begin(),
+                          sap_endpoint_updated_.end(),0);
+                sap_merge_changed_.clear();
+                sap_merge_changed_.reserve(updated_count*2);
+                for(std::size_t j=0;j<updated_count;++j) {
+                    if(!(broadphase_updated_axis_masks_[j]&bit))continue;
+                    const std::uint32_t slot=
+                        broadphase_updated_volume_slots_[j];
+                    for(unsigned side=0;side<2;++side) {
+                        const auto index=sap_volumes_[slot].
+                            endpoint_positions[axis][side];
+                        sap_endpoint_updated_[index]=1;
+                        Endpoint ep=endpoints[index];
+                        ep.value=actors_[ep.id].encoded_bounds[
+                            axis+(side?3u:0u)];
+                        sap_merge_changed_.push_back(ep);
+                    }
+                }
+                std::sort(sap_merge_changed_.begin(),
+                          sap_merge_changed_.end(),less);
+                sap_merge_output_.clear();
+                sap_merge_output_.reserve(n);
+                std::size_t changed=0;
+                for(std::size_t i=0;i<n;++i) {
+                    if(sap_endpoint_updated_[i])continue;
+                    const Endpoint unchanged=endpoints[i];
+                    while(changed<sap_merge_changed_.size() &&
+                          less(sap_merge_changed_[changed],unchanged))
+                        sap_merge_output_.push_back(
+                            sap_merge_changed_[changed++]);
+                    sap_merge_output_.push_back(unchanged);
+                }
+                while(changed<sap_merge_changed_.size())
+                    sap_merge_output_.push_back(
+                        sap_merge_changed_[changed++]);
+                endpoints.swap(sap_merge_output_);
+                reindex(axis);
+            }
+            const auto overlaps=[](const Actor& a,const Actor& b) {
+                const auto& aa=a.encoded_bounds;
+                const auto& bb=b.encoded_bounds;
+                return !(aa[0]>bb[3] || bb[0]>aa[3] ||
+                         aa[1]>bb[4] || bb[1]>aa[4] ||
+                         aa[2]>bb[5] || bb[2]>aa[5]);
+            };
+            // An unchanged pair cannot change overlap state. Only an
+            // updated volume can create a new pair, so no whole-scene
+            // static/static or inactive-pair reconstruction is needed.
+            for(const std::uint32_t slot:
+                broadphase_updated_volume_slots_) {
+                const Actor& a=actors_[sap_volumes_[slot].id];
+                for(std::size_t other_slot=0;
+                    other_slot<sap_volumes_.size();++other_slot) {
+                    if(other_slot==slot)continue;
+                    const Actor& b=actors_[sap_volumes_[other_slot].id];
+                    if((a.kind!=Kind::DynamicBox &&
+                        b.kind!=Kind::DynamicBox) ||
+                       !overlaps(a,b))continue;
+                    const Pair pair=ordered_pair(
+                        sap_volumes_[slot].id,
+                        sap_volumes_[other_slot].id);
+                    if(!std::binary_search(previous_pairs_.begin(),
+                                           previous_pairs_.end(),pair))
+                        broadphase_crossed_pairs_.push_back(pair);
+                }
+            }
+            sap_merge_updated_ids_=broadphase_updated_ids_;
+            std::sort(sap_merge_updated_ids_.begin(),
+                      sap_merge_updated_ids_.end());
+            // A Lost event also needs to be published when the new
+            // bounds no longer overlap. Previous Sc pairs provide the
+            // precise old membership without replaying transient
+            // crossings between moving endpoint keys.
+            for(const Pair pair:previous_pairs_) {
+                const Actor& a=actors_[pair.a];
+                const Actor& b=actors_[pair.b];
+                if(a.kind==Kind::StaticPlane ||
+                   b.kind==Kind::StaticPlane ||
+                   (!std::binary_search(sap_merge_updated_ids_.begin(),
+                                        sap_merge_updated_ids_.end(),pair.a) &&
+                    !std::binary_search(sap_merge_updated_ids_.begin(),
+                                        sap_merge_updated_ids_.end(),pair.b)))
+                    continue;
+                if(!overlaps(a,b))
+                    broadphase_crossed_pairs_.push_back(pair);
+            }
+            broadphase_batch_crossings_complete_=true;
+            broadphase_batch_pair_set_unchanged_=
+                broadphase_crossed_pairs_.empty();
+            ++broadphase_batch_merge_count_;
+            return;
+        }
         if(!sparse) {
             bool all_axes_stable=true;
             // BpBroadPhaseSap::batchUpdate: update the encoded keys in
