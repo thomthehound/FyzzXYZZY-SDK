@@ -511,6 +511,7 @@ struct SourceSapEndpointFixture {
                 {float(i%12)*2.0f,float(i/12)*2.0f,0},1.0f);
         scene.advance_collision();
         const auto prior_pockets=scene.broadphase_activity_pocket_count();
+        const auto prior_shifts=scene.broadphase_endpoint_local_shift_count();
         const auto prior_full=scene.broadphase_endpoint_full_sort_count();
         std::vector<Pair> previous(scene.pairs().begin(),scene.pairs().end());
         for(unsigned frame=0;frame<48;++frame) {
@@ -560,10 +561,12 @@ struct SourceSapEndpointFixture {
                     "Source activity pocket pair reports diverged");
             previous=std::move(expected);
         }
-        if(scene.broadphase_activity_pocket_count()==prior_pockets ||
+        if((scene.broadphase_activity_pocket_count()==prior_pockets &&
+            scene.broadphase_endpoint_local_shift_count()==prior_shifts) ||
            scene.broadphase_endpoint_full_sort_count()!=prior_full)
             throw std::runtime_error(
-                "Batch SAP updates bypassed local activity pockets");
+                "Batch SAP updates neither reordered activity pockets "
+                "nor maintained direct indexed endpoints");
     }
     static void verify_static_only_full_sweep() {
         // Source group filtering must reject static/static pairs even
