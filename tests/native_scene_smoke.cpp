@@ -874,6 +874,69 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Floor contact was scheduled before the final 1D partition");
     }
+    static void verify_mixed_task_local_writeback() {
+        // A 128-body contact-only task followed by a two-body
+        // contact+1D task must execute, write back and integrate from
+        // disjoint source descriptor ranges. Gu force windows remain
+        // independent of Dy's task-local partition permutation.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const BodyId floor=scene.add_static_floor(0.0f);
+        constexpr BodyId independent=128;
+        for(BodyId i=0;i<independent;++i)
+            scene.add_dynamic_box({0.5f,0.5f,0.5f},
+                {3.0f*static_cast<float>(i),0.49f,0.0f},1.0f);
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{384.0f,0.49f,0.0f},1.0f);
+        const auto b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{387.0f,0.49f,0.0f},1.0f);
+        scene.add_distance_constraint(a,b,2.0f);
+        for(unsigned frame=0;frame<2;++frame) {
+            scene.step(1.0f/120.0f);
+            if(scene.solver_tasks_.size()!=2 ||
+               scene.solver_tasks_[0].manager_end!=independent ||
+               scene.solver_tasks_[1].manager_end!=independent+2 ||
+               scene.solver_tasks_[0].distance_end!=0 ||
+               scene.solver_tasks_[1].distance_end!=1 ||
+               scene.solver_tasks_[0].solver_body_end!=independent ||
+               scene.solver_tasks_[1].solver_body_end!=independent+2 ||
+               scene.solver_tasks_[0].constraint_end!=independent ||
+               scene.solver_tasks_[1].constraint_end!=independent+3 ||
+               scene.solver_partition_count()!=3 ||
+               scene.distance_rows_.size()!=1 ||
+               scene.solved_result_frame()!=scene.frame_index())
+                throw std::runtime_error(
+                    "Mixed Dy task chains lost their original ownership boundaries");
+            const auto forces=scene.solved_normal_impulses();
+            if(forces.size()!=scene.contact_points_.size())
+                throw std::runtime_error(
+                    "Mixed task-local Gu writeback changed force arena size");
+            std::size_t first_count=0,last_count=0;
+            double first_force=0.0,last_force=0.0;
+            for(const auto& manager:scene.manifolds_) {
+                if(manager.pair.a!=floor)continue;
+                double sum=0.0;
+                for(std::size_t i=0;i<manager.count;++i)
+                    sum+=forces[manager.contact_offset+i];
+                if(manager.pair.b<a) {
+                    ++first_count;
+                    first_force+=sum;
+                } else if(manager.pair.b==a || manager.pair.b==b) {
+                    ++last_count;
+                    last_force+=sum;
+                }
+            }
+            if(first_count!=independent || last_count!=2 ||
+               !std::isfinite(first_force) || !std::isfinite(last_force) ||
+               first_force<=0.0 || last_force<=0.0)
+                throw std::runtime_error(
+                    "Task-local Gu force writeback dropped a separate island chain");
+        }
+        const auto left=scene.body_state(a);
+        const auto right=scene.body_state(b);
+        if(!(right.position.x-left.position.x<3.0f))
+            throw std::runtime_error(
+                "Mixed task-local Dy distance row failed to change rigid poses");
+    }
     static void verify_prepublication_constraint_retirement() {
         // An admitted ScConstraintSim has connected EdgeInstances but
         // no accurate IslandSim list member until first/second pass.
@@ -3615,7 +3678,8 @@ struct ContactCorrelationSourceFixture {
         constexpr double source_signed_force=-0.000160085;
         scene.solver_contact_points_[manifold.solver_offset].applied_force=
             source_signed_force;
-        scene.write_back_contacts();
+        scene.begin_contact_writeback();
+        scene.write_back_contacts(0,scene.indexed_managers_.size());
         if(scene.solved_normal_impulses().size()!=scene.contact_points_.size() ||
            scene.solved_normal_impulses()[manifold.contact_offset]!=
                source_signed_force)
@@ -12058,6 +12122,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_source_distance_1d_execution();
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_joint_contact_partitions();
     fyzz::native::ConstraintIslandSourceFixture::verify_mixed_partition_overflow_waves();
+    fyzz::native::ConstraintIslandSourceFixture::verify_mixed_task_local_writeback();
 #if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
     fyzz::native::ConstraintIslandSourceFixture::verify_original_distance_joint_1d();
 #endif
