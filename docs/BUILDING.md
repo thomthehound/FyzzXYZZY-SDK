@@ -41,6 +41,26 @@ cmake --build build-native --config Release --parallel 4
 ctest --test-dir build-native -C Release --output-on-failure
 ```
 
+## Native SAP performance and conformance
+
+The `fyzzxyzzy_native_sap_benchmark` target profiles stationary
+geometry, local movement, contact transitions, wide teleports, retained
+overlap managers, actor retirement, static membership edits, and
+multi-volume activity-pocket updates. Endpoint-only measurements exclude
+Gu contact generation and Sc pair publication; full-query measurements
+include those costs.
+
+```sh
+cmake --build build-native --target fyzzxyzzy_native_sap_benchmark
+./build-native/fyzzxyzzy_native_sap_benchmark
+```
+
+On Windows, build with `--config Release` and run
+`build-native/Release/fyzzxyzzy_native_sap_benchmark.exe`.
+For performance comparisons, use matched optimized builds and the same
+hardware. Native scene regressions separately verify endpoint ordering,
+pair-state transitions, refiltering and Found/Lost event identity.
+
 ## C++ toolchain requirement
 
 FyzzXYZZY-owned native libraries, test executables and the Godot GDExtension
