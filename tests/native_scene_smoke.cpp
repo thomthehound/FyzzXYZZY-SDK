@@ -5293,6 +5293,7 @@ struct SolverIterationSourceFixture {
             if(serial.solver_tasks_.size()!=count ||
                concurrent.solver_tasks_.size()!=count ||
                concurrent.concurrent_solver_dispatches_!=frame+1 ||
+               concurrent.concurrent_integration_dispatches_!=frame+1 ||
                concurrent.third_pass_worker_start_count_!=1 ||
                concurrent.solved_result_frame()!=concurrent.frame_index() ||
                serial.solved_result_frame()!=serial.frame_index())
@@ -5313,6 +5314,22 @@ struct SolverIterationSourceFixture {
                        concurrent.accurate_island_id(concurrent_ids[i]))
                     throw std::runtime_error(
                         "Concurrent Dy PGS changed independent rigid body/island state");
+            }
+            if(serial.speculative_ready_nodes_!=
+                   concurrent.speculative_ready_nodes_)
+                throw std::runtime_error(
+                    "Parallel source sleepCheck changed next-frame readiness order");
+            for(std::size_t i=0;i<count;++i) {
+                const auto& a=serial.actors_[serial_ids[i]];
+                const auto& b=concurrent.actors_[concurrent_ids[i]];
+                if(a.ready_for_sleep!=b.ready_for_sleep ||
+                   a.wake_counter!=b.wake_counter ||
+                   !same(a.sleep_linear_acc,b.sleep_linear_acc) ||
+                   !same(a.sleep_angular_acc,b.sleep_angular_acc) ||
+                   !same(a.last_ccd_position,b.last_ccd_position) ||
+                   a.last_ccd_generation!=b.last_ccd_generation)
+                    throw std::runtime_error(
+                        "Parallel source solver-end sleep/integration state differs");
             }
             const auto left=serial.solved_normal_impulses();
             const auto right=concurrent.solved_normal_impulses();
@@ -5370,6 +5387,7 @@ struct SolverIterationSourceFixture {
             if(joints_serial.solver_tasks_.size()!=pairs ||
                joints_parallel.solver_tasks_.size()!=pairs ||
                joints_parallel.concurrent_solver_dispatches_!=frame+1 ||
+               joints_parallel.concurrent_integration_dispatches_!=frame+1 ||
                joints_parallel.third_pass_worker_start_count_!=1 ||
                joints_serial.indexed_distance_constraints_.size()!=pairs ||
                joints_parallel.indexed_distance_constraints_.size()!=pairs)
@@ -5391,6 +5409,10 @@ struct SolverIterationSourceFixture {
                     throw std::runtime_error(
                         "Concurrent mixed 1D/contact task altered rigid state");
             }
+            if(joints_serial.speculative_ready_nodes_!=
+                   joints_parallel.speculative_ready_nodes_)
+                throw std::runtime_error(
+                    "Parallel mixed source task changed ready-node publication");
             const auto serial_impulses=joints_serial.solved_normal_impulses();
             const auto parallel_impulses=joints_parallel.solved_normal_impulses();
             if(serial_impulses.size()!=parallel_impulses.size() ||
