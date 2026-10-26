@@ -92,13 +92,15 @@ varying timesteps.
 ## Source ScNPhaseCore contact-pair orientation
 
 `ScNPhaseCore::createShapeInteraction` calls
-`shouldSwapBodies` before it constructs the contact manager. In the
-admitted ordinary-rigid subset, its source rule places the dynamic
-participant before a static one, and two nonkinematic dynamic actors
-in **descending ActorID order**. The SDK's monotonic BodyId admission
-retains that same ordering. The actual Gu reference/incident face and
-collision-axis cache use this source ordering, not sorted BodyIds and
-not the broadphase sweep's temporary endpoint order.
+`shouldSwapBodies` before it constructs the contact manager. The
+admitted source rule places ordinary dynamics before static or kinematic
+participants and orders two nonkinematic dynamic actors by **descending
+ActorID**. In a mixed rigid/kinematic pair, the kinematic actor stays
+second even when created later; when it is the first candidate, the
+source swaps it. The SDK's monotonic BodyId admission preserves these
+ActorID comparisons. Gu/PCM reference-face selection, cached collision
+axes, and Dy preparation all use this persistent source-oriented pair,
+not canonical BodyId or temporary broadphase endpoint order.
 
 The single native contact-manager EdgeIndex now retains the derived
 orientation for its complete overlap lifetime. Gu contact generation,
@@ -107,8 +109,11 @@ ordering** consume that same source-oriented pair. Only Sc's outward
 contact-event reporting translates normals back to canonical BodyIds.
 Maintaining one orientation across Gu and Dy prevents a canonical
 lookup-key optimization from changing the source's friction tangent
-sign and floating-point solve order. No shadow
-collision pipeline or fabricated contact geometry is added.
+sign and floating-point solve order. Both creation orders of a
+dynamic/kinematic contact manager are asserted on the production
+PCM and diagnostic Gu paths, followed by independent six-frame rigid
+response comparisons against the corresponding CPU reference modes.
+No shadow collision pipeline or fabricated contact geometry is added.
 
 Both the first speculative Gu contact geometry and the angular velocity
 at the first resolved impact now have independent PhysX source-witness
