@@ -106,6 +106,8 @@ jobs:
                     f'prior={y:9.3f} us current={z:9.3f} us '
                     f'vs-N1={x/z:6.2f}x vs-prior={y/z:6.2f}x')
           PY
+          echo "Final native SAP endpoint-only diagnostics:"
+          grep '^native_sap mode=endpoint-only-' current.txt | tail -n 2
 
   linux:
     runs-on: ubuntu-26.04
