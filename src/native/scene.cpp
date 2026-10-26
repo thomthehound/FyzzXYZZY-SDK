@@ -5079,6 +5079,8 @@ void Scene::dispatch_third_pass_worker(
         work.pending=true;
     }
     work.outstanding=true;
+    if(solver_first!=invalid_instance)
+        ++concurrent_solver_worker_jobs_;
     work.cv.notify_one();
 }
 void Scene::join_third_pass_worker() noexcept {
