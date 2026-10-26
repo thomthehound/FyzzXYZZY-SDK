@@ -1689,6 +1689,9 @@ only when at least 256 descriptors exist and both ranges contain at
 least 64; isolated small workloads remain serial. The zero-mass
 static-world solver body is copied into each task's local stack frame
 to prevent concurrent writes through a shared static participant.
+A task stream containing a kinematic solver endpoint remains serial:
+that endpoint can be referenced from more than one rigid island and
+must not acquire unsynchronized cross-task row mutations.
 All solver groups join before Gu force writeback, actor integration,
 sleep readiness, and postSolver completion. The separate source
 PxsSolverEndTask integration/sleepCheck continuations have not yet
