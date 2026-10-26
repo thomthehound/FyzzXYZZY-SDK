@@ -1658,6 +1658,22 @@ already-ready island without another Dy readiness transition. The
 existing adjacency lists and bounded candidate stream suffice; no
 dormant-island inventory scan is introduced.
 
+**Concurrent rigid third-pass execution:** The production native
+ScPipeline now runs the speculative IslandSim third-pass producer on
+a worker concurrently with accurate rigid sleep arbitration whenever
+a prior-Dy readiness, local split, or settling kinematic candidate
+needs speculative processing. Both graphs retain independent island
+node/edge ownership and ready-state inputs. Their only shared mutation
+boundary is the existing checkpoint's paired edge-state/reference undo
+record: a narrow mutex protects the original full-state snapshot and
+edge transition. Both producers finish before PostThirdPass consumes
+deactivation and before any Dy solver admission. On quiet frames, the
+existing serial no-worker path avoids thread startup. A rejected Dy
+frame rolls back both producers' graph state and the original readiness
+queue; a retry repeats source third-pass work. This implements real
+concurrent producer execution, not yet the separate later gate of
+overlapping the Dy solver task tree with island-generation work.
+
 **Independent speculative active-node lifecycle:** Source
 `PxsIslandSim::deactivateIsland` also retires that graph's active rigid
 nodes and island handle via swap-last, regardless of whether the

@@ -1803,6 +1803,7 @@ struct ConstraintIslandSourceFixture {
                 "Dy sleepCheck did not queue next-frame speculative readiness");
         scene.step(0.02f);
         if(!scene.body_is_sleeping(id) ||
+           scene.concurrent_third_pass_dispatches_!=1 ||
            !scene.speculative_ready_nodes_.empty() ||
            scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
            scene.accurate_islands_.nodes_to_deactivate.front()!=id)
@@ -1810,11 +1811,55 @@ struct ConstraintIslandSourceFixture {
                 "Independent IslandSims did not consume prior Dy readiness once");
         scene.step(0.02f);
         if(!scene.body_is_sleeping(id) ||
+           scene.concurrent_third_pass_dispatches_!=1 ||
            !scene.speculative_ready_nodes_.empty() ||
            !scene.speculative_islands_.nodes_to_deactivate.empty() ||
            !scene.accurate_islands_.nodes_to_deactivate.empty())
             throw std::runtime_error(
                 "Quiet Dy frame replayed the consumed readiness transition");
+    }
+    static void verify_parallel_third_pass_failure_rollback() {
+        // Exercise actual production worker dispatch, then reject in Dy.
+        // Both IslandSim outputs and the unread prior-Dy readiness
+        // event must roll back even though the speculative worker ran.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto sleeper=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+        const auto mover=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8,7,0},1.0f);
+        scene.actors_[sleeper].dynamics.gravity_enabled=false;
+        scene.actors_[mover].dynamics.gravity_enabled=false;
+        scene.set_velocity(mover,{10,0,0});
+        scene.advance_collision(true);
+        const auto baseline=scene.body_state(sleeper);
+        const auto mover_baseline=scene.body_state(mover);
+        const auto original_speculative=scene.speculative_islands_.active_nodes;
+        const auto original_accurate=scene.accurate_islands_.active_nodes;
+        scene.actors_[sleeper].ready_for_sleep=true;
+        scene.speculative_ready_nodes_.push_back(sleeper);
+        bool rejected=false;
+        try { scene.step(1.0e38f); }
+        catch(const std::overflow_error&) { rejected=true; }
+        if(!rejected || scene.concurrent_third_pass_dispatches_==0 ||
+           scene.body_is_sleeping(sleeper) ||
+           !scene.actors_[sleeper].ready_for_sleep ||
+           scene.speculative_ready_nodes_.size()!=1 ||
+           scene.speculative_ready_nodes_.front()!=sleeper ||
+           scene.speculative_islands_.active_nodes!=original_speculative ||
+           scene.accurate_islands_.active_nodes!=original_accurate ||
+           scene.body_state(sleeper).position.x!=baseline.position.x ||
+           scene.body_state(mover).position.x!=mover_baseline.position.x)
+            throw std::runtime_error(
+                "Concurrent third pass failed to restore pre-step state");
+        // A valid retry consumes exactly that original event; the
+        // failed task must not leave a stale sleeping-node publication.
+        scene.step(1.0f/120.0f);
+        if(!scene.body_is_sleeping(sleeper) ||
+           !scene.speculative_ready_nodes_.empty() ||
+           scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.concurrent_third_pass_dispatches_<2)
+            throw std::runtime_error(
+                "Concurrent third-pass failure prevented deterministic retry");
     }
     static void verify_speculative_active_island_ownership() {
         // Source accurate sleep does not forcibly deactivate a larger
@@ -13100,6 +13145,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
+    fyzz::native::ConstraintIslandSourceFixture::verify_parallel_third_pass_failure_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_active_island_ownership();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();

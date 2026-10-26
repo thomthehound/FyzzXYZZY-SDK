@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace fyzz::native {
@@ -4769,6 +4770,13 @@ void Scene::activate_contact_edge(EdgeIndex id, bool accurate) noexcept {
 }
 void Scene::deactivate_contact_edge(EdgeIndex id, bool accurate,
                                     bool publish) noexcept {
+    // Both IslandSims can finish their third passes concurrently.
+    // The checkpoint captures BOTH graph-state fields and both
+    // per-node reference counts; protect its snapshot and the
+    // corresponding per-edge transition as one indivisible operation.
+    // This lock is only acquired on a real edge deactivation, never
+    // during quiet island scans or ordinary Dy contact solving.
+    const std::scoped_lock lock(third_pass_edge_mutex_);
     auto& edge=island_edges_[id];
     auto& state=accurate?edge.accurate_state:edge.speculative_state;
     if(!(state&3u))return;
@@ -8223,14 +8231,36 @@ void Scene::step(float seconds) {
     // no island is ready, so the deactivation pass touches active roots
     // rather than the entire island-handle inventory.
     synchronize_active_island_nodes(true);
-    // Both third-pass IslandSims read prior Dy readiness. Exercise the
-    // opposite valid completion order in the production serial lowering:
-    // the speculative producer must NOT consume accurate mNodesToPutToSleep.
-    deactivate_ready_speculative_islands();
+    // The two original ThirdPassTasks are independent producers. When
+    // speculative readiness, a split, or kinematic settling actually
+    // requires work, run that graph on a worker while accurate IslandSim
+    // makes its own sleep decision on the calling thread. The worker is
+    // joined before either producer's completion is exposed to Sc; a
+    // failing thread launch remains inside the frame rollback boundary.
+    // Avoid thread launch costs on the common quiet PGS frame.
+    bool speculative_work=!speculative_ready_nodes_.empty() ||
+                          !speculative_split_sleep_candidates_.empty();
+    if(!speculative_work)
+        for(BodyId id:speculative_islands_.active_kinematic_nodes)
+            if(actors_[id].kinematic_settling &&
+               actors_[id].ready_for_sleep) {
+                speculative_work=true;
+                break;
+            }
+    if(speculative_work && !accurate_islands_.active_islands.empty()) {
+        std::jthread speculative_task(
+            [this] { deactivate_ready_speculative_islands(); });
+        // The speculative worker reads prior-Dy readiness and owns
+        // only speculative graph data. Accurate sleep publication
+        // mutates actor state but does not change those readiness bits.
+        deactivate_ready_accurate_islands();
+        speculative_task.join();
+        ++concurrent_third_pass_dispatches_;
+    } else {
+        deactivate_ready_speculative_islands();
+        deactivate_ready_accurate_islands();
+    }
     join.finish_speculative_third_pass();
-    // The independent accurate producer owns rigid Sc sleep state and
-    // its connected constraint/contact deactivation list.
-    deactivate_ready_accurate_islands();
     join.finish_accurate_third_pass();
     // Accurate deactivation removes nodes and islands from active lists.
     if(!accurate_islands_.nodes_to_deactivate.empty())

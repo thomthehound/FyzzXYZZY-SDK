@@ -6,6 +6,7 @@ project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 # PhysX is a transitional CPU oracle and source-port test dependency, not a
 # prerequisite for the native SDK core or standalone GPU compute runtimes.
@@ -116,6 +117,7 @@ add_library(fyzzxyzzy_core STATIC
   src/native/GuPCMGjkEpa.cpp)
 add_library(FyzzXYZZY::Core ALIAS fyzzxyzzy_core)
 target_compile_features(fyzzxyzzy_core PUBLIC cxx_std_23)
+target_link_libraries(fyzzxyzzy_core PUBLIC Threads::Threads)
 target_include_directories(fyzzxyzzy_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )

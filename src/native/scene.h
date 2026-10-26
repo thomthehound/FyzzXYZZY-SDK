@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -1085,6 +1086,13 @@ private:
     // Feed the speculative producer directly, independently of the
     // accurate producer's mNodesToPutToSleep output.
     std::vector<BodyId> speculative_ready_nodes_;
+    // The two source ThirdPassTask producers mutate separate IslandSims.
+    // Their shared checkpoint records both graph edge/reference fields:
+    // serialize only that sparse recording + edge mutation, not the
+    // graph scans or per-island deactivation itself.
+    std::mutex third_pass_edge_mutex_;
+    // Counts actual worker dispatches; quiet frames do not create a thread.
+    std::size_t concurrent_third_pass_dispatches_=0;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
