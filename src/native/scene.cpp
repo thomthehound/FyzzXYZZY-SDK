@@ -944,6 +944,10 @@ void Scene::update_bounds() {
     broadphase_batch_crossings_complete_=false;
     try {
         if(broadphase_endpoint_membership_dirty_) {
+            // The endpoint-index scratch is persistent across completed
+            // frames; only a structural proxy change invalidates it.
+            sap_list_next_.clear();
+            sap_list_prev_.clear();
             sap_volumes_.clear();
             sap_volumes_.reserve(live_actor_ids_.size());
             for(auto& axis:sap_axis_endpoints_) {
@@ -1074,15 +1078,22 @@ void Scene::update_bounds() {
                         sap_endpoint_updated_[sap_volumes_[slot].
                             endpoint_positions[axis][side]]=1;
                 }
-                sap_list_next_.resize(n+1);
-                sap_list_prev_.resize(n+1);
                 const std::size_t sentinel=n;
-                for(std::size_t i=0;i<n;++i) {
-                    sap_list_prev_[i]=i?i-1:sentinel;
-                    sap_list_next_[i]=i+1<n?i+1:sentinel;
+                // BpBroadPhaseSap's mListPrev/mListNext persist between
+                // updates. They return to identity after each rebuilt
+                // pocket, avoiding a whole-axis initialization on each
+                // coherent batch.
+                if(sap_list_next_.size()!=n+1 ||
+                   sap_list_prev_.size()!=n+1) {
+                    sap_list_next_.resize(n+1);
+                    sap_list_prev_.resize(n+1);
+                    for(std::size_t i=0;i<n;++i) {
+                        sap_list_prev_[i]=i?i-1:sentinel;
+                        sap_list_next_[i]=i+1<n?i+1:sentinel;
+                    }
+                    sap_list_next_[sentinel]=0;
+                    sap_list_prev_[sentinel]=n-1;
                 }
-                sap_list_next_[sentinel]=0;
-                sap_list_prev_[sentinel]=n-1;
                 auto& pockets=sap_activity_pockets_;
                 pockets.clear();
                 pockets.reserve(broadphase_updated_volume_slots_.size()*2);
@@ -1164,6 +1175,20 @@ void Scene::update_bounds() {
                             endpoint_positions[axis][ep.is_max?1u:0u]=
                             static_cast<std::uint32_t>(index_in_array);
                     }
+                    // The source restores the affected linked segment
+                    // after remapping its sorted endpoint data. Restore
+                    // both neighbors and the sentinel where necessary;
+                    // no untouched index needs another write.
+                    for(std::size_t i=pocket.start;i<=pocket.end;++i) {
+                        sap_list_prev_[i]=i?i-1:sentinel;
+                        sap_list_next_[i]=i+1<n?i+1:sentinel;
+                    }
+                    if(pocket.start)
+                        sap_list_next_[pocket.start-1]=pocket.start;
+                    else sap_list_next_[sentinel]=0;
+                    if(pocket.end+1<n)
+                        sap_list_prev_[pocket.end+1]=pocket.end;
+                    else sap_list_prev_[sentinel]=n-1;
                     ++broadphase_activity_pocket_count_;
                     broadphase_activity_pocket_endpoint_count_+=length;
                 }
@@ -1290,6 +1315,8 @@ void Scene::update_bounds() {
         // publication; invalidate the derived axis positions so the
         // next dirty publication rebuilds them without a dense snapshot.
         broadphase_endpoint_membership_dirty_=true;
+        sap_list_next_.clear();
+        sap_list_prev_.clear();
         throw;
     }
 }

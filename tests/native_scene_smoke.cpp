@@ -28,6 +28,22 @@
 namespace fyzz::native {
 struct SourceSapEndpointFixture {
     static void check(Scene& scene) {
+        const auto& links_next=scene.sap_list_next_;
+        const auto& links_prev=scene.sap_list_prev_;
+        const std::size_t n=scene.sap_axis_endpoints_[0].size();
+        if(!links_next.empty() || !links_prev.empty()) {
+            if(links_next.size()!=n+1 || links_prev.size()!=n+1)
+                throw std::runtime_error(
+                    "Persistent SAP linked scratch has stale endpoint extent");
+            for(std::size_t i=0;i<n;++i)
+                if(links_prev[i]!=(i?i-1:n) ||
+                   links_next[i]!=(i+1<n?i+1:n))
+                    throw std::runtime_error(
+                        "SAP activity pocket failed to restore linked indices");
+            if(n && (links_next[n]!=0 || links_prev[n]!=n-1))
+                throw std::runtime_error(
+                    "SAP activity pocket failed to restore its sentinel");
+        }
         const auto& actors=scene.actors_;
         std::vector<std::array<unsigned,2>> counts(actors.size());
         std::size_t admitted=0;
