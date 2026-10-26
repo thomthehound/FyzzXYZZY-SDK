@@ -1823,14 +1823,24 @@ struct ConstraintIslandSourceFixture {
         // Both IslandSim outputs and the unread prior-Dy readiness
         // event must roll back even though the speculative worker ran.
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        const auto world=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,6,0});
         const auto sleeper=scene.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,7,0},1.0f);
+            {0.5f,0.5f,0.5f},{0,6.9f,0},1.0f);
         const auto mover=scene.add_dynamic_box(
             {0.5f,0.5f,0.5f},{8,7,0},1.0f);
         scene.actors_[sleeper].dynamics.gravity_enabled=false;
         scene.actors_[mover].dynamics.gravity_enabled=false;
         scene.set_velocity(mover,{10,0,0});
         scene.advance_collision(true);
+        const Pair sleeping_pair{world,sleeper};
+        const auto edge=scene.contact_edge_index(sleeping_pair);
+        if(edge==Scene::invalid_edge ||
+           !(scene.island_edges_[edge].speculative_state&1u) ||
+           !(scene.island_edges_[edge].accurate_state&1u) ||
+           !scene.contact_interaction_active(sleeping_pair))
+            throw std::runtime_error(
+                "Parallel rollback fixture lacks a shared live manager");
         const auto baseline=scene.body_state(sleeper);
         const auto mover_baseline=scene.body_state(mover);
         const auto original_speculative=scene.speculative_islands_.active_nodes;
@@ -1847,6 +1857,9 @@ struct ConstraintIslandSourceFixture {
            scene.speculative_ready_nodes_.front()!=sleeper ||
            scene.speculative_islands_.active_nodes!=original_speculative ||
            scene.accurate_islands_.active_nodes!=original_accurate ||
+           !(scene.island_edges_[edge].speculative_state&1u) ||
+           !(scene.island_edges_[edge].accurate_state&1u) ||
+           !scene.contact_interaction_active(sleeping_pair) ||
            scene.body_state(sleeper).position.x!=baseline.position.x ||
            scene.body_state(mover).position.x!=mover_baseline.position.x)
             throw std::runtime_error(
@@ -1857,6 +1870,13 @@ struct ConstraintIslandSourceFixture {
         if(!scene.body_is_sleeping(sleeper) ||
            !scene.speculative_ready_nodes_.empty() ||
            scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
+           scene.speculative_islands_.deactivating_edges.size()!=1 ||
+           scene.speculative_islands_.deactivating_edges[0]!=edge ||
+           scene.accurate_islands_.deactivating_edges.size()!=1 ||
+           scene.accurate_islands_.deactivating_edges[0]!=edge ||
+           scene.island_edges_[edge].speculative_state&1u ||
+           scene.island_edges_[edge].accurate_state&1u ||
+           scene.contact_interaction_active(sleeping_pair) ||
            scene.concurrent_third_pass_dispatches_<2)
             throw std::runtime_error(
                 "Concurrent third-pass failure prevented deterministic retry");
