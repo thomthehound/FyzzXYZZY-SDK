@@ -5017,6 +5017,7 @@ void Scene::run_third_pass_worker() noexcept {
         const auto solver_end=work.solver_end;
         const bool integrate_solver=work.integrate_solver;
         const float seconds=work.seconds;
+        RigidStepJoin* const solver_join=work.solver_join;
         work.pending=false;
         lock.unlock();
         bool split=false;
@@ -5029,9 +5030,11 @@ void Scene::run_third_pass_worker() noexcept {
                 // integration and sleepCheck.
                 for(std::size_t i=solver_first;i<solver_end;++i) {
                     solve_constraint_task(i);
-                    if(integrate_solver)
+                    if(integrate_solver) {
                         complete_solver_end_task(
                             i,seconds,solver_ready_worker_);
+                        solver_join->finish_solver_task(i);
+                    }
                 }
             } else {
                 split=repair_only
@@ -5049,7 +5052,9 @@ void Scene::run_third_pass_worker() noexcept {
 }
 void Scene::dispatch_third_pass_worker(
     bool repair_only,std::size_t solver_first,
-    bool integrate_solver,float seconds) {
+    bool integrate_solver,float seconds,RigidStepJoin* solver_join) {
+    if(integrate_solver && !solver_join)
+        throw std::logic_error("Source Dy task missing completion join");
     if(!third_pass_worker_state_)
         third_pass_worker_state_=std::make_unique<ThirdPassWorkerState>();
     auto& work=*third_pass_worker_state_;
@@ -5064,6 +5069,7 @@ void Scene::dispatch_third_pass_worker(
         work.repair_only=repair_only;
         work.integrate_solver=integrate_solver;
         work.seconds=seconds;
+        work.solver_join=solver_join;
         work.solver_first=solver_first;
         work.solver_end=solver_first==invalid_instance
             ? 0:solver_tasks_.size();
@@ -8316,6 +8322,7 @@ void Scene::RigidStepJoin::dispatch_solver_tasks(
     outstanding_solver_tasks=stamps.size();
 }
 void Scene::RigidStepJoin::finish_solver_task(std::size_t task_index) {
+    const std::lock_guard lock(solver_completion_mutex);
     if(!solver_dispatched ||
        task_index>=solver_completion_stamps.size() ||
        solver_completion_stamps[task_index]==completion_generation ||
@@ -8806,11 +8813,13 @@ void Scene::step(float seconds) {
         solver_ready_worker_.clear();
         solver_ready_caller_.reserve(live_dynamic_count_);
         solver_ready_worker_.reserve(live_dynamic_count_);
-        dispatch_third_pass_worker(false,parallel_solver_split,true,seconds);
+        dispatch_third_pass_worker(
+            false,parallel_solver_split,true,seconds,&join);
         try {
             for(std::size_t i=0;i<parallel_solver_split;++i) {
                 solve_constraint_task(i);
                 complete_solver_end_task(i,seconds,solver_ready_caller_);
+                join.finish_solver_task(i);
             }
         } catch(...) {
             // No checkpoint restoration while another source chain
@@ -8832,13 +8841,13 @@ void Scene::step(float seconds) {
         for(std::size_t i=0;i<solver_tasks_.size();++i) {
             solve_constraint_task(i);
             complete_solver_end_task(i,seconds,speculative_ready_nodes_);
+            join.finish_solver_task(i);
         }
     }
     if(!solver_tasks_.empty())dirty_=true;
-    // PxsSolverEndTask signals mPostSolver only after integrateCore and
-    // sleepCheck complete. Both independent lanes have joined here.
-    for(std::size_t i=0;i<solver_tasks_.size();++i)
-        join.finish_solver_task(i);
+    // Each actual PxsSolverEndTask now contributes its own completion
+    // edge immediately after integrateCore/sleepCheck. The worker and
+    // caller have joined before mPostSolver tests the final dependency.
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.
