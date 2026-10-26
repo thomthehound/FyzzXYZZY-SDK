@@ -5328,6 +5328,85 @@ struct SolverIterationSourceFixture {
             throw std::runtime_error(
                 "Concurrent Dy PGS modified the shared static solver body");
 
+        // Two rigid nodes coupled by a source 1D distance row belong
+        // to ONE accurate island, but different joints are independent
+        // solver task groups. Validate the mixed 1D/contact PGS stream
+        // through all position and velocity iterations, not only
+        // isolated static-contact row updates.
+        Scene joints_serial{Scene::ContactGenerator::DiagnosticLegacyGu};
+        Scene joints_parallel{Scene::ContactGenerator::DiagnosticLegacyGu};
+        joints_serial.set_enhanced_determinism(true);
+        joints_parallel.set_enhanced_determinism(true);
+        joints_serial.parallel_solver_enabled_=false;
+        joints_parallel.parallel_solver_min_descriptors_=0;
+        joints_serial.parallel_third_pass_enabled_=false;
+        joints_parallel.parallel_third_pass_enabled_=false;
+        constexpr std::size_t pairs=8;
+        std::array<BodyId,pairs*2> left_ids{},right_ids{};
+        for(Scene* scene:{&joints_serial,&joints_parallel}) {
+            scene->add_static_floor(0.0f);
+            auto& ids=scene==&joints_serial?left_ids:right_ids;
+            for(std::size_t i=0;i<pairs;++i) {
+                const float base=float(i)*6.0f;
+                const auto a=scene->add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{base,0.48f,0},1.0f);
+                const auto b=scene->add_dynamic_box(
+                    {0.5f,0.5f,0.5f},{base+1.4f,0.48f,0},1.0f);
+                ids[2*i]=a;
+                ids[2*i+1]=b;
+                scene->add_distance_constraint(a,b,1.4f);
+                RigidBodyDynamics dynamics{};
+                dynamics.position_iterations=(i&1u)?7:4;
+                dynamics.velocity_iterations=(i&1u)?2:1;
+                scene->set_dynamics(a,dynamics);
+                scene->set_dynamics(b,dynamics);
+                scene->set_velocity(a,{0.3f,-0.3f,0});
+                scene->set_velocity(b,{-0.2f,-0.1f,0});
+            }
+        }
+        for(std::size_t frame=0;frame<8;++frame) {
+            joints_serial.step(dt);
+            joints_parallel.step(dt);
+            if(joints_serial.solver_tasks_.size()!=pairs ||
+               joints_parallel.solver_tasks_.size()!=pairs ||
+               joints_parallel.concurrent_solver_dispatches_!=frame+1 ||
+               joints_parallel.third_pass_worker_start_count_!=1 ||
+               joints_serial.indexed_distance_constraints_.size()!=pairs ||
+               joints_parallel.indexed_distance_constraints_.size()!=pairs)
+                throw std::runtime_error(
+                    "Independent contact/1D Dy task chains failed concurrent admission");
+            for(std::size_t i=0;i<left_ids.size();++i) {
+                const auto a=joints_serial.body_state(left_ids[i]);
+                const auto b=joints_parallel.body_state(right_ids[i]);
+                if(!same(a.position,b.position) ||
+                   !same(a.velocity,b.velocity) ||
+                   !same(a.angular_velocity,b.angular_velocity) ||
+                   a.orientation.x!=b.orientation.x ||
+                   a.orientation.y!=b.orientation.y ||
+                   a.orientation.z!=b.orientation.z ||
+                   a.orientation.w!=b.orientation.w ||
+                   a.sleeping!=b.sleeping ||
+                   joints_serial.accurate_island_id(left_ids[i])!=
+                       joints_parallel.accurate_island_id(right_ids[i]))
+                    throw std::runtime_error(
+                        "Concurrent mixed 1D/contact task altered rigid state");
+            }
+            const auto serial_impulses=joints_serial.solved_normal_impulses();
+            const auto parallel_impulses=joints_parallel.solved_normal_impulses();
+            if(serial_impulses.size()!=parallel_impulses.size() ||
+               !std::equal(serial_impulses.begin(),serial_impulses.end(),
+                           parallel_impulses.begin()) ||
+               joints_serial.distance_rows_.size()!=
+                   joints_parallel.distance_rows_.size())
+                throw std::runtime_error(
+                    "Concurrent mixed task changed source Gu/1D writeback");
+            for(std::size_t i=0;i<joints_serial.distance_rows_.size();++i)
+                if(joints_serial.distance_rows_[i].applied_force!=
+                   joints_parallel.distance_rows_[i].applied_force)
+                    throw std::runtime_error(
+                        "Concurrent source 1D impulse disagreed with serial PGS");
+        }
+
         // Unlike the source static-world body, a kinematic actor has an
         // individually prepared row and may touch two separate accurate
         // rigid islands. Do not concurrently solve those shared rows.
