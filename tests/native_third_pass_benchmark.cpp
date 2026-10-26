@@ -27,6 +27,9 @@ struct NativeThirdPassTimingFixture {
                           bool deep_chain=false) {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.parallel_third_pass_enabled_=mode!=Mode::Serial;
+        // This workload measures source third-pass scheduling alone.
+        // Dy PGS worker admission is independently benchmarked below.
+        scene.parallel_solver_enabled_=false;
         if(mode==Mode::ForcedParallel)
             scene.parallel_third_pass_min_dirty_nodes_=0;
         std::vector<BodyId> ids,bridges;
