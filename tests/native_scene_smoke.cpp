@@ -3082,7 +3082,8 @@ struct ContactCorrelationSourceFixture {
         constexpr double source_signed_force=-0.000160085;
         scene.solver_contact_points_[manifold.solver_offset].applied_force=
             source_signed_force;
-        scene.write_back_contacts();
+        scene.begin_contact_writeback();
+        scene.write_back_contacts(0,scene.indexed_managers_.size());
         if(scene.solved_normal_impulses().size()!=scene.contact_points_.size() ||
            scene.solved_normal_impulses()[manifold.contact_offset]!=
                source_signed_force)
