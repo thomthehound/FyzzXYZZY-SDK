@@ -59,7 +59,7 @@ std::unique_ptr<WorldBackend> create_world_backend(WorldOptions options) {
 #else
         throw std::logic_error(
             "Reference PhysX CPU backend was disabled at SDK build time; "
-            "the native CPU solver is not yet integrated");
+            "select NativeCpu for independent SDK execution");
 #endif
     case ExecutionMode::NativeCpu:
         return create_native_cpu_backend(
