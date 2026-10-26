@@ -1095,7 +1095,7 @@ private:
     // Their shared checkpoint records both graph edge/reference fields:
     // serialize only that sparse recording + edge mutation, not the
     // graph scans or per-island deactivation itself.
-    std::mutex third_pass_edge_mutex_;
+    mutable std::mutex third_pass_edge_mutex_;
     // Counts actual worker dispatches; quiet frames do not create a thread.
     std::size_t concurrent_third_pass_dispatches_=0;
     std::size_t concurrent_lost_route_dispatches_=0;
