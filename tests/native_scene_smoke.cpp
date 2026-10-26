@@ -1904,6 +1904,36 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Quiet Dy frame replayed the consumed readiness transition");
     }
+    static void verify_reused_worker_shutdown() {
+        // A single scene has multiple back-to-back ThirdPassTasks. Its
+        // worker must be created once, rearmed without lost wakeups, and
+        // cleanly joined when the Scene leaves scope.
+        Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        std::array<BodyId,4> ids{};
+        for(unsigned i=0;i<ids.size();++i) {
+            ids[i]=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{float(i)*5.0f,12,0},1.0f);
+            scene.actors_[ids[i]].dynamics.gravity_enabled=false;
+        }
+        scene.advance_collision();
+        for(std::size_t i=0;i<ids.size();++i) {
+            const auto id=ids[i];
+            scene.actors_[id].ready_for_sleep=true;
+            scene.speculative_ready_nodes_.push_back(id);
+            scene.step(1.0f/120.0f);
+            if(scene.third_pass_worker_start_count_!=1 ||
+               scene.concurrent_third_pass_dispatches_!=i+1 ||
+               scene.third_pass_work_outstanding_ ||
+               !scene.body_is_sleeping(id))
+                throw std::runtime_error(
+                    "Reusable source ThirdPassTask worker lost a handoff");
+        }
+        scene.step(1.0f/120.0f);
+        if(scene.third_pass_worker_start_count_!=1 ||
+           scene.concurrent_third_pass_dispatches_!=ids.size())
+            throw std::runtime_error(
+                "Quiet frame needlessly relaunched source island worker");
+    }
     static void verify_parallel_third_pass_failure_rollback() {
         // Exercise actual production worker dispatch, then reject in Dy.
         // Both IslandSim outputs and the unread prior-Dy readiness
@@ -13253,6 +13283,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_single_dispatch_for_split_and_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
     fyzz::native::ConstraintIslandSourceFixture::verify_dy_ready_event_reaches_both_islands();
+    fyzz::native::ConstraintIslandSourceFixture::verify_reused_worker_shutdown();
     fyzz::native::ConstraintIslandSourceFixture::verify_parallel_third_pass_failure_rollback();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_active_island_ownership();
     fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();

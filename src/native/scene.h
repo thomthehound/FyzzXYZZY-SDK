@@ -136,6 +136,7 @@ public:
         DiagnosticLegacyGu
     };
     Scene() = default;
+    ~Scene() noexcept;
     // Explicitly construct diagnostic Gu scenes without returning the
     // large Scene working set by value or changing the default mode.
     explicit Scene(ContactGenerator generator) noexcept
@@ -792,7 +793,7 @@ private:
     void update_island_connectivity();
     bool repair_lost_island_graph(bool accurate);
     bool repair_lost_island_graphs_concurrently();
-    void run_third_pass_worker(std::stop_token stop) noexcept;
+    void run_third_pass_worker() noexcept;
     void dispatch_third_pass_worker(bool repair_only);
     void join_third_pass_worker() noexcept;
     bool complete_third_pass_worker();
@@ -1619,7 +1620,8 @@ private:
     // Declared last: its stop-aware wait ends before any Scene graph,
     // mutex or condition variable storage is destroyed.
     std::mutex third_pass_work_mutex_;
-    std::condition_variable_any third_pass_work_cv_;
+    std::condition_variable third_pass_work_cv_;
+    bool third_pass_work_stopping_=false;
     bool third_pass_work_pending_=false;
     bool third_pass_work_done_=false;
     bool third_pass_work_outstanding_=false;

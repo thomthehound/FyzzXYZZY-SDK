@@ -4996,13 +4996,23 @@ void Scene::activate_published_islands() noexcept {
     }
     authored_activation_pending_=false;
 }
-void Scene::run_third_pass_worker(std::stop_token stop) noexcept {
+Scene::~Scene() noexcept {
+    if(!third_pass_worker_.joinable())return;
+    {
+        const std::lock_guard lock(third_pass_work_mutex_);
+        third_pass_work_stopping_=true;
+    }
+    third_pass_work_cv_.notify_all();
+    // End the worker before its graph and checkpoint storage is destroyed.
+    third_pass_worker_.join();
+}
+void Scene::run_third_pass_worker() noexcept {
     for(;;) {
         std::unique_lock lock(third_pass_work_mutex_);
-        third_pass_work_cv_.wait(lock,stop,[this] {
-            return third_pass_work_pending_;
+        third_pass_work_cv_.wait(lock,[this] {
+            return third_pass_work_pending_ || third_pass_work_stopping_;
         });
-        if(stop.stop_requested())return;
+        if(third_pass_work_stopping_)return;
         const bool repair_only=third_pass_work_repair_only_;
         third_pass_work_pending_=false;
         lock.unlock();
@@ -5027,7 +5037,7 @@ void Scene::dispatch_third_pass_worker(bool repair_only) {
     if(!third_pass_worker_.joinable()) {
         // Lazy initialization: no OS thread for serial-only scenes.
         third_pass_worker_=std::jthread(
-            [this](std::stop_token stop) {run_third_pass_worker(stop);});
+            [this] {run_third_pass_worker();});
         ++third_pass_worker_start_count_;
     }
     {
