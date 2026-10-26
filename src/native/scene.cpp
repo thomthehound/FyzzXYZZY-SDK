@@ -1192,6 +1192,10 @@ void Scene::update_bounds() {
                     // changed endpoint instead of comparing every key.
                     predecessor_updated=updated;
                     const Endpoint moving=endpoints[i];
+                    const Actor& moving_actor=actors_[moving.id];
+                    const bool moving_dynamic=
+                        moving_actor.kind==Kind::DynamicBox;
+                    const auto& moving_bounds=moving_actor.encoded_bounds;
                     std::size_t previous=sap_list_prev_[i];
                     std::size_t start_index=i;
                     while(previous!=sentinel) {
@@ -1203,16 +1207,15 @@ void Scene::update_bounds() {
                         const Endpoint& passed=endpoints[previous];
                         if(moving.id!=passed.id &&
                            moving.is_max!=passed.is_max &&
-                           (actors_[moving.id].kind==Kind::DynamicBox ||
+                           (moving_dynamic ||
                             actors_[passed.id].kind==Kind::DynamicBox)) {
-                            const Actor& a=actors_[moving.id];
                             const Actor& b=actors_[passed.id];
                             // A crossing on this axis changes the
                             // pair state only if its orthogonal extents
                             // also overlap, or it had a published pair.
                             // Test those axes first to avoid work for
                             // proxies separated in another dimension.
-                            const auto& aa=a.encoded_bounds;
+                            const auto& aa=moving_bounds;
                             const auto& bb=b.encoded_bounds;
                             bool final_overlap=true;
                             for(unsigned dim:check_axes) {
