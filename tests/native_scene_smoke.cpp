@@ -2481,6 +2481,106 @@ struct ConstraintIslandSourceFixture {
 };
 
 struct ContactCorrelationSourceFixture {
+    static void verify_kinematic_contact_manager_source_order() {
+        // The kinematic flag changes PxRigidDynamic's contact-manager
+        // orientation: a dynamic/kinematic pair keeps the ordinary
+        // dynamic first regardless of actor admission order.
+        constexpr Vec3 half{0.5f,0.5f,0.5f};
+        constexpr Vec3 dynamic_position{0,8,0};
+        constexpr Vec3 kinematic_position{0.92f,8,0.06f};
+        for(const bool legacy:{false,true}) {
+            for(const bool kinematic_first:{false,true}) {
+                Scene scene{legacy
+                    ? Scene::ContactGenerator::DiagnosticLegacyGu
+                    : Scene::ContactGenerator::DefaultPcm};
+                BodyId dynamic=0,kinematic=0;
+                const auto add_dynamic=[&] {
+                    dynamic=scene.add_dynamic_box(
+                        half,dynamic_position,1.0f);
+                };
+                const auto add_kinematic=[&] {
+                    kinematic=scene.add_dynamic_box(
+                        half,kinematic_position,1.0f);
+                    scene.set_kinematic(kinematic,true);
+                };
+                if(kinematic_first) {add_kinematic();add_dynamic();}
+                else {add_dynamic();add_kinematic();}
+                scene.advance_collision(true);
+                const auto edge=scene.contact_edge_index(
+                    {std::min(dynamic,kinematic),
+                     std::max(dynamic,kinematic)});
+                if(edge==Scene::invalid_edge ||
+                   scene.contacts().empty() ||
+                   scene.island_edges_[edge].type!=
+                       Scene::IslandEdgeType::ContactManager ||
+                   scene.island_edges_[edge].gu_order_reversed!=kinematic_first)
+                    throw std::runtime_error(
+                        "Sc contact-manager placed kinematic before dynamic");
+                scene.step(1.0f/120.0f);
+                const auto state=scene.body_state(dynamic);
+                if(!std::isfinite(state.velocity.x) ||
+                   !std::isfinite(state.angular_velocity.z))
+                    throw std::runtime_error(
+                        "Kinematic contact source ordering produced invalid Dy state");
+            }
+        }
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+        // Verify the actual solved rigid response, not just the
+        // persistent Gu manager's swap bit. Both generators preserve
+        // their independent original-CPU reference configuration.
+        const auto run=[&](ExecutionMode mode,bool legacy,
+                           bool kinematic_first) {
+            WorldOptions opts{mode};
+            opts.pcm_box_box=!legacy;
+            World world(opts);
+            BodyId dynamic=0,kinematic=0;
+            const auto add_dynamic=[&] {
+                dynamic=world.add_dynamic_box(
+                    half,dynamic_position,1.0f);
+            };
+            const auto add_kinematic=[&] {
+                kinematic=world.add_dynamic_box(
+                    half,kinematic_position,1.0f);
+            };
+            if(kinematic_first) {add_kinematic();add_dynamic();}
+            else {add_dynamic();add_kinematic();}
+            RigidBodyDynamics d{};
+            d.gravity_enabled=false;
+            d.linear_damping=0.0f;
+            d.angular_damping=0.0f;
+            world.set_body_dynamics(dynamic,d);
+            world.set_body_dynamics(kinematic,d);
+            world.set_body_kinematic(kinematic,true);
+            world.set_body_velocity(dynamic,{0.2f,0,0});
+            for(int frame=0;frame<6;++frame)
+                world.step(1.0f/120.0f);
+            return world.body_state(dynamic);
+        };
+        const auto error=[](Vec3 a,Vec3 b) {
+            return std::max({std::abs(a.x-b.x),std::abs(a.y-b.y),
+                             std::abs(a.z-b.z)});
+        };
+        for(const bool legacy:{false,true})
+            for(const bool kinematic_first:{false,true}) {
+                const auto native=run(ExecutionMode::NativeCpu,
+                                      legacy,kinematic_first);
+                const auto original=run(legacy
+                    ? ExecutionMode::ReferencePhysXCpuLegacyGu
+                    : ExecutionMode::ReferencePhysXCpu,
+                    legacy,kinematic_first);
+                if(!std::isfinite(error(native.position,original.position)) ||
+                   !std::isfinite(error(native.velocity,original.velocity)) ||
+                   !std::isfinite(error(native.angular_velocity,
+                                         original.angular_velocity)) ||
+                   error(native.position,original.position)>0.02f ||
+                   error(native.velocity,original.velocity)>0.06f ||
+                   error(native.angular_velocity,
+                         original.angular_velocity)>0.1f)
+                    throw std::runtime_error(
+                        "Native/PhysX kinematic contact ordering diverged");
+            }
+#endif
+    }
     static void verify_kinematic_target_source_reference_parity() {
         // ScKinematics.cpp calculates target velocity at dt and moves
         // the body only in postSolver; compare the public production
@@ -13592,6 +13692,7 @@ int run_native_scene_smoke() {
     verify_source_solver_task_batch_partitioning();
     verify_source_correlated_friction_patch_lifecycle();
     fyzz::native::ContactCorrelationSourceFixture::verify();
+    fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_contact_manager_source_order();
     fyzz::native::ContactCorrelationSourceFixture::verify_kinematic_target_source_reference_parity();
     fyzz::native::ContactCorrelationSourceFixture::verify_settled_kinematic_contact_solver_input();
     fyzz::native::ContactCorrelationSourceFixture::verify_moving_kinematic_target_through_source_solver();
