@@ -544,6 +544,7 @@ struct SourceSapEndpointFixture {
         check_pair_registry(scene);
         const auto initial_crossings=
             scene.broadphase_endpoint_crossing_count();
+        const auto merges_before=scene.broadphase_batch_merge_count();
         for(unsigned frame=0;frame<12;++frame) {
             const float dx=frame&1u?-3.25f:3.25f;
             for(unsigned i=0;i<moving;++i)
@@ -560,6 +561,9 @@ struct SourceSapEndpointFixture {
                 throw std::runtime_error(
                     "Co-moving SAP batch leaked temporary crossing candidates");
         }
+        if(scene.broadphase_batch_merge_count()!=merges_before+12)
+            throw std::runtime_error(
+                "Co-moving SAP batch did not exercise bounded endpoint merge");
     }
     static void verify_stable_multi_update_pair_lifetime() {
         // A large mUpdated batch can move without crossing any indexed
