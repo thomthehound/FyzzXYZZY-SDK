@@ -450,6 +450,9 @@ struct SourceSapEndpointFixture {
         // orthogonal shape bounds reject all new finite pairs.
         // A previously published pair must still report Lost when
         // its own x and z intervals separate simultaneously.
+        // Dynamics occupy distinct y lanes, ensuring transient
+        // sequential endpoint shifts cannot create mover/mover
+        // candidates that would obscure orthogonal rejection.
         Scene scene;
         constexpr unsigned fixed=192,moving=64;
         for(unsigned i=0;i<fixed;++i)
@@ -459,7 +462,7 @@ struct SourceSapEndpointFixture {
         for(unsigned i=0;i<moving;++i)
             dynamic[i]=scene.add_dynamic_box(
                 {0.4f,0.4f,0.4f},
-                {float(i%32)*3.0f,float(i/32)*3.0f,
+                {float(i%32)*3.0f,float(i)*3.0f,
                  i==0?0.0f:1000.0f},1.0f);
         scene.advance_collision();
         check(scene);
@@ -474,7 +477,7 @@ struct SourceSapEndpointFixture {
             for(unsigned i=0;i<moving;++i)
                 scene.set_position(dynamic[i],
                     {float(i%32)*3.0f+dx,
-                     float(i/32)*3.0f,1000.0f});
+                     float(i)*3.0f,1000.0f});
             const auto crossings=scene.broadphase_endpoint_crossing_count();
             scene.advance_collision();
             check(scene);
