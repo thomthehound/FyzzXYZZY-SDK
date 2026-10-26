@@ -14,6 +14,66 @@
 #include <stdexcept>
 #include <vector>
 
+namespace fyzz::native {
+struct NativeSapTimingFixture {
+    static void profile(bool crossings) {
+        // Measure Bp endpoint maintenance alone: deliberately do not
+        // invoke Gu, Sc pair publication or island reconciliation.
+        Scene scene;
+        constexpr unsigned statics=192,movers=64;
+        for(unsigned i=0;i<statics;++i)
+            scene.add_static_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,0});
+        std::vector<BodyId> ids;
+        ids.reserve(movers);
+        for(unsigned i=0;i<movers;++i)
+            ids.push_back(scene.add_dynamic_box({0.4f,0.4f,0.4f},
+                {float(i%32)*3.0f,float(i/32)*3.0f,1000},1.0f));
+        scene.advance_collision();
+        const auto pocket_before=scene.broadphase_activity_pocket_count();
+        const auto touched_before=
+            scene.broadphase_activity_pocket_endpoint_count();
+        const auto comparisons_before=
+            scene.broadphase_activity_pocket_comparison_count();
+        const auto relocations_before=
+            scene.broadphase_activity_pocket_relocation_count();
+        constexpr unsigned trials=7,steps=96;
+        std::vector<double> measurements;
+        measurements.reserve(trials);
+        unsigned frame=0;
+        for(unsigned trial=0;trial<trials;++trial) {
+            double total=0.0;
+            for(unsigned step=0;step<steps;++step,++frame) {
+                for(unsigned i=0;i<movers;++i) {
+                    const float dx=(frame&1u)
+                        ? (crossings?3.25f:0.25f)
+                        : (crossings?-3.25f:-0.25f);
+                    scene.set_position(ids[i],
+                        {float(i%32)*3.0f+dx,
+                         float(i/32)*3.0f,1000});
+                }
+                const auto t0=std::chrono::steady_clock::now();
+                scene.update_bounds();
+                total+=std::chrono::duration<double,std::micro>(
+                    std::chrono::steady_clock::now()-t0).count();
+            }
+            measurements.push_back(total/steps);
+        }
+        std::sort(measurements.begin(),measurements.end());
+        std::printf(
+            "native_sap mode=%s boxes=%u updated=%u"
+            " median_us_per_query=%.3f pockets=%zu pocket_endpoints=%zu"
+            " linked_compares=%zu linked_relocations=%zu\n",
+            crossings?"endpoint-only-crossings":"endpoint-only-local",
+            statics+movers,movers,measurements[trials/2],
+            scene.broadphase_activity_pocket_count()-pocket_before,
+            scene.broadphase_activity_pocket_endpoint_count()-touched_before,
+            scene.broadphase_activity_pocket_comparison_count()-comparisons_before,
+            scene.broadphase_activity_pocket_relocation_count()-relocations_before);
+    }
+};
+} // namespace fyzz::native
+
 namespace {
 using Clock=std::chrono::steady_clock;
 enum class Motion { Stationary, Local, LocalContacts, Teleport };
@@ -226,6 +286,8 @@ int main() {
         profile_static_membership();
         profile_activity_pockets(false);
         profile_activity_pockets(true);
+        fyzz::native::NativeSapTimingFixture::profile(false);
+        fyzz::native::NativeSapTimingFixture::profile(true);
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr,"native SAP benchmark: %s\n",error.what());
