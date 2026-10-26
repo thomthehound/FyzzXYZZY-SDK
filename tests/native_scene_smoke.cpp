@@ -6296,6 +6296,102 @@ void verify_source_rigid_contact_limits() {
 #endif
 }
 
+void verify_source_sleep_wake_generator_matrix() {
+    using namespace fyzz;
+    // Sleep/wake acceptance was previously confined to default PCM.
+    // Exercise the same Sc island deactivation/reactivation through
+    // BOTH original CPU contact generators, with body/shape admission
+    // ordering reversed and unequal dynamic masses.
+    struct Sample {
+        BodyState settled{},woken{};
+        std::array<int,4> events{};
+    };
+    const auto run=[](ExecutionMode mode,bool pcm,bool reversed) {
+        WorldOptions opts{mode};
+        opts.contact_notifications=true;
+        opts.pcm_plane_box=pcm;
+        opts.pcm_box_box=pcm;
+        World world(opts);
+        BodyId floor=0,body=0;
+        const auto add_floor=[&] {floor=world.add_static_floor(0.0f);};
+        const auto add_body=[&] {
+            body=world.add_dynamic_box({0.5f,0.5f,0.5f},
+                                       {0,0.5f,0},
+                                       reversed?2.3f:0.7f);
+        };
+        if(reversed){add_body();add_floor();}
+        else{add_floor();add_body();}
+        Material material{};
+        material.restitution=0.0f;
+        material.static_friction=0.5f;
+        material.dynamic_friction=0.5f;
+        world.set_body_material(floor,material);
+        world.set_body_material(body,material);
+        constexpr float dt=1.0f/120.0f;
+        for(int frame=0;frame<360;++frame)
+            world.step(dt);
+        Sample sample{};
+        sample.settled=world.body_state(body);
+        if(!sample.settled.sleeping)
+            throw std::runtime_error(
+                "Original rigid island failed to sleep after 360 settled frames");
+        const auto record=[&](std::size_t index) {
+            const auto events=world.contact_events();
+            if(events.size()>1 ||
+               (!events.empty() &&
+                (events[0].body0!=std::min(floor,body) ||
+                 events[0].body1!=std::max(floor,body))))
+                throw std::runtime_error(
+                    "Sleep/wake source contact reporting changed actor ownership");
+            sample.events[index]=events.empty()?-1:
+                static_cast<int>(events[0].kind);
+        };
+        world.step(dt);
+        record(0);
+        world.set_body_velocity(body,{0.8f,0,0});
+        world.step(dt);
+        sample.woken=world.body_state(body);
+        record(1);
+        if(sample.woken.sleeping)
+            throw std::runtime_error(
+                "Sc wake did not reactivate a resting rigid contact island");
+        world.set_body_position(body,{0,4,0});
+        world.step(dt);
+        record(2);
+        world.step(dt);
+        record(3);
+        const std::array<int,4> expected{
+            -1,static_cast<int>(ContactEventKind::Persists),
+            static_cast<int>(ContactEventKind::Lost),-1};
+        if(sample.events!=expected)
+            throw std::runtime_error(
+                "Source sleep/wake contact notifications violated Sc lifetime");
+        return sample;
+    };
+    const auto max_error=[](Vec3 a,Vec3 b) {
+        return std::max({std::abs(a.x-b.x),std::abs(a.y-b.y),
+                         std::abs(a.z-b.z)});
+    };
+    for(const bool pcm:{false,true})
+        for(const bool reversed:{false,true}) {
+            const auto native=run(ExecutionMode::NativeCpu,pcm,reversed);
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+            const auto source=run(pcm
+                ? ExecutionMode::ReferencePhysXCpu
+                : ExecutionMode::ReferencePhysXCpuLegacyGu,pcm,reversed);
+            if(native.events!=source.events ||
+               max_error(native.settled.position,
+                         source.settled.position)>0.01f ||
+               max_error(native.woken.position,
+                         source.woken.position)>0.03f ||
+               max_error(native.woken.velocity,
+                         source.woken.velocity)>0.10f)
+                throw std::runtime_error(
+                    "Native/PhysX CPU sleep/wake parity diverged by contact generator");
+#endif
+        }
+}
+
 void verify_source_combined_lifecycle_matrix() {
     using namespace fyzz;
     // One real World and one independent PhysX CPU World per cell.
@@ -14095,6 +14191,7 @@ int run_native_scene_smoke() {
     verify_removed_actor_touch_notifications();
     verify_source_rigid_contact_limits();
     verify_source_shape_offsets();
+    verify_source_sleep_wake_generator_matrix();
     verify_source_combined_lifecycle_matrix();
     verify_source_multiframe_completion();
     verify_source_pose_authoring();
