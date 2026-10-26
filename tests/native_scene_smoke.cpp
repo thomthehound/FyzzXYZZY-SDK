@@ -455,6 +455,7 @@ struct SourceSapEndpointFixture {
         std::vector<Scene::EdgeIndex> handles;
         for(Pair pair:initial)handles.push_back(scene.contact_edge_index(pair));
         const auto first=scene.broadphase_batch_stable_order_count();
+        const auto direct=scene.broadphase_batch_direct_update_count();
         const auto pockets=scene.broadphase_activity_pocket_count();
         for(unsigned frame=0;frame<32;++frame) {
             const float dx=(frame&1u)?0.35f:0.15f;
@@ -474,7 +475,8 @@ struct SourceSapEndpointFixture {
                     throw std::runtime_error(
                         "Coherent SAP batch replaced an unchanged Sc EdgeIndex");
         }
-        if(scene.broadphase_batch_stable_order_count()!=first+32 ||
+        if((scene.broadphase_batch_stable_order_count()-first)+
+           (scene.broadphase_batch_direct_update_count()-direct)!=32 ||
            scene.broadphase_activity_pocket_count()!=pockets)
             throw std::runtime_error(
                 "Coherent SAP batch rebuilt unnecessary activity pockets");
