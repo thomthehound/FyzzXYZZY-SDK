@@ -773,7 +773,9 @@ private:
     // append, concatenate on merge, and swap-last on retirement.
     void append_accurate_island_edge(std::uint32_t id, std::uint32_t island);
     void remove_accurate_island_edge(std::uint32_t id);
-    void update_island_connectivity(bool repair_lost_edges);
+    void update_island_connectivity();
+    bool repair_lost_island_graph(bool accurate);
+    void rebuild_accurate_island_offsets();
     // A dependency-ready, synchronous lowering of third-pass lost-edge
     // repair. Source activation and whole-island deactivation consume
     // already published readiness before this frame's solver begins.
@@ -1032,17 +1034,15 @@ private:
     // Reconstructed after the third-pass sleep decision, not a second
     // registry of actors, island handles, or solver bodies.
     std::vector<std::size_t> active_accurate_island_batches_;
-    // IslandSim::findRoute traversal reuses its search queue/visited
-    // marks, but now traverses the persistent EdgeInstance adjacency.
-    std::vector<BodyId> island_route_queue_, island_route_predecessor_;
-    // The same source EdgeIndex used to discover each BFS predecessor.
-    std::vector<EdgeIndex> island_route_predecessor_edge_;
-    std::vector<std::uint32_t> island_route_seen_;
-    std::uint32_t island_route_visit_stamp_=0;
-    // Per-third-pass processed mVisitedState witnesses. Visit generations
-    // avoid clearing the entire actor vector for each dirty publication.
-    std::vector<std::uint32_t> island_route_confirmed_;
-    std::uint32_t island_route_confirmed_stamp_=0;
+    // Independent IslandSim route traversal and split migration storage.
+    // Generations retain capacity without scanning dormant actor slots.
+    struct IslandRouteScratch {
+        std::vector<BodyId> queue, predecessor, split_members;
+        std::vector<EdgeIndex> predecessor_edge, split_edges;
+        std::vector<std::uint32_t> seen, confirmed;
+        std::uint32_t visit_stamp=0, confirmed_stamp=0;
+    };
+    IslandRouteScratch speculative_route_scratch_, accurate_route_scratch_;
     // Rare rigid sleep publication: process each speculative island
     // exactly once when its final member sleeps. Indexed by root BodyId
     // to avoid an O(all islands) scan or post-commit allocations.
@@ -1076,11 +1076,6 @@ private:
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
     std::vector<BodyId> speculative_dirty_nodes_, accurate_dirty_nodes_;
-    // Source processLostEdges' failed dirty-route seeds, consumed by
-    // local split migration in their original ascending dirty order.
-    // Reused source mVisitedNodes and mIslandSplitEdges working sets.
-    std::vector<BodyId> island_split_members_;
-    std::vector<EdgeIndex> island_split_edges_;
     // IslandSim::mDirtyMap lowers to reusable per-graph membership bits.
     // Reset only touched nodes after a pass or a failed publication.
     std::vector<std::uint8_t> speculative_dirty_map_, accurate_dirty_map_;
