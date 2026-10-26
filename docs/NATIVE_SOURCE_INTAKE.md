@@ -1460,9 +1460,15 @@ collision graph or duplicate the physics actors. Finite broadphase overlaps are 
 `SapPairManager` with explicit creation/removal states. Indexed minimum
 and maximum endpoints on all three axes produce sparse crossing
 candidates, and multi-volume updates use linked activity-pocket
-reordering. The contact-manager stream remains separate: unchanged
-Sc pairs retain their original EdgeIndices, while net pair additions
-and removals enter the existing linear Sc publication merge. Source `setEdgeConnected`/`setEdgeDisconnected`
+reordering. A per-volume three-axis change mask skips unmodified
+endpoint arrays. Bulk updates preserve their prior pair set when the
+encoded endpoint ordering remains stable; otherwise the linked
+reorder records min/max crossings and feeds the same hashed
+creation/removal state machine used by sparse endpoint updates.
+A complete pair sweep remains necessary for structural proxy changes.
+The contact-manager stream remains separate: unchanged Sc pairs
+retain their original EdgeIndices, while net pair additions and
+removals enter the existing linear Sc publication merge. Source `setEdgeConnected`/`setEdgeDisconnected`
 semantics are represented by an accurate-connection bit on that slot,
 updated from Gu found/lost touch events. Both speculative and accurate
 island connectivity now consume the same persistent edge slots.
