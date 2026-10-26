@@ -1459,17 +1459,16 @@ the original sorted pair stream; it does **not** allocate a separate
 collision graph or duplicate the physics actors. Finite broadphase overlaps are retained in a compact hashed
 `SapPairManager` with explicit creation/removal states. Indexed minimum
 and maximum endpoints on all three axes produce sparse crossing
-candidates. Multi-volume updates first preserve exact endpoint
-order where all final neighbor comparisons remain sorted. Bounded
-rank-local changes reuse indexed adjacent shifts, independent
-of the body's displacement in world units; motion beyond the
-bounded old-rank envelope retains linked activity-pocket reordering.
-A per-volume three-axis change mask skips unmodified endpoint arrays.
-Only min/max crossings that can change the final three-axis
-overlap, or retire an existing pair, reach the hashed pair-state
-manager. Both update paths share this transition contract;
-bulk update selection changes work organization, not the source
-overlap definition or Sc contact-manager ownership.
+candidates. Multi-volume updates preserve endpoint order directly
+when all final neighbor comparisons remain sorted. Rank-local
+changes use indexed adjacent shifts regardless of world displacement.
+Bounded bulk updates merge sorted changed endpoints into the unchanged
+stream and sweep active X intervals involving updated volumes for net
+three-axis pair transitions. Larger reorders retain linked activity
+pockets. A per-volume axis mask skips unmodified endpoint arrays.
+The pair-state manager receives only potential new three-axis overlaps
+or retirements of existing pairs. All routes preserve the same
+endpoint ordering, overlap definition, and Sc contact-manager ownership.
 A complete pair sweep remains necessary for structural proxy changes.
 The contact-manager stream remains separate: unchanged Sc pairs
 retain their original EdgeIndices, while net pair additions and
