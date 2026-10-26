@@ -517,9 +517,16 @@ int main() {
                     throw std::runtime_error(
                         "Valid source count preflight incorrectly enqueued GPU work");
 
+                // Source PxgCudaBroadPhaseSap::update runs gpuDMAUp first;
+                // a changed frame requests a final idle convergence update.
+                bool forceUpdate=true;
                 const auto beforeFrameBatches=stream.submission_stats();
-                const auto nextCounts=gpu_dma_up_sap_frame_native(
-                    nextUpdate,borrowed,stream);
+                const auto nextAdmission=begin_sap_update_native(
+                    nextUpdate,borrowed,stream,forceUpdate);
+                const auto nextCounts=nextAdmission.counts;
+                if(!nextAdmission.execute_gpu_stages || !forceUpdate)
+                    throw std::runtime_error(
+                        "Changed source SAP frame failed update admission");
                 const auto afterFrameBatches=stream.submission_stats();
                 if(afterFrameBatches.upload_batches!=beforeFrameBatches.upload_batches+1u ||
                    afterFrameBatches.upload_spans!=beforeFrameBatches.upload_spans+6u ||
@@ -571,6 +578,50 @@ int main() {
                 checkGpu(projections[0],previousProjection.data(),
                          sizeof(previousProjection),
                          "Source gpuDMAUp frame destroyed prior GPU projection history");
+
+                // The source runs exactly one otherwise-idle GPU update
+                // to converge bounds/history, then skips kernel stages on
+                // later idle frames. Each frame still runs gpuDMAUp.
+                const physx::Bp::BroadPhaseUpdateData idleFrame(
+                    nullptr,0u,nullptr,0u,nullptr,0u,
+                    nullptr,nullptr,nullptr,6u,filter,false,false);
+                const auto beforeIdle=stream.submission_stats();
+                const auto forced=begin_sap_update_native(
+                    idleFrame,borrowed,stream,forceUpdate);
+                if(!forced.execute_gpu_stages || forceUpdate ||
+                   forced.counts.previous_boxes!=4u ||
+                   forced.counts.current_boxes!=4u || liveBoxes!=4u)
+                    throw std::runtime_error(
+                        "Source SAP lost its single forced idle convergence pass");
+                const auto afterForced=stream.submission_stats();
+                const auto trulyIdle=begin_sap_update_native(
+                    idleFrame,borrowed,stream,forceUpdate);
+                const auto afterIdle=stream.submission_stats();
+                if(trulyIdle.execute_gpu_stages || forceUpdate ||
+                   trulyIdle.counts.previous_boxes!=4u ||
+                   trulyIdle.counts.current_boxes!=4u ||
+                   afterForced.upload_batches!=beforeIdle.upload_batches+1u ||
+                   afterIdle.upload_batches!=afterForced.upload_batches+1u)
+                    throw std::runtime_error(
+                        "Quiet SAP frame bypassed source DMA or repeated GPU stages");
+                stream.wait_at_fetch();
+
+                // Rejecting a malformed frame cannot consume the source
+                // force-update state or commit a new box population.
+                bool rejectedForceUpdate=true;
+                const auto unchanged=liveBoxes;
+                bool rejectedBroken=false;
+                try {
+                    (void)begin_sap_update_native(
+                        overRegionLimit,overflowFrame,stream,
+                        rejectedForceUpdate);
+                } catch(const std::overflow_error&) {
+                    rejectedBroken=true;
+                }
+                if(!rejectedBroken || !rejectedForceUpdate ||
+                   liveBoxes!=unchanged || !stream.commands().empty())
+                    throw std::runtime_error(
+                        "Rejected source SAP DMA consumed update admission");
 
 
             }
