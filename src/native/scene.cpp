@@ -1298,43 +1298,283 @@ void Scene::after_integration_cached_bounds() {
             }
         }
 }
+// BpBroadPhaseSapAux::SapPairManager. The stable pair keys are BP handles;
+// Sc's sorted, generation-safe contact edges remain separately owned.
+std::uint32_t Scene::SapPairManager::hash(Pair pair) noexcept {
+    // Unsigned arithmetic reproduces Hash32Bits_1 without signed-shift UB.
+    std::uint32_t key=pair.a | (pair.b<<16);
+    key+=~(key<<15);
+    key^=key>>10;
+    key+=key<<3;
+    key^=key>>6;
+    key+=~(key<<11);
+    key^=key>>16;
+    return key;
+}
+std::uint32_t Scene::SapPairManager::find(Pair pair) const noexcept {
+    if(hash_table.empty())return invalid;
+    std::uint32_t slot=hash_table[hash(pair)&(hash_table.size()-1)];
+    while(slot!=invalid && !(active_pairs[slot]==pair))
+        slot=next[slot];
+    return slot;
+}
+void Scene::SapPairManager::rehash(std::size_t buckets) {
+    std::vector<std::uint32_t> heads(buckets,invalid);
+    for(std::size_t i=0;i<active_pairs.size();++i) {
+        const auto h=hash(active_pairs[i])&(buckets-1);
+        next[i]=heads[h];
+        heads[h]=static_cast<std::uint32_t>(i);
+    }
+    hash_table.swap(heads);
+}
+void Scene::SapPairManager::add(Pair pair) {
+    const auto existing=find(pair);
+    if(existing!=invalid) {
+        states[existing]&=static_cast<std::uint8_t>(~removed);
+        return;
+    }
+    if(active_pairs.size()>=invalid)
+        throw std::overflow_error("Native SAP pair index exhausted");
+    if(active_pairs.size()>=hash_table.size())
+        rehash(hash_table.empty()?64:hash_table.size()*2);
+    const auto index=static_cast<std::uint32_t>(active_pairs.size());
+    // Reserve every parallel array before publishing a hash bucket.
+    // Geometric growth retains amortized O(1) pair insertion.
+    // A failed allocation invalidates the derived registry at rollback.
+    if(active_pairs.capacity()==active_pairs.size())
+        active_pairs.reserve(std::max<std::size_t>(
+            8,active_pairs.capacity()*2));
+    if(states.capacity()==states.size())
+        states.reserve(std::max<std::size_t>(8,states.capacity()*2));
+    if(next.capacity()==next.size())
+        next.reserve(std::max<std::size_t>(8,next.capacity()*2));
+    if(touched.capacity()==touched.size())
+        touched.reserve(std::max<std::size_t>(
+            8,touched.capacity()*2));
+    const auto bucket=hash(pair)&(hash_table.size()-1);
+    active_pairs.push_back(pair);
+    states.push_back(in_array|newly_created);
+    next.push_back(hash_table[bucket]);
+    hash_table[bucket]=index;
+    touched.push_back(index);
+}
+void Scene::SapPairManager::remove(Pair pair) {
+    const auto index=find(pair);
+    if(index==invalid)return;
+    auto& state=states[index];
+    if(!(state&in_array)) {
+        touched.push_back(index);
+        state|=in_array;
+    }
+    state|=removed;
+}
+void Scene::SapPairManager::begin_full() {
+    touched.clear();
+    touched.reserve(active_pairs.size());
+    // Full membership changes use the same source pair-state machine as
+    // endpoint events: survivors clear REMOVED when encountered again.
+    for(std::size_t i=0;i<active_pairs.size();++i) {
+        states[i]=in_array|removed;
+        touched.push_back(static_cast<std::uint32_t>(i));
+    }
+}
+void Scene::SapPairManager::remove_index(std::uint32_t index) noexcept {
+    const auto bucket=hash(active_pairs[index])&(hash_table.size()-1);
+    std::uint32_t* link=&hash_table[bucket];
+    while(*link!=index)link=&next[*link];
+    *link=next[index];
+    const auto last=static_cast<std::uint32_t>(active_pairs.size()-1);
+    if(index!=last) {
+        const auto last_bucket=hash(active_pairs[last])&
+            (hash_table.size()-1);
+        std::uint32_t* last_link=&hash_table[last_bucket];
+        while(*last_link!=last)last_link=&next[*last_link];
+        *last_link=index;
+        active_pairs[index]=active_pairs[last];
+        states[index]=states[last];
+        next[index]=next[last];
+    }
+    active_pairs.pop_back();
+    states.pop_back();
+    next.pop_back();
+}
+void Scene::SapPairManager::finish(
+    std::vector<Pair>& created,std::vector<Pair>& deleted) {
+    created.clear();
+    deleted.clear();
+    actual_deleted.clear();
+    for(const auto index:touched) {
+        const auto state=states[index];
+        const Pair pair=active_pairs[index];
+        if(state&removed) {
+            // A pair born and retired in one BP update has no Sc Lost.
+            if(!(state&newly_created))deleted.push_back(pair);
+            actual_deleted.push_back(pair);
+        } else if(state&newly_created)
+            created.push_back(pair);
+        states[index]=0;
+    }
+    std::sort(created.begin(),created.end());
+    std::sort(deleted.begin(),deleted.end());
+    // Collect keys before swap-last compaction: indices change on removal.
+    for(const Pair pair:actual_deleted) {
+        const auto index=find(pair);
+        if(index!=invalid)remove_index(index);
+    }
+    touched.clear();
+    // Keep the hash load factor bounded without an allocation per pair.
+    if(hash_table.size()>64 &&
+       active_pairs.size()*4<hash_table.size())
+        rehash(hash_table.size()/2);
+}
+void Scene::SapPairManager::reset() noexcept {
+    active_pairs.clear();
+    states.clear();
+    next.clear();
+    touched.clear();
+    actual_deleted.clear();
+    std::fill(hash_table.begin(),hash_table.end(),invalid);
+}
+void Scene::SapPairManager::seed(std::span<const Pair> pairs) {
+    reset();
+    for(const Pair pair:pairs)add(pair);
+    for(auto& state:states)state=0;
+    touched.clear();
+}
+
 void Scene::update_pairs() {
+    // The BP hashed manager is the overlap authority; the sorted Sc
+    // manager/edge stream is a separate consumer. Rejected transactions
+    // reconstruct the BP lookup from the previously published Sc stream.
+    if(sap_pair_registry_dirty_) {
+        broadphase_candidate_deltas_.clear();
+        for(Pair pair:previous_pairs_)
+            if(actors_[pair.a].kind!=Kind::StaticPlane &&
+               actors_[pair.b].kind!=Kind::StaticPlane)
+                broadphase_candidate_deltas_.push_back(pair);
+        sap_pairs_.seed(broadphase_candidate_deltas_);
+        sap_pair_registry_dirty_=false;
+    }
     pending_pairs_.clear();
-    active_.clear();
-    // Source-corresponding SAP: x-axis sweep and integer y/z overlap.
-    // Retain ordered pair history across frames; exclude static/static.
-    for (Endpoint ep : endpoints_) {
-        const auto& actor = actors_[ep.id];
-        const auto& a = actor.encoded_bounds;
-        active_.erase(std::remove_if(active_.begin(), active_.end(),
-            [&](BodyId id) { return actors_[id].encoded_bounds[3] < ep.min_x; }),
-            active_.end());
-        for (BodyId other_id : active_) {
-            const auto& other = actors_[other_id];
-            if (actor.kind != Kind::DynamicBox && other.kind != Kind::DynamicBox)
-                continue;
-            const auto& b = other.encoded_bounds;
-            if (a[1] > b[4] || b[1] > a[4] ||
-                a[2] > b[5] || b[2] > a[5]) continue;
-            pending_pairs_.push_back(ordered_pair(ep.id, other_id));
+    sap_created_pairs_.clear();
+    sap_deleted_pairs_.clear();
+    broadphase_pair_membership_changed_=false;
+    const bool few_updates=!broadphase_full_pair_update_ &&
+        broadphase_updated_ids_.size()*5<sap_volumes_.size();
+    if(few_updates) {
+        ++broadphase_incremental_pair_update_count_;
+        const auto& crossed=broadphase_crossed_pairs_;
+        if(crossed.empty())return;
+        // Only candidate crossings enter the hashed state machine.
+        // Deduplication coalesces multi-axis start/stop transitions into
+        // final three-axis pair membership before Sc publication.
+        broadphase_candidate_deltas_=crossed;
+        std::sort(broadphase_candidate_deltas_.begin(),
+                  broadphase_candidate_deltas_.end());
+        auto& candidates=broadphase_candidate_deltas_;
+        candidates.erase(std::unique(candidates.begin(),candidates.end()),
+                         candidates.end());
+        for(Pair pair:candidates) {
+            const Actor& a=actors_[pair.a],&b=actors_[pair.b];
+            const auto& aa=a.encoded_bounds;
+            const auto& bb=b.encoded_bounds;
+            const bool overlap=(a.kind==Kind::DynamicBox ||
+                                b.kind==Kind::DynamicBox) &&
+                !(aa[0]>bb[3] || bb[0]>aa[3] ||
+                  aa[1]>bb[4] || bb[1]>aa[4] ||
+                  aa[2]>bb[5] || bb[2]>aa[5]);
+            if(overlap)sap_pairs_.add(pair);
+            else sap_pairs_.remove(pair);
         }
-        active_.push_back(ep.id);
-    }
-    // The infinite plane is only a *candidate* broadphase shape, not a
-    // resolved contact. Native narrowphase must reject noncontact candidates.
-    for (std::size_t i = 0; i < actors_.size(); ++i) {
-        if (!actors_[i].alive || !actors_[i].simulation_shape_enabled ||
-            actors_[i].kind != Kind::StaticPlane) continue;
-        for (std::size_t j = 0; j < actors_.size(); ++j) {
-            if (actors_[j].alive && actors_[j].simulation_shape_enabled &&
-                actors_[j].kind == Kind::DynamicBox)
-                pending_pairs_.push_back(ordered_pair(
-                    static_cast<BodyId>(i), static_cast<BodyId>(j)));
+        sap_pairs_.finish(sap_created_pairs_,sap_deleted_pairs_);
+        if(sap_created_pairs_.empty() && sap_deleted_pairs_.empty())
+            return;
+        broadphase_pair_membership_changed_=true;
+        pending_pairs_.reserve(previous_pairs_.size()+
+                               sap_created_pairs_.size());
+        // Sc maintains canonical pair/EdgeIndex order. Translate only
+        // BP Found/Lost deltas into its next list; inactive managers keep
+        // their identities and are never recreated by this path.
+        std::size_t add=0,del=0;
+        for(Pair prior:previous_pairs_) {
+            while(add<sap_created_pairs_.size() &&
+                  sap_created_pairs_[add]<prior)
+                pending_pairs_.push_back(sap_created_pairs_[add++]);
+            while(del<sap_deleted_pairs_.size() &&
+                  sap_deleted_pairs_[del]<prior)++del;
+            if(del<sap_deleted_pairs_.size() &&
+               sap_deleted_pairs_[del]==prior)++del;
+            else pending_pairs_.push_back(prior);
         }
+        while(add<sap_created_pairs_.size())
+            pending_pairs_.push_back(sap_created_pairs_[add++]);
+        return;
     }
-    std::sort(pending_pairs_.begin(), pending_pairs_.end());
-    pending_pairs_.erase(std::unique(pending_pairs_.begin(), pending_pairs_.end()),
-                         pending_pairs_.end());
+
+    // On a membership/full-update pass, every BP pair starts REMOVED,
+    // and the x-axis sweep reaffirms surviving overlaps. A single
+    // finish pass determines source Created/Deleted status.
+    sap_pairs_.begin_full();
+    sap_active_dynamic_slots_.clear();
+    sap_active_static_slots_.clear();
+    sap_active_positions_.resize(sap_volumes_.size());
+    // BpBroadPhaseSap x-axis sweep: only a pair with at least one
+    // dynamic participant passes source group filtering. Keep active
+    // static and dynamic intervals separate so dense static-only
+    // scenes never enumerate static/static candidates. Each endpoint
+    // already owns a compact slot for constant-time active removal.
+    for(const Endpoint ep:sap_axis_endpoints_[0]) {
+        const bool dynamic=actors_[ep.id].kind==Kind::DynamicBox;
+        auto& own=dynamic?sap_active_dynamic_slots_:
+                          sap_active_static_slots_;
+        if(ep.is_max) {
+            const std::uint32_t slot=ep.volume_slot;
+            const std::uint32_t index=sap_active_positions_[slot];
+            const std::uint32_t tail=own.back();
+            own[index]=tail;
+            sap_active_positions_[tail]=index;
+            own.pop_back();
+            continue;
+        }
+        const auto& a=actors_[ep.id].encoded_bounds;
+        const auto compare=[&](const std::vector<std::uint32_t>& slots) {
+            for(const std::uint32_t slot:slots) {
+                const BodyId other_id=sap_volumes_[slot].id;
+                const auto& b=actors_[other_id].encoded_bounds;
+                if(a[1]>b[4] || b[1]>a[4] ||
+                   a[2]>b[5] || b[2]>a[5])continue;
+                pending_pairs_.push_back(ordered_pair(ep.id,other_id));
+            }
+        };
+        compare(sap_active_dynamic_slots_);
+        if(dynamic)compare(sap_active_static_slots_);
+        sap_active_positions_[ep.volume_slot]=
+            static_cast<std::uint32_t>(own.size());
+        own.push_back(ep.volume_slot);
+    }
+    // Infinite source planes have no finite endpoint and therefore
+    // remain separate candidate broadphase shapes, as before.
+    for(BodyId plane:live_actor_ids_) {
+        const Actor& actor=actors_[plane];
+        if(!actor.simulation_shape_enabled ||
+           actor.kind!=Kind::StaticPlane)continue;
+        for(const SapVolume& volume:sap_volumes_)
+            if(actors_[volume.id].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(ordered_pair(plane,volume.id));
+    }
+    std::sort(pending_pairs_.begin(),pending_pairs_.end());
+    pending_pairs_.erase(
+        std::unique(pending_pairs_.begin(),pending_pairs_.end()),
+        pending_pairs_.end());
+    for(Pair pair:pending_pairs_)
+        if(actors_[pair.a].kind!=Kind::StaticPlane &&
+           actors_[pair.b].kind!=Kind::StaticPlane)
+            sap_pairs_.add(pair);
+    sap_pairs_.finish(sap_created_pairs_,sap_deleted_pairs_);
+    broadphase_pair_membership_changed_=
+        !std::equal(pending_pairs_.begin(),pending_pairs_.end(),
+                    previous_pairs_.begin(),previous_pairs_.end());
+
 }
 std::uint32_t Scene::contact_edge_index(Pair pair) const noexcept {
     const auto it=std::lower_bound(previous_pairs_.begin(),
@@ -1771,6 +2011,17 @@ void Scene::remove_constraint_edge(EdgeIndex id) {
     dirty_=true;
 }
 void Scene::publish_pairs() {
+    // Graph node heads must grow on actor admission even with no BP delta.
+    speculative_node_first_.resize(actors_.size(),invalid_instance);
+    accurate_node_first_.resize(actors_.size(),invalid_instance);
+    if(!broadphase_pair_membership_changed_) {
+        next_found_.clear();
+        next_lost_.clear();
+        found_.swap(next_found_);
+        lost_.swap(next_lost_);
+        ++quiet_event_epoch_;
+        return;
+    }
     // Source SAP's sorted prior/new overlap streams drive one linear
     // merge. Edges and found/lost events are published together; do not
     // perform binary searches per pair or construct a second graph map.
@@ -7305,6 +7556,8 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.solved_result_frame_=solved_result_frame;
     scene.active_contact_interaction_count_=initial_active_interactions;
     scene.island_topology_dirty_=topology_dirty;
+    scene.broadphase_endpoint_membership_dirty_=true;
+    scene.sap_pair_registry_dirty_=true;
     scene.dirty_=dirty;
     scene.authored_activation_pending_=authored_activation_pending;
  }
