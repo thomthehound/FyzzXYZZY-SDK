@@ -1819,10 +1819,23 @@ struct ConstraintIslandSourceFixture {
         // Source accurate sleep does not forcibly deactivate a larger
         // speculative AABB-only island while another rigid stays awake.
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+        // Rotated narrow boxes have intersecting SAP bounds but no
+        // actual OBB contact. Both remain ordinary dynamic nodes.
         const auto a=scene.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0,10,0},1.0f);
+            {2.0f,0.1f,0.2f},{0,10,0},1.0f);
         const auto b=scene.add_dynamic_box(
-            {0.5f,0.5f,0.5f},{0.9f,10,0.9f},1.0f);
+            {2.0f,0.1f,0.2f},{0,10,5},1.0f);
+        for(BodyId id:{a,b}) {
+            scene.set_velocity(id,{0,9.81f,0});
+            scene.set_angular_velocity(id,{0,0.83f,0});
+        }
+        scene.step(1.0f);
+        for(BodyId id:{a,b}) {
+            scene.set_angular_velocity(id,{});
+            scene.set_velocity(id,{});
+        }
+        scene.set_position(a,{0,0.1f,0});
+        scene.set_position(b,{0.6f,0.1f,0.6f});
         scene.advance_collision(true);
         const Pair pair{a,b};
         const auto edge=scene.contact_edge_index(pair);
