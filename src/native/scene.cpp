@@ -6300,13 +6300,14 @@ void Scene::update_threshold_stream(float seconds) {
     threshold_previous_.swap(threshold_current_);
     ++threshold_cache_epoch_;
 }
-void Scene::publish_solver_bodies() {
-    // The source retains pre-solver velocity independently and publishes
-    // solved motion velocity after the iteration/conclude/writeback sequence.
-    // The source's rigid-body normal-contact rows now update both linear
-    // and angular velocity state. Friction/correlation/writeback parity
-    // remains a separate N1 acceptance requirement.
-    for (BodyId id : solver_active_ids_) {
+void Scene::publish_solver_bodies(std::size_t first,std::size_t last) {
+    // Each Dy task chain publishes only its own contiguous solver-body
+    // range before integration and sleepCheck. No other active island's
+    // body state can be committed by this chain.
+    if(first>last || last>solver_active_ids_.size())
+        throw std::logic_error("Native Dy task solver-body range invalid");
+    for(std::size_t index=first;index<last;++index) {
+        const BodyId id=solver_active_ids_[index];
         auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
         const auto& row = solver_rows_[id];
@@ -7269,7 +7270,6 @@ void Scene::step(float seconds) {
     prepare_constraints(seconds);
     solve_constraints();
     write_back_contacts();
-    publish_solver_bodies();
     // PxsBodyCore::numCountedInteractions is maintained by original Sc
     // interaction edges. In this admitted contact-only subset each Gu
     // contact manager contributes one interaction to each dynamic body.
@@ -7298,8 +7298,12 @@ void Scene::step(float seconds) {
     // iteration motion velocities to move/rotate bodies. The velocity
     // iterations above publish their different, unbiased final velocities
     // for subsequent frames; they do not undo this frame's correction.
+    std::size_t published_solver_body_end=0;
     for(std::size_t task_index=0;task_index<solver_tasks_.size();++task_index) {
         const auto& task=solver_tasks_[task_index];
+        publish_solver_bodies(
+            published_solver_body_end,task.solver_body_end);
+        published_solver_body_end=task.solver_body_end;
         // PxsSolverEndTask owns integration and Dy::sleepCheck for its
         // contiguous range of accurate active islands, not just PGS.
         // The task contributes to postSolver only after every rigid
@@ -7427,6 +7431,9 @@ void Scene::step(float seconds) {
         }
         join.finish_solver_task(task_index);
     }
+    if(published_solver_body_end!=solver_active_ids_.size())
+        throw std::logic_error(
+            "Native Dy task ranges did not consume every prepared solver body");
     // Dy::sleepCheck has only published readiness. The next source
     // third pass decides whether entire islands may deactivate; applying
     // that decision here would incorrectly consume this frame's flags.

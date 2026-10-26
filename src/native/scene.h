@@ -744,7 +744,7 @@ private:
     void write_back_contacts();
     void update_threshold_stream(float seconds);
     void publish_contact_events();
-    void publish_solver_bodies();
+    void publish_solver_bodies(std::size_t first,std::size_t last);
 
     std::vector<Actor> actors_;
     using EdgeIndex=std::uint32_t;
