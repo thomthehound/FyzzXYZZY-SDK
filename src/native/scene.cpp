@@ -1651,7 +1651,7 @@ void Scene::remember_pre_integration_pose(BodyId id) noexcept {
     body.last_ccd_orientation=body.orientation;
     body.last_ccd_generation=rigid_integration_generation_;
 }
-void Scene::reconcile_integrated_deactivations() noexcept {
+void Scene::reconcile_integrated_deactivations() {
     // ScPipeline::afterIntegration repairs rigid bodies that Dy already
     // integrated while the accurate IslandSim independently put their
     // islands to sleep. Serial third-pass-first execution has no such

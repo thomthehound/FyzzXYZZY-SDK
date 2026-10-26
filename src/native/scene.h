@@ -762,7 +762,7 @@ private:
     void update_bounds();
     void after_integration_cached_bounds();
     void remember_pre_integration_pose(BodyId id) noexcept;
-    void reconcile_integrated_deactivations() noexcept;
+    void reconcile_integrated_deactivations();
     void calculate_kinematic_velocities(float inverse_dt);
     void publish_kinematic_targets();
     void update_pairs();

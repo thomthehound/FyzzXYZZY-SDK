@@ -1701,6 +1701,10 @@ struct ConstraintIslandSourceFixture {
         ++scene.rigid_integration_generation_;
         scene.remember_pre_integration_pose(sleeper);
         scene.remember_pre_integration_pose(awake);
+        // The real solver always journals the authoritative state before
+        // integrated motion so a rejected frame restores both actors.
+        scene.step_checkpoint_.save_motion(scene,sleeper);
+        scene.step_checkpoint_.save_motion(scene,awake);
         // Stand in for task-local Dy integration, not a second solver:
         // the original pose was saved by the exact production hook.
         scene.actors_[sleeper].position={2,9,1};
