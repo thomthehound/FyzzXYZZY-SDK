@@ -90,6 +90,80 @@ struct SourceSapEndpointFixture {
             }
         }
     }
+    static void verify_kinematic_sap_refilter() {
+        // Refitting the same PxRigidDynamic as kinematic changes the BP
+        // group filter, not its Sc contact manager identity. Existing
+        // dynamic/kinematic contact edges must retain their handles.
+        Scene scene;
+        const BodyId a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const BodyId b=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,0,0},1.0f);
+        const BodyId s=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0,0,0});
+        const Pair ab{a,b},as{a,s},bs{b,s};
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=3)
+            throw std::runtime_error(
+                "SAP rigid refilter fixture failed initial admission");
+        const auto persistent=scene.contact_edge_index(ab);
+        scene.set_kinematic(b,true);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=2 ||
+           !std::binary_search(scene.pairs().begin(),
+                               scene.pairs().end(),ab) ||
+           !std::binary_search(scene.pairs().begin(),
+                               scene.pairs().end(),as) ||
+           scene.contact_edge_index(ab)!=persistent ||
+           scene.lost_pairs().size()!=1 ||
+           !(scene.lost_pairs()[0]==bs))
+            throw std::runtime_error(
+                "SAP kinematic refilter replaced a persistent contact manager");
+        scene.set_position(a,{7,0,0});
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(!scene.pairs().empty() || scene.lost_pairs().size()!=2)
+            throw std::runtime_error(
+                "SAP moving dynamics failed to retire kinematic pairs");
+        scene.set_position(a,{0,0,0});
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=2 || scene.found_pairs().size()!=2)
+            throw std::runtime_error(
+                "SAP kinematic contact re-admission failed");
+        scene.set_kinematic(b,false);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=3 ||
+           scene.found_pairs().size()!=1 ||
+           !(scene.found_pairs()[0]==bs))
+            throw std::runtime_error(
+                "SAP dynamic refilter missed the static pair");
+        scene.set_shape_simulation_enabled(b,false);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=1 ||
+           !(scene.pairs()[0]==as) ||
+           scene.lost_pairs().size()!=2)
+            throw std::runtime_error(
+                "SAP disabled kinematic-capable shape retained overlap");
+        scene.set_shape_simulation_enabled(b,true);
+        scene.advance_collision();
+        check(scene);
+        check_pair_registry(scene);
+        if(scene.pairs().size()!=3 ||
+           scene.found_pairs().size()!=2)
+            throw std::runtime_error(
+                "SAP re-enabled rigid shape lost pair admission");
+    }
     static void verify_pair_manager_states() {
         // Exercise source PAIR_NEW/PAIR_REMOVED cancellation and the
         // packed hash-chain swap-last removal directly. This catches
@@ -12070,6 +12144,7 @@ int main() {
     try {
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
+    fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();
     fyzz::native::SourceSapEndpointFixture::verify_crossing_stress();
     fyzz::native::SourceSapEndpointFixture::verify_persistent_overlap_crossings();
     fyzz::native::SourceSapEndpointFixture::verify_static_only_full_sweep();
