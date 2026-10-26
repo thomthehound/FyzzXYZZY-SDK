@@ -38,6 +38,7 @@ struct NativeSapTimingFixture {
         const auto relocations_before=
             scene.broadphase_activity_pocket_relocation_count();
         const auto direct_before=scene.broadphase_batch_direct_update_count();
+        const auto merge_before=scene.broadphase_batch_merge_count();
         const auto crossing_before=scene.broadphase_endpoint_crossing_count();
         constexpr unsigned trials=7,steps=96;
         std::vector<double> measurements;
@@ -66,7 +67,7 @@ struct NativeSapTimingFixture {
             "native_sap mode=%s boxes=%u updated=%u"
             " median_us_per_query=%.3f pockets=%zu pocket_endpoints=%zu"
             " linked_compares=%zu linked_relocations=%zu"
-            " direct_batches=%zu filtered_crossings=%zu\n",
+            " direct_batches=%zu merge_batches=%zu filtered_crossings=%zu\n",
             crossings?"endpoint-only-crossings":"endpoint-only-local",
             statics+movers,movers,measurements[trials/2],
             scene.broadphase_activity_pocket_count()-pocket_before,
@@ -74,6 +75,7 @@ struct NativeSapTimingFixture {
             scene.broadphase_activity_pocket_comparison_count()-comparisons_before,
             scene.broadphase_activity_pocket_relocation_count()-relocations_before,
             scene.broadphase_batch_direct_update_count()-direct_before,
+            scene.broadphase_batch_merge_count()-merge_before,
             scene.broadphase_endpoint_crossing_count()-crossing_before);
     }
 };
