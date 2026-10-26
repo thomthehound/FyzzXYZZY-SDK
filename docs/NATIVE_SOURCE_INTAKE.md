@@ -1456,10 +1456,23 @@ third-pass/post-integration join.
 for each created SAP contact-manager overlap. `native::Scene` now owns
 the corresponding indexed edge slots and reusable handle pool alongside
 the original sorted pair stream; it does **not** allocate a separate
-collision graph or duplicate the physics actors. A single linear
-old/new SAP merge publishes found/lost events, carries forward
-identical handles for surviving pairs, and allocates handles only for
-new overlaps. Source `setEdgeConnected`/`setEdgeDisconnected`
+collision graph or duplicate the physics actors. Finite broadphase overlaps are retained in a compact hashed
+`SapPairManager` with explicit creation/removal states. Indexed minimum
+and maximum endpoints on all three axes produce sparse crossing
+candidates. Multi-volume updates preserve endpoint order directly
+when all final neighbor comparisons remain sorted. Rank-local
+changes use indexed adjacent shifts regardless of world displacement.
+Bounded bulk updates merge sorted changed endpoints into the unchanged
+stream and sweep active X intervals involving updated volumes for net
+three-axis pair transitions. Larger reorders retain linked activity
+pockets. A per-volume axis mask skips unmodified endpoint arrays.
+The pair-state manager receives only potential new three-axis overlaps
+or retirements of existing pairs. All routes preserve the same
+endpoint ordering, overlap definition, and Sc contact-manager ownership.
+A complete pair sweep remains necessary for structural proxy changes.
+The contact-manager stream remains separate: unchanged Sc pairs
+retain their original EdgeIndices, while net pair additions and
+removals enter the existing linear Sc publication merge. Source `setEdgeConnected`/`setEdgeDisconnected`
 semantics are represented by an accurate-connection bit on that slot,
 updated from Gu found/lost touch events. Both speculative and accurate
 island connectivity now consume the same persistent edge slots.

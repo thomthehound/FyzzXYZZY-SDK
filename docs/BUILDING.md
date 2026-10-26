@@ -41,6 +41,54 @@ cmake --build build-native --config Release --parallel 4
 ctest --test-dir build-native -C Release --output-on-failure
 ```
 
+## Native SAP performance and conformance
+
+The `fyzzxyzzy_native_sap_benchmark` target profiles stationary
+geometry, local movement, contact transitions, wide teleports, retained
+overlap managers, actor retirement, static membership edits, and
+multi-volume activity-pocket updates. Endpoint-only measurements exclude
+Gu contact generation and Sc pair publication; full-query measurements
+include those costs.
+
+```sh
+cmake --build build-native --target fyzzxyzzy_native_sap_benchmark
+./build-native/fyzzxyzzy_native_sap_benchmark
+```
+
+On Windows, build with `--config Release` and run
+`build-native/Release/fyzzxyzzy_native_sap_benchmark.exe`.
+For performance comparisons, use matched optimized builds and the same
+hardware. Native scene regressions separately verify endpoint ordering,
+pair-state transitions, refiltering and Found/Lost event identity.
+
+### Matched CPU SAP measurements
+
+Observed October 26, 2026 on an Ubuntu 26.04 CI runner, using seven
+alternating trials of Release builds with PhysX source, Godot, Vulkan,
+and D3D12 disabled. Both revisions executed the same benchmark workloads;
+values are medians in microseconds per query (lower is better).
+The comparison isolates the bounded endpoint-merge and filtered-X-sweep
+implementation against the preceding linked-pocket audit revision.
+
+| Workload | Previous audit (µs) | Bounded merge (µs) |
+| --- | ---: | ---: |
+| Stationary | 0.791 | 0.802 |
+| Local movement | 0.967 | 0.945 |
+| Local contacts | 1.422 | 1.398 |
+| Teleport | 5.059 | 5.017 |
+| Retired actor history | 1.507 | 1.503 |
+| Persistent pairs | 24.866 | 24.913 |
+| Static membership changes | 45.660 | 45.890 |
+| Bulk contacting volumes | 54.388 | 54.515 |
+| Bulk separated volumes | 11.884 | 11.962 |
+| Endpoint-only local batch | 9.268 | 9.331 |
+| Endpoint-only wide crossings | 25.388 | 11.251 |
+
+Wide-crossing endpoint maintenance improved 2.26×. Other measured paths
+were essentially unchanged. Endpoint-only measurements exclude contact
+generation and Sc publication; full-query measurements include them.
+The benchmark is a performance characterization, not a pass/fail test.
+
 ## C++ toolchain requirement
 
 FyzzXYZZY-owned native libraries, test executables and the Godot GDExtension
