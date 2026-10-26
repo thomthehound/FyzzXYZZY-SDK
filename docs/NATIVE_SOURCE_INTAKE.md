@@ -1649,6 +1649,20 @@ rejects before graph mutation. Source-enabled conformance checks
 completed-frame rigid motion and lifetime through these public APIs. Extended joint flags, general anchors and
 articulation constraints are not part of this admission.
 
+**Independent IslandSim readiness handoff:** Native Dy
+`sleepCheck` now queues only newly-ready rigid node IDs for the next
+speculative third pass, on the same source actor identities. Speculative
+`processLostEdges` evaluates its own island's previously published
+`isReadyForSleeping` flags, not `ScBodySim::sleeping` or the accurate
+task's deactivation list. The two producers can execute in either
+order while retaining reverse active-island contact-manager event order.
+Split and kinematic-settling candidates continue through the same
+graph-owned source paths. The transient prior-Dy readiness stream is
+failure-atomic under the existing scene checkpoint and reserves its
+live-rigid capacity before solver publication; idle frames do not scan
+historical nodes. This removes an implicit accurate-to-speculative
+task dependency, but does not itself launch parallel workers.
+
 **Kinematic active-island reference publication:** Speculative and
 accurate IslandSim graphs now keep separate indexed active-kinematic
 lists in addition to their dynamic rigid solver-node streams.

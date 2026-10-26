@@ -1080,6 +1080,11 @@ private:
     // member. Retain both resulting roots as third-pass candidates;
     // no duplicate actor registry or speculative-wide sleep scan.
     std::vector<BodyId> speculative_split_sleep_candidates_;
+    // Dy::sleepCheck publishes the transition to source
+    // Node::isReadyForSleeping for the NEXT island generation.
+    // Feed the speculative producer directly, independently of the
+    // accurate producer's mNodesToPutToSleep output.
+    std::vector<BodyId> speculative_ready_nodes_;
     // IslandSim::mDirtyMap, mFastRoute and mHopCounts lowerings for the
     // admitted all-awake rigid-node graph. Fast routes are advisory and
     // validated against current intrusive adjacency on every use.
@@ -1166,6 +1171,9 @@ private:
         // Only dynamic motion is mutated by a step. Static geometry,
         // material ownership and immutable mass properties stay in actors_.
         std::vector<Motion> motions;
+        // Pending prior-Dy readiness is a cross-frame island input.
+        // Snapshot only the touched nodes, not every historical actor.
+        std::vector<BodyId> speculative_ready_before;
         // Sparse undo records for intrusive source EdgeInstances and
         // per-node list heads. Replayed in reverse order on failure;
         // unchanged or historically allocated slots incur no copies.

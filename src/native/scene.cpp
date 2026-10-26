@@ -5144,13 +5144,13 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
         speculative_sleep_order_.push_back({
             handle,speculative_sleep_order_.size()});
     };
-    // Accurate deactivations and speculative split/retirement produce
-    // independent candidate streams. Do not publish in their encounter
-    // order: PxsIslandSim::processLostEdges iterates each graph's own
-    // mActiveIslands backwards. Order only the affected island handles,
-    // without scanning all dormant or still-active speculative islands.
-    for(BodyId candidate:accurate_islands_.nodes_to_deactivate)
+    // Dy readiness transitions and speculative split/retirement
+    // events are independent of accurate IslandSim's sleep output.
+    // Source processLostEdges considers this graph's active islands
+    // in reverse; sort only the touched candidates in that order.
+    for(BodyId candidate:speculative_ready_nodes_)
         collect_candidate(candidate);
+    speculative_ready_nodes_.clear();
     for(BodyId candidate:speculative_split_sleep_candidates_)
         collect_candidate(candidate);
     for(BodyId kinematic:speculative_islands_.active_kinematic_nodes) {
@@ -5201,15 +5201,18 @@ void Scene::deactivate_ready_speculative_islands() noexcept {
             continue;
         const auto& island=speculative_islands_.islands[candidate.handle];
         const BodyId root=island.root;
-        bool all_sleeping=true;
+        // PhysX speculative IslandSim tests Node::isReadyForSleeping,
+        // NOT Sc's rigid sleeping bit set by the accurate island task.
+        // This producer therefore works in either completion order.
+        bool all_ready=true;
         for(BodyId node=root;node!=invalid;
             node=speculative_islands_.node_next[node]) {
-            if(!actors_[node].sleeping) {
-                all_sleeping=false;
+            if(!actors_[node].ready_for_sleep) {
+                all_ready=false;
                 break;
             }
         }
-        if(!all_sleeping)continue;
+        if(!all_ready)continue;
         // Source deactivateIsland walks the original intrusive node
         // chain; deactivateNodeInternal publishes each active edge on
         // visiting its last inactive endpoint. Reuse the same stamp as
@@ -7486,6 +7489,12 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     // that persists beyond a step or is exposed by Scene's read-only APIs.
     // It intentionally excludes rebuilt solver constraints and scratch.
     motions.clear();
+    speculative_ready_before.assign(
+        scene.speculative_ready_nodes_.begin(),
+        scene.speculative_ready_nodes_.end());
+    // A currently awake rigid may become ready once in this Dy frame.
+    // Reserve before source task-local integration, reuse on quiet frames.
+    scene.speculative_ready_nodes_.reserve(scene.live_dynamic_count_);
     {
         // Source wakeIslands can change actor state on collision-only
         // publications before third-pass lost-edge repair. Save only
@@ -7725,6 +7734,9 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
 
 void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.activity_checkpoint_active_=false;
+    // Recover unread prior-Dy wake readiness even if third pass consumed
+    // the queue before a later solver/bounds publication threw.
+    scene.speculative_ready_nodes_.swap(speculative_ready_before);
     // Restore the exact pre-publication route cache and epochs so retries
     // reuse valid prior paths. Only written hint slots were journaled;
     // replay and shrinking newly admitted slots cannot allocate.
@@ -8450,7 +8462,10 @@ void Scene::step(float seconds) {
                 }
             } else wc=std::max(wc-seconds,0.0f);
             actor.wake_counter=wc;
+            const bool was_ready=actor.ready_for_sleep;
             actor.ready_for_sleep=(wc==0.0f);
+            if(actor.ready_for_sleep && !was_ready)
+                speculative_ready_nodes_.push_back(id);
             if(actor.ready_for_sleep) {
                 actor.sleep_linear_acc={};
                 actor.sleep_angular_acc={};

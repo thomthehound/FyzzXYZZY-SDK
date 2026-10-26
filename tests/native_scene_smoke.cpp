@@ -1781,6 +1781,65 @@ struct ConstraintIslandSourceFixture {
             throw std::runtime_error(
                 "Production Dy pre-integration pose witness failed after rollback");
     }
+    static void verify_speculative_ready_is_independent() {
+        // The two PxsIslandSim::ThirdPassTasks have no dependency on
+        // one another. Dy publishes readiness in the preceding step;
+        // speculative completion can therefore precede accurate sleep.
+        for(bool accurate_first:{false,true}) {
+            Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
+            const auto world=scene.add_static_box(
+                {0.5f,0.5f,0.5f},{0,7,0});
+            const auto sleeper=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{0,7.9f,0},1.0f);
+            const Pair pair{world,sleeper};
+            scene.advance_collision();
+            const auto edge=scene.contact_edge_index(pair);
+            if(edge==Scene::invalid_edge ||
+               !(scene.island_edges_[edge].speculative_state&1u) ||
+               !(scene.island_edges_[edge].accurate_state&1u))
+                throw std::runtime_error(
+                    "Speculative independence fixture lacks source manager");
+            scene.actors_[sleeper].ready_for_sleep=true;
+            scene.speculative_ready_nodes_.push_back(sleeper);
+            scene.step_checkpoint_.capture(scene);
+            if(accurate_first) {
+                scene.deactivate_ready_accurate_islands();
+                scene.deactivate_ready_speculative_islands();
+            } else {
+                scene.deactivate_ready_speculative_islands();
+                if(scene.body_is_sleeping(sleeper) ||
+                   !scene.accurate_islands_.nodes_to_deactivate.empty() ||
+                   !(scene.island_edges_[edge].accurate_state&1u))
+                    throw std::runtime_error(
+                        "Speculative task depended on accurate rigid deactivation");
+                scene.deactivate_ready_accurate_islands();
+            }
+            if(!scene.body_is_sleeping(sleeper) ||
+               (scene.island_edges_[edge].speculative_state&1u) ||
+               (scene.island_edges_[edge].accurate_state&1u) ||
+               scene.speculative_islands_.deactivating_edges.size()!=1 ||
+               scene.speculative_islands_.deactivating_edges[0]!=edge ||
+               scene.accurate_islands_.nodes_to_deactivate.size()!=1 ||
+               !scene.speculative_ready_nodes_.empty())
+                throw std::runtime_error(
+                    "Independent IslandSim order changed rigid sleep or edge output");
+            scene.step_checkpoint_.rollback(scene);
+            if(!scene.actors_[sleeper].ready_for_sleep ||
+               scene.body_is_sleeping(sleeper) ||
+               scene.speculative_ready_nodes_.size()!=1 ||
+               scene.speculative_ready_nodes_[0]!=sleeper ||
+               !(scene.island_edges_[edge].speculative_state&1u) ||
+               !(scene.island_edges_[edge].accurate_state&1u))
+                throw std::runtime_error(
+                    "Rejected independent third pass consumed prior-Dy readiness");
+            // A replay of the very same producer input must still
+            // release its speculative edge on the next accepted pass.
+            scene.deactivate_ready_speculative_islands();
+            if(scene.island_edges_[edge].speculative_state&1u)
+                throw std::runtime_error(
+                    "Speculative task did not replay restored readiness");
+        }
+    }
     static void verify_sc_activity_third_pass_publication() {
         // Activation and third-pass deactivation have distinct Sc
         // consumers. Neither an accurate sleep result nor an inactive
@@ -12867,6 +12926,7 @@ int run_native_scene_smoke() {
     fyzz::native::ConstraintIslandSourceFixture::verify_graph_owned_kinematic_active_references();
     fyzz::native::ConstraintIslandSourceFixture::verify_independent_lost_route_producers();
     fyzz::native::ConstraintIslandSourceFixture::verify_after_integration_deactivation_reconciliation();
+    fyzz::native::ConstraintIslandSourceFixture::verify_speculative_ready_is_independent();
     fyzz::native::ConstraintIslandSourceFixture::verify_sc_activity_third_pass_publication();
     fyzz::native::ConstraintIslandSourceFixture::verify_active_kinematic_guards_rigid_island_sleep();
     fyzz::native::ConstraintIslandSourceFixture::verify_kinematic_speculative_sleep_veto();
