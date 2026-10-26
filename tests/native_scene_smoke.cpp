@@ -5387,6 +5387,14 @@ struct SolverIterationSourceFixture {
                    concurrent.speculative_ready_nodes_)
                 throw std::runtime_error(
                     "Parallel source sleepCheck changed next-frame readiness order");
+            // Source preIntegration must have journaled every awake
+            // island node before the two task lanes may mutate actors.
+            for(BodyId id:concurrent.accurate_island_nodes_)
+                if(!concurrent.actors_[id].sleeping &&
+                   concurrent.motion_undo_generations_[id]!=
+                       concurrent.motion_undo_generation_)
+                    throw std::runtime_error(
+                        "Source preIntegration skipped concurrent actor rollback");
             for(std::size_t i=0;i<count;++i) {
                 const auto& a=serial.actors_[serial_ids[i]];
                 const auto& b=concurrent.actors_[concurrent_ids[i]];
