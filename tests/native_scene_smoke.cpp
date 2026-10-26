@@ -5297,6 +5297,7 @@ struct SolverIterationSourceFixture {
         }
         if(!rejected || scene.frame_index()!=frame ||
            scene.solved_result_frame()!=0 ||
+           scene.concurrent_solver_worker_jobs_!=1 ||
            !scene.speculative_ready_nodes_.empty() ||
            (scene.third_pass_worker_state_ &&
             scene.third_pass_worker_state_->outstanding))
@@ -5318,6 +5319,7 @@ struct SolverIterationSourceFixture {
         scene.set_velocity(ids.back(),{});
         scene.step(1.0f/120.0f);
         if(scene.concurrent_integration_dispatches_!=1 ||
+           scene.concurrent_solver_worker_jobs_!=2 ||
            scene.solved_result_frame()!=scene.frame_index() ||
            scene.solver_tasks_.size()!=ids.size())
             throw std::runtime_error(
@@ -5359,6 +5361,7 @@ struct SolverIterationSourceFixture {
                concurrent.solver_tasks_.size()!=count ||
                concurrent.concurrent_solver_dispatches_!=frame+1 ||
                concurrent.concurrent_integration_dispatches_!=frame+1 ||
+               concurrent.concurrent_solver_worker_jobs_!=frame+1 ||
                concurrent.third_pass_worker_start_count_!=1 ||
                concurrent.solved_result_frame()!=concurrent.frame_index() ||
                serial.solved_result_frame()!=serial.frame_index())
@@ -5457,6 +5460,7 @@ struct SolverIterationSourceFixture {
                joints_parallel.solver_tasks_.size()!=pairs ||
                joints_parallel.concurrent_solver_dispatches_!=frame+1 ||
                joints_parallel.concurrent_integration_dispatches_!=frame+1 ||
+               joints_parallel.concurrent_solver_worker_jobs_!=frame+1 ||
                joints_parallel.third_pass_worker_start_count_!=1 ||
                joints_serial.indexed_distance_constraints_.size()!=pairs ||
                joints_parallel.indexed_distance_constraints_.size()!=pairs)
@@ -5524,6 +5528,7 @@ struct SolverIterationSourceFixture {
         }
         if(!found_kinematic_constraint || mixed.solver_tasks_.size()<2 ||
            mixed.concurrent_solver_dispatches_!=0 ||
+           mixed.concurrent_solver_worker_jobs_!=0 ||
            mixed.third_pass_worker_start_count_!=0)
             throw std::runtime_error(
                 "Shared kinematic solver row escaped serial task admission");
