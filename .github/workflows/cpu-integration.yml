@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - audit/faithful-perf-conformance-20261025
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
