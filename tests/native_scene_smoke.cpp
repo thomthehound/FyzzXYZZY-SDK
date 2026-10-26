@@ -5262,6 +5262,72 @@ struct SolverIterationSourceFixture {
             throw std::runtime_error(
                 "Source active manager admission failed after response reenable");
     }
+    static void verify_parallel_pgs_groups() {
+        constexpr float dt=1.0f/120.0f;
+        constexpr std::size_t count=12;
+        Scene serial{Scene::ContactGenerator::DiagnosticLegacyGu};
+        Scene concurrent{Scene::ContactGenerator::DiagnosticLegacyGu};
+        serial.parallel_solver_enabled_=false;
+        concurrent.parallel_solver_min_descriptors_=0;
+        std::array<BodyId,count> serial_ids{}, concurrent_ids{};
+        for(Scene* scene:{&serial,&concurrent}) {
+            scene->set_enhanced_determinism(true);
+            scene->add_static_floor(0.0f);
+            for(std::size_t i=0;i<count;++i) {
+                const auto id=scene->add_dynamic_box(
+                    {0.5f,0.5f,0.5f},
+                    {static_cast<float>(i)*3.0f,0.48f,0},1.0f);
+                (scene==&serial?serial_ids:concurrent_ids)[i]=id;
+                RigidBodyDynamics dynamics{};
+                dynamics.position_iterations=i&1u?6:4;
+                dynamics.velocity_iterations=i&1u?2:1;
+                scene->set_dynamics(id,dynamics);
+            }
+        }
+        const auto same=[](Vec3 a,Vec3 b) {
+            return a.x==b.x && a.y==b.y && a.z==b.z;
+        };
+        for(std::size_t frame=0;frame<6;++frame) {
+            serial.step(dt);
+            concurrent.step(dt);
+            if(serial.solver_tasks_.size()!=count ||
+               concurrent.solver_tasks_.size()!=count ||
+               concurrent.concurrent_solver_dispatches_!=frame+1 ||
+               concurrent.third_pass_worker_start_count_!=1 ||
+               concurrent.solved_result_frame()!=concurrent.frame_index() ||
+               serial.solved_result_frame()!=serial.frame_index())
+                throw std::runtime_error(
+                    "Independent Dy PGS task chains did not execute concurrently");
+            for(std::size_t i=0;i<count;++i) {
+                const auto lhs=serial.body_state(serial_ids[i]);
+                const auto rhs=concurrent.body_state(concurrent_ids[i]);
+                if(!same(lhs.position,rhs.position) ||
+                   !same(lhs.velocity,rhs.velocity) ||
+                   !same(lhs.angular_velocity,rhs.angular_velocity) ||
+                   lhs.orientation.x!=rhs.orientation.x ||
+                   lhs.orientation.y!=rhs.orientation.y ||
+                   lhs.orientation.z!=rhs.orientation.z ||
+                   lhs.orientation.w!=rhs.orientation.w ||
+                   lhs.sleeping!=rhs.sleeping ||
+                   serial.accurate_island_id(serial_ids[i])!=
+                       concurrent.accurate_island_id(concurrent_ids[i]))
+                    throw std::runtime_error(
+                        "Concurrent Dy PGS changed independent rigid body/island state");
+            }
+            const auto left=serial.solved_normal_impulses();
+            const auto right=concurrent.solved_normal_impulses();
+            if(left.size()!=right.size() ||
+               !std::equal(left.begin(),left.end(),right.begin()))
+                throw std::runtime_error(
+                    "Concurrent Dy PGS changed Gu-indexed contact force writeback");
+        }
+        // A task-local static-world row must never retain another
+        // island's solver deltas or publish a nonzero world velocity.
+        if(!same(concurrent.world_solver_row_.solver.linear_velocity_delta,{}) ||
+           !same(concurrent.world_solver_row_.solver.angular_state,{}))
+            throw std::runtime_error(
+                "Concurrent Dy PGS modified the shared static solver body");
+    }
     static void verify() {
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         scene.add_static_floor(0.0f);
@@ -13345,6 +13411,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
+    fyzz::native::SolverIterationSourceFixture::verify_parallel_pgs_groups();
     verify_source_body_dynamics_api();
     verify_source_rigid_lock_flags();
     verify_source_gyroscopic_motion();
