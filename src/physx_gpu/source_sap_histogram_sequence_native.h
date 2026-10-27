@@ -4,34 +4,40 @@
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_endpoint_histograms_native.h"
 #include "physx_gpu/source_sap_incremental_counts_native.h"
+#include "physx_gpu/source_sap_incremental_pairs_native.h"
 #include <iterator>
 #include <utility>
 #include <vector>
 
 namespace fyzz::physx_gpu {
 
-// Between WR sort and BP_INCREMENTAL_SAP, source update() always
-// builds current (and, for removals, prior) endpoint histograms.
-// Comparison prefixes are gated by getGpuStateChanged(), exactly as
-// in PxgCudaBroadPhaseSap::performIncrementalSapKernel.
-// The subsequent pair kernel consumes this same descriptor and stream.
-inline void append_source_sap_incremental_histograms_native(
+// The source update() interval between WR sorting and the
+// post-incremental removal/creation handling. The HISTOGRAM operation
+// runs on every update. GPU-changed frames append both incremental
+// comparison passes AND the original pair producer as one transaction.
+// The caller has already queued WR sorting on the same mStream.
+inline void append_source_sap_incremental_phase_native(
     SourceSapDmaNative& stream,
     const SourceSapEndpointHistogramsNativeStage& histograms,
     const SourceSapIncrementalCountsNativeStage& comparisons,
+    const SourceSapIncrementalPairsNativeStage& pairs,
     const physx::PxgBroadPhaseDesc& descriptor,
     CudaDeviceAddressMap::Address device_descriptor,
     const CudaDeviceAddressMap& addresses,
     SourceSapEndpointHistogramsNativeLayout histogram_layout,
     SourceSapIncrementalCountsLayout comparison_layout,
+    SourceSapIncrementalPairsNativeLayout pair_layout,
     bool gpu_state_changed,bool execute_gpu_stages) {
     if(!execute_gpu_stages)return;
     std::vector<compute::BatchCommand> prepared;
-    prepared.reserve(gpu_state_changed?4u:2u);
+    prepared.reserve(gpu_state_changed?5u:2u);
     histograms.append(prepared,descriptor,addresses,histogram_layout,true);
-    if(gpu_state_changed)
+    if(gpu_state_changed) {
         comparisons.append(prepared,descriptor,device_descriptor,addresses,
                            comparison_layout);
+        pairs.append(prepared,descriptor,device_descriptor,addresses,
+                     pair_layout);
+    }
     auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
