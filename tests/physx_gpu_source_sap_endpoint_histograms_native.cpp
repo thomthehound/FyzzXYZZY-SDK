@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_endpoint_histograms_native.h"
+#include "physx_gpu/source_sap_histogram_sequence_native.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include <array>
 #include <cstddef>
