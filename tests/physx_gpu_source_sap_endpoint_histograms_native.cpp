@@ -144,6 +144,7 @@ void run(Context& ctx,const SourceSapEndpointHistogramsNativeStage& stage,
         source.totalEndPtHistogram[axis]=ptr.operator()<Word>(addresses[base+14u]);
         source.blockTotalEndPtHistogram[axis]=ptr.operator()<Word>(addresses[base+15u]);
     }
+    std::cerr<<"source histogram: allocation/upload complete; building commands\n";
     SourceSapDmaNative stream(ctx,map);
     auto& cmds=stream.commands();
     auto bad=source;
@@ -164,7 +165,9 @@ void run(Context& ctx,const SourceSapEndpointHistogramsNativeStage& stage,
         require(d.groups.x==32u&&d.groups.y==3u&&d.buffers.size()==48u,
                 "Original 32x3 endpoint grid or source bindings changed");
     }
+    std::cerr<<"source histogram: GPU submit incremental="<<incremental<<" shared="<<shared<<"\n";
     stream.wait_at_fetch();
+    std::cerr<<"source histogram: GPU completion\n";
     require(stream.submission_stats().command_batches==1u,
             "Original endpoint histogram kernels split source GPU submission");
     for(std::size_t i=0u;i<48u;++i){
@@ -173,6 +176,7 @@ void run(Context& ctx,const SourceSapEndpointHistogramsNativeStage& stage,
         require(observed==expected[i],
                 "Source endpoint histogram or previous-frame state disagrees with reference");
     }
+    std::cerr<<"source histogram: reference verified\n";
     if(shared)ctx.destroy_buffer(root);
     else for(const auto id:buffer)ctx.destroy_buffer(id);
 }
@@ -185,8 +189,10 @@ int main(int argc,char** argv){
 #else
         Context context(Backend::Vulkan);
 #endif
+        std::cerr<<"source histogram: native context initialized\n";
         SourceSapEndpointHistogramsNativeStage stage(
             context,read_shader(argv[1]),read_shader(argv[2]));
+        std::cerr<<"source histogram: shader pipelines created\n";
         run(context,stage,true,false);
         run(context,stage,false,true);
         std::cout<<"Source-owned endpoint histogram GPU sequence PASS\n";
