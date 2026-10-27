@@ -34,19 +34,8 @@ jobs:
         run: cmake --build build --target fyzzxyzzy_physx_source_sap_radix_native --parallel 4
       - name: Run source GPU radix conformance
         run: ctest --test-dir build -R fyzzxyzzy_physx_source_sap_radix_native --output-on-failure
-      - name: Compare original and batch-allocated native Vulkan descriptor recording
-        timeout-minutes: 12
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The previous version of the one changed compute recorder is
-          # the parent's blob; no second implementation is maintained.
-          recorder_change="$(git log -1 --format=%H -- src/compute_vulkan.cpp)"
-          for pass in 1 2; do
-            git show "${recorder_change}^:src/compute_vulkan.cpp" > src/compute_vulkan.cpp
-            echo "===== reference Vulkan recording / pass ${pass} ====="
-            cmake --build build --target fyzzxyzzy_source_sap_radix_profile_vulkan --parallel 4
-            git restore -- src/compute_vulkan.cpp
-            echo "===== batch-allocated Vulkan recording / pass ${pass} ====="
-            cmake --build build --target fyzzxyzzy_source_sap_radix_profile_vulkan --parallel 4
-          done
+      - name: Profile source Vulkan command recording phases
+        timeout-minutes: 8
+        env:
+          FYZZXYZZY_PROFILE_VULKAN_SUBMIT: "1"
+        run: cmake --build build --target fyzzxyzzy_source_sap_radix_profile_vulkan
