@@ -20,6 +20,7 @@ void test_source_scene_boundary() {
     // The original AABB manager owns handles (which deliberately do NOT
     // equal native actor IDs), the delta lists, groups and bounds arrays.
     std::array<physx::PxBounds3,4> bounds{};
+    for(auto& item:bounds)item=physx::PxBounds3::empty();
     std::array<physx::PxReal,4> distances{};
     std::array<physx::Bp::FilterGroup::Enum,4> groups{};
     const SourceSapSceneBounds target{bounds,distances,groups};
