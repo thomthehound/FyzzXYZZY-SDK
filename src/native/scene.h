@@ -52,6 +52,36 @@ struct Pair {
     }
 };
 
+// The native Sc scene consumes the real PxgCudaBroadPhaseSap found/lost
+// actor-pair reports at the original postBroadPhase/fetch boundary.
+// The GPU owner maintains its own source heap, projections, history and
+// completion fences; this interface owns NONE of those resources.
+struct GpuSapVolume {
+    BodyId id=0;
+    Vec3 position{},half_extents{};
+    Quat orientation{};
+    float contact_offset=0.0f;
+    bool dynamic=false;
+};
+struct GpuSapPairReports {
+    // Source fetchBroadPhaseResults purges and orders duplicate actor pairs.
+    // All handles must be translated to live native BodyIds by the AABB owner.
+    std::span<const Pair> found{},lost{};
+};
+class GpuSapPairSource {
+public:
+    virtual ~GpuSapPairSource()=default;
+    // The owning GPU SAP must perform its source update/fetch continuation
+    // and return borrowed, valid-until-next-advance report spans.
+    virtual GpuSapPairReports advance(
+        std::span<const GpuSapVolume> volumes,
+        bool source_state_changed,bool force_update)=0;
+    // A failed Sc/Dy publication cannot reuse advanced GPU history.
+    // The source owner must abandon/rebuild that history rather than
+    // silently replay stale reports or switch to CPU SAP.
+    virtual void abort_frame() noexcept=0;
+};
+
 // Matches Gu::PxContactPoint semantics for the presently supported shapes:
 // normal points from shape1 toward shape0, signed separation is negative
 // for penetration. Contacts are geometry results, not solved impulses.
@@ -289,6 +319,11 @@ public:
     bool body_is_sleeping(BodyId id) const {
         return require(id).sleeping;
     }
+
+    // Install the GPU SAP source owner before any actor is admitted.
+    // The scene remains the single owner of Sc/Gu/Dy contact and solver
+    // state; GPU broadphase never falls back to the CPU pair producer.
+    void set_gpu_sap_source(std::unique_ptr<GpuSapPairSource> source);
 
     // One scene-owned collision progression: update bounds -> SAP ->
     // overlap publication -> source Gu narrowphase -> contact publication.
@@ -776,6 +811,8 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
+    void consume_gpu_sap_reports(GpuSapPairReports reports);
+    void invalidate_gpu_sap() noexcept;
     void publish_pairs();
     void update_contacts();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
@@ -1566,6 +1603,12 @@ private:
         void reset() noexcept;
         void seed(std::span<const Pair> pairs);
     };
+    // Source GPU pair producer feeds the SAME previous/pending Sc streams.
+    // The volume vector is temporary HtoD preparation, not a second
+    // broadphase pair registry or GPU resource owner.
+    std::unique_ptr<GpuSapPairSource> gpu_sap_source_;
+    std::vector<GpuSapVolume> gpu_sap_volume_work_;
+    bool gpu_sap_failed_=false;
     SapPairManager sap_pairs_;
     bool sap_pair_registry_dirty_=true;
     bool broadphase_pair_membership_changed_=true;
