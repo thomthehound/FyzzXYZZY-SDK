@@ -7,6 +7,7 @@
 #include "physx_gpu/source_sap_update_middle_native.h"
 #include "physx_gpu/source_sap_update_tail_native.h"
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
+#include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
 
 #include <cstdint>
 #include <iterator>
@@ -76,4 +77,35 @@ bool append_source_sap_update_native(
     const SourceSapUpdateNativeFrame& frame,
     physx::PxgCudaBuffer& new_integer_bounds,
     physx::PxgCudaBuffer& old_integer_bounds);
+
+// PhysX's gpuDMAUp update decision has ALREADY been evaluated by
+// begin_sap_update_native(). Consume that admission without evaluating
+// mForceUpdate again. In particular, a forced final quiet frame cannot
+// be converted into a second state transition at this boundary.
+bool append_source_sap_admitted_update_native(
+    SourceSapDmaNative& stream,
+    const SourceSapUpdateNativeStages& stages,
+    bool execute_gpu_stages,
+    bool gpu_state_changed,
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const physx::PxgBroadPhaseDesc& descriptor,
+    std::span<const physx::PxgRadixSortDesc,6> wr_radix,
+    std::span<const physx::PxgRadixSortDesc,6> wor_radix,
+    const CudaDeviceAddressMap& addresses,
+    const SourceSapUpdateNativeFrame& frame,
+    physx::PxgCudaBuffer& new_integer_bounds,
+    physx::PxgCudaBuffer& old_integer_bounds);
+
+// Contiguous source update() call: gpuDMAUp (including six original
+// HtoD record uploads) -> the SINGLE PhysX forced/quiet decision ->
+// all native GPU stages. Fetch remains the existing source continuation.
+// Original members, stream, allocations and command ordering are borrowed.
+SourceSapUpdateAdmission advance_source_sap_frame_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapDmaUpFrameMembers members,
+    SourceSapDmaNative& stream,
+    bool& force_update,
+    const SourceSapUpdateNativeStages& stages,
+    const CudaDeviceAddressMap& addresses,
+    const SourceSapUpdateNativeFrame& frame);
 } // namespace fyzz::physx_gpu
