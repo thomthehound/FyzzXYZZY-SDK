@@ -239,6 +239,44 @@ int main() {
                                "Live Sc contact-distance GPU upload differs from source input");
                     checkBytes(gpuGroups,groups.data(),sizeof(groups),
                                "Live Sc filter-group GPU upload differs from source input");
+
+                    // A persistent source handle can move without being
+                    // created again. Its original GPU bounds allocation
+                    // must receive the new authored geometry at preBP.
+                    auto moved=boxes;
+                    moved[0].position.x=8.0f;
+                    const std::array<physx::Bp::ShapeHandle,1> changed{3u};
+                    write_source_sap_scene_bounds(
+                        moved,handles,{bounds,distances,groups},scratch);
+                    const physx::Bp::BroadPhaseUpdateData movedFrame(
+                        nullptr,0u,changed.data(),1u,nullptr,0u,
+                        bounds.data(),groups.data(),distances.data(),
+                        4u,filter,true,false);
+                    pre_broadphase_native(movedFrame,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    checkBytes(gpuBounds,bounds.data(),sizeof(bounds),
+                               "Source moving-volume update did not reach original GPU bounds");
+                    if(std::abs(bounds[3].minimum.x-6.0f)>1.0e-5f)
+                        throw std::runtime_error(
+                            "Original source handle did not preserve moved Sc shape bounds");
+
+                    // The source always uploads groups and distances, but
+                    // skips the bounds upload for stateChanged=false.
+                    const auto bytesBefore=stream.submission_stats().upload_bytes;
+                    const physx::Bp::BroadPhaseUpdateData idle(
+                        nullptr,0u,nullptr,0u,nullptr,0u,
+                        bounds.data(),groups.data(),distances.data(),
+                        4u,filter,false,false);
+                    pre_broadphase_native(idle,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    if(stream.submission_stats().upload_bytes-bytesBefore !=
+                          sizeof(distances)+sizeof(groups))
+                        throw std::runtime_error(
+                            "Source idle preBroadPhase unexpectedly reuploaded AABBs");
                 }
                 physx::PxgCudaBufferN<27> singles(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxU32> created(heap,group);
