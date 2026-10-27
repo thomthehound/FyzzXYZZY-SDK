@@ -26,6 +26,7 @@ public:
         physx::Sc::ObjectIDTracker& elements,
         PxgAabbSourceMembersNative& aabb,
         BodyId actor,
+        physx::PxU32 source_rigid_actor_id,
         physx::PxReal contact_distance,
         native::GpuBroadphaseBox::Motion motion,
         void* element_sim) {
@@ -38,13 +39,17 @@ public:
         // particular, different dynamics MUST NOT share eDYNAMICS_BASE.
         const bool is_static=motion==native::GpuBroadphaseBox::Motion::Static;
         if(!is_static &&
-           actor>=((std::numeric_limits<physx::PxU32>::max() >>
-                    BP_FILTERING_TYPE_SHIFT_BIT) -
-                   physx::Bp::FilterGroup::eDYNAMICS_BASE))
+           source_rigid_actor_id>=
+               ((std::numeric_limits<physx::PxU32>::max() >>
+                 BP_FILTERING_TYPE_SHIFT_BIT) -
+                physx::Bp::FilterGroup::eDYNAMICS_BASE))
             throw std::out_of_range(
                 "Source Sc actor ID overflows original Bp filter group encoding");
+        // Sc::ActorSim::getActorID comes from its separate
+        // mActorIDTracker. The native BodyId used to publish Sc pairs
+        // is NOT interchangeable with the source actor's filter ID.
         const auto group=physx::Bp::getFilterGroup(
-            is_static,actor,
+            is_static,source_rigid_actor_id,
             motion==native::GpuBroadphaseBox::Motion::Kinematic);
         // Sc::ElementSim::initID acquires the ID before BoundsArray::initEntry.
         const auto handle=elements.createID();
