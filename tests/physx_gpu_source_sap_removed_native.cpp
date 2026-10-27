@@ -86,13 +86,13 @@ void run(Context& context,SourceSapRemovedNativeStage& stage,
     desc.numPreviousHandles=3u;
     desc.numCreatedHandles=1u;
     desc.numRemovedHandles=1u;
-    desc.updateData_removedHandles=ptr.operator()<decltype(desc.updateData_removedHandles)>(addresses[0]);
+    desc.updateData_removedHandles=ptr.operator()<std::remove_reference_t<decltype(desc.updateData_removedHandles)>>(addresses[0]);
     for(std::size_t a=0;a<3u;++a) {
-        desc.boxSapBox1D[a]=ptr.operator()<decltype(desc.boxSapBox1D[a])>(addresses[1u+a]);
-        desc.boxHandles[1][a]=ptr.operator()<decltype(desc.boxHandles[1][a])>(addresses[4u+a]);
-        desc.boxProjections[a]=ptr.operator()<decltype(desc.boxProjections[a])>(addresses[8u+a]);
+        desc.boxSapBox1D[a]=ptr.operator()<std::remove_reference_t<decltype(desc.boxSapBox1D[a])>>(addresses[1u+a]);
+        desc.boxHandles[1][a]=ptr.operator()<std::remove_reference_t<decltype(desc.boxHandles[1][a])>>(addresses[4u+a]);
+        desc.boxProjections[a]=ptr.operator()<std::remove_reference_t<decltype(desc.boxProjections[a])>>(addresses[8u+a]);
     }
-    desc.oldIntegerBounds=ptr.operator()<decltype(desc.oldIntegerBounds)>(addresses[7]);
+    desc.oldIntegerBounds=ptr.operator()<std::remove_reference_t<decltype(desc.oldIntegerBounds)>>(addresses[7]);
     SourceSapDmaNative stream(context,map);
     auto& commands=stream.commands();
     const auto reject=[&](auto run_bad) {
@@ -103,7 +103,7 @@ void run(Context& context,SourceSapRemovedNativeStage& stage,
                 "Invalid source SAP removal partially submitted GPU commands");
     };
     auto bad=desc;
-    bad.boxHandles[1][2]=ptr.operator()<decltype(desc.boxHandles[1][2])>(
+    bad.boxHandles[1][2]=ptr.operator()<std::remove_reference_t<decltype(desc.boxHandles[1][2])>>(
         static_cast<CudaDeviceAddressMap::Address>(0x1234u));
     reject([&]{stage.append_mark_removed(commands,bad,map,{capacity,slots});});
     reject([&]{stage.append_mark_removed(commands,desc,map,{capacity,3u});});
@@ -140,7 +140,7 @@ void run(Context& context,SourceSapRemovedNativeStage& stage,
             "Original removed bounds did not receive PxgIntegerAABB::setEmpty");
 
     bad=desc;
-    bad.boxProjections[2]=ptr.operator()<decltype(desc.boxProjections[2])>(
+    bad.boxProjections[2]=ptr.operator()<std::remove_reference_t<decltype(desc.boxProjections[2])>>(
         static_cast<CudaDeviceAddressMap::Address>(0x1234u));
     reject([&]{stage.append_remove_projections(commands,bad,map,{capacity,slots});});
     stage.append_remove_projections(commands,desc,map,{capacity,slots});
