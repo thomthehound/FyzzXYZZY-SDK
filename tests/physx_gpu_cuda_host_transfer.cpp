@@ -961,6 +961,20 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         const std::array<physx::Bp::ShapeHandle,2u> handles{36u,2u};
         const physx::Bp::BpFilter filter(false,false);
         const auto first=owner.prepare(boxes,handles,filter);
+        const auto originalMinimum=
+            owner.source_bounds().getBounds(36u).minimum.x;
+        auto invalidActors=boxes;
+        invalidActors[0].id=99u;
+        invalidActors[0].position.x=123.f;
+        bool wrongActorRejected=false;
+        try {
+            (void)owner.prepare(invalidActors,handles,filter);
+        }catch(const std::invalid_argument&){wrongActorRejected=true;}
+        if(!wrongActorRejected ||
+           owner.source_bounds().getBounds(36u).minimum.x!=originalMinimum ||
+           owner.volume_to_actor()[36u]!=36u)
+            throw std::runtime_error(
+                "Persistent GPU AABB owner accepted wrong Sc actor for source handle");
         if(first.getNumCreatedHandles()!=2u ||
            first.getNumUpdatedHandles()!=0u ||
            first.getNumRemovedHandles()!=0u ||
