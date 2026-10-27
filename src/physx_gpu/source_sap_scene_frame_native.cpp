@@ -127,9 +127,12 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const auto update=aabb.prepare(
         inputs.live_boxes,inputs.live_handles,inputs.filter);
     const auto lifetime=aabb.actor_lifetime();
+    // SourceSapSceneFrameNativeMembers borrows this view by reference;
+    // keep the borrowed original member aliases alive through GPU fetch.
+    const auto pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
     const SourceSapSceneFrameNativeMembers members{
         update,
-        aabb.pre_update(sap.pre_broadphase_buffers()),
+        pre_update,
         sap.dma_up_members(nullptr,inputs.mapped_reports),
         inputs.update,
         sap.fetch_histories(),
