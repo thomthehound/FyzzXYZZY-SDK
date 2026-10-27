@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <utility>
