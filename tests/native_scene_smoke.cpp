@@ -102,6 +102,19 @@ struct GpuSapSceneAdmissionFixture {
            !scene.sap_volumes_.empty())
             throw std::runtime_error(
                 "GPU SAP retirement called native CPU SAP");
+
+        // A GPU-produced found report must reach the actual N1 Dy step,
+        // not just the collision-only Gu query path. The source manager
+        // and native solver are still those owned by this same Scene.
+        scene.set_position(b,{0.4f,1.0f,0.0f});
+        gpu->set({pair},{});
+        scene.step(1.0f/60.0f);
+        if(scene.pairs().size()!=1 || scene.pairs()[0]!=pair ||
+           scene.contacts().empty() || gpu->fetches!=5 ||
+           scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "GPU SAP found pair failed native N1 solver publication");
     }
 };
 struct SourceSapEndpointFixture {
