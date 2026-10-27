@@ -4,6 +4,7 @@
 #pragma once
 
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
+#include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "BpBroadPhaseUpdate.h"
 #include "BpVolumeData.h"
 #include "foundation/PxBounds3.h"
@@ -88,6 +89,36 @@ inline void add_source_sap_single_volume_native(
     else m.added.set(index);
     m.aggregated.boundedReset(index);
     m.persistent_state_changed=true;
+}
+
+// Sc single-volume admission binds its actor ID to the SAME source
+// manager handle on which addBounds operates. The existing map is
+// retained through GPU fetch; reject reuse by a different actor while
+// any old lost-pair report may still reference that handle. Complete
+// original bitmap/VolumeData admission first, so its validation failure
+// cannot partially overwrite the actor identity mapping.
+inline void add_source_sap_single_volume_actor_native(
+    SourceSapSingleVolumeMembersNative manager,
+    SourceSapVolumeActorLifetimeNative identity,
+    physx::PxU32 index,
+    physx::PxReal contact_distance,
+    physx::Bp::FilterGroup::Enum group,
+    void* user_data,BodyId actor,
+    physx::Bp::ElementType::Enum volume_type=physx::Bp::ElementType::eSHAPE) {
+    if(identity.volume_data.data()!=manager.volume_data.data() ||
+       identity.volume_data.size()!=manager.volume_data.size())
+        throw std::invalid_argument(
+            "Source actor identity does not alias original AABB volume owner");
+    if(index>=identity.volume_to_actor.size() ||
+       actor==std::numeric_limits<BodyId>::max())
+        throw std::out_of_range("Source AABB actor identity outside volume mapping");
+    const auto previous=identity.volume_to_actor[index];
+    if(previous!=std::numeric_limits<BodyId>::max() && previous!=actor)
+        throw std::logic_error(
+            "Source AABB handle reused before GPU lost-pair publication");
+    add_source_sap_single_volume_native(
+        manager,index,contact_distance,group,user_data,volume_type);
+    identity.volume_to_actor[index]=actor;
 }
 
 // Bp::AABBManagerBase::removeBPEntry and PxgAABBManager::removeBounds,
