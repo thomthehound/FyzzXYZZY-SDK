@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sap_fetch_native.h"
 #include "physx_gpu/source_sap_scene_bounds.h"
 #include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 
 #include <span>
@@ -35,6 +36,11 @@ struct SourceSapSceneFrameNativeMembers {
     std::span<const BodyId> volume_to_actor;
     std::vector<native::Pair>& found;
     std::vector<native::Pair>& lost;
+    // PxgAABBManager::processFoundPairs/processLostPairs follow successful
+    // fetch and clear these ORIGINAL host and device bitmap allocations.
+    const SourceFillD32NativeStage& bitmap_fill;
+    SourceSapAabbReportBitmapNative added_bitmap;
+    SourceSapAabbReportBitmapNative removed_bitmap;
 
     SourceSapMappedReportView* mapped_reports = nullptr;
     bool abort_mode = false;
