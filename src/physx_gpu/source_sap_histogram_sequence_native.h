@@ -17,7 +17,7 @@ namespace fyzz::physx_gpu {
 // comparison passes AND the original pair producer as one transaction.
 // The caller has already queued WR sorting on the same mStream.
 inline void append_source_sap_incremental_phase_native(
-    SourceSapDmaNative& stream,
+    std::vector<compute::BatchCommand>& commands,
     const SourceSapEndpointHistogramsNativeStage& histograms,
     const SourceSapIncrementalCountsNativeStage& comparisons,
     const SourceSapIncrementalPairsNativeStage& pairs,
@@ -38,7 +38,6 @@ inline void append_source_sap_incremental_phase_native(
         pairs.append(prepared,descriptor,device_descriptor,addresses,
                      pair_layout);
     }
-    auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
                     std::make_move_iterator(prepared.begin()),
@@ -50,7 +49,7 @@ inline void append_source_sap_incremental_phase_native(
 // creation or removal was present. No duplicate histogram on quiet,
 // motion-only or forced-flush-only frames.
 inline void append_source_sap_final_histograms_native(
-    SourceSapDmaNative& stream,
+    std::vector<compute::BatchCommand>& commands,
     const SourceSapEndpointHistogramsNativeStage& histograms,
     const physx::PxgBroadPhaseDesc& descriptor,
     const CudaDeviceAddressMap& addresses,
@@ -62,10 +61,39 @@ inline void append_source_sap_final_histograms_native(
     std::vector<compute::BatchCommand> prepared;
     prepared.reserve(2u);
     histograms.append(prepared,descriptor,addresses,layout,false);
-    auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
                     std::make_move_iterator(prepared.begin()),
                     std::make_move_iterator(prepared.end()));
+}
+
+inline void append_source_sap_incremental_phase_native(
+    SourceSapDmaNative& stream,
+    const SourceSapEndpointHistogramsNativeStage& histograms,
+    const SourceSapIncrementalCountsNativeStage& comparisons,
+    const SourceSapIncrementalPairsNativeStage& pairs,
+    const physx::PxgBroadPhaseDesc& descriptor,
+    CudaDeviceAddressMap::Address device_descriptor,
+    const CudaDeviceAddressMap& addresses,
+    SourceSapEndpointHistogramsNativeLayout histogram_layout,
+    SourceSapIncrementalCountsLayout comparison_layout,
+    SourceSapIncrementalPairsNativeLayout pair_layout,
+    bool gpu_state_changed,bool execute_gpu_stages) {
+    append_source_sap_incremental_phase_native(
+        stream.commands(),histograms,comparisons,pairs,descriptor,
+        device_descriptor,addresses,histogram_layout,comparison_layout,
+        pair_layout,gpu_state_changed,execute_gpu_stages);
+}
+
+inline void append_source_sap_final_histograms_native(
+    SourceSapDmaNative& stream,
+    const SourceSapEndpointHistogramsNativeStage& histograms,
+    const physx::PxgBroadPhaseDesc& descriptor,
+    const CudaDeviceAddressMap& addresses,
+    SourceSapEndpointHistogramsNativeLayout layout,
+    bool execute_gpu_stages) {
+    append_source_sap_final_histograms_native(
+        stream.commands(),histograms,descriptor,addresses,layout,
+        execute_gpu_stages);
 }
 } // namespace fyzz::physx_gpu
