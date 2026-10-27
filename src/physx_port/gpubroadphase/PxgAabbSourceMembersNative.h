@@ -120,6 +120,18 @@ public:
         std::span<const native::GpuBroadphaseBox> live,
         std::span<const physx::Bp::ShapeHandle> handles,
         const physx::Bp::BpFilter& filter) {
+        if(live.size()!=handles.size())
+            throw std::invalid_argument(
+                "Source SAP live actor and original volume handle counts disagree");
+        // Sc owns actor identity, while PxgAABBManager owns the volume
+        // handle. Their persistent admission binding must agree before
+        // changing any bounds, groups, handle lists, or GPU descriptors.
+        for(std::size_t i=0;i<live.size();++i) {
+            if(handles[i]>=volume_to_actor_.size() ||
+               volume_to_actor_[handles[i]]!=live[i].id)
+                throw std::invalid_argument(
+                    "Source GPU volume handle no longer belongs to the supplied Sc actor");
+        }
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
             scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_);
