@@ -14,11 +14,13 @@
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_gpu/source_sap_scene_bounds.h"
 #include "fyzzxyzzy/compute.h"
 #include <PxPhysicsAPI.h>
 
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -28,6 +30,89 @@
 
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
+
+// The live scene-to-source preBroadPhase input uses original AABB-manager
+// volume handles, true oriented box bounds and source filter group encoding.
+// No CPU SAP, independent proxy allocator or second pair history is involved.
+static void verify_source_sap_scene_bounds() {
+    using Box=fyzz::native::GpuBroadphaseBox;
+    constexpr float s=0.7071067811865475f;
+    const std::array<Box,3> boxes{{
+        {7u,{3.0f,4.0f,5.0f},{2.0f,1.0f,0.5f},
+            {0.0f,0.0f,s,s},0.02f,Box::Motion::Dynamic},
+        {3u,{-4.0f,0.0f,0.0f},{1.0f,2.0f,3.0f},
+            {},0.05f,Box::Motion::Static},
+        {9u,{0.0f,0.0f,1.0f},{0.5f,0.5f,0.5f},
+            {},0.10f,Box::Motion::Kinematic}
+    }};
+    // Source volume handle order is independent of Sc BodyId order.
+    const std::array<physx::Bp::ShapeHandle,3> handles{4u,1u,6u};
+    std::array<physx::PxBounds3,7> bounds;
+    bounds.fill(physx::PxBounds3::centerExtents(
+        physx::PxVec3(0.0f),physx::PxVec3(1.0f)));
+    std::array<physx::PxReal,7> distances;
+    distances.fill(-1.0f);
+    std::array<physx::Bp::FilterGroup::Enum,7> groups;
+    groups.fill(physx::Bp::FilterGroup::eINVALID);
+    SourceSapSceneBoundsScratch scratch;
+    const SourceSapSceneBounds output{bounds,distances,groups};
+    const auto check=[](float a,float b) {
+        return std::abs(a-b)<2.0e-5f;
+    };
+    write_source_sap_scene_bounds(boxes,handles,output,scratch);
+    if(!check(bounds[4].minimum.x,2.0f) ||
+       !check(bounds[4].minimum.y,2.0f) ||
+       !check(bounds[4].minimum.z,4.5f) ||
+       !check(bounds[4].maximum.x,4.0f) ||
+       !check(bounds[4].maximum.y,6.0f) ||
+       !check(bounds[4].maximum.z,5.5f) ||
+       !check(distances[4],0.02f) ||
+       !check(bounds[1].minimum.x,-5.0f) ||
+       !check(bounds[1].maximum.y,2.0f) ||
+       !check(distances[1],0.05f) ||
+       !check(bounds[6].minimum.z,0.5f) ||
+       !check(distances[6],0.10f) ||
+       groups[4]!=physx::Bp::getFilterGroup_Dynamics(7u,false) ||
+       groups[1]!=physx::Bp::getFilterGroup_Statics() ||
+       groups[6]!=physx::Bp::getFilterGroup_Dynamics(9u,true) ||
+       distances[0]!=-1.0f ||
+       groups[0]!=physx::Bp::FilterGroup::eINVALID)
+        throw std::runtime_error(
+            "Native Sc oriented bounds/contact offsets/source PhysX groups lowered incorrectly");
+
+    // Quiet source frames do not modify the original AABB-manager arrays.
+    write_source_sap_scene_bounds({}, {},output,scratch);
+    if(!check(bounds[4].minimum.x,2.0f) || distances[4]!=0.02f)
+        throw std::runtime_error("Quiet source bounds publication mutated existing volume");
+
+    // Invalid late inputs cannot partially update an earlier valid handle.
+    auto invalid=boxes;
+    invalid[2].orientation.w=0.0f;
+    bool rejected=false;
+    try {write_source_sap_scene_bounds(invalid,handles,output,scratch);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected || !check(bounds[4].minimum.x,2.0f) ||
+       distances[4]!=0.02f || groups[6]!=
+          physx::Bp::getFilterGroup_Dynamics(9u,true))
+        throw std::runtime_error(
+            "Malformed late source geometry partially changed GPU AABB input");
+
+    auto duplicates=handles;
+    duplicates[2]=handles[0];
+    rejected=false;
+    try {write_source_sap_scene_bounds(boxes,duplicates,output,scratch);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected || distances[4]!=0.02f)
+        throw std::runtime_error("Duplicate original source volume handle accepted");
+
+    auto outside=handles;
+    outside[2]=static_cast<physx::PxU32>(bounds.size());
+    rejected=false;
+    try {write_source_sap_scene_bounds(boxes,outside,output,scratch);}
+    catch(const std::out_of_range&) {rejected=true;}
+    if(!rejected || distances[4]!=0.02f)
+        throw std::runtime_error("Out-of-range source AABB handle partially published");
+}
 
 // Original GPU source pair handles are not necessarily Scene actor IDs.
 // This proves the real fetch ABI maps volume handles and duplicate source
@@ -78,6 +163,7 @@ static void verify_source_sap_sc_report_mapping() {
 int main() {
     try {
         verify_source_sap_sc_report_mapping();
+        verify_source_sap_scene_bounds();
         physx::PxDefaultAllocator defaultAllocator;
         physx::PxDefaultErrorCallback errors;
         auto* foundation=PxCreateFoundation(PX_PHYSICS_VERSION,defaultAllocator,errors);
