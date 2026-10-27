@@ -113,6 +113,64 @@ static void verify_source_sap_scene_bounds() {
     catch(const std::out_of_range&) {rejected=true;}
     if(!rejected || distances[4]!=0.02f)
         throw std::runtime_error("Out-of-range source AABB handle partially published");
+
+    // Original Bp update inputs must keep ascending, disjoint source
+    // handle deltas independent of the scene's unsorted actor order.
+    const physx::Bp::BpFilter filter(false,false);
+    const std::array<physx::Bp::ShapeHandle,3> created{1u,4u,6u};
+    const std::array<physx::Bp::ShapeHandle,1> retired{0u};
+    const SourceSapSceneFrameChanges initial{created,{},retired};
+    const auto update=prepare_source_sap_scene_update(
+        boxes,handles,output,initial,filter,true,true,scratch);
+    if(update.getNumCreatedHandles()!=3u ||
+       update.getNumUpdatedHandles()!=0u ||
+       update.getNumRemovedHandles()!=1u ||
+       update.getCreatedHandles()!=created.data() ||
+       update.getRemovedHandles()!=retired.data() ||
+       update.getCapacity()!=bounds.size() ||
+       update.getAABBs()!=bounds.data() ||
+       update.getGroups()!=groups.data() ||
+       update.getContactDistance()!=distances.data() ||
+       !update.getStateChanged() || !update.getGpuStateChanged())
+        throw std::runtime_error("Original source Bp frame deltas were not preserved");
+
+    auto moved=boxes;
+    moved[0].position.x=12.0f;
+    const std::array<physx::Bp::ShapeHandle,1> updated{4u};
+    const SourceSapSceneFrameChanges badOverlap{updated,updated,{}};
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,badOverlap,filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error(
+            "Overlapping original source handle deltas modified staged bounds");
+
+    const std::array<physx::Bp::ShapeHandle,2> unordered{6u,4u};
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,{unordered,{},{}},filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error("Unordered source handle deltas partially published");
+
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,{{},{},updated},filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error("Live source handle was erroneously retired");
+
+    const auto moving=prepare_source_sap_scene_update(
+        moved,handles,output,{{},updated,{}},filter,true,false,scratch);
+    if(moving.getNumCreatedHandles()!=0u ||
+       moving.getNumUpdatedHandles()!=1u ||
+       moving.getUpdatedHandles()!=updated.data() ||
+       !check(bounds[4].minimum.x,11.0f))
+        throw std::runtime_error("Source Bp moving-frame admission lost handle identity");
 }
 
 // Original GPU source pair handles are not necessarily Scene actor IDs.
@@ -203,16 +261,13 @@ int main() {
                     std::array<physx::Bp::FilterGroup::Enum,4> groups;
                     groups.fill(physx::Bp::FilterGroup::eINVALID);
                     SourceSapSceneBoundsScratch scratch;
-                    write_source_sap_scene_bounds(
-                        boxes,handles,{bounds,distances,groups},scratch);
                     const physx::Bp::BpFilter filter(false,false);
                     // Source creation/removal lists are sorted separately
                     // from the scene input and the manager's handle mapping.
                     const std::array<physx::Bp::ShapeHandle,2> created{0u,3u};
-                    const physx::Bp::BroadPhaseUpdateData update(
-                        created.data(),2u,nullptr,0u,nullptr,0u,
-                        bounds.data(),groups.data(),distances.data(),
-                        4u,filter,true,false);
+                    const auto update=prepare_source_sap_scene_update(
+                        boxes,handles,{bounds,distances,groups},
+                        {created,{},{}},filter,true,false,scratch);
                     physx::PxgTypedCudaBuffer<physx::PxBounds3> gpuBounds(heap,group);
                     physx::PxgTypedCudaBuffer<physx::PxReal> gpuDistances(heap,group);
                     physx::PxgTypedCudaBuffer<physx::PxU32> gpuGroups(heap,group);
@@ -246,12 +301,9 @@ int main() {
                     auto moved=boxes;
                     moved[0].position.x=8.0f;
                     const std::array<physx::Bp::ShapeHandle,1> changed{3u};
-                    write_source_sap_scene_bounds(
-                        moved,handles,{bounds,distances,groups},scratch);
-                    const physx::Bp::BroadPhaseUpdateData movedFrame(
-                        nullptr,0u,changed.data(),1u,nullptr,0u,
-                        bounds.data(),groups.data(),distances.data(),
-                        4u,filter,true,false);
+                    const auto movedFrame=prepare_source_sap_scene_update(
+                        moved,handles,{bounds,distances,groups},
+                        {{},changed,{}},filter,true,false,scratch);
                     pre_broadphase_native(movedFrame,{
                         gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
                         sourceCapacity},stream);
@@ -265,10 +317,9 @@ int main() {
                     // The source always uploads groups and distances, but
                     // skips the bounds upload for stateChanged=false.
                     const auto bytesBefore=stream.submission_stats().upload_bytes;
-                    const physx::Bp::BroadPhaseUpdateData idle(
-                        nullptr,0u,nullptr,0u,nullptr,0u,
-                        bounds.data(),groups.data(),distances.data(),
-                        4u,filter,false,false);
+                    const auto idle=prepare_source_sap_scene_update(
+                        moved,handles,{bounds,distances,groups},
+                        {},filter,false,false,scratch);
                     pre_broadphase_native(idle,{
                         gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
                         sourceCapacity},stream);
