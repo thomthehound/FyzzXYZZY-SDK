@@ -128,6 +128,25 @@ struct GpuSapSceneAdmissionFixture {
            !scene.sap_volumes_.empty())
             throw std::runtime_error(
                 "GPU SAP found pair failed native N1 solver publication");
+
+        // A shape can move while the same pair remains overlapping.
+        // The GPU owner must fetch that frame and PCM must refresh, but
+        // the published Sc pair list and contact edge are unchanged.
+        const auto edge=scene.contacts().front().edge_handle;
+        const auto pending_size=scene.pending_pairs_.size();
+        gpu->set({},{});
+        scene.set_position(b,{0.5f,1.0f,0.0f});
+        scene.advance_collision();
+        if(scene.pairs().size()!=1 || scene.pairs()[0]!=pair ||
+           scene.contacts().empty() ||
+           scene.contacts().front().edge_handle!=edge ||
+           !scene.found_pairs().empty() || !scene.lost_pairs().empty() ||
+           scene.pending_pairs_.size()!=pending_size ||
+           gpu->fetches!=7 ||
+           scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "Quiet GPU SAP membership rebuilt Sc pairs or skipped moving PCM contacts");
     }
 };
 struct SourceSapEndpointFixture {
