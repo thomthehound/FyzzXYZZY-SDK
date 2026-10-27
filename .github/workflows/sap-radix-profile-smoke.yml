@@ -31,7 +31,7 @@ jobs:
       - name: Build source radix profiling executable
         run: cmake --build build --target fyzzxyzzy_physx_source_sap_radix_native --parallel 4
       - name: Run source GPU radix conformance
-        run: ctest --test-dir build -R '^fyzzxyzzy_physx_source_sap_radix_native --output-on-failure
+        run: ctest --test-dir build -R fyzzxyzzy_physx_source_sap_radix_native --output-on-failure
       - name: Exercise source GPU radix host and device profiling
         timeout-minutes: 8
         run: cmake --build build --target fyzzxyzzy_source_sap_radix_profile_vulkan
