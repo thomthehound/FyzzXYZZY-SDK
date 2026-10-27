@@ -731,7 +731,7 @@ void exercise_original_sap_source_members_native(Context& context) {
         const physx::Bp::BroadPhaseUpdateData first(
             created.data(),2u,nullptr,0u,nullptr,0u,
             bounds.data(),groups.data(),distances.data(),
-            2u,filter,true,true);
+            nullptr,2u,filter,true,true);
         pre_broadphase_native(first,pre,stream);
         const auto counts=gpu_dma_up_sap_frame_native(first,members,stream);
         if(counts.current_boxes!=2u || source.num_boxes()!=2u ||
@@ -748,7 +748,7 @@ void exercise_original_sap_source_members_native(Context& context) {
         const physx::Bp::BroadPhaseUpdateData second(
             nullptr,0u,nullptr,0u,nullptr,0u,
             bounds.data(),groups.data(),distances.data(),
-            2u,filter,false,false);
+            nullptr,2u,filter,false,false);
         pre_broadphase_native(second,source.pre_broadphase_buffers(),stream);
         const auto quiet=gpu_dma_up_sap_frame_native(
             second,source.dma_up_members(nullptr,foundAddress,lostAddress),
