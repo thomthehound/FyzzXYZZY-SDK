@@ -1281,7 +1281,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
         -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" VERBATIM)
-    add_custom_target(fyzzxyzzy_source_sap_radix_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}")
+    set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_radix_native tests/physx_gpu_source_sap_radix_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sap_radix_native PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -1289,7 +1295,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
     target_link_libraries(fyzzxyzzy_physx_source_sap_radix_native PRIVATE fyzzxyzzy_physx_gpu_stages)
     add_dependencies(fyzzxyzzy_physx_source_sap_radix_native fyzzxyzzy_source_sap_radix_spv)
-    add_test(NAME fyzzxyzzy_physx_source_sap_radix_native COMMAND fyzzxyzzy_physx_source_sap_radix_native "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}")
+    add_test(NAME fyzzxyzzy_physx_source_sap_radix_native COMMAND fyzzxyzzy_physx_source_sap_radix_native "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}")
 
 
 
@@ -2819,7 +2825,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
         -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" VERBATIM)
-    add_custom_target(fyzzxyzzy_source_sap_radix_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}")
+    set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_radix_native_d3d12 tests/physx_gpu_source_sap_radix_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PRIVATE
@@ -2828,7 +2840,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
     target_link_libraries(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_source_sap_radix_native_d3d12 fyzzxyzzy_source_sap_radix_dxil)
-    add_test(NAME fyzzxyzzy_physx_source_sap_radix_native_d3d12 COMMAND fyzzxyzzy_physx_source_sap_radix_native_d3d12 "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}")
+    add_test(NAME fyzzxyzzy_physx_source_sap_radix_native_d3d12 COMMAND fyzzxyzzy_physx_source_sap_radix_native_d3d12 "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}")
     set_tests_properties(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
 
