@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <new>
 #include <span>
 #include <stdexcept>
 
@@ -34,7 +35,7 @@ struct SourceSapSingleVolumeMembersNative {
 
 inline void validate_source_sap_single_volume_native(
     const SourceSapSingleVolumeMembersNative& m,
-    physx::Bp::BoundsIndex index) {
+    physx::PxU32 index) {
     if(index>=m.volume_data.size() || index>=m.groups.size() ||
        index>=m.contact_distances.size() ||
        index>=std::numeric_limits<physx::PxU32>::max()-1u)
@@ -46,7 +47,7 @@ inline void validate_source_sap_single_volume_native(
 // it must NOT generate another created handle.
 inline void add_source_sap_single_volume_native(
     SourceSapSingleVolumeMembersNative m,
-    physx::Bp::BoundsIndex index,
+    physx::PxU32 index,
     physx::PxReal contact_distance,
     physx::Bp::FilterGroup::Enum group,
     void* user_data,
@@ -84,7 +85,7 @@ inline void add_source_sap_single_volume_native(
 // scene's fetch-time volume-to-actor lifetime is owned by its caller.
 inline bool remove_source_sap_single_volume_native(
     SourceSapSingleVolumeMembersNative m,
-    physx::Bp::BoundsIndex index) {
+    physx::PxU32 index) {
     validate_source_sap_single_volume_native(m,index);
     if(m.groups[index]==physx::Bp::FilterGroup::eINVALID ||
        !m.volume_data[index].isSingleActor())
@@ -105,7 +106,7 @@ inline bool remove_source_sap_single_volume_native(
 // bit must not be replaced by per-frame geometry comparisons.
 inline void mark_source_sap_single_volume_changed_native(
     SourceSapSingleVolumeMembersNative m,
-    physx::Bp::BoundsIndex index,
+    physx::PxU32 index,
     physx::PxReal contact_distance) {
     validate_source_sap_single_volume_native(m,index);
     if(m.groups[index]==physx::Bp::FilterGroup::eINVALID ||
