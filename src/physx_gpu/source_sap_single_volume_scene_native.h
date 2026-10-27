@@ -36,6 +36,18 @@ prepare_source_sap_single_volume_scene_native(
         throw std::invalid_argument(
             "Source SAP Sc bounds do not alias the original AABB manager arrays");
 
+    // The source manager, not geometry publication, admits volumes.
+    // Reject stale/recycled/unadmitted handles before the bounds writer
+    // can install a non-invalid group and accidentally resurrect a shape.
+    for(const auto handle:live_handles) {
+        if(handle>=manager.volume_data.size() ||
+           handle>=manager.groups.size() ||
+           manager.groups[handle]==physx::Bp::FilterGroup::eINVALID ||
+           !manager.volume_data[handle].isSingleActor())
+            throw std::invalid_argument(
+                "Sc box references a volume not admitted by the source AABB manager");
+    }
+
     collect_source_sap_single_volume_first_pass_native(manager,handles);
     const SourceSapSceneFrameChanges changes{
         {handles.created.begin(),handles.created.size()},
