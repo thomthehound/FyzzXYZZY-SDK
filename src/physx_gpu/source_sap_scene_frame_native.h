@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sap_fetch_native.h"
 #include "physx_gpu/source_sap_scene_bounds.h"
 #include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 
@@ -33,7 +34,9 @@ struct SourceSapSceneFrameNativeMembers {
     SourceSapFetchHistoryBuffers histories;
     SourceSapActorPairDestination found_pairs;
     SourceSapActorPairDestination lost_pairs;
-    std::span<const BodyId> volume_to_actor;
+    // Existing source volume-handle -> Sc actor identity stays alive for
+    // removed handles through GPU lost-pair fetch; no second actor map.
+    std::span<BodyId> volume_to_actor;
     std::vector<native::Pair>& found;
     std::vector<native::Pair>& lost;
     // PxgAABBManager::processFoundPairs/processLostPairs follow successful

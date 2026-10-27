@@ -198,6 +198,86 @@ void test_source_scene_boundary() {
     require(unchanged,
             "Malformed sparse source SAP update partially published bounds");
 
+    // Source PxgAABBManager::removeBounds immediately resets VolumeData,
+    // but its GPU lost report arrives only after the BP stream fetch.
+    // Borrowed handle-to-actor identities must survive until that fetch.
+    {
+        alignas(4) std::uint32_t liveActor=11u,reusedActor=27u;
+        std::array<physx::Bp::VolumeData,4> sourceVolumes{};
+        for(auto& volume:sourceVolumes)volume.reset();
+        sourceVolumes[0].setUserData(&liveActor);
+        sourceVolumes[0].setSingleActor();
+        std::array<BodyId,4> actorIdentity{
+            11u,std::numeric_limits<BodyId>::max(),
+            std::numeric_limits<BodyId>::max(),4u};
+        const SourceSapVolumeActorLifetimeNative identity{
+            actorIdentity,sourceVolumes};
+        std::array<physx::Bp::FilterGroup::Enum,4> sourceGroups{};
+        sourceGroups.fill(physx::Bp::FilterGroup::eINVALID);
+        sourceGroups[0]=physx::Bp::FilterGroup::eDYNAMICS_BASE;
+        const std::array<physx::Bp::ShapeHandle,1> removedVolume{3u};
+        const physx::Bp::BroadPhaseUpdateData retiredFrame(
+            nullptr,0u,nullptr,0u,removedVolume.data(),1u,
+            bounds.data(),sourceGroups.data(),distances.data(),
+            nullptr,4u,filter,true,false);
+        validate_source_sap_volume_actor_lifetime_native(
+            identity,retiredFrame);
+        bool rejectedEarlyReuse=false;
+        try {
+            admit_source_sap_volume_actor_identity_native(
+                identity,3u,27u);
+        }catch(const std::logic_error&){rejectedEarlyReuse=true;}
+        require(rejectedEarlyReuse && actorIdentity[3]==4u,
+                "Source handle was rebound before GPU lost-pair publication");
+        admit_source_sap_volume_actor_identity_native(
+            identity,3u,4u);
+        require(actorIdentity[3]==4u,
+                "Source same-actor readmission lost its original handle");
+        const std::array<physx::PxgBroadPhasePair,1> removedLost{
+            physx::PxgBroadPhasePair{0u,3u}};
+        bool rejectedRetired=false;
+        try {
+            validate_source_sap_found_volume_lifetime_native(
+                removedLost,identity);
+        }catch(const std::invalid_argument&){rejectedRetired=true;}
+        require(rejectedRetired && actorIdentity[3]==4u,
+                "GPU found pair re-admitted retired PhysX VolumeData");
+        std::vector<native::Pair> loweredFound,loweredLost;
+        lower_source_sap_actor_reports_to_sc(
+            {},removedLost,actorIdentity,loweredFound,loweredLost);
+        require(loweredFound.empty() && loweredLost.size()==1u &&
+                loweredLost[0]==native::Pair{4u,11u} &&
+                actorIdentity[3]==4u,
+                "Removed source volume lost its actor before GPU lost report fetch");
+        retire_source_sap_volume_actor_lifetime_native(
+            identity,retiredFrame);
+        require(actorIdentity[3]==std::numeric_limits<BodyId>::max() &&
+                actorIdentity[0]==11u,
+                "Source fetch retired wrong original AABB volume identity");
+        bool rejectedLateLost=false;
+        try {
+            lower_source_sap_actor_reports_to_sc(
+                {},removedLost,actorIdentity,loweredFound,loweredLost);
+        }catch(const std::out_of_range&){rejectedLateLost=true;}
+        require(rejectedLateLost && loweredLost.size()==1u,
+                "Post-fetch recycled source handle resolved stale Sc actor ID");
+
+        // Only after retired identity is released may that original
+        // handle be assigned to a different source Sc actor.
+        sourceVolumes[3].setUserData(&reusedActor);
+        sourceVolumes[3].setSingleActor();
+        sourceGroups[3]=physx::Bp::FilterGroup::eDYNAMICS_BASE;
+        admit_source_sap_volume_actor_identity_native(
+            identity,3u,27u);
+        validate_source_sap_found_volume_lifetime_native(
+            removedLost,identity);
+        lower_source_sap_actor_reports_to_sc(
+            removedLost,{},actorIdentity,loweredFound,loweredLost);
+        require(loweredFound.size()==1u &&
+                loweredFound[0]==native::Pair{11u,27u},
+                "Recycled source GPU handle retained prior actor identity");
+    }
+
     // AABB handle order is independent of Sc actor order and may be
     // recycled. PhysX pair ordering is by volume; Sc is by actor ID.
     const std::array<BodyId,4> volume_to_actor{
