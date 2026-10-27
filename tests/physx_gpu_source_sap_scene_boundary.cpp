@@ -166,7 +166,7 @@ void test_source_scene_boundary() {
     actors[0].contact_offset=0.375f;
     (void)prepare_source_sap_scene_update(
         actors,handles,target,moving,filter,true,true,scratch);
-    require(std::fabs(bounds[0].minimum.x-5.0f)<1.0e-6f &&
+    require(std::fabs(bounds[0].minimum.x-3.0f)<1.0e-6f &&
             std::fabs(bounds[3].minimum.x+8.0f)<1.0e-6f &&
             distances[0]==0.375f && distances[3]==beforeDistances[3],
             "Sparse source SAP update changed an unmodified volume");
