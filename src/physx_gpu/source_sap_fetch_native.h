@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace fyzz::physx_gpu {
 
@@ -54,7 +55,7 @@ struct SourceSapFetchedCounts {
 // DtoH copy. The staged fallback remains on the same source GPU fence.
 // The original seven buffer history families rotate after successful fetch,
 // including the no-update path. Integer bounds swap separately in update().
-template<class RotateHistories>
+template<class RotateHistories,class PublishActorPairs>
 inline SourceSapFetchedCounts fetch_source_sap_results_native(
     compute::Context& context,
     const CudaDeviceAddressMap& addresses,
@@ -64,7 +65,8 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
     SourceSapActorPairDestination lost,
     bool abort_mode,
     RotateHistories&& rotate_histories,
-    SourceSapMappedReportView* mapped_roots) {
+    SourceSapMappedReportView* mapped_roots,
+    PublishActorPairs&& publish_actor_pairs) {
 
     const auto desc_source = addresses.resolve(
         descriptor_address, sizeof(physx::PxgBroadPhaseDesc));
@@ -153,9 +155,32 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
                              lost.data, lost_bytes);
     }
 
+    // Perform the source scene's handle->actor admission while the
+    // original GPU result arrays are readable but BEFORE committing
+    // the fetched descriptor or exchanging the seven source histories.
+    // A rejected Sc pair (including overflow) cannot consume a frame.
+    std::forward<PublishActorPairs>(publish_actor_pairs)(counts);
     host_descriptor = gpu_desc;
     rotate_histories();
     return counts;
+}
+
+// Non-scene fetch retains the original successful publication path.
+template<class RotateHistories>
+inline SourceSapFetchedCounts fetch_source_sap_results_native(
+    compute::Context& context,
+    const CudaDeviceAddressMap& addresses,
+    CudaDeviceAddressMap::Address descriptor_address,
+    physx::PxgBroadPhaseDesc& host_descriptor,
+    SourceSapActorPairDestination found,
+    SourceSapActorPairDestination lost,
+    bool abort_mode,
+    RotateHistories&& rotate_histories,
+    SourceSapMappedReportView* mapped_roots) {
+    return fetch_source_sap_results_native(
+        context,addresses,descriptor_address,host_descriptor,found,lost,
+        abort_mode,std::forward<RotateHistories>(rotate_histories),
+        mapped_roots,[](const SourceSapFetchedCounts&) noexcept {});
 }
 
 // Legacy Context-side frame role view retained for source-independent
