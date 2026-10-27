@@ -14,6 +14,25 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const CudaDeviceAddressMap& addresses,
     compute::Context& context) {
 
+    if(members.aabb_owner) {
+        // A source-owned frame cannot publish GPU reports against an
+        // unrelated AABB owner's volume identity or bitmap storage.
+        // Compare borrowed aliases, not a cloned registry or a map scan.
+        const auto lifetime=members.aabb_owner->actor_lifetime();
+        const auto added=members.aabb_owner->added_report_bitmap();
+        const auto removed=members.aabb_owner->removed_report_bitmap();
+        if(members.volume_to_actor.data()!=lifetime.volume_to_actor.data() ||
+           members.volume_to_actor.size()!=lifetime.volume_to_actor.size() ||
+           members.aabb_manager.volume_data.data()!=lifetime.volume_data.data() ||
+           members.aabb_manager.volume_data.size()!=lifetime.volume_data.size() ||
+           members.aabb_manager.added.words.data()!=added.host_words.data() ||
+           members.aabb_manager.added.words.size()!=added.host_words.size() ||
+           members.aabb_manager.removed.words.data()!=removed.host_words.data() ||
+           members.aabb_manager.removed.words.size()!=removed.host_words.size())
+            throw std::invalid_argument(
+                "Source SAP frame does not borrow its original AABB manager owner");
+    }
+
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
     // before queuing any source heap allocation or transfer.
