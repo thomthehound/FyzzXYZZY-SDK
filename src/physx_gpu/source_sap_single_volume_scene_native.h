@@ -1,0 +1,50 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include "physx_gpu/source_sap_scene_bounds.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
+
+#include <span>
+#include <stdexcept>
+
+namespace fyzz::physx_gpu {
+
+// Lower the source AABB manager's real first-pass deltas into the scene
+// bounds it owns, then construct the original Bp::BroadPhaseUpdateData.
+// In GPU mode mUpdatedHandles is empty: mChangedHandleMap is the source
+// of dirty bounds. This is the existing manager/Sc task boundary, not
+// an independent handle registry or a second broadphase.
+inline physx::Bp::BroadPhaseUpdateData
+prepare_source_sap_single_volume_scene_native(
+    SourceSapSingleVolumeMembersNative manager,
+    SourceSapSingleVolumeFirstPassNative handles,
+    std::span<const native::GpuBroadphaseBox> live_boxes,
+    std::span<const physx::Bp::ShapeHandle> live_handles,
+    SourceSapSceneBounds arrays,
+    const physx::Bp::BpFilter& filter,
+    bool bounds_changed,
+    SourceSapSceneBoundsScratch& scratch) {
+    // Source volume state and preBroadPhase must reference the exact
+    // same original AABB-manager host arrays (not independently cloned
+    // bounds, distance or group storage).
+    if(arrays.groups.data()!=manager.groups.data() ||
+       arrays.groups.size()!=manager.groups.size() ||
+       arrays.contact_distances.data()!=manager.contact_distances.data() ||
+       arrays.contact_distances.size()!=manager.contact_distances.size() ||
+       arrays.bounds.size()!=manager.groups.size())
+        throw std::invalid_argument(
+            "Source SAP Sc bounds do not alias the original AABB manager arrays");
+
+    collect_source_sap_single_volume_first_pass_native(manager,handles);
+    const SourceSapSceneFrameChanges changes{
+        {handles.created.begin(),handles.created.size()},
+        {}, // PxgAABBManager::updateBPSecondPass always passes zero updated handles.
+        {handles.removed.begin(),handles.removed.size()},
+        {manager.changed.getWords(),manager.changed.getWordCount()}};
+    return prepare_source_sap_scene_update(
+        live_boxes,live_handles,arrays,changes,filter,
+        manager.persistent_state_changed || bounds_changed,
+        manager.gpu_state_changed,scratch);
+}
+} // namespace fyzz::physx_gpu
