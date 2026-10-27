@@ -1148,6 +1148,12 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
             shapeA,shapeB};
         const physx::Bp::BpFilter filter(false,false);
         const auto first=manager.prepare(boxes,handles,filter);
+        if(manager.single_volumes().groups[shapeB]!=
+               physx::Bp::getFilterGroup(false,rigidB,false) ||
+           manager.single_volumes().groups[shapeB]==
+               physx::Bp::getFilterGroup(false,900u,false))
+            throw std::runtime_error(
+                "Sc element volume bounds overwrote the original rigid actor filter group");
         if(first.getNumCreatedHandles()!=2u ||
            first.getCreatedHandles()[0]!=shapeA ||
            first.getCreatedHandles()[1]!=shapeB ||
