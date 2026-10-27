@@ -175,8 +175,8 @@ void run(Context& context,SourceSapIncrementalPairsNativeStage& stage,
     std::array<std::uint32_t,2> pair{};
     const auto slot=lose?38u:37u;
     context.download(buffer[slot],offset[slot],pair.data(),sizeof(pair));
-    require(pair[0]==1u&&pair[1]==0u,
-            "Source incremental producer changed original report handle order");
+    require(pair[0]==0u&&pair[1]==1u,
+            "Source PxgBroadPhasePair constructor canonicalization differs");
     for(std::size_t i=0u;i<33u;++i){
         std::vector<std::uint32_t> observed(data[i].size());
         context.download(buffer[i],offset[i],observed.data(),allocation(i));
