@@ -1947,7 +1947,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
-    FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address)
+    FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address
+    fyzzxyzzy_physx_original_gpu_heap)
 
 
   if(BUILD_TESTING)
