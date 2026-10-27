@@ -164,6 +164,9 @@ if(BUILD_TESTING)
   target_compile_definitions(fyzzxyzzy_native_scene_smoke PRIVATE
     FYZZXYZZY_ENABLE_PHYSX_SOURCE=$<BOOL:${FYZZXYZZY_ENABLE_PHYSX_SOURCE}>)
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+    target_include_directories(fyzzxyzzy_native_scene_smoke PRIVATE
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
     target_link_libraries(fyzzxyzzy_native_scene_smoke PRIVATE physx_lib)
   endif()
   add_test(NAME fyzzxyzzy_native_scene_smoke
