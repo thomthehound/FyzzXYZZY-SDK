@@ -14226,8 +14226,131 @@ int run_native_scene_smoke() {
     return 0;
 }
 
+// Source-report handoff validation runs through the real N1 Sc/Gu/Dy
+// collision path. The scripted source below only substitutes *fetched GPU
+// reports*; it does not claim to implement a GPU SAP kernel or device.
+namespace {
+class ScriptedSapReports final : public fyzz::native::GpuSapPairSource {
+public:
+    using Pair=fyzz::native::Pair;
+    struct Frame {
+        std::vector<Pair> found,lost;
+    };
+    explicit ScriptedSapReports(std::vector<Frame> frames)
+        :frames_(std::move(frames)) {}
+    fyzz::native::GpuSapPairReports advance(
+        std::span<const fyzz::native::GpuSapVolume> volumes,
+        bool state_changed,bool /*force_update*/) override {
+        ++calls;
+        if(poisoned || next_>=frames_.size())
+            throw std::logic_error("Scripted source report frame exhausted");
+        last_volume_count=volumes.size();
+        saw_changed |= state_changed;
+        const auto& frame=frames_[next_++];
+        return {frame.found,frame.lost};
+    }
+    void abort_frame() noexcept override {
+        poisoned=true;
+        ++aborts;
+    }
+    std::size_t calls=0,aborts=0,last_volume_count=0;
+    bool poisoned=false,saw_changed=false;
+private:
+    std::vector<Frame> frames_;
+    std::size_t next_=0;
+};
+
+void verify_native_gpu_sap_report_admission() {
+    using fyzz::native::Scene;
+    using fyzz::native::Pair;
+    constexpr float dt=1.0f/60.0f;
+    Scene scene;
+    auto reports=std::make_unique<ScriptedSapReports>(
+        std::vector<ScriptedSapReports::Frame>{
+            {{{0u,1u}},{}}, {{},{}}, {{},{ {0u,1u} }},
+            {{{0u,1u}},{}}, {{},{}}
+        });
+    auto* source=reports.get();
+    scene.set_gpu_sap_source(std::move(reports));
+    const auto dynamic=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f},1.0f);
+    const auto stationary=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.2f,0.0f,0.0f});
+    if(dynamic!=0u || stationary!=1u)
+        throw std::runtime_error("Unexpected native GPU SAP actor identity");
+    scene.advance_collision();
+    if(scene.pairs().size()!=1u || scene.found_pairs().size()!=1u ||
+       scene.contacts().empty())
+        throw std::runtime_error(
+            "GPU SAP Found report failed native Sc edge/Gu PCM publication");
+    scene.advance_collision(); // source idle still executes GPU fetch
+    if(scene.pairs().size()!=1u || !scene.found_pairs().empty() ||
+       !scene.lost_pairs().empty())
+        throw std::runtime_error(
+            "GPU SAP quiet source frame duplicated Sc pair publication");
+    scene.set_position(dynamic,{4.0f,0.0f,0.0f});
+    scene.advance_collision();
+    if(!scene.pairs().empty() || scene.lost_pairs().size()!=1u ||
+       !scene.contacts().empty())
+        throw std::runtime_error(
+            "GPU SAP Lost report failed native Sc edge/contact retirement");
+    scene.set_position(dynamic,{0.0f,0.0f,0.0f});
+    scene.advance_collision();
+    if(scene.pairs().size()!=1u || scene.found_pairs().size()!=1u ||
+       scene.contacts().empty())
+        throw std::runtime_error(
+            "GPU SAP refound report did not reconnect original PCM contact");
+    scene.step(dt);
+    if(scene.solved_result_frame()!=scene.frame_index() ||
+       scene.pairs().size()!=1u || source->calls!=5u ||
+       source->last_volume_count!=2u || !source->saw_changed ||
+       scene.broadphase_endpoint_full_sort_count()!=0u)
+        throw std::runtime_error(
+            "GPU SAP reports did not reach original Dy solve without CPU SAP");
+    // No CPU endpoint array ever ran; the source report remains the
+    // sole broadphase authority for this scene.
+    if(source->aborts || source->poisoned)
+        throw std::runtime_error("Successful GPU SAP source was poisoned");
+
+    // Invalid fetched data must not half-publish an Sc edge or fall back
+    // to CPU SAP on the next advance. A failed transaction permanently
+    // invalidates its source GPU history until the scene is rebuilt.
+    Scene bad;
+    auto bad_reports=std::make_unique<ScriptedSapReports>(
+        std::vector<ScriptedSapReports::Frame>{{{},{{0u,1u}}}});
+    auto* bad_source=bad_reports.get();
+    bad.set_gpu_sap_source(std::move(bad_reports));
+    bad.add_dynamic_box({0.5f,0.5f,0.5f},{0,0,0},1);
+    bad.add_static_box({0.5f,0.5f,0.5f},{0.1f,0,0});
+    bool rejected=false;
+    try{bad.advance_collision();}
+    catch(const std::invalid_argument&){rejected=true;}
+    if(!rejected || !bad.pairs().empty() || bad_source->aborts!=1u)
+        throw std::runtime_error(
+            "Rejected GPU SAP report mutated published Sc pair history");
+    rejected=false;
+    try{bad.advance_collision();}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected || bad_source->calls!=1u ||
+       bad.broadphase_endpoint_full_sort_count()!=0u)
+        throw std::runtime_error(
+            "Invalid GPU SAP source silently retried or fell back to CPU");
+    Scene late;
+    late.add_static_box({0.5f,0.5f,0.5f},{0,0,0});
+    rejected=false;
+    try{late.set_gpu_sap_source(
+        std::make_unique<ScriptedSapReports>(
+            std::vector<ScriptedSapReports::Frame>{}));}
+    catch(const std::logic_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error(
+            "GPU SAP source installed after native actor admission");
+}
+} // namespace
+
 int main() {
     try {
+    verify_native_gpu_sap_report_admission();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();
