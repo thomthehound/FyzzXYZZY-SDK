@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
+#include "PxgRadixSortKernelIndices.h"
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
@@ -77,7 +78,7 @@ PxgSapSourceMembersNative::PxgSapSourceMembersNative(
     // resources. All projection, endpoint and region allocations grow
     // later, in the original gpuDMAUp ordering.
     for(physx::PxU32 i=0;i<3u;++i)
-        radixCounts_[i].allocate(sizeof(physx::PxU32)*32u*16u,PX_FL);
+        radixCounts_[i].allocate(sizeof(physx::PxU32)*physx::PxgRadixSortKernelGridDim::RADIX_SORT*16u,PX_FL);
     broadphaseDescriptorBuffer_.allocate(sizeof(physx::PxgBroadPhaseDesc),PX_FL);
     radixDescriptorBuffer_.allocate(sizeof(physx::PxgRadixSortDesc)*6u,PX_FL);
     radixWithoutRanksBuffer_.allocate(sizeof(physx::PxgRadixSortDesc)*6u,PX_FL);
