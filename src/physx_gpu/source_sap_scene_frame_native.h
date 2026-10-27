@@ -30,7 +30,7 @@ struct SourceSapSceneFrameNativeMembers {
     SourceSapFetchHistoryBuffers histories;
     SourceSapActorPairDestination found_pairs;
     SourceSapActorPairDestination lost_pairs;
-    std::span<const native::BodyId> volume_to_actor;
+    std::span<const BodyId> volume_to_actor;
     std::vector<native::Pair>& found;
     std::vector<native::Pair>& lost;
 
