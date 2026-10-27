@@ -1166,6 +1166,9 @@ struct Context::Impl {
         // This prevents a malformed later operation from partially executing.
         std::uint64_t dispatch_count = 0;
         std::uint64_t descriptor_count = 0;
+        // Preflight descriptors once, before any GPU commands can be
+        // recorded. Keep the slot-ordered views for actual recording.
+        std::vector<std::vector<VkDescriptorBufferInfo>> validated_dispatches;
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                 const Buffer& source = get(copy->source);
@@ -1186,9 +1189,10 @@ struct Context::Impl {
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                validate_dispatch(dispatch.pipeline, dispatch.groups,
-                                  dispatch.buffers, dispatch.push_constants.data(),
-                                  dispatch.push_constants.size());
+                validated_dispatches.push_back(validate_dispatch(
+                    dispatch.pipeline, dispatch.groups,
+                    dispatch.buffers, dispatch.push_constants.data(),
+                    dispatch.push_constants.size()));
                 ++dispatch_count;
                 descriptor_count += pipeline.binding_count;
             }
@@ -1287,8 +1291,14 @@ struct Context::Impl {
             std::unordered_map<BufferId, Access> last_access;
             if(!independent_uploads)
                 last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            // Reuse CPU-side command scratch throughout this batch instead
+            // of allocating per copy, kernel, and barrier publication.
+            std::vector<std::pair<BufferId, Access>> operation_uses;
+            std::vector<VkBufferMemoryBarrier> barriers;
+            std::vector<VkWriteDescriptorSet> writes;
+            std::size_t dispatch_index=0;
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
-                std::vector<VkBufferMemoryBarrier> barriers;
+                barriers.clear();
                 VkPipelineStageFlags sources = 0;
                 VkPipelineStageFlags targets = 0;
                 for (const auto& use : uses) {
@@ -1328,25 +1338,26 @@ struct Context::Impl {
             };
 
             for (const BatchCommand& operation : operations) {
+                operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                     // A packed upload batch has only staging reads and
                     // validated nonoverlapping destination writes.
                     if(!independent_uploads) {
                         if (copy->source == copy->destination) {
                             // One buffer, one combined dependency entry.
-                            before_operation({
+                            operation_uses.push_back(
                                 {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
                                     VK_ACCESS_TRANSFER_READ_BIT |
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                            });
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
                         } else {
-                            before_operation({
+                            operation_uses.push_back(
                                 {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_READ_BIT, false}},
+                                    VK_ACCESS_TRANSFER_READ_BIT, false}});
+                            operation_uses.push_back(
                                 {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                            });
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
                         }
+                        before_operation(operation_uses);
                     }
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
@@ -1364,18 +1375,17 @@ struct Context::Impl {
                 // conservative Unspecified default remains read/write.
                 // Multiple slots aliasing one allocation are merged before
                 // the dependency graph is updated, regardless of view ranges.
-                std::vector<std::pair<BufferId, Access>> shader_uses;
-                shader_uses.reserve(dispatch.buffers.size());
+                operation_uses.reserve(dispatch.buffers.size());
                 for (const auto& binding : dispatch.buffers) {
                     const bool reads = binding.access != BufferAccess::Write;
                     const bool writes = binding.access != BufferAccess::Read;
                     const VkAccessFlags mask =
                         (reads ? VK_ACCESS_SHADER_READ_BIT : 0u) |
                         (writes ? VK_ACCESS_SHADER_WRITE_BIT : 0u);
-                    auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
+                    auto found = std::find_if(operation_uses.begin(), operation_uses.end(),
                         [&](const auto& entry) { return entry.first == binding.buffer; });
-                    if (found == shader_uses.end()) {
-                        shader_uses.push_back({
+                    if (found == operation_uses.end()) {
+                        operation_uses.push_back({
                             binding.buffer,
                             {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mask, writes}});
                     } else {
@@ -1383,10 +1393,8 @@ struct Context::Impl {
                         found->second.writes |= writes;
                     }
                 }
-                before_operation(shader_uses);
-                auto descriptors = validate_dispatch(
-                    dispatch.pipeline, dispatch.groups, dispatch.buffers,
-                    dispatch.push_constants.data(), dispatch.push_constants.size());
+                before_operation(operation_uses);
+                const auto& descriptors=validated_dispatches[dispatch_index++];
 
                 VkDescriptorSetAllocateInfo descriptor_allocate{};
                 descriptor_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -1397,8 +1405,9 @@ struct Context::Impl {
                 require(vkAllocateDescriptorSets(device, &descriptor_allocate,
                                                  &descriptor_set), "vkAllocateDescriptorSets");
 
-                std::vector<VkWriteDescriptorSet> writes(descriptors.size());
+                writes.resize(descriptors.size());
                 for (std::uint32_t slot = 0; slot < writes.size(); ++slot) {
+                    writes[slot]={};
                     writes[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[slot].dstSet = descriptor_set;
                     writes[slot].dstBinding = slot;
