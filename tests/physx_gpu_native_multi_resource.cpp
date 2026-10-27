@@ -88,11 +88,30 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     dispatch.push_constants.resize(sizeof(parameters));
     std::memcpy(dispatch.push_constants.data(), parameters.data(), sizeof(parameters));
 
+    // Validate the entire batch before any dispatch can execute. A
+    // malformed later kernel must not mutate the buffers from the
+    // preceding otherwise-valid kernel.
+    auto invalid=dispatch;
+    invalid.buffers[2].slot=1u;
+    bool rejected=false;
+    try {(void)context.submit_batch({dispatch,invalid});}
+    catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"Malformed later dispatch entered native GPU batch");
+
     // Two dependent dispatches and a GPU copy must execute in source order
     // with no host synchronization between them. Both source arrays are
     // modified by the shader; the second dispatch reads their new contents.
+    auto second_dispatch=dispatch;
+#ifndef FYZZXYZZY_TEST_D3D12
+    // Vulkan slot order is explicitly specified by BufferBinding::slot.
+    // Its flattened prevalidated descriptor array must preserve the slots
+    // even if a later dispatch supplies bindings in a different order.
+    std::rotate(second_dispatch.buffers.begin(),
+                second_dispatch.buffers.begin()+1,
+                second_dispatch.buffers.end());
+#endif
     const std::vector<BatchCommand> commands{
-        dispatch, dispatch,
+        dispatch, second_dispatch,
         CopyCommand{destination, 0u, snapshot, 0u, kViewBytes}
     };
     const auto submission = context.submit_batch(commands);
