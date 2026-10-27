@@ -110,6 +110,23 @@ void exercise_reused_source_submission_scratch(Context& context) {
             before.upload_batches)
         throw std::runtime_error(
             "Invalid reused source upload group partially submitted");
+
+    // Overlapping copies within a single batch require the original
+    // ordered transfer semantics even when both target one heap root.
+    std::array<std::uint32_t,8> earlier{},later{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        earlier[i]=i+301u;
+        later[i]=i+401u;
+    }
+    auto& overlapping=stream.upload_scratch();
+    overlapping.push_back({base+192u,earlier.data(),sizeof(earlier)});
+    overlapping.push_back({base+208u,later.data(),sizeof(later)});
+    stream.queue_uploads(overlapping);
+    earlier.fill(0u);
+    later.fill(0u);
+    if(stream.submission_stats().upload_batches!=before.upload_batches+1u)
+        throw std::runtime_error(
+            "Overlapping source upload changed GPU submission count");
     stream.wait_at_fetch();
     context.download(gpu,0u,observed.data(),sizeof(observed));
     for(std::uint32_t i=0u;i<observed.size();++i)
@@ -126,6 +143,15 @@ void exercise_reused_source_submission_scratch(Context& context) {
         if(observed[i]!=i+201u)
             throw std::runtime_error(
                 "Reused source upload staging lost later host snapshot");
+
+    std::array<std::uint32_t,12> overlap_result{};
+    context.download(gpu,192u,overlap_result.data(),sizeof(overlap_result));
+    for(std::uint32_t i=0u;i<overlap_result.size();++i) {
+        const auto expected=i<4u?i+301u:i-4u+401u;
+        if(overlap_result[i]!=expected)
+            throw std::runtime_error(
+                "Overlapping Vulkan/D3D12 source upload lost final writer");
+    }
 
     auto& staged=stream.update_scratch();
     staged.emplace_back(CopyCommand{gpu,0u,gpu,192u,32u});
