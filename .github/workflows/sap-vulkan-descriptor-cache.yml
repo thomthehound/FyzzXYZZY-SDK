@@ -33,7 +33,11 @@ jobs:
       - name: Build source radix profiling executable
         run: cmake --build build --target fyzzxyzzy_physx_source_sap_radix_native fyzzxyzzy_native_multi_resource fyzzxyzzy_physx_cuda_host_transfer --parallel 4
       - name: Run source GPU radix conformance
-        run: ctest --test-dir build -R 'fyzzxyzzy_(physx_source_sap_radix_native|native_multi_resource|physx_cuda_host_transfer)
+        shell: bash
+        run: |
+          ctest --test-dir build -R fyzzxyzzy_physx_source_sap_radix_native --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_native_multi_resource --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_physx_cuda_host_transfer --output-on-failure
       - name: Paired source radix CPU submission comparison
         timeout-minutes: 12
         shell: bash
