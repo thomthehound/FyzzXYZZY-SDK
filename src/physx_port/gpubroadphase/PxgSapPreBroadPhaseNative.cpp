@@ -57,7 +57,7 @@ void pre_broadphase_native(
     // Four consecutive upstream memcpyHtoDAsync calls are one ordered
     // native upload group. Context snapshots the host bytes at enqueue,
     // and its queue/fences retain staging until PhysX's fetch boundary.
-    std::vector<SourceSapUpload> uploads;
+    auto& uploads=stream.upload_scratch();
     uploads.reserve(4);
     if (update.getStateChanged())
         uploads.push_back({buffers.bounds.getDevicePtr(),
