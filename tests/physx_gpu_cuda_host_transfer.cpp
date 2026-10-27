@@ -946,8 +946,9 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
         std::vector<fyzz::native::Pair> scLost{{3u,4u}};
         stream.queue_uploads({{descriptorAddress,&gpu,sizeof(gpu)}});
         stream.wait_at_fetch();
-        const auto publish_to_sc=[&](const auto& map) {
-            return [&](const fyzz::physx_gpu::SourceSapFetchedCounts& counts) {
+        const auto publish_to_sc=[&](
+            std::span<const fyzz::BodyId> map) {
+            return [&,map](const fyzz::physx_gpu::SourceSapFetchedCounts& counts) {
                 fyzz::physx_gpu::lower_source_sap_actor_reports_to_sc(
                     std::span<const physx::PxgBroadPhasePair>(
                         foundCPU.data(),counts.found_actors),
