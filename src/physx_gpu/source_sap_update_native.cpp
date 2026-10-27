@@ -31,7 +31,7 @@ bool append_source_sap_admitted_update_native(
         throw std::invalid_argument(
             "Source SAP GPU descriptor or integer-bounds owner disagrees with gpuDMAUp");
 
-    std::vector<compute::BatchCommand> pending;
+    auto& pending=stream.update_scratch();
     SourceSapUpdateHeadNative head{
         frame.translation,frame.removed,frame.updated,
         descriptor.numPreviousHandles,gpu_state_changed,true};
