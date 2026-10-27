@@ -1371,6 +1371,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_physx_source_sap_incremental_pairs_native fyzzxyzzy_source_sap_incremental_pairs_spv)
     add_test(NAME fyzzxyzzy_physx_source_sap_incremental_pairs_native COMMAND fyzzxyzzy_physx_source_sap_incremental_pairs_native "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV}")
 
+    # Source AABB-manager handles and GPU reports must lower to Sc
+    # without a second volume registry or partial late publication.
+    add_executable(fyzzxyzzy_physx_source_sap_scene_boundary tests/physx_gpu_source_sap_scene_boundary.cpp)
+    target_include_directories(fyzzxyzzy_physx_source_sap_scene_boundary PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+    target_link_libraries(fyzzxyzzy_physx_source_sap_scene_boundary PRIVATE fyzzxyzzy_physx_gpu_stages)
+    add_test(NAME fyzzxyzzy_physx_source_sap_scene_boundary COMMAND fyzzxyzzy_physx_source_sap_scene_boundary)
+
+
 
 
 
@@ -3000,6 +3012,19 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_dependencies(fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 fyzzxyzzy_source_sap_incremental_pairs_dxil)
     add_test(NAME fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 COMMAND fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL}")
     set_tests_properties(fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 120)
+
+    # Source AABB-manager handles and GPU reports must lower to Sc
+    # without a second volume registry or partial late publication.
+    add_executable(fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 tests/physx_gpu_source_sap_scene_boundary.cpp)
+    target_include_directories(fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+    target_link_libraries(fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_test(NAME fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 COMMAND fyzzxyzzy_physx_source_sap_scene_boundary_d3d12)
+    set_tests_properties(fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
 
 
 
