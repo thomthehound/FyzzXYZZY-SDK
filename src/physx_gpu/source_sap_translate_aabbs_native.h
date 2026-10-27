@@ -31,7 +31,7 @@ struct SourceSapTranslateAabbsNativeInput {
 // have completed gpuDMAUp; no separate submission or wait occurs here.
 // This uses the existing source-CUDA ABI translator and AABB shader.
 inline void append_source_sap_translate_aabbs_native(
-    SourceSapDmaNative& stream,
+    std::vector<compute::BatchCommand>& commands,
     const CudaAabbLaunchLowering& translate,
     const SourceSapTranslateAabbsNativeInput& source,
     bool execute_gpu_stages) {
@@ -65,10 +65,21 @@ inline void append_source_sap_translate_aabbs_native(
     const auto grid=(std::uint64_t(p.count)+31u)/32u;
     if(grid>std::numeric_limits<std::uint32_t>::max())
         throw std::out_of_range("Source SAP translateAABBs grid exceeds PxU32");
-    translate.append(stream.commands(),physx::PxgKernelIds::BP_TRANSLATE_AABBS,
+    translate.append(commands,physx::PxgKernelIds::BP_TRANSLATE_AABBS,
                      static_cast<std::uint32_t>(grid),
                      256u, // original PxgBPKernelBlockDim::BP_TRANSLATE_AABBS
                      args.data(),args.size());
 }
 
+
+// Retain the public per-stage stream form; the full source head can
+// instead stage every kernel transactionally before appending them.
+inline void append_source_sap_translate_aabbs_native(
+    SourceSapDmaNative& stream,
+    const CudaAabbLaunchLowering& translate,
+    const SourceSapTranslateAabbsNativeInput& source,
+    bool execute_gpu_stages) {
+    append_source_sap_translate_aabbs_native(
+        stream.commands(),translate,source,execute_gpu_stages);
+}
 } // namespace fyzz::physx_gpu
