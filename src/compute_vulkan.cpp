@@ -1276,6 +1276,58 @@ struct Context::Impl {
                         "vkAllocateCommandBuffers");
             }
 
+            // Every dispatch was validated in the preflight pass. Allocate
+            // all of its native sets at once and publish the prevalidated
+            // descriptors in one update instead of calling the Vulkan driver
+            // twice for every small SAP kernel.
+            std::vector<VkDescriptorSet> descriptor_sets;
+            if (dispatch_count != 0) {
+                std::vector<VkDescriptorSetLayout> layouts;
+                layouts.reserve(static_cast<std::size_t>(dispatch_count));
+                for (const BatchCommand& operation : operations) {
+                    if (const auto* dispatch =
+                            std::get_if<DispatchCommand>(&operation))
+                        layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
+                }
+                descriptor_sets.resize(layouts.size(), VK_NULL_HANDLE);
+                VkDescriptorSetAllocateInfo allocate{};
+                allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                allocate.descriptorPool = pool;
+                allocate.descriptorSetCount = static_cast<std::uint32_t>(layouts.size());
+                allocate.pSetLayouts = layouts.data();
+                require(vkAllocateDescriptorSets(device, &allocate,
+                                                 descriptor_sets.data()),
+                        "vkAllocateDescriptorSets");
+
+                std::vector<VkWriteDescriptorSet> writes;
+                writes.reserve(static_cast<std::size_t>(descriptor_count));
+                std::size_t descriptor_offset = 0;
+                std::size_t dispatch_index = 0;
+                for (const BatchCommand& operation : operations) {
+                    const auto* dispatch = std::get_if<DispatchCommand>(&operation);
+                    if (!dispatch) continue;
+                    const auto count = get_pipeline(dispatch->pipeline).binding_count;
+                    const auto descriptors = std::span<const VkDescriptorBufferInfo>(
+                        validated_dispatches).subspan(descriptor_offset, count);
+                    for (std::uint32_t slot = 0; slot < count; ++slot) {
+                        VkWriteDescriptorSet write{};
+                        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        write.dstSet = descriptor_sets[dispatch_index];
+                        write.dstBinding = slot;
+                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        write.descriptorCount = 1;
+                        write.pBufferInfo = &descriptors[slot];
+                        writes.push_back(write);
+                    }
+                    descriptor_offset += count;
+                    ++dispatch_index;
+                }
+                if (!writes.empty())
+                    vkUpdateDescriptorSets(device,
+                        static_cast<std::uint32_t>(writes.size()),
+                        writes.data(), 0, nullptr);
+            }
+
             VkCommandBufferBeginInfo begin{};
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1318,8 +1370,7 @@ struct Context::Impl {
             // of allocating per copy, kernel, and barrier publication.
             std::vector<std::pair<BufferId, Access>> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
-            std::vector<VkWriteDescriptorSet> writes;
-            std::size_t descriptor_index=0;
+            std::size_t dispatch_index=0;
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
                 barriers.clear();
                 VkPipelineStageFlags sources = 0;
@@ -1417,34 +1468,7 @@ struct Context::Impl {
                     }
                 }
                 before_operation(operation_uses);
-                const auto descriptors=std::span<const VkDescriptorBufferInfo>(
-                    validated_dispatches).subspan(
-                        descriptor_index,pipeline.binding_count);
-                descriptor_index+=pipeline.binding_count;
-
-                VkDescriptorSetAllocateInfo descriptor_allocate{};
-                descriptor_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                descriptor_allocate.descriptorPool = pool;
-                descriptor_allocate.descriptorSetCount = 1;
-                descriptor_allocate.pSetLayouts = &pipeline.descriptors;
-                VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-                require(vkAllocateDescriptorSets(device, &descriptor_allocate,
-                                                 &descriptor_set), "vkAllocateDescriptorSets");
-
-                writes.resize(descriptors.size());
-                for (std::uint32_t slot = 0; slot < writes.size(); ++slot) {
-                    writes[slot]={};
-                    writes[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[slot].dstSet = descriptor_set;
-                    writes[slot].dstBinding = slot;
-                    writes[slot].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    writes[slot].descriptorCount = 1;
-                    writes[slot].pBufferInfo = &descriptors[slot];
-                }
-                if (!writes.empty()) {
-                    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
-                                           writes.data(), 0, nullptr);
-                }
+                const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
 
                 vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
                 vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
