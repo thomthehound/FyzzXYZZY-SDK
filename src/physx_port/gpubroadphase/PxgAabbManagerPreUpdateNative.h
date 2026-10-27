@@ -68,6 +68,10 @@ inline void pre_update_source_sap_aabb_manager_native(
         manager.persistent_state_changed || update.getStateChanged();
     if(!state_changed && !manager.gpu_state_changed)return;
 
+    // The AABB manager's bitmap uploads occur before preBroadPhase.
+    // Reject bad bounds/group inputs first, while the source stream and
+    // its persistent GPU histories are still untouched.
+    if(state_changed)validate_pre_broadphase_native(update);
     const auto capacity=update.getCapacity();
     if(state_changed && manager.volume_data.size()<capacity)
         throw std::invalid_argument(
