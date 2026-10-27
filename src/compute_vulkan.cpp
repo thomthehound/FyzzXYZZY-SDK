@@ -6,6 +6,9 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 #include <cstring>
 #include <algorithm>
@@ -251,6 +254,8 @@ struct Context::Impl {
     SubmissionId next_submission = 1;
     VkPhysicalDeviceLimits limits{};
     std::uint32_t timestamp_valid_bits = 0;
+    std::array<double,5> submit_phase_us{};
+    std::size_t submit_phase_samples=0;
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
         if (backend != Backend::Vulkan) {
@@ -355,7 +360,21 @@ struct Context::Impl {
         }
     }
 
-    ~Impl() { cleanup(); }
+    ~Impl() {
+        if(submit_phase_samples!=0) {
+            std::fprintf(stderr,
+                "vulkan_record_phases samples=%zu preflight_us=%.3f"
+                " acquire_us=%.3f descriptors_us=%.3f"
+                " record_us=%.3f enqueue_us=%.3f\n",
+                submit_phase_samples,
+                submit_phase_us[0]/submit_phase_samples,
+                submit_phase_us[1]/submit_phase_samples,
+                submit_phase_us[2]/submit_phase_samples,
+                submit_phase_us[3]/submit_phase_samples,
+                submit_phase_us[4]/submit_phase_samples);
+        }
+        cleanup();
+    }
 
     void release_submission(const Submission& submission) noexcept {
         if (submission.timestamps != VK_NULL_HANDLE)
@@ -1169,6 +1188,10 @@ struct Context::Impl {
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
                               bool profile = false,
                               bool independent_uploads = false) {
+        using SubmitClock=std::chrono::steady_clock;
+        const bool sample=!profile && operations.size()==18 &&
+            std::getenv("FYZZXYZZY_PROFILE_VULKAN_SUBMIT")!=nullptr;
+        const auto phase_start=SubmitClock::now();
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
@@ -1225,6 +1248,7 @@ struct Context::Impl {
             throw std::out_of_range("Compute batch descriptor capacity exceeded");
         }
 
+        const auto preflight_done=sample?SubmitClock::now():phase_start;
         VkDescriptorPool pool = VK_NULL_HANDLE;
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkQueryPool timestamps = VK_NULL_HANDLE;
@@ -1276,6 +1300,7 @@ struct Context::Impl {
                         "vkAllocateCommandBuffers");
             }
 
+            const auto acquire_done=sample?SubmitClock::now():phase_start;
             // Every dispatch was validated in the preflight pass. Allocate
             // all of its native sets at once and publish the prevalidated
             // descriptors in one update instead of calling the Vulkan driver
@@ -1328,6 +1353,7 @@ struct Context::Impl {
                         writes.data(), 0, nullptr);
             }
 
+            const auto descriptors_done=sample?SubmitClock::now():phase_start;
             VkCommandBufferBeginInfo begin{};
             begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1493,7 +1519,19 @@ struct Context::Impl {
             if (timestamps != VK_NULL_HANDLE)
                 vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
             require(vkEndCommandBuffer(commands), "vkEndCommandBuffer");
+            const auto record_done=sample?SubmitClock::now():phase_start;
             const SubmissionId id = enqueue(commands, pool);
+            const auto enqueue_done=sample?SubmitClock::now():phase_start;
+            if(sample) {
+                const std::array<SubmitClock::time_point,6> times{
+                    phase_start,preflight_done,acquire_done,descriptors_done,
+                    record_done,enqueue_done};
+                for(std::size_t i=0;i<submit_phase_us.size();++i)
+                    submit_phase_us[i]+=
+                        std::chrono::duration<double,std::micro>(
+                            times[i+1u]-times[i]).count();
+                ++submit_phase_samples;
+            }
             auto& submitted = submissions.at(id);
             submitted.timestamps = timestamps;
             submitted.cacheable_batch = true;
