@@ -13,6 +13,7 @@
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
+#include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
@@ -754,8 +755,19 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
                 volumeGpu,volumes,persistent,gpu,false};
         };
         const physx::Bp::BpFilter filter(false,false);
-        const auto frame=source_sap_single_volume_update_native(
-            manager,{created,retired,updated},bounds,filter,true);
+        using Box=fyzz::native::GpuBroadphaseBox;
+        std::array<Box,2u> live_boxes{{
+            {36u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.04f,
+                Box::Motion::Static},
+            {2u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
+                Box::Motion::Dynamic}
+        }};
+        const std::array<physx::Bp::ShapeHandle,2u> live_handles{36u,2u};
+        SourceSapSceneBoundsScratch sceneScratch;
+        const SourceSapSceneBounds sceneBounds{bounds,offsets,groups};
+        const auto frame=prepare_source_sap_single_volume_scene_native(
+            manager,{created,retired,updated},live_boxes,live_handles,
+            sceneBounds,filter,true,sceneScratch);
         if(frame.getNumCreatedHandles()!=2u ||
            frame.getNumUpdatedHandles()!=0u ||
            frame.getNumRemovedHandles()!=0u ||
@@ -794,8 +806,18 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            offsets[2]!=0.125f)
             throw std::runtime_error(
                 "Original source remove/re-add and changed bitmap semantics diverged");
-        const auto next=source_sap_single_volume_update_native(
-            manager,{created,retired,updated},bounds,filter,false);
+        std::array<Box,1u> remaining{{
+            {2u,{6.f,0.f,0.f},{1.f,1.f,1.f},{},0.125f,
+                Box::Motion::Dynamic}
+        }};
+        const std::array<physx::Bp::ShapeHandle,1u> retained_handle{2u};
+        const auto next=prepare_source_sap_single_volume_scene_native(
+            manager,{created,retired,updated},remaining,retained_handle,
+            sceneBounds,filter,true,sceneScratch);
+        if(std::fabs(bounds[2].minimum.x-5.f)>1.0e-6f ||
+           std::fabs(bounds[36].minimum.x-2.f)>1.0e-6f)
+            throw std::runtime_error(
+                "GPU-only changed volume did not advance original AABB bounds");
         if(next.getNumCreatedHandles()!=0u ||
            next.getNumUpdatedHandles()!=0u ||
            next.getNumRemovedHandles()!=1u ||
