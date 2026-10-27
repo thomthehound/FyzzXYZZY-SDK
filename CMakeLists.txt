@@ -2951,7 +2951,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 fyzzxyzzy_source_sap_hist_dxil)
     add_test(NAME fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 COMMAND fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL}" "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL}")
-    set_tests_properties(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    set_tests_properties(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1" TIMEOUT 120)
 
 
 
