@@ -8,6 +8,7 @@
 #include "physx_gpu/source_sap_dma_native.h"
 #include "BpBroadPhaseUpdate.h"
 #include "BpVolumeData.h"
+#include "CmPinnableBitMap.h"
 
 #include <cstdint>
 #include <limits>
@@ -23,6 +24,14 @@ struct SourceSapAabbManagerBitmapNative {
     physx::PxgCudaBuffer& device;
     std::span<const physx::PxU32> words;
 };
+
+// Bind original PinnableBitMap words directly. No copied bitmap/vector
+// shadows may sit between AABB-manager admissions and GPU descriptor DMA.
+inline SourceSapAabbManagerBitmapNative source_sap_aabb_bitmap_native(
+    physx::PxgCudaBuffer& device,
+    const physx::Cm::PinnableBitMap& bitmap) noexcept {
+    return {device,{bitmap.getWords(),bitmap.getWordCount()}};
+}
 
 // PxgAABBManager::preBpUpdate_GPU inputs. This does not construct a new
 // AABB manager or derive its bitmaps from Scene geometry.
