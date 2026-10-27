@@ -66,7 +66,8 @@ void SourceSapBoxIndicesNativeStage::append(
        layout.endpoint_slots>std::numeric_limits<std::size_t>::max()/4u)
         throw std::invalid_argument("Invalid PhysX SAP box-index source capacities");
     const std::uint32_t projections=num_handles*2u;
-    const std::uint32_t groups=(projections+255u)/256u;
+    const std::uint32_t groups=static_cast<std::uint32_t>(
+        (std::uint64_t(projections)+255u)/256u);
     if(groups>max_groups_)
         throw std::out_of_range("Original BP_INITIALIZE_SAPBOX grid exceeds device");
     Parameters params{};
