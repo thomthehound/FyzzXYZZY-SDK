@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/cuda_aabb_launch_lowering.h"
+#include "physx_gpu/source_sap_translate_aabbs_native.h"
 #include "PxgKernelIndices.h"
 
 #include <algorithm>
@@ -159,13 +160,29 @@ void run(Context& ctx, AabbEncodingStage& shader) {
     const std::uint32_t cuda_grid = (n+31u)/32u;
     CudaAabbLaunchLowering bridge(map, shader);
     negative(bridge,args,cuda_grid);
-    std::vector<BatchCommand> commands;
+    SourceSapDmaNative stream(ctx,map);
+    auto& commands=stream.commands();
     bridge.append(commands,physx::PxgKernelIds::BP_TRANSLATE_AABBS,
                   cuda_grid,256u,args.data(),args.size());
     commands.emplace_back(CopyCommand{out,0u,snapshot,0u,output_bytes});
     argEnv = 0ull; // source omitted optional environment IDs for second launch
-    bridge.append(commands,physx::PxgKernelIds::BP_TRANSLATE_AABBS,
-                  cuda_grid,256u,args.data(),args.size());
+    const SourceSapTranslateAabbsNativeInput source{
+        argBounds,argOutput,argDistance,argEnv,
+        {n,shifts[0],shifts[1],shifts[2],
+           envbits[0],envbits[1],envbits[2]}};
+    append_source_sap_translate_aabbs_native(stream,bridge,source,true);
+    // No second update/copy for a truly idle source mForceUpdate gate.
+    append_source_sap_translate_aabbs_native(stream,bridge,source,false);
+    auto invalid_source=source;
+    invalid_source.encoding.shift_x=256u;
+    bool invalid_rejected=false;
+    try {
+        append_source_sap_translate_aabbs_native(
+            stream,bridge,invalid_source,true);
+    } catch(const std::invalid_argument&) {invalid_rejected=true;}
+    if(!invalid_rejected || commands.size()!=3u)
+        throw std::runtime_error(
+            "Invalid source AABB frame changed the original GPU stream");
     if (commands.size()!=3u)
         throw std::runtime_error("Missing source CUDA translation dispatch");
     for(std::size_t i : {0u,2u}) {
@@ -203,7 +220,9 @@ void run(Context& ctx, AabbEncodingStage& shader) {
                     "CUDA pointer did not lower to aligned descriptor plus element bias");
         }
     }
-    ctx.wait_submission(ctx.submit_batch(commands));
+    // Source DMA and the first GPU kernel execute on the same ordered
+    // stream and retire their tokens at the source fetch boundary.
+    stream.wait_at_fetch();
     std::vector<std::uint32_t> first(output_bytes/4u), second(output_bytes/4u);
     ctx.download(snapshot,0,first.data(),output_bytes);
     ctx.download(out,0,second.data(),output_bytes);
