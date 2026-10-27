@@ -105,6 +105,13 @@ public:
         return update_scratch_;
     }
 
+    // The caller submits each host snapshot before borrowing this storage
+    // again. Source heap allocations and GPU submission order are unchanged.
+    std::vector<SourceSapUpload>& upload_scratch() noexcept {
+        upload_scratch_.clear();
+        return upload_scratch_;
+    }
+
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
@@ -151,6 +158,7 @@ private:
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
     std::vector<compute::BatchCommand> update_scratch_;
+    std::vector<SourceSapUpload> upload_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
     SubmissionStats stats_;
