@@ -1077,7 +1077,14 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
         physx::PxgAllocatorDesc allocators(heap,mapped,mapped);
         PxgAabbSourceMembersNative manager(allocators);
         PxgSapSourceMembersNative sap(allocators,8u,2u);
-        physx::Sc::ObjectIDTracker scElements;
+        // Sc::Scene owns DIFFERENT original trackers for rigid actor IDs
+        // (filtering) and ElementSim IDs (AABB volume handles).
+        physx::Sc::ObjectIDTracker scActors,scElements;
+        const auto rigidA=scActors.createID();
+        const auto rigidB=scActors.createID();
+        const auto rigidC=scActors.createID();
+        const auto rigidD=scActors.createID();
+        const auto rigidE=scActors.createID();
 
         using Box=fyzz::native::GpuBroadphaseBox;
         // These are Sc actor IDs, NOT Sc::ElementSim IDs. The original
@@ -1085,18 +1092,20 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
         alignas(4) physx::PxU32 elementA=17u,elementB=18u,
             elementCanceled=19u,elementD=20u,elementE=21u;
         const auto shapeA=SourceScElementLifecycleNative::admit(
-            scElements,manager,300u,0.04f,
+            scElements,manager,300u,rigidA,0.04f,
             Box::Motion::Static,&elementA);
         const auto shapeB=SourceScElementLifecycleNative::admit(
-            scElements,manager,900u,0.02f,
+            scElements,manager,900u,rigidB,0.02f,
             Box::Motion::Dynamic,&elementB);
         const auto canceled=SourceScElementLifecycleNative::admit(
-            scElements,manager,450u,0.03f,
+            scElements,manager,450u,rigidC,0.03f,
             Box::Motion::Static,&elementCanceled);
         if(manager.single_volumes().groups[shapeB]!=
+               physx::Bp::getFilterGroup(false,rigidB,false) ||
+           manager.single_volumes().groups[shapeB]==
                physx::Bp::getFilterGroup(false,900u,false) ||
            manager.single_volumes().groups[shapeA]!=
-               physx::Bp::getFilterGroup(true,300u,false))
+               physx::Bp::getFilterGroup(true,rigidA,false))
             throw std::runtime_error(
                 "Source Sc actor admission omitted original Bp filter encoding");
         if(shapeA!=0u || shapeB!=1u || canceled!=2u ||
@@ -1144,7 +1153,7 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
             throw std::runtime_error(
                 "Published Sc element removal lost pre-fetch volume identity");
         const auto shapeD=SourceScElementLifecycleNative::admit(
-            scElements,manager,650u,0.035f,
+            scElements,manager,650u,rigidD,0.035f,
             Box::Motion::Static,&elementD);
         if(shapeD==shapeB || manager.volume_to_actor()[shapeD]!=650u ||
            manager.volume_to_actor()[shapeB]!=900u)
@@ -1201,7 +1210,7 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
         // source AABB manager admits it for a DIFFERENT actor only after
         // the fetched lost report and postReportsCleanup completed.
         const auto shapeE=SourceScElementLifecycleNative::admit(
-            scElements,manager,1200u,0.05f,
+            scElements,manager,1200u,rigidE,0.05f,
             Box::Motion::Dynamic,&elementE);
         if(shapeE!=shapeB ||
            manager.volume_to_actor()[shapeE]!=1200u ||
