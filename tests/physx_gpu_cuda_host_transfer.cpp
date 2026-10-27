@@ -972,8 +972,17 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
            physx::Bp::getFilterGroup_Dynamics(99u,false))
             throw std::runtime_error(
                 "Persistent GPU AABB source writer overwrote Sc filter group");
+        // ScShapeSimBase::getBPGroup permits DYNAMIC filtering for a
+        // kinematic body with forced kinematic notifications.
+        auto forcedKinematic=boxes;
+        forcedKinematic[1].motion=Box::Motion::Kinematic;
+        (void)owner.prepare(forcedKinematic,handles,filter);
+        if(owner.single_volumes().groups[2]!=
+           physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Forced kinematic Sc filtering was overwritten by native motion");
         auto incorrectMotion=boxes;
-        incorrectMotion[1].motion=Box::Motion::Kinematic;
+        incorrectMotion[1].motion=Box::Motion::Static;
         bool mismatchedMotionRejected=false;
         try {
             (void)owner.prepare(incorrectMotion,handles,filter);
