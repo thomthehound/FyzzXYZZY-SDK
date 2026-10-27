@@ -142,6 +142,29 @@ inline bool remove_source_sap_single_volume_native(
     return cancelled;
 }
 
+// A canceled same-frame add has NEVER entered GPU SAP history, so
+// there is no eventual lost report and the actor identity is released
+// immediately. A previously published source volume's removal keeps
+// its actor ID until post-fetch retirement.
+inline bool remove_source_sap_single_volume_actor_native(
+    SourceSapSingleVolumeMembersNative manager,
+    SourceSapVolumeActorLifetimeNative identity,
+    physx::PxU32 index) {
+    if(identity.volume_data.data()!=manager.volume_data.data() ||
+       identity.volume_data.size()!=manager.volume_data.size() ||
+       index>=identity.volume_to_actor.size() ||
+       identity.volume_to_actor[index]==
+           std::numeric_limits<BodyId>::max())
+        throw std::invalid_argument(
+            "Source AABB removal has no matching original Sc actor identity");
+    const bool cancelled=remove_source_sap_single_volume_native(
+        manager,index);
+    if(cancelled)
+        identity.volume_to_actor[index]=
+            std::numeric_limits<BodyId>::max();
+    return cancelled;
+}
+
 // AABBManagerBase::setContactDistance and the GPU changed-map update.
 // Source first-pass determines GPUStateChanged from this bitmap; a changed
 // bit must not be replaced by per-frame geometry comparisons.
