@@ -36,7 +36,7 @@ struct SourceSapUpdateHeadNative {
 // append AFTER this function, on the very same SourceSapDmaNative stream.
 // No new allocations, CPU upload/readback, submission or wait.
 inline void append_source_sap_update_head_native(
-    SourceSapDmaNative& stream,
+    std::vector<compute::BatchCommand>& commands,
     const CudaAabbLaunchLowering& translate,
     const SourceSapRemovedNativeStage& deletion,
     const SourceSapUpdatedNativeStage& changed,
@@ -59,10 +59,23 @@ inline void append_source_sap_update_head_native(
     // If any late source descriptor is invalid, none of the commands
     // above are committed to mStream. Existing queued source DMA stays
     // untouched, preserving PhysX's original transfer/dependency order.
-    auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
         std::make_move_iterator(prepared.begin()),
         std::make_move_iterator(prepared.end()));
+}
+
+inline void append_source_sap_update_head_native(
+    SourceSapDmaNative& stream,
+    const CudaAabbLaunchLowering& translate,
+    const SourceSapRemovedNativeStage& deletion,
+    const SourceSapUpdatedNativeStage& changed,
+    const SourceSapRadixNativeStage& sort,
+    const physx::PxgBroadPhaseDesc& source,
+    std::span<const physx::PxgRadixSortDesc,6> wr_radix,
+    const CudaDeviceAddressMap& addresses,
+    const SourceSapUpdateHeadNative& frame) {
+    append_source_sap_update_head_native(stream.commands(),translate,deletion,
+        changed,sort,source,wr_radix,addresses,frame);
 }
 } // namespace fyzz::physx_gpu
