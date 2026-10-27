@@ -130,6 +130,14 @@ public:
     // of the preceding submissions on the same Context queue.
     void wait_at_fetch() {
         flush_gpu_commands();
+        if(tokens_.empty())return;
+        // Every source command runs on one ordered native queue. Waiting
+        // for its newest fence completes every preceding submission,
+        // avoiding a separate blocking wait at each intermediate fence.
+        // Retire the final token first so a later retirement exception
+        // cannot leave an already-consumed final token pending for retry.
+        context_.wait_submission(tokens_.back());
+        tokens_.pop_back();
         std::size_t completed = 0;
         try {
             for (const auto token : tokens_) {
