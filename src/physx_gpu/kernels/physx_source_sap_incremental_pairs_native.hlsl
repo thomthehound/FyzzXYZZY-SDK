@@ -238,7 +238,7 @@ uint load_word(uint slot,uint index) {
     default:return 0u;
     }
 #else
-    return sourceViews[slot].Load(byteOffset);
+    return sourceViews[NonUniformResourceIndex(slot)].Load(byteOffset);
 #endif
 }
 uint endpoint_for_work(uint axis,uint work) {
