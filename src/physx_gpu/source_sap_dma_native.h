@@ -97,6 +97,14 @@ public:
     // Appenders provide their own all-or-nothing source field validation.
     std::vector<compute::BatchCommand>& commands() noexcept { return pending_; }
 
+    // A complete source update is validated here before being committed to
+    // mStream. Retaining the scratch capacity avoids reallocating its
+    // command sequence on every frame, including after a failed update.
+    std::vector<compute::BatchCommand>& update_scratch() noexcept {
+        update_scratch_.clear();
+        return update_scratch_;
+    }
+
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
@@ -142,6 +150,7 @@ private:
     compute::Context& context_;
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
+    std::vector<compute::BatchCommand> update_scratch_;
     std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
     SubmissionStats stats_;
