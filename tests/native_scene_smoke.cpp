@@ -148,6 +148,52 @@ struct GpuSapSceneAdmissionFixture {
             throw std::runtime_error(
                 "Quiet GPU SAP membership rebuilt Sc pairs or skipped moving PCM contacts");
     }
+
+    static void verify_world_installation() {
+        // The public World takes an already constructed source GPU
+        // owner at its Sc backend boundary. No implicit CPU SAP is
+        // selected, and malformed GPU reports reach the real rollback.
+        bool rejected=false;
+        try {
+            (void)create_native_gpu_broadphase_backend(
+                {},false,false,true,true);
+        }catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected)
+            throw std::runtime_error(
+                "Native GPU world admitted a missing source broadphase owner");
+
+        auto producer=std::make_unique<FetchedReports>();
+        auto* source=producer.get();
+        World world(create_native_gpu_broadphase_backend(
+            std::move(producer),false,false,true,true));
+        const BodyId a=world.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+        const BodyId b=world.add_static_box(
+            {0.5f,0.5f,0.5f},{0.4f,1.0f,0.0f});
+        const Pair pair{std::min(a,b),std::max(a,b)};
+        source->set({pair},{});
+        world.step(1.0f/60.0f);
+        if(source->fetches!=1u)
+            throw std::runtime_error(
+                "World did not advance the explicitly installed GPU SAP owner");
+
+        source->set({pair},{});
+        rejected=false;
+        try {world.step(1.0f/60.0f);}
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected || source->rollbacks!=1u)
+            throw std::runtime_error(
+                "World failed to invalidate source GPU history after Sc rejection");
+
+        source->set({},{});
+        world.step(1.0f/60.0f);
+        world.set_body_position(b,{8.0f,1.0f,0.0f});
+        source->set({},{pair});
+        world.step(1.0f/60.0f);
+        if(source->fetches!=4u)
+            throw std::runtime_error(
+                "World skipped a quiet or lost source GPU SAP frame");
+    }
 };
 struct SourceSapEndpointFixture {
     static void check(Scene& scene) {
@@ -14349,6 +14395,7 @@ int run_native_scene_smoke() {
 int main() {
     try {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();
