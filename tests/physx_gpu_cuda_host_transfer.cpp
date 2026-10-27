@@ -11,6 +11,7 @@
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
@@ -722,26 +723,86 @@ void exercise_original_sap_source_members_native(Context& context) {
             created.data(),2u,nullptr,0u,nullptr,0u,
             bounds.data(),groups.data(),distances.data(),
             nullptr,2u,filter,true,true);
-        pre_broadphase_native(first,pre,stream);
+        // Actual PxgAABBManager preBpUpdate_GPU source-owned bitmap and
+        // volume buffers, independently indexed by original source handles.
+        physx::PxgCudaBuffer addedMap(heap,physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgCudaBuffer removedMap(heap,physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgCudaBuffer aggregatedMap(heap,physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgCudaBuffer changedMap(heap,physx::PxsHeapStats::eBROADPHASE);
+        physx::PxgCudaBuffer volumeGpu(heap,physx::PxsHeapStats::eBROADPHASE);
+        std::array<physx::PxU32,1u> addedBits{3u},removedBits{0u},
+            aggregateBits{0u},changedBits{3u};
+        std::array<physx::Bp::VolumeData,2u> volumeData{};
+        for(auto& v:volumeData)v.reset();
+        const auto manager_view=[&](bool persistent,bool gpu) {
+            return SourceSapAabbManagerPreUpdateNative{
+                source.pre_broadphase_buffers(),
+                {addedMap,addedBits},{removedMap,removedBits},
+                {aggregatedMap,aggregateBits},{changedMap,changedBits},
+                volumeGpu,volumeData,persistent,gpu,false};
+        };
+        auto manager=manager_view(true,true);
+        // Malformed source volume ownership must fail before ANY of the
+        // AABB manager GPU bitmap uploads or heap allocations are queued.
+        auto missingVolumes=manager;
+        missingVolumes.volume_data={};
+        bool invalidPreupdate=false;
+        try {pre_update_source_sap_aabb_manager_native(
+            first,missingVolumes,stream);}
+        catch(const std::invalid_argument&){invalidPreupdate=true;}
+        if(!invalidPreupdate || stream.submission_stats().upload_batches!=0u ||
+           addedMap.getDevicePtr()!=0u)
+            throw std::runtime_error(
+                "Invalid source AABB manager frame partially queued GPU work");
+        pre_update_source_sap_aabb_manager_native(first,manager,stream);
+        if(stream.submission_stats().upload_batches!=4u)
+            throw std::runtime_error(
+                "Original source AABB first-pass GPU transfer ordering changed");
+        const auto gpu_manager=source_sap_aabb_descriptor_native(manager);
+        members=source.dma_up_members(&gpu_manager,mapped);
         const auto counts=gpu_dma_up_sap_frame_native(first,members,stream);
         if(counts.current_boxes!=2u || source.num_boxes()!=2u ||
            source.descriptor().numCreatedHandles!=2u ||
            source.descriptor().max_found_lost_pairs!=4u ||
            source.descriptor().foundPairReportMap!=
                 reinterpret_cast<physx::PxgBroadPhasePair*>(
-                    static_cast<std::uintptr_t>(foundAddress)))
+                    static_cast<std::uintptr_t>(foundAddress)) ||
+           source.descriptor().aabbMngr_addedHandleMap!=
+                reinterpret_cast<physx::PxU32*>(addedMap.getDevicePtr()) ||
+           source.descriptor().aabbMngr_changedHandleBitMapWordCounts!=1u ||
+           source.descriptor().aabbMngr_volumeData!=
+                reinterpret_cast<physx::Bp::VolumeData*>(
+                    volumeGpu.getDevicePtr()))
             throw std::runtime_error(
                 "First original source member frame lost count or mapped report ownership");
         stream.wait_at_fetch();
+        const auto observe=[&](physx::PxgCudaBuffer& buffer,auto& data) {
+            const auto view=addresses.resolve(buffer.getDevicePtr(),sizeof(data));
+            std::remove_cvref_t<decltype(data)> copied{};
+            context.download(view.buffer,view.offset,&copied,sizeof(copied));
+            if(std::memcmp(&copied,&data,sizeof(data))!=0)
+                throw std::runtime_error(
+                    "Original AABB manager GPU bitmap/volume upload changed payload");
+        };
+        observe(addedMap,addedBits);
+        observe(removedMap,removedBits);
+        observe(aggregatedMap,aggregateBits);
+        observe(changedMap,changedBits);
+        observe(volumeGpu,volumeData);
         const auto originalOld=source.old_integer_bounds().getDevicePtr();
         const auto originalHistory=source.fetch_histories().projection_handles[0].getDevicePtr();
         const physx::Bp::BroadPhaseUpdateData second(
             nullptr,0u,nullptr,0u,nullptr,0u,
             bounds.data(),groups.data(),distances.data(),
             nullptr,2u,filter,false,false);
-        pre_broadphase_native(second,source.pre_broadphase_buffers(),stream);
+        const auto previousUploads=stream.submission_stats().upload_batches;
+        auto quietManager=manager_view(false,false);
+        pre_update_source_sap_aabb_manager_native(second,quietManager,stream);
+        if(stream.submission_stats().upload_batches!=previousUploads)
+            throw std::runtime_error(
+                "Quiet AABB manager first pass uploaded stale source bitmap history");
         const auto quiet=gpu_dma_up_sap_frame_native(
-            second,source.dma_up_members(nullptr,mapped),
+            second,source.dma_up_members(&gpu_manager,mapped),
             stream);
         stream.wait_at_fetch();
         if(quiet.current_boxes!=2u || quiet.created!=0u ||
@@ -754,6 +815,33 @@ void exercise_original_sap_source_members_native(Context& context) {
         if(source.fetch_histories().projection_handles[0].getDevicePtr()!=originalHistory)
             throw std::runtime_error(
                 "Original owner did not retain fetch-time history identity");
+
+        // A GPU-only update uploads changed bitmap words without replaying
+        // the source CPU-bound/group/volume transfers or creation records.
+        changedBits[0]=1u;
+        auto gpuOnly=manager_view(false,true);
+        const auto beforeGpuOnly=stream.submission_stats();
+        pre_update_source_sap_aabb_manager_native(second,gpuOnly,stream);
+        if(stream.submission_stats().upload_batches!=
+               beforeGpuOnly.upload_batches+1u ||
+           stream.submission_stats().upload_spans!=
+               beforeGpuOnly.upload_spans+1u)
+            throw std::runtime_error(
+                "GPU-only source AABB update replayed persistent CPU transfers");
+        stream.wait_at_fetch();
+        observe(changedMap,changedBits);
+
+        auto unsupportedAggregate=manager_view(true,true);
+        unsupportedAggregate.has_aggregates=true;
+        const auto beforeRejected=stream.submission_stats().upload_batches;
+        bool rejectedAggregate=false;
+        try {pre_update_source_sap_aabb_manager_native(
+            first,unsupportedAggregate,stream);}
+        catch(const std::logic_error&){rejectedAggregate=true;}
+        if(!rejectedAggregate ||
+           stream.submission_stats().upload_batches!=beforeRejected)
+            throw std::runtime_error(
+                "Unsupported GPU aggregate source state silently entered SAP");
     }
     stream.wait_at_fetch();
     if(aborted || roots.live_roots() || addresses.live_allocations() ||
