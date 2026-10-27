@@ -123,6 +123,10 @@ inline void write_source_sap_scene_bounds(
                           double(q.z)*q.z+double(q.w)*q.w;
         if(std::abs(norm-1.0)>1.0e-3)
             throw std::invalid_argument("Source SAP box orientation is not normalized");
+        if(box.motion!=native::GpuBroadphaseBox::Motion::Static &&
+           box.motion!=native::GpuBroadphaseBox::Motion::Dynamic &&
+           box.motion!=native::GpuBroadphaseBox::Motion::Kinematic)
+            throw std::invalid_argument("Invalid source SAP actor motion class");
         // Source Bp::getFilterGroup_Dynamics shifts (rigidId+1) by 3.
         // Prevent overflow and collisions with reserved aggregate groups.
         if(box.motion!=native::GpuBroadphaseBox::Motion::Static &&
