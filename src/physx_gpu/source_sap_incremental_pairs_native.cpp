@@ -59,6 +59,7 @@ void SourceSapIncrementalPairsNativeStage::append(
        boxes>(std::numeric_limits<std::uint32_t>::max()-255u)/2u ||
        layout.endpoint_slots<std::uint64_t(boxes)*2u ||
        layout.ordered_handle_slots<boxes ||
+       layout.report_capacity!=source.max_found_lost_pairs ||
        !source_device_descriptor ||
        source_device_descriptor>
            std::numeric_limits<CudaDeviceAddressMap::Address>::max()-
