@@ -13,6 +13,7 @@
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
+#include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
@@ -916,6 +917,132 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
     if(aborted || roots.live_roots() || addresses.live_allocations() ||
        pinned.live_roots())
         throw std::runtime_error("Source AABB volume bitmap lifecycle leaked GPU roots");
+}
+
+void exercise_persistent_source_aabb_manager_native(Context& context) {
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourcePhysxDeviceRootCallback callback(roots,&stream);
+    SourcePhysxMappedReportRoots mapped(
+        context,addresses,stream,SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    bool aborted=false;
+    const auto abort=[](void* state) noexcept {
+        *static_cast<bool*>(state)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        physx::PxgAllocatorDesc allocators(heap,mapped,mapped);
+        PxgAabbSourceMembersNative owner(allocators,3u);
+        PxgSapSourceMembersNative sap(allocators,8u,2u);
+        if(owner.capacity()<3u ||
+           owner.volume_to_actor().size()!=owner.capacity())
+            throw std::runtime_error(
+                "Source PxgAABBManager original member storage was not initialized");
+        alignas(4) physx::PxU32 shapeA=100u,shapeB=200u,shapeC=300u;
+        owner.admit(36u,36u,0.04f,physx::Bp::FilterGroup::eSTATICS,&shapeA);
+        owner.admit(2u,2u,0.02f,
+            physx::Bp::FilterGroup::eDYNAMICS_BASE,&shapeB);
+        owner.admit(7u,7u,0.03f,physx::Bp::FilterGroup::eSTATICS,&shapeC);
+        if(!owner.remove(7u) ||
+           owner.volume_to_actor()[7u]!=
+               std::numeric_limits<fyzz::BodyId>::max())
+            throw std::runtime_error(
+                "Canceled source volume retained actor identity in persistent manager");
+
+        using Box=fyzz::native::GpuBroadphaseBox;
+        std::array<Box,2u> boxes{{
+            {36u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.04f,
+                Box::Motion::Static},
+            {2u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
+                Box::Motion::Dynamic}
+        }};
+        const std::array<physx::Bp::ShapeHandle,2u> handles{36u,2u};
+        const physx::Bp::BpFilter filter(false,false);
+        const auto first=owner.prepare(boxes,handles,filter);
+        if(first.getNumCreatedHandles()!=2u ||
+           first.getNumUpdatedHandles()!=0u ||
+           first.getNumRemovedHandles()!=0u ||
+           !first.getStateChanged() || first.getGpuStateChanged() ||
+           std::fabs(owner.source_bounds().getBounds(36u).minimum.x-2.f)>1.e-6f)
+            throw std::runtime_error(
+                "Persistent PhysX AABB manager did not publish original first frame");
+        pre_update_source_sap_aabb_manager_native(
+            first,owner.pre_update(sap.pre_broadphase_buffers()),stream);
+        stream.wait_at_fetch();
+        const auto initial=owner.added_report_bitmap();
+        const auto firstWords=addresses.resolve(
+            initial.device,2u*sizeof(physx::PxU32));
+        std::array<physx::PxU32,2> observed{};
+        context.download(firstWords.buffer,firstWords.offset,
+                         observed.data(),sizeof(observed));
+        if(observed!=std::array<physx::PxU32,2>{1u<<2u,1u<<4u})
+            throw std::runtime_error(
+                "Persistent source AABB admission bitmap diverged on GPU");
+
+        owner.complete_fetch(first);
+        if(owner.source_added().hasAnyBitSet() ||
+           owner.source_removed().hasAnyBitSet())
+            throw std::runtime_error(
+                "Source AABB manager did not retire host report bitmaps");
+        owner.mark_changed(2u,0.125f);
+        if(owner.remove(36u) ||
+           owner.volume_to_actor()[36u]!=36u)
+            throw std::runtime_error(
+                "Published source AABB removal lost pre-fetch actor identity");
+        bool prematureReuse=false;
+        try {
+            owner.admit(36u,99u,0.04f,
+                physx::Bp::FilterGroup::eSTATICS,&shapeC);
+        }catch(const std::logic_error&){prematureReuse=true;}
+        if(!prematureReuse)
+            throw std::runtime_error(
+                "Persistent source AABB manager allowed premature handle reuse");
+        const std::array<Box,1u> remaining{{
+            {2u,{6.f,0.f,0.f},{1.f,1.f,1.f},{},0.125f,
+                Box::Motion::Dynamic}
+        }};
+        const std::array<physx::Bp::ShapeHandle,1u> remainingHandles{2u};
+        const auto second=owner.prepare(remaining,remainingHandles,filter);
+        if(second.getNumRemovedHandles()!=1u ||
+           second.getRemovedHandles()[0]!=36u ||
+           second.getNumUpdatedHandles()!=0u ||
+           !second.getGpuStateChanged() ||
+           std::fabs(owner.source_bounds().getBounds(2u).minimum.x-5.f)>1.e-6f ||
+           owner.volume_to_actor()[36u]!=36u)
+            throw std::runtime_error(
+                "Persistent source manager lost original multi-frame deltas");
+        pre_update_source_sap_aabb_manager_native(
+            second,owner.pre_update(sap.pre_broadphase_buffers()),stream);
+        stream.wait_at_fetch();
+        const auto removed=owner.removed_report_bitmap();
+        const auto secondWords=addresses.resolve(
+            removed.device,2u*sizeof(physx::PxU32));
+        observed={};
+        context.download(secondWords.buffer,secondWords.offset,
+                         observed.data(),sizeof(observed));
+        if(observed!=std::array<physx::PxU32,2>{0u,1u<<4u})
+            throw std::runtime_error(
+                "Persistent source GPU removed bitmap lost second-frame retirement");
+        owner.complete_fetch(second);
+        if(owner.volume_to_actor()[36u]!=
+               std::numeric_limits<fyzz::BodyId>::max() ||
+           owner.volume_to_actor()[2u]!=2u)
+            throw std::runtime_error(
+                "Persistent source fetch retired wrong actor identity");
+        owner.admit(36u,99u,0.04f,
+            physx::Bp::FilterGroup::eSTATICS,&shapeC);
+        if(owner.volume_to_actor()[36u]!=99u ||
+           !owner.source_added().boundedTest(36u))
+            throw std::runtime_error(
+                "Persistent source manager could not reuse fetched handle");
+    }
+    stream.wait_at_fetch();
+    if(aborted || roots.live_roots() || addresses.live_allocations() ||
+       mapped.live_roots())
+        throw std::runtime_error(
+            "Persistent source AABB manager leaked original PhysX GPU heap roots");
 }
 
 void exercise_original_sap_source_members_native(Context& context) {
@@ -2819,6 +2946,7 @@ int main() {
         exercise_original_sap_post_axis_buffers_native(context);
         exercise_original_sap_radix_descriptors_native(context);
         exercise_source_single_volume_bitmap_lifecycle_native(context);
+        exercise_persistent_source_aabb_manager_native(context);
         exercise_original_sap_source_members_native(context);
         exercise_original_sap_update_fetch_lifecycle(context);
         exercise_source_gpu_heap_manager(context);
