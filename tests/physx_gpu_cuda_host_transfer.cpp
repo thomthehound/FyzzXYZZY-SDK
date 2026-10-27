@@ -765,6 +765,19 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         const std::array<physx::Bp::ShapeHandle,2u> live_handles{36u,2u};
         SourceSapSceneBoundsScratch sceneScratch;
         const SourceSapSceneBounds sceneBounds{bounds,offsets,groups};
+        const std::array<physx::Bp::ShapeHandle,2u> unadmitted{36u,7u};
+        bool rejectedUnadmitted=false;
+        try {
+            (void)prepare_source_sap_single_volume_scene_native(
+                manager,{created,retired,updated},live_boxes,unadmitted,
+                sceneBounds,filter,true,sceneScratch);
+        }catch(const std::invalid_argument&){rejectedUnadmitted=true;}
+        if(!rejectedUnadmitted ||
+           groups[7]!=physx::Bp::FilterGroup::eINVALID ||
+           groups[36]!=physx::Bp::FilterGroup::eSTATICS)
+            throw std::runtime_error(
+                "Unadmitted source volume was resurrected by Sc geometry");
+
         const auto frame=prepare_source_sap_single_volume_scene_native(
             manager,{created,retired,updated},live_boxes,live_handles,
             sceneBounds,filter,true,sceneScratch);
