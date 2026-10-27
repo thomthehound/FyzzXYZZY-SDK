@@ -186,6 +186,69 @@ void run(Context& context,SourceSapIncrementalPairsNativeStage& stage,
         require(observed==data[i],"Source incremental producer modified endpoint history");
     }
     std::cerr<<"source pairs: reference verified\n";
+    if(!lose) {
+        // A quiet frame must not replay the preceding found pair. The
+        // original buffers, address mappings and GPU source descriptor
+        // remain live across the two submissions and the fetch boundary.
+        auto quiet=source;
+        quiet.sharedFoundPairIndex=0u;
+        quiet.sharedLostPairIndex=0u;
+        quiet.totalIncrementalComparisons[0]=0u;
+        stream.queue_uploads({{pointer[39u],&quiet,sizeof(quiet)}});
+        stage.append(stream.commands(),quiet,pointer[39u],map,
+                     {boxes,slots,boxes,slots});
+        stream.wait_at_fetch();
+        context.download(buffer[39u],offset[39u]+
+            offsetof(physx::PxgBroadPhaseDesc,sharedFoundPairIndex),
+            reportCounts.data(),sizeof(reportCounts));
+        require(reportCounts[0u]==0u&&reportCounts[1u]==0u,
+                "Quiet source SAP frame repeated a previous GPU pair report");
+
+        // The next motion frame uses the prior frame's CURRENT bounds as
+        // its previous bounds, by exchanging only the original owner
+        // identities. The opposite crossing must now emit LOST, while
+        // the same GPU buffers and descriptors remain allocated.
+        auto next=source;
+        std::swap(next.oldIntegerBounds,next.newIntegerBounds);
+        next.sharedFoundPairIndex=0u;
+        next.sharedLostPairIndex=0u;
+        next.totalIncrementalComparisons[0u]=1u;
+        data[0u]={8u,1u,9u,0u};
+        data[1u]={3u,0u,1u,2u};
+        data[2u]={0u,1u,1u,1u};
+        data[5u]={0u,1u,1u,1u};
+        data[9u]={0u,unused};
+        // B's new bounds move to the left of A. The original
+        // new-bounds buffer is now the prior old-bounds allocation.
+        data[33u][6u]=70u;
+        data[33u][9u]=90u;
+        std::vector<SourceSapUpload> nextUploads;
+        nextUploads.reserve(7u);
+        nextUploads.push_back({pointer[39u],&next,sizeof(next)});
+        for(const std::size_t i:{0u,1u,2u,5u,9u,33u})
+            nextUploads.push_back({pointer[i],data[i].data(),allocation(i)});
+        stream.queue_uploads(nextUploads);
+        stage.append(stream.commands(),next,pointer[39u],map,
+                     {boxes,slots,boxes,slots});
+        stream.wait_at_fetch();
+        context.download(buffer[39u],offset[39u]+
+            offsetof(physx::PxgBroadPhaseDesc,sharedFoundPairIndex),
+            reportCounts.data(),sizeof(reportCounts));
+        require(reportCounts[0u]==0u&&reportCounts[1u]==1u,
+                "Next source SAP frame did not convert found to lost");
+        context.download(buffer[38u],offset[38u],
+                         pair.data(),sizeof(pair));
+        require(pair[0u]==0u&&pair[1u]==1u,
+                "Next-frame lost pair changed original PhysX handles");
+        const auto priorBounds=map.resolve(
+            static_cast<CudaDeviceAddressMap::Address>(
+                reinterpret_cast<std::uintptr_t>(next.oldIntegerBounds)),48u);
+        std::array<std::uint32_t,12> preserved{};
+        context.download(priorBounds.buffer,priorBounds.offset,
+                         preserved.data(),sizeof(preserved));
+        require(preserved[6u]==110u&&preserved[9u]==130u,
+                "Frame-to-frame bounds owner swap did not preserve previous GPU geometry");
+    }
     if(shared)context.destroy_buffer(root);
     else for(const auto id:buffer)context.destroy_buffer(id);
 }
