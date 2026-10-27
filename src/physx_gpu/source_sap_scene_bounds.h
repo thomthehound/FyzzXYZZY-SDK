@@ -28,7 +28,7 @@ struct SourceSapSceneBounds {
     std::span<physx::Bp::FilterGroup::Enum> groups;
 };
 
-// Translates one shape per presently admitted native rigid actor into the
+// Per-producer staging, retained across frames. This is not an AABB-manager\n// history: only the original manager owns current/past volume membership.\nstruct SourceSapSceneBoundsScratch {\n    std::vector<std::uint32_t> visit_epochs;\n    std::vector<physx::PxBounds3> prepared_bounds;\n    std::uint32_t epoch=0;\n};\n\n// Translates one shape per presently admitted native rigid actor into the
 // original PxBounds3/FilterGroup representation used by preBroadPhase().
 // The caller supplies the live source volume handles in the same order as
 // boxes, and retains a scratch vector across frames. All inputs and handle
@@ -38,7 +38,7 @@ inline void write_source_sap_scene_bounds(
     std::span<const native::GpuBroadphaseBox> boxes,
     std::span<const physx::Bp::ShapeHandle> source_handles,
     SourceSapSceneBounds output,
-    std::vector<physx::Bp::ShapeHandle>& handle_scratch) {
+    SourceSapSceneBoundsScratch& scratch) {
 
     if(boxes.size()!=source_handles.size() ||
        output.bounds.size()!=output.contact_distances.size() ||
@@ -46,22 +46,23 @@ inline void write_source_sap_scene_bounds(
        output.bounds.size()>std::numeric_limits<physx::PxU32>::max())
         throw std::invalid_argument("Source SAP scene array capacities or live handles disagree");
 
-    // Validate the complete batch before modifying even one source AABB.
-    // This includes duplicate source handles if the AABB manager has
-    // accidentally reissued a handle during the same publication epoch.
-    handle_scratch.assign(source_handles.begin(),source_handles.end());
-    std::sort(handle_scratch.begin(),handle_scratch.end());
-    if(std::adjacent_find(handle_scratch.begin(),handle_scratch.end())
-       !=handle_scratch.end())
-        throw std::invalid_argument("Source SAP assigned a volume handle twice");
+    // Reuse linear-time membership stamps rather than sorting the full
+    // source handle population each frame. All writes remain deferred
+    // until every geometry and group value has passed validation.
+    scratch.visit_epochs.resize(output.bounds.size(),0u);
+    scratch.prepared_bounds.resize(boxes.size());
+    if(++scratch.epoch==0u) {
+        std::fill(scratch.visit_epochs.begin(),scratch.visit_epochs.end(),0u);
+        scratch.epoch=1u;
+    }
 
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
         const auto& box=boxes[i];
         if(handle>=output.bounds.size() ||
-           handle>=physx::Bp::BP_INVALID_BP_HANDLE)
+           handle>=BP_INVALID_BP_HANDLE)
             throw std::out_of_range("Source SAP shape volume handle outside AABB manager");
-        const auto finite=[](float x){return std::isfinite(x);};
+        if(scratch.visit_epochs[handle]==scratch.epoch)\n            throw std::invalid_argument("Source SAP assigned a volume handle twice");\n        scratch.visit_epochs[handle]=scratch.epoch;\n        const auto finite=[](float x){return std::isfinite(x);};
         const auto& p=box.position;
         const auto& e=box.half_extents;
         const auto& q=box.orientation;
@@ -86,18 +87,13 @@ inline void write_source_sap_scene_bounds(
             pose,physx::PxVec3(e.x,e.y,e.z));
         if(!bounds.isFinite() || bounds.isEmpty())
             throw std::out_of_range("Source SAP box produces invalid world bounds");
+        scratch.prepared_bounds[i]=bounds;
     }
 
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
         const auto& b=boxes[i];
-        const physx::PxTransform pose(
-            physx::PxVec3(b.position.x,b.position.y,b.position.z),
-            physx::PxQuat(b.orientation.x,b.orientation.y,
-                          b.orientation.z,b.orientation.w));
-        output.bounds[handle]=physx::PxBounds3::poseExtent(
-            pose,physx::PxVec3(b.half_extents.x,b.half_extents.y,
-                               b.half_extents.z));
+        output.bounds[handle]=scratch.prepared_bounds[i];
         output.contact_distances[handle]=b.contact_offset;
         output.groups[handle]=b.motion==native::GpuBroadphaseBox::Motion::Static
             ? physx::Bp::getFilterGroup_Statics()
