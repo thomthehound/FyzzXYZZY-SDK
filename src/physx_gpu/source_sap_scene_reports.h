@@ -58,7 +58,10 @@ inline void lower_source_sap_actor_reports_to_sc(
             const BodyId b=volume_to_actor[p.mVolB];
             target.push_back({std::min(a,b),std::max(a,b)});
         }
-        std::sort(target.begin(),target.end());
+        // GPU report order is not necessarily actor order, but avoid an
+        // O(n log n) sort when the lowered Sc keys are already ordered.
+        if(!std::is_sorted(target.begin(),target.end()))
+            std::sort(target.begin(),target.end());
         target.erase(std::unique(target.begin(),target.end()),target.end());
     };
     lower(source_found,found);
