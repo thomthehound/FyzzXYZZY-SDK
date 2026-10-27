@@ -143,6 +143,22 @@ void test_source_scene_boundary() {
             high_bounds[2].minimum.x==initial_low,
             "Source GPU changed bitmap failed at 32-bit volume boundary");
 
+    // Source handles removed earlier may retain dirty bits until the
+    // manager's fetch boundary. A stale bit that has no live Sc volume
+    // must neither update any surviving bounds nor invent a volume.
+    shifted[0].position.x=20.f;
+    shifted[1].position.x=200.f;
+    const std::array<physx::PxU32,2> retired_dirty{1u<<5u,0u};
+    const auto before_high=high_bounds[36].minimum.x;
+    const auto before_low=high_bounds[2].minimum.x;
+    (void)prepare_source_sap_scene_update(
+        shifted,high_handles,high_target,{{},{},{},retired_dirty},
+        filter,true,true,high_scratch);
+    require(high_bounds[36].minimum.x==before_high &&
+            high_bounds[2].minimum.x==before_low &&
+            high_groups[5]==physx::Bp::FilterGroup::eINVALID,
+            "Stale source GPU changed bit improperly rewrote a live volume");
+
     // Only the authoritative updated handle is reconstructed, even when
     // another live Sc actor's pose differs from its retained GPU bounds.
     const std::array<physx::Bp::ShapeHandle,1> moved{0u};
