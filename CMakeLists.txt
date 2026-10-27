@@ -300,6 +300,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sap_incremental_counts_native.cpp
     src/physx_gpu/source_sap_endpoint_histograms_native.cpp
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
+    src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -313,7 +314,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
   target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
     FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address
     fyzzxyzzy_physx_original_gpu_heap)
@@ -1933,6 +1935,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sap_incremental_counts_native.cpp
     src/physx_gpu/source_sap_endpoint_histograms_native.cpp
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
+    src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -1945,7 +1948,8 @@ if(FYZZXYZZY_BUILD_D3D12)
   target_include_directories(fyzzxyzzy_physx_gpu_stages_d3d12 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address
     fyzzxyzzy_physx_original_gpu_heap)
