@@ -1079,19 +1079,26 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
         PxgSapSourceMembersNative sap(allocators,8u,2u);
         physx::Sc::ObjectIDTracker scElements;
 
+        using Box=fyzz::native::GpuBroadphaseBox;
         // These are Sc actor IDs, NOT Sc::ElementSim IDs. The original
         // ObjectIDTracker alone selects the volume indices (0, 1, 2 ...).
         alignas(4) physx::PxU32 elementA=17u,elementB=18u,
             elementCanceled=19u,elementD=20u,elementE=21u;
         const auto shapeA=SourceScElementLifecycleNative::admit(
             scElements,manager,300u,0.04f,
-            physx::Bp::FilterGroup::eSTATICS,&elementA);
+            Box::Motion::Static,&elementA);
         const auto shapeB=SourceScElementLifecycleNative::admit(
             scElements,manager,900u,0.02f,
-            physx::Bp::FilterGroup::eDYNAMICS_BASE,&elementB);
+            Box::Motion::Dynamic,&elementB);
         const auto canceled=SourceScElementLifecycleNative::admit(
             scElements,manager,450u,0.03f,
-            physx::Bp::FilterGroup::eSTATICS,&elementCanceled);
+            Box::Motion::Static,&elementCanceled);
+        if(manager.single_volumes().groups[shapeB]!=
+               physx::Bp::getFilterGroup(false,900u,false) ||
+           manager.single_volumes().groups[shapeA]!=
+               physx::Bp::getFilterGroup(true,300u,false))
+            throw std::runtime_error(
+                "Source Sc actor admission omitted original Bp filter encoding");
         if(shapeA!=0u || shapeB!=1u || canceled!=2u ||
            shapeA==300u || shapeB==900u ||
            !SourceScElementLifecycleNative::remove(
@@ -1101,7 +1108,6 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
             throw std::runtime_error(
                 "Source Sc element IDPool did not defer canceled admission");
 
-        using Box=fyzz::native::GpuBroadphaseBox;
         std::array<Box,2u> boxes{{
             {300u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.04f,
                 Box::Motion::Static},
@@ -1139,7 +1145,7 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
                 "Published Sc element removal lost pre-fetch volume identity");
         const auto shapeD=SourceScElementLifecycleNative::admit(
             scElements,manager,650u,0.035f,
-            physx::Bp::FilterGroup::eSTATICS,&elementD);
+            Box::Motion::Static,&elementD);
         if(shapeD==shapeB || manager.volume_to_actor()[shapeD]!=650u ||
            manager.volume_to_actor()[shapeB]!=900u)
             throw std::runtime_error(
@@ -1196,7 +1202,7 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
         // the fetched lost report and postReportsCleanup completed.
         const auto shapeE=SourceScElementLifecycleNative::admit(
             scElements,manager,1200u,0.05f,
-            physx::Bp::FilterGroup::eDYNAMICS_BASE,&elementE);
+            Box::Motion::Dynamic,&elementE);
         if(shapeE!=shapeB ||
            manager.volume_to_actor()[shapeE]!=1200u ||
            manager.volume_to_actor()[shapeA]!=300u)
