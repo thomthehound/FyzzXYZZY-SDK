@@ -686,28 +686,18 @@ void exercise_original_sap_source_members_native(Context& context) {
     };
     {
         physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
-        PxgSapSourceMembersNative source(heap,4u,2u);
+        physx::PxgAllocatorDesc sourceAlloc(heap,mapped,mapped);
+        PxgSapSourceMembersNative source(sourceAlloc,4u,2u);
         if(!source.force_update() || source.num_boxes()!=0u)
             throw std::runtime_error(
                 "Original PhysX SAP constructor did not initialize source frame ownership");
-        auto originalMappedFound=mapped.allocate(
-            4u*sizeof(physx::PxgBroadPhasePair),
-            physx::PxsHeapStats::eBROADPHASE,PX_FL);
-        auto originalMappedLost=mapped.allocate(
-            4u*sizeof(physx::PxgBroadPhasePair),
-            physx::PxsHeapStats::eBROADPHASE,PX_FL);
         const auto foundAddress=mapped.device_address(
-            originalMappedFound,4u*sizeof(physx::PxgBroadPhasePair));
+            source.mapped_found_actor_pairs(),
+            4u*sizeof(physx::PxgBroadPhasePair));
         const auto lostAddress=mapped.device_address(
-            originalMappedLost,4u*sizeof(physx::PxgBroadPhasePair));
-        bool rejected=false;
-        try { (void)source.dma_up_members(nullptr,0u,lostAddress); }
-        catch(const std::invalid_argument&){rejected=true;}
-        if(!rejected)
-            throw std::runtime_error(
-                "Original SAP GPU constructor admitted an unowned host-mapped result");
-        auto members=source.dma_up_members(
-            nullptr,foundAddress,lostAddress);
+            source.mapped_lost_actor_pairs(),
+            4u*sizeof(physx::PxgBroadPhasePair));
+        auto members=source.dma_up_members(nullptr,mapped);
         auto pre=source.pre_broadphase_buffers();
         if(&pre.bounds!=&members.broadphase_buffers.fp_bounds ||
            &members.broadphase_buffers.projection_handles!=
@@ -751,7 +741,7 @@ void exercise_original_sap_source_members_native(Context& context) {
             nullptr,2u,filter,false,false);
         pre_broadphase_native(second,source.pre_broadphase_buffers(),stream);
         const auto quiet=gpu_dma_up_sap_frame_native(
-            second,source.dma_up_members(nullptr,foundAddress,lostAddress),
+            second,source.dma_up_members(nullptr,mapped),
             stream);
         stream.wait_at_fetch();
         if(quiet.current_boxes!=2u || quiet.created!=0u ||
@@ -764,8 +754,6 @@ void exercise_original_sap_source_members_native(Context& context) {
         if(source.fetch_histories().projection_handles[0].getDevicePtr()!=originalHistory)
             throw std::runtime_error(
                 "Original owner did not retain fetch-time history identity");
-        mapped.deallocate(originalMappedFound);
-        mapped.deallocate(originalMappedLost);
     }
     stream.wait_at_fetch();
     if(aborted || roots.live_roots() || addresses.live_allocations() ||
