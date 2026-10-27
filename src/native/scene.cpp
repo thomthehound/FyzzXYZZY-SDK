@@ -1935,6 +1935,15 @@ void Scene::update_gpu_pairs(bool force_update) {
             throw std::invalid_argument(
                 "GPU SAP reported both found and lost for the same pair");
 
+    // An unchanged source overlap stream already agrees with the
+    // published Sc manager list. No pair merge is needed, even if
+    // geometry changed and the existing contacts need fresh PCM data.
+    // publish_pairs() retains those managers when membership is quiet.
+    if(reports.found.empty() && reports.lost.empty()) {
+        broadphase_pair_membership_changed_=false;
+        return;
+    }
+
     pending_pairs_.clear();
     pending_pairs_.reserve(previous_pairs_.size()+reports.found.size());
     std::size_t new_index=0,lost_index=0;
