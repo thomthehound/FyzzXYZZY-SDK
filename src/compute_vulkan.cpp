@@ -744,6 +744,21 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan upload span or staging capacity");
             total += upload.bytes;
         }
+        // Native source uploads often target disjoint allocations within a
+        // single PhysX heap root. Avoid redundant intra-batch barriers
+        // for these independent ranges, while preserving transfer order
+        // when two uploads overwrite the same destination bytes.
+        bool independent_destinations=true;
+        for(std::size_t i=0;i<uploads.size() && independent_destinations;++i)
+            for(std::size_t j=0;j<i;++j)
+                if(uploads[i].destination==uploads[j].destination &&
+                   uploads[i].destination_offset<
+                       uploads[j].destination_offset+uploads[j].bytes &&
+                   uploads[j].destination_offset<
+                       uploads[i].destination_offset+uploads[i].bytes) {
+                    independent_destinations=false;
+                    break;
+                }
         // Prevent post-submit allocation failure during deferred staging
         // ownership transfer. In the single-queue model, the last submitted
         // fence captures the lifetime of this entire upload batch.
@@ -775,7 +790,8 @@ struct Context::Impl {
                     upload.destination_offset, upload.bytes});
                 position += upload.bytes;
             }
-            const SubmissionId id = submit_batch(copies);
+            const SubmissionId id = submit_batch(
+                copies,false,independent_destinations);
             submitted = true;
             // Guaranteed room in retired_buffers. Retires only the public
             // staging ID, not the memory still referenced by the GPU.
@@ -1135,10 +1151,16 @@ struct Context::Impl {
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
-                              bool profile = false) {
+                              bool profile = false,
+                              bool independent_uploads = false) {
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
+        if(independent_uploads)
+            for(const auto& operation:operations)
+                if(!std::holds_alternative<CopyCommand>(operation))
+                    throw std::invalid_argument(
+                        "Independent upload batch may not contain GPU dispatches");
 
         // Validate the complete batch before recording any GPU commands.
         // This prevents a malformed later operation from partially executing.
@@ -1263,7 +1285,8 @@ struct Context::Impl {
                 bool writes = false;
             };
             std::unordered_map<BufferId, Access> last_access;
-            last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            if(!independent_uploads)
+                last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
                 std::vector<VkBufferMemoryBarrier> barriers;
                 VkPipelineStageFlags sources = 0;
@@ -1306,20 +1329,24 @@ struct Context::Impl {
 
             for (const BatchCommand& operation : operations) {
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                    if (copy->source == copy->destination) {
-                        // One buffer, one combined access in the dependency
-                        // map: no duplicate VkBufferMemoryBarrier entries
-                        // over the same resource in a single barrier call.
-                        before_operation({
-                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_ACCESS_TRANSFER_READ_BIT |
-                                VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                        });
-                    } else {
-                        before_operation({
-                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
-                            {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                        });
+                    // A packed upload batch has only staging reads and
+                    // validated nonoverlapping destination writes.
+                    if(!independent_uploads) {
+                        if (copy->source == copy->destination) {
+                            // One buffer, one combined dependency entry.
+                            before_operation({
+                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_READ_BIT |
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                            });
+                        } else {
+                            before_operation({
+                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_READ_BIT, false}},
+                                {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}}
+                            });
+                        }
                     }
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
