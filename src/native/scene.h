@@ -600,6 +600,7 @@ private:
     friend struct SolverIterationSourceFixture;
     friend struct ConstraintIslandSourceFixture;
     friend struct SourceSapEndpointFixture;
+    friend struct GpuSapSceneAdmissionFixture;
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Kind : std::uint8_t {
