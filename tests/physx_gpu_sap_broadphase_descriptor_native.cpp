@@ -196,15 +196,21 @@ int main() {
                             {},0.07f,Box::Motion::Kinematic}
                     }};
                     const std::array<physx::Bp::ShapeHandle,2> handles{3u,0u};
-                    std::array<physx::PxBounds3,4> bounds{};
+                    std::array<physx::PxBounds3,4> bounds;
+                    bounds.fill(physx::PxBounds3::centerExtents(
+                        physx::PxVec3(0.0f),physx::PxVec3(1.0f)));
                     std::array<physx::PxReal,4> distances{};
-                    std::array<physx::Bp::FilterGroup::Enum,4> groups{};
+                    std::array<physx::Bp::FilterGroup::Enum,4> groups;
+                    groups.fill(physx::Bp::FilterGroup::eINVALID);
                     SourceSapSceneBoundsScratch scratch;
                     write_source_sap_scene_bounds(
                         boxes,handles,{bounds,distances,groups},scratch);
                     const physx::Bp::BpFilter filter(false,false);
+                    // Source creation/removal lists are sorted separately
+                    // from the scene input and the manager's handle mapping.
+                    const std::array<physx::Bp::ShapeHandle,2> created{0u,3u};
                     const physx::Bp::BroadPhaseUpdateData update(
-                        handles.data(),2u,nullptr,0u,nullptr,0u,
+                        created.data(),2u,nullptr,0u,nullptr,0u,
                         bounds.data(),groups.data(),distances.data(),
                         4u,filter,true,false);
                     physx::PxgTypedCudaBuffer<physx::PxBounds3> gpuBounds(heap,group);
