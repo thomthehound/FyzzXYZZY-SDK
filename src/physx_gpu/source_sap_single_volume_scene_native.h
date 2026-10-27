@@ -56,12 +56,17 @@ prepare_source_sap_single_volume_scene_native(
         const bool static_group=group==physx::Bp::getFilterGroup_Statics();
         const auto type=static_cast<physx::PxU32>(group) &
                         BP_FILTERING_TYPE_MASK;
-        if((motion==native::GpuBroadphaseBox::Motion::Static)!=static_group ||
-           (!static_group &&
-            type!=static_cast<physx::PxU32>(
-                motion==native::GpuBroadphaseBox::Motion::Kinematic
-                    ? physx::Bp::FilterType::KINEMATIC
-                    : physx::Bp::FilterType::DYNAMIC)))
+        // ScShapeSimBase::getBPGroup intentionally treats kinematics
+        // with forced notifications as DYNAMIC for broadphase filtering.
+        // Both encodings remain authoritative when the body is kinematic.
+        const bool compatible=
+            motion==native::GpuBroadphaseBox::Motion::Static
+                ? static_group
+                : !static_group &&
+                  (type==physx::Bp::FilterType::DYNAMIC ||
+                   (motion==native::GpuBroadphaseBox::Motion::Kinematic &&
+                    type==physx::Bp::FilterType::KINEMATIC));
+        if(!compatible)
             throw std::invalid_argument(
                 "Source Sc motion does not match admitted PhysX filter group");
     }
