@@ -6,6 +6,7 @@
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
+#include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "BpBroadPhaseUpdate.h"
 #include "PxgRadixSortKernelIndices.h"
@@ -183,6 +184,56 @@ int main() {
             {
                 physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
                 constexpr int group=physx::PxsHeapStats::eBROADPHASE;
+                // Exercise the source preBroadPhase GPU upload with
+                // real Sc shape geometry, external source volume handles,
+                // and original PhysX-owned buddy-heap buffers.
+                {
+                    using Box=fyzz::native::GpuBroadphaseBox;
+                    const std::array<Box,2> boxes{{
+                        {12u,{1.0f,3.0f,5.0f},{2.0f,1.0f,0.5f},
+                            {},0.03f,Box::Motion::Dynamic},
+                        {19u,{-1.0f,-2.0f,0.0f},{1.0f,2.0f,0.5f},
+                            {},0.07f,Box::Motion::Kinematic}
+                    }};
+                    const std::array<physx::Bp::ShapeHandle,2> handles{3u,0u};
+                    std::array<physx::PxBounds3,4> bounds{};
+                    std::array<physx::PxReal,4> distances{};
+                    std::array<physx::Bp::FilterGroup::Enum,4> groups{};
+                    SourceSapSceneBoundsScratch scratch;
+                    write_source_sap_scene_bounds(
+                        boxes,handles,{bounds,distances,groups},scratch);
+                    const physx::Bp::BpFilter filter(false,false);
+                    const physx::Bp::BroadPhaseUpdateData update(
+                        handles.data(),2u,nullptr,0u,nullptr,0u,
+                        bounds.data(),groups.data(),distances.data(),
+                        4u,filter,true,false);
+                    physx::PxgTypedCudaBuffer<physx::PxBounds3> gpuBounds(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxReal> gpuDistances(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxU32> gpuGroups(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxU32> gpuEnvironments(heap,group);
+                    physx::PxU32 sourceCapacity=0u;
+                    pre_broadphase_native(update,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    const auto checkBytes=[&](const auto& gpu,const void* expected,
+                                             std::size_t bytes,const char* diagnostic) {
+                        const auto view=addresses.resolve(gpu.getDevicePtr(),bytes);
+                        std::vector<std::uint8_t> observed(bytes);
+                        context.download(view.buffer,view.offset,
+                                         observed.data(),bytes);
+                        if(std::memcmp(observed.data(),expected,bytes)!=0)
+                            throw std::runtime_error(diagnostic);
+                    };
+                    if(sourceCapacity!=4u)
+                        throw std::runtime_error("Source scene AABB input capacity changed");
+                    checkBytes(gpuBounds,bounds.data(),sizeof(bounds),
+                               "Live Sc shape AABB GPU upload differs from source input");
+                    checkBytes(gpuDistances,distances.data(),sizeof(distances),
+                               "Live Sc contact-distance GPU upload differs from source input");
+                    checkBytes(gpuGroups,groups.data(),sizeof(groups),
+                               "Live Sc filter-group GPU upload differs from source input");
+                }
                 physx::PxgCudaBufferN<27> singles(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxU32> created(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxU32> removed(heap,group);
