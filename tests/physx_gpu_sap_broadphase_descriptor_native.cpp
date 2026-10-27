@@ -13,6 +13,7 @@
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sap_scene_reports.h"
 #include "fyzzxyzzy/compute.h"
 #include <PxPhysicsAPI.h>
 
@@ -28,8 +29,55 @@
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
 
+// Original GPU source pair handles are not necessarily Scene actor IDs.
+// This proves the real fetch ABI maps volume handles and duplicate source
+// reports into the Sc-ordered stream before its contact-edge publication.
+static void verify_source_sap_sc_report_mapping() {
+    using fyzz::native::Pair;
+    constexpr std::array<fyzz::BodyId,5> ownership{50u,3u,25u,7u,100u};
+    const std::array<physx::PxgBroadPhasePair,3> source_found{
+        physx::PxgBroadPhasePair{0u,2u},
+        physx::PxgBroadPhasePair{1u,4u},
+        physx::PxgBroadPhasePair{0u,2u}};
+    const std::array<physx::PxgBroadPhasePair,1> source_lost{
+        physx::PxgBroadPhasePair{1u,3u}};
+    std::vector<Pair> found,lost;
+    lower_source_sap_actor_reports_to_sc(
+        source_found,source_lost,ownership,found,lost);
+    const std::vector<Pair> expected_found{{3u,100u},{25u,50u}};
+    const std::vector<Pair> expected_lost{{3u,7u}};
+    if(found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Source GPU fetched pair handles did not map to canonical native Sc pairs");
+    const std::array<physx::PxgBroadPhasePair,1> invalid{
+        physx::PxgBroadPhasePair{1u,9u}};
+    bool rejected=false;
+    try {
+        lower_source_sap_actor_reports_to_sc(
+            source_found,invalid,ownership,found,lost);
+    } catch(const std::out_of_range&) {
+        rejected=true;
+    }
+    if(!rejected || found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Invalid source GPU lost report partially published Sc pairs");
+    auto retired=ownership;
+    retired[2]=std::numeric_limits<fyzz::BodyId>::max();
+    rejected=false;
+    try {
+        lower_source_sap_actor_reports_to_sc(
+            source_found,source_lost,retired,found,lost);
+    } catch(const std::out_of_range&) {
+        rejected=true;
+    }
+    if(!rejected || found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Source GPU pair mapping accepted an already retired volume handle");
+}
+
 int main() {
     try {
+        verify_source_sap_sc_report_mapping();
         physx::PxDefaultAllocator defaultAllocator;
         physx::PxDefaultErrorCallback errors;
         auto* foundation=PxCreateFoundation(PX_PHYSICS_VERSION,defaultAllocator,errors);
