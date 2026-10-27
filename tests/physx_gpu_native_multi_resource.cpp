@@ -148,6 +148,34 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     check(actual_mirror == mirror,
           "Native multi-resource ordered GPU copy or canary mismatch");
 
+    // Recycle a completed native batch with a different view offset but
+    // the same buffer identity. A subsequent identical binding must remain
+    // valid when its source buffer contents change between submissions.
+    if(!shared_backing) {
+        auto redirected=dispatch;
+        for(auto& binding:redirected.buffers)
+            binding.offset=kViewBytes;
+        auto verify_redirected=[&](std::uint32_t seed) {
+            std::vector<std::uint32_t> next_a(kElements),next_b(kElements);
+            for(std::uint32_t i=0;i<kElements;++i) {
+                next_a[i]=seed+i;
+                next_b[i]=seed*2u+3u*i;
+            }
+            context.upload(source_a,kViewBytes,next_a.data(),kViewBytes);
+            context.upload(source_b,kViewBytes,next_b.data(),kViewBytes);
+            const auto id=context.submit_batch({redirected});
+            context.wait_submission(id);
+            std::vector<std::uint32_t> next_result(kElements);
+            context.download(destination,kViewBytes,
+                             next_result.data(),kViewBytes);
+            for(std::uint32_t i=0;i<kElements;++i)
+                check(next_result[i]==3u*next_a[i]+next_b[i],
+                      "Reused GPU descriptor set retained an outdated view");
+        };
+        verify_redirected(300u);
+        verify_redirected(500u);
+    }
+
     context.destroy_buffer(snapshot);
     context.destroy_buffer(destination);
     if (!shared_backing) context.destroy_buffer(source_b);
