@@ -315,7 +315,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
-    FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address)
+    FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address
+    fyzzxyzzy_physx_original_gpu_heap)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
