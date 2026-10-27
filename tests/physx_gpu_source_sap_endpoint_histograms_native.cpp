@@ -39,7 +39,8 @@ ShaderBinary read_shader(const char* file) {
 }
 std::size_t count(std::size_t slot) {
     const auto field=slot%16u;
-    return field==5u||field==6u||field==15u?blocks:
+    return field==5u||field==6u||field==12u||field==13u||
+           field==15u?blocks:
            field==3u||field==4u||field==10u||field==11u?
                orderedSlots:projections;
 }
