@@ -222,6 +222,17 @@ void test_source_scene_boundary() {
             nullptr,4u,filter,true,false);
         validate_source_sap_volume_actor_lifetime_native(
             identity,retiredFrame);
+        bool rejectedEarlyReuse=false;
+        try {
+            admit_source_sap_volume_actor_identity_native(
+                identity,3u,27u);
+        }catch(const std::logic_error&){rejectedEarlyReuse=true;}
+        require(rejectedEarlyReuse && actorIdentity[3]==4u,
+                "Source handle was rebound before GPU lost-pair publication");
+        admit_source_sap_volume_actor_identity_native(
+            identity,3u,4u);
+        require(actorIdentity[3]==4u,
+                "Source same-actor readmission lost its original handle");
         const std::array<physx::PxgBroadPhasePair,1> removedLost{
             physx::PxgBroadPhasePair{0u,3u}};
         bool rejectedRetired=false;
@@ -256,7 +267,8 @@ void test_source_scene_boundary() {
         sourceVolumes[3].setUserData(&reusedActor);
         sourceVolumes[3].setSingleActor();
         sourceGroups[3]=physx::Bp::FilterGroup::eDYNAMICS_BASE;
-        actorIdentity[3]=27u;
+        admit_source_sap_volume_actor_identity_native(
+            identity,3u,27u);
         validate_source_sap_found_volume_lifetime_native(
             removedLost,identity);
         lower_source_sap_actor_reports_to_sc(
