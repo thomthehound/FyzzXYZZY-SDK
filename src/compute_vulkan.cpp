@@ -1352,35 +1352,35 @@ struct Context::Impl {
                         }
                     }
                 if(!same_views) {
-                std::vector<VkWriteDescriptorSet> writes;
-                writes.reserve(static_cast<std::size_t>(descriptor_count));
-                std::size_t descriptor_offset = 0;
-                std::size_t dispatch_index = 0;
-                for (const BatchCommand& operation : operations) {
-                    const auto* dispatch = std::get_if<DispatchCommand>(&operation);
-                    if (!dispatch) continue;
-                    const auto count = get_pipeline(dispatch->pipeline).binding_count;
-                    const auto descriptors = std::span<const VkDescriptorBufferInfo>(
-                        validated_dispatches).subspan(descriptor_offset, count);
-                    for (std::uint32_t slot = 0; slot < count; ++slot) {
-                        VkWriteDescriptorSet write{};
-                        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                        write.dstSet = descriptor_sets[dispatch_index];
-                        write.dstBinding = slot;
-                        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                        write.descriptorCount = 1;
-                        write.pBufferInfo = &descriptors[slot];
-                        writes.push_back(write);
+                    std::vector<VkWriteDescriptorSet> writes;
+                    writes.reserve(static_cast<std::size_t>(descriptor_count));
+                    std::size_t descriptor_offset = 0;
+                    std::size_t dispatch_index = 0;
+                    for (const BatchCommand& operation : operations) {
+                        const auto* dispatch = std::get_if<DispatchCommand>(&operation);
+                        if (!dispatch) continue;
+                        const auto count = get_pipeline(dispatch->pipeline).binding_count;
+                        const auto descriptors = std::span<const VkDescriptorBufferInfo>(
+                            validated_dispatches).subspan(descriptor_offset, count);
+                        for (std::uint32_t slot = 0; slot < count; ++slot) {
+                            VkWriteDescriptorSet write{};
+                            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                            write.dstSet = descriptor_sets[dispatch_index];
+                            write.dstBinding = slot;
+                            write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                            write.descriptorCount = 1;
+                            write.pBufferInfo = &descriptors[slot];
+                            writes.push_back(write);
+                        }
+                        descriptor_offset += count;
+                        ++dispatch_index;
                     }
-                    descriptor_offset += count;
-                    ++dispatch_index;
-                }
-                if (!writes.empty())
-                    vkUpdateDescriptorSets(device,
-                        static_cast<std::uint32_t>(writes.size()),
-                        writes.data(), 0, nullptr);
-                descriptor_reuse.views=validated_dispatches;
-                descriptor_reuse.buffer_ids=validated_buffer_ids;
+                    if (!writes.empty())
+                        vkUpdateDescriptorSets(device,
+                            static_cast<std::uint32_t>(writes.size()),
+                            writes.data(), 0, nullptr);
+                    descriptor_reuse.views=validated_dispatches;
+                    descriptor_reuse.buffer_ids=validated_buffer_ids;
                 }
             }
 
