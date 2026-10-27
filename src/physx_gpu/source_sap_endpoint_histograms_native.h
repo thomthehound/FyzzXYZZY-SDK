@@ -14,6 +14,7 @@ namespace fyzz::physx_gpu {
 // two total-end histories per axis) are never repacked or copied.
 struct SourceSapEndpointHistogramsNativeLayout {
     std::uint32_t endpoint_slots=0;
+    std::uint32_t ordered_handle_slots=0;
 };
 
 class SourceSapEndpointHistogramsNativeStage final {
