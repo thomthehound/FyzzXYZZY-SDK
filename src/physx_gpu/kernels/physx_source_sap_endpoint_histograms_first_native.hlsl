@@ -271,7 +271,7 @@ uint load_field(uint slot,uint index) {
     default:return 0u;
     }
 #else
-    return sourceViews[slot].Load(address);
+    return sourceViews[NonUniformResourceIndex(slot)].Load(address);
 #endif
 }
 void store_field(uint slot,uint index,uint value) {
@@ -329,7 +329,7 @@ void store_field(uint slot,uint index,uint value) {
     default:return;
     }
 #else
-    sourceViews[slot].Store(address,value);
+    sourceViews[NonUniformResourceIndex(slot)].Store(address,value);
 #endif
 }
 groupshared uint3 scanA[256];
