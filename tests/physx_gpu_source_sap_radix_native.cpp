@@ -307,6 +307,31 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
             gpu_us.push_back(*gpu_ns*0.001);
         }
     }
+    // The measured real GPU stage must still produce source-correct
+    // sorted projection/rank/handle streams at both workload sizes.
+    for(std::uint32_t axis=0u;axis<axes;++axis) {
+        const std::size_t start=axis*fields;
+        std::vector<std::pair<std::uint32_t,std::uint32_t>> expected;
+        expected.reserve(keys);
+        for(std::uint32_t i=0u;i<keys;++i)
+            expected.push_back({initial[offsets[start]/4u+i],i});
+        std::stable_sort(expected.begin(),expected.end(),
+            [](const auto& left,const auto& right){
+                return left.first<right.first;
+            });
+        std::vector<std::uint32_t> projections(keys),ranks(keys),handles(keys);
+        context.download(root,offsets[start],
+                         projections.data(),keys*sizeof(std::uint32_t));
+        context.download(root,offsets[start+1u],
+                         ranks.data(),keys*sizeof(std::uint32_t));
+        context.download(root,offsets[start+6u],
+                         handles.data(),keys*sizeof(std::uint32_t));
+        for(std::uint32_t i=0u;i<keys;++i)
+            require(projections[i]==expected[i].first &&
+                    ranks[i]==expected[i].second &&
+                    handles[i]==initial[offsets[start+5u]/4u+expected[i].second],
+                    "Profiled source radix stage produced incorrect sorted GPU streams");
+    }
     const char* backend=
 #if defined(FYZZXYZZY_TEST_D3D12)
         "d3d12";
