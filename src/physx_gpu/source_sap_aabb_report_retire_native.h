@@ -25,17 +25,18 @@ struct SourceSapAabbReportBitmapNative {
     std::span<std::uint32_t> host_words;
 };
 
-// PxgAABBManager::processFoundPairs/processLostPairs post-fetch bitmap
-// retirement: clear both complete GPU allocations using the original
-// mStream, then clear the original host map words. This follows successful
-// fetch and source pair admission, not kernel submission.
-//
-// Stage BOTH GPU fills before touching the source stream or host maps. A
-// malformed second resource cannot consume the first map. Native GPU work
-// is enqueued but never waited here: the next source update submits it
-// ahead of any following HtoD transfers, preserving CUDA mStream order.
-inline void retire_source_sap_aabb_report_bitmaps_native(
-    SourceSapDmaNative& stream,
+// Preflight both original GPU buffers and construct their D32 fills
+// BEFORE Sc publishes either fetched actor-pair report. The prepared
+// commands do not enter mStream until report publication succeeds.
+struct SourceSapPreparedAabbReportRetirementNative {
+    std::vector<compute::BatchCommand> commands;
+    std::span<std::uint32_t> added_words;
+    std::span<std::uint32_t> removed_words;
+};
+
+inline SourceSapPreparedAabbReportRetirementNative
+prepare_source_sap_aabb_report_retirement_native(
+    const SourceSapDmaNative& stream,
     const SourceFillD32NativeStage& fill,
     const CudaDeviceAddressMap& addresses,
     SourceSapAabbReportBitmapNative added,
@@ -59,17 +60,45 @@ inline void retire_source_sap_aabb_report_bitmaps_native(
     };
     const auto added_words=checked_words(added);
     const auto removed_words=checked_words(removed);
-    std::vector<compute::BatchCommand> prepared;
-    fill.append(prepared,addresses,added.device,0u,added_words);
-    fill.append(prepared,addresses,removed.device,0u,removed_words);
+    SourceSapPreparedAabbReportRetirementNative prepared{
+        {},added.host_words,removed.host_words};
+    fill.append(prepared.commands,addresses,added.device,0u,added_words);
+    fill.append(prepared.commands,addresses,removed.device,0u,removed_words);
+    return prepared;
+}
 
+// PxgAABBManager::processFoundPairs/processLostPairs retire both host
+// maps and zero the COMPLETE source GPU allocations after successful
+// publication. The caller has reserved enough mStream capacity before
+// entering Sc publication; inserting the prepared commands cannot
+// allocate and therefore cannot fail after a frame has been published.
+inline void commit_source_sap_aabb_report_retirement_native(
+    SourceSapDmaNative& stream,
+    SourceSapPreparedAabbReportRetirementNative&& prepared) {
     auto& commands=stream.commands();
-    commands.reserve(commands.size()+prepared.size());
+    if(commands.capacity()-commands.size()<prepared.commands.size())
+        throw std::logic_error(
+            "Source report bitmap retirement was not reserved before publication");
     commands.insert(commands.end(),
-                    std::make_move_iterator(prepared.begin()),
-                    std::make_move_iterator(prepared.end()));
-    std::fill(added.host_words.begin(),added.host_words.end(),0u);
-    std::fill(removed.host_words.begin(),removed.host_words.end(),0u);
+                    std::make_move_iterator(prepared.commands.begin()),
+                    std::make_move_iterator(prepared.commands.end()));
+    std::fill(prepared.added_words.begin(),prepared.added_words.end(),0u);
+    std::fill(prepared.removed_words.begin(),prepared.removed_words.end(),0u);
+}
+
+// Standalone fetch callers retain an atomic one-call operation.
+inline void retire_source_sap_aabb_report_bitmaps_native(
+    SourceSapDmaNative& stream,
+    const SourceFillD32NativeStage& fill,
+    const CudaDeviceAddressMap& addresses,
+    SourceSapAabbReportBitmapNative added,
+    SourceSapAabbReportBitmapNative removed) {
+    auto prepared=prepare_source_sap_aabb_report_retirement_native(
+        stream,fill,addresses,added,removed);
+    auto& commands=stream.commands();
+    commands.reserve(commands.size()+prepared.commands.size());
+    commit_source_sap_aabb_report_retirement_native(
+        stream,std::move(prepared));
 }
 
 } // namespace fyzz::physx_gpu
