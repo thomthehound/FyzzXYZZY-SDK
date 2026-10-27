@@ -45,6 +45,17 @@ void test_source_scene_boundary() {
             distances[0]==0.125f && distances[3]==0.25f,
             "Sc box geometry did not enter original PhysX AABB manager arrays");
     const auto before=bounds;
+    const auto bounds_equal=[&]() {
+        for(std::size_t i=0;i<bounds.size();++i) {
+            const auto& a=bounds[i];
+            const auto& b=before[i];
+            if(a.minimum.x!=b.minimum.x || a.minimum.y!=b.minimum.y ||
+               a.minimum.z!=b.minimum.z || a.maximum.x!=b.maximum.x ||
+               a.maximum.y!=b.maximum.y || a.maximum.z!=b.maximum.z)
+                return false;
+        }
+        return true;
+    };
     const auto beforeDistances=distances;
     const auto beforeGroups=groups;
     actors[1].half_extents.x=-1.0f;
@@ -53,7 +64,7 @@ void test_source_scene_boundary() {
         (void)prepare_source_sap_scene_update(
             actors,handles,target,changes,filter,true,true,scratch);
     }catch(const std::invalid_argument&){rejected=true;}
-    require(rejected && bounds==before && distances==beforeDistances &&
+    require(rejected && bounds_equal() && distances==beforeDistances &&
             groups==beforeGroups,
             "Malformed late actor geometry partially changed source AABB buffers");
     actors[1].half_extents.x=2.0f;
@@ -63,7 +74,7 @@ void test_source_scene_boundary() {
         (void)prepare_source_sap_scene_update(
             actors,duplicate,target,changes,filter,true,true,scratch);
     }catch(const std::invalid_argument&){rejected=true;}
-    require(rejected && bounds==before,
+    require(rejected && bounds_equal(),
             "Duplicated original volume handle changed source bounds");
 
     // AABB handle order is independent of Sc actor order and may be
