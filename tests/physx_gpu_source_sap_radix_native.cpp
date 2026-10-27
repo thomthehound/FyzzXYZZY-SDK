@@ -343,20 +343,26 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
         std::printf(
             "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
             " boxes=%u commands=18 trials=%zu"
+            " wave_count=%u wave_scatter=%u"
             " median_host_append_us=%.3f median_host_submit_us=%.3f"
             " median_submit_wait_us=%.3f median_gpu_batch_us=%.3f"
             " timed_upload_reset=no gpu_timestamp_replay=yes\n",
             backend,device.name.c_str(),boxes,trials,
+            stage.using_wave_count()?1u:0u,
+            stage.using_wave_scatter()?1u:0u,
             median(host_append),median(host_submit),
             median(host_submit_wait),median(gpu_us));
     else
         std::printf(
             "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
             " boxes=%u commands=18 trials=%zu"
+            " wave_count=%u wave_scatter=%u"
             " median_host_append_us=%.3f median_host_submit_us=%.3f"
             " median_submit_wait_us=%.3f median_gpu_batch_us=unavailable"
             " timed_upload_reset=no gpu_timestamp_replay=yes\n",
             backend,device.name.c_str(),boxes,trials,
+            stage.using_wave_count()?1u:0u,
+            stage.using_wave_scatter()?1u:0u,
             median(host_append),median(host_submit),
             median(host_submit_wait));
     context.destroy_buffer(root);
@@ -382,7 +388,9 @@ int main(int argc,char** argv) {
         std::cout<<"Source WR/WOR stable radix, ranks and original handles PASS\n";
         if(argc==8) {
             profile_wr_radix(context,stage,256u);
+            profile_wr_radix(context,portable,256u);
             profile_wr_radix(context,stage,4096u);
+            profile_wr_radix(context,portable,4096u);
         }
     }catch(const std::exception& e) {
         std::cerr<<"Source WR/WOR radix GPU FAILED: "<<e.what()<<'\n';
