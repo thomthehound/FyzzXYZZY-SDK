@@ -754,10 +754,15 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
                 volumeGpu,volumes,persistent,gpu,false};
         };
         const physx::Bp::BpFilter filter(false,false);
-        const physx::Bp::BroadPhaseUpdateData frame(
-            created.begin(),created.size(),nullptr,0u,
-            retired.begin(),retired.size(),bounds.data(),groups.data(),
-            offsets.data(),nullptr,40u,filter,true,gpu);
+        const auto frame=source_sap_single_volume_update_native(
+            manager,{created,retired,updated},bounds,filter,true);
+        if(frame.getNumCreatedHandles()!=2u ||
+           frame.getNumUpdatedHandles()!=0u ||
+           frame.getNumRemovedHandles()!=0u ||
+           !frame.getStateChanged() || frame.getGpuStateChanged() ||
+           frame.getCreatedHandles()!=created.begin())
+            throw std::runtime_error(
+                "Source single-volume first pass did not construct original Bp frame");
         pre_update_source_sap_aabb_manager_native(
             frame,manager_view(),stream);
         stream.wait_at_fetch();
@@ -789,10 +794,15 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            offsets[2]!=0.125f)
             throw std::runtime_error(
                 "Original source remove/re-add and changed bitmap semantics diverged");
-        const physx::Bp::BroadPhaseUpdateData next(
-            nullptr,0u,nullptr,0u,retired.begin(),retired.size(),
-            bounds.data(),groups.data(),offsets.data(),nullptr,
-            40u,filter,true,true);
+        const auto next=source_sap_single_volume_update_native(
+            manager,{created,retired,updated},bounds,filter,false);
+        if(next.getNumCreatedHandles()!=0u ||
+           next.getNumUpdatedHandles()!=0u ||
+           next.getNumRemovedHandles()!=1u ||
+           !next.getStateChanged() || !next.getGpuStateChanged() ||
+           next.getRemovedHandles()!=retired.begin())
+            throw std::runtime_error(
+                "Source removed/changed bitmap frame omitted original GPU dirty flags");
         pre_update_source_sap_aabb_manager_native(next,manager_view(),stream);
         stream.wait_at_fetch();
         const auto removedGpuWords=addresses.resolve(
