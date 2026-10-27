@@ -29,6 +29,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -759,8 +760,8 @@ void exercise_original_sap_source_members_native(Context& context) {
             throw std::runtime_error(
                 "Original source AABB first-pass GPU transfer ordering changed");
         const auto gpu_manager=source_sap_aabb_descriptor_native(manager);
-        members=source.dma_up_members(&gpu_manager,mapped);
-        const auto counts=gpu_dma_up_sap_frame_native(first,members,stream);
+        auto managedMembers=source.dma_up_members(&gpu_manager,mapped);
+        const auto counts=gpu_dma_up_sap_frame_native(first,managedMembers,stream);
         if(counts.current_boxes!=2u || source.num_boxes()!=2u ||
            source.descriptor().numCreatedHandles!=2u ||
            source.descriptor().max_found_lost_pairs!=4u ||
