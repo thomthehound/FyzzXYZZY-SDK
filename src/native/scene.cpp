@@ -1855,6 +1855,82 @@ void Scene::SapPairManager::seed(std::span<const Pair> pairs) {
     touched.clear();
 }
 
+void Scene::set_gpu_sap_source(std::unique_ptr<GpuSapPairSource> source) {
+    if(!source)
+        throw std::invalid_argument("GPU SAP requires a native source owner");
+    if(!actors_.empty() || gpu_sap_source_)
+        throw std::logic_error(
+            "GPU SAP must be installed once, before scene actor admission");
+    gpu_sap_source_=std::move(source);
+}
+
+void Scene::invalidate_gpu_sap() noexcept {
+    if(gpu_sap_source_ && !gpu_sap_failed_) {
+        gpu_sap_failed_=true;
+        gpu_sap_source_->abort_frame();
+    }
+}
+
+void Scene::consume_gpu_sap_reports(GpuSapPairReports reports) {
+    // Source PxgCudaBroadPhaseSap::purgeDuplicate{Found,Lost}Pairs sorts
+    // reports before PxgAABBManager::postBroadPhase publishes Sc tasks.
+    // Reject corrupt/partial fetches without modifying any Sc pair arena.
+    auto check_order=[](std::span<const Pair> pairs) {
+        for(std::size_t i=1;i<pairs.size();++i)
+            if(!(pairs[i-1]<pairs[i]))
+                throw std::invalid_argument(
+                    "GPU SAP actor reports are not strictly ordered and unique");
+    };
+    check_order(reports.found);
+    check_order(reports.lost);
+    auto valid=[&](Pair pair) {
+        if(pair.a>=pair.b || pair.b>=actors_.size())
+            throw std::invalid_argument("GPU SAP returned noncanonical actor IDs");
+        const auto& a=actors_[pair.a];
+        const auto& b=actors_[pair.b];
+        if(!a.alive || !b.alive || !a.simulation_shape_enabled ||
+           !b.simulation_shape_enabled ||
+           a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane ||
+           (a.kind!=Kind::DynamicBox && b.kind!=Kind::DynamicBox))
+            throw std::invalid_argument(
+                "GPU SAP reported a disabled/retired/nonrigid-filtered pair");
+    };
+    for(Pair pair:reports.found) {
+        valid(pair);
+        if(std::binary_search(previous_pairs_.begin(),previous_pairs_.end(),pair) ||
+           std::binary_search(reports.lost.begin(),reports.lost.end(),pair))
+            throw std::invalid_argument(
+                "GPU SAP Found pair already published or simultaneously Lost");
+    }
+    for(Pair pair:reports.lost) {
+        valid(pair);
+        if(!std::binary_search(previous_pairs_.begin(),previous_pairs_.end(),pair))
+            throw std::invalid_argument("GPU SAP Lost pair has no Sc owner");
+    }
+    broadphase_pair_membership_changed_=
+        !reports.found.empty() || !reports.lost.empty();
+    if(!broadphase_pair_membership_changed_)return;
+    // These are the EXACT published Sc pair histories. The GPU source
+    // owns the BP pair registry and its own report buffers; no CPU SAP
+    // sweep, second hash owner or geometry-based overlap verification.
+    broadphase_candidate_deltas_.clear();
+    broadphase_candidate_deltas_.reserve(previous_pairs_.size());
+    std::set_difference(previous_pairs_.begin(),previous_pairs_.end(),
+                        reports.lost.begin(),reports.lost.end(),
+                        std::back_inserter(broadphase_candidate_deltas_));
+    pending_pairs_.clear();
+    pending_pairs_.reserve(broadphase_candidate_deltas_.size()+
+                           reports.found.size());
+    std::set_union(broadphase_candidate_deltas_.begin(),
+                   broadphase_candidate_deltas_.end(),
+                   reports.found.begin(),reports.found.end(),
+                   std::back_inserter(pending_pairs_));
+    // If a GPU source is ever replaced after a fatal abort, rebuilding
+    // CPU SAP's hash from these pairs must be explicit; never use its
+    // stale pre-GPU state as a hidden fallback.
+    sap_pair_registry_dirty_=true;
+}
+
 void Scene::update_pairs() {
     // The BP hashed manager is the overlap authority; the sorted Sc
     // manager/edge stream is a separate consumer. Rejected transactions
@@ -8909,6 +8985,7 @@ void Scene::step(float seconds) {
     // successful step returns its published body and contact results.
     activity_checkpoint_active_=false;
     } catch (...) {
+        invalidate_gpu_sap();
         step_checkpoint_.rollback(*this);
         throw;
     }
@@ -8920,8 +8997,8 @@ void Scene::advance_collision(bool force_update) {
     // work path instead of copying persistent edge/island state.
     // A successful quiet advance still retires last frame's transient
     // event/solver reports and advances the publication clock.
-    if (!dirty_ && !force_update && !island_topology_dirty_ &&
-        retired_edge_handles_.empty()) {
+    if (!gpu_sap_source_ && !dirty_ && !force_update &&
+        !island_topology_dirty_ && retired_edge_handles_.empty()) {
         // No new edges or pending island changes: never scan live
         // islands on the existing constant-work collision query path.
         advance_collision_internal(false,false);
@@ -8971,6 +9048,7 @@ void Scene::advance_collision(bool force_update) {
         // may complete inside the failure-atomic collision transaction.
         retire_destroyed_contact_edges();
     } catch (...) {
+        invalidate_gpu_sap();
         step_checkpoint_.rollback(*this);
         throw;
     }
@@ -9007,9 +9085,40 @@ void Scene::advance_collision_internal(
     // BP first pass -> BP update -> post-BP pair publication ->
     // Gu narrowphase -> physical touch publication.
     // No parallel timestep or dynamics scheduler is introduced.
-    if (dirty_ || force_update) {
-        update_bounds();
-        update_pairs();
+    bool update_collision=dirty_ || force_update;
+    if(gpu_sap_source_) {
+        if(gpu_sap_failed_)
+            throw std::logic_error("GPU SAP source history was invalidated");
+        gpu_sap_volume_work_.clear();
+        gpu_sap_volume_work_.reserve(live_actor_ids_.size());
+        for(BodyId id:live_actor_ids_) {
+            auto& actor=actors_[id];
+            if(!actor.simulation_shape_enabled)continue;
+            // The current native GPU SAP admits finite box volumes only.
+            // An unsupported infinite plane must fail, not silently run
+            // the CPU broadphase while claiming GPU selection.
+            if(actor.kind==Kind::StaticPlane)
+                throw std::logic_error(
+                    "GPU SAP does not yet admit infinite plane shapes");
+            if(!actor.cached_bounds_current)
+                update_actor_bounds(actor); // Sc cached-shape preparation
+            gpu_sap_volume_work_.push_back({
+                id,actor.position,actor.half_extents,actor.orientation,
+                actor.contact_offset,actor.kind==Kind::DynamicBox});
+        }
+        // The source GPU owner performs preBpUpdate_GPU/update/gpuDMABack
+        // and fence-gated fetch BEFORE publishing these report spans.
+        // GPU idle/forced logic stays live even on quiet Sc frames.
+        const auto reports=gpu_sap_source_->advance(
+            gpu_sap_volume_work_,dirty_,force_update);
+        consume_gpu_sap_reports(reports);
+        update_collision |= broadphase_pair_membership_changed_;
+    }
+    if (update_collision) {
+        if(!gpu_sap_source_) {
+            update_bounds();
+            update_pairs();
+        }
         publish_pairs();
         update_contacts();
     } else {
