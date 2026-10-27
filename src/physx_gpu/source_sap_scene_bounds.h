@@ -51,6 +51,8 @@ struct SourceSapSceneFrameChanges {
 // boxes, and retains a scratch vector across frames. All inputs and handle
 // uniqueness are checked before modifying any source array. Retired handles
 // and their pre-existing source array entries are deliberately untouched.
+// When source deltas are supplied, only created/updated volumes are written;
+// quiet and removed-only frames leave persistent AABB geometry untouched.
 inline void write_source_sap_scene_bounds(
     std::span<const native::GpuBroadphaseBox> boxes,
     std::span<const physx::Bp::ShapeHandle> source_handles,
@@ -69,10 +71,28 @@ inline void write_source_sap_scene_bounds(
     // until every geometry and group value has passed validation.
     scratch.visit_epochs.resize(output.bounds.size(),0u);
     scratch.prepared_bounds.resize(boxes.size());
-    if(++scratch.epoch==0u) {
+    // Reserve the following stamp for created/updated volumes in this
+    // frame. Both stamps are distinct from every previous frame.
+    if(scratch.epoch>=std::numeric_limits<std::uint32_t>::max()-2u) {
         std::fill(scratch.visit_epochs.begin(),scratch.visit_epochs.end(),0u);
-        scratch.epoch=1u;
+        scratch.epoch=2u;
+    }else {
+        scratch.epoch+=2u;
     }
+    const auto changed_epoch=scratch.epoch+1u;
+    const auto stage_bounds=[&](std::size_t i) {
+        const auto& box=boxes[i];
+        const auto& p=box.position;
+        const auto& e=box.half_extents;
+        const auto& q=box.orientation;
+        const physx::PxTransform pose(
+            physx::PxVec3(p.x,p.y,p.z),physx::PxQuat(q.x,q.y,q.z,q.w));
+        const auto bounds=physx::PxBounds3::poseExtent(
+            pose,physx::PxVec3(e.x,e.y,e.z));
+        if(!bounds.isFinite() || bounds.isEmpty())
+            throw std::out_of_range("Source SAP box produces invalid world bounds");
+        scratch.prepared_bounds[i]=bounds;
+    };
 
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
@@ -102,13 +122,7 @@ inline void write_source_sap_scene_bounds(
         if(box.motion!=native::GpuBroadphaseBox::Motion::Static &&
            box.id>=((std::numeric_limits<physx::PxU32>::max()>>3)-1u))
             throw std::out_of_range("Source SAP rigid group ID exceeds encoded range");
-        const physx::PxTransform pose(
-            physx::PxVec3(p.x,p.y,p.z),physx::PxQuat(q.x,q.y,q.z,q.w));
-        const auto bounds=physx::PxBounds3::poseExtent(
-            pose,physx::PxVec3(e.x,e.y,e.z));
-        if(!bounds.isFinite() || bounds.isEmpty())
-            throw std::out_of_range("Source SAP box produces invalid world bounds");
-        scratch.prepared_bounds[i]=bounds;
+        if(!changes)stage_bounds(i);
     }
 
     if(changes) {
@@ -149,10 +163,23 @@ inline void write_source_sap_scene_bounds(
            intersects(changes->created,changes->removed) ||
            intersects(changes->updated,changes->removed))
             throw std::invalid_argument("Source SAP handle occurs in multiple delta lists");
+
+        // The source AABB manager's deltas, not a new geometry diff,
+        // determine which boxes need world-space reconstruction. Quiet
+        // frames validate inputs without rewriting persistent AABB data.
+        for(const auto handle:changes->created)
+            scratch.visit_epochs[handle]=changed_epoch;
+        for(const auto handle:changes->updated)
+            scratch.visit_epochs[handle]=changed_epoch;
+        for(std::size_t i=0;i<boxes.size();++i)
+            if(scratch.visit_epochs[source_handles[i]]==changed_epoch)
+                stage_bounds(i);
     }
 
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
+        if(changes && scratch.visit_epochs[handle]!=changed_epoch)
+            continue;
         const auto& b=boxes[i];
         output.bounds[handle]=scratch.prepared_bounds[i];
         output.contact_distances[handle]=b.contact_offset;
