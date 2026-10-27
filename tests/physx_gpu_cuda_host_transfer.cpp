@@ -12,6 +12,7 @@
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
@@ -672,6 +673,150 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourcePhysxDeviceRootCallback deviceCallback(roots,&stream);
+    SourcePhysxMappedReportRoots pinned(
+        context,addresses,stream,SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    bool aborted=false;
+    const auto abort=[](void* data) noexcept {
+        *static_cast<bool*>(data)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,deviceCallback,abort,&aborted);
+        constexpr auto stat=physx::PxsHeapStats::eBROADPHASE;
+        // The source manager owns its original bitmap and PinnableArray
+        // members. Admission and first-pass lowering borrow these directly.
+        physx::Cm::PinnableBitMap added(pinned,stat),removed(pinned,stat),
+            changed(pinned,stat),aggregated(pinned,stat);
+        physx::Cm::PinnableArray<physx::Bp::ShapeHandle> created(pinned,stat),
+            retired(pinned,stat),updated(pinned,stat);
+        std::array<physx::Bp::VolumeData,40u> volumes{};
+        for(auto& v:volumes)v.reset();
+        std::array<physx::Bp::FilterGroup::Enum,40u> groups{};
+        groups.fill(physx::Bp::FilterGroup::eINVALID);
+        std::array<physx::PxReal,40u> offsets{};
+        std::array<physx::PxBounds3,40u> bounds{};
+        bounds.fill(physx::PxBounds3::centerExtents(
+            physx::PxVec3(0.f),physx::PxVec3(1.f)));
+        bool persistent=false,gpu=false;
+        SourceSapSingleVolumeMembersNative manager{
+            added,removed,changed,aggregated,volumes,groups,offsets,
+            persistent,gpu};
+        const auto first_pass=[&]() {
+            collect_source_sap_single_volume_first_pass_native(
+                manager,{created,retired,updated});
+        };
+        // Original AABB handles need not equal actor IDs or arrive sorted.
+        alignas(4) int actorA=1,actorB=2;
+        add_source_sap_single_volume_native(
+            manager,36u,0.04f,physx::Bp::FilterGroup::eSTATICS,&actorA);
+        add_source_sap_single_volume_native(
+            manager,2u,0.02f,physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB);
+        add_source_sap_single_volume_native(
+            manager,7u,0.03f,physx::Bp::FilterGroup::eSTATICS,&actorA);
+        if(!remove_source_sap_single_volume_native(manager,7u))
+            throw std::runtime_error("Same-frame source admission was not cancelled");
+        bool rejected=false;
+        try {add_source_sap_single_volume_native(
+            manager,2u,0.04f,physx::Bp::FilterGroup::eSTATICS,&actorA);}
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected || !volumes[2].isSingleActor() ||
+           groups[2]!=physx::Bp::FilterGroup::eDYNAMICS_BASE)
+            throw std::runtime_error("Duplicate source volume admission changed the owner");
+        first_pass();
+        if(created.size()!=2u || created[0]!=2u || created[1]!=36u ||
+           retired.size()!=0u || updated.size()!=0u || gpu || !persistent ||
+           added.getWordCount()!=2u || !added.boundedTest(36u) ||
+           added.boundedTest(7u))
+            throw std::runtime_error(
+                "PhysX single-volume source first pass lost sorted/cancelled handles");
+
+        physx::PxgCudaBuffer addedGpu(heap,stat),removedGpu(heap,stat),
+            aggregatedGpu(heap,stat),changedGpu(heap,stat),volumeGpu(heap,stat);
+        physx::PxgTypedCudaBuffer<physx::PxBounds3> boundsGpu(heap,stat);
+        physx::PxgTypedCudaBuffer<physx::PxReal> distancesGpu(heap,stat);
+        physx::PxgTypedCudaBuffer<physx::PxU32> groupsGpu(heap,stat),
+            environmentGpu(heap,stat);
+        physx::PxU32 boxCapacity=0u;
+        const auto manager_view=[&]() {
+            return SourceSapAabbManagerPreUpdateNative{
+                {boundsGpu,distancesGpu,groupsGpu,environmentGpu,boxCapacity},
+                source_sap_aabb_bitmap_native(addedGpu,added),
+                source_sap_aabb_bitmap_native(removedGpu,removed),
+                source_sap_aabb_bitmap_native(aggregatedGpu,aggregated),
+                source_sap_aabb_bitmap_native(changedGpu,changed),
+                volumeGpu,volumes,persistent,gpu,false};
+        };
+        const physx::Bp::BpFilter filter(false,false);
+        const physx::Bp::BroadPhaseUpdateData frame(
+            created.begin(),created.size(),nullptr,0u,
+            retired.begin(),retired.size(),bounds.data(),groups.data(),
+            offsets.data(),nullptr,40u,filter,true,gpu);
+        pre_update_source_sap_aabb_manager_native(
+            frame,manager_view(),stream);
+        stream.wait_at_fetch();
+        const auto gpuWords=addresses.resolve(
+            addedGpu.getDevicePtr(),added.getWordCount()*sizeof(physx::PxU32));
+        std::array<physx::PxU32,2> observed{};
+        context.download(gpuWords.buffer,gpuWords.offset,
+                         observed.data(),sizeof(observed));
+        if(observed[0]!=(1u<<2u) || observed[1]!=(1u<<4u))
+            throw std::runtime_error(
+                "Native GPU AABB bitmap differs from original source admission");
+
+        // Source processFoundPairs/processLostPairs retire these host bits
+        // after successful fetch; the next frame reuses the same allocations.
+        clear_source_sap_single_volume_report_bitmaps_native(manager);
+        persistent=false;gpu=false;
+        if(remove_source_sap_single_volume_native(manager,2u))
+            throw std::runtime_error("Previously admitted volume was cancelled");
+        add_source_sap_single_volume_native(
+            manager,2u,0.05f,physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB);
+        if(remove_source_sap_single_volume_native(manager,36u))
+            throw std::runtime_error("Previously published volume was not retired");
+        mark_source_sap_single_volume_changed_native(manager,2u,0.125f);
+        first_pass();
+        if(created.size()!=0u || retired.size()!=1u || retired[0]!=36u ||
+           updated.size()!=0u || !gpu || !persistent ||
+           groups[36]!=physx::Bp::FilterGroup::eINVALID ||
+           volumes[36].getUserData()!=nullptr ||
+           offsets[2]!=0.125f)
+            throw std::runtime_error(
+                "Original source remove/re-add and changed bitmap semantics diverged");
+        const physx::Bp::BroadPhaseUpdateData next(
+            nullptr,0u,nullptr,0u,retired.begin(),retired.size(),
+            bounds.data(),groups.data(),offsets.data(),nullptr,
+            40u,filter,true,true);
+        pre_update_source_sap_aabb_manager_native(next,manager_view(),stream);
+        stream.wait_at_fetch();
+        const auto removedGpuWords=addresses.resolve(
+            removedGpu.getDevicePtr(),removed.getWordCount()*sizeof(physx::PxU32));
+        observed={};
+        context.download(removedGpuWords.buffer,removedGpuWords.offset,
+                         observed.data(),sizeof(observed));
+        if(observed[0]!=0u || observed[1]!=(1u<<4u))
+            throw std::runtime_error(
+                "Original source GPU removed bitmap lost retired volume");
+        const auto changedGpuWords=addresses.resolve(
+            changedGpu.getDevicePtr(),changed.getWordCount()*sizeof(physx::PxU32));
+        physx::PxU32 observedChanged=0;
+        context.download(changedGpuWords.buffer,changedGpuWords.offset,
+                         &observedChanged,sizeof(observedChanged));
+        if(!(observedChanged & (1u<<2u)))
+            throw std::runtime_error(
+                "Original source changed-handle bitmap not uploaded to native GPU");
+        clear_source_sap_single_volume_report_bitmaps_native(manager);
+    }
+    stream.wait_at_fetch();
+    if(aborted || roots.live_roots() || addresses.live_allocations() ||
+       pinned.live_roots())
+        throw std::runtime_error("Source AABB volume bitmap lifecycle leaked GPU roots");
 }
 
 void exercise_original_sap_source_members_native(Context& context) {
@@ -2574,6 +2719,7 @@ int main() {
         exercise_original_sap_history_growth_native(context);
         exercise_original_sap_post_axis_buffers_native(context);
         exercise_original_sap_radix_descriptors_native(context);
+        exercise_source_single_volume_bitmap_lifecycle_native(context);
         exercise_original_sap_source_members_native(context);
         exercise_original_sap_update_fetch_lifecycle(context);
         exercise_source_gpu_heap_manager(context);
