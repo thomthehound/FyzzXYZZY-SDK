@@ -14,6 +14,7 @@
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerVolumeLifecycleNative.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
+#include "physx_gpu/source_sc_element_lifecycle_native.h"
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
@@ -1057,6 +1058,171 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
        mapped.live_roots())
         throw std::runtime_error(
             "Persistent source AABB manager leaked original PhysX GPU heap roots");
+}
+
+void exercise_source_sc_element_id_lifecycle_native(Context& context) {
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourcePhysxDeviceRootCallback callback(roots,&stream);
+    SourcePhysxMappedReportRoots mapped(
+        context,addresses,stream,SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    bool aborted=false;
+    const auto abort=[](void* state) noexcept {
+        *static_cast<bool*>(state)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        physx::PxgAllocatorDesc allocators(heap,mapped,mapped);
+        PxgAabbSourceMembersNative manager(allocators);
+        PxgSapSourceMembersNative sap(allocators,8u,2u);
+        // Sc::Scene owns DIFFERENT original trackers for rigid actor IDs
+        // (filtering) and ElementSim IDs (AABB volume handles).
+        physx::Sc::ObjectIDTracker scActors,scElements;
+        const auto rigidA=scActors.createID();
+        const auto rigidB=scActors.createID();
+        const auto rigidC=scActors.createID();
+        const auto rigidD=scActors.createID();
+        const auto rigidE=scActors.createID();
+
+        using Box=fyzz::native::GpuBroadphaseBox;
+        // These are Sc actor IDs, NOT Sc::ElementSim IDs. The original
+        // ObjectIDTracker alone selects the volume indices (0, 1, 2 ...).
+        alignas(4) physx::PxU32 elementA=17u,elementB=18u,
+            elementCanceled=19u,elementD=20u,elementE=21u;
+        const auto shapeA=SourceScElementLifecycleNative::admit(
+            scElements,manager,300u,rigidA,0.04f,
+            Box::Motion::Static,&elementA);
+        const auto shapeB=SourceScElementLifecycleNative::admit(
+            scElements,manager,900u,rigidB,0.02f,
+            Box::Motion::Dynamic,&elementB);
+        const auto canceled=SourceScElementLifecycleNative::admit(
+            scElements,manager,450u,rigidC,0.03f,
+            Box::Motion::Static,&elementCanceled);
+        if(manager.single_volumes().groups[shapeB]!=
+               physx::Bp::getFilterGroup(false,rigidB,false) ||
+           manager.single_volumes().groups[shapeB]==
+               physx::Bp::getFilterGroup(false,900u,false) ||
+           manager.single_volumes().groups[shapeA]!=
+               physx::Bp::getFilterGroup(true,rigidA,false))
+            throw std::runtime_error(
+                "Source Sc actor admission omitted original Bp filter encoding");
+        if(shapeA!=0u || shapeB!=1u || canceled!=2u ||
+           shapeA==300u || shapeB==900u ||
+           !SourceScElementLifecycleNative::remove(
+               scElements,manager,canceled) ||
+           !scElements.isDeletedID(canceled) ||
+           scElements.getDeletedIDCount()!=1u)
+            throw std::runtime_error(
+                "Source Sc element IDPool did not defer canceled admission");
+
+        std::array<Box,2u> boxes{{
+            {300u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.04f,
+                Box::Motion::Static},
+            {900u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
+                Box::Motion::Dynamic}
+        }};
+        const std::array<physx::Bp::ShapeHandle,2u> handles{
+            shapeA,shapeB};
+        const physx::Bp::BpFilter filter(false,false);
+        const auto first=manager.prepare(boxes,handles,filter);
+        if(first.getNumCreatedHandles()!=2u ||
+           first.getCreatedHandles()[0]!=shapeA ||
+           first.getCreatedHandles()[1]!=shapeB ||
+           manager.volume_to_actor()[shapeA]!=300u ||
+           manager.volume_to_actor()[shapeB]!=900u)
+            throw std::runtime_error(
+                "Sc ElementIDPool IDs were confused with original source actor IDs");
+        pre_update_source_sap_aabb_manager_native(
+            first,manager.pre_update(sap.pre_broadphase_buffers()),stream);
+        stream.wait_at_fetch();
+        manager.complete_fetch(first);
+        SourceScElementLifecycleNative::post_reports_cleanup(scElements);
+        if(scElements.isDeletedID(canceled) ||
+           scElements.getDeletedIDCount()!=0u)
+            throw std::runtime_error(
+                "Sc postReportsCleanup did not release canceled element ID");
+
+        // Original Sc element teardown releases its ID before GPU fetch.
+        // ObjectIDTracker defers its recycling through postReportsCleanup.
+        if(SourceScElementLifecycleNative::remove(
+               scElements,manager,shapeB) ||
+           !scElements.isDeletedID(shapeB) ||
+           manager.volume_to_actor()[shapeB]!=900u)
+            throw std::runtime_error(
+                "Published Sc element removal lost pre-fetch volume identity");
+        const auto shapeD=SourceScElementLifecycleNative::admit(
+            scElements,manager,650u,rigidD,0.035f,
+            Box::Motion::Static,&elementD);
+        if(shapeD==shapeB || manager.volume_to_actor()[shapeD]!=650u ||
+           manager.volume_to_actor()[shapeB]!=900u)
+            throw std::runtime_error(
+                "Original ObjectIDTracker recycled a pending GPU lost volume");
+        manager.mark_changed(shapeA,0.125f);
+        std::array<Box,2u> moved{{
+            {300u,{6.f,0.f,0.f},{1.f,1.f,1.f},{},0.125f,
+                Box::Motion::Static},
+            {650u,{9.f,0.f,0.f},{1.f,1.f,1.f},{},0.035f,
+                Box::Motion::Static}
+        }};
+        const std::array<physx::Bp::ShapeHandle,2u> movedHandles{
+            shapeA,shapeD};
+        const auto second=manager.prepare(moved,movedHandles,filter);
+        if(second.getNumRemovedHandles()!=1u ||
+           second.getRemovedHandles()[0]!=shapeB ||
+           second.getNumCreatedHandles()!=1u ||
+           second.getCreatedHandles()[0]!=shapeD ||
+           !second.getGpuStateChanged() ||
+           std::fabs(manager.source_bounds().getBounds(shapeA).minimum.x-5.f)>1.e-6f)
+            throw std::runtime_error(
+                "Original Sc shape IDs did not produce expected GPU AABB frame deltas");
+        pre_update_source_sap_aabb_manager_native(
+            second,manager.pre_update(sap.pre_broadphase_buffers()),stream);
+        stream.wait_at_fetch();
+        const auto removed=manager.removed_report_bitmap();
+        const auto view=addresses.resolve(removed.device,sizeof(physx::PxU32));
+        physx::PxU32 gpu_removed=0;
+        context.download(view.buffer,view.offset,&gpu_removed,sizeof(gpu_removed));
+        if((gpu_removed&(1u<<shapeB))==0u)
+            throw std::runtime_error(
+                "Source Sc element removal was not uploaded to real GPU bitmap");
+
+        // The fetched lost pair still resolves BOTH actors, even though
+        // Sc already released the element ID and VolumeData has reset.
+        const std::array<physx::PxgBroadPhasePair,1u> sourceLost{
+            physx::PxgBroadPhasePair{shapeA,shapeB}};
+        std::vector<fyzz::native::Pair> found,lost;
+        lower_source_sap_actor_reports_to_sc(
+            {},sourceLost,manager.volume_to_actor(),found,lost);
+        if(lost!=std::vector<fyzz::native::Pair>{
+               fyzz::native::Pair{300u,900u}})
+            throw std::runtime_error(
+                "Source GPU lost pair failed with original Sc deferred element ID");
+        manager.complete_fetch(second);
+        SourceScElementLifecycleNative::post_reports_cleanup(scElements);
+        if(manager.volume_to_actor()[shapeB]!=
+               std::numeric_limits<fyzz::BodyId>::max())
+            throw std::runtime_error(
+                "Original Sc element identity was not retired after GPU fetch");
+
+        // Cm::IDPool now owns the released ID and may recycle it. The
+        // source AABB manager admits it for a DIFFERENT actor only after
+        // the fetched lost report and postReportsCleanup completed.
+        const auto shapeE=SourceScElementLifecycleNative::admit(
+            scElements,manager,1200u,rigidE,0.05f,
+            Box::Motion::Dynamic,&elementE);
+        if(shapeE!=shapeB ||
+           manager.volume_to_actor()[shapeE]!=1200u ||
+           manager.volume_to_actor()[shapeA]!=300u)
+            throw std::runtime_error(
+                "Original Sc ObjectIDTracker did not recycle fetched source volume");
+    }
+    stream.wait_at_fetch();
+    if(aborted || roots.live_roots() || addresses.live_allocations() ||
+       mapped.live_roots())
+        throw std::runtime_error(
+            "Source Sc element ID lifetime leaked PhysX GPU buddy-heap roots");
 }
 
 void exercise_original_sap_source_members_native(Context& context) {
@@ -2961,6 +3127,7 @@ int main() {
         exercise_original_sap_radix_descriptors_native(context);
         exercise_source_single_volume_bitmap_lifecycle_native(context);
         exercise_persistent_source_aabb_manager_native(context);
+        exercise_source_sc_element_id_lifecycle_native(context);
         exercise_original_sap_source_members_native(context);
         exercise_original_sap_update_fetch_lifecycle(context);
         exercise_source_gpu_heap_manager(context);

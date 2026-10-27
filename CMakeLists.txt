@@ -340,6 +340,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/simulationcontroller/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
@@ -1978,6 +1979,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_include_directories(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/simulationcontroller/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
