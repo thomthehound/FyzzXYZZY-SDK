@@ -78,6 +78,57 @@ void test_source_scene_boundary() {
     require(rejected && bounds_equal(),
             "Duplicated original volume handle changed source bounds");
 
+    // A quiet frame carries no created/updated source volumes. Geometry
+    // validation still runs, but the persistent source AABB arrays must
+    // not be repopulated from every Sc actor on each collision frame.
+    actors[0].position.x=6.0f;
+    actors[1].position.x=-10.0f;
+    const SourceSapSceneFrameChanges quiet{{},{},{}};
+    (void)prepare_source_sap_scene_update(
+        actors,handles,target,quiet,filter,false,false,scratch);
+    require(bounds_equal() && distances==beforeDistances &&
+            groups==beforeGroups,
+            "Quiet source SAP frame rewrote persistent AABB manager arrays");
+
+    // Only the authoritative updated handle is reconstructed, even when
+    // another live Sc actor's pose differs from its retained GPU bounds.
+    const std::array<physx::Bp::ShapeHandle,1> moved{0u};
+    const SourceSapSceneFrameChanges moving{{},moved,{}};
+    actors[0].contact_offset=0.375f;
+    (void)prepare_source_sap_scene_update(
+        actors,handles,target,moving,filter,true,true,scratch);
+    require(std::fabs(bounds[0].minimum.x-5.0f)<1.0e-6f &&
+            std::fabs(bounds[3].minimum.x+8.0f)<1.0e-6f &&
+            distances[0]==0.375f && distances[3]==beforeDistances[3],
+            "Sparse source SAP update changed an unmodified volume");
+
+    // A late invalid actor is rejected before publishing even the
+    // earlier valid changed volume to the original source arrays.
+    const auto sparseBefore=bounds;
+    const auto sparseDistances=distances;
+    const auto sparseGroups=groups;
+    const std::array<physx::Bp::ShapeHandle,2> bothMoved{0u,3u};
+    const SourceSapSceneFrameChanges invalidUpdate{{},bothMoved,{}};
+    actors[0].position.x=9.0f;
+    actors[1].half_extents.x=-1.0f;
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            actors,handles,target,invalidUpdate,filter,true,true,scratch);
+    }catch(const std::invalid_argument&){rejected=true;}
+    bool unchanged=rejected && distances==sparseDistances &&
+                   groups==sparseGroups;
+    for(std::size_t i=0;i<bounds.size();++i) {
+        const auto& a=bounds[i];
+        const auto& b=sparseBefore[i];
+        unchanged=unchanged && a.minimum.x==b.minimum.x &&
+                  a.minimum.y==b.minimum.y && a.minimum.z==b.minimum.z &&
+                  a.maximum.x==b.maximum.x && a.maximum.y==b.maximum.y &&
+                  a.maximum.z==b.maximum.z;
+    }
+    require(unchanged,
+            "Malformed sparse source SAP update partially published bounds");
+
     // AABB handle order is independent of Sc actor order and may be
     // recycled. PhysX pair ordering is by volume; Sc is by actor ID.
     const std::array<BodyId,4> volume_to_actor{
