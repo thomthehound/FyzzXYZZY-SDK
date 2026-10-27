@@ -726,7 +726,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             physx::Bp::FilterGroup::eSTATICS,&actorA,36u);
         add_source_sap_single_volume_actor_native(
             manager,identity,2u,0.02f,
-            physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB,2u);
+            physx::Bp::getFilterGroup_Dynamics(99u,false),&actorB,2u);
         add_source_sap_single_volume_actor_native(
             manager,identity,7u,0.03f,
             physx::Bp::FilterGroup::eSTATICS,&actorA,7u);
@@ -740,7 +740,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             physx::Bp::FilterGroup::eSTATICS,&actorA,2u);}
         catch(const std::invalid_argument&){rejected=true;}
         if(!rejected || !volumes[2].isSingleActor() ||
-           groups[2]!=physx::Bp::FilterGroup::eDYNAMICS_BASE)
+           groups[2]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
             throw std::runtime_error("Duplicate source volume admission changed the owner");
         first_pass();
         if(created.size()!=2u || created[0]!=2u || created[1]!=36u ||
@@ -794,6 +794,9 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             manager,{created,retired,updated},live_boxes,live_handles,
             sceneBounds,filter,true,sceneScratch);
         validate_source_sap_volume_actor_lifetime_native(identity,frame);
+        if(groups[2]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "GPU Sc bounds overwrote admitted PhysX rigid actor filter group");
         if(frame.getNumCreatedHandles()!=2u ||
            frame.getNumUpdatedHandles()!=0u ||
            frame.getNumRemovedHandles()!=0u ||
@@ -821,7 +824,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             throw std::runtime_error("Previously admitted volume was cancelled");
         add_source_sap_single_volume_actor_native(
             manager,identity,2u,0.05f,
-            physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB,2u);
+            physx::Bp::getFilterGroup_Dynamics(99u,false),&actorB,2u);
         if(remove_source_sap_single_volume_actor_native(manager,identity,36u))
             throw std::runtime_error("Previously published volume was not retired");
         if(sourceActorIds[36]!=36u)
@@ -852,6 +855,9 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         const auto next=prepare_source_sap_single_volume_scene_native(
             manager,{created,retired,updated},remaining,retained_handle,
             sceneBounds,filter,true,sceneScratch);
+        if(groups[2]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Moving source volume replaced original Sc actor filter group");
         if(std::fabs(bounds[2].minimum.x-5.f)>1.0e-6f ||
            std::fabs(bounds[36].minimum.x-2.f)>1.0e-6f)
             throw std::runtime_error(
@@ -944,7 +950,7 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         alignas(4) physx::PxU32 shapeA=100u,shapeB=200u,shapeC=300u;
         owner.admit(36u,36u,0.04f,physx::Bp::FilterGroup::eSTATICS,&shapeA);
         owner.admit(2u,2u,0.02f,
-            physx::Bp::FilterGroup::eDYNAMICS_BASE,&shapeB);
+            physx::Bp::getFilterGroup_Dynamics(99u,false),&shapeB);
         owner.admit(7u,7u,0.03f,physx::Bp::FilterGroup::eSTATICS,&shapeC);
         if(!owner.remove(7u) ||
            owner.volume_to_actor()[7u]!=
@@ -962,6 +968,30 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         const std::array<physx::Bp::ShapeHandle,2u> handles{36u,2u};
         const physx::Bp::BpFilter filter(false,false);
         const auto first=owner.prepare(boxes,handles,filter);
+        if(owner.single_volumes().groups[2]!=
+           physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Persistent GPU AABB source writer overwrote Sc filter group");
+        // ScShapeSimBase::getBPGroup permits DYNAMIC filtering for a
+        // kinematic body with forced kinematic notifications.
+        auto forcedKinematic=boxes;
+        forcedKinematic[1].motion=Box::Motion::Kinematic;
+        (void)owner.prepare(forcedKinematic,handles,filter);
+        if(owner.single_volumes().groups[2]!=
+           physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Forced kinematic Sc filtering was overwritten by native motion");
+        auto incorrectMotion=boxes;
+        incorrectMotion[1].motion=Box::Motion::Static;
+        bool mismatchedMotionRejected=false;
+        try {
+            (void)owner.prepare(incorrectMotion,handles,filter);
+        }catch(const std::invalid_argument&){mismatchedMotionRejected=true;}
+        if(!mismatchedMotionRejected ||
+           owner.single_volumes().groups[2]!=
+               physx::Bp::getFilterGroup_Dynamics(99u,false))
+            throw std::runtime_error(
+                "Source Sc motion changed without original filter readmission");
         const auto originalMinimum=
             owner.source_bounds().getBounds(36u).minimum.x;
         auto invalidActors=boxes;
@@ -1127,6 +1157,12 @@ void exercise_source_sc_element_id_lifecycle_native(Context& context) {
             shapeA,shapeB};
         const physx::Bp::BpFilter filter(false,false);
         const auto first=manager.prepare(boxes,handles,filter);
+        if(manager.single_volumes().groups[shapeB]!=
+               physx::Bp::getFilterGroup(false,rigidB,false) ||
+           manager.single_volumes().groups[shapeB]==
+               physx::Bp::getFilterGroup(false,900u,false))
+            throw std::runtime_error(
+                "Sc element volume bounds overwrote the original rigid actor filter group");
         if(first.getNumCreatedHandles()!=2u ||
            first.getCreatedHandles()[0]!=shapeA ||
            first.getCreatedHandles()[1]!=shapeB ||
