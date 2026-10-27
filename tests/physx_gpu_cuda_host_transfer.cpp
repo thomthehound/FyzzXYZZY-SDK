@@ -897,6 +897,9 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            lostPairs.front()!=fyzz::native::Pair{2u,36u})
             throw std::runtime_error(
                 "Original source retired handle lost valid GPU lost-pair identity");
+        // Source processFoundPairs/processLostPairs clear the original
+        // bitmap deltas before a previously removed handle is reused.
+        clear_source_sap_single_volume_report_bitmaps_native(manager);
         retire_source_sap_volume_actor_lifetime_native(identity,next);
         if(sourceActorIds[36]!=std::numeric_limits<fyzz::BodyId>::max() ||
            sourceActorIds[2]!=2u)
@@ -908,7 +911,6 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         if(sourceActorIds[36]!=99u || !added.boundedTest(36u))
             throw std::runtime_error(
                 "Source AABB manager did not admit recycled handle after fetch");
-        clear_source_sap_single_volume_report_bitmaps_native(manager);
     }
     stream.wait_at_fetch();
     if(aborted || roots.live_roots() || addresses.live_allocations() ||
