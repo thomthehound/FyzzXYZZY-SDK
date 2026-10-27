@@ -10,6 +10,7 @@
 #include <cstring>
 #include <algorithm>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -998,10 +999,12 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    std::vector<VkDescriptorBufferInfo> validate_dispatch(
+    void validate_dispatch_into(
             PipelineId id, DispatchSize groups,
             const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes) const {
+            const void* push_constants, std::size_t push_bytes,
+            std::span<VkDescriptorBufferInfo> descriptors,
+            std::span<std::uint8_t> assigned) const {
         const Pipeline& pipeline = get_pipeline(id);
         const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
         for (std::uint32_t i = 0; i < 3; ++i) {
@@ -1016,8 +1019,10 @@ struct Context::Impl {
             throw std::invalid_argument("Push constants do not match pipeline layout");
         }
 
-        std::vector<VkDescriptorBufferInfo> descriptors(pipeline.binding_count);
-        std::vector<bool> assigned(pipeline.binding_count, false);
+        if(descriptors.size()!=pipeline.binding_count ||
+           assigned.size()!=pipeline.binding_count)
+            throw std::logic_error("Compute descriptor validation scratch size mismatch");
+        std::fill(assigned.begin(),assigned.end(),0u);
         for (const auto& binding : bindings) {
             if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
                 throw std::invalid_argument("Invalid or duplicate compute binding slot");
@@ -1048,6 +1053,17 @@ struct Context::Impl {
             assigned[binding.slot] = true;
             descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
         }
+    }
+
+    std::vector<VkDescriptorBufferInfo> validate_dispatch(
+            PipelineId id, DispatchSize groups,
+            const std::vector<BufferBinding>& bindings,
+            const void* push_constants, std::size_t push_bytes) const {
+        const auto count=get_pipeline(id).binding_count;
+        std::vector<VkDescriptorBufferInfo> descriptors(count);
+        std::vector<std::uint8_t> assigned(count);
+        validate_dispatch_into(id,groups,bindings,push_constants,push_bytes,
+                               descriptors,assigned);
         return descriptors;
     }
 
@@ -1168,7 +1184,8 @@ struct Context::Impl {
         std::uint64_t descriptor_count = 0;
         // Preflight descriptors once, before any GPU commands can be
         // recorded. Keep the slot-ordered views for actual recording.
-        std::vector<std::vector<VkDescriptorBufferInfo>> validated_dispatches;
+        std::vector<VkDescriptorBufferInfo> validated_dispatches;
+        std::vector<std::uint8_t> assigned_slots;
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                 const Buffer& source = get(copy->source);
@@ -1189,10 +1206,16 @@ struct Context::Impl {
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                validated_dispatches.push_back(validate_dispatch(
+                const auto offset=validated_dispatches.size();
+                validated_dispatches.resize(offset+pipeline.binding_count);
+                assigned_slots.resize(pipeline.binding_count);
+                validate_dispatch_into(
                     dispatch.pipeline, dispatch.groups,
                     dispatch.buffers, dispatch.push_constants.data(),
-                    dispatch.push_constants.size()));
+                    dispatch.push_constants.size(),
+                    std::span<VkDescriptorBufferInfo>(validated_dispatches)
+                        .subspan(offset,pipeline.binding_count),
+                    assigned_slots);
                 ++dispatch_count;
                 descriptor_count += pipeline.binding_count;
             }
@@ -1296,7 +1319,7 @@ struct Context::Impl {
             std::vector<std::pair<BufferId, Access>> operation_uses;
             std::vector<VkBufferMemoryBarrier> barriers;
             std::vector<VkWriteDescriptorSet> writes;
-            std::size_t dispatch_index=0;
+            std::size_t descriptor_index=0;
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
                 barriers.clear();
                 VkPipelineStageFlags sources = 0;
@@ -1394,7 +1417,10 @@ struct Context::Impl {
                     }
                 }
                 before_operation(operation_uses);
-                const auto& descriptors=validated_dispatches[dispatch_index++];
+                const auto descriptors=std::span<const VkDescriptorBufferInfo>(
+                    validated_dispatches).subspan(
+                        descriptor_index,pipeline.binding_count);
+                descriptor_index+=pipeline.binding_count;
 
                 VkDescriptorSetAllocateInfo descriptor_allocate{};
                 descriptor_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
