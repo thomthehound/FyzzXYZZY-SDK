@@ -329,6 +329,11 @@ void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
         if(frame==1u&&(!incremental||p.counts.z==0u))break;
         const uint boxes=frame==0u?currentBoxes:p.counts.x;
         const uint n=boxes*2u,base=axisBase+frame*7u;
+        const uint required=(n+255u)/256u;
+        const uint iterations=(required+31u)/32u;
+        // Empty fixed-grid blocks contribute no prefix or ordered
+        // endpoints. Skip before the per-block prefix walk.
+        if(group.x*iterations*256u>=n)continue;
         if(thread.x==0u) {
             uint3 prior=uint3(0u,0u,0u);
             for(uint b=0u;b<group.x;++b){
@@ -339,10 +344,6 @@ void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
             blockBase=prior;
         }
         GroupMemoryBarrierWithGroupSync();
-        const uint required=(n+255u)/256u;
-        const uint iterations=(required+31u)/32u;
-        // No endpoint lies in this original source grid partition.
-        if(group.x*iterations*256u>=n)continue;
         for(uint iteration=0u;iteration<iterations;++iteration) {
             const uint index=(group.x*iterations+iteration)*256u+thread.x;
             if(index<n) {
