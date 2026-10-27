@@ -10,6 +10,7 @@
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
+#include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
@@ -669,6 +670,108 @@ void exercise_original_native_physx_cuda_buffer(Context& context) {
     }
     if (aborted || roots.live_roots() || addresses.live_allocations())
         throw std::runtime_error("Original PhysX CUDA buffer left live GPU root allocations");
+}
+
+void exercise_original_sap_source_members_native(Context& context) {
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    SourcePhysxHeapRoots roots(context,addresses);
+    SourcePhysxDeviceRootCallback callback(roots,&stream);
+    SourcePhysxMappedReportRoots mapped(
+        context,addresses,stream,SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    bool aborted=false;
+    const auto abort=[](void* state) noexcept {
+        *static_cast<bool*>(state)=true;
+    };
+    {
+        physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
+        PxgSapSourceMembersNative source(heap,4u,2u);
+        if(!source.force_update() || source.num_boxes()!=0u)
+            throw std::runtime_error(
+                "Original PhysX SAP constructor did not initialize source frame ownership");
+        auto originalMappedFound=mapped.allocate(
+            4u*sizeof(physx::PxgBroadPhasePair),
+            physx::PxsHeapStats::eBROADPHASE,PX_FL);
+        auto originalMappedLost=mapped.allocate(
+            4u*sizeof(physx::PxgBroadPhasePair),
+            physx::PxsHeapStats::eBROADPHASE,PX_FL);
+        const auto foundAddress=mapped.device_address(
+            originalMappedFound,4u*sizeof(physx::PxgBroadPhasePair));
+        const auto lostAddress=mapped.device_address(
+            originalMappedLost,4u*sizeof(physx::PxgBroadPhasePair));
+        bool rejected=false;
+        try { (void)source.dma_up_members(nullptr,0u,lostAddress); }
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected)
+            throw std::runtime_error(
+                "Original SAP GPU constructor admitted an unowned host-mapped result");
+        auto members=source.dma_up_members(
+            nullptr,foundAddress,lostAddress);
+        auto pre=source.pre_broadphase_buffers();
+        if(&pre.bounds!=&members.broadphase_buffers.fp_bounds ||
+           &members.broadphase_buffers.projection_handles!=
+                &source.fetch_histories().projection_handles ||
+           members.descriptor_gpu_buffers.broadphase.getDevicePtr()==0u ||
+           members.descriptor_gpu_buffers.radix.getSize()<
+                6u*sizeof(physx::PxgRadixSortDesc) ||
+           members.descriptor_gpu_buffers.radix_without_ranks.getSize()<
+                6u*sizeof(physx::PxgRadixSortDesc))
+            throw std::runtime_error(
+                "Original SAP host views reference different GPU allocations");
+        physx::Bp::BpFilter filter(false,false);
+        std::array<physx::PxBounds3,2u> bounds{
+            physx::PxBounds3{physx::PxVec3{0.f},physx::PxVec3{1.f}},
+            physx::PxBounds3{physx::PxVec3{3.f},physx::PxVec3{4.f}}};
+        std::array<physx::PxReal,2u> distances{0.02f,0.03f};
+        std::array<physx::Bp::FilterGroup::Enum,2u> groups{
+            physx::Bp::FilterGroup::eDYNAMICS_BASE,
+            physx::Bp::FilterGroup::eSTATICS};
+        const std::array<physx::PxU32,2u> created{0u,1u};
+        const physx::Bp::BroadPhaseUpdateData first(
+            created.data(),2u,nullptr,0u,nullptr,0u,
+            bounds.data(),groups.data(),distances.data(),
+            2u,filter,true,true);
+        pre_broadphase_native(first,pre,stream);
+        const auto counts=gpu_dma_up_sap_frame_native(first,members,stream);
+        if(counts.current_boxes!=2u || source.num_boxes()!=2u ||
+           source.descriptor().numCreatedHandles!=2u ||
+           source.descriptor().max_found_lost_pairs!=4u ||
+           source.descriptor().foundPairReportMap!=
+                reinterpret_cast<physx::PxgBroadPhasePair*>(
+                    static_cast<std::uintptr_t>(foundAddress)))
+            throw std::runtime_error(
+                "First original source member frame lost count or mapped report ownership");
+        stream.wait_at_fetch();
+        const auto originalOld=source.old_integer_bounds().getDevicePtr();
+        const auto originalHistory=source.fetch_histories().projection_handles[0].getDevicePtr();
+        const physx::Bp::BroadPhaseUpdateData second(
+            nullptr,0u,nullptr,0u,nullptr,0u,
+            bounds.data(),groups.data(),distances.data(),
+            2u,filter,false,false);
+        pre_broadphase_native(second,source.pre_broadphase_buffers(),stream);
+        const auto quiet=gpu_dma_up_sap_frame_native(
+            second,source.dma_up_members(nullptr,foundAddress,lostAddress),
+            stream);
+        stream.wait_at_fetch();
+        if(quiet.current_boxes!=2u || quiet.created!=0u ||
+           source.old_integer_bounds().getDevicePtr()!=originalOld ||
+           source.fetch_histories().projection_handles[0].getDevicePtr()!=originalHistory)
+            throw std::runtime_error(
+                "Quiet original SAP frame reallocated stable GPU history");
+        swap_sap_endpoint_histories_after_fetch_native(source.fetch_histories());
+        swap_sap_endpoint_histories_after_fetch_native(source.fetch_histories());
+        if(source.fetch_histories().projection_handles[0].getDevicePtr()!=originalHistory)
+            throw std::runtime_error(
+                "Original owner did not retain fetch-time history identity");
+        mapped.deallocate(originalMappedFound);
+        mapped.deallocate(originalMappedLost);
+    }
+    stream.wait_at_fetch();
+    if(aborted || roots.live_roots() || addresses.live_allocations() ||
+       mapped.live_roots())
+        throw std::runtime_error(
+            "Original source SAP member owner leaked native PhysX heap allocations");
 }
 
 void exercise_original_sap_update_fetch_lifecycle(Context& context) {
@@ -2367,6 +2470,7 @@ int main() {
         exercise_original_sap_history_growth_native(context);
         exercise_original_sap_post_axis_buffers_native(context);
         exercise_original_sap_radix_descriptors_native(context);
+        exercise_original_sap_source_members_native(context);
         exercise_original_sap_update_fetch_lifecycle(context);
         exercise_source_gpu_heap_manager(context);
         exercise_source_mapped_pair_reports(context,true);
