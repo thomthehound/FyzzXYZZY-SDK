@@ -1883,9 +1883,12 @@ void Scene::consume_gpu_sap_reports(GpuSapPairReports reports) {
     };
     check_order(reports.found);
     check_order(reports.lost);
-    auto valid=[&](Pair pair) {
+    auto canonical=[&](Pair pair) {
         if(pair.a>=pair.b || pair.b>=actors_.size())
             throw std::invalid_argument("GPU SAP returned noncanonical actor IDs");
+    };
+    for(Pair pair:reports.found) {
+        canonical(pair);
         const auto& a=actors_[pair.a];
         const auto& b=actors_[pair.b];
         if(!a.alive || !b.alive || !a.simulation_shape_enabled ||
@@ -1893,17 +1896,19 @@ void Scene::consume_gpu_sap_reports(GpuSapPairReports reports) {
            a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane ||
            (a.kind!=Kind::DynamicBox && b.kind!=Kind::DynamicBox))
             throw std::invalid_argument(
-                "GPU SAP reported a disabled/retired/nonrigid-filtered pair");
-    };
-    for(Pair pair:reports.found) {
-        valid(pair);
+                "GPU SAP Found report names a disabled/retired/nonfiltered pair");
         if(std::binary_search(previous_pairs_.begin(),previous_pairs_.end(),pair) ||
            std::binary_search(reports.lost.begin(),reports.lost.end(),pair))
             throw std::invalid_argument(
                 "GPU SAP Found pair already published or simultaneously Lost");
     }
     for(Pair pair:reports.lost) {
-        valid(pair);
+        // The original PxgAABBManager may retire a shape BEFORE its GPU
+        // removal result is fetched. A Lost report therefore must refer
+        // to an existing Sc edge, but need not refer to a currently live
+        // or simulation-enabled shape. Requiring live actors here would
+        // prevent the ordinary removeActor/disableShape lifecycle.
+        canonical(pair);
         if(!std::binary_search(previous_pairs_.begin(),previous_pairs_.end(),pair))
             throw std::invalid_argument("GPU SAP Lost pair has no Sc owner");
     }
