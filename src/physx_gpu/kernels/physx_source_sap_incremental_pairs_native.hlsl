@@ -5,6 +5,7 @@
 // All inputs, outputs and counters belong to the original GPU descriptor.
 // Original 32-bit group report reservation and cross-axis overlap rules.
 #ifdef __spirv__
+#ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
 RWByteAddressBuffer handlesX:register(u0,space0);
@@ -168,6 +169,14 @@ RWByteAddressBuffer reportCounts:register(u39,space0);
 [[vk::binding(40,0)]]
 #endif
 RWByteAddressBuffer totals:register(u40,space0);
+#else
+// Shader Model 6 indexed UAV table: 41 unchanged source buffer slots.
+// This prevents WARP from evaluating a 41-way resource switch per word.
+RWByteAddressBuffer sourceViews[41] : register(u0,space0);
+#define found sourceViews[37]
+#define lost sourceViews[38]
+#define reportCounts sourceViews[39]
+#endif
 struct Parameters {
     uint4 biasPairs[6]; // two 16-bit native view biases per DWORD
     uint4 dimensions; // previous boxes, box capacity, report capacity, env IDs
@@ -183,6 +192,7 @@ uint bias(uint slot) {
 }
 uint load_word(uint slot,uint index) {
     const uint byteOffset=bias(slot)+index*4u;
+#ifdef __spirv__
     switch(slot) {
     case 0u:return handlesX.Load(byteOffset);
     case 1u:return ranksX.Load(byteOffset);
@@ -227,6 +237,9 @@ uint load_word(uint slot,uint index) {
     case 40u:return totals.Load(byteOffset);
     default:return 0u;
     }
+#else
+    return sourceViews[slot].Load(byteOffset);
+#endif
 }
 uint endpoint_for_work(uint axis,uint work) {
     const uint prefix=axis*11u+2u;
