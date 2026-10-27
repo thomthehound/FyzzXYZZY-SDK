@@ -106,7 +106,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     if(manager.persistent_state_changed) {
         manager.added.device.allocate(added_bytes,PX_FL);
         manager.removed.device.allocate(removed_bytes,PX_FL);
-        std::vector<SourceSapUpload> uploads;
+        auto& uploads=stream.upload_scratch();
         uploads.reserve(2u);
         append_bitmap(uploads,manager.added,added_bytes);
         append_bitmap(uploads,manager.removed,removed_bytes);
@@ -116,7 +116,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     if(state_changed) {
         manager.aggregated.device.allocate(aggregate_bytes,PX_FL);
         manager.volume_data_device.allocate(volume_bytes,PX_FL);
-        std::vector<SourceSapUpload> uploads;
+        auto& uploads=stream.upload_scratch();
         uploads.reserve(2u);
         append_bitmap(uploads,manager.aggregated,aggregate_bytes);
         if(volume_bytes)
@@ -131,7 +131,7 @@ inline void pre_update_source_sap_aabb_manager_native(
 
     if(state_changed || manager.gpu_state_changed) {
         manager.changed.device.allocate(changed_bytes,PX_FL);
-        std::vector<SourceSapUpload> uploads;
+        auto& uploads=stream.upload_scratch();
         uploads.reserve(1u);
         append_bitmap(uploads,manager.changed,changed_bytes);
         stream.queue_uploads(uploads);
