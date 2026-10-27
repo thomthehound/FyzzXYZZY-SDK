@@ -65,7 +65,7 @@ inline void write_source_sap_scene_bounds(
     SourceSapSceneBounds output,
     SourceSapSceneBoundsScratch& scratch,
     const SourceSapSceneFrameChanges* changes = nullptr,
-    bool preserve_source_filter_groups = false) {
+    bool preserve_source_owned_metadata = false) {
 
     if(boxes.size()!=source_handles.size() ||
        output.bounds.size()!=output.contact_distances.size() ||
@@ -127,7 +127,7 @@ inline void write_source_sap_scene_bounds(
         // Only standalone non-admitted callers derive Bp groups from
         // their actor identities. Admitted source volumes already own
         // their Sc rigid-actor filtering identity in mGroups[handle].
-        if(!preserve_source_filter_groups &&
+        if(!preserve_source_owned_metadata &&
            box.motion!=native::GpuBroadphaseBox::Motion::Static &&
            box.id>=((std::numeric_limits<physx::PxU32>::max()>>3)-1u))
             throw std::out_of_range("Source SAP rigid group ID exceeds encoded range");
@@ -199,11 +199,15 @@ inline void write_source_sap_scene_bounds(
             continue;
         const auto& b=boxes[i];
         output.bounds[handle]=scratch.prepared_bounds[i];
-        output.contact_distances[handle]=b.contact_offset;
+        // The source AABBManagerBase::setContactDistance owns the
+        // contact distance, independently of native Sc box snapshots.
+        // Never undo a source contact-offset edit when uploading bounds.
+        if(!preserve_source_owned_metadata)
+            output.contact_distances[handle]=b.contact_offset;
         // Original Sc::ShapeSimBase::getBPGroup derives this value from
         // Sc::ActorSim::getActorID, not native BodyId. Geometry updates
         // must not overwrite the AABB manager's admitted filter group.
-        if(!preserve_source_filter_groups)
+        if(!preserve_source_owned_metadata)
             output.groups[handle]=b.motion==native::GpuBroadphaseBox::Motion::Static
                 ? physx::Bp::getFilterGroup_Statics()
                 : physx::Bp::getFilterGroup_Dynamics(
@@ -226,10 +230,10 @@ inline physx::Bp::BroadPhaseUpdateData prepare_source_sap_scene_update(
     bool state_changed,
     bool gpu_state_changed,
     SourceSapSceneBoundsScratch& scratch,
-    bool preserve_source_filter_groups = false) {
+    bool preserve_source_owned_metadata = false) {
     write_source_sap_scene_bounds(
         live_boxes,live_source_handles,arrays,scratch,&changes,
-        preserve_source_filter_groups);
+        preserve_source_owned_metadata);
     return physx::Bp::BroadPhaseUpdateData(
         changes.created.data(),static_cast<physx::PxU32>(changes.created.size()),
         changes.updated.data(),static_cast<physx::PxU32>(changes.updated.size()),
