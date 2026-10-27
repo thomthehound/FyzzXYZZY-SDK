@@ -211,6 +211,15 @@ struct Context::Impl {
         std::uint32_t push_bytes = 0;
         std::vector<StorageBufferViewKind> view_kinds;
     };
+    // Descriptor sets belong to the existing completed native batch cache.
+    // Buffer IDs protect against a destroyed buffer whose Vulkan handle is
+    // subsequently recycled for a different allocation.
+    struct DescriptorReuse {
+        std::vector<VkDescriptorSet> sets;
+        std::vector<PipelineId> pipelines;
+        std::vector<VkDescriptorBufferInfo> views;
+        std::vector<BufferId> buffer_ids;
+    };
     struct Submission {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
@@ -219,12 +228,14 @@ struct Context::Impl {
         bool cacheable_batch = false;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptors;
     };
     struct CachedBatch {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptors;
     };
     static constexpr std::size_t kMaxCachedBatches = 8;
 
@@ -371,7 +382,7 @@ struct Context::Impl {
         }
     }
 
-    void retire_submission(const Submission& submission) noexcept {
+    void retire_submission(Submission& submission) noexcept {
         // No host allocation, and Vulkan destroy/free APIs return void.
         // This cannot leave a live submission retaining destroyed handles
         // because retirement itself can no longer throw.
@@ -389,7 +400,8 @@ struct Context::Impl {
         }
         cached_batches[cached_batch_count++] = {
             submission.commands, submission.descriptor_pool,
-            submission.descriptor_capacity, submission.set_capacity};
+            submission.descriptor_capacity, submission.set_capacity,
+            std::move(submission.descriptors)};
     }
 
     SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
@@ -1185,6 +1197,7 @@ struct Context::Impl {
         // Preflight descriptors once, before any GPU commands can be
         // recorded. Keep the slot-ordered views for actual recording.
         std::vector<VkDescriptorBufferInfo> validated_dispatches;
+        std::vector<BufferId> validated_buffer_ids;
         std::vector<std::uint8_t> assigned_slots;
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
@@ -1216,6 +1229,9 @@ struct Context::Impl {
                     std::span<VkDescriptorBufferInfo>(validated_dispatches)
                         .subspan(offset,pipeline.binding_count),
                     assigned_slots);
+                validated_buffer_ids.resize(offset+pipeline.binding_count);
+                for(const auto& binding:dispatch.buffers)
+                    validated_buffer_ids[offset+binding.slot]=binding.buffer;
                 ++dispatch_count;
                 descriptor_count += pipeline.binding_count;
             }
@@ -1230,14 +1246,17 @@ struct Context::Impl {
         VkQueryPool timestamps = VK_NULL_HANDLE;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptor_reuse;
+        bool reuse_sets=false;
         try {
             if (cached_batch_count != 0) {
-                CachedBatch cached = cached_batches[--cached_batch_count];
+                CachedBatch cached = std::move(cached_batches[--cached_batch_count]);
                 cached_batches[cached_batch_count] = {};
                 pool = cached.descriptor_pool;
                 commands = cached.commands;
                 descriptor_capacity = cached.descriptor_capacity;
                 set_capacity = cached.set_capacity;
+                descriptor_reuse=std::move(cached.descriptors);
             }
             if (dispatch_count != 0) {
                 if (pool == VK_NULL_HANDLE ||
@@ -1246,6 +1265,7 @@ struct Context::Impl {
                     if (pool != VK_NULL_HANDLE)
                         vkDestroyDescriptorPool(device, pool, nullptr);
                     pool = VK_NULL_HANDLE;
+                    descriptor_reuse={};
                     VkDescriptorPoolSize pool_size{};
                     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                     pool_size.descriptorCount = static_cast<std::uint32_t>(
@@ -1260,8 +1280,24 @@ struct Context::Impl {
                     descriptor_capacity = pool_size.descriptorCount;
                     set_capacity = create.maxSets;
                 } else {
-                    require(vkResetDescriptorPool(device, pool, 0),
-                            "vkResetDescriptorPool");
+                    reuse_sets=descriptor_reuse.sets.size()==dispatch_count &&
+                        descriptor_reuse.pipelines.size()==dispatch_count;
+                    if(reuse_sets) {
+                        std::size_t i=0;
+                        for(const auto& operation:operations) {
+                            if(const auto* dispatch=
+                                    std::get_if<DispatchCommand>(&operation))
+                                if(descriptor_reuse.pipelines[i++]!=dispatch->pipeline) {
+                                    reuse_sets=false;
+                                    break;
+                                }
+                        }
+                    }
+                    if(!reuse_sets) {
+                        require(vkResetDescriptorPool(device, pool, 0),
+                                "vkResetDescriptorPool");
+                        descriptor_reuse={};
+                    }
                 }
             }
             if (commands != VK_NULL_HANDLE) {
@@ -1280,25 +1316,42 @@ struct Context::Impl {
             // all of its native sets at once and publish the prevalidated
             // descriptors in one update instead of calling the Vulkan driver
             // twice for every small SAP kernel.
-            std::vector<VkDescriptorSet> descriptor_sets;
+            auto& descriptor_sets=descriptor_reuse.sets;
             if (dispatch_count != 0) {
-                std::vector<VkDescriptorSetLayout> layouts;
-                layouts.reserve(static_cast<std::size_t>(dispatch_count));
-                for (const BatchCommand& operation : operations) {
-                    if (const auto* dispatch =
-                            std::get_if<DispatchCommand>(&operation))
-                        layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
+                if(!reuse_sets) {
+                    std::vector<VkDescriptorSetLayout> layouts;
+                    layouts.reserve(static_cast<std::size_t>(dispatch_count));
+                    descriptor_reuse.pipelines.reserve(layouts.capacity());
+                    for(const auto& operation:operations) {
+                        if(const auto* dispatch=
+                                std::get_if<DispatchCommand>(&operation)) {
+                            layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
+                            descriptor_reuse.pipelines.push_back(dispatch->pipeline);
+                        }
+                    }
+                    descriptor_sets.resize(layouts.size(),VK_NULL_HANDLE);
+                    VkDescriptorSetAllocateInfo allocate{};
+                    allocate.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    allocate.descriptorPool=pool;
+                    allocate.descriptorSetCount=static_cast<std::uint32_t>(layouts.size());
+                    allocate.pSetLayouts=layouts.data();
+                    require(vkAllocateDescriptorSets(device,&allocate,descriptor_sets.data()),
+                            "vkAllocateDescriptorSets");
                 }
-                descriptor_sets.resize(layouts.size(), VK_NULL_HANDLE);
-                VkDescriptorSetAllocateInfo allocate{};
-                allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                allocate.descriptorPool = pool;
-                allocate.descriptorSetCount = static_cast<std::uint32_t>(layouts.size());
-                allocate.pSetLayouts = layouts.data();
-                require(vkAllocateDescriptorSets(device, &allocate,
-                                                 descriptor_sets.data()),
-                        "vkAllocateDescriptorSets");
-
+                bool same_views=reuse_sets &&
+                    descriptor_reuse.views.size()==validated_dispatches.size() &&
+                    descriptor_reuse.buffer_ids==validated_buffer_ids;
+                if(same_views)
+                    for(std::size_t i=0;i<validated_dispatches.size();++i) {
+                        const auto& a=descriptor_reuse.views[i];
+                        const auto& b=validated_dispatches[i];
+                        if(a.buffer!=b.buffer || a.offset!=b.offset ||
+                           a.range!=b.range) {
+                            same_views=false;
+                            break;
+                        }
+                    }
+                if(!same_views) {
                 std::vector<VkWriteDescriptorSet> writes;
                 writes.reserve(static_cast<std::size_t>(descriptor_count));
                 std::size_t descriptor_offset = 0;
@@ -1326,6 +1379,9 @@ struct Context::Impl {
                     vkUpdateDescriptorSets(device,
                         static_cast<std::uint32_t>(writes.size()),
                         writes.data(), 0, nullptr);
+                descriptor_reuse.views=validated_dispatches;
+                descriptor_reuse.buffer_ids=validated_buffer_ids;
+                }
             }
 
             VkCommandBufferBeginInfo begin{};
@@ -1499,6 +1555,7 @@ struct Context::Impl {
             submitted.cacheable_batch = true;
             submitted.descriptor_capacity = descriptor_capacity;
             submitted.set_capacity = set_capacity;
+            submitted.descriptors=std::move(descriptor_reuse);
             return id;
         } catch (...) {
             if (timestamps != VK_NULL_HANDLE)
