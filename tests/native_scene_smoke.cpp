@@ -14268,7 +14268,8 @@ void verify_native_gpu_sap_report_admission() {
     auto reports=std::make_unique<ScriptedSapReports>(
         std::vector<ScriptedSapReports::Frame>{
             {{{0u,1u}},{}}, {{},{}}, {{},{ {0u,1u} }},
-            {{{0u,1u}},{}}, {{},{}}
+            {{{0u,1u}},{}}, {{},{}}, {{},{ {0u,1u} }},
+            {{{0u,1u}},{}}
         });
     auto* source=reports.get();
     scene.set_gpu_sap_source(std::move(reports));
@@ -14307,6 +14308,21 @@ void verify_native_gpu_sap_report_admission() {
        scene.broadphase_endpoint_full_sort_count()!=0u)
         throw std::runtime_error(
             "GPU SAP reports did not reach original Dy solve without CPU SAP");
+    // PxgAABBManager source removal results are fetched AFTER Sc has
+    // disabled the shape. Lost must still retire that old edge.
+    scene.set_shape_simulation_enabled(stationary,false);
+    scene.advance_collision();
+    if(!scene.pairs().empty() || scene.lost_pairs().size()!=1u ||
+       source->last_volume_count!=1u)
+        throw std::runtime_error(
+            "GPU SAP Lost on disabled shape did not retire native Sc edge");
+    scene.set_shape_simulation_enabled(stationary,true);
+    scene.advance_collision();
+    if(scene.pairs().size()!=1u || scene.found_pairs().size()!=1u ||
+       source->last_volume_count!=2u ||
+       scene.broadphase_endpoint_full_sort_count()!=0u)
+        throw std::runtime_error(
+            "GPU SAP shape re-admission failed without CPU endpoint rebuild");
     // No CPU endpoint array ever ran; the source report remains the
     // sole broadphase authority for this scene.
     if(source->aborts || source->poisoned)
