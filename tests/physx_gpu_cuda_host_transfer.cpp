@@ -805,12 +805,18 @@ void exercise_original_sap_source_members_native(Context& context) {
         observe(removedMap,removedBits);
         observe(aggregatedMap,aggregateBits);
         observe(changedMap,changedBits);
-        const std::array<physx::Bp::VolumeData,2u> admittedVolumes{
-            volumeData[0],volumeData[1]};
-        if(volumeGpu.getSize()!=sizeof(admittedVolumes))
+        const auto admittedBytes=sizeof(physx::Bp::VolumeData)*2u;
+        if(volumeGpu.getSize()!=admittedBytes)
             throw std::runtime_error(
                 "Source AABB volume-data upload included reserved inactive entries");
-        observe(volumeGpu,admittedVolumes);
+        const auto gpuVolume=addresses.resolve(
+            volumeGpu.getDevicePtr(),admittedBytes);
+        std::array<std::byte,sizeof(physx::Bp::VolumeData)*2u> gpuVolumeBytes{};
+        context.download(gpuVolume.buffer,gpuVolume.offset,
+                         gpuVolumeBytes.data(),admittedBytes);
+        if(std::memcmp(gpuVolumeBytes.data(),volumeData.data(),admittedBytes))
+            throw std::runtime_error(
+                "Source AABB manager volume-data transfer changed original bytes");
         const auto originalOld=source.old_integer_bounds().getDevicePtr();
         const auto originalHistory=source.fetch_histories().projection_handles[0].getDevicePtr();
         const physx::Bp::BroadPhaseUpdateData second(
