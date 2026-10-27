@@ -5,6 +5,7 @@
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
+#include "physx_gpu/source_sap_fetch_native.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
@@ -800,6 +801,89 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
                 if((*owners[kind])[i].getDevicePtr()!=initialPointers[kind][i] ||
                    (*owners[kind])[i].getSize()!=initialSizes[kind][i])
                     throw std::runtime_error("Repeated source fetch swap did not restore owners");
+        // Multi-frame fetch against the real seven PhysX owners, not
+        // a separate BufferId role table. Each of the 42 heap allocations
+        // contains its own marker and size across frame rotations.
+        physx::PxgCudaBuffer gpuDescriptor(heap,group);
+        gpuDescriptor.allocate(sizeof(physx::PxgBroadPhaseDesc),PX_FL);
+        const auto descriptorAddress=gpuDescriptor.getDevicePtr();
+        physx::PxgBroadPhaseDesc gpu{};
+        gpu.max_found_lost_pairs=1u;
+        physx::PxgBroadPhaseDesc host{};
+        std::array<std::array<physx::PxU32,6>,7> markers{};
+        std::vector<fyzz::physx_gpu::SourceSapUpload> uploads;
+        uploads.reserve(43u);
+        for(std::size_t kind=0u;kind<owners.size();++kind)
+            for(physx::PxU32 i=0;i<6u;++i) {
+                markers[kind][i]=
+                    static_cast<physx::PxU32>(100000u+kind*101u+i*17u);
+                uploads.push_back({initialPointers[kind][i],
+                                   &markers[kind][i],sizeof(physx::PxU32)});
+            }
+        uploads.push_back({descriptorAddress,&gpu,sizeof(gpu)});
+        stream.queue_uploads(uploads);
+        stream.wait_at_fetch();
+        const auto check_histories=[&](bool rotated) {
+            for(std::size_t kind=0u;kind<owners.size();++kind)
+                for(physx::PxU32 i=0;i<6u;++i) {
+                    const auto origin=rotated
+                        ? (i<3u?i+3u:i-3u):i;
+                    const auto& owner=(*owners[kind])[i];
+                    if(owner.getDevicePtr()!=initialPointers[kind][origin] ||
+                       owner.getSize()!=initialSizes[kind][origin])
+                        throw std::runtime_error(
+                            "Original source SAP multi-frame fetch lost PhysX heap owner identity");
+                    const auto view=addresses.resolve(owner.getDevicePtr(),4u);
+                    physx::PxU32 value=0u;
+                    context.download(view.buffer,view.offset,&value,sizeof(value));
+                    if(value!=markers[kind][origin])
+                        throw std::runtime_error(
+                            "Original source SAP multi-frame fetch corrupted GPU history");
+                }
+        };
+        // First frame publishes the source descriptor, then rotates
+        // ORIGINAL owners before the AABB-manager found/lost callbacks.
+        const auto first=fyzz::physx_gpu::fetch_source_sap_results(
+            context,addresses,descriptorAddress,host,{},{},false,source);
+        if(first.found_actors||first.lost_actors||
+           host.max_found_lost_pairs!=gpu.max_found_lost_pairs)
+            throw std::runtime_error(
+                "Original SAP owner fetch failed zero-pair publication");
+        check_histories(true);
+
+        // A malformed second-frame descriptor must not mutate the
+        // previous successfully published descriptor OR any GPU owner.
+        auto corrupt=gpu;
+        corrupt.sharedFoundPairIndex=1u;
+        corrupt.sharedFoundAggPairIndex=2u;
+        stream.queue_uploads({{descriptorAddress,&corrupt,sizeof(corrupt)}});
+        stream.wait_at_fetch();
+        bool invalidDescriptor=false;
+        try {
+            (void)fyzz::physx_gpu::fetch_source_sap_results(
+                context,addresses,descriptorAddress,host,{},{},false,source);
+        }catch(const std::invalid_argument&){invalidDescriptor=true;}
+        if(!invalidDescriptor || host.sharedFoundPairIndex!=0u)
+            throw std::runtime_error(
+                "Failed source SAP fetch partially published descriptor");
+        check_histories(true);
+
+        // Retrying that frame after its original GPU result is repaired
+        // must rotate the seven histories once, not twice.
+        stream.queue_uploads({{descriptorAddress,&gpu,sizeof(gpu)}});
+        stream.wait_at_fetch();
+        (void)fyzz::physx_gpu::fetch_source_sap_results(
+            context,addresses,descriptorAddress,host,{},{},false,source);
+        check_histories(false);
+
+        // PxgCudaBroadPhaseSap::fetchBroadPhaseResults also rotates
+        // histories on early-return/quiet frames, even with no GPU work.
+        (void)fyzz::physx_gpu::fetch_source_sap_results(
+            context,addresses,descriptorAddress,host,{},{},false,source);
+        check_histories(true);
+        (void)fyzz::physx_gpu::fetch_source_sap_results(
+            context,addresses,descriptorAddress,host,{},{},true,source);
+        check_histories(false);
         if(!stream.commands().empty())
             throw std::runtime_error("Source SAP update/fetch ownership swaps queued GPU commands");
     }
