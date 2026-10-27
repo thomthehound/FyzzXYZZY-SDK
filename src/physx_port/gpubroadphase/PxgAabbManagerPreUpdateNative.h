@@ -69,7 +69,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     if(!state_changed && !manager.gpu_state_changed)return;
 
     const auto capacity=update.getCapacity();
-    if(state_changed && manager.volume_data.size()!=capacity)
+    if(state_changed && manager.volume_data.size()<capacity)
         throw std::invalid_argument(
             "Source AABB manager volume data does not match bounds capacity");
     const auto checked_bytes=[](std::size_t elements,std::size_t stride){
@@ -88,7 +88,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     const auto aggregate_bytes=validate_bitmap(manager.aggregated);
     const auto changed_bytes=validate_bitmap(manager.changed);
     const auto volume_bytes=checked_bytes(
-        manager.volume_data.size(),sizeof(physx::Bp::VolumeData));
+        state_changed?capacity:0u,sizeof(physx::Bp::VolumeData));
 
     const auto append_bitmap=[](
         std::vector<SourceSapUpload>& uploads,
