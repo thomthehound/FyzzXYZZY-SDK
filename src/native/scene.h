@@ -1714,3 +1714,15 @@ private:
 };
 
 } // namespace fyzz::native
+
+namespace fyzz {
+// Explicit source GPU broadphase injection. The producer must already
+// own the original PxgAABBManager/PxgCudaBroadPhaseSap lifecycle; the
+// native Sc/Dy scene takes ownership before any actor is admitted.
+// NativePortableGpu stays unavailable until that original owner has
+// a complete device/allocator construction path.
+std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
+    std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
+    bool contact_notifications, bool enhanced_determinism,
+    bool pcm_plane_box, bool pcm_box_box);
+} // namespace fyzz
