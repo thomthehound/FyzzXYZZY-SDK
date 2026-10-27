@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "BpBroadPhaseUpdate.h"
 #include "BpVolumeData.h"
 #include "foundation/PxBounds3.h"
@@ -18,6 +19,14 @@
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
+
+// Bind original PinnableBitMap words directly. No copied bitmap/vector
+// shadows may sit between AABB-manager admissions and GPU descriptor DMA.
+inline SourceSapAabbManagerBitmapNative source_sap_aabb_bitmap_native(
+    physx::PxgCudaBuffer& device,
+    const physx::Cm::PinnableBitMap& bitmap) noexcept {
+    return {device,{bitmap.getWords(),bitmap.getWordCount()}};
+}
 
 // Borrowed PxgAABBManager/AABBManagerBase members for single-actor volumes.
 // The source AABB manager retains ALL bitmaps, storage and handle ownership;
