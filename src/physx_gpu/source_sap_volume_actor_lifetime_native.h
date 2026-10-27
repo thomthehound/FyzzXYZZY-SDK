@@ -6,6 +6,7 @@
 #include "native/scene.h"
 #include "BpBroadPhaseUpdate.h"
 #include "BpVolumeData.h"
+#include "PxgBroadPhasePairReport.h"
 
 #include <limits>
 #include <span>
