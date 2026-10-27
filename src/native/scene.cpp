@@ -1943,19 +1943,9 @@ void Scene::update_gpu_pairs(bool force_update) {
     };
     validate(reports.found,true);
     validate(reports.lost,false);
-    // Both report streams are ordered. A single linear walk rejects
-    // contradictory found/lost membership without per-pair searches.
-    auto found_index=std::size_t{0},lost_index=std::size_t{0};
-    while(found_index<reports.found.size() &&
-          lost_index<reports.lost.size()) {
-        const Pair found=reports.found[found_index];
-        const Pair lost=reports.lost[lost_index];
-        if(found==lost)
-            throw std::invalid_argument(
-                "GPU SAP reported both found and lost for the same pair");
-        if(found<lost)++found_index;
-        else ++lost_index;
-    }
+    // Found membership is absent from previous_pairs_, while lost
+    // membership is present. These checks also reject any pair reported
+    // in both streams without another cross-stream search.
 
     // An unchanged source overlap stream already agrees with the
     // published Sc manager list. No pair merge is needed, even if
