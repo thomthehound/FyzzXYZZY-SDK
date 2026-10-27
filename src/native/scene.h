@@ -52,6 +52,41 @@ struct Pair {
     }
 };
 
+// PxgAABBManager's native scene-facing shape input. Actor identity and
+// authored geometry remain owned by this Scene. GPU SAP retains its own
+// original volume-handle, AABB and projection history across updates.
+// This is a borrowed per-update view, not an alternate simulation state.
+struct GpuBroadphaseBox {
+    enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
+    BodyId id=0;
+    Vec3 position{}, half_extents{};
+    Quat orientation{};
+    float contact_offset=0.0f;
+    Motion motion=Motion::Static;
+};
+
+// Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
+// completed actor-pair streams. The GPU source owner maps source volume
+// handles to native scene actor IDs, purges duplicate records and retains
+// both result arrays through this publication. No CPU broadphase oracle
+// is accepted or consulted by this path.
+struct GpuBroadphaseReports {
+    std::span<const Pair> found;
+    std::span<const Pair> lost;
+    bool overflow=false;
+};
+class GpuBroadphaseProducer {
+public:
+    virtual ~GpuBroadphaseProducer()=default;
+    virtual GpuBroadphaseReports advance(
+        std::span<const GpuBroadphaseBox> live_boxes,
+        bool force_update,bool geometry_dirty)=0;
+    // The source GPU has already advanced its histories at fetch. A
+    // rejected Sc/Dy transaction invalidates that frame; the owner must
+    // reconstruct its GPU histories from the next authoritative scene.
+    virtual void invalidate_after_rollback() noexcept=0;
+};
+
 // Matches Gu::PxContactPoint semantics for the presently supported shapes:
 // normal points from shape1 toward shape0, signed separation is negative
 // for penetration. Contacts are geometry results, not solved impulses.
@@ -145,6 +180,9 @@ public:
           pcm_box_box_enabled_(generator==ContactGenerator::DefaultPcm) {}
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
+    // The production GPU SAP/AABB owner is attached before any actor is
+    // admitted. A selected GPU scene never silently runs native CPU SAP.
+    void set_gpu_broadphase(std::unique_ptr<GpuBroadphaseProducer> producer);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -776,6 +814,7 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
+    void update_gpu_pairs(bool force_update);
     void publish_pairs();
     void update_contacts();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
@@ -1567,6 +1606,10 @@ private:
         void seed(std::span<const Pair> pairs);
     };
     SapPairManager sap_pairs_;
+    // The GPU owner is the only broadphase producer in GPU mode; these
+    // cached shape views are reused, never a duplicate SAP/pair registry.
+    std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
+    std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     bool sap_pair_registry_dirty_=true;
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;

@@ -29,6 +29,81 @@
 // exact normal, so a purely geometric fixture would miss the source
 // header-normal rule when correlation joins distinct runs.
 namespace fyzz::native {
+// Fixture probes ONLY the production GPU-report/Sc/Dy admission contract.
+// It does not implement or claim the GPU SAP kernel, and no native CPU
+// pair-production path is invoked by an attached GPU source owner.
+struct GpuSapSceneAdmissionFixture {
+    struct FetchedReports final : GpuBroadphaseProducer {
+        std::vector<Pair> found,lost;
+        std::size_t fetches=0,rollbacks=0;
+        bool overflow=false;
+        GpuBroadphaseReports advance(
+            std::span<const GpuBroadphaseBox> boxes,
+            bool,bool) override {
+            ++fetches;
+            for(const auto& b:boxes)
+                if(b.id==std::numeric_limits<BodyId>::max())
+                    throw std::runtime_error("Invalid GPU shape input");
+            return {found,lost,overflow};
+        }
+        void invalidate_after_rollback() noexcept override {
+            ++rollbacks;
+        }
+        void set(std::vector<Pair> next_found,std::vector<Pair> next_lost) {
+            found=std::move(next_found);
+            lost=std::move(next_lost);
+        }
+    };
+    static void verify() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const auto a=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+        const auto b=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.4f,1.0f,0.0f});
+        const Pair pair={std::min(a,b),std::max(a,b)};
+        gpu->set({pair},{});
+        scene.advance_collision();
+        if(scene.found_pairs().size()!=1 || scene.found_pairs()[0]!=pair ||
+           scene.pairs().size()!=1 || scene.contacts().empty())
+            throw std::runtime_error(
+                "GPU SAP found report did not enter native Sc/Gu");
+        if(scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "GPU SAP admission silently executed native CPU broadphase");
+        gpu->set({},{});
+        scene.advance_collision();
+        if(!scene.found_pairs().empty() ||
+           !scene.lost_pairs().empty() || scene.pairs().size()!=1)
+            throw std::runtime_error(
+                "GPU SAP quiet frame lost Sc contact-manager identity");
+        // Invalid fetched reports must fail atomically and invalidate
+        // source GPU histories before the next real publication.
+        gpu->set({pair},{});
+        bool rejected=false;
+        try { scene.advance_collision(); }
+        catch(const std::invalid_argument&) { rejected=true; }
+        if(!rejected || !gpu->rollbacks ||
+           scene.pairs().size()!=1 || scene.pairs()[0]!=pair)
+            throw std::runtime_error(
+                "Rejected GPU SAP report escaped Sc rollback");
+        scene.set_position(b,{8.0f,1.0f,0.0f});
+        gpu->set({},{pair});
+        scene.advance_collision();
+        if(!scene.pairs().empty() ||
+           scene.lost_pairs().size()!=1 || scene.lost_pairs()[0]!=pair ||
+           !scene.contacts().empty() || gpu->fetches!=4)
+            throw std::runtime_error(
+                "GPU SAP lost report failed Sc contact retirement");
+        if(scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "GPU SAP retirement called native CPU SAP");
+    }
+};
 struct SourceSapEndpointFixture {
     static void check(Scene& scene) {
         const auto& links_next=scene.sap_list_next_;
@@ -14228,6 +14303,7 @@ int run_native_scene_smoke() {
 
 int main() {
     try {
+    fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();
