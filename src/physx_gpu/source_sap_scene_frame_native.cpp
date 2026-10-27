@@ -13,15 +13,29 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const CudaDeviceAddressMap& addresses,
     compute::Context& context) {
 
-    // The original AABB manager has already consumed the prepared Sc
-    // arrays in preBroadPhase(), on its own task chain. No scene geometry
-    // is mutated after its GPU snapshot at this boundary.
+    // The source manager's handle/bitmap first pass has already created
+    // this frame's authoritative Bp update. Validate its GPU dirty flag
+    // before queuing any source heap allocation or transfer.
+    if(members.aabb_manager.gpu_state_changed!=
+       members.aabb_update.getGpuStateChanged())
+        throw std::invalid_argument(
+            "Source AABB manager GPU dirty flag disagrees with Bp frame");
+
+    // PxgAABBManager::preBpUpdate_GPU executes before SAP update().
+    // Its original device bitmap and VolumeData buffers are used by
+    // the SAP descriptor, not a parallel scene-owned history.
+    pre_update_source_sap_aabb_manager_native(
+        members.aabb_update,members.aabb_manager,stream);
+    const auto manager_descriptor=
+        source_sap_aabb_descriptor_native(members.aabb_manager);
+    auto dma=members.dma;
+    dma.descriptor_inputs.aabb_manager=&manager_descriptor;
 
     // Original PxgCudaBroadPhaseSap::update: gpuDMAUp always precedes
     // mForceUpdate gating. The same owner retains the stream and all
     // persistent allocations until its fetch continuation has completed.
     const auto admission=advance_source_sap_frame_native(
-        members.aabb_update,members.dma,stream,force_update,stages,
+        members.aabb_update,dma,stream,force_update,stages,
         addresses,members.update);
     stream.wait_at_fetch();
 
