@@ -64,7 +64,8 @@ void commit(std::vector<compute::BatchCommand>& commands,
 SourceSapRadixNativeStage::SourceSapRadixNativeStage(
     compute::Context& context,compute::ShaderBinary initialize,
     compute::ShaderBinary count,compute::ShaderBinary scatter,
-    compute::ShaderBinary gather) : context_(context) {
+    compute::ShaderBinary gather,
+    compute::ShaderBinary count_wave,bool force_portable) : context_(context) {
     const auto& gpu=context_.device_info();
     if(gpu.max_workgroup_invocations<kRadixThreads ||
        gpu.max_workgroup_size[0]<kRadixThreads ||
@@ -72,6 +73,9 @@ SourceSapRadixNativeStage::SourceSapRadixNativeStage(
        gpu.max_workgroup_count[1]<kSortAxes ||
        !gpu.max_storage_buffer_range)
         throw std::runtime_error("Original source SAP radix 32x3x1024/64x256 GPU launch unsupported");
+    using_wave_count_=!force_portable && !count_wave.bytes.empty() &&
+        gpu.supports_wave_arithmetic && gpu.subgroup_size>=4u &&
+        kRadixThreads%gpu.subgroup_size==0u;
     view_alignment_=static_cast<std::size_t>(
         std::max<std::uint64_t>(4u,gpu.storage_buffer_offset_alignment));
     max_view_bytes_=gpu.max_storage_buffer_range;
@@ -82,7 +86,7 @@ SourceSapRadixNativeStage::SourceSapRadixNativeStage(
     try {
         desc.shader=std::move(initialize);
         init_pipeline_=context_.create_compute_pipeline(desc);
-        desc.shader=std::move(count);
+        desc.shader=using_wave_count_?std::move(count_wave):std::move(count);
         desc.storage_buffer_binding_count=6u;
         desc.storage_buffer_views.assign(6u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=sizeof(CountParams);
