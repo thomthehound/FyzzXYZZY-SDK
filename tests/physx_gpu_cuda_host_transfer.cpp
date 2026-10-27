@@ -733,7 +733,10 @@ void exercise_original_sap_source_members_native(Context& context) {
         physx::PxgCudaBuffer volumeGpu(heap,physx::PxsHeapStats::eBROADPHASE);
         std::array<physx::PxU32,1u> addedBits{3u},removedBits{0u},
             aggregateBits{0u},changedBits{3u};
-        std::array<physx::Bp::VolumeData,2u> volumeData{};
+        // The original manager may reserve more VolumeData slots than
+        // its current broadphase capacity; only the frame's first two
+        // records belong to this GPU upload.
+        std::array<physx::Bp::VolumeData,3u> volumeData{};
         for(auto& v:volumeData)v.reset();
         const auto manager_view=[&](bool persistent,bool gpu) {
             return SourceSapAabbManagerPreUpdateNative{
@@ -755,6 +758,19 @@ void exercise_original_sap_source_members_native(Context& context) {
            addedMap.getDevicePtr()!=0u)
             throw std::runtime_error(
                 "Invalid source AABB manager frame partially queued GPU work");
+        const physx::Bp::BroadPhaseUpdateData missingGroups(
+            created.data(),2u,nullptr,0u,nullptr,0u,
+            bounds.data(),nullptr,distances.data(),
+            nullptr,2u,filter,true,true);
+        bool invalidGroups=false;
+        try {pre_update_source_sap_aabb_manager_native(
+            missingGroups,manager,stream);}
+        catch(const std::invalid_argument&){invalidGroups=true;}
+        if(!invalidGroups || stream.submission_stats().upload_batches!=0u ||
+           addedMap.getDevicePtr()!=0u)
+            throw std::runtime_error(
+                "Malformed preBroadPhase group array partially queued manager bitmaps");
+
         pre_update_source_sap_aabb_manager_native(first,manager,stream);
         if(stream.submission_stats().upload_batches!=4u)
             throw std::runtime_error(
@@ -789,7 +805,12 @@ void exercise_original_sap_source_members_native(Context& context) {
         observe(removedMap,removedBits);
         observe(aggregatedMap,aggregateBits);
         observe(changedMap,changedBits);
-        observe(volumeGpu,volumeData);
+        const std::array<physx::Bp::VolumeData,2u> admittedVolumes{
+            volumeData[0],volumeData[1]};
+        if(volumeGpu.getSize()!=sizeof(admittedVolumes))
+            throw std::runtime_error(
+                "Source AABB volume-data upload included reserved inactive entries");
+        observe(volumeGpu,admittedVolumes);
         const auto originalOld=source.old_integer_bounds().getDevicePtr();
         const auto originalHistory=source.fetch_histories().projection_handles[0].getDevicePtr();
         const physx::Bp::BroadPhaseUpdateData second(
