@@ -6,6 +6,7 @@
 // Each source view retains its original GPU allocation; only 16-bit RAW
 // binding offsets are packed, avoiding any GPU-side descriptor upload.
 #ifdef __spirv__
+#ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
 RWByteAddressBuffer currenthandlesX:register(u0,space0);
@@ -197,6 +198,11 @@ RWByteAddressBuffer totalEndZ:register(u46,space0);
 [[vk::binding(47,0)]]
 #endif
 RWByteAddressBuffer blockTotalZ:register(u47,space0);
+#else
+// Same source binding slots; native D3D12 indexes the descriptor table
+// instead of lowering 48 resource-selection branches into every load.
+RWByteAddressBuffer sourceViews[48] : register(u0,space0);
+#endif
 struct Parameters {
     uint4 biasPairs[6];
     uint4 counts; // previous, created, removed, incremental
@@ -212,6 +218,7 @@ uint bias(uint slot) {
 }
 uint load_field(uint slot,uint index) {
     const uint address=bias(slot)+4u*index;
+#ifdef __spirv__
     switch(slot) {
     case 0u:return currenthandlesX.Load(address);
     case 1u:return currentendsX.Load(address);
@@ -263,9 +270,13 @@ uint load_field(uint slot,uint index) {
     case 47u:return blockTotalZ.Load(address);
     default:return 0u;
     }
+#else
+    return sourceViews[slot].Load(address);
+#endif
 }
 void store_field(uint slot,uint index,uint value) {
     const uint address=bias(slot)+4u*index;
+#ifdef __spirv__
     switch(slot) {
     case 0u:currenthandlesX.Store(address,value);return;
     case 1u:currentendsX.Store(address,value);return;
@@ -317,6 +328,9 @@ void store_field(uint slot,uint index,uint value) {
     case 47u:blockTotalZ.Store(address,value);return;
     default:return;
     }
+#else
+    sourceViews[slot].Store(address,value);
+#endif
 }
 groupshared uint3 scanA[256];
 groupshared uint3 scanB[256];
