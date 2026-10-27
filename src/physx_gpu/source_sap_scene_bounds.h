@@ -36,6 +36,15 @@ struct SourceSapSceneBoundsScratch {
     std::uint32_t epoch=0;
 };
 
+// Borrowed, ascending source PxgAABBManager/Bp::BroadPhaseUpdateData
+// delta lists. These are NOT reconstructed from Sc geometry: only the
+// original AABB manager knows which volumes were admitted and retired.
+struct SourceSapSceneFrameChanges {
+    std::span<const physx::Bp::ShapeHandle> created;
+    std::span<const physx::Bp::ShapeHandle> updated;
+    std::span<const physx::Bp::ShapeHandle> removed;
+};
+
 // Translates one shape per presently admitted native rigid actor into the
 // original PxBounds3/FilterGroup representation used by preBroadPhase().
 // The caller supplies the live source volume handles in the same order as
@@ -46,7 +55,8 @@ inline void write_source_sap_scene_bounds(
     std::span<const native::GpuBroadphaseBox> boxes,
     std::span<const physx::Bp::ShapeHandle> source_handles,
     SourceSapSceneBounds output,
-    SourceSapSceneBoundsScratch& scratch) {
+    SourceSapSceneBoundsScratch& scratch,
+    const SourceSapSceneFrameChanges* changes = nullptr) {
 
     if(boxes.size()!=source_handles.size() ||
        output.bounds.size()!=output.contact_distances.size() ||
@@ -101,6 +111,46 @@ inline void write_source_sap_scene_bounds(
         scratch.prepared_bounds[i]=bounds;
     }
 
+    if(changes) {
+        // Bp::BroadPhaseUpdateData requires ascending, mutually exclusive
+        // delta streams. Validate all lists against the actual source
+        // volume handles BEFORE committing the staged box geometry.
+        const auto valid_stream=[&](std::span<const physx::Bp::ShapeHandle> handles,
+                                    bool must_be_live) {
+            physx::Bp::ShapeHandle previous=0;
+            bool first=true;
+            for(const auto handle:handles) {
+                if(handle>=output.bounds.size() || handle>=BP_INVALID_BP_HANDLE)
+                    throw std::out_of_range("Source SAP delta references an invalid volume");
+                if(!first && previous>=handle)
+                    throw std::invalid_argument("Source SAP delta handles are not ascending");
+                first=false;
+                previous=handle;
+                const bool live=scratch.visit_epochs[handle]==scratch.epoch;
+                if(live!=must_be_live)
+                    throw std::invalid_argument(
+                        "Source SAP delta does not agree with live AABB manager volumes");
+            }
+        };
+        valid_stream(changes->created,true);
+        valid_stream(changes->updated,true);
+        valid_stream(changes->removed,false);
+        const auto intersects=[](std::span<const physx::Bp::ShapeHandle> a,
+                                 std::span<const physx::Bp::ShapeHandle> b) {
+            std::size_t i=0,j=0;
+            while(i<a.size() && j<b.size()) {
+                if(a[i]==b[j]) return true;
+                if(a[i]<b[j]) ++i;
+                else ++j;
+            }
+            return false;
+        };
+        if(intersects(changes->created,changes->updated) ||
+           intersects(changes->created,changes->removed) ||
+           intersects(changes->updated,changes->removed))
+            throw std::invalid_argument("Source SAP handle occurs in multiple delta lists");
+    }
+
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
         const auto& b=boxes[i];
@@ -111,5 +161,32 @@ inline void write_source_sap_scene_bounds(
             : physx::Bp::getFilterGroup_Dynamics(
                 b.id,b.motion==native::GpuBroadphaseBox::Motion::Kinematic);
     }
+}
+
+// One source-ordered input boundary: validate original volume deltas,
+// publish Sc geometry into the borrowed PxgAABBManager arrays, and
+// construct the ORIGINAL Bp::BroadPhaseUpdateData for preBroadPhase()
+// and gpuDMAUp(). The returned object borrows every pointer and the filter;
+// the manager/owner must retain them through both calls. In particular,
+// gpu_state_changed comes from the GPU manager, not an inferred CPU diff.
+inline physx::Bp::BroadPhaseUpdateData prepare_source_sap_scene_update(
+    std::span<const native::GpuBroadphaseBox> live_boxes,
+    std::span<const physx::Bp::ShapeHandle> live_source_handles,
+    SourceSapSceneBounds arrays,
+    SourceSapSceneFrameChanges changes,
+    const physx::Bp::BpFilter& filter,
+    bool state_changed,
+    bool gpu_state_changed,
+    SourceSapSceneBoundsScratch& scratch) {
+    write_source_sap_scene_bounds(
+        live_boxes,live_source_handles,arrays,scratch,&changes);
+    return physx::Bp::BroadPhaseUpdateData(
+        changes.created.data(),static_cast<physx::PxU32>(changes.created.size()),
+        changes.updated.data(),static_cast<physx::PxU32>(changes.updated.size()),
+        changes.removed.data(),static_cast<physx::PxU32>(changes.removed.size()),
+        arrays.bounds.data(),arrays.groups.data(),
+        arrays.contact_distances.data(),
+        static_cast<physx::PxU32>(arrays.bounds.size()),
+        filter,state_changed,gpu_state_changed);
 }
 } // namespace fyzz::physx_gpu
