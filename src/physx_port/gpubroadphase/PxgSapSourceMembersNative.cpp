@@ -6,61 +6,73 @@
 
 namespace fyzz::physx_gpu {
 PxgSapSourceMembersNative::PxgSapSourceMembersNative(
-    physx::PxgHeapMemoryAllocator& heap,physx::PxU32 max_pairs,
+    physx::PxgAllocatorDesc& allocators,physx::PxU32 max_pairs,
     physx::PxU32 max_aggregate_pairs)
     : maxPairs_(max_pairs),maxAggregatePairs_(max_aggregate_pairs),
-    createdHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    removedHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    updatedHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    fpBounds_(heap,physx::PxsHeapStats::eBROADPHASE),
-    contactDistances_(heap,physx::PxsHeapStats::eBROADPHASE),
-    groups_(heap,physx::PxsHeapStats::eBROADPHASE),
-    environmentIds_(heap,physx::PxsHeapStats::eBROADPHASE),
-    newIntegerBounds_(heap,physx::PxsHeapStats::eBROADPHASE),
-    oldIntegerBounds_(heap,physx::PxsHeapStats::eBROADPHASE),
-    projections_(heap,physx::PxsHeapStats::eBROADPHASE),
-    projectionRanks_(heap,physx::PxsHeapStats::eBROADPHASE),
-    tempProjections_(heap,physx::PxsHeapStats::eBROADPHASE),
-    tempHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    radixCounts_(heap,physx::PxsHeapStats::eBROADPHASE),
-    sapBoxes_(heap,physx::PxsHeapStats::eBROADPHASE),
-    newSapBoxes_(heap,physx::PxsHeapStats::eBROADPHASE),
-    incrementalComparisons_(heap,physx::PxsHeapStats::eBROADPHASE),
-    incrementalBlockComparisons_(heap,physx::PxsHeapStats::eBROADPHASE),
-    projectionHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    endHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockEndHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    endHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    startHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockStartHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    startHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    totalEndHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockTotalEndHistograms_(heap,physx::PxsHeapStats::eBROADPHASE),
-    aggregateReportBlocks_(heap,physx::PxsHeapStats::eBROADPHASE),
-    actorReportBlocks_(heap,physx::PxsHeapStats::eBROADPHASE),
-    activeRegions_(heap,physx::PxsHeapStats::eBROADPHASE),
-    startRegions_(heap,physx::PxsHeapStats::eBROADPHASE),
-    orderedActiveHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    orderedStartHandles_(heap,physx::PxsHeapStats::eBROADPHASE),
-    overlapChecks_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockOverlapChecks_(heap,physx::PxsHeapStats::eBROADPHASE),
-    overlapHandleRegions_(heap,physx::PxsHeapStats::eBROADPHASE),
-    regionRange_(heap,physx::PxsHeapStats::eBROADPHASE),
-    startRegionAccum_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockStartRegionAccum_(heap,physx::PxsHeapStats::eBROADPHASE),
-    regionAccum_(heap,physx::PxsHeapStats::eBROADPHASE),
-    blockRegionAccum_(heap,physx::PxsHeapStats::eBROADPHASE),
-    foundPairs_(heap,physx::PxsHeapStats::eBROADPHASE),
-    lostPairs_(heap,physx::PxsHeapStats::eBROADPHASE),
-    foundAggregate_(heap,physx::PxsHeapStats::eBROADPHASE),
-    lostAggregate_(heap,physx::PxsHeapStats::eBROADPHASE),
-    foundActor_(heap,physx::PxsHeapStats::eBROADPHASE),
-    lostActor_(heap,physx::PxsHeapStats::eBROADPHASE),
-    broadphaseDescriptorBuffer_(heap,physx::PxsHeapStats::eBROADPHASE),
-    radixDescriptorBuffer_(heap,physx::PxsHeapStats::eBROADPHASE),
-    radixWithoutRanksBuffer_(heap,physx::PxsHeapStats::eBROADPHASE) {
+    pinnedDescriptor_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+    radixDescs_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+    radixWorDescs_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+    mappedFound_(allocators.hostMappedAlloc,physx::PxsHeapStats::eBROADPHASE,
+                 physx::Cm::PinnableAllocatorFallback::eDISABLED),
+    mappedLost_(allocators.hostMappedAlloc,physx::PxsHeapStats::eBROADPHASE,
+                physx::Cm::PinnableAllocatorFallback::eDISABLED),
+    createdHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    removedHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    updatedHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    fpBounds_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    contactDistances_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    groups_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    environmentIds_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    newIntegerBounds_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    oldIntegerBounds_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    projections_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    projectionRanks_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    tempProjections_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    tempHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    radixCounts_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    sapBoxes_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    newSapBoxes_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    incrementalComparisons_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    incrementalBlockComparisons_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    projectionHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    endHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockEndHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    endHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    startHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockStartHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    startHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    totalEndHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockTotalEndHistograms_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    aggregateReportBlocks_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    actorReportBlocks_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    activeRegions_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    startRegions_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    orderedActiveHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    orderedStartHandles_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    overlapChecks_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockOverlapChecks_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    overlapHandleRegions_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    regionRange_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    startRegionAccum_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockStartRegionAccum_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    regionAccum_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    blockRegionAccum_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    foundPairs_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    lostPairs_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    foundAggregate_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    lostAggregate_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    foundActor_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    lostActor_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    broadphaseDescriptorBuffer_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    radixDescriptorBuffer_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+    radixWithoutRanksBuffer_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE) {
     if(!maxPairs_ || !maxAggregatePairs_)
         throw std::invalid_argument("Original SAP report capacities must be nonzero");
+    if(!pinnedDescriptor_.isValid() ||
+       !mappedFound_.reserve(maxPairs_) || !mappedLost_.reserve(maxPairs_))
+        throw std::bad_alloc();
+    radixDescs_.resize(6u);
+    radixWorDescs_.resize(6u);
     // PxgCudaBroadPhaseSap constructor allocates only these permanent
     // resources. All projection, endpoint and region allocations grow
     // later, in the original gpuDMAUp ordering.
@@ -87,10 +99,12 @@ PxgSapSourceMembersNative::fetch_histories() noexcept {
 }
 SourceSapDmaUpFrameMembers PxgSapSourceMembersNative::dma_up_members(
     const SourceSapAabbManagerDescriptorView* aabb_manager,
-    CUdeviceptr original_found_map,CUdeviceptr original_lost_map) {
-    if(!original_found_map || !original_lost_map)
-        throw std::invalid_argument(
-            "Source GPU SAP requires original pinned mapped actor report addresses");
+    const SourceSapMappedReportView& mapped_host) {
+    const auto pair_bytes=sizeof(physx::PxgBroadPhasePair)*maxPairs_;
+    const auto original_found_map=mapped_host.device_address(
+        mappedFound_.begin(),pair_bytes);
+    const auto original_lost_map=mapped_host.device_address(
+        mappedLost_.begin(),pair_bytes);
     return {
         {numBoxes_,boxesCapacity_,createdCount_,removedCount_,
 #ifdef SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU
@@ -135,7 +149,7 @@ SourceSapDmaUpFrameMembers PxgSapSourceMembersNative::dma_up_members(
         {projections_,projectionRanks_,tempProjections_,tempHandles_,
          radixCounts_,projectionHandles_},
         {broadphaseDescriptorBuffer_,radixDescriptorBuffer_,radixWithoutRanksBuffer_},
-        descriptor_,radixDescs_.data(),radixWorDescs_.data()
+        pinnedDescriptor_.get(),radixDescs_.begin(),radixWorDescs_.begin()
     };
 }
 } // namespace fyzz::physx_gpu
