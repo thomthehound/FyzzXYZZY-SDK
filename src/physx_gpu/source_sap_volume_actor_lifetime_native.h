@@ -8,6 +8,7 @@
 #include "BpVolumeData.h"
 #include "PxgBroadPhasePairReport.h"
 
+#include <initializer_list>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -23,6 +24,26 @@ struct SourceSapVolumeActorLifetimeNative {
     std::span<BodyId> volume_to_actor;
     std::span<const physx::Bp::VolumeData> volume_data;
 };
+
+// An existing removed handle keeps its PREVIOUS actor identity until
+// the lost-report fetch. Rebinding it to a different actor beforehand
+// would misattribute the GPU pair history. Re-admission of the SAME
+// actor is permitted, matching addBPEntry's removed-bit cancellation.
+inline void admit_source_sap_volume_actor_identity_native(
+    SourceSapVolumeActorLifetimeNative state,
+    physx::Bp::ShapeHandle handle,BodyId actor) {
+    if(handle>=state.volume_to_actor.size() ||
+       handle>=state.volume_data.size() ||
+       actor==std::numeric_limits<BodyId>::max())
+        throw std::out_of_range(
+            "Original AABB source admission references invalid Sc identity");
+    const auto previous=state.volume_to_actor[handle];
+    if(previous!=std::numeric_limits<BodyId>::max() &&
+       previous!=actor)
+        throw std::logic_error(
+            "Source volume handle reused before GPU lost-pair fetch");
+    state.volume_to_actor[handle]=actor;
+}
 
 // Validate the original source created/removed handle lists before
 // preBroadPhase queues GPU work. No full-map walk, staging allocation,
