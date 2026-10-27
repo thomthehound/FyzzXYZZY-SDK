@@ -805,14 +805,30 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
         // a separate BufferId role table. Each of the 42 heap allocations
         // contains its own marker and size across frame rotations.
         physx::PxgCudaBuffer gpuDescriptor(heap,group);
+        physx::PxgCudaBuffer mappedFound(heap,group),mappedLost(heap,group);
         gpuDescriptor.allocate(sizeof(physx::PxgBroadPhaseDesc),PX_FL);
+        mappedFound.allocate(2u*sizeof(physx::PxgBroadPhasePair),PX_FL);
+        mappedLost.allocate(2u*sizeof(physx::PxgBroadPhasePair),PX_FL);
         const auto descriptorAddress=gpuDescriptor.getDevicePtr();
         physx::PxgBroadPhaseDesc gpu{};
-        gpu.max_found_lost_pairs=1u;
+        gpu.max_found_lost_pairs=2u;
+        gpu.sharedFoundPairIndex=1u;
+        gpu.sharedLostPairIndex=1u;
+        gpu.foundPairReportMap=reinterpret_cast<physx::PxgBroadPhasePair*>(
+            static_cast<std::uintptr_t>(mappedFound.getDevicePtr()));
+        gpu.lostPairReportMap=reinterpret_cast<physx::PxgBroadPhasePair*>(
+            static_cast<std::uintptr_t>(mappedLost.getDevicePtr()));
+        std::array<physx::PxgBroadPhasePair,2> foundGPU{
+            physx::PxgBroadPhasePair{3u,8u},
+            physx::PxgBroadPhasePair{11u,19u}};
+        std::array<physx::PxgBroadPhasePair,2> lostGPU{
+            physx::PxgBroadPhasePair{2u,7u},
+            physx::PxgBroadPhasePair{23u,29u}};
+        std::array<physx::PxgBroadPhasePair,2> foundCPU{},lostCPU{};
         physx::PxgBroadPhaseDesc host{};
         std::array<std::array<physx::PxU32,6>,7> markers{};
         std::vector<fyzz::physx_gpu::SourceSapUpload> uploads;
-        uploads.reserve(43u);
+        uploads.reserve(45u);
         for(std::size_t kind=0u;kind<owners.size();++kind)
             for(physx::PxU32 i=0;i<6u;++i) {
                 markers[kind][i]=
@@ -821,6 +837,10 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
                                    &markers[kind][i],sizeof(physx::PxU32)});
             }
         uploads.push_back({descriptorAddress,&gpu,sizeof(gpu)});
+        uploads.push_back({mappedFound.getDevicePtr(),
+                           foundGPU.data(),sizeof(foundGPU)});
+        uploads.push_back({mappedLost.getDevicePtr(),
+                           lostGPU.data(),sizeof(lostGPU)});
         stream.queue_uploads(uploads);
         stream.wait_at_fetch();
         const auto check_histories=[&](bool rotated) {
@@ -844,11 +864,16 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
         // First frame publishes the source descriptor, then rotates
         // ORIGINAL owners before the AABB-manager found/lost callbacks.
         const auto first=fyzz::physx_gpu::fetch_source_sap_results(
-            context,addresses,descriptorAddress,host,{},{},false,source);
-        if(first.found_actors||first.lost_actors||
-           host.max_found_lost_pairs!=gpu.max_found_lost_pairs)
+            context,addresses,descriptorAddress,host,
+            {foundCPU.data(),foundCPU.size()},
+            {lostCPU.data(),lostCPU.size()},false,source);
+        if(first.found_actors!=1u||first.lost_actors!=1u ||
+           first.pairs_needed!=1u||
+           host.max_found_lost_pairs!=gpu.max_found_lost_pairs ||
+           foundCPU[0].mVolA!=3u||foundCPU[0].mVolB!=8u ||
+           lostCPU[0].mVolA!=2u||lostCPU[0].mVolB!=7u)
             throw std::runtime_error(
-                "Original SAP owner fetch failed zero-pair publication");
+                "Original SAP owner fetch failed GPU actor-pair publication");
         check_histories(true);
 
         // A malformed second-frame descriptor must not mutate the
@@ -861,9 +886,12 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
         bool invalidDescriptor=false;
         try {
             (void)fyzz::physx_gpu::fetch_source_sap_results(
-                context,addresses,descriptorAddress,host,{},{},false,source);
+                context,addresses,descriptorAddress,host,
+                {foundCPU.data(),foundCPU.size()},
+                {lostCPU.data(),lostCPU.size()},false,source);
         }catch(const std::invalid_argument&){invalidDescriptor=true;}
-        if(!invalidDescriptor || host.sharedFoundPairIndex!=0u)
+        if(!invalidDescriptor || host.sharedFoundPairIndex!=1u ||
+           foundCPU[0].mVolA!=3u || lostCPU[0].mVolA!=2u)
             throw std::runtime_error(
                 "Failed source SAP fetch partially published descriptor");
         check_histories(true);
@@ -873,13 +901,43 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
         stream.queue_uploads({{descriptorAddress,&gpu,sizeof(gpu)}});
         stream.wait_at_fetch();
         (void)fyzz::physx_gpu::fetch_source_sap_results(
-            context,addresses,descriptorAddress,host,{},{},false,source);
+            context,addresses,descriptorAddress,host,
+            {foundCPU.data(),foundCPU.size()},
+            {lostCPU.data(),lostCPU.size()},false,source);
         check_histories(false);
 
         // PxgCudaBroadPhaseSap::fetchBroadPhaseResults also rotates
         // histories on early-return/quiet frames, even with no GPU work.
-        (void)fyzz::physx_gpu::fetch_source_sap_results(
+        // Corrupted late lost mapping must not publish found reports,
+        // the host descriptor, or swap any of the original buffers.
+        auto invalidLost=gpu;
+        invalidLost.lostPairReportMap=reinterpret_cast<physx::PxgBroadPhasePair*>(
+            static_cast<std::uintptr_t>(0x1234u));
+        stream.queue_uploads({{descriptorAddress,&invalidLost,sizeof(invalidLost)}});
+        stream.wait_at_fetch();
+        foundCPU[0]=physx::PxgBroadPhasePair{31u,37u};
+        bool invalidPairSource=false;
+        try {
+            (void)fyzz::physx_gpu::fetch_source_sap_results(
+                context,addresses,descriptorAddress,host,
+                {foundCPU.data(),foundCPU.size()},
+                {lostCPU.data(),lostCPU.size()},false,source);
+        }catch(const std::out_of_range&){invalidPairSource=true;}
+        if(!invalidPairSource || foundCPU[0].mVolA!=31u ||
+           host.sharedFoundPairIndex!=1u)
+            throw std::runtime_error(
+                "Late corrupt source lost-pair mapping partially published found pairs");
+        check_histories(false);
+
+        auto quietGpu=gpu;
+        quietGpu.sharedFoundPairIndex=0u;
+        quietGpu.sharedLostPairIndex=0u;
+        stream.queue_uploads({{descriptorAddress,&quietGpu,sizeof(quietGpu)}});
+        stream.wait_at_fetch();
+        const auto quiet=fyzz::physx_gpu::fetch_source_sap_results(
             context,addresses,descriptorAddress,host,{},{},false,source);
+        if(quiet.found_actors||quiet.lost_actors)
+            throw std::runtime_error("Quiet source fetch published stale actor-pair reports");
         check_histories(true);
         (void)fyzz::physx_gpu::fetch_source_sap_results(
             context,addresses,descriptorAddress,host,{},{},true,source);
