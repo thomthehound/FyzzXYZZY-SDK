@@ -709,23 +709,33 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         SourceSapSingleVolumeMembersNative manager{
             added,removed,changed,aggregated,volumes,groups,offsets,
             persistent,gpu};
+        std::array<BodyId,40u> sourceActorIds{};
+        sourceActorIds.fill(std::numeric_limits<BodyId>::max());
+        const SourceSapVolumeActorLifetimeNative identity{
+            sourceActorIds,volumes};
         const auto first_pass=[&]() {
             collect_source_sap_single_volume_first_pass_native(
                 manager,{created,retired,updated});
         };
         // Original AABB handles need not equal actor IDs or arrive sorted.
         alignas(4) int actorA=1,actorB=2;
-        add_source_sap_single_volume_native(
-            manager,36u,0.04f,physx::Bp::FilterGroup::eSTATICS,&actorA);
-        add_source_sap_single_volume_native(
-            manager,2u,0.02f,physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB);
-        add_source_sap_single_volume_native(
-            manager,7u,0.03f,physx::Bp::FilterGroup::eSTATICS,&actorA);
-        if(!remove_source_sap_single_volume_native(manager,7u))
-            throw std::runtime_error("Same-frame source admission was not cancelled");
+        add_source_sap_single_volume_actor_native(
+            manager,identity,36u,0.04f,
+            physx::Bp::FilterGroup::eSTATICS,&actorA,36u);
+        add_source_sap_single_volume_actor_native(
+            manager,identity,2u,0.02f,
+            physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB,2u);
+        add_source_sap_single_volume_actor_native(
+            manager,identity,7u,0.03f,
+            physx::Bp::FilterGroup::eSTATICS,&actorA,7u);
+        if(!remove_source_sap_single_volume_actor_native(manager,identity,7u) ||
+           sourceActorIds[7]!=std::numeric_limits<BodyId>::max())
+            throw std::runtime_error(
+                "Canceled source volume retained a GPU-unpublished actor identity");
         bool rejected=false;
-        try {add_source_sap_single_volume_native(
-            manager,2u,0.04f,physx::Bp::FilterGroup::eSTATICS,&actorA);}
+        try {add_source_sap_single_volume_actor_native(
+            manager,identity,2u,0.04f,
+            physx::Bp::FilterGroup::eSTATICS,&actorA,2u);}
         catch(const std::invalid_argument&){rejected=true;}
         if(!rejected || !volumes[2].isSingleActor() ||
            groups[2]!=physx::Bp::FilterGroup::eDYNAMICS_BASE)
@@ -781,6 +791,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         const auto frame=prepare_source_sap_single_volume_scene_native(
             manager,{created,retired,updated},live_boxes,live_handles,
             sceneBounds,filter,true,sceneScratch);
+        validate_source_sap_volume_actor_lifetime_native(identity,frame);
         if(frame.getNumCreatedHandles()!=2u ||
            frame.getNumUpdatedHandles()!=0u ||
            frame.getNumRemovedHandles()!=0u ||
@@ -804,12 +815,24 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         // after successful fetch; the next frame reuses the same allocations.
         clear_source_sap_single_volume_report_bitmaps_native(manager);
         persistent=false;gpu=false;
-        if(remove_source_sap_single_volume_native(manager,2u))
+        if(remove_source_sap_single_volume_actor_native(manager,identity,2u))
             throw std::runtime_error("Previously admitted volume was cancelled");
-        add_source_sap_single_volume_native(
-            manager,2u,0.05f,physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB);
-        if(remove_source_sap_single_volume_native(manager,36u))
+        add_source_sap_single_volume_actor_native(
+            manager,identity,2u,0.05f,
+            physx::Bp::FilterGroup::eDYNAMICS_BASE,&actorB,2u);
+        if(remove_source_sap_single_volume_actor_native(manager,identity,36u))
             throw std::runtime_error("Previously published volume was not retired");
+        if(sourceActorIds[36]!=36u)
+            throw std::runtime_error(
+                "Retired source volume lost identity before GPU lost-pair fetch");
+        bool blockedReuse=false;
+        try {add_source_sap_single_volume_actor_native(
+            manager,identity,36u,0.04f,
+            physx::Bp::FilterGroup::eSTATICS,&actorA,99u);}
+        catch(const std::logic_error&){blockedReuse=true;}
+        if(!blockedReuse || groups[36]!=physx::Bp::FilterGroup::eINVALID)
+            throw std::runtime_error(
+                "Source volume was recycled before its lost report completed");
         mark_source_sap_single_volume_changed_native(manager,2u,0.125f);
         first_pass();
         if(created.size()!=0u || retired.size()!=1u || retired[0]!=36u ||
@@ -831,6 +854,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            std::fabs(bounds[36].minimum.x-2.f)>1.0e-6f)
             throw std::runtime_error(
                 "GPU-only changed volume did not advance original AABB bounds");
+        validate_source_sap_volume_actor_lifetime_native(identity,next);
         if(next.getNumCreatedHandles()!=0u ||
            next.getNumUpdatedHandles()!=0u ||
            next.getNumRemovedHandles()!=1u ||
@@ -856,6 +880,34 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         if(!(observedChanged & (1u<<2u)))
             throw std::runtime_error(
                 "Original source changed-handle bitmap not uploaded to native GPU");
+
+        // GPU report identities are retained across source VolumeData reset.
+        // Found reports must reject the retired source volume, while the
+        // same original pair remains valid as a lost report until fetch.
+        const std::array<physx::PxgBroadPhasePair,1u> formerPair{
+            physx::PxgBroadPhasePair{2u,36u}};
+        bool staleFound=false;
+        try {validate_source_sap_found_volume_lifetime_native(
+            formerPair,identity);}
+        catch(const std::invalid_argument&){staleFound=true;}
+        std::vector<native::Pair> foundPairs,lostPairs;
+        lower_source_sap_actor_reports_to_sc(
+            {},formerPair,sourceActorIds,foundPairs,lostPairs);
+        if(!staleFound || lostPairs.size()!=1u ||
+           lostPairs.front()!=native::Pair{2u,36u})
+            throw std::runtime_error(
+                "Original source retired handle lost valid GPU lost-pair identity");
+        retire_source_sap_volume_actor_lifetime_native(identity,next);
+        if(sourceActorIds[36]!=std::numeric_limits<BodyId>::max() ||
+           sourceActorIds[2]!=2u)
+            throw std::runtime_error(
+                "Source GPU fetch did not release only completed removed handles");
+        add_source_sap_single_volume_actor_native(
+            manager,identity,36u,0.04f,
+            physx::Bp::FilterGroup::eSTATICS,&actorA,99u);
+        if(sourceActorIds[36]!=99u || !added.boundedTest(36u))
+            throw std::runtime_error(
+                "Source AABB manager did not admit recycled handle after fetch");
         clear_source_sap_single_volume_report_bitmaps_native(manager);
     }
     stream.wait_at_fetch();
