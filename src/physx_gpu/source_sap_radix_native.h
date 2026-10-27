@@ -24,8 +24,11 @@ public:
                               compute::ShaderBinary initialize_ranks,
                               compute::ShaderBinary count,
                               compute::ShaderBinary scatter,
-                              compute::ShaderBinary gather_handles);
+                              compute::ShaderBinary gather_handles,
+                              compute::ShaderBinary count_wave = {},
+                              bool force_portable = false);
     ~SourceSapRadixNativeStage();
+    bool using_wave_count() const noexcept { return using_wave_count_; }
     SourceSapRadixNativeStage(const SourceSapRadixNativeStage&)=delete;
     SourceSapRadixNativeStage& operator=(const SourceSapRadixNativeStage&)=delete;
 
@@ -55,6 +58,7 @@ private:
     compute::PipelineId count_pipeline_=0;
     compute::PipelineId scatter_pipeline_=0;
     compute::PipelineId gather_pipeline_=0;
+    bool using_wave_count_=false;
     std::size_t view_alignment_=4u;
     std::uint64_t max_view_bytes_=0u;
 };
