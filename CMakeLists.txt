@@ -291,6 +291,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
     src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -1152,6 +1153,25 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}"
           "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}")
 
+    # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
+    set(FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_clear_new_flags_spv DEPENDS "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}")
+    add_executable(fyzzxyzzy_physx_source_clear_new_flags_native
+      tests/physx_gpu_source_clear_new_flags_native.cpp)
+    target_include_directories(fyzzxyzzy_physx_source_clear_new_flags_native PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_clear_new_flags_native PRIVATE fyzzxyzzy_physx_gpu_stages)
+    add_dependencies(fyzzxyzzy_physx_source_clear_new_flags_native fyzzxyzzy_source_clear_new_flags_spv)
+    add_test(NAME fyzzxyzzy_physx_source_clear_new_flags_native COMMAND fyzzxyzzy_physx_source_clear_new_flags_native "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}")
+    
       # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
       set(FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_clear_new_flags_arena.spv")
@@ -1682,6 +1702,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
     src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -2518,6 +2539,27 @@ if(FYZZXYZZY_BUILD_D3D12)
           "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}"
           "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}")
 
+    # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
+    set(FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12 "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_clear_new_flags_dxil DEPENDS "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}")
+    add_executable(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12
+      tests/physx_gpu_source_clear_new_flags_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 fyzzxyzzy_source_clear_new_flags_dxil)
+    add_test(NAME fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 COMMAND fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}")
+    set_tests_properties(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    
     # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
     set(FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_clear_new_flags_arena.dxil")
