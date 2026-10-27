@@ -90,6 +90,75 @@ void test_source_scene_boundary() {
             groups==beforeGroups,
             "Quiet source SAP frame rewrote persistent AABB manager arrays");
 
+    // The original GPU AABB manager never populates the CPU updated
+    // handle array. Its mChangedHandleMap supplies changed volumes to
+    // markUpdatedPairs, including when the bounds actor is not 'created'.
+    actors[0].position.x=4.0f;
+    actors[0].contact_offset=0.3125f;
+    const std::array<physx::PxU32,1> gpu_changed{1u};
+    const SourceSapSceneFrameChanges gpu_dirty{
+        {},{},{},gpu_changed};
+    const auto gpu_frame=prepare_source_sap_scene_update(
+        actors,handles,target,gpu_dirty,filter,true,true,scratch);
+    require(gpu_frame.getNumUpdatedHandles()==0u &&
+            gpu_frame.getGpuStateChanged() &&
+            std::fabs(bounds[0].minimum.x-3.0f)<1.0e-6f &&
+            std::fabs(bounds[3].minimum.x+8.0f)<1.0e-6f &&
+            distances[0]==0.3125f &&
+            distances[3]==beforeDistances[3],
+            "GPU changed bitmap with empty updated list lost moved Sc bounds");
+
+    // Source bitmap word indices above 31 must preserve volume-handle
+    // identity and leave unmarked peers untouched.
+    std::array<physx::PxBounds3,40> high_bounds{};
+    for(auto& b:high_bounds)b=physx::PxBounds3::empty();
+    std::array<physx::PxReal,40> high_offsets{};
+    std::array<physx::Bp::FilterGroup::Enum,40> high_groups{};
+    high_groups.fill(physx::Bp::FilterGroup::eINVALID);
+    SourceSapSceneBoundsScratch high_scratch;
+    const SourceSapSceneBounds high_target{
+        high_bounds,high_offsets,high_groups};
+    const std::array<native::GpuBroadphaseBox,2> high_boxes{{
+        {11u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
+            native::GpuBroadphaseBox::Motion::Dynamic},
+        {4u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.03f,
+            native::GpuBroadphaseBox::Motion::Static}
+    }};
+    const std::array<physx::Bp::ShapeHandle,2> high_handles{36u,2u};
+    const std::array<physx::Bp::ShapeHandle,2> high_created{2u,36u};
+    (void)prepare_source_sap_scene_update(
+        high_boxes,high_handles,high_target,{high_created,{},{}},
+        filter,true,true,high_scratch);
+    const auto initial_low=high_bounds[2].minimum.x;
+    auto shifted=high_boxes;
+    shifted[0].position.x=7.f;
+    shifted[1].position.x=100.f;
+    const std::array<physx::PxU32,2> high_dirty{0u,1u<<4u};
+    const auto high_frame=prepare_source_sap_scene_update(
+        shifted,high_handles,high_target,{{},{},{},high_dirty},
+        filter,true,true,high_scratch);
+    require(high_frame.getNumUpdatedHandles()==0u &&
+            high_frame.getNumCreatedHandles()==0u &&
+            std::fabs(high_bounds[36].minimum.x-6.f)<1.0e-6f &&
+            high_bounds[2].minimum.x==initial_low,
+            "Source GPU changed bitmap failed at 32-bit volume boundary");
+
+    // Source handles removed earlier may retain dirty bits until the
+    // manager's fetch boundary. A stale bit that has no live Sc volume
+    // must neither update any surviving bounds nor invent a volume.
+    shifted[0].position.x=20.f;
+    shifted[1].position.x=200.f;
+    const std::array<physx::PxU32,2> retired_dirty{1u<<5u,0u};
+    const auto before_high=high_bounds[36].minimum.x;
+    const auto before_low=high_bounds[2].minimum.x;
+    (void)prepare_source_sap_scene_update(
+        shifted,high_handles,high_target,{{},{},{},retired_dirty},
+        filter,true,true,high_scratch);
+    require(high_bounds[36].minimum.x==before_high &&
+            high_bounds[2].minimum.x==before_low &&
+            high_groups[5]==physx::Bp::FilterGroup::eINVALID,
+            "Stale source GPU changed bit improperly rewrote a live volume");
+
     // Only the authoritative updated handle is reconstructed, even when
     // another live Sc actor's pose differs from its retained GPU bounds.
     const std::array<physx::Bp::ShapeHandle,1> moved{0u};
@@ -97,7 +166,7 @@ void test_source_scene_boundary() {
     actors[0].contact_offset=0.375f;
     (void)prepare_source_sap_scene_update(
         actors,handles,target,moving,filter,true,true,scratch);
-    require(std::fabs(bounds[0].minimum.x-5.0f)<1.0e-6f &&
+    require(std::fabs(bounds[0].minimum.x-3.0f)<1.0e-6f &&
             std::fabs(bounds[3].minimum.x+8.0f)<1.0e-6f &&
             distances[0]==0.375f && distances[3]==beforeDistances[3],
             "Sparse source SAP update changed an unmodified volume");
