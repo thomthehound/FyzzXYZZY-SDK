@@ -30,7 +30,7 @@ struct SourceSapUpdateMiddleNative {
 };
 
 inline void append_source_sap_update_middle_native(
-    SourceSapDmaNative& stream,
+    std::vector<compute::BatchCommand>& commands,
     const SourceSapBoxIndicesNativeStage& indices,
     const SourceSapRemovedNativeStage& deletion,
     const SourceSapCreatedNativeStage& insertion,
@@ -67,10 +67,23 @@ inline void append_source_sap_update_middle_native(
 
     // Do not submit or wait here. Atomic batch construction preserves
     // the original source array identities and all later fetch semantics.
-    auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
         std::make_move_iterator(prepared.begin()),
         std::make_move_iterator(prepared.end()));
+}
+
+inline void append_source_sap_update_middle_native(
+    SourceSapDmaNative& stream,
+    const SourceSapBoxIndicesNativeStage& indices,
+    const SourceSapRemovedNativeStage& deletion,
+    const SourceSapCreatedNativeStage& insertion,
+    const SourceSapRadixNativeStage& sort,
+    const physx::PxgBroadPhaseDesc& source,
+    std::span<const physx::PxgRadixSortDesc,6> wor_radix,
+    const CudaDeviceAddressMap& addresses,
+    const SourceSapUpdateMiddleNative& frame) {
+    append_source_sap_update_middle_native(stream.commands(),indices,deletion,
+        insertion,sort,source,wor_radix,addresses,frame);
 }
 } // namespace fyzz::physx_gpu
