@@ -57,5 +57,21 @@ SourceSapGpuDMAUpCounts gpu_dma_up_sap_frame_native(
     SourceSapDmaUpFrameMembers members,
     SourceSapDmaNative& stream);
 
+// This is the contiguous beginning of the original
+// PxgCudaBroadPhaseSap::update(): gpuDMAUp always runs BEFORE its
+// forced/quiet update gate. The caller retains the original force-update
+// member, allocations, stream and downstream kernel/fetch continuations.
+// In particular, a rejected DMA preparation cannot consume mForceUpdate.
+struct SourceSapUpdateAdmission {
+    SourceSapGpuDMAUpCounts counts;
+    bool execute_gpu_stages = false;
+};
+
+SourceSapUpdateAdmission begin_sap_update_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapDmaUpFrameMembers members,
+    SourceSapDmaNative& stream,
+    bool& force_update);
+
 } // namespace fyzz::physx_gpu
 #endif

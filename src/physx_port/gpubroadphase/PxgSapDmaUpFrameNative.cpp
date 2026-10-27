@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
+#include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
 #include <stdexcept>
@@ -71,6 +72,21 @@ SourceSapGpuDMAUpCounts gpu_dma_up_sap_frame_native(
         uploads);
     stream.queue_uploads(uploads);
     return counts;
+}
+
+SourceSapUpdateAdmission begin_sap_update_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapDmaUpFrameMembers members,
+    SourceSapDmaNative& stream,
+    bool& force_update) {
+    // PxgCudaBroadPhaseSap::update saves previousNumOfBoxes before
+    // gpuDMAUp, then tests the original GPU/CPU dirty and force flags.
+    // Never test the gate before DMA: even quiet frames need descriptor
+    // uploads and may need a final forced bounds/history convergence.
+    const auto counts=gpu_dma_up_sap_frame_native(update,members,stream);
+    const bool execute=should_execute_sap_update_after_dma_up_native(
+        update,force_update);
+    return {counts,execute};
 }
 
 } // namespace fyzz::physx_gpu
