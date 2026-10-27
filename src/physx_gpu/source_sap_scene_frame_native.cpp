@@ -3,6 +3,7 @@
 #include "physx_gpu/source_sap_scene_frame_native.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace fyzz::physx_gpu {
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
@@ -39,6 +40,15 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         addresses,members.update);
     stream.wait_at_fetch();
 
+    // Complete both source bitmap D32 view validations before reporting
+    // success to Sc. Reserve the following GPU command queue now so
+    // post-fetch retirement cannot allocate after history publication.
+    auto bitmap_retirement=prepare_source_sap_aabb_report_retirement_native(
+        stream,members.bitmap_fill,addresses,
+        members.added_bitmap,members.removed_bitmap);
+    auto& pending=stream.commands();
+    pending.reserve(pending.size()+bitmap_retirement.commands.size());
+
     // Fetch publishes the ORIGINAL CPU destination arrays and rotates
     // all seven PxgCudaBufferN<6> endpoint histories exactly once.
     // Failed source-buffer validation does not publish either report.
@@ -62,6 +72,11 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
                     members.lost_pairs.data,counts.lost_actors),
                 members.volume_to_actor,members.found,members.lost);
         });
+    // Source processFoundPairs/processLostPairs clear added/removed maps
+    // only after the completed GPU report and Sc admission. These D32
+    // dispatches are enqueued on the SAME stream; no fetch-time host wait.
+    commit_source_sap_aabb_report_retirement_native(
+        stream,std::move(bitmap_retirement));
     return {admission,fetched};
 }
 } // namespace fyzz::physx_gpu
