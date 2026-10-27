@@ -8,6 +8,8 @@
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "PxgBroadPhasePairReport.h"
+#include "CmPinnableObject.h"
+#include "CmPinnableArray.h"
 #include <array>
 #include <cstdint>
 
@@ -20,7 +22,7 @@ namespace fyzz::physx_gpu {
 // No parallel endpoint/rank/report storage and no independent scheduler.
 class PxgSapSourceMembersNative final {
 public:
-    PxgSapSourceMembersNative(physx::PxgHeapMemoryAllocator& device_heap,
+    PxgSapSourceMembersNative(physx::PxgAllocatorDesc& allocators,
                               physx::PxU32 max_pairs,
                               physx::PxU32 max_aggregate_pairs);
     PxgSapSourceMembersNative(const PxgSapSourceMembersNative&)=delete;
@@ -33,12 +35,20 @@ public:
         CUdeviceptr original_lost_map);
     SourceSapFetchHistoryBuffers fetch_histories() noexcept;
 
-    physx::PxgBroadPhaseDesc& descriptor() noexcept {return descriptor_;}
-    const physx::PxgBroadPhaseDesc& descriptor() const noexcept {return descriptor_;}
+    physx::PxgBroadPhaseDesc& descriptor() noexcept {return pinnedDescriptor_.get();}
+    const physx::PxgBroadPhaseDesc& descriptor() const noexcept {return pinnedDescriptor_.get();}
     physx::PxgCudaBuffer& new_integer_bounds() noexcept {return newIntegerBounds_;}
     physx::PxgCudaBuffer& old_integer_bounds() noexcept {return oldIntegerBounds_;}
     bool& force_update() noexcept {return forceUpdate_;}
     physx::PxU32 num_boxes() const noexcept {return numBoxes_;}
+    physx::PxgBroadPhasePair* mapped_found_actor_pairs() noexcept {
+        return mappedFound_.begin();
+    }
+    physx::PxgBroadPhasePair* mapped_lost_actor_pairs() noexcept {
+        return mappedLost_.begin();
+    }
+    physx::PxU32 max_found_lost_pairs() const noexcept {return maxPairs_;}
+
 
 private:
     physx::PxU32 numBoxes_=0, boxesCapacity_=0;
@@ -47,8 +57,9 @@ private:
     physx::PxU32 regionAccumTotal_=0,startRegionAccumTotal_=0;
     physx::regionOverlapType overlapChecksTotal_=0;
     bool forceUpdate_=true;
-    physx::PxgBroadPhaseDesc descriptor_{};
-    std::array<physx::PxgRadixSortDesc,6> radixDescs_{},radixWorDescs_{};
+    physx::Cm::PinnableObject<physx::PxgBroadPhaseDesc> pinnedDescriptor_;
+    physx::Cm::PinnableArray<physx::PxgRadixSortDesc> radixDescs_,radixWorDescs_;
+    physx::Cm::PinnableArray<physx::PxgBroadPhasePair> mappedFound_,mappedLost_;
     physx::PxgTypedCudaBuffer<physx::PxU32> createdHandles_;
     physx::PxgTypedCudaBuffer<physx::PxU32> removedHandles_;
     physx::PxgTypedCudaBuffer<physx::PxU32> updatedHandles_;
