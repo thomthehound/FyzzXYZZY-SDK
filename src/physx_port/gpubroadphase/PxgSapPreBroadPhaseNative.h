@@ -27,6 +27,11 @@ struct SourceSapPreBroadPhaseBuffers {
     physx::PxU32& boxes_capacity;
 };
 
+// Preflight source bounds and host-array capacity before any preceding
+// AABB-manager bitmap transfer can enter the same GPU frame.
+void validate_pre_broadphase_native(
+    const physx::Bp::BroadPhaseUpdateData& update);
+
 // Source: PxgCudaBroadPhaseSap::preBroadPhase, including its conditional
 // bounds upload and unconditional contact-distance/group uploads.
 // The original Bp::BroadPhaseUpdateData is consumed directly; GPU buffers

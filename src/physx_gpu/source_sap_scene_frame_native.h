@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sap_fetch_native.h"
 #include "physx_gpu/source_sap_scene_bounds.h"
 #include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 
 #include <span>
 #include <vector>
@@ -22,6 +23,9 @@ struct SourceSapSceneFrameNativeMembers {
     // and BEFORE the source preBroadPhase task runs. Borrowed here after
     // that task's dependency has been satisfied by the source owner.
     const physx::Bp::BroadPhaseUpdateData& aabb_update;
+    // The source AABB manager owns all bitmap and VolumeData buffers.
+    // Its first-pass GPU upload precedes SAP's gpuDMAUp on this same stream.
+    const SourceSapAabbManagerPreUpdateNative& aabb_manager;
 
     SourceSapDmaUpFrameMembers dma;
     SourceSapUpdateNativeFrame update;
@@ -42,10 +46,10 @@ struct SourceSapSceneFrameNativeResult {
 };
 
 // Called by the original source owner at its update/fetch boundary.
-// Sc geometry preparation and the AABB-manager preBroadPhase continuation
-// MUST have run first, on the original PhysX task chain. This call joins
-// GPU DMA, the SAP kernels, source fence completion, actor report
-// publication and the seven fetch-time history swaps on that same stream.
+// Sc geometry preparation and the AABB manager's handle/bitmap first
+// pass MUST have run first. This call performs its native GPU pre-update,
+// SAP gpuDMAUp/update, source fence completion, actor report publication
+// and seven fetch-time history swaps on the same original stream.
 // Output spans remain owned by the source/Sc consumers.
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,
