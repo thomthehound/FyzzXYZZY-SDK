@@ -86,16 +86,29 @@ struct GpuSapSceneAdmissionFixture {
         bool rejected=false;
         try { scene.advance_collision(); }
         catch(const std::invalid_argument&) { rejected=true; }
-        if(!rejected || !gpu->rollbacks ||
+        if(!rejected || gpu->rollbacks!=1 ||
            scene.pairs().size()!=1 || scene.pairs()[0]!=pair)
             throw std::runtime_error(
                 "Rejected GPU SAP report escaped Sc rollback");
+
+        // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults must reject
+        // over-capacity reports before Sc touches a single manager edge.
+        gpu->set({},{});
+        gpu->overflow=true;
+        rejected=false;
+        try { scene.advance_collision(); }
+        catch(const std::overflow_error&) { rejected=true; }
+        gpu->overflow=false;
+        if(!rejected || gpu->rollbacks!=2 ||
+           scene.pairs().size()!=1 || scene.pairs()[0]!=pair)
+            throw std::runtime_error(
+                "GPU SAP overflow published a partial Sc frame");
         scene.set_position(b,{8.0f,1.0f,0.0f});
         gpu->set({},{pair});
         scene.advance_collision();
         if(!scene.pairs().empty() ||
            scene.lost_pairs().size()!=1 || scene.lost_pairs()[0]!=pair ||
-           !scene.contacts().empty() || gpu->fetches!=4)
+           !scene.contacts().empty() || gpu->fetches!=5)
             throw std::runtime_error(
                 "GPU SAP lost report failed Sc contact retirement");
         if(scene.broadphase_endpoint_full_sort_count()!=0 ||
@@ -110,7 +123,7 @@ struct GpuSapSceneAdmissionFixture {
         gpu->set({pair},{});
         scene.step(1.0f/60.0f);
         if(scene.pairs().size()!=1 || scene.pairs()[0]!=pair ||
-           scene.contacts().empty() || gpu->fetches!=5 ||
+           scene.contacts().empty() || gpu->fetches!=6 ||
            scene.broadphase_endpoint_full_sort_count()!=0 ||
            !scene.sap_volumes_.empty())
             throw std::runtime_error(
