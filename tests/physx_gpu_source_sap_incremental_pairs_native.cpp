@@ -150,6 +150,7 @@ void run(Context& context,SourceSapIncrementalPairsNativeStage& stage,
     source.foundPairReport=ptr.operator()<Pairs>(pointer[37u]);
     source.lostPairReport=ptr.operator()<Pairs>(pointer[38u]);
     context.upload(buffer[39u],offset[39u],&source,sizeof(source));
+    std::cerr<<"source pairs: allocation/upload complete; building commands\n";
     SourceSapDmaNative stream(context,map);
     auto& commands=stream.commands();
     auto bad=source;
@@ -165,7 +166,9 @@ void run(Context& context,SourceSapIncrementalPairsNativeStage& stage,
     const auto& d=std::get<DispatchCommand>(commands[0]);
     require(d.groups.x==256u&&d.groups.y==3u&&d.buffers.size()==41u,
             "Original 256x3 SAP producer dispatch or source ABI changed");
+    std::cerr<<"source pairs: GPU submit lose="<<lose<<" shared="<<shared<<"\n";
     stream.wait_at_fetch();
+    std::cerr<<"source pairs: GPU completion\n";
     std::array<std::uint32_t,2> reportCounts{};
     context.download(buffer[39u],offset[39u]+
         offsetof(physx::PxgBroadPhaseDesc,sharedFoundPairIndex),
@@ -182,6 +185,7 @@ void run(Context& context,SourceSapIncrementalPairsNativeStage& stage,
         context.download(buffer[i],offset[i],observed.data(),allocation(i));
         require(observed==data[i],"Source incremental producer modified endpoint history");
     }
+    std::cerr<<"source pairs: reference verified\n";
     if(shared)context.destroy_buffer(root);
     else for(const auto id:buffer)context.destroy_buffer(id);
 }
@@ -194,7 +198,9 @@ int main(int argc,char** argv) {
 #else
         Context context(Backend::Vulkan);
 #endif
+        std::cerr<<"source pairs: native context initialized\n";
         SourceSapIncrementalPairsNativeStage stage(context,shader(argv[1]));
+        std::cerr<<"source pairs: shader pipeline created\n";
         for(bool shared:{false,true})
             for(bool lose:{false,true})
                 run(context,stage,lose,shared);
