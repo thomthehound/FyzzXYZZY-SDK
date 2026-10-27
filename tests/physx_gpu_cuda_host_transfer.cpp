@@ -962,12 +962,15 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         std::array<Box,2u> boxes{{
             {36u,{3.f,0.f,0.f},{1.f,1.f,1.f},{},0.04f,
                 Box::Motion::Static},
-            {2u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
+            {2u,{0.f,0.f,0.f},{1.f,1.f,1.f},{},0.015f,
                 Box::Motion::Dynamic}
         }};
         const std::array<physx::Bp::ShapeHandle,2u> handles{36u,2u};
         const physx::Bp::BpFilter filter(false,false);
         const auto first=owner.prepare(boxes,handles,filter);
+        if(std::fabs(owner.single_volumes().contact_distances[2]-0.02f)>1.e-6f)
+            throw std::runtime_error(
+                "Original Sc contact distance was overwritten by stale native admission snapshot");
         if(owner.single_volumes().groups[2]!=
            physx::Bp::getFilterGroup_Dynamics(99u,false))
             throw std::runtime_error(
@@ -1016,6 +1019,15 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         pre_update_source_sap_aabb_manager_native(
             first,owner.pre_update(sap.pre_broadphase_buffers()),stream);
         stream.wait_at_fetch();
+        const auto gpu_distances=sap.pre_broadphase_buffers().contact_distances.getDevicePtr();
+        const auto admitted_offset=addresses.resolve(
+            gpu_distances+2u*sizeof(physx::PxReal),sizeof(physx::PxReal));
+        physx::PxReal gpu_offset=0.f;
+        context.download(admitted_offset.buffer,admitted_offset.offset,
+                         &gpu_offset,sizeof(gpu_offset));
+        if(std::fabs(gpu_offset-0.02f)>1.e-6f)
+            throw std::runtime_error(
+                "Native GPU contact distance disagrees with source AABB admission");
         const auto initial=owner.added_report_bitmap();
         const auto firstWords=addresses.resolve(
             initial.device,2u*sizeof(physx::PxU32));
@@ -1045,11 +1057,14 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
             throw std::runtime_error(
                 "Persistent source AABB manager allowed premature handle reuse");
         const std::array<Box,1u> remaining{{
-            {2u,{6.f,0.f,0.f},{1.f,1.f,1.f},{},0.125f,
+            {2u,{6.f,0.f,0.f},{1.f,1.f,1.f},{},0.02f,
                 Box::Motion::Dynamic}
         }};
         const std::array<physx::Bp::ShapeHandle,1u> remainingHandles{2u};
         const auto second=owner.prepare(remaining,remainingHandles,filter);
+        if(std::fabs(owner.single_volumes().contact_distances[2]-0.125f)>1.e-6f)
+            throw std::runtime_error(
+                "Source contact-distance update was undone by stale native motion snapshot");
         if(second.getNumRemovedHandles()!=1u ||
            second.getRemovedHandles()[0]!=36u ||
            second.getNumUpdatedHandles()!=0u ||
@@ -1061,6 +1076,14 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         pre_update_source_sap_aabb_manager_native(
             second,owner.pre_update(sap.pre_broadphase_buffers()),stream);
         stream.wait_at_fetch();
+        const auto updated_offset=addresses.resolve(
+            gpu_distances+2u*sizeof(physx::PxReal),sizeof(physx::PxReal));
+        gpu_offset=0.f;
+        context.download(updated_offset.buffer,updated_offset.offset,
+                         &gpu_offset,sizeof(gpu_offset));
+        if(std::fabs(gpu_offset-0.125f)>1.e-6f)
+            throw std::runtime_error(
+                "Native GPU uploaded stale Sc contact offset after source change");
         const auto removed=owner.removed_report_bitmap();
         const auto secondWords=addresses.resolve(
             removed.device,2u*sizeof(physx::PxU32));
