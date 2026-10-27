@@ -28,7 +28,15 @@ struct SourceSapSceneBounds {
     std::span<physx::Bp::FilterGroup::Enum> groups;
 };
 
-// Per-producer staging, retained across frames. This is not an AABB-manager\n// history: only the original manager owns current/past volume membership.\nstruct SourceSapSceneBoundsScratch {\n    std::vector<std::uint32_t> visit_epochs;\n    std::vector<physx::PxBounds3> prepared_bounds;\n    std::uint32_t epoch=0;\n};\n\n// Translates one shape per presently admitted native rigid actor into the
+// Per-producer staging, retained across frames. This is not an AABB-manager
+// history: only the original manager owns current/past volume membership.
+struct SourceSapSceneBoundsScratch {
+    std::vector<std::uint32_t> visit_epochs;
+    std::vector<physx::PxBounds3> prepared_bounds;
+    std::uint32_t epoch=0;
+};
+
+// Translates one shape per presently admitted native rigid actor into the
 // original PxBounds3/FilterGroup representation used by preBroadPhase().
 // The caller supplies the live source volume handles in the same order as
 // boxes, and retains a scratch vector across frames. All inputs and handle
@@ -62,7 +70,10 @@ inline void write_source_sap_scene_bounds(
         if(handle>=output.bounds.size() ||
            handle>=BP_INVALID_BP_HANDLE)
             throw std::out_of_range("Source SAP shape volume handle outside AABB manager");
-        if(scratch.visit_epochs[handle]==scratch.epoch)\n            throw std::invalid_argument("Source SAP assigned a volume handle twice");\n        scratch.visit_epochs[handle]=scratch.epoch;\n        const auto finite=[](float x){return std::isfinite(x);};
+        if(scratch.visit_epochs[handle]==scratch.epoch)
+            throw std::invalid_argument("Source SAP assigned a volume handle twice");
+        scratch.visit_epochs[handle]=scratch.epoch;
+        const auto finite=[](float x){return std::isfinite(x);};
         const auto& p=box.position;
         const auto& e=box.half_extents;
         const auto& q=box.orientation;
