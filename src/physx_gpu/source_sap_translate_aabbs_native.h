@@ -6,7 +6,6 @@
 #include "physx_gpu/cuda_aabb_launch_lowering.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "PxgKernelIndices.h"
-#include "PxgBroadPhaseKernelIndices.h"
 
 #include <array>
 #include <cstdint>
@@ -68,7 +67,7 @@ inline void append_source_sap_translate_aabbs_native(
         throw std::out_of_range("Source SAP translateAABBs grid exceeds PxU32");
     translate.append(stream.commands(),physx::PxgKernelIds::BP_TRANSLATE_AABBS,
                      static_cast<std::uint32_t>(grid),
-                     physx::PxgBPKernelBlockDim::BP_TRANSLATE_AABBS,
+                     256u, // original PxgBPKernelBlockDim::BP_TRANSLATE_AABBS
                      args.data(),args.size());
 }
 
