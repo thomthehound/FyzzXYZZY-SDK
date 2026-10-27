@@ -5,7 +5,9 @@
 
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "ScObjectIDTracker.h"
+#include "BpFiltering.h"
 
+#include <limits>
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
@@ -25,11 +27,25 @@ public:
         PxgAabbSourceMembersNative& aabb,
         BodyId actor,
         physx::PxReal contact_distance,
-        physx::Bp::FilterGroup::Enum group,
+        native::GpuBroadphaseBox::Motion motion,
         void* element_sim) {
         if(!element_sim)
             throw std::invalid_argument(
                 "Source Sc element requires its original ElementSim user data");
+        // ScShapeSimBase::getBPGroup uses the original Bp filtering
+        // encoding: all statics share eSTATICS; dynamic and kinematic
+        // groups incorporate Sc's actor ID and element type. In
+        // particular, different dynamics MUST NOT share eDYNAMICS_BASE.
+        const bool is_static=motion==native::GpuBroadphaseBox::Motion::Static;
+        if(!is_static &&
+           actor>=((std::numeric_limits<physx::PxU32>::max() >>
+                    BP_FILTERING_TYPE_SHIFT_BIT) -
+                   physx::Bp::FilterGroup::eDYNAMICS_BASE))
+            throw std::out_of_range(
+                "Source Sc actor ID overflows original Bp filter group encoding");
+        const auto group=physx::Bp::getFilterGroup(
+            is_static,actor,
+            motion==native::GpuBroadphaseBox::Motion::Kinematic);
         // Sc::ElementSim::initID acquires the ID before BoundsArray::initEntry.
         const auto handle=elements.createID();
         try {
