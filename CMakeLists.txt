@@ -293,6 +293,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
+    src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -1170,6 +1171,38 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_link_libraries(fyzzxyzzy_physx_source_sapbox_indices_native PRIVATE fyzzxyzzy_physx_gpu_stages)
     add_dependencies(fyzzxyzzy_physx_source_sapbox_indices_native fyzzxyzzy_source_sapbox_spv)
     add_test(NAME fyzzxyzzy_physx_source_sapbox_indices_native COMMAND fyzzxyzzy_physx_source_sapbox_indices_native "${FYZZXYZZY_SOURCE_SAPBOX_SPV}")
+
+    # Original BP_MARK_DELETEDPAIRS and BP_UPDATE_DELETEDPAIRS on
+    # PxgBroadPhaseDesc's separate source GPU allocations.
+    set(FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_mark_removed_native.spv")
+    set(FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_remove_projections_native.spv")
+    foreach(part IN ITEMS mark_removed remove_projections)
+      set(shader_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_${part}_native.hlsl")
+      set(shader_out "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_${part}_native.spv")
+      add_custom_command(OUTPUT "${shader_out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main -Fo "${shader_out}" "${shader_src}"
+        DEPENDS "${shader_src}" VERBATIM)
+    endforeach()
+    add_custom_target(fyzzxyzzy_source_sap_removed_spv
+      DEPENDS "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_SPV}" "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_SPV}")
+    add_executable(fyzzxyzzy_physx_source_sap_removed_native
+      tests/physx_gpu_source_sap_removed_native.cpp)
+    target_include_directories(fyzzxyzzy_physx_source_sap_removed_native PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_sap_removed_native PRIVATE
+      fyzzxyzzy_physx_gpu_stages)
+    add_dependencies(fyzzxyzzy_physx_source_sap_removed_native
+      fyzzxyzzy_source_sap_removed_spv)
+    add_test(NAME fyzzxyzzy_physx_source_sap_removed_native
+      COMMAND fyzzxyzzy_physx_source_sap_removed_native
+        "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_SPV}")
+
     
     # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
     set(FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.spv")
@@ -1722,6 +1755,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
+    src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -2576,6 +2610,40 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_dependencies(fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 fyzzxyzzy_source_sapbox_dxil)
     add_test(NAME fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 COMMAND fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 "${FYZZXYZZY_SOURCE_SAPBOX_DXIL}")
     set_tests_properties(fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+    set(FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_mark_removed_native.dxil")
+    set(FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_remove_projections_native.dxil")
+    foreach(part IN ITEMS mark_removed remove_projections)
+      set(shader_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_${part}_native.hlsl")
+      set(shader_out "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_${part}_native.dxil")
+      add_custom_command(OUTPUT "${shader_out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${shader_out}" "${shader_src}"
+        DEPENDS "${shader_src}" VERBATIM)
+    endforeach()
+    add_custom_target(fyzzxyzzy_source_sap_removed_dxil
+      DEPENDS "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_DXIL}" "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_DXIL}")
+    add_executable(fyzzxyzzy_physx_source_sap_removed_native_d3d12
+      tests/physx_gpu_source_sap_removed_native.cpp)
+    target_compile_definitions(fyzzxyzzy_physx_source_sap_removed_native_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_physx_source_sap_removed_native_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include")
+    target_link_libraries(fyzzxyzzy_physx_source_sap_removed_native_d3d12 PRIVATE
+      fyzzxyzzy_physx_gpu_stages_d3d12)
+    add_dependencies(fyzzxyzzy_physx_source_sap_removed_native_d3d12
+      fyzzxyzzy_source_sap_removed_dxil)
+    add_test(NAME fyzzxyzzy_physx_source_sap_removed_native_d3d12
+      COMMAND fyzzxyzzy_physx_source_sap_removed_native_d3d12
+        "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_DXIL}")
+    set_tests_properties(fyzzxyzzy_physx_source_sap_removed_native_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
     
     # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
     set(FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12 "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.dxil")
