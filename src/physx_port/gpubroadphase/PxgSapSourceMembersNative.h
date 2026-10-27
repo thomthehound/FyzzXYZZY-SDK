@@ -10,6 +10,7 @@
 #include "PxgBroadPhasePairReport.h"
 #include "CmPinnableObject.h"
 #include "CmPinnableArray.h"
+#include "physx_gpu/source_sap_mapped_report_view.h"
 #include <array>
 #include <cstdint>
 
@@ -31,8 +32,7 @@ public:
     SourceSapPreBroadPhaseBuffers pre_broadphase_buffers() noexcept;
     SourceSapDmaUpFrameMembers dma_up_members(
         const SourceSapAabbManagerDescriptorView* aabb_manager,
-        CUdeviceptr original_found_map,
-        CUdeviceptr original_lost_map);
+        const SourceSapMappedReportView& mapped_host);
     SourceSapFetchHistoryBuffers fetch_histories() noexcept;
 
     physx::PxgBroadPhaseDesc& descriptor() noexcept {return pinnedDescriptor_.get();}
