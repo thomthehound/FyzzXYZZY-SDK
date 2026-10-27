@@ -27,10 +27,12 @@ RWByteAddressBuffer sapY : register(u4,space0);
 [[vk::binding(5,0)]]
 #endif
 RWByteAddressBuffer sapZ : register(u5,space0);
+// Root constants match the host's eight tightly packed uint32 words.
+// Never use an HLSL array here: ConstantBuffer arrays occupy one 16-byte
+// register per element on D3D12 instead of the CPU's contiguous words.
 struct Parameters {
-    uint bias[6];
-    uint numProjections;
-    uint reserved;
+    uint handlesXBias, handlesYBias, handlesZBias, sapXBias;
+    uint sapYBias, sapZBias, numProjections, reserved;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -41,14 +43,14 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
     const uint index=group.x*256u+thread.x;
     if(index>=p.numProjections)return;
-    const uint hx=handlesX.Load(p.bias[0]+index*4u);
-    const uint hy=handlesY.Load(p.bias[1]+index*4u);
-    const uint hz=handlesZ.Load(p.bias[2]+index*4u);
+    const uint hx=handlesX.Load(p.handlesXBias+index*4u);
+    const uint hy=handlesY.Load(p.handlesYBias+index*4u);
+    const uint hz=handlesZ.Load(p.handlesZBias+index*4u);
     // Source getHandle removes the low three endpoint/new flags.
     const uint ix=(hx>>3u)*8u+((hx&1u)==0u?4u:0u);
     const uint iy=(hy>>3u)*8u+((hy&1u)==0u?4u:0u);
     const uint iz=(hz>>3u)*8u+((hz&1u)==0u?4u:0u);
-    sapX.Store(p.bias[3]+ix,index);
-    sapY.Store(p.bias[4]+iy,index);
-    sapZ.Store(p.bias[5]+iz,index);
+    sapX.Store(p.sapXBias+ix,index);
+    sapY.Store(p.sapYBias+iy,index);
+    sapZ.Store(p.sapZBias+iz,index);
 }
