@@ -6,6 +6,7 @@
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_fetch_native.h"
+#include "physx_gpu/source_sap_scene_reports.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
@@ -929,6 +930,65 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
                 "Late corrupt source lost-pair mapping partially published found pairs");
         check_histories(false);
 
+        // Sc admission must precede source fetch history rotation.
+        // A valid GPU report with a retired handle is not a valid Sc pair.
+        // Keep using the ACTUAL original mapped pair arrays and all 42
+        // PhysX heap allocations; no test-only replacement frame buffers.
+        std::array<fyzz::BodyId,24u> volumeToActor{};
+        volumeToActor.fill(std::numeric_limits<fyzz::BodyId>::max());
+        volumeToActor[3u]=12u;
+        volumeToActor[8u]=4u;
+        volumeToActor[2u]=8u;
+        volumeToActor[7u]=5u;
+        auto invalidMap=volumeToActor;
+        invalidMap[8u]=std::numeric_limits<fyzz::BodyId>::max();
+        std::vector<fyzz::native::Pair> scFound{{1u,2u}};
+        std::vector<fyzz::native::Pair> scLost{{3u,4u}};
+        stream.queue_uploads({{descriptorAddress,&gpu,sizeof(gpu)}});
+        stream.wait_at_fetch();
+        const auto publish_to_sc=[&](const auto& map) {
+            return [&](const fyzz::physx_gpu::SourceSapFetchedCounts& counts) {
+                fyzz::physx_gpu::lower_source_sap_actor_reports_to_sc(
+                    std::span<const physx::PxgBroadPhasePair>(
+                        foundCPU.data(),counts.found_actors),
+                    std::span<const physx::PxgBroadPhasePair>(
+                        lostCPU.data(),counts.lost_actors),
+                    map,scFound,scLost);
+            };
+        };
+        bool rejectedActor=false;
+        try {
+            (void)fyzz::physx_gpu::fetch_source_sap_results_native(
+                context,addresses,descriptorAddress,host,
+                {foundCPU.data(),foundCPU.size()},
+                {lostCPU.data(),lostCPU.size()},false,
+                [source]() noexcept {
+                    fyzz::physx_gpu::swap_sap_endpoint_histories_after_fetch_native(source);
+                },nullptr,publish_to_sc(invalidMap));
+        }catch(const std::out_of_range&){rejectedActor=true;}
+        if(!rejectedActor || host.sharedFoundPairIndex!=1u ||
+           scFound!=std::vector<fyzz::native::Pair>{{1u,2u}} ||
+           scLost!=std::vector<fyzz::native::Pair>{{3u,4u}})
+            throw std::runtime_error(
+                "Rejected Sc volume handle partially committed a PhysX SAP frame");
+        check_histories(false);
+
+        // Repair the original volume-to-actor mapping and retry the SAME
+        // GPU frame. Only this successful admission rotates source owners.
+        const auto admitted=fyzz::physx_gpu::fetch_source_sap_results_native(
+            context,addresses,descriptorAddress,host,
+            {foundCPU.data(),foundCPU.size()},
+            {lostCPU.data(),lostCPU.size()},false,
+            [source]() noexcept {
+                fyzz::physx_gpu::swap_sap_endpoint_histories_after_fetch_native(source);
+            },nullptr,publish_to_sc(volumeToActor));
+        if(admitted.found_actors!=1u || admitted.lost_actors!=1u ||
+           scFound!=std::vector<fyzz::native::Pair>{{4u,12u}} ||
+           scLost!=std::vector<fyzz::native::Pair>{{5u,8u}})
+            throw std::runtime_error(
+                "Original GPU fetch did not publish source volume reports to Sc");
+        check_histories(true);
+
         auto quietGpu=gpu;
         quietGpu.sharedFoundPairIndex=0u;
         quietGpu.sharedLostPairIndex=0u;
@@ -938,10 +998,10 @@ void exercise_original_sap_update_fetch_lifecycle(Context& context) {
             context,addresses,descriptorAddress,host,{},{},false,source);
         if(quiet.found_actors||quiet.lost_actors)
             throw std::runtime_error("Quiet source fetch published stale actor-pair reports");
-        check_histories(true);
+        check_histories(false);
         (void)fyzz::physx_gpu::fetch_source_sap_results(
             context,addresses,descriptorAddress,host,{},{},true,source);
-        check_histories(false);
+        check_histories(true);
         if(!stream.commands().empty())
             throw std::runtime_error("Source SAP update/fetch ownership swaps queued GPU commands");
     }
