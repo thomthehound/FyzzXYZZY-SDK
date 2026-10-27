@@ -43,6 +43,11 @@ struct SourceSapSceneFrameChanges {
     std::span<const physx::Bp::ShapeHandle> created;
     std::span<const physx::Bp::ShapeHandle> updated;
     std::span<const physx::Bp::ShapeHandle> removed;
+    // In GPU AABB-manager mode the source updated-handle list is EMPTY:
+    // markUpdatedPairs reads PxgAABBManager::mChangedHandleMap instead.
+    // Borrow the original bitmap words to stage moved bounds without a
+    // parallel geometry-diff registry or a full-volume AABB rewrite.
+    std::span<const physx::PxU32> changed_bitmap_words{};
 };
 
 // Translates one shape per presently admitted native rigid actor into the
@@ -51,8 +56,9 @@ struct SourceSapSceneFrameChanges {
 // boxes, and retains a scratch vector across frames. All inputs and handle
 // uniqueness are checked before modifying any source array. Retired handles
 // and their pre-existing source array entries are deliberately untouched.
-// When source deltas are supplied, only created/updated volumes are written;
-// quiet and removed-only frames leave persistent AABB geometry untouched.
+// When source deltas are supplied, only created/updated or original GPU
+// changed-bitmap volumes are written. Quiet and removed-only frames leave
+// persistent AABB geometry untouched.
 inline void write_source_sap_scene_bounds(
     std::span<const native::GpuBroadphaseBox> boxes,
     std::span<const physx::Bp::ShapeHandle> source_handles,
@@ -164,16 +170,24 @@ inline void write_source_sap_scene_bounds(
            intersects(changes->updated,changes->removed))
             throw std::invalid_argument("Source SAP handle occurs in multiple delta lists");
 
-        // The source AABB manager's deltas, not a new geometry diff,
-        // determine which boxes need world-space reconstruction. Quiet
-        // frames validate inputs without rewriting persistent AABB data.
+        // The original GPU manager's updated list is empty by design;
+        // mChangedHandleMap instead identifies changed shape bounds.
+        // Source created/updated lists still apply for other callers.
+        // Scan live handles once and reconstruct only the authoritative
+        // changed volumes; no geometry comparisons or full AABB writes.
         for(const auto handle:changes->created)
             scratch.visit_epochs[handle]=changed_epoch;
         for(const auto handle:changes->updated)
             scratch.visit_epochs[handle]=changed_epoch;
-        for(std::size_t i=0;i<boxes.size();++i)
-            if(scratch.visit_epochs[source_handles[i]]==changed_epoch)
+        const auto changed_words=changes->changed_bitmap_words;
+        for(std::size_t i=0;i<boxes.size();++i) {
+            const auto handle=source_handles[i];
+            if((handle>>5u)<changed_words.size() &&
+               (changed_words[handle>>5u] & (1u<<(handle&31u))))
+                scratch.visit_epochs[handle]=changed_epoch;
+            if(scratch.visit_epochs[handle]==changed_epoch)
                 stage_bounds(i);
+        }
     }
 
     for(std::size_t i=0;i<boxes.size();++i) {
