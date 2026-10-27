@@ -16,6 +16,7 @@
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_gpu/source_sc_element_lifecycle_native.h"
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
+#include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
@@ -943,6 +944,22 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
         physx::PxgAllocatorDesc allocators(heap,mapped,mapped);
         PxgAabbSourceMembersNative owner(allocators,3u);
         PxgSapSourceMembersNative sap(allocators,8u,2u);
+        // The full GPU frame must borrow its actual PhysX AABB owner,
+        // not a foreign Sc actor mapping with coincidentally equal size.
+        const auto preflight=owner.pre_update(sap.pre_broadphase_buffers());
+        const auto originalIdentity=owner.actor_lifetime().volume_to_actor;
+        validate_source_sap_owned_aabb_aliases_native(
+            owner,preflight,originalIdentity);
+        std::vector<fyzz::BodyId> alienIdentity(
+            owner.capacity(),std::numeric_limits<fyzz::BodyId>::max());
+        bool rejectedAlien=false;
+        try {
+            validate_source_sap_owned_aabb_aliases_native(
+                owner,preflight,alienIdentity);
+        }catch(const std::invalid_argument&){rejectedAlien=true;}
+        if(!rejectedAlien || stream.submission_stats().upload_batches!=0u)
+            throw std::runtime_error(
+                "Source GPU frame accepted non-owning Sc identity before DMA");
         if(owner.capacity()<3u ||
            owner.volume_to_actor().size()!=owner.capacity())
             throw std::runtime_error(
@@ -1016,9 +1033,19 @@ void exercise_persistent_source_aabb_manager_native(Context& context) {
            std::fabs(owner.source_bounds().getBounds(36u).minimum.x-2.f)>1.e-6f)
             throw std::runtime_error(
                 "Persistent PhysX AABB manager did not publish original first frame");
-        pre_update_source_sap_aabb_manager_native(
-            first,owner.pre_update(sap.pre_broadphase_buffers()),stream);
+        const auto originalPre=owner.pre_update(sap.pre_broadphase_buffers());
+        pre_update_source_sap_aabb_manager_native(first,originalPre,stream);
         stream.wait_at_fetch();
+        // The GPU bitmaps may be allocated on this very first upload.
+        // Owner-backed fetch must use the POST-allocation device aliases.
+        if(!owner.added_report_bitmap().device ||
+           !owner.removed_report_bitmap().device ||
+           originalPre.added.device.getDevicePtr()!=
+               owner.added_report_bitmap().device ||
+           originalPre.removed.device.getDevicePtr()!=
+               owner.removed_report_bitmap().device)
+            throw std::runtime_error(
+                "Source GPU frame used stale AABB report bitmap pointers");
         const auto gpu_distances=sap.pre_broadphase_buffers().contact_distances.getDevicePtr();
         const auto admitted_offset=addresses.resolve(
             gpu_distances+2u*sizeof(physx::PxReal),sizeof(physx::PxReal));
