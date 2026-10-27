@@ -709,8 +709,8 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         SourceSapSingleVolumeMembersNative manager{
             added,removed,changed,aggregated,volumes,groups,offsets,
             persistent,gpu};
-        std::array<BodyId,40u> sourceActorIds{};
-        sourceActorIds.fill(std::numeric_limits<BodyId>::max());
+        std::array<fyzz::BodyId,40u> sourceActorIds{};
+        sourceActorIds.fill(std::numeric_limits<fyzz::BodyId>::max());
         const SourceSapVolumeActorLifetimeNative identity{
             sourceActorIds,volumes};
         const auto first_pass=[&]() {
@@ -729,7 +729,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             manager,identity,7u,0.03f,
             physx::Bp::FilterGroup::eSTATICS,&actorA,7u);
         if(!remove_source_sap_single_volume_actor_native(manager,identity,7u) ||
-           sourceActorIds[7]!=std::numeric_limits<BodyId>::max())
+           sourceActorIds[7]!=std::numeric_limits<fyzz::BodyId>::max())
             throw std::runtime_error(
                 "Canceled source volume retained a GPU-unpublished actor identity");
         bool rejected=false;
@@ -890,15 +890,15 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         try {validate_source_sap_found_volume_lifetime_native(
             formerPair,identity);}
         catch(const std::invalid_argument&){staleFound=true;}
-        std::vector<native::Pair> foundPairs,lostPairs;
+        std::vector<fyzz::native::Pair> foundPairs,lostPairs;
         lower_source_sap_actor_reports_to_sc(
             {},formerPair,sourceActorIds,foundPairs,lostPairs);
         if(!staleFound || lostPairs.size()!=1u ||
-           lostPairs.front()!=native::Pair{2u,36u})
+           lostPairs.front()!=fyzz::native::Pair{2u,36u})
             throw std::runtime_error(
                 "Original source retired handle lost valid GPU lost-pair identity");
         retire_source_sap_volume_actor_lifetime_native(identity,next);
-        if(sourceActorIds[36]!=std::numeric_limits<BodyId>::max() ||
+        if(sourceActorIds[36]!=std::numeric_limits<fyzz::BodyId>::max() ||
            sourceActorIds[2]!=2u)
             throw std::runtime_error(
                 "Source GPU fetch did not release only completed removed handles");
