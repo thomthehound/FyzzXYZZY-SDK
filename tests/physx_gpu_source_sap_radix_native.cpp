@@ -189,7 +189,7 @@ void run(Context& context,const SourceSapRadixNativeStage& stage,
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=6)throw std::invalid_argument("Require four source radix shaders and wave count");
+        if(argc!=7)throw std::invalid_argument("Require source radix shaders and wave count/scatter");
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
 #else
@@ -197,10 +197,10 @@ int main(int argc,char** argv) {
 #endif
         SourceSapRadixNativeStage stage(
             context,shader(argv[1]),shader(argv[2]),
-            shader(argv[3]),shader(argv[4]),shader(argv[5]));
+            shader(argv[3]),shader(argv[4]),shader(argv[5]),false,shader(argv[6]));
         SourceSapRadixNativeStage portable(
             context,shader(argv[1]),shader(argv[2]),
-            shader(argv[3]),shader(argv[4]),shader(argv[5]),true);
+            shader(argv[3]),shader(argv[4]),shader(argv[5]),true,shader(argv[6]));
         run(context,stage,true,false);
         run(context,portable,false,true);
         std::cout<<"Source WR/WOR stable radix, ranks and original handles PASS\n";
