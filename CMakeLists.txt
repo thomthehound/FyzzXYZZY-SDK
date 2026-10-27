@@ -301,6 +301,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sap_endpoint_histograms_native.cpp
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
+    src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
@@ -1936,6 +1937,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sap_endpoint_histograms_native.cpp
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
+    src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
