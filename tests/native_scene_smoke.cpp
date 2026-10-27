@@ -21,6 +21,7 @@
 #include "PxPhysicsAPI.h"
 #include "extensions/PxDistanceJoint.h"
 #include "extensions/PxSimpleFactory.h"
+#include "physx_port/gpubroadphase/PxgSapSceneReportsNative.h"
 #endif
 
 // Exercise the actual production Dy preparation after installing a Gu
@@ -14226,6 +14227,54 @@ int run_native_scene_smoke() {
     return 0;
 }
 
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+void verify_source_gpu_mapped_actor_report_translation() {
+    using namespace fyzz::physx_gpu;
+    using fyzz::native::Pair;
+    // Original PxgBroadPhasePair handles are source BP volume slots,
+    // NOT native Sc BodyIds. Their orders need not be identical.
+    std::array<physx::PxgBroadPhasePair,2> gpu_found{{
+        {0u,1u},{1u,2u}
+    }};
+    std::array<physx::PxgBroadPhasePair,1> gpu_lost{{
+        {0u,2u}
+    }};
+    const std::array<fyzz::BodyId,3> actors{9u,1u,7u};
+    SourceSapFetchedCounts counts{};
+    counts.found_actors=2u;
+    counts.lost_actors=1u;
+    std::vector<Pair> found,lost;
+    const auto reports=source_sap_actor_reports_to_sc(
+        counts,{gpu_found.data(),gpu_found.size()},
+        {gpu_lost.data(),gpu_lost.size()},actors,found,lost);
+    if(reports.found.size()!=2u || reports.lost.size()!=1u ||
+       !(reports.found[0]==Pair{1u,7u}) ||
+       !(reports.found[1]==Pair{1u,9u}) ||
+       !(reports.lost[0]==Pair{7u,9u}))
+        throw std::runtime_error(
+            "Source Pxg pair handle conversion did not preserve native Sc IDs");
+    bool rejected=false;
+    counts.overflow=true;
+    try {(void)source_sap_actor_reports_to_sc(
+        counts,{gpu_found.data(),gpu_found.size()},
+        {gpu_lost.data(),gpu_lost.size()},actors,found,lost);}
+    catch(const std::overflow_error&){rejected=true;}
+    if(!rejected)
+        throw std::runtime_error("Overflowed source GPU reports admitted to Sc");
+    counts.overflow=false;
+    rejected=false;
+    const auto bad=gpu_found[1];
+    gpu_found[1]=physx::PxgBroadPhasePair(1u,99u);
+    try {(void)source_sap_actor_reports_to_sc(
+        counts,{gpu_found.data(),gpu_found.size()},
+        {gpu_lost.data(),gpu_lost.size()},actors,found,lost);}
+    catch(const std::invalid_argument&){rejected=true;}
+    gpu_found[1]=bad;
+    if(!rejected)
+        throw std::runtime_error("Unmapped source GPU volume admitted to Sc");
+}
+#endif
+
 // Source-report handoff validation runs through the real N1 Sc/Gu/Dy
 // collision path. The scripted source below only substitutes *fetched GPU
 // reports*; it does not claim to implement a GPU SAP kernel or device.
@@ -14366,6 +14415,9 @@ void verify_native_gpu_sap_report_admission() {
 
 int main() {
     try {
+#if defined(FYZZXYZZY_ENABLE_PHYSX_SOURCE) && FYZZXYZZY_ENABLE_PHYSX_SOURCE
+    verify_source_gpu_mapped_actor_report_translation();
+#endif
     verify_native_gpu_sap_report_admission();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
