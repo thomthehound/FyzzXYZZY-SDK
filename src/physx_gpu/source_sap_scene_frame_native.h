@@ -17,13 +17,11 @@ namespace fyzz::physx_gpu {
 // destinations remain with the original PhysX owners. This adapter
 // neither creates a broadphase registry nor advances a second clock.
 struct SourceSapSceneFrameNativeMembers {
-    std::span<const native::GpuBroadphaseBox> live_boxes;
-    std::span<const physx::Bp::ShapeHandle> source_handles;
-    SourceSapSceneBounds aabb_arrays;
-    SourceSapSceneFrameChanges changes;
-    const physx::Bp::BpFilter& filter;
-    bool state_changed;
-    bool gpu_state_changed;
+    // Original Bp::BroadPhaseUpdateData created by
+    // prepare_source_sap_scene_update(), AFTER Sc has authored geometry
+    // and BEFORE the source preBroadPhase task runs. Borrowed here after
+    // that task's dependency has been satisfied by the source owner.
+    const physx::Bp::BroadPhaseUpdateData& aabb_update;
 
     SourceSapDmaUpFrameMembers dma;
     SourceSapUpdateNativeFrame update;
@@ -44,13 +42,13 @@ struct SourceSapSceneFrameNativeResult {
 };
 
 // Called by the original source owner at its update/fetch boundary.
-// preBroadPhase and the AABB-manager delta lists must already be prepared.
-// This is one source stream through gpuDMAUp, all SAP kernels, fence
-// completion, report publication and the seven fetch-time history swaps.
+// Sc geometry preparation and the AABB-manager preBroadPhase continuation
+// MUST have run first, on the original PhysX task chain. This call joins
+// GPU DMA, the SAP kernels, source fence completion, actor report
+// publication and the seven fetch-time history swaps on that same stream.
 // Output spans remain owned by the source/Sc consumers.
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,
-    SourceSapSceneBoundsScratch& geometry_scratch,
     SourceSapDmaNative& stream,
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
