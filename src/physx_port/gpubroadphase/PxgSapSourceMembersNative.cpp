@@ -69,11 +69,8 @@ PxgSapSourceMembersNative::PxgSapSourceMembersNative(
     radixWithoutRanksBuffer_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE) {
     if(!maxPairs_ || !maxAggregatePairs_)
         throw std::invalid_argument("Original SAP report capacities must be nonzero");
-    if(!pinnedDescriptor_.isValid() ||
-       !mappedFound_.reserve(maxPairs_) || !mappedLost_.reserve(maxPairs_))
+    if(!pinnedDescriptor_.isValid())
         throw std::bad_alloc();
-    radixDescs_.resize(6u);
-    radixWorDescs_.resize(6u);
     // PxgCudaBroadPhaseSap constructor allocates only these permanent
     // resources. All projection, endpoint and region allocations grow
     // later, in the original gpuDMAUp ordering.
@@ -82,12 +79,16 @@ PxgSapSourceMembersNative::PxgSapSourceMembersNative(
     broadphaseDescriptorBuffer_.allocate(sizeof(physx::PxgBroadPhaseDesc),PX_FL);
     radixDescriptorBuffer_.allocate(sizeof(physx::PxgRadixSortDesc)*6u,PX_FL);
     radixWithoutRanksBuffer_.allocate(sizeof(physx::PxgRadixSortDesc)*6u,PX_FL);
+    radixDescs_.resize(6u);
+    radixWorDescs_.resize(6u);
     foundPairs_.allocate(sizeof(physx::PxgBroadPhasePair)*maxPairs_,PX_FL);
     lostPairs_.allocate(sizeof(physx::PxgBroadPhasePair)*maxPairs_,PX_FL);
     foundAggregate_.allocate(sizeof(physx::PxgBroadPhasePair)*maxAggregatePairs_,PX_FL);
     lostAggregate_.allocate(sizeof(physx::PxgBroadPhasePair)*maxAggregatePairs_,PX_FL);
     foundActor_.allocate(sizeof(physx::PxgBroadPhasePair)*maxPairs_,PX_FL);
     lostActor_.allocate(sizeof(physx::PxgBroadPhasePair)*maxPairs_,PX_FL);
+    if(!mappedFound_.reserve(maxPairs_) || !mappedLost_.reserve(maxPairs_))
+        throw std::bad_alloc();
 }
 SourceSapPreBroadPhaseBuffers
 PxgSapSourceMembersNative::pre_broadphase_buffers() noexcept {
