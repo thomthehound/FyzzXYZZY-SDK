@@ -4,6 +4,7 @@
 #include "physx_gpu/source_sap_radix_native.h"
 #include "physx_gpu/source_sap_update_head_native.h"
 #include "physx_gpu/source_sap_update_middle_native.h"
+#include "physx_gpu/source_sap_update_native.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
 #include <algorithm>
