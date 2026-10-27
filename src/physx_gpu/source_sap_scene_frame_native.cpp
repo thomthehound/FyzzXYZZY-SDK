@@ -28,19 +28,26 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // Fetch publishes the ORIGINAL CPU destination arrays and rotates
     // all seven PxgCudaBufferN<6> endpoint histories exactly once.
     // Failed source-buffer validation does not publish either report.
-    const auto fetched=fetch_source_sap_results(
+    const auto fetched=fetch_source_sap_results_native(
         context,addresses,members.update.device_descriptor,
         members.dma.broadphase_descriptor,
         members.found_pairs,members.lost_pairs,
-        members.abort_mode,members.histories,members.mapped_reports);
-    if(fetched.overflow)
-        throw std::overflow_error("Original GPU SAP found/lost report capacity overflow");
-    lower_source_sap_actor_reports_to_sc(
-        std::span<const physx::PxgBroadPhasePair>(
-            members.found_pairs.data,fetched.found_actors),
-        std::span<const physx::PxgBroadPhasePair>(
-            members.lost_pairs.data,fetched.lost_actors),
-        members.volume_to_actor,members.found,members.lost);
+        members.abort_mode,
+        [histories=members.histories]() noexcept {
+            swap_sap_endpoint_histories_after_fetch_native(histories);
+        },
+        members.mapped_reports,
+        [&](const SourceSapFetchedCounts& counts) {
+            if(counts.overflow)
+                throw std::overflow_error(
+                    "Original GPU SAP found/lost report capacity overflow");
+            lower_source_sap_actor_reports_to_sc(
+                std::span<const physx::PxgBroadPhasePair>(
+                    members.found_pairs.data,counts.found_actors),
+                std::span<const physx::PxgBroadPhasePair>(
+                    members.lost_pairs.data,counts.lost_actors),
+                members.volume_to_actor,members.found,members.lost);
+        });
     return {admission,fetched};
 }
 } // namespace fyzz::physx_gpu
