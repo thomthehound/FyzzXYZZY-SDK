@@ -5,6 +5,7 @@
 
 #include "BpBroadPhaseUpdate.h"
 #include "BpVolumeData.h"
+#include "foundation/PxBounds3.h"
 #include "CmPinnableArray.h"
 #include "CmPinnableBitMap.h"
 
@@ -148,6 +149,30 @@ inline void collect_source_sap_single_volume_first_pass_native(
     out.updated.forceSize_Unsafe(0);
     if(m.changed.hasAnyBitSet())m.gpu_state_changed=true;
     enumerate(m.removed,out.removed);
+}
+
+// PxgAABBManager::updateBPSecondPass constructs the exact Bp update
+// from its first-pass lists, source AABB arrays and dirty flags. The owner
+// retains all referenced storage through GPU update and fetch.
+inline physx::Bp::BroadPhaseUpdateData
+source_sap_single_volume_update_native(
+    SourceSapSingleVolumeMembersNative m,
+    SourceSapSingleVolumeFirstPassNative handles,
+    std::span<const physx::PxBounds3> bounds,
+    const physx::Bp::BpFilter& filter,
+    bool bounds_changed) {
+    if(bounds.size()!=m.groups.size() ||
+       bounds.size()!=m.contact_distances.size() ||
+       bounds.size()>std::numeric_limits<physx::PxU32>::max())
+        throw std::invalid_argument(
+            "Source AABB-manager frame arrays disagree on capacity");
+    collect_source_sap_single_volume_first_pass_native(m,handles);
+    return physx::Bp::BroadPhaseUpdateData(
+        handles.created.begin(),handles.created.size(),
+        nullptr,0u,handles.removed.begin(),handles.removed.size(),
+        bounds.data(),m.groups.data(),m.contact_distances.data(),
+        nullptr,static_cast<physx::PxU32>(bounds.size()),filter,
+        m.persistent_state_changed || bounds_changed,m.gpu_state_changed);
 }
 
 // PxgAABBManager::processFoundPairs/processLostPairs clear the host maps
