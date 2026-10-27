@@ -333,7 +333,7 @@ void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
             const uint output=groupBase[reportType]+
                 scanA[thread.x][reportType]-1u;
             if(output<p.dimensions.z) {
-                const uint2 pair=uint2(min(handle,other),max(handle,other));
+                const uint2 pair=uint2(handle,other);
                 if(reportType==0u)found.Store2(bias(37u)+output*8u,pair);
                 else lost.Store2(bias(38u)+output*8u,pair);
             }
