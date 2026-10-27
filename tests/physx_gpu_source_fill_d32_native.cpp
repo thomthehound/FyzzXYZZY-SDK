@@ -226,6 +226,17 @@ void exercise_source_aabb_bitmap_retirement(
           removedHost[0]==5u,
           "Rejected AABB bitmap retirement consumed the source frame");
 
+    // A fetched pair can fail Sc admission after both native bitmap
+    // addresses validated. Discarded retirement preparations must leave
+    // both host bitmaps and the pending GPU stream entirely unchanged.
+    {
+        const auto uncommitted=prepare_source_sap_aabb_report_retirement_native(
+            stream,stage,addresses,added,removed);
+        check(uncommitted.commands.size()==2u && stream.commands().empty() &&
+              addedHost[0]==1u && removedHost[0]==5u,
+              "Rejected Sc fetch partially retired original source bitmaps");
+    }
+
     retire_source_sap_aabb_report_bitmaps_native(
         stream,stage,addresses,added,removed);
     check(stream.commands().size()==2u &&
