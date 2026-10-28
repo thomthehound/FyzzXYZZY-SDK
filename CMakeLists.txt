@@ -281,7 +281,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sap_updated_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
-    src/physx_gpu/source_sap_radix_native.cpp)
+    src/physx_gpu/source_sap_radix_native.cpp
+    src/physx_gpu/source_region_create_native.cpp
+    src/physx_gpu/source_region_histograms_native.cpp
+    src/physx_gpu/source_active_region_lists_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -607,6 +610,60 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_SPV}"
       "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_SPV}"
     )
+    # Original source GPU region create and histogram kernels.
+    set(FYZZXYZZY_OWNED_REGION_CREATE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_region_shaders DEPENDS
+      "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+    )
+    add_executable(fyzzxyzzy_owned_region_histograms tests/physx_gpu_source_region_histograms_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_region_histograms PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_region_histograms PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_region_histograms fyzzxyzzy_owned_region_shaders)
+    add_test(NAME fyzzxyzzy_owned_region_histograms COMMAND fyzzxyzzy_owned_region_histograms
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_region_histograms PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(fyzzxyzzy_owned_region_create tests/physx_gpu_source_region_create_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_region_create PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_region_create PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_region_create fyzzxyzzy_owned_region_shaders)
+    add_test(NAME fyzzxyzzy_owned_region_create COMMAND fyzzxyzzy_owned_region_create
+      "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_region_create PROPERTIES SKIP_RETURN_CODE 77)
+
 
 
 
@@ -639,9 +696,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
-    src/physx_gpu/source_region_create_native.cpp
-    src/physx_gpu/source_region_histograms_native.cpp
-    src/physx_gpu/source_active_region_lists_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -2290,7 +2344,10 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sap_updated_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
-    src/physx_gpu/source_sap_radix_native.cpp)
+    src/physx_gpu/source_sap_radix_native.cpp
+    src/physx_gpu/source_region_create_native.cpp
+    src/physx_gpu/source_region_histograms_native.cpp
+    src/physx_gpu/source_active_region_lists_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -2642,6 +2699,62 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_DXIL}"
     )
     set_tests_properties(fyzzxyzzy_owned_sap_radix_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # Original source GPU region create and histogram kernels.
+    set(FYZZXYZZY_OWNED_REGION_CREATE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_region_shaders_d3d12 DEPENDS
+      "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+    )
+    add_executable(fyzzxyzzy_owned_region_histograms_d3d12 tests/physx_gpu_source_region_histograms_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_region_histograms_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_region_histograms_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_region_histograms_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_region_histograms_d3d12 fyzzxyzzy_owned_region_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_region_histograms_d3d12 COMMAND fyzzxyzzy_owned_region_histograms_d3d12
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_region_histograms_d3d12 PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_owned_region_create_d3d12 tests/physx_gpu_source_region_create_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_region_create_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_region_create_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_region_create_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_region_create_d3d12 fyzzxyzzy_owned_region_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_region_create_d3d12 COMMAND fyzzxyzzy_owned_region_create_d3d12
+      "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_region_create_d3d12 PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
 
 
 
@@ -2672,9 +2785,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
-    src/physx_gpu/source_region_create_native.cpp
-    src/physx_gpu/source_region_histograms_native.cpp
-    src/physx_gpu/source_active_region_lists_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
