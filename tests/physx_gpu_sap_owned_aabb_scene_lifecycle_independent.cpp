@@ -225,6 +225,12 @@ void execute(Context& context, ShaderBinary translateShader,
                            &sourceElements[i]);
             const auto scActors=aabb.volume_to_actor();
             const auto update=aabb.prepare(liveBoxes,created,filter);
+            const auto sceneBounds=aabb.scene_bounds();
+            require(aabb.capacity()==4u &&
+                    sceneBounds.bounds.data()==aabb.source_bounds().begin() &&
+                    sceneBounds.groups.size()==aabb.capacity() &&
+                    sceneBounds.contact_distances.size()==aabb.capacity(),
+                    "Original AABB source owner changed bounds capacity or aliases");
             const auto aabbPre=aabb.pre_update(sap.pre_broadphase_buffers());
             pre_update_source_sap_aabb_manager_native(update,aabbPre,stream);
             const auto aabbView=source_sap_aabb_descriptor_native(aabbPre);
