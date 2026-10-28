@@ -393,8 +393,19 @@ jobs:
         with:
           path: .ci-cache/vulkan-apt/archives
           key: ${{ steps.apt_debs.outputs.cache-primary-key }}
+      - name: Install DXC for reference-free source GPU conformance
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
+            -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/dxc"
+          tar -xzf "${RUNNER_TEMP}/linux-dxc.tar.gz" -C "${RUNNER_TEMP}/dxc"
+          test -x "${RUNNER_TEMP}/dxc/bin/dxc"
+          echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
       - name: Configure without external source or network
-        run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+        run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build and test native core and compute
         shell: bash
         run: |
@@ -403,6 +414,7 @@ jobs:
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
+          test -f build-native/libfyzzxyzzy_source_gpu_primitives.a
 
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
@@ -410,9 +422,18 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
+      - name: Locate Windows SDK DXC for reference-free source GPU conformance
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $dxc = @(Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
+            Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+            Sort-Object FullName -Descending | Select-Object -First 1)
+          if (-not $dxc) { throw 'Windows SDK DXC is required for source GPU conformance' }
+          "FYZZXYZZY_DXC=$($dxc[0].FullName)" >> $env:GITHUB_ENV
       - name: Configure without external source or network
         shell: pwsh
-        run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+        run: cmake -S . -B build-native -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Build and test native core and compute
         shell: pwsh
         run: |
@@ -421,3 +442,4 @@ jobs:
           ctest --test-dir build-native -C Release --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
+          if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
