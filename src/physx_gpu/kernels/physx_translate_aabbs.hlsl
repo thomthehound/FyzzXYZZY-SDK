@@ -13,22 +13,25 @@
 // UAV register classes, while Vulkan uses one descriptor set of storage
 // buffers. PhysX data layout remains six float/uint coordinates per box.
 
+// PhysX buddy suballocations can share one D3D12 resource. D3D12 cannot
+// bind that resource simultaneously through SRV and UAV descriptor tables;
+// its read-only inputs therefore use UAV reads, without any data copies.
+// Vulkan retains read-only storage views and their original access intent.
 #ifdef __spirv__
 [[vk::binding(0, 0)]]
-#endif
 StructuredBuffer<float> input_bounds : register(t0, space0);
-#ifdef __spirv__
 [[vk::binding(1, 0)]]
-#endif
 StructuredBuffer<float> contact_distances : register(t1, space0);
-#ifdef __spirv__
 [[vk::binding(2, 0)]]
-#endif
 StructuredBuffer<uint> environment_ids : register(t2, space0);
-#ifdef __spirv__
 [[vk::binding(3, 0)]]
-#endif
 RWStructuredBuffer<uint> output_bounds : register(u0, space0);
+#else
+RWStructuredBuffer<float> input_bounds : register(u0, space0);
+RWStructuredBuffer<float> contact_distances : register(u1, space0);
+RWStructuredBuffer<uint> environment_ids : register(u2, space0);
+RWStructuredBuffer<uint> output_bounds : register(u3, space0);
+#endif
 
 struct Parameters {
     uint count;
