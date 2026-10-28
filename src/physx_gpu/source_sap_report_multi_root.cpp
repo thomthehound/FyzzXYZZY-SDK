@@ -4,7 +4,7 @@
 
 #include "physx_gpu/source_sap_report_multi_root.h"
 #include "physx_gpu/source_native_view.h"
-#include "PxgBroadPhasePairReport.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 
 #include <algorithm>
 #include <array>
