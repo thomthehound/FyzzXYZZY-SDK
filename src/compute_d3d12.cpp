@@ -250,7 +250,17 @@ struct Context::Impl {
         std::vector<StorageBufferViewKind> view_kinds;
         std::vector<std::uint32_t> descriptor_slots;
     };
+    struct DescriptorView {
+        BufferId buffer = 0;
+        std::size_t offset = 0;
+        std::size_t bytes = 0;
+        ID3D12Resource* resource = nullptr;
+    };
     struct Submission {
+        // A descriptor heap belongs to its completed command submission.
+        // These identities describe the live entries in that exact heap.
+        std::vector<PipelineId> cached_pipelines;
+        std::vector<DescriptorView> cached_views;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commands;
         ComPtr<ID3D12DescriptorHeap> heap;
@@ -344,9 +354,31 @@ struct Context::Impl {
         return it->second;
     }
 
-    Submission new_commands() {
-        if (!recycled.empty()) {
-            Submission submission = std::move(recycled.back());
+    Submission new_commands(
+            const std::vector<PipelineId>* pipeline_sequence = nullptr,
+            std::size_t descriptor_count = 0) {
+        std::size_t match = recycled.size();
+        if (pipeline_sequence && !pipeline_sequence->empty()) {
+            for (std::size_t i = recycled.size(); i > 0; --i) {
+                const auto& candidate = recycled[i - 1u];
+                if (candidate.heap &&
+                    candidate.heap->GetDesc().NumDescriptors >= descriptor_count &&
+                    candidate.cached_pipelines == *pipeline_sequence) {
+                    match = i - 1u;
+                    break;
+                }
+            }
+        }
+        // Do not evict a completed source stage's still-valid descriptors
+        // merely because another stage reached the fetch boundary later.
+        if (match == recycled.size() &&
+            (!pipeline_sequence || pipeline_sequence->empty() ||
+             recycled.size() == kMaxRecycled))
+            match = recycled.empty() ? recycled.size() : recycled.size() - 1u;
+        if (match < recycled.size()) {
+            Submission submission = std::move(recycled[match]);
+            if (match + 1u != recycled.size())
+                recycled[match] = std::move(recycled.back());
             recycled.pop_back();
             check(submission.allocator->Reset(), "ResetCommandAllocator");
             check(submission.commands->Reset(submission.allocator.Get(), nullptr),
@@ -910,6 +942,7 @@ struct Context::Impl {
                               bool profile = false) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
+        std::vector<PipelineId> pipeline_sequence;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
@@ -924,13 +957,15 @@ struct Context::Impl {
                     copy->bytes % 4)
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
             } else {
-                validate_dispatch(std::get<DispatchCommand>(op));
-                descriptor_count += get_pipeline(std::get<DispatchCommand>(op).pipeline).bindings;
+                const auto& dispatch = std::get<DispatchCommand>(op);
+                validate_dispatch(dispatch);
+                descriptor_count += get_pipeline(dispatch.pipeline).bindings;
+                pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
-        Submission submission = new_commands();
+        Submission submission = new_commands(&pipeline_sequence, descriptor_count);
         if (profile) {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
@@ -971,6 +1006,13 @@ struct Context::Impl {
                                                    IID_PPV_ARGS(&replacement)),
                       "CreateDescriptorHeap");
                 submission.heap = std::move(replacement);
+                submission.cached_views.clear();
+                submission.cached_pipelines.clear();
+            }
+            if (submission.cached_pipelines != pipeline_sequence ||
+                submission.cached_views.size() != descriptor_count) {
+                submission.cached_pipelines = pipeline_sequence;
+                submission.cached_views.assign(descriptor_count, {});
             }
             ID3D12DescriptorHeap* heaps[] = {submission.heap.Get()};
             submission.commands->SetDescriptorHeaps(1, heaps);
@@ -1069,9 +1111,19 @@ struct Context::Impl {
                                        kind == StorageBufferViewKind::Structured32Read;
                 const bool raw = kind == StorageBufferViewKind::RawRead ||
                                  kind == StorageBufferViewKind::RawReadWrite;
+                const auto physical_slot = descriptor_index +
+                    pipeline.descriptor_slots[slot];
+                DescriptorView& cached = submission.cached_views[physical_slot];
+                const DescriptorView next{
+                    binding.buffer, binding.offset, binding.bytes,
+                    buffer.resource.Get()};
+                if (cached.buffer == next.buffer &&
+                    cached.offset == next.offset &&
+                    cached.bytes == next.bytes &&
+                    cached.resource == next.resource)
+                    continue;
                 D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + (descriptor_index +
-                        pipeline.descriptor_slots[slot]) * increment
+                    cpu_start.ptr + physical_slot * increment
                 };
                 if (!read_only) {
                     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
@@ -1095,6 +1147,7 @@ struct Context::Impl {
                                               D3D12_BUFFER_SRV_FLAG_NONE;
                     device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
                 }
+                cached = next;
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
