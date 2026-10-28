@@ -7,7 +7,9 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
-#include "physx_port/lowlevelaabb/include/BpAABBManagerBase.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpVolumeData.h"
+#include "physx_port/lowlevelaabb/include/BpSourceBoundsArrayNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 
 #include <limits>
@@ -52,8 +54,6 @@ public:
         if(count<=bounds_.size())return;
         if(count>=BP_INVALID_BP_HANDLE-1u)
             throw std::out_of_range("Source AABB volume capacity exceeds PhysX handle range");
-        // The source BoundsArray grows to a power of two and retains a
-        // SIMD-readable extra slot. Its size is the Bp update capacity.
         if(!bounds_.initEntry(count-1u))
             throw std::bad_alloc();
         const auto capacity=bounds_.size();
@@ -174,13 +174,13 @@ public:
     }
 
     physx::PxU32 capacity() const noexcept {return bounds_.size();}
-    const physx::Bp::BoundsArray& source_bounds() const noexcept {return bounds_;}
+    const physx::Bp::SourceBoundsArrayNative& source_bounds() const noexcept {return bounds_;}
     physx::Cm::PinnableBitMap& source_added() noexcept {return added_;}
     physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
 private:
-    physx::Bp::BoundsArray bounds_;
+    physx::Bp::SourceBoundsArrayNative bounds_;
     physx::Cm::PinnableArray<physx::PxReal> distances_;
     physx::Cm::PinnableArray<physx::Bp::FilterGroup::Enum> groups_;
     physx::Cm::PinnableArray<physx::Bp::VolumeData> volumes_;

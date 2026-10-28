@@ -1895,21 +1895,42 @@ void Scene::update_gpu_pairs(bool force_update) {
         throw std::overflow_error(
             "Source GPU SAP found/lost report capacity overflow");
 
-    // Source fetch purges per-stream duplicates and publishes sorted
-    // canonical actor-pair keys. Validate without allocating a second
-    // pair registry. In particular, a lost pair may name a retired actor.
-    const auto validate=[&](std::span<const Pair> pairs,bool found) {
+    // Source GPU pair generation filters original Bp groups, which may
+    // include static/kinematic and kinematic/kinematic overlaps. Sc owns
+    // only contact managers with at least one dynamic actor. Validate
+    // source ordering before discarding ineligible reports, so malformed
+    // GPU output cannot disappear behind the Sc participant filter.
+    const auto eligible=[&](std::span<const Pair> raw,
+                             std::vector<Pair>& kept) {
+        kept.clear();
         Pair last{};
         bool have_last=false;
-        std::size_t previous_index=0;
-        // Small deltas are cheaper as independent binary searches;
-        // bulk GPU reports walk the already sorted Sc history once.
-        const bool bulk=pairs.size()>previous_pairs_.size()/16u;
-        for(const Pair pair:pairs) {
+        for(const Pair pair:raw) {
             if(pair.a>=pair.b || pair.b>=actors_.size() ||
                (have_last && !(last<pair)))
                 throw std::invalid_argument(
                     "Noncanonical or unsorted GPU SAP pair reports");
+            last=pair;
+            have_last=true;
+            if(actors_[pair.a].kind==Kind::DynamicBox ||
+               actors_[pair.b].kind==Kind::DynamicBox)
+                kept.push_back(pair);
+        }
+    };
+    // Reuse Sc's existing pair-delta scratch storage; neither vector
+    // owns GPU membership or maintains a second broadphase registry.
+    eligible(reports.found,sap_created_pairs_);
+    eligible(reports.lost,sap_deleted_pairs_);
+    const auto& found=sap_created_pairs_;
+    const auto& lost=sap_deleted_pairs_;
+
+    // The filtered streams are canonical and sorted. Compare them to
+    // Sc's published history using sparse lookup or a bulk linear walk.
+    // Lost reports may still name an actor retired after the last fetch.
+    const auto validate=[&](std::span<const Pair> pairs,bool new_pair) {
+        std::size_t previous_index=0;
+        const bool bulk=pairs.size()>previous_pairs_.size()/16u;
+        for(const Pair pair:pairs) {
             bool existing;
             if(bulk) {
                 while(previous_index<previous_pairs_.size() &&
@@ -1917,61 +1938,50 @@ void Scene::update_gpu_pairs(bool force_update) {
                     ++previous_index;
                 existing=previous_index<previous_pairs_.size() &&
                     previous_pairs_[previous_index]==pair;
-            } else {
+            }else {
                 existing=std::binary_search(
                     previous_pairs_.begin(),previous_pairs_.end(),pair);
             }
-            if(existing==found)
+            if(existing==new_pair)
                 throw std::invalid_argument(
                     "GPU SAP pair report contradicts Sc overlap history");
-            if(found) {
+            if(new_pair) {
                 const Actor& a=actors_[pair.a];
                 const Actor& b=actors_[pair.b];
                 if(!a.alive || !b.alive ||
                    !a.simulation_shape_enabled ||
                    !b.simulation_shape_enabled ||
                    a.kind==Kind::StaticPlane ||
-                   b.kind==Kind::StaticPlane ||
-                   (a.kind!=Kind::DynamicBox &&
-                    b.kind!=Kind::DynamicBox))
+                   b.kind==Kind::StaticPlane)
                     throw std::invalid_argument(
                         "GPU SAP found pair is not an admitted dynamic overlap");
             }
-            last=pair;
-            have_last=true;
         }
     };
-    validate(reports.found,true);
-    validate(reports.lost,false);
-    // Found membership is absent from previous_pairs_, while lost
-    // membership is present. These checks also reject any pair reported
-    // in both streams without another cross-stream search.
+    validate(found,true);
+    validate(lost,false);
 
-    // An unchanged source overlap stream already agrees with the
-    // published Sc manager list. No pair merge is needed, even if
-    // geometry changed and the existing contacts need fresh PCM data.
-    // publish_pairs() retains those managers when membership is quiet.
-    if(reports.found.empty() && reports.lost.empty()) {
+    // A quiet Sc pair stream needs no merge even when the source GPU
+    // reports non-dynamic overlaps or updates existing PCM contacts.
+    if(found.empty() && lost.empty()) {
         broadphase_pair_membership_changed_=false;
         return;
     }
 
     pending_pairs_.clear();
-    pending_pairs_.reserve(previous_pairs_.size()+reports.found.size());
+    pending_pairs_.reserve(previous_pairs_.size()+found.size());
     std::size_t new_index=0,lost_index=0;
     for(const Pair prior:previous_pairs_) {
-        while(new_index<reports.found.size() &&
-              reports.found[new_index]<prior)
-            pending_pairs_.push_back(reports.found[new_index++]);
-        if(lost_index<reports.lost.size() &&
-           reports.lost[lost_index]==prior)
+        while(new_index<found.size() && found[new_index]<prior)
+            pending_pairs_.push_back(found[new_index++]);
+        if(lost_index<lost.size() && lost[lost_index]==prior)
             ++lost_index;
         else pending_pairs_.push_back(prior);
     }
-    while(new_index<reports.found.size())
-        pending_pairs_.push_back(reports.found[new_index++]);
+    while(new_index<found.size())
+        pending_pairs_.push_back(found[new_index++]);
     broadphase_pair_membership_changed_=
-        !reports.found.empty() || !reports.lost.empty();
+        !found.empty() || !lost.empty();
 }
 
 void Scene::update_pairs() {
