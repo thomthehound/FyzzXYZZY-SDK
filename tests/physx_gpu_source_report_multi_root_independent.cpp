@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_report_multi_root.h"
+#include "physx_gpu/source_sap_scene_reports.h"
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 
 #include <algorithm>
@@ -194,6 +195,53 @@ void run(Context& context, SourceSapReportNativeStage& stage,
         if (overflow) expect_pairs(foundActors, found, {0,1,2,3,4,5,6,7}, "Overflow ordering changed");
         else expect_pairs(foundActors, found, {0,1,2,3,4,5}, "Found ordering changed");
         expect_pairs(lostActors, lost, {0,1,2,3}, "Lost ordering changed");
+    }
+    if (!overflow) {
+        // Map source volume handles to intentionally reversed Sc actor IDs.
+        // GPU report order cannot be assumed to be Sc pair order.
+        std::array<fyzz::BodyId,kVolumes> volumeToActor{};
+        for (std::size_t i=0; i<volumeToActor.size(); ++i)
+            volumeToActor[i] = static_cast<fyzz::BodyId>(31u-i);
+        const std::size_t foundCount = 6u-(volumes ? 2u : 0u);
+        const std::size_t lostCount = 4u-(volumes ? 1u : 0u);
+        const std::span<const Pair> gpuFound{foundActors.data(),foundCount};
+        const std::span<const Pair> gpuLost{lostActors.data(),lostCount};
+        std::vector<fyzz::native::Pair> scFound,scLost;
+        lower_source_sap_actor_reports_to_sc(
+            gpuFound,gpuLost,volumeToActor,scFound,scLost);
+        const std::vector<fyzz::native::Pair> expectedFound = volumes
+            ? std::vector<fyzz::native::Pair>{{19u,20u},{23u,24u},
+                                               {25u,26u},{29u,30u}}
+            : std::vector<fyzz::native::Pair>{{19u,20u},{21u,22u},
+                                               {23u,24u},{25u,26u},
+                                               {27u,28u},{29u,30u}};
+        const std::vector<fyzz::native::Pair> expectedLost = volumes
+            ? std::vector<fyzz::native::Pair>{{18u,19u},{22u,24u},{28u,30u}}
+            : std::vector<fyzz::native::Pair>{{18u,19u},{22u,24u},
+                                               {27u,29u},{28u,30u}};
+        check(scFound == expectedFound && scLost == expectedLost,
+              "Original GPU actor reports did not lower into canonical Sc keys");
+
+        // A corrupt lost report must reject BEFORE modifying either
+        // already-published Sc stream.
+        const std::array<Pair,1> badLost{Pair{1u,kVolumes}};
+        bool rejectedSc = false;
+        try {
+            lower_source_sap_actor_reports_to_sc(
+                gpuFound,badLost,volumeToActor,scFound,scLost);
+        } catch (const std::out_of_range&) { rejectedSc = true; }
+        check(rejectedSc && scFound == expectedFound && scLost == expectedLost,
+              "Invalid GPU lost report partially changed Sc publication");
+
+        // Source volumes need not be in actor order; duplicate raw pairs
+        // must collapse to one canonical Sc key without a CPU SAP pass.
+        const std::array<Pair,3> duplicated{
+            Pair{7u,8u},Pair{1u,2u},Pair{7u,8u}};
+        lower_source_sap_actor_reports_to_sc(
+            duplicated,std::span<const Pair>{},volumeToActor,scFound,scLost);
+        check(scFound == std::vector<fyzz::native::Pair>{
+                  {23u,24u},{29u,30u}} && scLost.empty(),
+              "Source duplicate GPU pair records escaped Sc canonicalization");
     }
 }
 } // namespace

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "native/scene.h"
-#include "PxgBroadPhasePairReport.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 #include <algorithm>
 #include <cstdint>
 #include <limits>
