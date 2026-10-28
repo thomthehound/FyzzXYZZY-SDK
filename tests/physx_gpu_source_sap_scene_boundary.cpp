@@ -78,6 +78,17 @@ void test_source_scene_boundary() {
     require(rejected && bounds_equal(),
             "Duplicated original volume handle changed source bounds");
 
+    actors[0].motion=static_cast<native::GpuBroadphaseBox::Motion>(0xffu);
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            actors,handles,target,changes,filter,true,true,scratch);
+    }catch(const std::invalid_argument&){rejected=true;}
+    require(rejected && bounds_equal() && distances==beforeDistances &&
+            groups==beforeGroups,
+            "Unknown GPU SAP motion class changed source AABB groups");
+    actors[0].motion=native::GpuBroadphaseBox::Motion::Dynamic;
+
     // A quiet frame carries no created/updated source volumes. Geometry
     // validation still runs, but the persistent source AABB arrays must
     // not be repopulated from every Sc actor on each collision frame.
@@ -289,6 +300,17 @@ void test_source_scene_boundary() {
     const std::array<physx::PxgBroadPhasePair,1> sourceLost{
         physx::PxgBroadPhasePair{0u,2u}};
     std::vector<native::Pair> found,lost;
+    const std::array<physx::PxgBroadPhasePair,3> orderedFound{
+        physx::PxgBroadPhasePair{2u,3u},
+        physx::PxgBroadPhasePair{0u,3u},
+        physx::PxgBroadPhasePair{0u,3u}};
+    const std::array<physx::PxgBroadPhasePair,0> noLost{};
+    lower_source_sap_actor_reports_to_sc(
+        orderedFound,noLost,volume_to_actor,found,lost);
+    require(found.size()==2u &&
+            found[0]==native::Pair{4u,9u} &&
+            found[1]==native::Pair{4u,11u} && lost.empty(),
+            "Already ordered SAP actor reports were not deduplicated");
     lower_source_sap_actor_reports_to_sc(
         sourceFound,sourceLost,volume_to_actor,found,lost);
     require(found.size()==2u &&

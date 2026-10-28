@@ -10,6 +10,7 @@
 #include <cstring>
 #include <algorithm>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -210,6 +211,15 @@ struct Context::Impl {
         std::uint32_t push_bytes = 0;
         std::vector<StorageBufferViewKind> view_kinds;
     };
+    // Descriptor sets belong to the existing completed native batch cache.
+    // Buffer IDs protect against a destroyed buffer whose Vulkan handle is
+    // subsequently recycled for a different allocation.
+    struct DescriptorReuse {
+        std::vector<VkDescriptorSet> sets;
+        std::vector<PipelineId> pipelines;
+        std::vector<VkDescriptorBufferInfo> views;
+        std::vector<BufferId> buffer_ids;
+    };
     struct Submission {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
@@ -218,12 +228,14 @@ struct Context::Impl {
         bool cacheable_batch = false;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptors;
     };
     struct CachedBatch {
         VkCommandBuffer commands = VK_NULL_HANDLE;
         VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptors;
     };
     static constexpr std::size_t kMaxCachedBatches = 8;
 
@@ -370,7 +382,7 @@ struct Context::Impl {
         }
     }
 
-    void retire_submission(const Submission& submission) noexcept {
+    void retire_submission(Submission& submission) noexcept {
         // No host allocation, and Vulkan destroy/free APIs return void.
         // This cannot leave a live submission retaining destroyed handles
         // because retirement itself can no longer throw.
@@ -388,7 +400,8 @@ struct Context::Impl {
         }
         cached_batches[cached_batch_count++] = {
             submission.commands, submission.descriptor_pool,
-            submission.descriptor_capacity, submission.set_capacity};
+            submission.descriptor_capacity, submission.set_capacity,
+            std::move(submission.descriptors)};
     }
 
     SubmissionId enqueue(VkCommandBuffer commands, VkDescriptorPool descriptor_pool) {
@@ -744,6 +757,21 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan upload span or staging capacity");
             total += upload.bytes;
         }
+        // Native source uploads often target disjoint allocations within a
+        // single PhysX heap root. Avoid redundant intra-batch barriers
+        // for these independent ranges, while preserving transfer order
+        // when two uploads overwrite the same destination bytes.
+        bool independent_destinations=true;
+        for(std::size_t i=0;i<uploads.size() && independent_destinations;++i)
+            for(std::size_t j=0;j<i;++j)
+                if(uploads[i].destination==uploads[j].destination &&
+                   uploads[i].destination_offset<
+                       uploads[j].destination_offset+uploads[j].bytes &&
+                   uploads[j].destination_offset<
+                       uploads[i].destination_offset+uploads[i].bytes) {
+                    independent_destinations=false;
+                    break;
+                }
         // Prevent post-submit allocation failure during deferred staging
         // ownership transfer. In the single-queue model, the last submitted
         // fence captures the lifetime of this entire upload batch.
@@ -775,7 +803,8 @@ struct Context::Impl {
                     upload.destination_offset, upload.bytes});
                 position += upload.bytes;
             }
-            const SubmissionId id = submit_batch(copies);
+            const SubmissionId id = submit_batch(
+                copies,false,independent_destinations);
             submitted = true;
             // Guaranteed room in retired_buffers. Retires only the public
             // staging ID, not the memory still referenced by the GPU.
@@ -982,10 +1011,12 @@ struct Context::Impl {
         pipelines.erase(it);
     }
 
-    std::vector<VkDescriptorBufferInfo> validate_dispatch(
+    void validate_dispatch_into(
             PipelineId id, DispatchSize groups,
             const std::vector<BufferBinding>& bindings,
-            const void* push_constants, std::size_t push_bytes) const {
+            const void* push_constants, std::size_t push_bytes,
+            std::span<VkDescriptorBufferInfo> descriptors,
+            std::span<std::uint8_t> assigned) const {
         const Pipeline& pipeline = get_pipeline(id);
         const std::uint32_t counts[3] = {groups.x, groups.y, groups.z};
         for (std::uint32_t i = 0; i < 3; ++i) {
@@ -1000,8 +1031,10 @@ struct Context::Impl {
             throw std::invalid_argument("Push constants do not match pipeline layout");
         }
 
-        std::vector<VkDescriptorBufferInfo> descriptors(pipeline.binding_count);
-        std::vector<bool> assigned(pipeline.binding_count, false);
+        if(descriptors.size()!=pipeline.binding_count ||
+           assigned.size()!=pipeline.binding_count)
+            throw std::logic_error("Compute descriptor validation scratch size mismatch");
+        std::fill(assigned.begin(),assigned.end(),0u);
         for (const auto& binding : bindings) {
             if (binding.slot >= pipeline.binding_count || assigned[binding.slot]) {
                 throw std::invalid_argument("Invalid or duplicate compute binding slot");
@@ -1032,6 +1065,17 @@ struct Context::Impl {
             assigned[binding.slot] = true;
             descriptors[binding.slot] = {buffer.buffer, binding.offset, binding.bytes};
         }
+    }
+
+    std::vector<VkDescriptorBufferInfo> validate_dispatch(
+            PipelineId id, DispatchSize groups,
+            const std::vector<BufferBinding>& bindings,
+            const void* push_constants, std::size_t push_bytes) const {
+        const auto count=get_pipeline(id).binding_count;
+        std::vector<VkDescriptorBufferInfo> descriptors(count);
+        std::vector<std::uint8_t> assigned(count);
+        validate_dispatch_into(id,groups,bindings,push_constants,push_bytes,
+                               descriptors,assigned);
         return descriptors;
     }
 
@@ -1135,15 +1179,26 @@ struct Context::Impl {
     }
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& operations,
-                              bool profile = false) {
+                              bool profile = false,
+                              bool independent_uploads = false) {
         if (operations.empty()) {
             throw std::invalid_argument("Compute batch must contain an operation");
         }
+        if(independent_uploads)
+            for(const auto& operation:operations)
+                if(!std::holds_alternative<CopyCommand>(operation))
+                    throw std::invalid_argument(
+                        "Independent upload batch may not contain GPU dispatches");
 
         // Validate the complete batch before recording any GPU commands.
         // This prevents a malformed later operation from partially executing.
         std::uint64_t dispatch_count = 0;
         std::uint64_t descriptor_count = 0;
+        // Preflight descriptors once, before any GPU commands can be
+        // recorded. Keep the slot-ordered views for actual recording.
+        std::vector<VkDescriptorBufferInfo> validated_dispatches;
+        std::vector<BufferId> validated_buffer_ids;
+        std::vector<std::uint8_t> assigned_slots;
         for (const BatchCommand& operation : operations) {
             if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
                 const Buffer& source = get(copy->source);
@@ -1164,9 +1219,19 @@ struct Context::Impl {
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(operation);
                 const Pipeline& pipeline = get_pipeline(dispatch.pipeline);
-                validate_dispatch(dispatch.pipeline, dispatch.groups,
-                                  dispatch.buffers, dispatch.push_constants.data(),
-                                  dispatch.push_constants.size());
+                const auto offset=validated_dispatches.size();
+                validated_dispatches.resize(offset+pipeline.binding_count);
+                assigned_slots.resize(pipeline.binding_count);
+                validate_dispatch_into(
+                    dispatch.pipeline, dispatch.groups,
+                    dispatch.buffers, dispatch.push_constants.data(),
+                    dispatch.push_constants.size(),
+                    std::span<VkDescriptorBufferInfo>(validated_dispatches)
+                        .subspan(offset,pipeline.binding_count),
+                    assigned_slots);
+                validated_buffer_ids.resize(offset+pipeline.binding_count);
+                for(const auto& binding:dispatch.buffers)
+                    validated_buffer_ids[offset+binding.slot]=binding.buffer;
                 ++dispatch_count;
                 descriptor_count += pipeline.binding_count;
             }
@@ -1181,14 +1246,52 @@ struct Context::Impl {
         VkQueryPool timestamps = VK_NULL_HANDLE;
         std::uint32_t descriptor_capacity = 0;
         std::uint32_t set_capacity = 0;
+        DescriptorReuse descriptor_reuse;
+        bool reuse_sets=false;
         try {
-            if (cached_batch_count != 0) {
-                CachedBatch cached = cached_batches[--cached_batch_count];
-                cached_batches[cached_batch_count] = {};
-                pool = cached.descriptor_pool;
-                commands = cached.commands;
-                descriptor_capacity = cached.descriptor_capacity;
-                set_capacity = cached.set_capacity;
+            // Completed PhysX source stages can have distinct pipeline
+            // sequences. Prefer the native batch with matching descriptors,
+            // rather than resetting another stage's valid cached sets.
+            // The existing eight-entry completion cache remains the owner.
+            auto matching_batch=[&](const CachedBatch& cached) {
+                if(dispatch_count==0)
+                    return cached.descriptors.pipelines.empty();
+                if(cached.descriptor_pool==VK_NULL_HANDLE ||
+                   cached.descriptor_capacity<descriptor_count ||
+                   cached.set_capacity<dispatch_count ||
+                   cached.descriptors.sets.size()!=dispatch_count ||
+                   cached.descriptors.pipelines.size()!=dispatch_count)
+                    return false;
+                std::size_t index=0;
+                for(const auto& operation:operations)
+                    if(const auto* dispatch=std::get_if<DispatchCommand>(&operation))
+                        if(cached.descriptors.pipelines[index++]!=dispatch->pipeline)
+                            return false;
+                return true;
+            };
+            std::size_t cached_index=cached_batch_count;
+            for(std::size_t i=cached_batch_count;i>0;--i)
+                if(matching_batch(cached_batches[i-1u])) {
+                    cached_index=i-1u;
+                    break;
+                }
+            // Preserve completed, reusable native descriptor sets while
+            // capacity remains. Once full, recycle the newest entry rather
+            // than grow the existing bounded cache.
+            if(cached_index==cached_batch_count &&
+               cached_batch_count==kMaxCachedBatches)
+                cached_index=cached_batch_count-1u;
+            if(cached_index<cached_batch_count) {
+                CachedBatch cached=std::move(cached_batches[cached_index]);
+                const auto last=--cached_batch_count;
+                if(cached_index!=last)
+                    cached_batches[cached_index]=std::move(cached_batches[last]);
+                cached_batches[last]={};
+                pool=cached.descriptor_pool;
+                commands=cached.commands;
+                descriptor_capacity=cached.descriptor_capacity;
+                set_capacity=cached.set_capacity;
+                descriptor_reuse=std::move(cached.descriptors);
             }
             if (dispatch_count != 0) {
                 if (pool == VK_NULL_HANDLE ||
@@ -1197,6 +1300,7 @@ struct Context::Impl {
                     if (pool != VK_NULL_HANDLE)
                         vkDestroyDescriptorPool(device, pool, nullptr);
                     pool = VK_NULL_HANDLE;
+                    descriptor_reuse={};
                     VkDescriptorPoolSize pool_size{};
                     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                     pool_size.descriptorCount = static_cast<std::uint32_t>(
@@ -1211,8 +1315,24 @@ struct Context::Impl {
                     descriptor_capacity = pool_size.descriptorCount;
                     set_capacity = create.maxSets;
                 } else {
-                    require(vkResetDescriptorPool(device, pool, 0),
-                            "vkResetDescriptorPool");
+                    reuse_sets=descriptor_reuse.sets.size()==dispatch_count &&
+                        descriptor_reuse.pipelines.size()==dispatch_count;
+                    if(reuse_sets) {
+                        std::size_t i=0;
+                        for(const auto& operation:operations) {
+                            if(const auto* dispatch=
+                                    std::get_if<DispatchCommand>(&operation))
+                                if(descriptor_reuse.pipelines[i++]!=dispatch->pipeline) {
+                                    reuse_sets=false;
+                                    break;
+                                }
+                        }
+                    }
+                    if(!reuse_sets) {
+                        require(vkResetDescriptorPool(device, pool, 0),
+                                "vkResetDescriptorPool");
+                        descriptor_reuse={};
+                    }
                 }
             }
             if (commands != VK_NULL_HANDLE) {
@@ -1225,6 +1345,75 @@ struct Context::Impl {
                 allocate.commandBufferCount = 1;
                 require(vkAllocateCommandBuffers(device, &allocate, &commands),
                         "vkAllocateCommandBuffers");
+            }
+
+            // Every dispatch was validated in the preflight pass. Allocate
+            // all of its native sets at once and publish the prevalidated
+            // descriptors in one update instead of calling the Vulkan driver
+            // twice for every small SAP kernel.
+            auto& descriptor_sets=descriptor_reuse.sets;
+            if (dispatch_count != 0) {
+                if(!reuse_sets) {
+                    std::vector<VkDescriptorSetLayout> layouts;
+                    layouts.reserve(static_cast<std::size_t>(dispatch_count));
+                    descriptor_reuse.pipelines.reserve(layouts.capacity());
+                    for(const auto& operation:operations) {
+                        if(const auto* dispatch=
+                                std::get_if<DispatchCommand>(&operation)) {
+                            layouts.push_back(get_pipeline(dispatch->pipeline).descriptors);
+                            descriptor_reuse.pipelines.push_back(dispatch->pipeline);
+                        }
+                    }
+                    descriptor_sets.resize(layouts.size(),VK_NULL_HANDLE);
+                    VkDescriptorSetAllocateInfo allocate{};
+                    allocate.sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                    allocate.descriptorPool=pool;
+                    allocate.descriptorSetCount=static_cast<std::uint32_t>(layouts.size());
+                    allocate.pSetLayouts=layouts.data();
+                    require(vkAllocateDescriptorSets(device,&allocate,descriptor_sets.data()),
+                            "vkAllocateDescriptorSets");
+                }
+                // A completed set keeps its own binding identity. Only
+                // rewrite slots whose original buffer ID or native view
+                // changed; the remaining sets stay valid and untouched.
+                const bool have_cached_views=reuse_sets &&
+                    descriptor_reuse.views.size()==validated_dispatches.size() &&
+                    descriptor_reuse.buffer_ids.size()==validated_buffer_ids.size();
+                std::vector<VkWriteDescriptorSet> writes;
+                std::size_t descriptor_offset=0;
+                std::size_t dispatch_index=0;
+                for(const auto& operation:operations) {
+                    const auto* dispatch=std::get_if<DispatchCommand>(&operation);
+                    if(!dispatch)continue;
+                    const auto count=get_pipeline(dispatch->pipeline).binding_count;
+                    for(std::uint32_t slot=0;slot<count;++slot) {
+                        const auto index=descriptor_offset+slot;
+                        const auto& next=validated_dispatches[index];
+                        if(have_cached_views) {
+                            const auto& old=descriptor_reuse.views[index];
+                            if(descriptor_reuse.buffer_ids[index]==validated_buffer_ids[index] &&
+                               old.buffer==next.buffer && old.offset==next.offset &&
+                               old.range==next.range)
+                                continue;
+                        }
+                        VkWriteDescriptorSet write{};
+                        write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                        write.dstSet=descriptor_sets[dispatch_index];
+                        write.dstBinding=slot;
+                        write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        write.descriptorCount=1;
+                        write.pBufferInfo=&next;
+                        writes.push_back(write);
+                    }
+                    descriptor_offset+=count;
+                    ++dispatch_index;
+                }
+                if(!writes.empty())
+                    vkUpdateDescriptorSets(device,
+                        static_cast<std::uint32_t>(writes.size()),
+                        writes.data(),0,nullptr);
+                descriptor_reuse.views=std::move(validated_dispatches);
+                descriptor_reuse.buffer_ids=std::move(validated_buffer_ids);
             }
 
             VkCommandBufferBeginInfo begin{};
@@ -1263,9 +1452,15 @@ struct Context::Impl {
                 bool writes = false;
             };
             std::unordered_map<BufferId, Access> last_access;
-            last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            if(!independent_uploads)
+                last_access.reserve(std::min<std::size_t>(operations.size() * 2, 512));
+            // Reuse CPU-side command scratch throughout this batch instead
+            // of allocating per copy, kernel, and barrier publication.
+            std::vector<std::pair<BufferId, Access>> operation_uses;
+            std::vector<VkBufferMemoryBarrier> barriers;
+            std::size_t dispatch_index=0;
             auto before_operation = [&](const std::vector<std::pair<BufferId, Access>>& uses) {
-                std::vector<VkBufferMemoryBarrier> barriers;
+                barriers.clear();
                 VkPipelineStageFlags sources = 0;
                 VkPipelineStageFlags targets = 0;
                 for (const auto& use : uses) {
@@ -1305,21 +1500,26 @@ struct Context::Impl {
             };
 
             for (const BatchCommand& operation : operations) {
+                operation_uses.clear();
                 if (const auto* copy = std::get_if<CopyCommand>(&operation)) {
-                    if (copy->source == copy->destination) {
-                        // One buffer, one combined access in the dependency
-                        // map: no duplicate VkBufferMemoryBarrier entries
-                        // over the same resource in a single barrier call.
-                        before_operation({
-                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_ACCESS_TRANSFER_READ_BIT |
-                                VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                        });
-                    } else {
-                        before_operation({
-                            {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, false}},
-                            {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, true}}
-                        });
+                    // A packed upload batch has only staging reads and
+                    // validated nonoverlapping destination writes.
+                    if(!independent_uploads) {
+                        if (copy->source == copy->destination) {
+                            // One buffer, one combined dependency entry.
+                            operation_uses.push_back(
+                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_READ_BIT |
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
+                        } else {
+                            operation_uses.push_back(
+                                {copy->source, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_READ_BIT, false}});
+                            operation_uses.push_back(
+                                {copy->destination, {VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                    VK_ACCESS_TRANSFER_WRITE_BIT, true}});
+                        }
+                        before_operation(operation_uses);
                     }
                     VkBufferCopy region{};
                     region.srcOffset = copy->source_offset;
@@ -1337,18 +1537,17 @@ struct Context::Impl {
                 // conservative Unspecified default remains read/write.
                 // Multiple slots aliasing one allocation are merged before
                 // the dependency graph is updated, regardless of view ranges.
-                std::vector<std::pair<BufferId, Access>> shader_uses;
-                shader_uses.reserve(dispatch.buffers.size());
+                operation_uses.reserve(dispatch.buffers.size());
                 for (const auto& binding : dispatch.buffers) {
                     const bool reads = binding.access != BufferAccess::Write;
                     const bool writes = binding.access != BufferAccess::Read;
                     const VkAccessFlags mask =
                         (reads ? VK_ACCESS_SHADER_READ_BIT : 0u) |
                         (writes ? VK_ACCESS_SHADER_WRITE_BIT : 0u);
-                    auto found = std::find_if(shader_uses.begin(), shader_uses.end(),
+                    auto found = std::find_if(operation_uses.begin(), operation_uses.end(),
                         [&](const auto& entry) { return entry.first == binding.buffer; });
-                    if (found == shader_uses.end()) {
-                        shader_uses.push_back({
+                    if (found == operation_uses.end()) {
+                        operation_uses.push_back({
                             binding.buffer,
                             {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, mask, writes}});
                     } else {
@@ -1356,33 +1555,8 @@ struct Context::Impl {
                         found->second.writes |= writes;
                     }
                 }
-                before_operation(shader_uses);
-                auto descriptors = validate_dispatch(
-                    dispatch.pipeline, dispatch.groups, dispatch.buffers,
-                    dispatch.push_constants.data(), dispatch.push_constants.size());
-
-                VkDescriptorSetAllocateInfo descriptor_allocate{};
-                descriptor_allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-                descriptor_allocate.descriptorPool = pool;
-                descriptor_allocate.descriptorSetCount = 1;
-                descriptor_allocate.pSetLayouts = &pipeline.descriptors;
-                VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-                require(vkAllocateDescriptorSets(device, &descriptor_allocate,
-                                                 &descriptor_set), "vkAllocateDescriptorSets");
-
-                std::vector<VkWriteDescriptorSet> writes(descriptors.size());
-                for (std::uint32_t slot = 0; slot < writes.size(); ++slot) {
-                    writes[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    writes[slot].dstSet = descriptor_set;
-                    writes[slot].dstBinding = slot;
-                    writes[slot].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                    writes[slot].descriptorCount = 1;
-                    writes[slot].pBufferInfo = &descriptors[slot];
-                }
-                if (!writes.empty()) {
-                    vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
-                                           writes.data(), 0, nullptr);
-                }
+                before_operation(operation_uses);
+                const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
 
                 vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
                 vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1413,6 +1587,7 @@ struct Context::Impl {
             submitted.cacheable_batch = true;
             submitted.descriptor_capacity = descriptor_capacity;
             submitted.set_capacity = set_capacity;
+            submitted.descriptors=std::move(descriptor_reuse);
             return id;
         } catch (...) {
             if (timestamps != VK_NULL_HANDLE)

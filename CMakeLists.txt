@@ -1378,6 +1378,30 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_link_libraries(fyzzxyzzy_physx_source_sap_radix_native PRIVATE fyzzxyzzy_physx_gpu_stages)
     add_dependencies(fyzzxyzzy_physx_source_sap_radix_native fyzzxyzzy_source_sap_radix_spv)
     add_test(NAME fyzzxyzzy_physx_source_sap_radix_native COMMAND fyzzxyzzy_physx_source_sap_radix_native "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}")
+    # Explicit, hardware-dependent profiling; never part of CTest or CI
+    # pass/fail thresholds. Compile the real source WR radix shaders.
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_vulkan
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}"
+        --benchmark
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native
+      USES_TERMINAL VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_alternating_vulkan
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}"
+        --benchmark-alternating
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native
+      USES_TERMINAL VERBATIM)
 
     # Source incremental comparison prefixes publish into the original GPU descriptor.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.spv")
@@ -2168,6 +2192,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_native_multi_resource_d3d12
       COMMAND fyzzxyzzy_native_multi_resource_d3d12 "${FYZZXYZZY_MULTI_RESOURCE_DXIL}")
     set_tests_properties(fyzzxyzzy_native_multi_resource_d3d12 PROPERTIES SKIP_RETURN_CODE 77)
+    # Explicit source-copy CPU measurement, not a conformance threshold.
+    add_custom_target(fyzzxyzzy_native_same_buffer_copy_profile_d3d12
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_native_multi_resource_d3d12>"
+        "${FYZZXYZZY_MULTI_RESOURCE_DXIL}" --benchmark-self-copy
+      DEPENDS fyzzxyzzy_native_multi_resource_d3d12
+      USES_TERMINAL VERBATIM)
     set(FYZZXYZZY_D3D12_AABB_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
     add_custom_command(
@@ -3082,6 +3112,28 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PRIVATE fyzzxyzzy_physx_gpu_stages_d3d12)
     add_dependencies(fyzzxyzzy_physx_source_sap_radix_native_d3d12 fyzzxyzzy_source_sap_radix_dxil)
     add_test(NAME fyzzxyzzy_physx_source_sap_radix_native_d3d12 COMMAND fyzzxyzzy_physx_source_sap_radix_native_d3d12 "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}")
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_d3d12
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native_d3d12>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}"
+        --benchmark
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native_d3d12
+      USES_TERMINAL VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_alternating_d3d12
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native_d3d12>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}"
+        --benchmark-alternating
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native_d3d12
+      USES_TERMINAL VERBATIM)
     set_tests_properties(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
     # Source incremental comparison prefixes publish into the original GPU descriptor.

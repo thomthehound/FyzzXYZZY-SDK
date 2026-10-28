@@ -149,6 +149,84 @@ struct GpuSapSceneAdmissionFixture {
                 "Quiet GPU SAP membership rebuilt Sc pairs or skipped moving PCM contacts");
     }
 
+    static void verify_bulk_pair_reports() {
+        // Exercise both bulk ordered-history walks and sparse binary
+        // lookups through the actual Sc/Gu publication boundary.
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        constexpr std::size_t count=96u;
+        std::vector<BodyId> statics;
+        std::vector<Pair> overlaps;
+        statics.reserve(count);
+        overlaps.reserve(count);
+        for(std::size_t i=0;i<count;++i) {
+            const float x=static_cast<float>(i)*4.0f;
+            const auto a=scene.add_dynamic_box(
+                {0.5f,0.5f,0.5f},{x,1.0f,0.0f},1.0f);
+            const auto b=scene.add_static_box(
+                {0.5f,0.5f,0.5f},{x+0.25f,1.0f,0.0f});
+            statics.push_back(b);
+            overlaps.push_back({std::min(a,b),std::max(a,b)});
+        }
+        gpu->set(overlaps,{});
+        scene.advance_collision();
+        if(scene.pairs().size()!=count ||
+           !std::equal(scene.pairs().begin(),scene.pairs().end(),
+                       overlaps.begin()))
+            throw std::runtime_error(
+                "Bulk GPU SAP found reports did not publish ordered Sc pairs");
+
+        std::vector<Pair> removed;
+        for(std::size_t i=0;i<count;i+=2u) {
+            const float x=static_cast<float>(i)*4.0f;
+            scene.set_position(statics[i],{x+2.0f,1.0f,0.0f});
+            removed.push_back(overlaps[i]);
+        }
+        gpu->set({},removed);
+        scene.advance_collision();
+        if(scene.pairs().size()!=count/2u ||
+           scene.lost_pairs().size()!=count/2u)
+            throw std::runtime_error(
+                "Bulk GPU SAP lost reports failed sorted Sc retirement");
+        for(std::size_t i=0;i<count/2u;++i)
+            if(scene.pairs()[i]!=overlaps[2u*i+1u])
+                throw std::runtime_error(
+                    "Bulk GPU SAP retirement changed surviving pair order");
+
+        // Reinsert a retired low-ID pair and remove a surviving pair
+        // in one sparse fetch; the two sorted streams stay independent.
+        scene.set_position(statics[0],{0.25f,1.0f,0.0f});
+        scene.set_position(statics[1],{6.0f,1.0f,0.0f});
+        gpu->set({overlaps[0]},{overlaps[1]});
+        scene.advance_collision();
+        if(scene.pairs().size()!=count/2u ||
+           scene.found_pairs().size()!=1u ||
+           scene.found_pairs()[0]!=overlaps[0] ||
+           scene.lost_pairs().size()!=1u ||
+           scene.lost_pairs()[0]!=overlaps[1] ||
+           !std::binary_search(scene.pairs().begin(),scene.pairs().end(),
+                               overlaps[0]) ||
+           std::binary_search(scene.pairs().begin(),scene.pairs().end(),
+                              overlaps[1]))
+            throw std::runtime_error(
+                "Sparse mixed GPU SAP found/lost admission lost pair identity");
+
+        gpu->set({overlaps[0]},{});
+        bool rejected=false;
+        try {scene.advance_collision();}
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected || gpu->rollbacks!=1u ||
+           scene.pairs().size()!=count/2u)
+            throw std::runtime_error(
+                "Duplicate GPU SAP pair failed rollback after bulk admission");
+        if(scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "Bulk GPU SAP regression executed the CPU SAP producer");
+    }
+
     static void verify_world_installation() {
         // The public World takes an already constructed source GPU
         // owner at its Sc backend boundary. No implicit CPU SAP is
@@ -14396,6 +14474,7 @@ int main() {
     try {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_bulk_pair_reports();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
     fyzz::native::SourceSapEndpointFixture::verify_kinematic_sap_refilter();

@@ -71,6 +71,103 @@ struct SourceBufferState {
     }
 };
 
+void exercise_reused_source_submission_scratch(Context& context) {
+    constexpr std::size_t bytes=256u;
+    const auto gpu=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    CudaDeviceAddressMap addresses;
+    const auto base=addresses.register_allocation(gpu,bytes);
+    fyzz::physx_gpu::SourceSapDmaNative stream(context,addresses);
+    std::array<std::uint32_t,8> first{},second{},third{},observed{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        first[i]=i+11u;
+        second[i]=i+101u;
+        third[i]=i+201u;
+    }
+
+    // Each source group must snapshot host bytes before its retained
+    // vector is cleared for the next group, with one submission per group.
+    auto& first_group=stream.upload_scratch();
+    first_group.push_back({base,first.data(),sizeof(first)});
+    first_group.push_back({base+64u,second.data(),sizeof(second)});
+    stream.queue_uploads(first_group);
+    const auto retained_capacity=first_group.capacity();
+    first.fill(0u);
+    second.fill(0u);
+    auto& second_group=stream.upload_scratch();
+    if(&first_group!=&second_group ||
+       second_group.capacity()<retained_capacity ||
+       !second_group.empty())
+        throw std::runtime_error("Source upload group scratch was not retained");
+    second_group.push_back({base+128u,third.data(),sizeof(third)});
+    stream.queue_uploads(second_group);
+    third.fill(0u);
+
+    const auto before=stream.submission_stats();
+    auto& invalid_group=stream.upload_scratch();
+    invalid_group.push_back({base+160u,third.data(),sizeof(third)});
+    invalid_group.push_back({base+bytes,third.data(),sizeof(third)});
+    bool rejected=false;
+    try {stream.queue_uploads(invalid_group);}
+    catch(const std::out_of_range&){rejected=true;}
+    if(!rejected || stream.submission_stats().upload_batches!=
+            before.upload_batches)
+        throw std::runtime_error(
+            "Invalid reused source upload group partially submitted");
+
+    // Overlapping copies within a single batch require the original
+    // ordered transfer semantics even when both target one heap root.
+    std::array<std::uint32_t,8> earlier{},later{};
+    for(std::uint32_t i=0u;i<8u;++i) {
+        earlier[i]=i+301u;
+        later[i]=i+401u;
+    }
+    auto& overlapping=stream.upload_scratch();
+    overlapping.push_back({base+192u,earlier.data(),sizeof(earlier)});
+    overlapping.push_back({base+208u,later.data(),sizeof(later)});
+    stream.queue_uploads(overlapping);
+    earlier.fill(0u);
+    later.fill(0u);
+    if(stream.submission_stats().upload_batches!=before.upload_batches+1u)
+        throw std::runtime_error(
+            "Overlapping source upload changed GPU submission count");
+    stream.wait_at_fetch();
+    context.download(gpu,0u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+11u)
+            throw std::runtime_error(
+                "Reused source upload staging lost first host snapshot");
+    context.download(gpu,64u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+101u)
+            throw std::runtime_error(
+                "Reused source upload staging lost second host snapshot");
+    context.download(gpu,128u,observed.data(),sizeof(observed));
+    for(std::uint32_t i=0u;i<observed.size();++i)
+        if(observed[i]!=i+201u)
+            throw std::runtime_error(
+                "Reused source upload staging lost later host snapshot");
+
+    std::array<std::uint32_t,12> overlap_result{};
+    context.download(gpu,192u,overlap_result.data(),sizeof(overlap_result));
+    for(std::uint32_t i=0u;i<overlap_result.size();++i) {
+        const auto expected=i<4u?i+301u:i-4u+401u;
+        if(overlap_result[i]!=expected)
+            throw std::runtime_error(
+                "Overlapping Vulkan/D3D12 source upload lost final writer");
+    }
+
+    auto& staged=stream.update_scratch();
+    staged.emplace_back(CopyCommand{gpu,0u,gpu,192u,32u});
+    const auto staged_capacity=staged.capacity();
+    auto& retry=stream.update_scratch();
+    if(!retry.empty() || retry.capacity()<staged_capacity ||
+       !stream.commands().empty())
+        throw std::runtime_error(
+            "Discarded source update commands contaminated the GPU stream");
+    addresses.unregister_allocation(base);
+    context.destroy_buffer(gpu);
+}
+
 void exercise_source_raw_buffer_growth(Context& context) {
     // PhysX buddy heaps keep a root resource while their child raw
     // allocator keys move/swap. The two raw addresses deliberately have
@@ -3201,6 +3298,7 @@ int main() {
         if (pointers.live_allocations() != 0u)
             throw std::runtime_error("GPU transfer mapping leak");
         exercise_source_raw_buffer_growth(context);
+        exercise_reused_source_submission_scratch(context);
         exercise_native_physx_heap_roots(context);
         exercise_native_heap_raii_teardown(context);
         exercise_source_virtual_device_allocator(context);

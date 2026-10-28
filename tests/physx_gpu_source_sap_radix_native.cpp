@@ -9,12 +9,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <numeric>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -190,9 +193,202 @@ void run(Context& context,const SourceSapRadixNativeStage& stage,
     else for(auto buffer:buffers)context.destroy_buffer(buffer);
 }
 }
+
+// Opt-in source GPU radix timing. This measures the original 18-command
+// sortProjectionAndHandlesWR stage, not an invented complete SAP frame.
+// Upload/reset, pipeline creation and allocation are outside all samples.
+void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
+                      std::uint32_t boxes,
+                      const SourceSapRadixNativeStage* interleaved=nullptr) {
+    using Clock=std::chrono::steady_clock;
+    constexpr std::size_t axes=3u, fields=7u, hist_words=512u;
+    const std::uint32_t keys=boxes*2u;
+    std::array<std::size_t,axes*fields> offsets{};
+    std::array<CudaDeviceAddressMap::Address,axes*fields> pointers{};
+    std::array<std::size_t,axes*fields> counts{};
+    std::size_t bytes=0;
+    for(std::size_t i=0;i<counts.size();++i) {
+        counts[i]=i%fields==4u?hist_words:keys;
+        bytes=(bytes+255u)&~std::size_t{255u};
+        offsets[i]=bytes;
+        bytes+=counts[i]*sizeof(std::uint32_t);
+    }
+    std::vector<std::uint32_t> initial(bytes/sizeof(std::uint32_t),0u);
+    for(std::uint32_t axis=0u;axis<axes;++axis) {
+        const std::size_t start=axis*fields;
+        for(std::uint32_t i=0u;i<keys;++i) {
+            // The source radix shader consumes projections and previous
+            // handle identities, not a synthetic kernel for this benchmark.
+            initial[offsets[start]/4u+i]=
+                (i*2654435761u)^(axis*0x9e3779b9u);
+            initial[offsets[start+5u]/4u+i]=
+                axis*keys+i;
+            initial[offsets[start+6u]/4u+i]=
+                0xffffffffu;
+        }
+    }
+    const auto root=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    CudaDeviceAddressMap map;
+    for(std::size_t i=0;i<pointers.size();++i)
+        pointers[i]=map.register_slice(
+            root,offsets[i],counts[i]*sizeof(std::uint32_t));
+    const auto ptr=[]<class T>(CudaDeviceAddressMap::Address address) {
+        return reinterpret_cast<T>(static_cast<std::uintptr_t>(address));
+    };
+    physx::PxgBroadPhaseDesc source{};
+    std::array<physx::PxgRadixSortDesc,6u> radix{};
+    for(std::uint32_t axis=0u;axis<axes;++axis) {
+        const std::size_t start=axis*fields;
+        using Rank=std::remove_reference_t<
+            decltype(source.boxProjectionRanks[axis])>;
+        using Handles=std::remove_reference_t<
+            decltype(source.boxHandles[0][axis])>;
+        source.boxProjectionRanks[axis]=
+            ptr.operator()<Rank>(pointers[start+1u]);
+        source.boxHandles[1][axis]=
+            ptr.operator()<Handles>(pointers[start+5u]);
+        source.boxHandles[0][axis]=
+            ptr.operator()<Handles>(pointers[start+6u]);
+        auto& forward=radix[axis];
+        auto& reverse=radix[axis+3u];
+        using Word=std::uint32_t*;
+        forward.inputKeys=ptr.operator()<Word>(pointers[start]);
+        forward.inputRanks=ptr.operator()<Word>(pointers[start+1u]);
+        forward.outputKeys=ptr.operator()<Word>(pointers[start+2u]);
+        forward.outputRanks=ptr.operator()<Word>(pointers[start+3u]);
+        forward.radixBlockCounts=ptr.operator()<Word>(pointers[start+4u]);
+        reverse.inputKeys=forward.outputKeys;
+        reverse.inputRanks=forward.outputRanks;
+        reverse.outputKeys=forward.inputKeys;
+        reverse.outputRanks=forward.inputRanks;
+        reverse.radixBlockCounts=forward.radixBlockCounts;
+    }
+
+    auto elapsed_us=[](Clock::time_point begin,Clock::time_point end) {
+        return std::chrono::duration<double,std::micro>(end-begin).count();
+    };
+    const auto median=[](std::vector<double> values) {
+        std::sort(values.begin(),values.end());
+        return values[values.size()/2u];
+    };
+    constexpr std::size_t warmup=3u,trials=11u;
+    std::vector<double> host_append,host_submit,host_submit_wait,gpu_us;
+    host_append.reserve(trials);
+    host_submit.reserve(trials);
+    host_submit_wait.reserve(trials);
+    gpu_us.reserve(trials);
+    bool timestamp_supported=true;
+    std::vector<BatchCommand> commands;
+    for(std::size_t trial=0;trial<warmup+trials;++trial) {
+        context.upload(root,0u,initial.data(),bytes);
+        commands.clear();
+        const auto begin=Clock::now();
+        stage.append_wr(commands,source,radix,map,boxes);
+        const auto prepared=Clock::now();
+        require(commands.size()==18u,
+                "Source WR radix profiling command topology changed");
+        const auto submitted=context.submit_batch(commands);
+        const auto queued=Clock::now();
+        context.wait_submission(submitted);
+        const auto completed=Clock::now();
+        if(trial>=warmup) {
+            host_append.push_back(elapsed_us(begin,prepared));
+            host_submit.push_back(elapsed_us(prepared,queued));
+            host_submit_wait.push_back(elapsed_us(prepared,completed));
+        }
+        if(timestamp_supported) {
+            // Reset/timestamp replay is independent of the CPU timing.
+            context.upload(root,0u,initial.data(),bytes);
+            const auto gpu_ns=context.profile_batch_gpu_nanoseconds(commands);
+            if(!gpu_ns) {
+                timestamp_supported=false;
+                gpu_us.clear();
+            } else if(trial>=warmup) {
+                gpu_us.push_back(*gpu_ns*0.001);
+            }
+        }
+        if(interleaved && trial+1u<warmup+trials) {
+            // Each original WR radix stage consumes the unsorted projection
+            // and previous handle stream. Its alternate stage needs the
+            // same initial input, not the preceding stage's sorted output.
+            // Neither this reset nor the alternate submission is timed.
+            context.upload(root,0u,initial.data(),bytes);
+            std::vector<BatchCommand> other;
+            interleaved->append_wr(other,source,radix,map,boxes);
+            require(other.size()==18u,
+                    "Interleaved source WR radix command topology changed");
+            context.wait_submission(context.submit_batch(other));
+        }
+    }
+    // The measured real GPU stage must still produce source-correct
+    // sorted projection/rank/handle streams at both workload sizes.
+    for(std::uint32_t axis=0u;axis<axes;++axis) {
+        const std::size_t start=axis*fields;
+        std::vector<std::pair<std::uint32_t,std::uint32_t>> expected;
+        expected.reserve(keys);
+        for(std::uint32_t i=0u;i<keys;++i)
+            expected.push_back({initial[offsets[start]/4u+i],i});
+        std::stable_sort(expected.begin(),expected.end(),
+            [](const auto& left,const auto& right){
+                return left.first<right.first;
+            });
+        std::vector<std::uint32_t> projections(keys),ranks(keys),handles(keys);
+        context.download(root,offsets[start],
+                         projections.data(),keys*sizeof(std::uint32_t));
+        context.download(root,offsets[start+1u],
+                         ranks.data(),keys*sizeof(std::uint32_t));
+        context.download(root,offsets[start+6u],
+                         handles.data(),keys*sizeof(std::uint32_t));
+        for(std::uint32_t i=0u;i<keys;++i)
+            require(projections[i]==expected[i].first &&
+                    ranks[i]==expected[i].second &&
+                    handles[i]==initial[offsets[start+5u]/4u+expected[i].second],
+                    "Profiled source radix stage produced incorrect sorted GPU streams");
+    }
+    const char* backend=
+#if defined(FYZZXYZZY_TEST_D3D12)
+        "d3d12";
+#else
+        "vulkan";
+#endif
+    const auto& device=context.device_info();
+    if(timestamp_supported)
+        std::printf(
+            "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
+            " boxes=%u commands=18 trials=%zu"
+            " interleaved=%u wave_count=%u wave_scatter=%u"
+            " median_host_append_us=%.3f median_host_submit_us=%.3f"
+            " median_submit_wait_us=%.3f median_gpu_batch_us=%.3f"
+            " timed_upload_reset=no gpu_timestamp_replay=yes\n",
+            backend,device.name.c_str(),boxes,trials,
+            interleaved?1u:0u,stage.using_wave_count()?1u:0u,
+            stage.using_wave_scatter()?1u:0u,
+            median(host_append),median(host_submit),
+            median(host_submit_wait),median(gpu_us));
+    else
+        std::printf(
+            "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
+            " boxes=%u commands=18 trials=%zu"
+            " interleaved=%u wave_count=%u wave_scatter=%u"
+            " median_host_append_us=%.3f median_host_submit_us=%.3f"
+            " median_submit_wait_us=%.3f median_gpu_batch_us=unavailable"
+            " timed_upload_reset=no gpu_timestamp_replay=yes\n",
+            backend,device.name.c_str(),boxes,trials,
+            interleaved?1u:0u,stage.using_wave_count()?1u:0u,
+            stage.using_wave_scatter()?1u:0u,
+            median(host_append),median(host_submit),
+            median(host_submit_wait));
+    context.destroy_buffer(root);
+}
 int main(int argc,char** argv) {
     try {
-        if(argc!=7)throw std::invalid_argument("Require source radix shaders and wave count/scatter");
+        const bool benchmark=argc==8 &&
+            std::string_view(argv[7])=="--benchmark";
+        const bool benchmark_alternating=argc==8 &&
+            std::string_view(argv[7])=="--benchmark-alternating";
+        if(argc!=7 && !benchmark && !benchmark_alternating)
+            throw std::invalid_argument(
+                "Require six source radix shaders and optional profiling mode");
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
 #else
@@ -207,6 +403,17 @@ int main(int argc,char** argv) {
         run(context,stage,true,false);
         run(context,portable,false,true);
         std::cout<<"Source WR/WOR stable radix, ranks and original handles PASS\n";
+        if(benchmark) {
+            profile_wr_radix(context,stage,256u);
+            profile_wr_radix(context,portable,256u);
+            profile_wr_radix(context,stage,4096u);
+            profile_wr_radix(context,portable,4096u);
+        } else if(benchmark_alternating) {
+            profile_wr_radix(context,stage,256u,&portable);
+            profile_wr_radix(context,portable,256u,&stage);
+            profile_wr_radix(context,stage,4096u,&portable);
+            profile_wr_radix(context,portable,4096u,&stage);
+        }
     }catch(const std::exception& e) {
         std::cerr<<"Source WR/WOR radix GPU FAILED: "<<e.what()<<'\n';
         return 1;

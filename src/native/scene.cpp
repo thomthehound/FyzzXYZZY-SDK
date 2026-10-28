@@ -1901,13 +1901,26 @@ void Scene::update_gpu_pairs(bool force_update) {
     const auto validate=[&](std::span<const Pair> pairs,bool found) {
         Pair last{};
         bool have_last=false;
+        std::size_t previous_index=0;
+        // Small deltas are cheaper as independent binary searches;
+        // bulk GPU reports walk the already sorted Sc history once.
+        const bool bulk=pairs.size()>previous_pairs_.size()/16u;
         for(const Pair pair:pairs) {
             if(pair.a>=pair.b || pair.b>=actors_.size() ||
                (have_last && !(last<pair)))
                 throw std::invalid_argument(
                     "Noncanonical or unsorted GPU SAP pair reports");
-            const bool existing=std::binary_search(
-                previous_pairs_.begin(),previous_pairs_.end(),pair);
+            bool existing;
+            if(bulk) {
+                while(previous_index<previous_pairs_.size() &&
+                      previous_pairs_[previous_index]<pair)
+                    ++previous_index;
+                existing=previous_index<previous_pairs_.size() &&
+                    previous_pairs_[previous_index]==pair;
+            } else {
+                existing=std::binary_search(
+                    previous_pairs_.begin(),previous_pairs_.end(),pair);
+            }
             if(existing==found)
                 throw std::invalid_argument(
                     "GPU SAP pair report contradicts Sc overlap history");
@@ -1930,10 +1943,9 @@ void Scene::update_gpu_pairs(bool force_update) {
     };
     validate(reports.found,true);
     validate(reports.lost,false);
-    for(const Pair pair:reports.found)
-        if(std::binary_search(reports.lost.begin(),reports.lost.end(),pair))
-            throw std::invalid_argument(
-                "GPU SAP reported both found and lost for the same pair");
+    // Found membership is absent from previous_pairs_, while lost
+    // membership is present. These checks also reject any pair reported
+    // in both streams without another cross-stream search.
 
     // An unchanged source overlap stream already agrees with the
     // published Sc manager list. No pair merge is needed, even if

@@ -250,7 +250,17 @@ struct Context::Impl {
         std::vector<StorageBufferViewKind> view_kinds;
         std::vector<std::uint32_t> descriptor_slots;
     };
+    struct DescriptorView {
+        BufferId buffer = 0;
+        std::size_t offset = 0;
+        std::size_t bytes = 0;
+        ID3D12Resource* resource = nullptr;
+    };
     struct Submission {
+        // A descriptor heap belongs to its completed command submission.
+        // These identities describe the live entries in that exact heap.
+        std::vector<PipelineId> cached_pipelines;
+        std::vector<DescriptorView> cached_views;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commands;
         ComPtr<ID3D12DescriptorHeap> heap;
@@ -287,6 +297,9 @@ struct Context::Impl {
     // Completed command allocator/list and descriptor heap reuse. Never
     // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
     std::vector<Submission> recycled;
+    // The largest completed source relocation scratch can serve later
+    // submissions. In-flight command lists retain their own allocation.
+    ComPtr<ID3D12Resource> completed_copy_scratch;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -344,9 +357,31 @@ struct Context::Impl {
         return it->second;
     }
 
-    Submission new_commands() {
-        if (!recycled.empty()) {
-            Submission submission = std::move(recycled.back());
+    Submission new_commands(
+            const std::vector<PipelineId>* pipeline_sequence = nullptr,
+            std::size_t descriptor_count = 0) {
+        std::size_t match = recycled.size();
+        if (pipeline_sequence && !pipeline_sequence->empty()) {
+            for (std::size_t i = recycled.size(); i > 0; --i) {
+                const auto& candidate = recycled[i - 1u];
+                if (candidate.heap &&
+                    candidate.heap->GetDesc().NumDescriptors >= descriptor_count &&
+                    candidate.cached_pipelines == *pipeline_sequence) {
+                    match = i - 1u;
+                    break;
+                }
+            }
+        }
+        // Do not evict a completed source stage's still-valid descriptors
+        // merely because another stage reached the fetch boundary later.
+        if (match == recycled.size() &&
+            (!pipeline_sequence || pipeline_sequence->empty() ||
+             recycled.size() == kMaxRecycled))
+            match = recycled.empty() ? recycled.size() : recycled.size() - 1u;
+        if (match < recycled.size()) {
+            Submission submission = std::move(recycled[match]);
+            if (match + 1u != recycled.size())
+                recycled[match] = std::move(recycled.back());
             recycled.pop_back();
             check(submission.allocator->Reset(), "ResetCommandAllocator");
             check(submission.commands->Reset(submission.allocator.Get(), nullptr),
@@ -367,7 +402,14 @@ struct Context::Impl {
 
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
-        submission.owned_copy_scratch.clear(); // GPU-local copies completed.
+        if (!submission.owned_copy_scratch.empty()) {
+            auto& candidate = submission.owned_copy_scratch.front();
+            if (candidate &&
+                (!completed_copy_scratch ||
+                 candidate->GetDesc().Width > completed_copy_scratch->GetDesc().Width))
+                completed_copy_scratch = std::move(candidate);
+            submission.owned_copy_scratch.clear();
+        }
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
@@ -375,14 +417,27 @@ struct Context::Impl {
     }
 
     SubmissionId enqueue(Submission&& submission) {
+        if (next_submission == std::numeric_limits<SubmissionId>::max() ||
+            next_fence == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("D3D12 submission or fence ID range exhausted");
         check(submission.commands->Close(), "Close command list");
-        ID3D12CommandList* lists[] = {submission.commands.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        const std::uint64_t signal = next_fence++;
-        check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
-        const SubmissionId id = next_submission++;
+        const SubmissionId id = next_submission;
+        const std::uint64_t signal = next_fence;
         submission.fence_value = signal;
-        submissions.emplace(id, std::move(submission));
+        // Own the command allocator, list, descriptor heap and any source
+        // upload/copy staging before the GPU can begin using them.
+        // unordered_map insertion can allocate and throw; submitting first
+        // would allow its failure to release resources still in flight.
+        const auto [it, inserted] = submissions.emplace(id, std::move(submission));
+        if (!inserted)
+            throw std::logic_error("D3D12 submission ID already registered");
+        ++next_submission;
+        ++next_fence;
+        ID3D12CommandList* lists[] = {it->second.commands.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        // A queue-signal failure must not destroy the submitted resources:
+        // the owning entry stays recorded until device teardown.
+        check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
         return id;
     }
 
@@ -897,6 +952,8 @@ struct Context::Impl {
                               bool profile = false) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
+        std::size_t same_resource_copy_scratch_bytes = 0;
+        std::vector<PipelineId> pipeline_sequence;
         for (const BatchCommand& op : commands) {
             if (const auto* copy = std::get_if<CopyCommand>(&op)) {
                 const auto& source = get_buffer(copy->source);
@@ -910,14 +967,37 @@ struct Context::Impl {
                     copy->source_offset % 4 || copy->destination_offset % 4 ||
                     copy->bytes % 4)
                     throw std::invalid_argument("Invalid D3D12 buffer copy");
+                if (copy->source == copy->destination)
+                    same_resource_copy_scratch_bytes =
+                        std::max(same_resource_copy_scratch_bytes, copy->bytes);
             } else {
-                validate_dispatch(std::get<DispatchCommand>(op));
-                descriptor_count += get_pipeline(std::get<DispatchCommand>(op).pipeline).bindings;
+                const auto& dispatch = std::get<DispatchCommand>(op);
+                validate_dispatch(dispatch);
+                descriptor_count += get_pipeline(dispatch.pipeline).bindings;
+                pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
-        Submission submission = new_commands();
+        Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        // Legacy D3D12 requires staging nonoverlapping copies within one
+        // buffer. All such copies in this command batch can share one
+        // device-local scratch allocation, with ordered state transitions
+        // between uses. Keep it fence-owned by the original submission.
+        if (same_resource_copy_scratch_bytes) {
+            ComPtr<ID3D12Resource> scratch;
+            if (completed_copy_scratch &&
+                completed_copy_scratch->GetDesc().Width >=
+                    same_resource_copy_scratch_bytes)
+                scratch = std::move(completed_copy_scratch);
+            else
+                scratch = allocate_resource(
+                    device.Get(), same_resource_copy_scratch_bytes,
+                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            submission.owned_copy_scratch.push_back(std::move(scratch));
+        }
+        bool scratch_in_source_state = false;
         if (profile) {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
@@ -958,6 +1038,13 @@ struct Context::Impl {
                                                    IID_PPV_ARGS(&replacement)),
                       "CreateDescriptorHeap");
                 submission.heap = std::move(replacement);
+                submission.cached_views.clear();
+                submission.cached_pipelines.clear();
+            }
+            if (submission.cached_pipelines != pipeline_sequence ||
+                submission.cached_views.size() != descriptor_count) {
+                submission.cached_pipelines = pipeline_sequence;
+                submission.cached_views.assign(descriptor_count, {});
             }
             ID3D12DescriptorHeap* heaps[] = {submission.heap.Get()};
             submission.commands->SetDescriptorHeaps(1, heaps);
@@ -1001,27 +1088,26 @@ struct Context::Impl {
                 auto& src = get_buffer(copy->source);
                 auto& dst = get_buffer(copy->destination);
                 if (copy->source == copy->destination) {
-                    // Under legacy resource-state barriers a buffer cannot
-                    // have COPY_SOURCE and COPY_DEST simultaneously.
-                    // Stage through a device-LOCAL scratch copy, never a
-                    // host upload/readback or a new queue submission.
-                    // Source and destination ranges were checked disjoint.
-                    auto scratch = allocate_resource(device.Get(), copy->bytes,
-                        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
-                        D3D12_RESOURCE_STATE_COPY_DEST);
-                    // Hold GPU scratch through the submission fence before
-                    // executing either copy, including exceptions during
-                    // command recording.
-                    submission.owned_copy_scratch.push_back(scratch);
+                    // Legacy D3D12 cannot simultaneously use this buffer
+                    // for COPY_SOURCE and COPY_DEST. Reuse the batch's
+                    // fence-owned device-local staging allocation. Each
+                    // transition enforces the original copy order before
+                    // the scratch bytes are overwritten by the next copy.
+                    auto* scratch = submission.owned_copy_scratch.front().Get();
+                    if (scratch_in_source_state)
+                        transition(submission.commands.Get(), scratch,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_COPY_DEST);
                     require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                    submission.commands->CopyBufferRegion(scratch.Get(), 0u,
+                    submission.commands->CopyBufferRegion(scratch, 0u,
                         src.resource.Get(), copy->source_offset, copy->bytes);
-                    transition(submission.commands.Get(), scratch.Get(),
+                    transition(submission.commands.Get(), scratch,
                         D3D12_RESOURCE_STATE_COPY_DEST,
                         D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    scratch_in_source_state = true;
                     require_state(copy->destination, D3D12_RESOURCE_STATE_COPY_DEST);
                     submission.commands->CopyBufferRegion(dst.resource.Get(),
-                        copy->destination_offset, scratch.Get(), 0u,
+                        copy->destination_offset, scratch, 0u,
                         copy->bytes);
                 } else {
                     require_state(copy->source, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1056,9 +1142,19 @@ struct Context::Impl {
                                        kind == StorageBufferViewKind::Structured32Read;
                 const bool raw = kind == StorageBufferViewKind::RawRead ||
                                  kind == StorageBufferViewKind::RawReadWrite;
+                const auto physical_slot = descriptor_index +
+                    pipeline.descriptor_slots[slot];
+                DescriptorView& cached = submission.cached_views[physical_slot];
+                const DescriptorView next{
+                    binding.buffer, binding.offset, binding.bytes,
+                    buffer.resource.Get()};
+                if (cached.buffer == next.buffer &&
+                    cached.offset == next.offset &&
+                    cached.bytes == next.bytes &&
+                    cached.resource == next.resource)
+                    continue;
                 D3D12_CPU_DESCRIPTOR_HANDLE cpu{
-                    cpu_start.ptr + (descriptor_index +
-                        pipeline.descriptor_slots[slot]) * increment
+                    cpu_start.ptr + physical_slot * increment
                 };
                 if (!read_only) {
                     D3D12_UNORDERED_ACCESS_VIEW_DESC view{};
@@ -1082,6 +1178,7 @@ struct Context::Impl {
                                               D3D12_BUFFER_SRV_FLAG_NONE;
                     device->CreateShaderResourceView(buffer.resource.Get(), &view, cpu);
                 }
+                cached = next;
             }
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
@@ -1112,6 +1209,11 @@ struct Context::Impl {
             transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
                        entry.second.state, D3D12_RESOURCE_STATE_COMMON);
         }
+        if (scratch_in_source_state)
+            transition(submission.commands.Get(),
+                       submission.owned_copy_scratch.front().Get(),
+                       D3D12_RESOURCE_STATE_COPY_SOURCE,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 1);

@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 using namespace fyzz::compute;
@@ -88,11 +91,30 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     dispatch.push_constants.resize(sizeof(parameters));
     std::memcpy(dispatch.push_constants.data(), parameters.data(), sizeof(parameters));
 
+    // Validate the entire batch before any dispatch can execute. A
+    // malformed later kernel must not mutate the buffers from the
+    // preceding otherwise-valid kernel.
+    auto invalid=dispatch;
+    invalid.buffers[2].slot=1u;
+    bool rejected=false;
+    try {(void)context.submit_batch({dispatch,invalid});}
+    catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"Malformed later dispatch entered native GPU batch");
+
     // Two dependent dispatches and a GPU copy must execute in source order
     // with no host synchronization between them. Both source arrays are
     // modified by the shader; the second dispatch reads their new contents.
+    auto second_dispatch=dispatch;
+#ifndef FYZZXYZZY_TEST_D3D12
+    // Vulkan slot order is explicitly specified by BufferBinding::slot.
+    // Its flattened prevalidated descriptor array must preserve the slots
+    // even if a later dispatch supplies bindings in a different order.
+    std::rotate(second_dispatch.buffers.begin(),
+                second_dispatch.buffers.begin()+1,
+                second_dispatch.buffers.end());
+#endif
     const std::vector<BatchCommand> commands{
-        dispatch, dispatch,
+        dispatch, second_dispatch,
         CopyCommand{destination, 0u, snapshot, 0u, kViewBytes}
     };
     const auto submission = context.submit_batch(commands);
@@ -129,18 +151,192 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     check(actual_mirror == mirror,
           "Native multi-resource ordered GPU copy or canary mismatch");
 
+    // Recycle a completed native batch with a different view offset but
+    // the same buffer identity. A subsequent identical binding must remain
+    // valid when its source buffer contents change between submissions.
+    if(!shared_backing) {
+        auto redirected=dispatch;
+        for(auto& binding:redirected.buffers)
+            binding.offset=kViewBytes;
+        auto verify_redirected=[&](std::uint32_t seed,bool remap_one_slot=false) {
+            auto current=redirected;
+            if(remap_one_slot)
+                current.buffers[1].offset=0u;
+            std::vector<std::uint32_t> next_a(kElements),next_b(kElements);
+            for(std::uint32_t i=0;i<kElements;++i) {
+                next_a[i]=seed+i;
+                next_b[i]=seed*2u+3u*i;
+            }
+            context.upload(source_a,kViewBytes,next_a.data(),kViewBytes);
+            context.upload(source_b,current.buffers[1].offset,
+                           next_b.data(),kViewBytes);
+            const auto id=context.submit_batch({current});
+            context.wait_submission(id);
+            std::vector<std::uint32_t> next_result(kElements);
+            context.download(destination,kViewBytes,
+                             next_result.data(),kViewBytes);
+            for(std::uint32_t i=0;i<kElements;++i)
+                check(next_result[i]==3u*next_a[i]+next_b[i],
+                      "Reused GPU descriptor set retained an outdated view");
+        };
+        verify_redirected(300u);
+        verify_redirected(500u);
+        // Only the second descriptor slot changes its original view.
+        // All remaining completed native bindings are still reusable.
+        verify_redirected(700u,true);
+        verify_redirected(900u,true);
+    }
+
     context.destroy_buffer(snapshot);
     context.destroy_buffer(destination);
     if (!shared_backing) context.destroy_buffer(source_b);
     context.destroy_buffer(source_a);
 }
 
+// A real native command batch may carry successive PhysX device-to-device
+// relocations within one GPU allocation. Every copy reads the preceding
+// copy's results; a shared staging resource must not corrupt later reads.
+void verify_ordered_same_resource_copies(Context& context) {
+    constexpr std::size_t words=128u;
+    const auto buffer=context.create_buffer(words*sizeof(std::uint32_t),
+                                            MemoryPlacement::DeviceLocal);
+    const std::vector<BatchCommand> copies{
+        CopyCommand{buffer,0u,buffer,128u,64u},
+        CopyCommand{buffer,128u,buffer,256u,128u},
+        CopyCommand{buffer,256u,buffer,448u,64u}
+    };
+    for(std::uint32_t seed:{13u,91u}) {
+        std::vector<std::uint32_t> original(words),expected(words),actual(words);
+        for(std::uint32_t i=0;i<words;++i)
+            original[i]=seed*31u+i*17u;
+        expected=original;
+        // Nonoverlapping locations make sequential std::copy equivalent
+        // to the original source CUDA device-copy ordering contract.
+        for(const auto& op:copies) {
+            const auto& copy=std::get<CopyCommand>(op);
+            std::copy(expected.begin()+copy.source_offset/4u,
+                      expected.begin()+(copy.source_offset+copy.bytes)/4u,
+                      expected.begin()+copy.destination_offset/4u);
+        }
+        context.upload(buffer,0u,original.data(),words*4u);
+        // A later invalid operation must reject the entire batch before
+        // recording or submitting the earlier, otherwise-valid copy.
+        auto invalid=copies;
+        invalid.push_back(CopyCommand{buffer,0u,buffer,32u,64u});
+        bool rejected=false;
+        try {(void)context.submit_batch(invalid);}
+        catch(const std::invalid_argument&){rejected=true;}
+        check(rejected,"Overlapping late DtoD copy passed native batch preflight");
+        context.wait_submission(context.submit_batch(copies));
+        context.download(buffer,0u,actual.data(),words*4u);
+        check(actual==expected,
+              "Ordered native same-buffer copies violated source dependencies or canaries");
+    }
+    // Two distinct source heap roots may relocate concurrently on the
+    // ordered native queue. Their staging resources must remain exclusive
+    // until both completion fences retire, even when the later fence is
+    // reaped first at the original PhysX fetch boundary.
+    const auto second_root=context.create_buffer(
+        words*sizeof(std::uint32_t),MemoryPlacement::DeviceLocal);
+    std::vector<std::uint32_t> initial_a(words),initial_b(words);
+    for(std::uint32_t i=0;i<words;++i) {
+        initial_a[i]=i*43u+37u;
+        initial_b[i]=i*71u+59u;
+    }
+    auto expected_a=initial_a,expected_b=initial_b;
+    auto copy_expected=[&](std::vector<std::uint32_t>& values) {
+        for(const auto& op:copies) {
+            const auto& copy=std::get<CopyCommand>(op);
+            std::copy(values.begin()+copy.source_offset/4u,
+                      values.begin()+(copy.source_offset+copy.bytes)/4u,
+                      values.begin()+copy.destination_offset/4u);
+        }
+    };
+    copy_expected(expected_a);
+    copy_expected(expected_b);
+    context.upload(buffer,0u,initial_a.data(),words*4u);
+    context.upload(second_root,0u,initial_b.data(),words*4u);
+    auto other_copies=copies;
+    for(auto& op:other_copies) {
+        auto& copy=std::get<CopyCommand>(op);
+        copy.source=second_root;
+        copy.destination=second_root;
+    }
+    const auto earlier=context.submit_batch(copies);
+    const auto later=context.submit_batch(other_copies);
+    context.wait_submission(later);
+    context.wait_submission(earlier);
+    std::vector<std::uint32_t> actual_a(words),actual_b(words);
+    context.download(buffer,0u,actual_a.data(),words*4u);
+    context.download(second_root,0u,actual_b.data(),words*4u);
+    check(actual_a==expected_a && actual_b==expected_b,
+          "Concurrent source relocations shared in-flight scratch or changed copy order");
+    context.destroy_buffer(second_root);
+    context.destroy_buffer(buffer);
+}
+
+// Opt-in CPU queue measurement for the original native CopyCommand data
+// path. Reset and GPU completion are deliberately outside submit timing;
+// source dataflow conformance above runs first on the same backend.
+void profile_ordered_same_resource_copies(Context& context) {
+    using Clock=std::chrono::steady_clock;
+    constexpr std::size_t words=128u;
+    constexpr std::size_t warmup=3u,trials=11u;
+    const auto root=context.create_buffer(words*sizeof(std::uint32_t),
+                                          MemoryPlacement::DeviceLocal);
+    const std::vector<BatchCommand> copies{
+        CopyCommand{root,0u,root,128u,64u},
+        CopyCommand{root,128u,root,256u,128u},
+        CopyCommand{root,256u,root,448u,64u}
+    };
+    std::vector<std::uint32_t> initial(words);
+    for(std::uint32_t i=0;i<words;++i)
+        initial[i]=173u+i*31u;
+    std::vector<double> submitted,completed;
+    submitted.reserve(trials);
+    completed.reserve(trials);
+    for(std::size_t iteration=0;iteration<warmup+trials;++iteration) {
+        context.upload(root,0u,initial.data(),words*sizeof(std::uint32_t));
+        const auto begin=Clock::now();
+        const auto token=context.submit_batch(copies);
+        const auto queued=Clock::now();
+        context.wait_submission(token);
+        const auto done=Clock::now();
+        if(iteration>=warmup) {
+            submitted.push_back(std::chrono::duration<double,std::micro>(
+                queued-begin).count());
+            completed.push_back(std::chrono::duration<double,std::micro>(
+                done-begin).count());
+        }
+    }
+    const auto median=[](std::vector<double> samples) {
+        std::sort(samples.begin(),samples.end());
+        return samples[samples.size()/2u];
+    };
+    std::printf(
+        "native_copy_profile scope=same_buffer_chain backend=%s"
+        " device=\"%s\" copies=3 bytes=64,128,64 trials=%zu"
+        " median_host_submit_us=%.3f median_submit_wait_us=%.3f"
+        " timed_upload_reset=no\n",
+#ifdef FYZZXYZZY_TEST_D3D12
+        "d3d12",
+#else
+        "vulkan",
+#endif
+        context.device_info().name.c_str(),trials,
+        median(submitted),median(completed));
+    context.destroy_buffer(root);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2)
-            throw std::invalid_argument("Expected compiled native multi-resource shader");
+        const bool benchmark=argc==3 &&
+            std::string_view(argv[2])=="--benchmark-self-copy";
+        if(argc!=2 && !benchmark)
+            throw std::invalid_argument(
+                "Expected compiled native multi-resource shader and optional benchmark");
         Context context(
 #ifdef FYZZXYZZY_TEST_D3D12
             Backend::D3D12
@@ -167,6 +363,9 @@ int main(int argc, char** argv) {
         const auto pipeline = context.create_compute_pipeline(desc);
         run_case(context, pipeline, false);
         run_case(context, pipeline, true);
+        verify_ordered_same_resource_copies(context);
+        if(benchmark)
+            profile_ordered_same_resource_copies(context);
         context.destroy_compute_pipeline(pipeline);
         std::cout << "Native multi-resource binding and ordering PASS\n";
         return 0;
