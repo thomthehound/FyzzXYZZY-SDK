@@ -269,10 +269,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
   # Source-owned GPU memsetD32Async, DMA and bitmap retirement, no PhysX ABI.
   add_library(fyzzxyzzy_source_gpu_primitives STATIC
     src/physx_gpu/source_fill_d32_native.cpp
-    src/physx_gpu/aabb_encoding.cpp)
+    src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/source_overlap_work_native.cpp
+    src/physx_gpu/source_overlap_prefix_native.cpp
+    src/physx_gpu/source_newbounds_pairs_native.cpp
+    src/physx_gpu/source_newbounds_sequence_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
-  target_include_directories(fyzzxyzzy_source_gpu_primitives PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_source_gpu_primitives PUBLIC
     FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
   set_target_properties(fyzzxyzzy_source_gpu_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -354,10 +359,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
-    src/physx_gpu/source_overlap_work_native.cpp
-    src/physx_gpu/source_overlap_prefix_native.cpp
-    src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
@@ -1984,10 +1985,15 @@ if(FYZZXYZZY_BUILD_D3D12)
   # Same portable source operation on native D3D12, no PhysX reference.
   add_library(fyzzxyzzy_source_gpu_primitives_d3d12 STATIC
     src/physx_gpu/source_fill_d32_native.cpp
-    src/physx_gpu/aabb_encoding.cpp)
+    src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/source_overlap_work_native.cpp
+    src/physx_gpu/source_overlap_prefix_native.cpp
+    src/physx_gpu/source_newbounds_pairs_native.cpp
+    src/physx_gpu/source_newbounds_sequence_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
-  target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
 
@@ -2072,10 +2078,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
-    src/physx_gpu/source_overlap_work_native.cpp
-    src/physx_gpu/source_overlap_prefix_native.cpp
-    src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
