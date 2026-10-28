@@ -789,7 +789,13 @@ void execute(Context& context, ShaderBinary translateShader,
             // update between preBroadPhase/gpuDMAUp and fetch.
             std::array<std::vector<std::uint32_t>,3> previousHandles{};
             std::array<std::vector<std::uint32_t>,3> previousIndices{};
+            std::array<CUdeviceptr,3> previousHandleAddress{},
+                                       previousSapAddress{};
             for(std::uint32_t axis=0u;axis<3u;++axis) {
+                previousHandleAddress[axis]=reinterpret_cast<CUdeviceptr>(
+                    descriptor.boxHandles[0][axis]);
+                previousSapAddress[axis]=reinterpret_cast<CUdeviceptr>(
+                    descriptor.boxSapBox1D[axis]);
                 previousHandles[axis]=read_words(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.boxHandles[0][axis]),8u);
@@ -840,8 +846,14 @@ void execute(Context& context, ShaderBinary translateShader,
 
             for(std::uint32_t axis=0u;axis<3u;++axis)
                 require(previousIndices[axis][removed[0]*2u]<6u &&
-                        previousIndices[axis][removed[0]*2u+1u]<6u,
-                        "Original second-frame deleted indices lost prior endpoint history");
+                        previousIndices[axis][removed[0]*2u+1u]<6u &&
+                        reinterpret_cast<CUdeviceptr>(
+                            removalDescriptor.boxHandles[1][axis])==
+                            previousHandleAddress[axis] &&
+                        reinterpret_cast<CUdeviceptr>(
+                            removalDescriptor.boxSapBox1D[axis])==
+                            previousSapAddress[axis],
+                        "Second source gpuDMAUp did not borrow actual fetched endpoint owners");
             auto& secondCommands=stream.commands();
             auto invalidRemoval=removalDescriptor;
             invalidRemoval.boxHandles[1][2]=
