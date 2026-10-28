@@ -84,6 +84,24 @@ void exercise(Context& context) {
                 bounds.data(), groups.data(), distances.data(),
                 1u, filter, true, true);
 
+            // A rejected borrowed source array must not consume frame
+            // ownership or queue any GPU uploads before the first update.
+            const physx::Bp::BroadPhaseUpdateData invalid(
+                created.data(), 1u, nullptr, 0u, nullptr, 0u,
+                bounds.data(), groups.data(), nullptr,
+                1u, filter, true, true);
+            bool rejected = false;
+            try {
+                pre_broadphase_native(
+                    invalid, sap.pre_broadphase_buffers(), stream);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            require(rejected && sap.num_boxes() == 0u &&
+                    sap.force_update() &&
+                    stream.submission_stats().upload_batches == 0u,
+                    "Rejected SAP input mutated original source frame state");
+
             pre_broadphase_native(initial, sap.pre_broadphase_buffers(), stream);
             auto frame = begin_sap_update_native(
                 initial, sap.dma_up_members(nullptr, mappedRoots),
