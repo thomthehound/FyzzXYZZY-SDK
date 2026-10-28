@@ -5,11 +5,11 @@
 
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
-#include "BpBroadPhaseUpdate.h"
-#include "BpVolumeData.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpVolumeData.h"
 #include "foundation/PxBounds3.h"
-#include "CmPinnableArray.h"
-#include "CmPinnableBitMap.h"
+#include "physx_port/common/src/CmPinnableArray.h"
+#include "physx_port/common/src/CmPinnableBitMap.h"
 
 #include <bit>
 #include <cmath>
