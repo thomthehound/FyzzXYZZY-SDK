@@ -33,9 +33,12 @@ public:
     PxBounds3* begin() noexcept {return bounds_.begin();}
     const PxBounds3* begin() const noexcept {return bounds_.begin();}
     PxU32 size() const noexcept {return bounds_.size();}
+    const PxBounds3* getBounds() const noexcept {return bounds_.begin();}
+    PxBounds3* getBounds() noexcept {return bounds_.begin();}
     const PxBounds3& getBounds(PxU32 index) const {return bounds_[index];}
     bool hasChanged() const noexcept {return changed_;}
     void resetChangedState() noexcept {changed_=false;}
+    void setChangedState() noexcept {changed_=true;}
     void setBounds(const PxBounds3& bounds,PxU32 index) {
         bounds_[index]=bounds;
         changed_=true;
