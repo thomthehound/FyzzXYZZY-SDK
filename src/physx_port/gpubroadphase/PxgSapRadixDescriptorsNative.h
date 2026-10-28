@@ -8,7 +8,7 @@
 #define FYZZXYZZY_PXG_SAP_RADIX_DESCRIPTORS_NATIVE_H
 
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
-#include "PxgRadixSortDesc.h"
+#include "physx_port/gpucommon/include/PxgRadixSortDesc.h"
 
 namespace fyzz::physx_gpu {
 

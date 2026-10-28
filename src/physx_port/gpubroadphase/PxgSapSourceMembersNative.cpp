@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
-#include "PxgRadixSortKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgRadixSortKernelIndices.h"
 #include <stdexcept>
 
 namespace fyzz::physx_gpu {
