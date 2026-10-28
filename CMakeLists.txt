@@ -227,8 +227,7 @@ target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
 target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon"
-  "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon")
 target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
 endif() # source-port PhysX heap and SAP host fixtures
 

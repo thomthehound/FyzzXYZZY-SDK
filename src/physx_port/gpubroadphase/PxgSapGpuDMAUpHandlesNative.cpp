@@ -6,7 +6,7 @@
 
 #include "physx_port/gpubroadphase/PxgSapGpuDMAUpHandlesNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
-#include "BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 #include <cstdint>
 #include <limits>
