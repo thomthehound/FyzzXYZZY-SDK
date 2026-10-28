@@ -299,6 +299,18 @@ void execute(Context& context, ShaderBinary translateShader,
                         dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
                     "Production GPU update layout did not use source DMA owners");
             const auto translation=sourceFrame.translation;
+            auto inconsistentCounts=admission.counts;
+            ++inconsistentCounts.previous_boxes;
+            bool rejectedInvalidLayout=false;
+            try {
+                (void)make_source_sap_update_frame_native(
+                    update,inconsistentCounts,descriptor,
+                    dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            }catch(const std::invalid_argument&) {
+                rejectedInvalidLayout=true;
+            }
+            require(rejectedInvalidLayout && stream.commands().empty(),
+                    "Invalid source GPU DMA roles contaminated the command stream");
             const auto boundsView = addresses.resolve(
                 translation.fp_bounds, 3u*sizeof(physx::PxBounds3));
             const auto distanceView = addresses.resolve(
@@ -889,6 +901,16 @@ void execute(Context& context, ShaderBinary translateShader,
                     admitted.counts.removed==0u,
                     "Second PhysX update did not preserve the three live shapes");
             const auto& nextDesc=sap.descriptor();
+            const auto nextLayout=make_source_sap_update_frame_native(
+                moved,admitted.counts,nextDesc,
+                nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(nextLayout.translation.encoding.count==3u &&
+                    nextLayout.incremental_pairs.report_capacity==
+                        sap.max_found_lost_pairs() &&
+                    nextLayout.histograms.endpoint_slots==
+                        admitted.counts.padded_projections &&
+                    nextLayout.new_pairs.new_bounds.current_boxes==3u,
+                    "Moved source SAP frame reused stale creation-layout extents");
             const auto nextGpu=nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             require(nextDesc.aabbMngr_changedHandleBitMapWordCounts==1u&&
                     gpu_address(nextDesc.aabbMngr_changedHandleMap)==
@@ -1014,6 +1036,15 @@ void execute(Context& context, ShaderBinary translateShader,
                     admittedRemoval.counts.removed==1u,
                     "Source volume removal did not retain prior SAP frame counts");
             const auto& removalDesc=sap.descriptor();
+            const auto removedLayout=make_source_sap_update_frame_native(
+                retirement,admittedRemoval.counts,removalDesc,
+                retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(removedLayout.translation.encoding.count==2u &&
+                    removedLayout.new_pairs.new_bounds.current_boxes==2u &&
+                    removedLayout.new_pairs.new_bounds.region_work_capacity==128u &&
+                    removedLayout.new_pairs.new_bounds.projection_slots==6u &&
+                    removedLayout.reports.volume_capacity==aabb.capacity(),
+                    "Removed source SAP frame reused stale live-volume dimensions");
             const auto removalGpu=
                 retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             auto& removePending=stream.commands();
