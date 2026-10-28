@@ -6,7 +6,7 @@
 
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
 
-#include "PxgBroadPhaseKernelIndices.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseKernelIndices.h"
 
 #include <cstdint>
 #include <limits>

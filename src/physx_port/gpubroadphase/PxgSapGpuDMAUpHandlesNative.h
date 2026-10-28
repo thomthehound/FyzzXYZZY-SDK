@@ -11,7 +11,7 @@
 // declaring conditional updated-handle members. It defines
 // SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU and must also control the native
 // member-view ABI, regardless of the including translation unit.
-#include "PxgBroadPhaseDesc.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <vector>
