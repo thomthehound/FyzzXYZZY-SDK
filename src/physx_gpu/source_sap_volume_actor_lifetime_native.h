@@ -4,9 +4,9 @@
 #pragma once
 
 #include "native/scene.h"
-#include "BpBroadPhaseUpdate.h"
-#include "BpVolumeData.h"
-#include "PxgBroadPhasePairReport.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpVolumeData.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 
 #include <initializer_list>
 #include <limits>
