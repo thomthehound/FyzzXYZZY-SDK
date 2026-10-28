@@ -4,6 +4,7 @@
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_gpu/source_physx_root_callback.h"
+#include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
@@ -11,6 +12,7 @@
 #include "foundation/PxErrorCallback.h"
 #include "foundation/PxPhysicsVersion.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -93,8 +95,13 @@ void exercise(Context& context) {
         heap.flushDeferredDeallocs();
         require(heap.getHeapStats().stats[group] == 768u,
                 "Original PhysX deferred free was not accounted at fetch");
+        physx::PxgCudaBuffer reused(heap, group);
+        reused.allocate(256u, PX_FL);
+        require(reused.getDevicePtr() == oldAddress && roots.live_roots() == 1u,
+                "Original PhysX buddy block was not reused after fetch");
         companion.deallocate();
         buffer.deallocate();
+        reused.deallocate();
         require(heap.getHeapStats().stats[group] == 0u,
                 "Original PhysX buddy blocks leaked after release");
 
@@ -116,6 +123,116 @@ void exercise(Context& context) {
             addresses.live_allocations() == 0u,
             "Original PhysX GPU heap failed to release its native root mappings");
 }
+
+void exercise_manager(Context& context) {
+    Foundation foundation;
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context, addresses);
+    SourcePhysxHeapRoots deviceRoots(context, addresses);
+    SourcePhysxDeviceRootCallback deviceCallback(deviceRoots, &stream);
+    SourcePhysxMappedReportRoots pinnedRoots(
+        context, addresses, stream,
+        SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    SourcePhysxMappedReportRoots mappedRoots(
+        context, addresses, stream,
+        SourcePhysxMappedReportRoots::Mode::ForceStaged);
+    bool aborted = false;
+    const auto abort = [](void* data) noexcept {
+        *static_cast<bool*>(data) = true;
+    };
+    constexpr auto group = physx::PxsHeapStats::eBROADPHASE;
+
+    // Normal PhysX mode shares a single mapped host heap between both
+    // allocator-descriptor views. Device roots remain separate.
+    {
+        physx::PxgHeapMemoryAllocatorManager manager(
+            8192u, deviceCallback, pinnedRoots, mappedRoots, abort, &aborted);
+        auto desc = physx::PxgCreateAllocatorDesc(manager);
+        require(&desc.deviceAlloc == manager.mDeviceMemoryAllocator &&
+                &desc.hostAlloc == &desc.hostMappedAlloc &&
+                &desc.hostAlloc == manager.mPinnedHostMappedMemoryAllocator &&
+                deviceRoots.live_roots() == 1u &&
+                mappedRoots.live_roots() == 1u &&
+                pinnedRoots.live_roots() == 0u,
+                "Original PhysX normal heap-manager root aliasing changed");
+
+        void* input = desc.hostAlloc.allocate(256u, group, PX_FL);
+        void* report = desc.hostMappedAlloc.allocate(256u, group, PX_FL);
+        require(input && report && input != report &&
+                mappedRoots.live_roots() == 1u,
+                "Original PhysX shared mapped host heap did not split a root");
+        constexpr std::array<std::uint32_t, 8> contents{
+            101u, 203u, 307u, 409u, 503u, 607u, 709u, 811u};
+        const auto reportAddress = mappedRoots.device_address(
+            report, sizeof(contents));
+        const auto reportView = addresses.resolve(
+            reportAddress, sizeof(contents));
+        context.upload(reportView.buffer, reportView.offset,
+                       contents.data(), sizeof(contents));
+        mappedRoots.publish_at_fetch(report, sizeof(contents));
+        require(std::equal(contents.begin(), contents.end(),
+                           static_cast<std::uint32_t*>(report)),
+                "Original PhysX shared host report did not publish GPU data");
+
+        std::copy(contents.begin(), contents.end(),
+                  static_cast<std::uint32_t*>(input));
+        const auto inputAddress = mappedRoots.device_address(
+            input, sizeof(contents));
+        const auto inputView = addresses.resolve(inputAddress, sizeof(contents));
+        stream.queue_uploads({{inputAddress, input, sizeof(contents)}});
+        std::fill_n(static_cast<std::uint32_t*>(input), contents.size(), 0u);
+        stream.wait_at_fetch();
+        std::array<std::uint32_t, 8> observed{};
+        context.download(inputView.buffer, inputView.offset,
+                         observed.data(), sizeof(observed));
+        require(observed == contents,
+                "Original PhysX pinned input descriptor lost its source snapshot");
+
+        desc.hostAlloc.deallocate(input);
+        desc.hostMappedAlloc.deallocate(report);
+        require(manager.getDeviceMemorySize() == 8192u &&
+                manager.getDeviceHeapStats().stats[group] == 0u,
+                "Original PhysX normal heap-manager accounting changed");
+    }
+    require(deviceRoots.live_roots() == 0u &&
+            pinnedRoots.live_roots() == 0u &&
+            mappedRoots.live_roots() == 0u &&
+            addresses.live_allocations() == 0u,
+            "Original PhysX normal heap-manager roots leaked");
+
+    // Zero-capacity source debug mode uses distinct pinned and mapped host
+    // heaps; each allocation is an exceptional root, not a buddy subblock.
+    {
+        physx::PxgHeapMemoryAllocatorManager manager(
+            0u, deviceCallback, pinnedRoots, mappedRoots, abort, &aborted);
+        auto desc = physx::PxgCreateAllocatorDesc(manager);
+        require(&desc.hostAlloc != &desc.hostMappedAlloc &&
+                !deviceRoots.live_roots() && !pinnedRoots.live_roots() &&
+                !mappedRoots.live_roots(),
+                "Original PhysX debug heap-manager policy changed");
+        void* device = desc.deviceAlloc.allocate(256u, group, PX_FL);
+        void* pinned = desc.hostAlloc.allocate(256u, group, PX_FL);
+        void* mapped = desc.hostMappedAlloc.allocate(256u, group, PX_FL);
+        require(device && pinned && mapped &&
+                deviceRoots.live_roots() == 1u &&
+                pinnedRoots.live_roots() == 1u &&
+                mappedRoots.live_roots() == 1u &&
+                manager.getDeviceHeapStats().stats[group] == 256u,
+                "Original PhysX debug heaps did not allocate distinct roots");
+        desc.deviceAlloc.deallocate(device);
+        desc.hostAlloc.deallocate(pinned);
+        desc.hostMappedAlloc.deallocate(mapped);
+        require(manager.getDeviceHeapStats().stats[group] == 0u,
+                "Original PhysX debug heap-manager accounting failed");
+    }
+    deviceRoots.close(&stream);
+    require(deviceRoots.live_roots() == 0u &&
+            pinnedRoots.live_roots() == 0u &&
+            mappedRoots.live_roots() == 0u &&
+            addresses.live_allocations() == 0u &&
+            !aborted && !foundation.errors.reported,
+            "Original PhysX heap manager leaked roots or reported corruption");
+}
 }
 
 int main() {
@@ -128,6 +245,7 @@ int main() {
 #endif
         );
         exercise(context);
+        exercise_manager(context);
         std::cout << "Original PhysX source buddy heap GPU lifecycle PASS\n";
         return 0;
     } catch(const std::exception& e) {
