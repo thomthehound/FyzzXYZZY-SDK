@@ -18,6 +18,9 @@ option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
 # PhysX-independent builds never compile or link the reference fixture.
 option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
   "Require 48-frame native/PhysX CPU coupled friction trajectory parity" ON)
+# Exercise source-owned GPU DMA/bitmap kernels without the upstream checkout.
+option(FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST
+  "Test source GPU DMA and D32 bitmap retirement without PhysX (requires DXC)" OFF)
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
@@ -263,6 +266,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
     )
   endif()
 
+  # Source-owned GPU memsetD32Async, DMA and bitmap retirement, no PhysX ABI.
+  add_library(fyzzxyzzy_source_gpu_primitives STATIC
+    src/physx_gpu/source_fill_d32_native.cpp)
+  target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
+  target_include_directories(fyzzxyzzy_source_gpu_primitives PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_source_gpu_primitives PUBLIC
+    FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
+  set_target_properties(fyzzxyzzy_source_gpu_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
@@ -303,7 +316,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
-    src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
@@ -320,7 +332,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
     FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address
-    fyzzxyzzy_physx_original_gpu_heap)
+    fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
   set_target_properties(fyzzxyzzy_physx_gpu_stages
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -572,7 +584,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       target_include_directories(fyzzxyzzy_physx_source_d32_fill_native PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src")
       target_link_libraries(fyzzxyzzy_physx_source_d32_fill_native PRIVATE
-        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+        fyzzxyzzy_source_gpu_primitives)
       add_dependencies(fyzzxyzzy_physx_source_d32_fill_native
         fyzzxyzzy_physx_source_d32_fill_spv)
       add_test(NAME fyzzxyzzy_physx_source_d32_fill_native
@@ -1914,6 +1926,15 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
   endif()
 
+  # Same portable source operation on native D3D12, no PhysX reference.
+  add_library(fyzzxyzzy_source_gpu_primitives_d3d12 STATIC
+    src/physx_gpu/source_fill_d32_native.cpp)
+  target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
+  target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
+    FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
+
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
     src/physx_gpu/aabb_encoding.cpp
@@ -1952,7 +1973,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
-    src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
@@ -1968,7 +1988,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address
-    fyzzxyzzy_physx_original_gpu_heap)
+    fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
 
 
   if(BUILD_TESTING)
@@ -2200,7 +2220,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_include_directories(fyzzxyzzy_physx_source_d32_fill_native_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(fyzzxyzzy_physx_source_d32_fill_native_d3d12 PRIVATE
-      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+      fyzzxyzzy_source_gpu_primitives_d3d12)
     add_dependencies(fyzzxyzzy_physx_source_d32_fill_native_d3d12
       fyzzxyzzy_physx_source_d32_fill_dxil)
     add_test(NAME fyzzxyzzy_physx_source_d32_fill_native_d3d12
