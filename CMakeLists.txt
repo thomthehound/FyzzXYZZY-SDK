@@ -276,6 +276,36 @@ if(FYZZXYZZY_BUILD_VULKAN)
     FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
   set_target_properties(fyzzxyzzy_source_gpu_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+  if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
+     AND FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST)
+    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    set(FYZZXYZZY_INDEPENDENT_D32_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+        -T cs_6_0 -E main -Fo "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_independent_source_d32_spv
+      DEPENDS "${FYZZXYZZY_INDEPENDENT_D32_SPV}")
+    add_executable(fyzzxyzzy_source_gpu_d32_independent
+      tests/physx_gpu_source_fill_d32_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_d32_independent PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_d32_independent PRIVATE
+      fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_d32_independent
+      fyzzxyzzy_independent_source_d32_spv)
+    add_test(NAME fyzzxyzzy_source_gpu_d32_independent
+      COMMAND fyzzxyzzy_source_gpu_d32_independent
+        "${FYZZXYZZY_INDEPENDENT_D32_SPV}")
+    set_tests_properties(fyzzxyzzy_source_gpu_d32_independent PROPERTIES
+      SKIP_RETURN_CODE 77)
+  endif()
+
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
@@ -1934,6 +1964,38 @@ if(FYZZXYZZY_BUILD_D3D12)
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
+
+  if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
+     AND FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST)
+    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    set(FYZZXYZZY_INDEPENDENT_D32_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_independent_source_d32_dxil
+      DEPENDS "${FYZZXYZZY_INDEPENDENT_D32_DXIL}")
+    add_executable(fyzzxyzzy_source_gpu_d32_independent_d3d12
+      tests/physx_gpu_source_fill_d32_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_d32_independent_d3d12
+      PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_d32_independent_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_d32_independent_d3d12 PRIVATE
+      fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_d32_independent_d3d12
+      fyzzxyzzy_independent_source_d32_dxil)
+    add_test(NAME fyzzxyzzy_source_gpu_d32_independent_d3d12
+      COMMAND fyzzxyzzy_source_gpu_d32_independent_d3d12
+        "${FYZZXYZZY_INDEPENDENT_D32_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gpu_d32_independent_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+  endif()
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
