@@ -5,7 +5,7 @@
 #pragma once
 
 #include "physx_gpu/source_physx_heap_roots.h"
-#include "CmVirtualAllocatorCallback.h"
+#include "physx_port/common/src/CmVirtualAllocatorCallback.h"
 
 #include <cstddef>
 #include <cstdint>

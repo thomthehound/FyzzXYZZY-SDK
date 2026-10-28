@@ -741,6 +741,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_owned_pair_producer_shaders fyzzxyzzy_owned_report_shaders)
     add_test(NAME fyzzxyzzy_owned_pairs_to_sc COMMAND fyzzxyzzy_owned_pairs_to_sc
       ${FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES} ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
+
+    add_executable(fyzzxyzzy_owned_source_roots
+      tests/physx_gpu_source_roots_independent.cpp)
+    target_include_directories(fyzzxyzzy_owned_source_roots PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_source_roots PRIVATE
+      fyzzxyzzy_source_gpu_primitives)
+    add_test(NAME fyzzxyzzy_owned_source_roots
+      COMMAND fyzzxyzzy_owned_source_roots)
+
     set_tests_properties(fyzzxyzzy_owned_pairs_to_sc PROPERTIES SKIP_RETURN_CODE 77)
 
 
@@ -2943,6 +2953,18 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES} ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
     set_tests_properties(fyzzxyzzy_owned_pairs_to_sc_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+    add_executable(fyzzxyzzy_owned_source_roots_d3d12
+      tests/physx_gpu_source_roots_independent.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_source_roots_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_source_roots_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_source_roots_d3d12 PRIVATE
+      fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_test(NAME fyzzxyzzy_owned_source_roots_d3d12
+      COMMAND fyzzxyzzy_owned_source_roots_d3d12)
+
 
 
     set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL

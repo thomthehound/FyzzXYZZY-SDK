@@ -12,7 +12,7 @@
 #include "foundation/PxArray.h"
 #include "foundation/PxPool.h"
 #include "foundation/PxMutex.h"
-#include "CmVirtualAllocatorCallback.h"
+#include "physx_port/common/src/CmVirtualAllocatorCallback.h"
 #include "PxsHeapStats.h"
 #include "PxsHeapMemoryAllocator.h"
 #include "PxgAllocatorDesc.h"
