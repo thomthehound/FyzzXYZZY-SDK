@@ -22,7 +22,7 @@
 #include "physx_gpu/source_sap_updated_native.h"
 #include "physx_gpu/source_sap_incremental_counts_native.h"
 #include "physx_gpu/source_sap_incremental_pairs_native.h"
-#include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
@@ -140,7 +140,30 @@ void execute(Context& context, ShaderBinary translateShader,
         auto allocators = physx::PxgCreateAllocatorDesc(manager);
         {
             PxgSapSourceMembersNative sap(allocators, 32u, 16u);
-            PxgAabbSourceMembersNative aabb(allocators,3u);
+            // Original PxgAABBManager bitmap and VolumeData member
+            // allocations are borrowed by the independent frame test.
+            physx::PxgCudaBuffer addedDevice(
+                allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
+            physx::PxgCudaBuffer removedDevice(
+                allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
+            physx::PxgCudaBuffer aggregateDevice(
+                allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
+            physx::PxgCudaBuffer changedDevice(
+                allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
+            physx::PxgCudaBuffer volumeDevice(
+                allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
+            std::array<physx::PxU32,1> addedWords{0x7u};
+            std::array<physx::PxU32,1> removedWords{};
+            std::array<physx::PxU32,1> aggregateWords{};
+            std::array<physx::PxU32,1> changedWords{};
+            std::array<physx::Bp::VolumeData,3> sourceVolumes{};
+            const std::array<fyzz::BodyId,3> scActors{17u,3u,9u};
+            std::array<std::uint32_t,3> sourceElements{17u,3u,9u};
+            for(std::uint32_t i=0u;i<3u;++i) {
+                sourceVolumes[i].reset();
+                sourceVolumes[i].setUserData(&sourceElements[i]);
+                sourceVolumes[i].setSingleActor();
+            }
             AabbEncodingStage encoding(context, std::move(translateShader));
             CudaAabbLaunchLowering lowering(addresses, encoding);
             SourceSapCreatedNativeStage createdStage(
@@ -209,26 +232,21 @@ void execute(Context& context, ShaderBinary translateShader,
             constexpr std::array<physx::PxReal, 3> distances{
                 0.125f,0.125f,0.125f};
             const physx::Bp::BpFilter filter(false, false);
-            // The same original AABB owner admits Sc volumes, owns
-            // change bitmaps and supplies every preBroadPhase input.
-            const std::array<fyzz::BodyId,3> actorIds{17u,3u,9u};
-            std::array<std::uint32_t,3> sourceElements{17u,3u,9u};
-            std::array<fyzz::native::GpuBroadphaseBox,3> liveBoxes{{
-                {17u,{0.0f,0.0f,0.0f},{2.0f,1.0f,2.0f},{},0.125f,
-                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic},
-                {3u,{1.0f,0.0f,0.5f},{1.0f,1.0f,1.5f},{},0.125f,
-                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic},
-                {9u,{8.0f,0.0f,-5.0f},{1.0f,1.0f,1.0f},{},0.125f,
-                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic}
-            }};
-            for(std::uint32_t i=0u;i<3u;++i)
-                aabb.admit(i,actorIds[i],distances[i],groups[i],
-                           &sourceElements[i]);
-            const auto update=aabb.prepare(liveBoxes,created,filter);
-            const auto aabbPre=aabb.pre_update(sap.pre_broadphase_buffers());
+            // Sc-authored created volumes and original AABB-manager
+            // device bitmap/VolumeData owners feed source preBpUpdate.
+            const physx::Bp::BroadPhaseUpdateData update(
+                created.data(),3u,nullptr,0u,nullptr,0u,
+                bounds.data(),groups.data(),distances.data(),
+                3u,filter,true,true);
+            const SourceSapAabbManagerPreUpdateNative aabbPre{
+                sap.pre_broadphase_buffers(),
+                {addedDevice,addedWords},{removedDevice,removedWords},
+                {aggregateDevice,aggregateWords},{changedDevice,changedWords},
+                volumeDevice,sourceVolumes,true,true,false
+            };
             pre_update_source_sap_aabb_manager_native(update,aabbPre,stream);
             const auto aabbView=source_sap_aabb_descriptor_native(aabbPre);
-            auto dma = sap.dma_up_members(&aabbView, mappedRoots);
+            auto dma=sap.dma_up_members(&aabbView,mappedRoots);
             const auto admission = begin_sap_update_native(
                 update, dma, stream, sap.force_update());
             require(admission.execute_gpu_stages &&
@@ -405,13 +423,13 @@ void execute(Context& context, ShaderBinary translateShader,
             rejected=false;
             try {
                 reportStage.append(commands,malformedReport,addresses,
-                                   {gpuDescriptor,aabb.capacity(),
+                                   {gpuDescriptor,static_cast<std::uint32_t>(sourceVolumes.size()),
                                     sizeof(physx::Bp::VolumeData),8u});
             } catch(const std::exception&) { rejected=true; }
             require(rejected && commands.size()==35u,
                     "Invalid original report destination appended partial work");
             reportStage.append(commands,descriptor,addresses,
-                               {gpuDescriptor,aabb.capacity(),
+                               {gpuDescriptor,static_cast<std::uint32_t>(sourceVolumes.size()),
                                 sizeof(physx::Bp::VolumeData),8u});
             require(commands.size()==38u &&
                     std::get<DispatchCommand>(commands[35]).buffers.size()==8u &&
@@ -752,7 +770,6 @@ void execute(Context& context, ShaderBinary translateShader,
             };
             physx::PxgBroadPhaseDesc fetchedDescriptor{};
             std::vector<fyzz::native::Pair> scFound,scLost;
-            const auto scActors=aabb.volume_to_actor();
             bool rotated=false,published=false;
             auto publish=[&](const SourceSapFetchedCounts& counts) {
                 require(!counts.overflow &&
@@ -823,21 +840,29 @@ void execute(Context& context, ShaderBinary translateShader,
             // into the subsequent motion update.
             retire_source_sap_aabb_report_bitmaps_native(
                 stream,fillStage,addresses,
-                aabb.added_report_bitmap(),aabb.removed_report_bitmap());
-            aabb.complete_fetch(update);
+                {addedDevice.getDevicePtr(),addedDevice.getSize(),addedWords},
+                {removedDevice.getDevicePtr(),removedDevice.getSize(),removedWords});
+            addedWords[0]=0u;
+            removedWords[0]=0u;
 
-            // Frame two separates two still-live Sc volumes. This is the
-            // genuine incremental LOST event, unlike a removed volume,
-            // which is retired by PxgAABBManager independently.
-            auto movedBoxes=liveBoxes;
-            movedBoxes[1].position.x=20.0f;
-            aabb.mark_changed(1u,distances[1]);
-            const auto moved=aabb.prepare(movedBoxes,created,filter);
-            require(moved.getNumCreatedHandles()==0u&&
-                    moved.getNumRemovedHandles()==0u&&
-                    moved.getGpuStateChanged(),
-                    "Original AABB manager did not author a GPU motion delta");
-            const auto nextPre=aabb.pre_update(sap.pre_broadphase_buffers());
+            // Frame two separates two still-live volumes. The source
+            // changed bitmap and persistent VolumeData remain original
+            // PhysX member types; no independent GPU pair registry.
+            auto movedBounds=bounds;
+            movedBounds[1]=physx::PxBounds3::centerExtents(
+                physx::PxVec3(20.0f,0.0f,0.5f),
+                physx::PxVec3(1.0f,1.0f,1.5f));
+            changedWords[0]=1u<<1u;
+            const physx::Bp::BroadPhaseUpdateData moved(
+                nullptr,0u,nullptr,0u,nullptr,0u,
+                movedBounds.data(),groups.data(),distances.data(),
+                3u,filter,true,true);
+            const SourceSapAabbManagerPreUpdateNative nextPre{
+                sap.pre_broadphase_buffers(),
+                {addedDevice,addedWords},{removedDevice,removedWords},
+                {aggregateDevice,aggregateWords},{changedDevice,changedWords},
+                volumeDevice,sourceVolumes,false,true,false
+            };
             pre_update_source_sap_aabb_manager_native(moved,nextPre,stream);
             const auto nextAabbView=source_sap_aabb_descriptor_native(nextPre);
             auto nextDma=sap.dma_up_members(&nextAabbView,mappedRoots);
@@ -888,7 +913,7 @@ void execute(Context& context, ShaderBinary translateShader,
                                 {admitted.counts.capacity,
                                  admitted.counts.padded_projections},3u,false);
             reportStage.append(pending,nextDesc,addresses,
-                               {nextGpu,aabb.capacity(),
+                               {nextGpu,static_cast<std::uint32_t>(sourceVolumes.size()),
                                 sizeof(physx::Bp::VolumeData),8u});
             require(pending.size()>24u,
                     "Source GPU moving frame lost WR/incremental/report stages");
@@ -915,7 +940,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     lower_source_sap_actor_reports_to_sc(
                         {sap.mapped_found_actor_pairs(),counts.found_actors},
                         {sap.mapped_lost_actor_pairs(),counts.lost_actors},
-                        aabb.volume_to_actor(),scFound,scLost);
+                        scActors,scFound,scLost);
                     secondPublished=true;
                 });
             require(secondPublished&&lostCounts.found_actors==0u&&
@@ -928,10 +953,13 @@ void execute(Context& context, ShaderBinary translateShader,
                     "GPU separated pair was not published through original Sc fetch");
             retire_source_sap_aabb_report_bitmaps_native(
                 stream,fillStage,addresses,
-                aabb.added_report_bitmap(),aabb.removed_report_bitmap());
-            aabb.complete_fetch(moved);
+                {addedDevice.getDevicePtr(),addedDevice.getSize(),addedWords},
+                {removedDevice.getDevicePtr(),removedDevice.getSize(),removedWords});
+            changedWords[0]=0u;
             stream.wait_at_fetch();
-            require(aabb.volume_to_actor()[1u]==3u,
+            require(sourceVolumes[1].isSingleActor()&&
+                    sourceVolumes[1].getUserData()==&sourceElements[1]&&
+                    scActors[1u]==3u,
                     "GPU separation retired a live source Sc identity");
 
             require(manager.getDeviceHeapStats()
