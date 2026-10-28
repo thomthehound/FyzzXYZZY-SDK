@@ -1249,13 +1249,48 @@ struct Context::Impl {
         DescriptorReuse descriptor_reuse;
         bool reuse_sets=false;
         try {
-            if (cached_batch_count != 0) {
-                CachedBatch cached = std::move(cached_batches[--cached_batch_count]);
-                cached_batches[cached_batch_count] = {};
-                pool = cached.descriptor_pool;
-                commands = cached.commands;
-                descriptor_capacity = cached.descriptor_capacity;
-                set_capacity = cached.set_capacity;
+            // Completed PhysX source stages can have distinct pipeline
+            // sequences. Prefer the native batch with matching descriptors,
+            // rather than resetting another stage's valid cached sets.
+            // The existing eight-entry completion cache remains the owner.
+            auto matching_batch=[&](const CachedBatch& cached) {
+                if(dispatch_count==0)
+                    return cached.descriptors.pipelines.empty();
+                if(cached.descriptor_pool==VK_NULL_HANDLE ||
+                   cached.descriptor_capacity<descriptor_count ||
+                   cached.set_capacity<dispatch_count ||
+                   cached.descriptors.sets.size()!=dispatch_count ||
+                   cached.descriptors.pipelines.size()!=dispatch_count)
+                    return false;
+                std::size_t index=0;
+                for(const auto& operation:operations)
+                    if(const auto* dispatch=std::get_if<DispatchCommand>(&operation))
+                        if(cached.descriptors.pipelines[index++]!=dispatch->pipeline)
+                            return false;
+                return true;
+            };
+            std::size_t cached_index=cached_batch_count;
+            for(std::size_t i=cached_batch_count;i>0;--i)
+                if(matching_batch(cached_batches[i-1u])) {
+                    cached_index=i-1u;
+                    break;
+                }
+            // Preserve completed, reusable native descriptor sets while
+            // capacity remains. Once full, recycle the newest entry rather
+            // than grow the existing bounded cache.
+            if(cached_index==cached_batch_count &&
+               cached_batch_count==kMaxCachedBatches)
+                cached_index=cached_batch_count-1u;
+            if(cached_index<cached_batch_count) {
+                CachedBatch cached=std::move(cached_batches[cached_index]);
+                const auto last=--cached_batch_count;
+                if(cached_index!=last)
+                    cached_batches[cached_index]=std::move(cached_batches[last]);
+                cached_batches[last]={};
+                pool=cached.descriptor_pool;
+                commands=cached.commands;
+                descriptor_capacity=cached.descriptor_capacity;
+                set_capacity=cached.set_capacity;
                 descriptor_reuse=std::move(cached.descriptors);
             }
             if (dispatch_count != 0) {
