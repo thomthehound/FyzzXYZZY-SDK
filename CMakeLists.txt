@@ -2056,6 +2056,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_native_multi_resource_d3d12
       COMMAND fyzzxyzzy_native_multi_resource_d3d12 "${FYZZXYZZY_MULTI_RESOURCE_DXIL}")
     set_tests_properties(fyzzxyzzy_native_multi_resource_d3d12 PROPERTIES SKIP_RETURN_CODE 77)
+    # Explicit source-copy CPU measurement, not a conformance threshold.
+    add_custom_target(fyzzxyzzy_native_same_buffer_copy_profile_d3d12
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_native_multi_resource_d3d12>"
+        "${FYZZXYZZY_MULTI_RESOURCE_DXIL}" --benchmark-self-copy
+      DEPENDS fyzzxyzzy_native_multi_resource_d3d12
+      USES_TERMINAL VERBATIM)
     set(FYZZXYZZY_D3D12_AABB_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
     add_custom_command(
