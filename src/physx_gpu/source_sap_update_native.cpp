@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_update_native.h"
-#include "BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 namespace fyzz::physx_gpu {
 bool append_source_sap_admitted_update_native(

@@ -370,7 +370,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
-    src/physx_gpu/source_sap_report_multi_root.cpp)
+    src/physx_gpu/source_sap_report_multi_root.cpp
+    src/physx_gpu/source_sap_update_native.cpp
+    src/physx_gpu/source_sap_scene_frame_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -1321,8 +1323,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
-    src/physx_gpu/source_sap_update_native.cpp
-    src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
@@ -2976,7 +2976,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
     src/physx_gpu/source_clear_new_flags_native.cpp
-    src/physx_gpu/source_sap_report_multi_root.cpp)
+    src/physx_gpu/source_sap_report_multi_root.cpp
+    src/physx_gpu/source_sap_update_native.cpp
+    src/physx_gpu/source_sap_scene_frame_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -4022,8 +4024,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_region_histograms_arena.cpp
     src/physx_gpu/sap_active_region_lists_arena.cpp
     src/physx_gpu/sap_overlap_work_arena.cpp
-    src/physx_gpu/source_sap_update_native.cpp
-    src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/sap_overlap_prefix_arena.cpp
     src/physx_gpu/sap_newbounds_pairs_arena.cpp
     src/physx_gpu/sap_newbounds_sequence_arena.cpp
