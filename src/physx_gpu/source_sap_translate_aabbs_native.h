@@ -5,7 +5,7 @@
 
 #include "physx_gpu/cuda_aabb_launch_lowering.h"
 #include "physx_gpu/source_sap_dma_native.h"
-#include "PxgKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgKernelIndices.h"
 
 #include <array>
 #include <cstdint>
