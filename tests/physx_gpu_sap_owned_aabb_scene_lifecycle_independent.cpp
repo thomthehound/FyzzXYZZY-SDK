@@ -23,6 +23,7 @@
 #include "physx_gpu/source_sap_incremental_counts_native.h"
 #include "physx_gpu/source_sap_incremental_pairs_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
+#include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 
@@ -232,6 +233,21 @@ void execute(Context& context, ShaderBinary translateShader,
                     sceneBounds.contact_distances.size()==aabb.capacity(),
                     "Original AABB source owner changed bounds capacity or aliases");
             const auto aabbPre=aabb.pre_update(sap.pre_broadphase_buffers());
+            const auto actorOwner=aabb.actor_lifetime();
+            validate_source_sap_owned_aabb_aliases_native(
+                aabb,aabbPre,actorOwner.volume_to_actor);
+            std::vector<fyzz::BodyId> foreignActors(
+                actorOwner.volume_to_actor.begin(),
+                actorOwner.volume_to_actor.end());
+            bool rejectedForeignOwner=false;
+            try {
+                validate_source_sap_owned_aabb_aliases_native(
+                    aabb,aabbPre,foreignActors);
+            }catch(const std::invalid_argument&) {
+                rejectedForeignOwner=true;
+            }
+            require(rejectedForeignOwner,
+                    "Original source scene frame admitted a copied actor registry");
             pre_update_source_sap_aabb_manager_native(update,aabbPre,stream);
             const auto aabbView=source_sap_aabb_descriptor_native(aabbPre);
             auto dma=sap.dma_up_members(&aabbView,mappedRoots);
@@ -839,6 +855,8 @@ void execute(Context& context, ShaderBinary translateShader,
             aabb.mark_changed(1u,distances[1]);
             const auto moved=aabb.prepare(movedBoxes,created,filter);
             const auto nextPre=aabb.pre_update(sap.pre_broadphase_buffers());
+            validate_source_sap_owned_aabb_aliases_native(
+                aabb,nextPre,aabb.actor_lifetime().volume_to_actor);
             pre_update_source_sap_aabb_manager_native(moved,nextPre,stream);
             const auto nextAabbView=source_sap_aabb_descriptor_native(nextPre);
             auto nextDma=sap.dma_up_members(&nextAabbView,mappedRoots);
@@ -960,6 +978,8 @@ void execute(Context& context, ShaderBinary translateShader,
             const std::array<physx::Bp::ShapeHandle,2> remainingHandles{0u,2u};
             const auto retirement=aabb.prepare(remainingBoxes,remainingHandles,filter);
             const auto retirePre=aabb.pre_update(sap.pre_broadphase_buffers());
+            validate_source_sap_owned_aabb_aliases_native(
+                aabb,retirePre,aabb.actor_lifetime().volume_to_actor);
             pre_update_source_sap_aabb_manager_native(
                 retirement,retirePre,stream);
             const auto retiredAabbView=source_sap_aabb_descriptor_native(retirePre);
