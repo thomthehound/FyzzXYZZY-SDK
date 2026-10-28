@@ -1258,7 +1258,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_independent_source_d32_spv
       fyzzxyzzy_owned_active_shaders
       fyzzxyzzy_owned_source_sap_shaders
-      fyzzxyzzy_owned_report_shaders)
+      fyzzxyzzy_owned_report_shaders
+      fyzzxyzzy_owned_clear_new_shader)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
         "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
@@ -1289,7 +1290,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_OWNED_UPDATED_SPV}"
         "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
-        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}")
+        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
+        "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
 
 
 
@@ -3947,7 +3949,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_independent_source_d32_dxil
       fyzzxyzzy_owned_active_shaders_d3d12
       fyzzxyzzy_owned_source_sap_shaders_d3d12
-      fyzzxyzzy_owned_report_shaders_d3d12)
+      fyzzxyzzy_owned_report_shaders_d3d12
+      fyzzxyzzy_owned_clear_new_shader_d3d12)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
@@ -3978,7 +3981,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OWNED_UPDATED_DXIL}"
         "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
-        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}")
+        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
+        "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_new_pairs_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_report_fetch_d3d12 PROPERTIES

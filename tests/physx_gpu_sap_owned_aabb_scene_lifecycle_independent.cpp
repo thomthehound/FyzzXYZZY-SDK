@@ -111,7 +111,8 @@ void execute(Context& context, ShaderBinary translateShader,
              ShaderBinary updatedShader,
              ShaderBinary comparisonFirstShader,
              ShaderBinary comparisonSecondShader,
-             ShaderBinary incrementalPairsShader) {
+             ShaderBinary incrementalPairsShader,
+             ShaderBinary clearShader) {
     Foundation foundation;
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context, addresses);
@@ -193,6 +194,13 @@ void execute(Context& context, ShaderBinary translateShader,
                 std::move(comparisonSecondShader));
             SourceSapIncrementalPairsNativeStage incrementalStage(
                 context,std::move(incrementalPairsShader));
+            SourceClearNewFlagsNativeStage clearStage(
+                context,std::move(clearShader));
+            const SourceSapUpdateNativeStages cohesiveStages{
+                lowering,removedStage,updatedStage,radixStage,
+                histogramsStage,comparisonsStage,incrementalStage,
+                indicesStage,createdStage,sourceRegions,clearStage,
+                reportStage};
 
             constexpr std::array<physx::Bp::ShapeHandle, 3> created{0u,1u,2u};
             const std::array<physx::PxBounds3, 3> bounds{
@@ -1120,6 +1128,32 @@ void execute(Context& context, ShaderBinary translateShader,
             require(scActors[1]==27u,
                     "Original volume handle remained unavailable after GPU fetch");
 
+            // Reuse the source handle only after its completed retirement.
+            // The cohesive update/fetch consumes its original GPU owners,
+            // deriving all stage layouts from the current gpuDMAUp.
+            auto readmitted=movedBoxes[1];
+            readmitted.id=27u;
+            readmitted.position.x=0.75f;
+            const std::array<fyzz::native::GpuBroadphaseBox,3> readmittedBoxes{
+                movedBoxes[0],readmitted,movedBoxes[2]};
+            const SourceSapUpdateNativeFrame automaticLayout{};
+            const auto beforeFourth=stream.submission_stats().command_batches;
+            const auto ownedFrame=advance_source_sap_owned_scene_frame_native(
+                aabb,sap,
+                {readmittedBoxes,created,filter,automaticLayout,
+                 scFound,scLost,fillStage,mappedRoots,false},
+                stream,cohesiveStages,addresses,context);
+            require(ownedFrame.update.execute_gpu_stages &&
+                    ownedFrame.update.counts.created==1u &&
+                    ownedFrame.update.counts.current_boxes==3u &&
+                    ownedFrame.fetch.found_actors==1u &&
+                    ownedFrame.fetch.lost_actors==0u &&
+                    scFound==std::vector<fyzz::native::Pair>{{17u,27u}} &&
+                    scLost.empty() && scActors[1]==27u &&
+                    histories_match(false) &&
+                    stream.submission_stats().command_batches>beforeFourth,
+                    "Cohesive owned GPU SAP frame failed source re-admission/fetch");
+
             require(manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
                     "Created frame bypassed the original PhysX GPU buddy heap");
@@ -1141,7 +1175,7 @@ void execute(Context& context, ShaderBinary translateShader,
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 34)
+        if (argc != 35)
             throw std::invalid_argument("Expected source AABB, created, radix, indices, endpoint and region shader paths");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -1166,11 +1200,11 @@ int main(int argc, char** argv) {
                 load_shader(argv[27]), load_shader(argv[28]),
                 load_shader(argv[29]), load_shader(argv[30]),
                 load_shader(argv[31]), load_shader(argv[32]),
-                load_shader(argv[33]));
-        std::cout << "Original PhysX SAP native GPU AABB owner three-frame lifecycle PASS\n";
+                load_shader(argv[33]), load_shader(argv[34]));
+        std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "Original PhysX SAP native GPU AABB owner three-frame lifecycle FAILED: "
+        std::cerr << "Original PhysX SAP native GPU AABB owner four-frame lifecycle FAILED: "
                   << e.what() << '\n';
         return 1;
     }
