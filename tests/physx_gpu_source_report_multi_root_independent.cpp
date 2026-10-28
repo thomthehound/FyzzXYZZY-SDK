@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_report_multi_root.h"
 #include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_gpu/source_sap_fetch_core_native.h"
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 
 #include <algorithm>
@@ -196,6 +197,53 @@ void run(Context& context, SourceSapReportNativeStage& stage,
         else expect_pairs(foundActors, found, {0,1,2,3,4,5}, "Found ordering changed");
         expect_pairs(lostActors, lost, {0,1,2,3}, "Lost ordering changed");
     }
+    // Fetch consumes the original GPU descriptor and mapped pair report
+    // destinations on the same completed source fence.
+    physx::PxgBroadPhaseDesc fetched{};
+    std::array<Pair,kCapacity> fetchedFound{},fetchedLost{};
+    std::vector<fyzz::native::Pair> publishedFound,publishedLost;
+    std::array<fyzz::BodyId,kVolumes> fetchActorIds{};
+    for (std::size_t i=0;i<fetchActorIds.size();++i)
+        fetchActorIds[i]=static_cast<fyzz::BodyId>(31u-i);
+    bool rotated=false,published=false;
+    auto publish=[&](const SourceSapFetchedCounts& counts) {
+        if (counts.overflow) throw std::overflow_error("Source report overflow");
+        lower_source_sap_actor_reports_to_sc(
+            {fetchedFound.data(),counts.found_actors},
+            {fetchedLost.data(),counts.lost_actors},
+            fetchActorIds,publishedFound,publishedLost);
+        published=true;
+    };
+    // Both GPU readback destinations must validate before either one is
+    // modified, even when the found destination would otherwise fit.
+    bool rejectedFetch=false;
+    try {
+        fetch_source_sap_results_native(
+            context,root.addresses,descriptor,fetched,
+            {fetchedFound.data(),kCapacity},{fetchedLost.data(),0u},
+            false,[&]() noexcept { rotated=true; },nullptr,publish);
+    } catch (const std::out_of_range&) { rejectedFetch=true; }
+    check(rejectedFetch && !rotated && !published,
+          "Invalid source lost destination advanced fetch state");
+    try {
+        const auto counts=fetch_source_sap_results_native(
+            context,root.addresses,descriptor,fetched,
+            {fetchedFound.data(),kCapacity},{fetchedLost.data(),kCapacity},
+            false,[&]() noexcept { rotated=true; },nullptr,publish);
+        check(!overflow && counts.found_actors == (volumes ? 4u : 6u) &&
+              counts.lost_actors == (volumes ? 3u : 4u),
+              "Original GPU fetch returned invalid actor counts");
+    } catch (const std::overflow_error&) {
+        if (!overflow) throw;
+    }
+    check(rotated == !overflow && published == !overflow,
+          "Original GPU fetch committed failed report publication");
+    if (!overflow) {
+        check(fetched.sharedFoundPairIndex == 6u &&
+              fetched.sharedLostPairIndex == 4u &&
+              fetched.sharedFoundAggPairIndex == (volumes ? 2u : 0u),
+              "Original GPU fetch did not publish source descriptor");
+    }
     if (!overflow) {
         // Map source volume handles to intentionally reversed Sc actor IDs.
         // GPU report order cannot be assumed to be Sc pair order.
@@ -221,6 +269,8 @@ void run(Context& context, SourceSapReportNativeStage& stage,
                                                {27u,29u},{28u,30u}};
         check(scFound == expectedFound && scLost == expectedLost,
               "Original GPU actor reports did not lower into canonical Sc keys");
+        check(publishedFound == expectedFound && publishedLost == expectedLost,
+              "Original fetch-to-Sc publication differs from GPU report results");
 
         // A corrupt lost report must reject BEFORE modifying either
         // already-published Sc stream.
