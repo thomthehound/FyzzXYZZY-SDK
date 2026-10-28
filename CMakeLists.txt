@@ -1104,6 +1104,49 @@ if(FYZZXYZZY_BUILD_VULKAN)
         ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS}
         "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}"
         "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}")
+    add_executable(fyzzxyzzy_owned_sap_gpu_removal_compaction
+      tests/physx_gpu_sap_owned_removal_compaction_independent.cpp)
+    target_include_directories(fyzzxyzzy_owned_sap_gpu_removal_compaction PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_owned_sap_gpu_removal_compaction PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_sap_gpu_removal_compaction
+      fyzzxyzzy_owned_translate_aabbs_shader
+      fyzzxyzzy_owned_sap_incremental_shaders
+      fyzzxyzzy_owned_sap_sort_shaders
+      fyzzxyzzy_owned_region_shaders
+      fyzzxyzzy_independent_source_d32_spv
+      fyzzxyzzy_owned_active_shaders
+      fyzzxyzzy_owned_source_sap_shaders
+      fyzzxyzzy_owned_report_shaders)
+    add_test(NAME fyzzxyzzy_owned_sap_gpu_removal_compaction
+      COMMAND fyzzxyzzy_owned_sap_gpu_removal_compaction
+        "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
+        "${FYZZXYZZY_OWNED_CREATED_SPV}"
+        "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}"
+        "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}"
+        "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}"
+        "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}"
+        "${FYZZXYZZY_OWNED_SAPBOX_SPV}"
+        "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
+        "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
+        "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
+        "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+        "${FYZZXYZZY_OWNED_ACTIVE_writeout_SPV}"
+        "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_SPV}"
+        "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_SPV}"
+        "${FYZZXYZZY_OWNED_ACTIVE_output_SPV}"
+        "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
+        "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
+        "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
+        "${FYZZXYZZY_OWNED_PAIRS_SPV}"
+        ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS}
+        "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}"
+        "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}")
 
 
 
@@ -3601,11 +3644,58 @@ if(FYZZXYZZY_BUILD_D3D12)
         ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS}
         "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}"
         "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}")
+    add_executable(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12
+      tests/physx_gpu_sap_owned_removal_compaction_independent.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12 PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12
+      fyzzxyzzy_owned_translate_aabbs_shader_d3d12
+      fyzzxyzzy_owned_sap_incremental_shaders_d3d12
+      fyzzxyzzy_owned_sap_sort_shaders_d3d12
+      fyzzxyzzy_owned_region_shaders_d3d12
+      fyzzxyzzy_independent_source_d32_dxil
+      fyzzxyzzy_owned_active_shaders_d3d12
+      fyzzxyzzy_owned_source_sap_shaders_d3d12
+      fyzzxyzzy_owned_report_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12
+      COMMAND fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12
+        "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
+        "${FYZZXYZZY_OWNED_CREATED_DXIL}"
+        "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}"
+        "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}"
+        "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}"
+        "${FYZZXYZZY_OWNED_SAPBOX_DXIL}"
+        "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
+        "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
+        "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
+        "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+        "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+        "${FYZZXYZZY_OWNED_ACTIVE_writeout_DXIL}"
+        "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_DXIL}"
+        "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_DXIL}"
+        "${FYZZXYZZY_OWNED_ACTIVE_output_DXIL}"
+        "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
+        "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
+        "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
+        "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
+        ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS}
+        "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}"
+        "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_new_pairs_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_report_fetch_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_removed_history_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    set_tests_properties(fyzzxyzzy_owned_sap_gpu_removal_compaction_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
 
