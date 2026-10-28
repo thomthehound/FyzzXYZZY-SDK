@@ -273,7 +273,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp)
+    src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_sap_created_native.cpp
+    src/physx_gpu/source_sap_incremental_counts_native.cpp
+    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
+    src/physx_gpu/source_sap_incremental_pairs_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -401,6 +405,87 @@ if(FYZZXYZZY_BUILD_VULKAN)
     )
     set_tests_properties(fyzzxyzzy_source_gpu_pairs_independent PROPERTIES
       SKIP_RETURN_CODE 77)
+    # Source-owned SAP incremental/created GPU work uses the original
+    # PxgBroadPhaseDesc and native backend, without a reference PhysX ABI.
+    set(FYZZXYZZY_OWNED_CREATED_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CREATED_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_CREATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_COUNT_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_COUNT_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_HIST_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_HIST_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_sap_incremental_shaders DEPENDS
+      ${FYZZXYZZY_OWNED_CREATED_SPV}
+      ${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}
+      ${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}
+      ${FYZZXYZZY_OWNED_HIST_FIRST_SPV}
+      ${FYZZXYZZY_OWNED_HIST_SECOND_SPV}
+      ${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}
+    )
+    add_executable(fyzzxyzzy_owned_sap_created tests/physx_gpu_source_sap_created_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_sap_created PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_created PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_sap_created fyzzxyzzy_owned_sap_incremental_shaders)
+    add_test(NAME fyzzxyzzy_owned_sap_created COMMAND fyzzxyzzy_owned_sap_created
+      "${FYZZXYZZY_OWNED_CREATED_SPV}"
+    )
+    add_executable(fyzzxyzzy_owned_sap_counts tests/physx_gpu_source_sap_incremental_counts_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_sap_counts PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_counts PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_sap_counts fyzzxyzzy_owned_sap_incremental_shaders)
+    add_test(NAME fyzzxyzzy_owned_sap_counts COMMAND fyzzxyzzy_owned_sap_counts
+      "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
+    )
+    add_executable(fyzzxyzzy_owned_sap_hist tests/physx_gpu_source_sap_endpoint_histograms_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_sap_hist PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_hist PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_sap_hist fyzzxyzzy_owned_sap_incremental_shaders)
+    add_test(NAME fyzzxyzzy_owned_sap_hist COMMAND fyzzxyzzy_owned_sap_hist
+      "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_hist PROPERTIES
+      SKIP_RETURN_CODE 77)
+    add_executable(fyzzxyzzy_owned_sap_incremental_pairs tests/physx_gpu_source_sap_incremental_pairs_native.cpp)
+    target_include_directories(fyzzxyzzy_owned_sap_incremental_pairs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_incremental_pairs PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_sap_incremental_pairs fyzzxyzzy_owned_sap_incremental_shaders)
+    add_test(NAME fyzzxyzzy_owned_sap_incremental_pairs COMMAND fyzzxyzzy_owned_sap_incremental_pairs
+      "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_incremental_pairs PROPERTIES
+      SKIP_RETURN_CODE 77)
+
 
   endif()
 
@@ -432,11 +517,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sap_updated_native.cpp
-    src/physx_gpu/source_sap_created_native.cpp
     src/physx_gpu/source_sap_radix_native.cpp
-    src/physx_gpu/source_sap_incremental_counts_native.cpp
-    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
-    src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_region_create_native.cpp
@@ -2082,7 +2163,11 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp)
+    src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_sap_created_native.cpp
+    src/physx_gpu/source_sap_incremental_counts_native.cpp
+    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
+    src/physx_gpu/source_sap_incremental_pairs_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -2220,6 +2305,95 @@ if(FYZZXYZZY_BUILD_D3D12)
     )
     set_tests_properties(fyzzxyzzy_source_gpu_pairs_independent_d3d12 PROPERTIES
       SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # Source-owned SAP incremental/created GPU work uses the original
+    # PxgBroadPhaseDesc and native backend, without a reference PhysX ABI.
+    set(FYZZXYZZY_OWNED_CREATED_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CREATED_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_CREATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_COUNT_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_COUNT_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_HIST_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_HIST_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    set(FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_sap_incremental_shaders_d3d12 DEPENDS
+      ${FYZZXYZZY_OWNED_CREATED_DXIL}
+      ${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}
+      ${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}
+      ${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}
+      ${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}
+      ${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}
+    )
+    add_executable(fyzzxyzzy_owned_sap_created_d3d12 tests/physx_gpu_source_sap_created_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_sap_created_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_sap_created_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_created_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_sap_created_d3d12 fyzzxyzzy_owned_sap_incremental_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_sap_created_d3d12 COMMAND fyzzxyzzy_owned_sap_created_d3d12
+      "${FYZZXYZZY_OWNED_CREATED_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_created_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_owned_sap_counts_d3d12 tests/physx_gpu_source_sap_incremental_counts_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_sap_counts_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_sap_counts_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_counts_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_sap_counts_d3d12 fyzzxyzzy_owned_sap_incremental_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_sap_counts_d3d12 COMMAND fyzzxyzzy_owned_sap_counts_d3d12
+      "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_counts_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_owned_sap_hist_d3d12 tests/physx_gpu_source_sap_endpoint_histograms_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_sap_hist_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_sap_hist_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_hist_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_sap_hist_d3d12 fyzzxyzzy_owned_sap_incremental_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_sap_hist_d3d12 COMMAND fyzzxyzzy_owned_sap_hist_d3d12
+      "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_hist_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 tests/physx_gpu_source_sap_incremental_pairs_native.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 fyzzxyzzy_owned_sap_incremental_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_sap_incremental_pairs_d3d12 COMMAND fyzzxyzzy_owned_sap_incremental_pairs_d3d12
+      "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_owned_sap_incremental_pairs_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
 
   endif()
 
@@ -2249,11 +2423,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sap_updated_native.cpp
-    src/physx_gpu/source_sap_created_native.cpp
     src/physx_gpu/source_sap_radix_native.cpp
-    src/physx_gpu/source_sap_incremental_counts_native.cpp
-    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
-    src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_region_create_native.cpp

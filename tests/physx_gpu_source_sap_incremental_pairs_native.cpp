@@ -17,6 +17,19 @@
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
 namespace {
+// The source GPU kernel accesses these fields in its resident descriptor.
+// An SDK-owned header must preserve their exact scalar order on both x64
+// backends, including when the reference PhysX checkout is absent.
+static_assert(sizeof(void*)==8u);
+static_assert(sizeof(physx::PxU32)==4u);
+static_assert(sizeof(physx::regionOverlapType)==8u);
+static_assert(std::is_standard_layout_v<physx::PxgBroadPhaseDesc>);
+static_assert(offsetof(physx::PxgBroadPhaseDesc,sharedLostPairIndex)==
+              offsetof(physx::PxgBroadPhaseDesc,sharedFoundPairIndex)+4u);
+static_assert(offsetof(physx::PxgBroadPhaseDesc,sharedFoundAggPairIndex)==
+              offsetof(physx::PxgBroadPhaseDesc,sharedLostPairIndex)+4u);
+static_assert(offsetof(physx::PxgBroadPhaseDesc,sharedLostAggPairIndex)==
+              offsetof(physx::PxgBroadPhaseDesc,sharedFoundAggPairIndex)+4u);
 constexpr std::uint32_t unused=0xcdcdcdcdu,boxes=2u,slots=4u;
 void require(bool ok,const char* message){
     if(!ok)throw std::runtime_error(message);
