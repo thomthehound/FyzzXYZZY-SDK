@@ -952,6 +952,10 @@ void execute(Context& context, ShaderBinary translateShader,
                 });
             require(secondPublished&&finalCounts.found_actors==0u&&
                     finalCounts.lost_actors==0u&&
+                    sap.descriptor().numPreviousHandles==3u&&
+                    sap.descriptor().numRemovedHandles==1u&&
+                    sap.descriptor().sharedFoundPairIndex==0u&&
+                    sap.descriptor().sharedLostPairIndex==0u&&
                     scFound.empty()&&scLost.empty()&&histories_match(false),
                     "Source frame-two fetch did not retire compacted histories");
 
