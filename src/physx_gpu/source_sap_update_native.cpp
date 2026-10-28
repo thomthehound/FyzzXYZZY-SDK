@@ -168,9 +168,13 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
     const SourceSapUpdateNativeFrame& frame) {
-    if(frame.device_descriptor!=
-       members.descriptor_gpu_buffers.broadphase.getDevicePtr() ||
-       frame.reports.descriptor!=frame.device_descriptor)
+    // A zero descriptor selects source-owned frame layout construction
+    // after gpuDMAUp grows its descriptor allocation. Explicit layouts
+    // must already alias the same owner for both update and reporting.
+    if(frame.device_descriptor &&
+       (frame.device_descriptor!=
+            members.descriptor_gpu_buffers.broadphase.getDevicePtr() ||
+        frame.reports.descriptor!=frame.device_descriptor))
         throw std::invalid_argument(
             "Source SAP update must use the original gpuDMAUp descriptor owner");
     // gpuDMAUp must precede the original forced/quiet decision even

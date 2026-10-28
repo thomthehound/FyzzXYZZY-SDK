@@ -95,7 +95,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // all seven PxgCudaBufferN<6> endpoint histories exactly once.
     // Failed source-buffer validation does not publish either report.
     const auto fetched=fetch_source_sap_results_native(
-        context,addresses,members.update.device_descriptor,
+        context,addresses,
+        members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
         members.dma.broadphase_descriptor,
         members.found_pairs,members.lost_pairs,
         members.abort_mode,
