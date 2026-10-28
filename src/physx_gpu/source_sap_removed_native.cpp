@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_removed_native.h"
 #include "physx_gpu/source_native_view.h"
-#include "PxgSapBox1D.h"
+#include "physx_port/gpubroadphase/include/PxgSapBox1D.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
