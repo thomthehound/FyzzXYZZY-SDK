@@ -2,8 +2,74 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_update_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpVolumeData.h"
+
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 
 namespace fyzz::physx_gpu {
+SourceSapUpdateNativeFrame make_source_sap_update_frame_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    const physx::PxgBroadPhaseDesc& descriptor,
+    CudaDeviceAddressMap::Address device_descriptor) {
+    const auto retained=std::uint64_t(counts.previous_boxes)+counts.created;
+    if(!device_descriptor || retained<counts.removed ||
+       retained*2u!=counts.projections ||
+       retained-counts.removed!=counts.current_boxes ||
+       counts.capacity<counts.current_boxes ||
+       counts.padded_projections<counts.projections ||
+       counts.padded_projections<std::uint64_t(counts.previous_boxes)*2u ||
+       counts.capacity<counts.previous_boxes ||
+       descriptor.numPreviousHandles!=counts.previous_boxes ||
+       descriptor.numCreatedHandles!=counts.created ||
+       descriptor.numRemovedHandles!=counts.removed ||
+       !descriptor.max_found_lost_pairs)
+        throw std::invalid_argument(
+            "Source SAP gpuDMAUp counts disagree with descriptor allocations");
+    const auto region_slots=checked_sap_region_slots_native(counts.projections);
+    const auto work_slots=std::uint64_t(counts.current_boxes)*
+        kSapRegionSlotsPerProjection;
+    if(region_slots>std::numeric_limits<std::uint32_t>::max() ||
+       work_slots>std::numeric_limits<std::uint32_t>::max())
+        throw std::out_of_range("Source SAP region work layout exceeds original allocation");
+
+    const auto gpu_address=[](auto ptr) {
+        return static_cast<CudaDeviceAddressMap::Address>(
+            reinterpret_cast<std::uintptr_t>(ptr));
+    };
+    SourceSapUpdateNativeFrame frame{};
+    frame.device_descriptor=device_descriptor;
+    frame.translation={
+        gpu_address(descriptor.updateData_fpBounds),
+        gpu_address(descriptor.newIntegerBounds),
+        gpu_address(descriptor.updateData_contactDistances),
+        gpu_address(descriptor.updateData_envIDs),
+        {counts.capacity,4u,4u,4u,0u,0u,0u}};
+    frame.removed={counts.capacity,counts.padded_projections};
+    frame.updated={counts.capacity,counts.padded_projections};
+    frame.histograms={counts.padded_projections,counts.capacity};
+    frame.comparisons={counts.padded_projections};
+    frame.incremental_pairs={
+        counts.capacity,counts.padded_projections,counts.capacity,
+        descriptor.max_found_lost_pairs};
+    frame.indices={counts.capacity,counts.padded_projections};
+    frame.created={counts.capacity,counts.padded_projections};
+    frame.new_pairs={
+        {counts.capacity,counts.projections},
+        {device_descriptor,counts.projections},
+        {device_descriptor,counts.capacity,counts.projections,
+            static_cast<std::uint32_t>(region_slots)},
+        {device_descriptor,counts.current_boxes,counts.capacity,
+            counts.projections,static_cast<std::uint32_t>(work_slots)}};
+    frame.clear={counts.capacity,counts.padded_projections};
+    static_assert(sizeof(physx::Bp::VolumeData)==16u);
+    frame.reports={
+        device_descriptor,update.getCapacity(),
+        sizeof(physx::Bp::VolumeData),8u};
+    return frame;
+}
 bool append_source_sap_admitted_update_native(
     SourceSapDmaNative& stream,
     const SourceSapUpdateNativeStages& stages,
@@ -102,9 +168,13 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
     const SourceSapUpdateNativeFrame& frame) {
-    if(frame.device_descriptor!=
-       members.descriptor_gpu_buffers.broadphase.getDevicePtr() ||
-       frame.reports.descriptor!=frame.device_descriptor)
+    // A zero descriptor selects source-owned frame layout construction
+    // after gpuDMAUp grows its descriptor allocation. Explicit layouts
+    // must already alias the same owner for both update and reporting.
+    if(frame.device_descriptor &&
+       (frame.device_descriptor!=
+            members.descriptor_gpu_buffers.broadphase.getDevicePtr() ||
+        frame.reports.descriptor!=frame.device_descriptor))
         throw std::invalid_argument(
             "Source SAP update must use the original gpuDMAUp descriptor owner");
     // gpuDMAUp must precede the original forced/quiet decision even
@@ -114,6 +184,10 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     const auto admitted=begin_sap_update_native(
         update,members,stream,next_force_update);
     if(admitted.execute_gpu_stages) {
+        const auto actual=frame.device_descriptor ? frame :
+            make_source_sap_update_frame_native(
+                update,admitted.counts,members.broadphase_descriptor,
+                members.descriptor_gpu_buffers.broadphase.getDevicePtr());
         append_source_sap_admitted_update_native(
             stream,stages,true,update.getGpuStateChanged(),update,
             members.broadphase_descriptor,
@@ -121,7 +195,7 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
                 members.radix_descriptors,6u),
             std::span<const physx::PxgRadixSortDesc,6>(
                 members.radix_wor_descriptors,6u),
-            addresses,frame,members.new_integer_bounds,
+            addresses,actual,members.new_integer_bounds,
             members.old_integer_bounds);
     }
     force_update=next_force_update;

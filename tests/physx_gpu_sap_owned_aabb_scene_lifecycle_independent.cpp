@@ -111,7 +111,8 @@ void execute(Context& context, ShaderBinary translateShader,
              ShaderBinary updatedShader,
              ShaderBinary comparisonFirstShader,
              ShaderBinary comparisonSecondShader,
-             ShaderBinary incrementalPairsShader) {
+             ShaderBinary incrementalPairsShader,
+             ShaderBinary clearShader) {
     Foundation foundation;
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context, addresses);
@@ -193,6 +194,13 @@ void execute(Context& context, ShaderBinary translateShader,
                 std::move(comparisonSecondShader));
             SourceSapIncrementalPairsNativeStage incrementalStage(
                 context,std::move(incrementalPairsShader));
+            SourceClearNewFlagsNativeStage clearStage(
+                context,std::move(clearShader));
+            const SourceSapUpdateNativeStages cohesiveStages{
+                lowering,removedStage,updatedStage,radixStage,
+                histogramsStage,comparisonsStage,incrementalStage,
+                indicesStage,createdStage,sourceRegions,clearStage,
+                reportStage};
 
             constexpr std::array<physx::Bp::ShapeHandle, 3> created{0u,1u,2u};
             const std::array<physx::PxBounds3, 3> bounds{
@@ -284,13 +292,33 @@ void execute(Context& context, ShaderBinary translateShader,
                 return static_cast<CudaDeviceAddressMap::Address>(
                     reinterpret_cast<std::uintptr_t>(ptr));
             };
-            const SourceSapTranslateAabbsNativeInput translation{
-                gpu_address(descriptor.updateData_fpBounds),
-                gpu_address(descriptor.newIntegerBounds),
-                gpu_address(descriptor.updateData_contactDistances),
-                0u,
-                {3u, 4u, 4u, 4u, 0u, 0u, 0u}
-            };
+            const auto sourceFrame=make_source_sap_update_frame_native(
+                update,admission.counts,descriptor,
+                dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(sourceFrame.translation.encoding.count==admission.counts.capacity &&
+                    sourceFrame.translation.encoding.shift_x==4u &&
+                    sourceFrame.translation.new_integer_bounds==
+                        gpu_address(descriptor.newIntegerBounds) &&
+                    sourceFrame.new_pairs.new_bounds.current_boxes==3u &&
+                    sourceFrame.new_pairs.new_bounds.region_work_capacity==192u &&
+                    sourceFrame.new_pairs.histograms.projection_slots==6u &&
+                    sourceFrame.reports.volume_capacity==aabb.capacity() &&
+                    sourceFrame.reports.descriptor==
+                        dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
+                    "Production GPU update layout did not use source DMA owners");
+            const auto translation=sourceFrame.translation;
+            auto inconsistentCounts=admission.counts;
+            ++inconsistentCounts.previous_boxes;
+            bool rejectedInvalidLayout=false;
+            try {
+                (void)make_source_sap_update_frame_native(
+                    update,inconsistentCounts,descriptor,
+                    dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            }catch(const std::invalid_argument&) {
+                rejectedInvalidLayout=true;
+            }
+            require(rejectedInvalidLayout && stream.commands().empty(),
+                    "Invalid source GPU DMA roles contaminated the command stream");
             const auto boundsView = addresses.resolve(
                 translation.fp_bounds, 3u*sizeof(physx::PxBounds3));
             const auto distanceView = addresses.resolve(
@@ -310,7 +338,7 @@ void execute(Context& context, ShaderBinary translateShader,
             // Original markCreatedPairsKernel consumes the integer bounds
             // written by the preceding translateAABBsKernel, without an
             // intervening CPU download or an independent staging buffer.
-            createdStage.append(commands, descriptor, addresses, {3u, 8u});
+            createdStage.append(commands, descriptor, addresses, sourceFrame.created);
             require(commands.size() == 2u &&
                     std::get<DispatchCommand>(commands[0]).buffers.size() == 4u &&
                     std::get<DispatchCommand>(commands[1]).groups.x == 32u &&
@@ -881,6 +909,16 @@ void execute(Context& context, ShaderBinary translateShader,
                     admitted.counts.removed==0u,
                     "Second PhysX update did not preserve the three live shapes");
             const auto& nextDesc=sap.descriptor();
+            const auto nextLayout=make_source_sap_update_frame_native(
+                moved,admitted.counts,nextDesc,
+                nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(nextLayout.translation.encoding.count==admitted.counts.capacity &&
+                    nextLayout.incremental_pairs.report_capacity==
+                        sap.max_found_lost_pairs() &&
+                    nextLayout.histograms.endpoint_slots==
+                        admitted.counts.padded_projections &&
+                    nextLayout.new_pairs.new_bounds.current_boxes==3u,
+                    "Moved source SAP frame reused stale creation-layout extents");
             const auto nextGpu=nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             require(nextDesc.aabbMngr_changedHandleBitMapWordCounts==1u&&
                     gpu_address(nextDesc.aabbMngr_changedHandleMap)==
@@ -894,11 +932,7 @@ void execute(Context& context, ShaderBinary translateShader,
 
             auto& pending=stream.commands();
             append_source_sap_translate_aabbs_native(
-                pending,lowering,{
-                    gpu_address(nextDesc.updateData_fpBounds),
-                    gpu_address(nextDesc.newIntegerBounds),
-                    gpu_address(nextDesc.updateData_contactDistances),0u,
-                    {3u,4u,4u,4u,0u,0u,0u}},true);
+                pending,lowering,nextLayout.translation,true);
             updatedStage.append(pending,nextDesc,addresses,
                                 {admitted.counts.capacity,
                                  admitted.counts.padded_projections});
@@ -1006,15 +1040,20 @@ void execute(Context& context, ShaderBinary translateShader,
                     admittedRemoval.counts.removed==1u,
                     "Source volume removal did not retain prior SAP frame counts");
             const auto& removalDesc=sap.descriptor();
+            const auto removedLayout=make_source_sap_update_frame_native(
+                retirement,admittedRemoval.counts,removalDesc,
+                retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(removedLayout.translation.encoding.count==admittedRemoval.counts.capacity &&
+                    removedLayout.new_pairs.new_bounds.current_boxes==2u &&
+                    removedLayout.new_pairs.new_bounds.region_work_capacity==128u &&
+                    removedLayout.new_pairs.new_bounds.projection_slots==6u &&
+                    removedLayout.reports.volume_capacity==aabb.capacity(),
+                    "Removed source SAP frame reused stale live-volume dimensions");
             const auto removalGpu=
                 retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             auto& removePending=stream.commands();
             append_source_sap_translate_aabbs_native(
-                removePending,lowering,{
-                    gpu_address(removalDesc.updateData_fpBounds),
-                    gpu_address(removalDesc.newIntegerBounds),
-                    gpu_address(removalDesc.updateData_contactDistances),0u,
-                    {3u,4u,4u,4u,0u,0u,0u}},true);
+                removePending,lowering,removedLayout.translation,true);
             removedStage.append_mark_removed(
                 removePending,removalDesc,addresses,
                 {admittedRemoval.counts.capacity,
@@ -1089,6 +1128,32 @@ void execute(Context& context, ShaderBinary translateShader,
             require(scActors[1]==27u,
                     "Original volume handle remained unavailable after GPU fetch");
 
+            // Reuse the source handle only after its completed retirement.
+            // The cohesive update/fetch consumes its original GPU owners,
+            // deriving all stage layouts from the current gpuDMAUp.
+            auto readmitted=movedBoxes[1];
+            readmitted.id=27u;
+            readmitted.position.x=0.75f;
+            const std::array<fyzz::native::GpuBroadphaseBox,3> readmittedBoxes{
+                movedBoxes[0],readmitted,movedBoxes[2]};
+            const SourceSapUpdateNativeFrame automaticLayout{};
+            const auto beforeFourth=stream.submission_stats().command_batches;
+            const auto ownedFrame=advance_source_sap_owned_scene_frame_native(
+                aabb,sap,
+                {readmittedBoxes,created,filter,automaticLayout,
+                 scFound,scLost,fillStage,mappedRoots,false},
+                stream,cohesiveStages,addresses,context);
+            require(ownedFrame.update.execute_gpu_stages &&
+                    ownedFrame.update.counts.created==1u &&
+                    ownedFrame.update.counts.current_boxes==3u &&
+                    ownedFrame.fetch.found_actors==1u &&
+                    ownedFrame.fetch.lost_actors==0u &&
+                    scFound==std::vector<fyzz::native::Pair>{{17u,27u}} &&
+                    scLost.empty() && scActors[1]==27u &&
+                    histories_match(false) &&
+                    stream.submission_stats().command_batches>beforeFourth,
+                    "Cohesive owned GPU SAP frame failed source re-admission/fetch");
+
             require(manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
                     "Created frame bypassed the original PhysX GPU buddy heap");
@@ -1110,7 +1175,7 @@ void execute(Context& context, ShaderBinary translateShader,
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 34)
+        if (argc != 35)
             throw std::invalid_argument("Expected source AABB, created, radix, indices, endpoint and region shader paths");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -1135,11 +1200,11 @@ int main(int argc, char** argv) {
                 load_shader(argv[27]), load_shader(argv[28]),
                 load_shader(argv[29]), load_shader(argv[30]),
                 load_shader(argv[31]), load_shader(argv[32]),
-                load_shader(argv[33]));
-        std::cout << "Original PhysX SAP native GPU AABB owner three-frame lifecycle PASS\n";
+                load_shader(argv[33]), load_shader(argv[34]));
+        std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "Original PhysX SAP native GPU AABB owner three-frame lifecycle FAILED: "
+        std::cerr << "Original PhysX SAP native GPU AABB owner four-frame lifecycle FAILED: "
                   << e.what() << '\n';
         return 1;
     }
