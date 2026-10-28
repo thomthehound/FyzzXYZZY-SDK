@@ -28,5 +28,4 @@ jobs:
       - name: Build native multi-resource and ordered-copy conformance
         run: cmake --build build --target fyzzxyzzy_native_multi_resource --parallel 4
       - name: Run native compute descriptor and copy regression
-        run: ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource
- --output-on-failure
+        run: ctest --test-dir build -R fyzzxyzzy_native_multi_resource --output-on-failure
