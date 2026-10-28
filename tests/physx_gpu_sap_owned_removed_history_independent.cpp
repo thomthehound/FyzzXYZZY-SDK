@@ -817,6 +817,9 @@ void execute(Context& context, ShaderBinary translateShader,
             require(removalDescriptor.numPreviousHandles==3u &&
                     removalDescriptor.numRemovedHandles==1u &&
                     removalDescriptor.numCreatedHandles==0u &&
+                    reinterpret_cast<CUdeviceptr>(
+                        removalDescriptor.boxHandles[1][0])==
+                        historyAddresses[0][0] &&
                     removalDescriptor.oldIntegerBounds==
                         reinterpret_cast<physx::PxgIntegerAABB*>(
                             sap.old_integer_bounds().getDevicePtr()),
