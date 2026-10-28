@@ -9,6 +9,8 @@
 #include "physx_gpu/source_sap_translate_aabbs_native.h"
 #include "physx_gpu/source_sap_created_native.h"
 #include "physx_gpu/source_sap_radix_native.h"
+#include "physx_gpu/source_sapbox_indices_native.h"
+#include "physx_gpu/source_sap_endpoint_histograms_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -73,7 +75,9 @@ struct Foundation {
 void execute(Context& context, ShaderBinary translateShader,
              ShaderBinary createdShader, ShaderBinary initShader,
              ShaderBinary countShader, ShaderBinary scatterShader,
-             ShaderBinary gatherShader) {
+             ShaderBinary gatherShader, ShaderBinary indicesShader,
+             ShaderBinary firstHistogramShader,
+             ShaderBinary secondHistogramShader) {
     Foundation foundation;
     CudaDeviceAddressMap addresses;
     SourceSapDmaNative stream(context, addresses);
@@ -111,6 +115,11 @@ void execute(Context& context, ShaderBinary translateShader,
             SourceSapRadixNativeStage radixStage(
                 context, std::move(initShader), std::move(countShader),
                 std::move(scatterShader), std::move(gatherShader));
+            SourceSapBoxIndicesNativeStage indicesStage(
+                context, std::move(indicesShader));
+            SourceSapEndpointHistogramsNativeStage histogramsStage(
+                context, std::move(firstHistogramShader),
+                std::move(secondHistogramShader));
 
             constexpr std::array<physx::Bp::ShapeHandle, 3> created{0u,1u,2u};
             const std::array<physx::PxBounds3, 3> bounds{
@@ -150,6 +159,10 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Original SAP DMA-up did not admit the created frame");
 
             const auto& descriptor = sap.descriptor();
+            require(descriptor.numPreviousHandles==0u &&
+                    descriptor.numCreatedHandles==3u &&
+                    descriptor.numRemovedHandles==0u,
+                    "Original PhysX GPU descriptor did not retain created-only frame roles");
             const auto gpu_address = [](auto ptr) {
                 return static_cast<CudaDeviceAddressMap::Address>(
                     reinterpret_cast<std::uintptr_t>(ptr));
@@ -217,9 +230,48 @@ void execute(Context& context, ShaderBinary translateShader,
                     std::get<DispatchCommand>(commands[2]).groups.y==3u,
                     "Original WOR eight-pass GPU radix dispatch was not appended");
 
-            // Original DMA and all 18 shader dispatches execute on the
-            // same source stream, then retire at its fetch fence.
+            // After the source WOR sort, PhysX calculates current-frame
+            // endpoint histograms before final initializeSapBoxKernel.
+            // Do not move the index rebuild ahead of those histories.
+            auto invalidHistograms=descriptor;
+            invalidHistograms.blockTotalEndPtHistogram[2u]=
+                reinterpret_cast<physx::PxU32*>(
+                    static_cast<std::uintptr_t>(0x1234u));
+            rejected=false;
+            try {
+                histogramsStage.append(commands,invalidHistograms,
+                                       addresses,{8u,3u},false);
+            } catch (const std::exception&) { rejected=true; }
+            require(rejected && commands.size()==18u,
+                    "Invalid endpoint history appended partial GPU work");
+            histogramsStage.append(commands,descriptor,addresses,
+                                   {8u,3u},false);
+
+            auto invalidIndices=descriptor;
+            invalidIndices.boxSapBox1D[2u]=
+                reinterpret_cast<physx::PxgSapBox1D*>(
+                    static_cast<std::uintptr_t>(0x1234u));
+            rejected=false;
+            try {
+                indicesStage.append(commands,invalidIndices,addresses,
+                                    {3u,8u},3u,false);
+            } catch (const std::exception&) { rejected=true; }
+            require(rejected && commands.size()==20u,
+                    "Invalid source SAP box history appended partial work");
+            indicesStage.append(commands,descriptor,addresses,{3u,8u},3u,false);
+            require(commands.size()==21u &&
+                    std::get<DispatchCommand>(commands[18]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(commands[19]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(commands[20]).buffers.size()==6u &&
+                    std::get<DispatchCommand>(commands[19]).groups.x==32u &&
+                    std::get<DispatchCommand>(commands[19]).groups.y==3u,
+                    "Original source SAP endpoint/index execution shape changed");
+
+            // Original DMA, created-pair, WOR, histogram and SAP index work
+            // submits together, retiring only at the source fetch boundary.
             stream.wait_at_fetch();
+            require(stream.submission_stats().command_batches==1u,
+                    "Source-owned SAP GPU histories split command submissions");
             manager.flushDeferredDeallocs();
 
             const auto integerBounds = read_words(
@@ -280,6 +332,83 @@ void execute(Context& context, ShaderBinary translateShader,
                     require(projections[slot]==expected[slot].first &&
                             handles[slot]==expected[slot].second,
                             "Original SAP GPU WOR radix order or handle history differs");
+
+                std::array<std::uint32_t,6> expectedIndices{};
+                std::array<std::uint32_t,6> endPrefix{},startPrefix{};
+                std::array<std::uint32_t,3> expectedEnds{},expectedStarts{};
+                std::uint32_t endCount=0u,startCount=0u;
+                for(std::size_t slot=0u;slot<6u;++slot) {
+                    const auto tagged=expected[slot].second;
+                    const auto handle=tagged>>3u;
+                    const bool start=(tagged&1u)!=0u;
+                    expectedIndices[handle*2u+(start?0u:1u)]=
+                        static_cast<std::uint32_t>(slot);
+                    endPrefix[slot]=endCount;
+                    startPrefix[slot]=startCount;
+                    if(start)expectedStarts[startCount++]=handle;
+                    else expectedEnds[endCount++]=handle;
+                }
+                require(startCount==3u&&endCount==3u,
+                        "Created SAP population did not retain three endpoints of each kind");
+                const auto indexHistory=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.boxSapBox1D[axis]),6u);
+                const auto endpoints=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.endPtHistogram[0u][axis]),6u);
+                const auto starts=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.startPtHistogram[0u][axis]),6u);
+                const auto totalEnds=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.totalEndPtHistogram[axis]),6u);
+                // Histories must use the exact original descriptor allocations,
+                // not a copied endpoint cache or rearranged test-owned buffer.
+                const auto mappedIndices=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.boxSapBox1D[axis]),6u*sizeof(std::uint32_t));
+                const auto mappedEnds=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.endPtHistogram[0u][axis]),6u*sizeof(std::uint32_t));
+                const auto mappedStarts=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.startPtHistogram[0u][axis]),6u*sizeof(std::uint32_t));
+                require(mappedIndices.buffer==mappedEnds.buffer &&
+                        mappedEnds.buffer==mappedStarts.buffer &&
+                        mappedIndices.offset!=mappedEnds.offset &&
+                        mappedEnds.offset!=mappedStarts.offset,
+                        "Original SAP current histories were not aliased to the source heap root");
+                const auto orderedEnds=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.endPointHandles[0u][axis]),3u);
+                const auto orderedStarts=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.startPointHandles[0u][axis]),3u);
+                for(std::size_t slot=0u;slot<6u;++slot) {
+                    require(indexHistory[slot]==expectedIndices[slot] &&
+                            endpoints[slot]==endPrefix[slot] &&
+                            starts[slot]==startPrefix[slot] &&
+                            totalEnds[slot]==endPrefix[slot],
+                            "Source-owned GPU SAP box indices or endpoint prefix differs");
+                }
+                for(std::size_t slot=0u;slot<3u;++slot)
+                    require(orderedEnds[slot]==expectedEnds[slot] &&
+                            orderedStarts[slot]==expectedStarts[slot],
+                            "Source-owned endpoint ordered handles differ");
+                const auto blockEnd=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.blockEndPtHistogram[0u][axis]),32u);
+                const auto blockStart=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.blockStartPtHistogram[0u][axis]),32u);
+                const auto blockTotal=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.blockTotalEndPtHistogram[axis]),32u);
+                for(std::size_t block=0u;block<32u;++block)
+                    require(blockEnd[block]==(block?0u:3u) &&
+                            blockStart[block]==(block?0u:3u) &&
+                            blockTotal[block]==(block?0u:3u),
+                            "Original SAP GPU endpoint block histogram differs");
             }
 
             require(manager.getDeviceHeapStats()
@@ -303,8 +432,8 @@ void execute(Context& context, ShaderBinary translateShader,
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 7)
-            throw std::invalid_argument("Expected translated-AABB, created-pairs and four radix shaders");
+        if (argc != 10)
+            throw std::invalid_argument("Expected translated-AABB, created, radix, box indices and endpoint histogram shaders");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
@@ -314,11 +443,13 @@ int main(int argc, char** argv) {
         );
         execute(context, load_shader(argv[1]), load_shader(argv[2]),
                 load_shader(argv[3]), load_shader(argv[4]),
-                load_shader(argv[5]), load_shader(argv[6]));
-        std::cout << "Original PhysX SAP native GPU created-WOR-radix PASS\n";
+                load_shader(argv[5]), load_shader(argv[6]),
+                load_shader(argv[7]), load_shader(argv[8]),
+                load_shader(argv[9]));
+        std::cout << "Original PhysX SAP native GPU created endpoint histories PASS\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "Original PhysX SAP native GPU created-WOR-radix FAILED: "
+        std::cerr << "Original PhysX SAP native GPU created endpoint histories FAILED: "
                   << e.what() << '\n';
         return 1;
     }
