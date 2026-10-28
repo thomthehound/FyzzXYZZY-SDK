@@ -1171,7 +1171,7 @@ void execute(Context& context, ShaderBinary translateShader,
             require(rejectedForeignElement && stream.commands().empty(),
                     "GPU producer accepted a foreign Sc volume identity");
             const auto beforeFourth=stream.submission_stats().command_batches;
-            const auto reports=producer.advance(readmittedBoxes,true,true);
+            const auto gpuReports=producer.advance(readmittedBoxes,true,true);
             // The owner enqueues source bitmap retirement after report
             // fetch. Drain the same stream at teardown, before releasing
             // the pipelines referenced by those queued GPU commands.
@@ -1182,9 +1182,9 @@ void execute(Context& context, ShaderBinary translateShader,
                     ownedFrame.update.counts.current_boxes==3u &&
                     ownedFrame.fetch.found_actors==1u &&
                     ownedFrame.fetch.lost_actors==0u &&
-                    reports.found.size()==1u &&
-                    reports.found.front()==fyzz::native::Pair{17u,27u} &&
-                    reports.lost.empty() && scActors[1]==27u &&
+                    gpuReports.found.size()==1u &&
+                    gpuReports.found.front()==fyzz::native::Pair{17u,27u} &&
+                    gpuReports.lost.empty() && scActors[1]==27u &&
                     histories_match(false) &&
                     stream.submission_stats().command_batches>beforeFourth,
                     "Native GPU producer failed source Sc re-admission/fetch");
