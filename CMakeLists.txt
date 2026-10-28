@@ -899,25 +899,28 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND fyzzxyzzy_owned_sap_gpu_created_frame
         "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
         "${FYZZXYZZY_OWNED_CREATED_SPV}")
-    add_executable(fyzzxyzzy_owned_sap_gpu_created_radix
+    add_executable(fyzzxyzzy_owned_sap_gpu_endpoint_history
       tests/physx_gpu_sap_owned_created_radix_independent.cpp)
-    target_include_directories(fyzzxyzzy_owned_sap_gpu_created_radix PRIVATE
+    target_include_directories(fyzzxyzzy_owned_sap_gpu_endpoint_history PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
-    target_link_libraries(fyzzxyzzy_owned_sap_gpu_created_radix PRIVATE
+    target_link_libraries(fyzzxyzzy_owned_sap_gpu_endpoint_history PRIVATE
       fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
-    add_dependencies(fyzzxyzzy_owned_sap_gpu_created_radix
+    add_dependencies(fyzzxyzzy_owned_sap_gpu_endpoint_history
       fyzzxyzzy_owned_translate_aabbs_shader
       fyzzxyzzy_owned_sap_incremental_shaders
       fyzzxyzzy_owned_sap_sort_shaders)
-    add_test(NAME fyzzxyzzy_owned_sap_gpu_created_radix
-      COMMAND fyzzxyzzy_owned_sap_gpu_created_radix
+    add_test(NAME fyzzxyzzy_owned_sap_gpu_endpoint_history
+      COMMAND fyzzxyzzy_owned_sap_gpu_endpoint_history
         "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
         "${FYZZXYZZY_OWNED_CREATED_SPV}"
         "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}"
         "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}"
         "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}"
-        "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}")
+        "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}"
+        "${FYZZXYZZY_OWNED_SAPBOX_SPV}"
+        "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
+        "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}")
 
 
 
@@ -3196,28 +3199,31 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OWNED_CREATED_DXIL}")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_created_frame_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
-    add_executable(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12
+    add_executable(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12
       tests/physx_gpu_sap_owned_created_radix_independent.cpp)
-    target_compile_definitions(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12 PRIVATE
+    target_compile_definitions(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
-    target_include_directories(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12 PRIVATE
+    target_include_directories(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
-    target_link_libraries(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12 PRIVATE
+    target_link_libraries(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12 PRIVATE
       fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
-    add_dependencies(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12
+    add_dependencies(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12
       fyzzxyzzy_owned_translate_aabbs_shader_d3d12
       fyzzxyzzy_owned_sap_incremental_shaders_d3d12
       fyzzxyzzy_owned_sap_sort_shaders_d3d12)
-    add_test(NAME fyzzxyzzy_owned_sap_gpu_created_radix_d3d12
-      COMMAND fyzzxyzzy_owned_sap_gpu_created_radix_d3d12
+    add_test(NAME fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12
+      COMMAND fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12
         "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
         "${FYZZXYZZY_OWNED_CREATED_DXIL}"
         "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}"
         "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}"
         "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}"
-        "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}")
-    set_tests_properties(fyzzxyzzy_owned_sap_gpu_created_radix_d3d12 PROPERTIES
+        "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}"
+        "${FYZZXYZZY_OWNED_SAPBOX_DXIL}"
+        "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
+        "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}")
+    set_tests_properties(fyzzxyzzy_owned_sap_gpu_endpoint_history_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
 
