@@ -48,6 +48,8 @@ using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
 
 namespace {
+static_assert(sizeof(physx::Bp::VolumeData)==16u);
+static_assert(sizeof(physx::PxgBroadPhasePair)==8u);
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
