@@ -358,6 +358,22 @@ void execute(Context& context, ShaderBinary translateShader,
                 const auto totalEnds=read_words(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.totalEndPtHistogram[axis]),6u);
+                // Histories must use the exact original descriptor allocations,
+                // not a copied endpoint cache or rearranged test-owned buffer.
+                const auto mappedIndices=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.boxNewSapBox1D[axis]),6u*sizeof(std::uint32_t));
+                const auto mappedEnds=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.endPtHistogram[0u][axis]),6u*sizeof(std::uint32_t));
+                const auto mappedStarts=addresses.resolve(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.startPtHistogram[0u][axis]),6u*sizeof(std::uint32_t));
+                require(mappedIndices.buffer==mappedEnds.buffer &&
+                        mappedEnds.buffer==mappedStarts.buffer &&
+                        mappedIndices.offset!=mappedEnds.offset &&
+                        mappedEnds.offset!=mappedStarts.offset,
+                        "Original SAP endpoint histories were not aliased to the source heap root");
                 const auto orderedEnds=read_words(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.endPointHandles[0u][axis]),3u);
