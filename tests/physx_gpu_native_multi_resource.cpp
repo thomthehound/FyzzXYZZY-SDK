@@ -190,6 +190,48 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     context.destroy_buffer(source_a);
 }
 
+// A real native command batch may carry successive PhysX device-to-device
+// relocations within one GPU allocation. Every copy reads the preceding
+// copy's results; a shared staging resource must not corrupt later reads.
+void verify_ordered_same_resource_copies(Context& context) {
+    constexpr std::size_t words=128u;
+    const auto buffer=context.create_buffer(words*sizeof(std::uint32_t),
+                                            MemoryPlacement::DeviceLocal);
+    const std::vector<BatchCommand> copies{
+        CopyCommand{buffer,0u,buffer,128u,64u},
+        CopyCommand{buffer,128u,buffer,256u,128u},
+        CopyCommand{buffer,256u,buffer,448u,64u}
+    };
+    for(std::uint32_t seed:{13u,91u}) {
+        std::vector<std::uint32_t> original(words),expected(words),actual(words);
+        for(std::uint32_t i=0;i<words;++i)
+            original[i]=seed*31u+i*17u;
+        expected=original;
+        // Nonoverlapping locations make sequential std::copy equivalent
+        // to the original source CUDA device-copy ordering contract.
+        for(const auto& op:copies) {
+            const auto& copy=std::get<CopyCommand>(op);
+            std::copy(expected.begin()+copy.source_offset/4u,
+                      expected.begin()+(copy.source_offset+copy.bytes)/4u,
+                      expected.begin()+copy.destination_offset/4u);
+        }
+        context.upload(buffer,0u,original.data(),words*4u);
+        // A later invalid operation must reject the entire batch before
+        // recording or submitting the earlier, otherwise-valid copy.
+        auto invalid=copies;
+        invalid.push_back(CopyCommand{buffer,0u,buffer,32u,64u});
+        bool rejected=false;
+        try {(void)context.submit_batch(invalid);}
+        catch(const std::invalid_argument&){rejected=true;}
+        check(rejected,"Overlapping late DtoD copy passed native batch preflight");
+        context.wait_submission(context.submit_batch(copies));
+        context.download(buffer,0u,actual.data(),words*4u);
+        check(actual==expected,
+              "Ordered native same-buffer copies violated source dependencies or canaries");
+    }
+    context.destroy_buffer(buffer);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -222,6 +264,7 @@ int main(int argc, char** argv) {
         const auto pipeline = context.create_compute_pipeline(desc);
         run_case(context, pipeline, false);
         run_case(context, pipeline, true);
+        verify_ordered_same_resource_copies(context);
         context.destroy_compute_pipeline(pipeline);
         std::cout << "Native multi-resource binding and ordering PASS\n";
         return 0;
