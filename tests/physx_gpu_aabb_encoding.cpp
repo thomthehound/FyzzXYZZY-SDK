@@ -201,6 +201,16 @@ void run_ordered_batch(Context& context, AabbEncodingStage& stage) {
     }
     if (!rejected_access || commands.size() != before_invalid)
         throw std::runtime_error("Read-only PhysX AABB output was admitted");
+    invalid_views[3].access = BufferAccess::Write;
+    invalid_views[1].access = BufferAccess::Unspecified;
+    rejected_access = false;
+    try {
+        stage.append_views(commands, invalid_views, p, false);
+    } catch (const std::invalid_argument&) {
+        rejected_access = true;
+    }
+    if (!rejected_access || commands.size() != before_invalid)
+        throw std::runtime_error("Unspecified PhysX AABB distance access was admitted");
     context.wait_submission(context.submit_batch(commands));
 
     std::vector<IntegerBounds> before(p.count), after(p.count);
