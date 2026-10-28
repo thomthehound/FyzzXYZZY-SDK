@@ -5,6 +5,8 @@
 
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
+#include "physx_port/common/src/CmPinnableArray.h"
+#include "physx_port/common/src/CmPinnableBitMap.h"
 #include "BpAABBManagerBase.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 
