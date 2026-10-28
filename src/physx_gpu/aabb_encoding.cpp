@@ -180,9 +180,15 @@ void AabbEncodingStage::append_views(
     std::size_t index = 0u;
     for (const auto required : expected) {
         const auto& binding = views[index];
+        // Shader access remains read-only for source bounds, distances
+        // and environment IDs even when DXIL binds them through UAVs
+        // to support multiple PhysX suballocations in one D3D12 root.
+        const auto intended_access = index == 3u
+            ? compute::BufferAccess::Write : compute::BufferAccess::Read;
         if (binding.slot != index || !binding.buffer ||
             binding.offset % alignof(std::uint32_t) != 0u ||
-            binding.bytes != required)
+            binding.bytes != required ||
+            binding.access != intended_access)
             throw std::invalid_argument("Invalid PhysX CUDA-lowered AABB view");
         ++index;
     }
