@@ -226,22 +226,9 @@ void execute(Context& context, ShaderBinary translateShader,
                     std::get<DispatchCommand>(commands[2]).groups.y==3u,
                     "Original WOR eight-pass GPU radix dispatch was not appended");
 
-            // The source's post-WOR index initialization writes directly
-            // into boxNewSapBox1D. The current endpoint histogram kernels
-            // consume the sorted, tagged boxHandles in the same GPU queue.
-            auto invalidIndices=descriptor;
-            invalidIndices.boxNewSapBox1D[2u]=
-                reinterpret_cast<physx::PxgSapBox1D*>(
-                    static_cast<std::uintptr_t>(0x1234u));
-            rejected=false;
-            try {
-                indicesStage.append(commands,invalidIndices,addresses,
-                                    {3u,8u},3u,true);
-            } catch (const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==18u,
-                    "Invalid source SAP box history appended partial work");
-            indicesStage.append(commands,descriptor,addresses,{3u,8u},3u,true);
-
+            // After the source WOR sort, PhysX calculates current-frame
+            // endpoint histograms before final initializeSapBoxKernel.
+            // Do not move the index rebuild ahead of those histories.
             auto invalidHistograms=descriptor;
             invalidHistograms.blockTotalEndPtHistogram[2u]=
                 reinterpret_cast<physx::PxU32*>(
@@ -251,19 +238,32 @@ void execute(Context& context, ShaderBinary translateShader,
                 histogramsStage.append(commands,invalidHistograms,
                                        addresses,{8u,3u},false);
             } catch (const std::exception&) { rejected=true; }
-            require(rejected && commands.size()==19u,
+            require(rejected && commands.size()==18u,
                     "Invalid endpoint history appended partial GPU work");
             histogramsStage.append(commands,descriptor,addresses,
                                    {8u,3u},false);
-            require(commands.size()==21u &&
-                    std::get<DispatchCommand>(commands[18]).buffers.size()==6u &&
-                    std::get<DispatchCommand>(commands[19]).buffers.size()==48u &&
-                    std::get<DispatchCommand>(commands[20]).buffers.size()==48u &&
-                    std::get<DispatchCommand>(commands[20]).groups.x==32u &&
-                    std::get<DispatchCommand>(commands[20]).groups.y==3u,
-                    "Original source SAP box/histogram execution shape changed");
 
-            // Original DMA, created-pair, WOR and endpoint history work
+            auto invalidIndices=descriptor;
+            invalidIndices.boxSapBox1D[2u]=
+                reinterpret_cast<physx::PxgSapBox1D*>(
+                    static_cast<std::uintptr_t>(0x1234u));
+            rejected=false;
+            try {
+                indicesStage.append(commands,invalidIndices,addresses,
+                                    {3u,8u},3u,false);
+            } catch (const std::exception&) { rejected=true; }
+            require(rejected && commands.size()==20u,
+                    "Invalid source SAP box history appended partial work");
+            indicesStage.append(commands,descriptor,addresses,{3u,8u},3u,false);
+            require(commands.size()==21u &&
+                    std::get<DispatchCommand>(commands[18]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(commands[19]).buffers.size()==48u &&
+                    std::get<DispatchCommand>(commands[20]).buffers.size()==6u &&
+                    std::get<DispatchCommand>(commands[19]).groups.x==32u &&
+                    std::get<DispatchCommand>(commands[19]).groups.y==3u,
+                    "Original source SAP endpoint/index execution shape changed");
+
+            // Original DMA, created-pair, WOR, histogram and SAP index work
             // submits together, retiring only at the source fetch boundary.
             stream.wait_at_fetch();
             require(stream.submission_stats().command_batches==1u,
@@ -348,7 +348,7 @@ void execute(Context& context, ShaderBinary translateShader,
                         "Created SAP population did not retain three endpoints of each kind");
                 const auto indexHistory=read_words(
                     reinterpret_cast<CUdeviceptr>(
-                        descriptor.boxNewSapBox1D[axis]),6u);
+                        descriptor.boxSapBox1D[axis]),6u);
                 const auto endpoints=read_words(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.endPtHistogram[0u][axis]),6u);
@@ -362,7 +362,7 @@ void execute(Context& context, ShaderBinary translateShader,
                 // not a copied endpoint cache or rearranged test-owned buffer.
                 const auto mappedIndices=addresses.resolve(
                     reinterpret_cast<CUdeviceptr>(
-                        descriptor.boxNewSapBox1D[axis]),6u*sizeof(std::uint32_t));
+                        descriptor.boxSapBox1D[axis]),6u*sizeof(std::uint32_t));
                 const auto mappedEnds=addresses.resolve(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.endPtHistogram[0u][axis]),6u*sizeof(std::uint32_t));
@@ -373,7 +373,7 @@ void execute(Context& context, ShaderBinary translateShader,
                         mappedEnds.buffer==mappedStarts.buffer &&
                         mappedIndices.offset!=mappedEnds.offset &&
                         mappedEnds.offset!=mappedStarts.offset,
-                        "Original SAP endpoint histories were not aliased to the source heap root");
+                        "Original SAP current histories were not aliased to the source heap root");
                 const auto orderedEnds=read_words(
                     reinterpret_cast<CUdeviceptr>(
                         descriptor.endPointHandles[0u][axis]),3u);
