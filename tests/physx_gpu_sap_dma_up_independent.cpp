@@ -160,6 +160,16 @@ void exercise(Context& context) {
                 stream.wait_at_fetch();
                 manager.flushDeferredDeallocs();
             }
+            physx::PxgBroadPhaseDesc quietDescriptor{};
+            context.download(descriptorView.buffer, descriptorView.offset,
+                             &quietDescriptor, sizeof(quietDescriptor));
+            require(quietDescriptor.numCreatedHandles == 0u &&
+                    quietDescriptor.numRemovedHandles == 0u &&
+                    quietDescriptor.numPreviousHandles == 1u &&
+                    quietDescriptor.max_found_lost_pairs == 32u &&
+                    quietDescriptor.updateData_fpBounds ==
+                        uploaded.updateData_fpBounds,
+                    "Original SAP quiet DMA descriptor lost persistent history");
         }
         manager.flushDeferredDeallocs();
         require(manager.getDeviceHeapStats().stats[group] == 0u,
