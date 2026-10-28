@@ -1011,7 +1011,7 @@ void execute(Context& context, ShaderBinary translateShader,
                  admittedRemoval.counts.padded_projections},2u,false);
             reportStage.append(removePending,removalDesc,addresses,
                                {removalGpu,static_cast<std::uint32_t>(
-                                   sourceVolumes.size()),
+                                   aabb.capacity()),
                                 sizeof(physx::Bp::VolumeData),8u});
             swap_sap_integer_bounds_after_pairs_native(
                 sap.new_integer_bounds(),sap.old_integer_bounds());
