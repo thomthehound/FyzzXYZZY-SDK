@@ -375,14 +375,27 @@ struct Context::Impl {
     }
 
     SubmissionId enqueue(Submission&& submission) {
+        if (next_submission == std::numeric_limits<SubmissionId>::max() ||
+            next_fence == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("D3D12 submission or fence ID range exhausted");
         check(submission.commands->Close(), "Close command list");
-        ID3D12CommandList* lists[] = {submission.commands.Get()};
-        queue->ExecuteCommandLists(1, lists);
-        const std::uint64_t signal = next_fence++;
-        check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
-        const SubmissionId id = next_submission++;
+        const SubmissionId id = next_submission;
+        const std::uint64_t signal = next_fence;
         submission.fence_value = signal;
-        submissions.emplace(id, std::move(submission));
+        // Own the command allocator, list, descriptor heap and any source
+        // upload/copy staging before the GPU can begin using them.
+        // unordered_map insertion can allocate and throw; submitting first
+        // would allow its failure to release resources still in flight.
+        const auto [it, inserted] = submissions.emplace(id, std::move(submission));
+        if (!inserted)
+            throw std::logic_error("D3D12 submission ID already registered");
+        ++next_submission;
+        ++next_fence;
+        ID3D12CommandList* lists[] = {it->second.commands.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        // A queue-signal failure must not destroy the submitted resources:
+        // the owning entry stays recorded until device teardown.
+        check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
         return id;
     }
 
