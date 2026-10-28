@@ -783,6 +783,25 @@ void execute(Context& context, ShaderBinary translateShader,
                     scLost.empty() && histories_match(true),
                     "GPU classified reports did not publish through PhysX mapped fetch and rotate histories");
 
+            // Snapshot the completed first-frame histories ONLY at
+            // its fetch boundary. Vulkan download may reap submission
+            // tokens; no CPU readback is permitted in the next source
+            // update between preBroadPhase/gpuDMAUp and fetch.
+            std::array<std::vector<std::uint32_t>,3> previousHandles{};
+            std::array<std::vector<std::uint32_t>,3> previousIndices{};
+            for(std::uint32_t axis=0u;axis<3u;++axis) {
+                previousHandles[axis]=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.boxHandles[0][axis]),8u);
+                previousIndices[axis]=read_words(
+                    reinterpret_cast<CUdeviceptr>(
+                        descriptor.boxSapBox1D[axis]),6u);
+            }
+            require(read_words(
+                        sap.old_integer_bounds().getDevicePtr(),18u)==
+                        integerBounds,
+                    "Source GPU fetch did not preserve previous AABBs");
+
             // A second update borrows the *same* PhysX owner and the
             // histories just rotated at fetch. Remove a formerly
             // overlapping volume without recreating any SAP GPU state.
@@ -808,12 +827,6 @@ void execute(Context& context, ShaderBinary translateShader,
                     sap.num_boxes()==2u,
                     "Original SAP owner did not retain its previous-frame population");
             const auto& removalDescriptor=sap.descriptor();
-            // The first frame's post-pair integer bounds must survive
-            // original second-frame gpuDMAUp unchanged until deletion.
-            require(read_words(
-                        sap.old_integer_bounds().getDevicePtr(),18u)==
-                        integerBounds,
-                    "Source GPU second-frame DMA did not preserve previous AABBs");
             require(removalDescriptor.numPreviousHandles==3u &&
                     removalDescriptor.numRemovedHandles==1u &&
                     removalDescriptor.numCreatedHandles==0u &&
@@ -825,19 +838,10 @@ void execute(Context& context, ShaderBinary translateShader,
                             sap.old_integer_bounds().getDevicePtr()),
                     "Second source gpuDMAUp did not borrow the fetched bounds history");
 
-            std::array<std::vector<std::uint32_t>,3> previousHandles{};
-            std::array<std::vector<std::uint32_t>,3> previousIndices{};
-            for(std::uint32_t axis=0u;axis<3u;++axis) {
-                previousHandles[axis]=read_words(
-                    reinterpret_cast<CUdeviceptr>(
-                        removalDescriptor.boxHandles[1][axis]),8u);
-                previousIndices[axis]=read_words(
-                    reinterpret_cast<CUdeviceptr>(
-                        removalDescriptor.boxSapBox1D[axis]),6u);
+            for(std::uint32_t axis=0u;axis<3u;++axis)
                 require(previousIndices[axis][removed[0]*2u]<6u &&
                         previousIndices[axis][removed[0]*2u+1u]<6u,
                         "Original second-frame deleted indices lost prior endpoint history");
-            }
             auto& secondCommands=stream.commands();
             auto invalidRemoval=removalDescriptor;
             invalidRemoval.boxHandles[1][2]=
