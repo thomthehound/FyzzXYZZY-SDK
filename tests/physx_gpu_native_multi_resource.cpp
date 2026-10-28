@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 using namespace fyzz::compute;
@@ -232,12 +235,68 @@ void verify_ordered_same_resource_copies(Context& context) {
     context.destroy_buffer(buffer);
 }
 
+// Opt-in CPU queue measurement for the original native CopyCommand data
+// path. Reset and GPU completion are deliberately outside submit timing;
+// source dataflow conformance above runs first on the same backend.
+void profile_ordered_same_resource_copies(Context& context) {
+    using Clock=std::chrono::steady_clock;
+    constexpr std::size_t words=128u;
+    constexpr std::size_t warmup=3u,trials=11u;
+    const auto root=context.create_buffer(words*sizeof(std::uint32_t),
+                                          MemoryPlacement::DeviceLocal);
+    const std::vector<BatchCommand> copies{
+        CopyCommand{root,0u,root,128u,64u},
+        CopyCommand{root,128u,root,256u,128u},
+        CopyCommand{root,256u,root,448u,64u}
+    };
+    std::vector<std::uint32_t> initial(words);
+    for(std::uint32_t i=0;i<words;++i)
+        initial[i]=173u+i*31u;
+    std::vector<double> submitted,completed;
+    submitted.reserve(trials);
+    completed.reserve(trials);
+    for(std::size_t iteration=0;iteration<warmup+trials;++iteration) {
+        context.upload(root,0u,initial.data(),words*sizeof(std::uint32_t));
+        const auto begin=Clock::now();
+        const auto token=context.submit_batch(copies);
+        const auto queued=Clock::now();
+        context.wait_submission(token);
+        const auto done=Clock::now();
+        if(iteration>=warmup) {
+            submitted.push_back(std::chrono::duration<double,std::micro>(
+                queued-begin).count());
+            completed.push_back(std::chrono::duration<double,std::micro>(
+                done-begin).count());
+        }
+    }
+    const auto median=[](std::vector<double> samples) {
+        std::sort(samples.begin(),samples.end());
+        return samples[samples.size()/2u];
+    };
+    std::printf(
+        "native_copy_profile scope=same_buffer_chain backend=%s"
+        " device=\"%s\" copies=3 bytes=64,128,64 trials=%zu"
+        " median_host_submit_us=%.3f median_submit_wait_us=%.3f"
+        " timed_upload_reset=no\n",
+#ifdef FYZZXYZZY_TEST_D3D12
+        "d3d12",
+#else
+        "vulkan",
+#endif
+        context.device_info().name.c_str(),trials,
+        median(submitted),median(completed));
+    context.destroy_buffer(root);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2)
-            throw std::invalid_argument("Expected compiled native multi-resource shader");
+        const bool benchmark=argc==3 &&
+            std::string_view(argv[2])=="--benchmark-self-copy";
+        if(argc!=2 && !benchmark)
+            throw std::invalid_argument(
+                "Expected compiled native multi-resource shader and optional benchmark");
         Context context(
 #ifdef FYZZXYZZY_TEST_D3D12
             Backend::D3D12
@@ -265,6 +324,8 @@ int main(int argc, char** argv) {
         run_case(context, pipeline, false);
         run_case(context, pipeline, true);
         verify_ordered_same_resource_copies(context);
+        if(benchmark)
+            profile_ordered_same_resource_copies(context);
         context.destroy_compute_pipeline(pipeline);
         std::cout << "Native multi-resource binding and ordering PASS\n";
         return 0;
