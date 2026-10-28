@@ -1324,6 +1324,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
         --benchmark
       DEPENDS fyzzxyzzy_physx_source_sap_radix_native
       USES_TERMINAL VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_alternating_vulkan
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}"
+        --benchmark-alternating
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native
+      USES_TERMINAL VERBATIM)
 
     # Source incremental comparison prefixes publish into the original GPU descriptor.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.spv")
@@ -2968,6 +2979,17 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
         "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}"
         --benchmark
+      DEPENDS fyzzxyzzy_physx_source_sap_radix_native_d3d12
+      USES_TERMINAL VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sap_radix_profile_alternating_d3d12
+      COMMAND "$<TARGET_FILE:fyzzxyzzy_physx_source_sap_radix_native_d3d12>"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
+        "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}"
+        --benchmark-alternating
       DEPENDS fyzzxyzzy_physx_source_sap_radix_native_d3d12
       USES_TERMINAL VERBATIM)
     set_tests_properties(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
