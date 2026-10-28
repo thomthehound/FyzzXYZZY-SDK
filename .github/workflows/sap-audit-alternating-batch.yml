@@ -42,7 +42,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          prior="$(git log -2 --format=%H -- src/compute_vulkan.cpp | tail -n 1)"
+          # Two intervening compute revisions added stage matching and
+          # selective descriptor rewrites. Compare against the original
+          # completed descriptor cache without stage matching.
+          prior="$(git log -3 --format=%H -- src/compute_vulkan.cpp | tail -n 1)"
           for pass in 1 2; do
             git show "${prior}:src/compute_vulkan.cpp" > src/compute_vulkan.cpp
             echo "===== completed LIFO cache / pass ${pass} ====="

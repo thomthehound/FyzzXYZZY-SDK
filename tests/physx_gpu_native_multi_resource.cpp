@@ -155,15 +155,19 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
         auto redirected=dispatch;
         for(auto& binding:redirected.buffers)
             binding.offset=kViewBytes;
-        auto verify_redirected=[&](std::uint32_t seed) {
+        auto verify_redirected=[&](std::uint32_t seed,bool remap_one_slot=false) {
+            auto current=redirected;
+            if(remap_one_slot)
+                current.buffers[1].offset=0u;
             std::vector<std::uint32_t> next_a(kElements),next_b(kElements);
             for(std::uint32_t i=0;i<kElements;++i) {
                 next_a[i]=seed+i;
                 next_b[i]=seed*2u+3u*i;
             }
             context.upload(source_a,kViewBytes,next_a.data(),kViewBytes);
-            context.upload(source_b,kViewBytes,next_b.data(),kViewBytes);
-            const auto id=context.submit_batch({redirected});
+            context.upload(source_b,current.buffers[1].offset,
+                           next_b.data(),kViewBytes);
+            const auto id=context.submit_batch({current});
             context.wait_submission(id);
             std::vector<std::uint32_t> next_result(kElements);
             context.download(destination,kViewBytes,
@@ -174,6 +178,10 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
         };
         verify_redirected(300u);
         verify_redirected(500u);
+        // Only the second descriptor slot changes its original view.
+        // All remaining completed native bindings are still reusable.
+        verify_redirected(700u,true);
+        verify_redirected(900u,true);
     }
 
     context.destroy_buffer(snapshot);

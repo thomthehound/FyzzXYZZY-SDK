@@ -307,10 +307,12 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
                 gpu_us.push_back(*gpu_ns*0.001);
             }
         }
-        if(interleaved) {
-            // Original WR radix commands from a second PhysX stage must
-            // retain their own completed descriptor sets across frames.
-            // Neither this submission nor its wait is part of the sample.
+        if(interleaved && trial+1u<warmup+trials) {
+            // Each original WR radix stage consumes the unsorted projection
+            // and previous handle stream. Its alternate stage needs the
+            // same initial input, not the preceding stage's sorted output.
+            // Neither this reset nor the alternate submission is timed.
+            context.upload(root,0u,initial.data(),bytes);
             std::vector<BatchCommand> other;
             interleaved->append_wr(other,source,radix,map,boxes);
             require(other.size()==18u,
