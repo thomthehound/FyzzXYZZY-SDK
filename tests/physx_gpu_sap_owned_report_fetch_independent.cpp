@@ -664,10 +664,30 @@ void execute(Context& context, ShaderBinary translateShader,
             // Both actor streams and the seven endpoint histories are owned
             // by the real PhysX SAP object, not a test-side staging layout.
             const auto histories=sap.fetch_histories();
-            const auto currentHandle=histories.projection_handles[0].getDevicePtr();
-            const auto previousHandle=histories.projection_handles[3].getDevicePtr();
-            const auto currentEnds=histories.end_histograms[0].getDevicePtr();
-            const auto previousEnds=histories.end_histograms[3].getDevicePtr();
+            const std::array<physx::PxgCudaBufferN<6>*,7> historyFamilies{
+                &histories.projection_handles,
+                &histories.block_end_histograms,
+                &histories.end_histograms,
+                &histories.end_handles,
+                &histories.block_start_histograms,
+                &histories.start_histograms,
+                &histories.start_handles
+            };
+            std::array<std::array<CUdeviceptr,2>,7> historyAddresses{};
+            for(std::size_t i=0;i<historyFamilies.size();++i) {
+                historyAddresses[i][0]=(*historyFamilies[i])[0].getDevicePtr();
+                historyAddresses[i][1]=(*historyFamilies[i])[3].getDevicePtr();
+            }
+            const auto histories_match=[&](bool swapped) {
+                for(std::size_t i=0;i<historyFamilies.size();++i) {
+                    if((*historyFamilies[i])[0].getDevicePtr()!=
+                            historyAddresses[i][swapped?1u:0u] ||
+                       (*historyFamilies[i])[3].getDevicePtr()!=
+                            historyAddresses[i][swapped?0u:1u])
+                        return false;
+                }
+                return true;
+            };
             physx::PxgBroadPhaseDesc fetchedDescriptor{};
             std::vector<fyzz::native::Pair> scFound,scLost;
             const std::array<fyzz::BodyId,3> scActors{17u,3u,9u};
@@ -693,8 +713,28 @@ void execute(Context& context, ShaderBinary translateShader,
                     &mappedRoots,publish);
             } catch(const std::out_of_range&) { rejectedFetch=true; }
             require(rejectedFetch && !rotated && !published &&
-                    histories.projection_handles[0].getDevicePtr()==currentHandle,
+                    histories_match(false),
                     "Rejected GPU pair fetch advanced original PhysX history");
+
+            // Sc may reject the classified report after GPU completion.
+            // The original fetch must leave both descriptor publication
+            // and all seven double-buffer history families untouched.
+            bool rejectedAdmission=false;
+            try {
+                (void)fetch_source_sap_results_native(
+                    context,addresses,gpuDescriptor,sap.descriptor(),
+                    {sap.mapped_found_actor_pairs(),sap.max_found_lost_pairs()},
+                    {sap.mapped_lost_actor_pairs(),sap.max_found_lost_pairs()},
+                    false,[&]() noexcept {rotated=true;},
+                    &mappedRoots,[&](const SourceSapFetchedCounts&) {
+                        throw std::invalid_argument(
+                            "Rejected Sc actor identity at source fetch");
+                    });
+            }catch(const std::invalid_argument&){rejectedAdmission=true;}
+            require(rejectedAdmission&&!rotated&&!published&&
+                    histories_match(false)&&
+                    sap.descriptor().sharedFoundPairIndex==0u,
+                    "Rejected Sc admission committed original source fetch");
 
             const auto fetched=fetch_source_sap_results_native(
                 context,addresses,gpuDescriptor,sap.descriptor(),
@@ -712,11 +752,7 @@ void execute(Context& context, ShaderBinary translateShader,
                     fetchedDescriptor.sharedLostPairIndex==0u &&
                     !fetched.overflow &&
                     scFound==std::vector<fyzz::native::Pair>{{3u,17u}} &&
-                    scLost.empty() &&
-                    histories.projection_handles[0].getDevicePtr()==previousHandle &&
-                    histories.projection_handles[3].getDevicePtr()==currentHandle &&
-                    histories.end_histograms[0].getDevicePtr()==previousEnds &&
-                    histories.end_histograms[3].getDevicePtr()==currentEnds,
+                    scLost.empty() && histories_match(true),
                     "GPU classified reports did not publish through PhysX mapped fetch and rotate histories");
 
             require(manager.getDeviceHeapStats()
