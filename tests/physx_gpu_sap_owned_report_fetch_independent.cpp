@@ -343,6 +343,22 @@ void execute(Context& context, ShaderBinary translateShader,
                     std::get<DispatchCommand>(commands[34]).buffers.size()==16u,
                     "Original source region/active/pair GPU dispatch order changed");
 
+            // Original hostMappedAlloc destinations are the only allowed
+            // GPU report aliases. They are not test-created staging buffers.
+            const auto mappedBytes=
+                sap.max_found_lost_pairs()*sizeof(physx::PxgBroadPhasePair);
+            require(mappedRoots.device_address(
+                        sap.mapped_found_actor_pairs(),mappedBytes)==
+                        static_cast<CudaDeviceAddressMap::Address>(
+                            reinterpret_cast<std::uintptr_t>(
+                                descriptor.foundPairReportMap)) &&
+                    mappedRoots.device_address(
+                        sap.mapped_lost_actor_pairs(),mappedBytes)==
+                        static_cast<CudaDeviceAddressMap::Address>(
+                            reinterpret_cast<std::uintptr_t>(
+                                descriptor.lostPairReportMap)),
+                    "Original PhysX source report DMA host aliases changed");
+
             // The original three report kernels classify raw GPU pairs,
             // copy actor pairs into PhysX host-mapped destination allocations,
             // and publish both count families in the resident source desc.
