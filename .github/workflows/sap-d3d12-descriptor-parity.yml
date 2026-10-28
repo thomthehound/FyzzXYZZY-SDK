@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+# SPDX-License-Identifier: Apache-2.0
+name: Native D3D12 completed descriptor parity
+on:
+  push:
+    branches:
+      - ci/sap-d3d12-descriptor-parity-131
+jobs:
+  d3d12-source:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Find Windows SDK DXC
+        shell: pwsh
+        run: |
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $compiler = Get-ChildItem -Path $sdkBin -Filter dxc.exe -File -Recurse |
+            Where-Object { $_.FullName -match '[\\/]x64[\\/]' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $compiler) { throw 'Windows SDK DXC not found' }
+          "FYZZXYZZY_DXC=$($compiler.FullName)" >> $env:GITHUB_ENV
+      - name: Configure D3D12 source GPU
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+      - name: Build real source GPU tests
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target fyzzxyzzy_native_multi_resource_d3d12 fyzzxyzzy_physx_cuda_host_transfer_d3d12 fyzzxyzzy_physx_source_sap_radix_native_d3d12 --parallel 4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate D3D12 GPU views and source DMA under WARP
+        shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: |
+          ctest --test-dir build -C Release -R fyzzxyzzy_native_multi_resource_d3d12 --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release -R fyzzxyzzy_physx_cuda_host_transfer_d3d12 --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build -C Release -R fyzzxyzzy_physx_source_sap_radix_native_d3d12 --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Paired alternating source WR radix batch recording
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: |
+          $reference = (git log -2 --format=%H -- src/compute_d3d12.cpp | Select-Object -Last 1)
+          if (-not $reference) { throw 'Previous native recorder revision missing' }
+          try {
+            foreach ($pass in 1..2) {
+              git show "${reference}:src/compute_d3d12.cpp" | Set-Content -Encoding utf8 src/compute_d3d12.cpp
+              "===== reference D3D12 views / pass $pass ====="
+              cmake --build build --config Release --target fyzzxyzzy_source_sap_radix_profile_alternating_d3d12 --parallel 4
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              git restore -- src/compute_d3d12.cpp
+              "===== completed D3D12 views / pass $pass ====="
+              cmake --build build --config Release --target fyzzxyzzy_source_sap_radix_profile_alternating_d3d12 --parallel 4
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          } finally { git restore -- src/compute_d3d12.cpp }
