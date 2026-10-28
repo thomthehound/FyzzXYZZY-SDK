@@ -9,7 +9,7 @@
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "BpBroadPhaseUpdate.h"
-#include "PxgRadixSortKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgRadixSortKernelIndices.h"
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"

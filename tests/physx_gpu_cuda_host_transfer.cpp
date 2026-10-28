@@ -22,7 +22,7 @@
 #include "physx_port/gpubroadphase/PxgSapPostAxisBuffersNative.h"
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
-#include "PxgRadixSortKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgRadixSortKernelIndices.h"
 #include "BpBroadPhaseUpdate.h"
 #include <PxPhysicsAPI.h>
 
@@ -1434,6 +1434,16 @@ void exercise_original_sap_source_members_native(Context& context) {
             source.mapped_lost_actor_pairs(),
             4u*sizeof(physx::PxgBroadPhasePair));
         auto members=source.dma_up_members(nullptr,mapped);
+        // Source GPU radix count buffers are allocated once at the original
+        // 32 x 16 grid capacity, not per frame or by a parallel allocator.
+        const auto count_bytes=sizeof(physx::PxU32)*
+            physx::PxgRadixSortKernelGridDim::RADIX_SORT*16u;
+        for(physx::PxU32 axis=0u;axis<3u;++axis) {
+            const auto& count=members.radix_buffers.radix_counts[axis];
+            if(count.getSize()!=count_bytes || !count.getDevicePtr())
+                throw std::runtime_error(
+                    "Original SAP radix source heap size or pointer changed");
+        }
         auto pre=source.pre_broadphase_buffers();
         if(&pre.bounds!=&members.broadphase_buffers.fp_bounds ||
            &members.broadphase_buffers.projection_handles!=

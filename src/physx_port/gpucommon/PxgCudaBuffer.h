@@ -19,7 +19,7 @@
 using CUdeviceptr = unsigned long long;
 static_assert(sizeof(CUdeviceptr) == sizeof(std::uintptr_t),
               "Native PhysX source buffer requires a 64-bit host address ABI");
-#include "PxgDevicePointer.h"
+#include "physx_port/gpucommon/include/PxgDevicePointer.h"
 
 namespace fyzz { namespace physx_gpu { class SourceSapDmaNative; } }
 
