@@ -1,11 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_scene_frame_native.h"
+#include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
+#include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
 #include <stdexcept>
 #include <utility>
 
 namespace fyzz::physx_gpu {
+void validate_source_sap_owned_aabb_aliases_native(
+    PxgAabbSourceMembersNative& owner,
+    const SourceSapAabbManagerPreUpdateNative& pre,
+    std::span<BodyId> volume_to_actor) {
+    const auto lifetime=owner.actor_lifetime();
+    const auto added=owner.added_report_bitmap();
+    const auto removed=owner.removed_report_bitmap();
+    if(volume_to_actor.data()!=lifetime.volume_to_actor.data() ||
+       volume_to_actor.size()!=lifetime.volume_to_actor.size() ||
+       pre.volume_data.data()!=lifetime.volume_data.data() ||
+       pre.volume_data.size()!=lifetime.volume_data.size() ||
+       pre.added.words.data()!=added.host_words.data() ||
+       pre.added.words.size()!=added.host_words.size() ||
+       pre.removed.words.data()!=removed.host_words.data() ||
+       pre.removed.words.size()!=removed.host_words.size())
+        throw std::invalid_argument(
+            "Source SAP frame does not borrow its original AABB manager owner");
+}
+
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,
     SourceSapDmaNative& stream,
