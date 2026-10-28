@@ -9,14 +9,14 @@
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
-#include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
-#include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
 #include <span>
 #include <stdexcept>
 #include <vector>
 
 namespace fyzz::physx_gpu {
+class PxgAabbSourceMembersNative;
+class PxgSapSourceMembersNative;
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -64,24 +64,10 @@ struct SourceSapSceneFrameNativeResult {
 // Both source-owner view aliases are verified before any GPU work. The
 // references are original PhysX AABB manager allocations; no registry,
 // lookup loop, or per-frame copy of the source identity table is required.
-inline void validate_source_sap_owned_aabb_aliases_native(
+void validate_source_sap_owned_aabb_aliases_native(
     PxgAabbSourceMembersNative& owner,
     const SourceSapAabbManagerPreUpdateNative& pre,
-    std::span<BodyId> volume_to_actor) {
-    const auto lifetime=owner.actor_lifetime();
-    const auto added=owner.added_report_bitmap();
-    const auto removed=owner.removed_report_bitmap();
-    if(volume_to_actor.data()!=lifetime.volume_to_actor.data() ||
-       volume_to_actor.size()!=lifetime.volume_to_actor.size() ||
-       pre.volume_data.data()!=lifetime.volume_data.data() ||
-       pre.volume_data.size()!=lifetime.volume_data.size() ||
-       pre.added.words.data()!=added.host_words.data() ||
-       pre.added.words.size()!=added.host_words.size() ||
-       pre.removed.words.data()!=removed.host_words.data() ||
-       pre.removed.words.size()!=removed.host_words.size())
-        throw std::invalid_argument(
-            "Source SAP frame does not borrow its original AABB manager owner");
-}
+    std::span<BodyId> volume_to_actor);
 
 // Full source-owner boundary: admission, one GPU preBroadPhase / gpuDMAUp,
 // source kernel update/fetch, bitmap retirement and AABB frame completion.
