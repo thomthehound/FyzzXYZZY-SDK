@@ -1171,7 +1171,7 @@ void execute(Context& context, ShaderBinary translateShader,
             require(rejectedForeignElement && stream.commands().empty(),
                     "GPU producer accepted a foreign Sc volume identity");
             const auto beforeFourth=stream.submission_stats().command_batches;
-            const auto reports=producer.advance(readmittedBoxes,true,true);
+            const auto gpuReports=producer.advance(readmittedBoxes,true,true);
             // The owner enqueues source bitmap retirement after report
             // fetch. Drain the same stream at teardown, before releasing
             // the pipelines referenced by those queued GPU commands.
@@ -1182,9 +1182,9 @@ void execute(Context& context, ShaderBinary translateShader,
                     ownedFrame.update.counts.current_boxes==3u &&
                     ownedFrame.fetch.found_actors==1u &&
                     ownedFrame.fetch.lost_actors==0u &&
-                    reports.found.size()==1u &&
-                    reports.found.front()==fyzz::native::Pair{17u,27u} &&
-                    reports.lost.empty() && scActors[1]==27u &&
+                    gpuReports.found.size()==1u &&
+                    gpuReports.found.front()==fyzz::native::Pair{17u,27u} &&
+                    gpuReports.lost.empty() && scActors[1]==27u &&
                     histories_match(false) &&
                     stream.submission_stats().command_batches>beforeFourth,
                     "Native GPU producer failed source Sc re-admission/fetch");
@@ -1201,6 +1201,61 @@ void execute(Context& context, ShaderBinary translateShader,
                     stream.commands().empty(),
                     "Sc rollback reused invalid source GPU SAP history");
 
+            // Actual native Sc/Gu consumes GPU SAP reports rather than
+            // a CPU broadphase oracle. Source element IDs and changed
+            // volume bitmaps remain with the original Sc/AABB owners.
+            {
+                PxgSapSourceMembersNative sceneSap(allocators,32u,16u);
+                PxgAabbSourceMembersNative sceneAabb(allocators,2u);
+                physx::Sc::ObjectIDTracker sceneElements;
+                std::array<std::uint32_t,2> elementData{0u,1u};
+                std::vector<physx::Bp::ShapeHandle> elementHandles(
+                    2u,BP_INVALID_BP_HANDLE);
+                fyzz::native::Scene scene;
+                scene.set_gpu_broadphase(
+                    std::make_unique<SourceScGpuBroadphaseProducerNative>(
+                        sceneAabb,sceneSap,stream,cohesiveStages,
+                        addresses,context,filter,fillStage,mappedRoots,
+                        elementHandles));
+                const auto a=scene.add_dynamic_box(
+                    {1.0f,1.0f,1.0f},{0.0f,0.0f,0.0f},1.0f);
+                const auto b=scene.add_dynamic_box(
+                    {1.0f,1.0f,1.0f},{1.2f,0.0f,0.0f},1.0f);
+                require(a==0u && b==1u,"Native Sc GPU actor admission changed");
+                for(const fyzz::BodyId actor:{a,b}) {
+                    const auto handle=SourceScElementLifecycleNative::admit(
+                        sceneElements,sceneAabb,actor,actor,0.02f,
+                        fyzz::native::GpuBroadphaseBox::Motion::Dynamic,
+                        &elementData[actor]);
+                    elementHandles[actor]=handle;
+                    require(handle==actor,"Original Sc element ID ordering changed");
+                }
+                scene.advance_collision(true);
+                require(scene.pairs().size()==1u &&
+                        scene.pairs().front()==fyzz::native::Pair{0u,1u} &&
+                        scene.found_pairs().size()==1u &&
+                        scene.lost_pairs().empty() &&
+                        scene.contacts().size()==1u,
+                        "GPU found overlap failed native Sc/Gu admission");
+
+                scene.set_position(b,{6.0f,0.0f,0.0f});
+                sceneAabb.mark_changed(elementHandles[b],0.02f);
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        scene.found_pairs().empty() &&
+                        scene.lost_pairs().size()==1u &&
+                        scene.lost_pairs().front()==
+                            fyzz::native::Pair{0u,1u} &&
+                        scene.contacts().empty(),
+                        "GPU lost overlap failed native Sc contact retirement");
+
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        scene.found_pairs().empty() &&
+                        scene.lost_pairs().empty(),
+                        "Quiet GPU Sc frame replayed a stale overlap report");
+                stream.wait_at_fetch();
+            }
             require(manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
                     "Created frame bypassed the original PhysX GPU buddy heap");

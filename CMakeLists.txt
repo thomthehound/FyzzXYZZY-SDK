@@ -1249,7 +1249,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
-      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives
+      FyzzXYZZY::Core)
     add_dependencies(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       fyzzxyzzy_owned_translate_aabbs_shader
       fyzzxyzzy_owned_sap_incremental_shaders
@@ -3940,7 +3941,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12 PRIVATE
-      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12
+      FyzzXYZZY::Core)
     add_dependencies(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       fyzzxyzzy_owned_translate_aabbs_shader_d3d12
       fyzzxyzzy_owned_sap_incremental_shaders_d3d12
