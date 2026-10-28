@@ -868,6 +868,17 @@ void execute(Context& context, ShaderBinary translateShader,
             }catch(const std::exception&){rejectedRemoval=true;}
             require(rejectedRemoval&&secondCommands.empty(),
                     "Invalid second-frame history committed a removal dispatch");
+            // Every PhysX update begins by translating the current
+            // AABB-manager bounds into newIntegerBounds. Deletion then
+            // marks OLD integer bounds and previous endpoint handles.
+            const SourceSapTranslateAabbsNativeInput removalTranslation{
+                gpu_address(removalDescriptor.updateData_fpBounds),
+                gpu_address(removalDescriptor.newIntegerBounds),
+                gpu_address(removalDescriptor.updateData_contactDistances),
+                0u,{3u,4u,4u,4u,0u,0u,0u}
+            };
+            append_source_sap_translate_aabbs_native(
+                secondCommands,lowering,removalTranslation,true);
             removedStage.append_mark_removed(
                 secondCommands,removalDescriptor,addresses,
                 {removalAdmission.counts.capacity,
