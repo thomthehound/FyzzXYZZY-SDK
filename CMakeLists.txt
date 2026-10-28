@@ -333,6 +333,75 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_source_gpu_aabb_independent
       COMMAND fyzzxyzzy_source_gpu_aabb_independent
         "${FYZZXYZZY_INDEPENDENT_AABB_SPV}")
+    # Original PxgBroadPhaseDesc is now SDK-owned, not an upstream fixture.
+    set(FYZZXYZZY_OWNED_OVERLAP_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_SCAN_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_first_native.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_SCAN_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_second_native.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_PAIRS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.spv")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_PAIRS_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_PAIRS_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_source_sap_shaders DEPENDS
+      ${FYZZXYZZY_OWNED_OVERLAP_SPV}
+      ${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}
+      ${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}
+      ${FYZZXYZZY_OWNED_PAIRS_SPV})
+    add_executable(fyzzxyzzy_source_gpu_overlap_independent tests/physx_gpu_source_overlap_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_overlap_independent PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_overlap_independent PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_overlap_independent fyzzxyzzy_owned_source_sap_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_overlap_independent COMMAND fyzzxyzzy_source_gpu_overlap_independent
+      "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
+    )
+    add_executable(fyzzxyzzy_source_gpu_scan_independent tests/physx_gpu_source_overlap_prefix_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_scan_independent PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_scan_independent PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_scan_independent fyzzxyzzy_owned_source_sap_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_scan_independent COMMAND fyzzxyzzy_source_gpu_scan_independent
+      "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_source_gpu_scan_independent PROPERTIES
+      SKIP_RETURN_CODE 77)
+    add_executable(fyzzxyzzy_source_gpu_pairs_independent tests/physx_gpu_source_newbounds_pairs_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_pairs_independent PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_pairs_independent PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_pairs_independent fyzzxyzzy_owned_source_sap_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_pairs_independent COMMAND fyzzxyzzy_source_gpu_pairs_independent
+      "${FYZZXYZZY_OWNED_PAIRS_SPV}"
+    )
+    set_tests_properties(fyzzxyzzy_source_gpu_pairs_independent PROPERTIES
+      SKIP_RETURN_CODE 77)
+
   endif()
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
@@ -2054,6 +2123,80 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_INDEPENDENT_AABB_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aabb_independent_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # Original PxgBroadPhaseDesc is now SDK-owned, not an upstream fixture.
+    set(FYZZXYZZY_OWNED_OVERLAP_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_SCAN_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_first_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_SCAN_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_second_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
+      VERBATIM)
+    set(FYZZXYZZY_OWNED_PAIRS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_source_sap_shaders_d3d12 DEPENDS
+      ${FYZZXYZZY_OWNED_OVERLAP_DXIL}
+      ${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}
+      ${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}
+      ${FYZZXYZZY_OWNED_PAIRS_DXIL})
+    add_executable(fyzzxyzzy_source_gpu_overlap_independent_d3d12 tests/physx_gpu_source_overlap_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_overlap_independent_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_overlap_independent_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_overlap_independent_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_overlap_independent_d3d12 fyzzxyzzy_owned_source_sap_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_source_gpu_overlap_independent_d3d12 COMMAND fyzzxyzzy_source_gpu_overlap_independent_d3d12
+      "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_source_gpu_overlap_independent_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_source_gpu_scan_independent_d3d12 tests/physx_gpu_source_overlap_prefix_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_scan_independent_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_scan_independent_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_scan_independent_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_scan_independent_d3d12 fyzzxyzzy_owned_source_sap_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_source_gpu_scan_independent_d3d12 COMMAND fyzzxyzzy_source_gpu_scan_independent_d3d12
+      "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_source_gpu_scan_independent_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_source_gpu_pairs_independent_d3d12 tests/physx_gpu_source_newbounds_pairs_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_pairs_independent_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_pairs_independent_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_pairs_independent_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_pairs_independent_d3d12 fyzzxyzzy_owned_source_sap_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_source_gpu_pairs_independent_d3d12 COMMAND fyzzxyzzy_source_gpu_pairs_independent_d3d12
+      "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
+    )
+    set_tests_properties(fyzzxyzzy_source_gpu_pairs_independent_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
   endif()
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
