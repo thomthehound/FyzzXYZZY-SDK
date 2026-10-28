@@ -564,6 +564,43 @@ void execute(Context& context, ShaderBinary translateShader,
                     startTotal!=0u,
                     "Original source GPU descriptor did not receive region totals");
 
+            // The active-region lists are derived from the original GPU
+            // sorted X handles and spatial ranges. Validate the complete
+            // per-region prefix tables before consuming the GPU pair report.
+            const auto activePrefix=read_words(
+                reinterpret_cast<CUdeviceptr>(
+                    descriptor.activeRegionsHistogram),64u*projections);
+            const auto startPrefix=read_words(
+                reinterpret_cast<CUdeviceptr>(
+                    descriptor.startRegionsHistogram),64u*projections);
+            const auto activeOrder=read_words(
+                reinterpret_cast<CUdeviceptr>(
+                    descriptor.orderedActiveRegionHandles),64u*projections);
+            const auto startOrder=read_words(
+                reinterpret_cast<CUdeviceptr>(
+                    descriptor.orderedStartRegionHandles),64u*projections);
+            for(std::uint32_t region=0u;region<64u;++region) {
+                const auto rx=region%4u;
+                const auto ry=(region/4u)%4u;
+                const auto rz=region/16u;
+                std::uint32_t running=0u;
+                for(std::uint32_t slot=0u;slot<projections;++slot) {
+                    const auto handle=sortedX[slot]>>3u;
+                    const bool start=(sortedX[slot]&1u)!=0u;
+                    require(startPrefix[region*projections+slot]==running &&
+                            activePrefix[region*projections+slot]==running,
+                            "Original source active-region GPU prefix mismatch");
+                    if(start && first[handle][0]==rx &&
+                       first[handle][1]<=ry && ry<=last[handle][1] &&
+                       first[handle][2]<=rz && rz<=last[handle][2]) {
+                        require(startOrder[region*projections+running]==handle &&
+                                activeOrder[region*projections+running]==handle,
+                                "Original source GPU ordered active/start handles differ");
+                        ++running;
+                    }
+                }
+            }
+
             // This created-only scene has one physical overlap: the first
             // two volumes. The distant third volume must not be reported.
             // Check the GPU-produced found-pair counter and exact report,
