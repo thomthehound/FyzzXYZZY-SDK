@@ -8,6 +8,7 @@
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxFoundation.h"
+#include "foundation/PxErrorCallback.h"
 #include "foundation/PxPhysicsVersion.h"
 
 #include <array>
@@ -36,7 +37,7 @@ struct Foundation {
     physx::PxDefaultAllocator allocator;
     Errors errors;
     physx::PxFoundation* instance;
-    Foundation() : instance(physx::PxCreateFoundation(
+    Foundation() : instance(PxCreateFoundation(
         PX_PHYSICS_VERSION, allocator, errors)) {
         require(instance != nullptr, "Source PhysX Foundation creation failed");
     }
