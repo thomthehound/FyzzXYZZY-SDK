@@ -92,8 +92,10 @@ void execute(Context& context, ShaderBinary translateShader,
         return result;
     };
     {
+        // Exercise multiple source allocations sharing one physical GPU
+        // page; D3D12 must not require separate SRV/UAV resources.
         physx::PxgHeapMemoryAllocatorManager manager(
-            65536u, deviceCallback, pinnedRoots, mappedRoots, abort, &aborted);
+            1u << 20u, deviceCallback, pinnedRoots, mappedRoots, abort, &aborted);
         auto allocators = physx::PxgCreateAllocatorDesc(manager);
         {
             PxgSapSourceMembersNative sap(allocators, 32u, 16u);
@@ -140,6 +142,18 @@ void execute(Context& context, ShaderBinary translateShader,
                 0u,
                 {1u, 4u, 4u, 4u, 0u, 0u, 0u}
             };
+            const auto boundsView = addresses.resolve(
+                translation.fp_bounds, sizeof(physx::PxBounds3));
+            const auto distanceView = addresses.resolve(
+                translation.contact_distances, sizeof(physx::PxReal));
+            const auto outputView = addresses.resolve(
+                translation.new_integer_bounds, 6u * sizeof(std::uint32_t));
+            require(boundsView.buffer == outputView.buffer &&
+                    distanceView.buffer == outputView.buffer &&
+                    boundsView.offset != outputView.offset &&
+                    distanceView.offset != outputView.offset,
+                    "Source buddy heap did not exercise D3D12 shared-root bindings");
+
             auto& commands = stream.commands();
             append_source_sap_translate_aabbs_native(
                 commands, lowering, translation, true);
