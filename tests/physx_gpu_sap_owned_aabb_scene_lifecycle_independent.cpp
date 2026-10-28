@@ -248,6 +248,18 @@ void execute(Context& context, ShaderBinary translateShader,
             }
             require(rejectedForeignOwner,
                     "Original source scene frame admitted a copied actor registry");
+            auto forgedPre=aabbPre;
+            std::array<physx::PxU32,1> copiedAdded{0x7u};
+            forgedPre.added.words=copiedAdded;
+            bool rejectedCopiedBitmap=false;
+            try {
+                validate_source_sap_owned_aabb_aliases_native(
+                    aabb,forgedPre,actorOwner.volume_to_actor);
+            }catch(const std::invalid_argument&) {
+                rejectedCopiedBitmap=true;
+            }
+            require(rejectedCopiedBitmap,
+                    "Original source frame admitted a copied GPU added-handle bitmap");
             pre_update_source_sap_aabb_manager_native(update,aabbPre,stream);
             const auto aabbView=source_sap_aabb_descriptor_native(aabbPre);
             auto dma=sap.dma_up_members(&aabbView,mappedRoots);
