@@ -167,45 +167,53 @@ void SourceSapReportNativeStage::append(
     const Resource mapLost = {address(source.lostPairReportMap), pairs};
     const Resource overflow = {layout.descriptor + overflowField, 4u};
 
-    const std::array<std::vector<Resource>,3> passes{{
-        {raw,rawFound,rawLost,volume,
-         {blocks[0].pointer,blocks[0].bytes,compute::BufferAccess::Write},
-         {blocks[1].pointer,blocks[1].bytes,compute::BufferAccess::Write},
-         {blocks[2].pointer,blocks[2].bytes,compute::BufferAccess::Write},
-         {blocks[3].pointer,blocks[3].bytes,compute::BufferAccess::Write}},
-        {raw,{aggregate.pointer,aggregate.bytes,compute::BufferAccess::Write},
-         rawFound,rawLost,volume,blocks[0],blocks[1],blocks[2],blocks[3],
-         {foundAggregate.pointer,foundAggregate.bytes,compute::BufferAccess::Write},
-         {foundActor.pointer,foundActor.bytes,compute::BufferAccess::Write},
-         {lostAggregate.pointer,lostAggregate.bytes,compute::BufferAccess::Write},
-         {lostActor.pointer,lostActor.bytes,compute::BufferAccess::Write}},
-        {raw,aggregate,foundActor,lostActor,
-         {mapFound.pointer,mapFound.bytes,compute::BufferAccess::Write},
-         {mapLost.pointer,mapLost.bytes,compute::BufferAccess::Write},
-         {overflow.pointer,overflow.bytes,compute::BufferAccess::Write}}
+    const std::array<Resource,8> first{{
+        raw,rawFound,rawLost,volume,
+        {blocks[0].pointer,blocks[0].bytes,compute::BufferAccess::Write},
+        {blocks[1].pointer,blocks[1].bytes,compute::BufferAccess::Write},
+        {blocks[2].pointer,blocks[2].bytes,compute::BufferAccess::Write},
+        {blocks[3].pointer,blocks[3].bytes,compute::BufferAccess::Write}
+    }};
+    const std::array<Resource,13> second{{
+        raw,{aggregate.pointer,aggregate.bytes,compute::BufferAccess::Write},
+        rawFound,rawLost,volume,blocks[0],blocks[1],blocks[2],blocks[3],
+        {foundAggregate.pointer,foundAggregate.bytes,compute::BufferAccess::Write},
+        {foundActor.pointer,foundActor.bytes,compute::BufferAccess::Write},
+        {lostAggregate.pointer,lostAggregate.bytes,compute::BufferAccess::Write},
+        {lostActor.pointer,lostActor.bytes,compute::BufferAccess::Write}
+    }};
+    const std::array<Resource,7> copy{{
+        raw,aggregate,foundActor,lostActor,
+        {mapFound.pointer,mapFound.bytes,compute::BufferAccess::Write},
+        {mapLost.pointer,mapLost.bytes,compute::BufferAccess::Write},
+        {overflow.pointer,overflow.bytes,compute::BufferAccess::Write}
     }};
 
-    std::vector<compute::BatchCommand> pending;
-    pending.reserve(3u);
-    for (std::uint32_t pass=0u;pass<3u;++pass) {
-        auto constants = params;
-        compute::DispatchCommand cmd;
+    // Prepare all three source commands before modifying the caller's stream.
+    // Fixed source binding counts require no per-frame resource-list allocation.
+    std::array<compute::DispatchCommand,3> prepared{};
+    const auto prepare = [&]<std::size_t N>(
+        std::uint32_t pass, const std::array<Resource,N>& resources) {
+        auto& cmd = prepared[pass];
         cmd.pipeline = pass==0u ? first_ : pass==1u ? second_ : copy_;
         cmd.groups = pass==2u ? compute::DispatchSize{64u,1u,1u} :
                                 compute::DispatchSize{32u,4u,1u};
-        cmd.buffers.reserve(passes[pass].size());
-        for (std::uint32_t i=0u;i<passes[pass].size();++i) {
-            const auto& item=passes[pass][i];
+        auto constants = params;
+        cmd.buffers.reserve(resources.size());
+        for (std::uint32_t i=0u;i<resources.size();++i) {
+            const auto& item=resources[i];
             cmd.buffers.emplace_back(source_native_view(
                 addresses,item.pointer,item.bytes,align,i,item.access,
                 constants.bias[i],gpu.max_storage_buffer_range));
         }
         cmd.push_constants.resize(sizeof(constants));
         std::memcpy(cmd.push_constants.data(),&constants,sizeof(constants));
-        pending.emplace_back(std::move(cmd));
-    }
-    commands.reserve(commands.size()+pending.size());
-    for (auto& cmd:pending)commands.emplace_back(std::move(cmd));
+    };
+    prepare(0u,first);
+    prepare(1u,second);
+    prepare(2u,copy);
+    commands.reserve(commands.size()+prepared.size());
+    for (auto& cmd:prepared) commands.emplace_back(std::move(cmd));
 }
 
 } // namespace fyzz::physx_gpu
