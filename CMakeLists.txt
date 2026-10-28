@@ -19,8 +19,8 @@ option(FYZZXYZZY_ENABLE_PHYSX_SOURCE
 option(FYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE
   "Require 48-frame native/PhysX CPU coupled friction trajectory parity" ON)
 # Exercise source-owned GPU DMA/bitmap kernels without the upstream checkout.
-option(FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST
-  "Test source GPU DMA and D32 bitmap retirement without PhysX (requires DXC)" OFF)
+option(FYZZXYZZY_BUILD_SOURCE_GPU_TESTS
+  "Test independent source GPU AABB encoding and DMA (requires DXC)" OFF)
 
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # CPU PhysX-derived execution remains available; upstream CUDA is disabled.
@@ -268,7 +268,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
   # Source-owned GPU memsetD32Async, DMA and bitmap retirement, no PhysX ABI.
   add_library(fyzzxyzzy_source_gpu_primitives STATIC
-    src/physx_gpu/source_fill_d32_native.cpp)
+    src/physx_gpu/source_fill_d32_native.cpp
+    src/physx_gpu/aabb_encoding.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -277,7 +278,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   set_target_properties(fyzzxyzzy_source_gpu_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
-     AND FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST)
+     AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_INDEPENDENT_D32_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.spv")
@@ -310,7 +311,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
-    src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
@@ -472,7 +472,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       target_include_directories(fyzzxyzzy_physx_aabb_encoding PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src")
       target_link_libraries(fyzzxyzzy_physx_aabb_encoding
-        PRIVATE fyzzxyzzy_physx_gpu_stages)
+        PRIVATE fyzzxyzzy_source_gpu_primitives)
       add_dependencies(fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_aabb_shader)
       add_test(NAME fyzzxyzzy_physx_aabb_encoding
         COMMAND fyzzxyzzy_physx_aabb_encoding "${FYZZXYZZY_PHYSX_AABB_SHADER}")
@@ -1958,7 +1958,8 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   # Same portable source operation on native D3D12, no PhysX reference.
   add_library(fyzzxyzzy_source_gpu_primitives_d3d12 STATIC
-    src/physx_gpu/source_fill_d32_native.cpp)
+    src/physx_gpu/source_fill_d32_native.cpp
+    src/physx_gpu/aabb_encoding.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -1966,7 +1967,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
 
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
-     AND FYZZXYZZY_BUILD_SOURCE_GPU_D32_TEST)
+     AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_INDEPENDENT_D32_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.dxil")
@@ -1999,7 +2000,6 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
-    src/physx_gpu/aabb_encoding.cpp
     src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
@@ -2135,7 +2135,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_include_directories(fyzzxyzzy_physx_aabb_encoding_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(fyzzxyzzy_physx_aabb_encoding_d3d12 PRIVATE
-      fyzzxyzzy_physx_gpu_stages_d3d12)
+      fyzzxyzzy_source_gpu_primitives_d3d12)
     add_dependencies(fyzzxyzzy_physx_aabb_encoding_d3d12
       fyzzxyzzy_d3d12_aabb_shader)
     add_test(NAME fyzzxyzzy_physx_aabb_encoding_d3d12
