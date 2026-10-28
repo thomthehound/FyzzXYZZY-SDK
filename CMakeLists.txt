@@ -853,6 +853,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_sap_source_members_independent
       COMMAND fyzzxyzzy_sap_source_members_independent)
 
+    add_executable(fyzzxyzzy_sap_dma_up_independent
+      tests/physx_gpu_sap_dma_up_independent.cpp)
+    target_include_directories(fyzzxyzzy_sap_dma_up_independent PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_sap_dma_up_independent PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
+    add_test(NAME fyzzxyzzy_sap_dma_up_independent
+      COMMAND fyzzxyzzy_sap_dma_up_independent)
+
     set_tests_properties(fyzzxyzzy_owned_pairs_to_sc PROPERTIES SKIP_RETURN_CODE 77)
 
 
@@ -3093,6 +3103,21 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
     add_test(NAME fyzzxyzzy_sap_source_members_independent_d3d12
       COMMAND fyzzxyzzy_sap_source_members_independent_d3d12)
+
+    add_executable(fyzzxyzzy_sap_dma_up_independent_d3d12
+      tests/physx_gpu_sap_dma_up_independent.cpp)
+    target_compile_definitions(
+      fyzzxyzzy_sap_dma_up_independent_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(
+      fyzzxyzzy_sap_dma_up_independent_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(
+      fyzzxyzzy_sap_dma_up_independent_d3d12 PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_test(NAME fyzzxyzzy_sap_dma_up_independent_d3d12
+      COMMAND fyzzxyzzy_sap_dma_up_independent_d3d12)
 
 
 
