@@ -317,7 +317,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
     FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address
     fyzzxyzzy_physx_original_gpu_heap)
@@ -347,7 +349,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer PRIVATE
-      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
+      FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib fyzzxyzzy_physx_gpu_stages)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer
       COMMAND fyzzxyzzy_physx_cuda_host_transfer)
 
@@ -1965,7 +1967,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
     "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include")
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
+    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
   target_link_libraries(fyzzxyzzy_physx_gpu_stages_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 physx_lib fyzzxyzzy_physx_cuda_host_address
     fyzzxyzzy_physx_original_gpu_heap)
@@ -1986,7 +1990,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
       "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
     target_link_libraries(fyzzxyzzy_physx_cuda_host_transfer_d3d12 PRIVATE
-      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib)
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address fyzzxyzzy_physx_original_gpu_heap physx_lib fyzzxyzzy_physx_gpu_stages_d3d12)
     add_test(NAME fyzzxyzzy_physx_cuda_host_transfer_d3d12
       COMMAND fyzzxyzzy_physx_cuda_host_transfer_d3d12)
     add_executable(fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12

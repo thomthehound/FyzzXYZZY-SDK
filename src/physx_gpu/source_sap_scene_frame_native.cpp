@@ -1,11 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_scene_frame_native.h"
+#include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
+#include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
 #include <stdexcept>
 #include <utility>
 
 namespace fyzz::physx_gpu {
+void validate_source_sap_owned_aabb_aliases_native(
+    PxgAabbSourceMembersNative& owner,
+    const SourceSapAabbManagerPreUpdateNative& pre,
+    std::span<BodyId> volume_to_actor) {
+    const auto lifetime=owner.actor_lifetime();
+    const auto added=owner.added_report_bitmap();
+    const auto removed=owner.removed_report_bitmap();
+    if(volume_to_actor.data()!=lifetime.volume_to_actor.data() ||
+       volume_to_actor.size()!=lifetime.volume_to_actor.size() ||
+       pre.volume_data.data()!=lifetime.volume_data.data() ||
+       pre.volume_data.size()!=lifetime.volume_data.size() ||
+       pre.added.words.data()!=added.host_words.data() ||
+       pre.added.words.size()!=added.host_words.size() ||
+       pre.removed.words.data()!=removed.host_words.data() ||
+       pre.removed.words.size()!=removed.host_words.size())
+        throw std::invalid_argument(
+            "Source SAP frame does not borrow its original AABB manager owner");
+}
+
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,
     SourceSapDmaNative& stream,
@@ -13,6 +34,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
     compute::Context& context) {
+
+    if(members.aabb_owner)
+        validate_source_sap_owned_aabb_aliases_native(
+            *members.aabb_owner,members.aabb_manager,members.volume_to_actor);
 
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
@@ -51,9 +76,18 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // Complete both source bitmap D32 view validations before reporting
     // success to Sc. Reserve the following GPU command queue now so
     // post-fetch retirement cannot allocate after history publication.
+    // Original PxgCudaBuffer allocations may be resized by this very
+    // frame's preBpUpdate_GPU. Fetch report bitmap pointers from the
+    // persistent owner NOW, never from a view cached before GPU DMA.
+    const auto added_bitmap=members.aabb_owner
+        ? members.aabb_owner->added_report_bitmap()
+        : members.added_bitmap;
+    const auto removed_bitmap=members.aabb_owner
+        ? members.aabb_owner->removed_report_bitmap()
+        : members.removed_bitmap;
     auto bitmap_retirement=prepare_source_sap_aabb_report_retirement_native(
         stream,members.bitmap_fill,addresses,
-        members.added_bitmap,members.removed_bitmap);
+        added_bitmap,removed_bitmap);
     auto& pending=stream.commands();
     pending.reserve(pending.size()+bitmap_retirement.commands.size());
 
@@ -91,8 +125,53 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // dispatches are enqueued on the SAME stream; no fetch-time host wait.
     commit_source_sap_aabb_report_retirement_native(
         stream,std::move(bitmap_retirement));
-    retire_source_sap_volume_actor_lifetime_native(
-        volume_lifetime,members.aabb_update);
+    if(members.aabb_owner) {
+        // PxgAABBManager's original report-processing and fetch boundary
+        // retires added/removed/changed host maps and its dirty flags.
+        // Leave this state untouched on any earlier failed GPU/Sc fetch.
+        members.aabb_owner->complete_fetch(members.aabb_update);
+    }else {
+        retire_source_sap_volume_actor_lifetime_native(
+            volume_lifetime,members.aabb_update);
+    }
     return {admission,fetched};
+}
+
+SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
+    PxgAabbSourceMembersNative& aabb,
+    PxgSapSourceMembersNative& sap,
+    SourceSapOwnedSceneFrameNativeInputs inputs,
+    SourceSapDmaNative& stream,
+    const SourceSapUpdateNativeStages& stages,
+    const CudaDeviceAddressMap& addresses,
+    compute::Context& context) {
+
+    // The original Sc/ElementSim handles and PxgAABBManager-owned
+    // VolumeData, groups, bounds and delta bitmaps define this frame.
+    // No SAP-local handle allocator or second geometry/identity history.
+    const auto update=aabb.prepare(
+        inputs.live_boxes,inputs.live_handles,inputs.filter);
+    const auto lifetime=aabb.actor_lifetime();
+    // SourceSapSceneFrameNativeMembers borrows this view by reference;
+    // keep the borrowed original member aliases alive through GPU fetch.
+    const auto pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
+    const SourceSapSceneFrameNativeMembers members{
+        update,
+        pre_update,
+        sap.dma_up_members(nullptr,inputs.mapped_reports),
+        inputs.update,
+        sap.fetch_histories(),
+        {sap.mapped_found_actor_pairs(),sap.max_found_lost_pairs()},
+        {sap.mapped_lost_actor_pairs(),sap.max_found_lost_pairs()},
+        lifetime.volume_to_actor,
+        inputs.found,inputs.lost,
+        inputs.bitmap_fill,
+        {},{}, // bitmap device aliases resolve after preBpUpdate_GPU
+        &inputs.mapped_reports,
+        inputs.abort_mode,
+        &aabb
+    };
+    return advance_source_sap_scene_frame_native(
+        members,stream,sap.force_update(),stages,addresses,context);
 }
 } // namespace fyzz::physx_gpu
