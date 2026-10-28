@@ -211,6 +211,64 @@ struct GpuSapSceneAdmissionFixture {
                 "GPU SAP non-dynamic filter masked malformed raw reports");
     }
 
+    static void verify_gpu_lost_after_kinematic_transition() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const BodyId dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1,0},1.0f);
+        const BodyId fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.25f,1,0});
+        const Pair pair{std::min(dynamic,fixed),std::max(dynamic,fixed)};
+        gpu->set({pair},{});
+        scene.advance_collision();
+        if(scene.pairs().size()!=1u || scene.contacts().empty())
+            throw std::runtime_error(
+                "GPU SAP failed to establish the dynamic contact");
+
+        // The source lost report still retires the previously admitted
+        // Sc interaction after its only dynamic actor changes class.
+        scene.set_kinematic(dynamic,true);
+        scene.set_position(dynamic,{8,1,0});
+        gpu->set({},{pair});
+        scene.advance_collision();
+        if(gpu->rollbacks!=0u || !scene.pairs().empty() ||
+           scene.lost_pairs().size()!=1u || scene.lost_pairs()[0]!=pair ||
+           !scene.contacts().empty() ||
+           scene.broadphase_endpoint_full_sort_count()!=0 ||
+           !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "GPU SAP lost report retained a kinematic Sc contact edge");
+
+        // In contrast, an overlap which was never admitted to Sc must
+        // not be retired merely because an actor is dynamic *now*.
+        Scene ignored;
+        auto ignored_producer=std::make_unique<FetchedReports>();
+        auto* ignored_gpu=ignored_producer.get();
+        ignored.set_gpu_broadphase(std::move(ignored_producer));
+        const BodyId actor=ignored.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0,1,0},1.0f);
+        const BodyId stationary=ignored.add_static_box(
+            {0.5f,0.5f,0.5f},{0.25f,1,0});
+        const Pair ignored_pair{
+            std::min(actor,stationary),std::max(actor,stationary)};
+        ignored.set_kinematic(actor,true);
+        ignored_gpu->set({ignored_pair},{});
+        ignored.advance_collision();
+        if(!ignored.pairs().empty())
+            throw std::runtime_error(
+                "Non-dynamic GPU overlap entered Sc history");
+        ignored.set_kinematic(actor,false);
+        ignored.set_position(actor,{8,1,0});
+        ignored_gpu->set({},{ignored_pair});
+        ignored.advance_collision();
+        if(ignored_gpu->rollbacks!=0u ||
+           !ignored.pairs().empty() || !ignored.lost_pairs().empty())
+            throw std::runtime_error(
+                "Never-admitted GPU overlap produced an Sc lost pair");
+    }
+
     static void verify_bulk_pair_reports() {
         // Exercise both bulk ordered-history walks and sparse binary
         // lookups through the actual Sc/Gu publication boundary.
@@ -14537,6 +14595,7 @@ int main() {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_lost_after_kinematic_transition();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_bulk_pair_reports();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
