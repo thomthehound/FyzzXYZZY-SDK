@@ -54,6 +54,15 @@ struct SourceSapUpdateNativeFrame {
     CudaDeviceAddressMap::Address device_descriptor=0;
 };
 
+// Derive stage views from this frame's actual source gpuDMAUp counts and
+// resident descriptor. The production owner never supplies test-sized
+// addresses or capacities for its native GPU execution.
+SourceSapUpdateNativeFrame make_source_sap_update_frame_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    const SourceSapGpuDMAUpCounts& counts,
+    const physx::PxgBroadPhaseDesc& descriptor,
+    CudaDeviceAddressMap::Address device_descriptor);
+
 // A single native lowering of the source update() call, AFTER gpuDMAUp.
 // The complete GPU command sequence is built before ANY command is
 // appended to mStream, and before PhysX ownership/force-update state

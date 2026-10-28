@@ -284,13 +284,21 @@ void execute(Context& context, ShaderBinary translateShader,
                 return static_cast<CudaDeviceAddressMap::Address>(
                     reinterpret_cast<std::uintptr_t>(ptr));
             };
-            const SourceSapTranslateAabbsNativeInput translation{
-                gpu_address(descriptor.updateData_fpBounds),
-                gpu_address(descriptor.newIntegerBounds),
-                gpu_address(descriptor.updateData_contactDistances),
-                0u,
-                {3u, 4u, 4u, 4u, 0u, 0u, 0u}
-            };
+            const auto sourceFrame=make_source_sap_update_frame_native(
+                update,admission.counts,descriptor,
+                dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
+            require(sourceFrame.translation.encoding.count==3u &&
+                    sourceFrame.translation.encoding.shift_x==4u &&
+                    sourceFrame.translation.new_integer_bounds==
+                        gpu_address(descriptor.newIntegerBounds) &&
+                    sourceFrame.new_pairs.new_bounds.current_boxes==3u &&
+                    sourceFrame.new_pairs.new_bounds.region_work_capacity==192u &&
+                    sourceFrame.new_pairs.histograms.projection_slots==6u &&
+                    sourceFrame.reports.volume_capacity==aabb.capacity() &&
+                    sourceFrame.reports.descriptor==
+                        dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
+                    "Production GPU update layout did not use source DMA owners");
+            const auto translation=sourceFrame.translation;
             const auto boundsView = addresses.resolve(
                 translation.fp_bounds, 3u*sizeof(physx::PxBounds3));
             const auto distanceView = addresses.resolve(
@@ -310,7 +318,7 @@ void execute(Context& context, ShaderBinary translateShader,
             // Original markCreatedPairsKernel consumes the integer bounds
             // written by the preceding translateAABBsKernel, without an
             // intervening CPU download or an independent staging buffer.
-            createdStage.append(commands, descriptor, addresses, {3u, 8u});
+            createdStage.append(commands, descriptor, addresses, sourceFrame.created);
             require(commands.size() == 2u &&
                     std::get<DispatchCommand>(commands[0]).buffers.size() == 4u &&
                     std::get<DispatchCommand>(commands[1]).groups.x == 32u &&

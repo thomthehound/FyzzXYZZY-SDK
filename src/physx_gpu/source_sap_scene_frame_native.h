@@ -77,6 +77,8 @@ struct SourceSapOwnedSceneFrameNativeInputs {
     std::span<const native::GpuBroadphaseBox> live_boxes;
     std::span<const physx::Bp::ShapeHandle> live_handles;
     const physx::Bp::BpFilter& filter;
+    // An empty layout derives directly from the source GPU DMA result;
+    // explicit layouts are reserved for targeted contract tests.
     const SourceSapUpdateNativeFrame& update;
     std::vector<native::Pair>& found;
     std::vector<native::Pair>& lost;
