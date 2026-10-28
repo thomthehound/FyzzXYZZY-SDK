@@ -250,6 +250,62 @@ target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon")
 target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC physx_lib)
+else()
+# Source-owned original PhysX Foundation and GPU buddy heap, independent
+# of the reference PhysX checkout and CUDA. Both implement the original
+# allocation and synchronization contracts.
+set(FYZZXYZZY_OWNED_FOUNDATION_SOURCES
+  src/physx_port/foundation_source/FdAllocator.cpp
+  src/physx_port/foundation_source/FdAssert.cpp
+  src/physx_port/foundation_source/FdFoundation.cpp
+  src/physx_port/foundation_source/FdMathUtils.cpp
+  src/physx_port/foundation_source/FdString.cpp
+  src/physx_port/foundation_source/FdTempAllocator.cpp)
+if(WIN32)
+  list(APPEND FYZZXYZZY_OWNED_FOUNDATION_SOURCES
+    src/physx_port/foundation_source/windows/FdWindowsAtomic.cpp
+    src/physx_port/foundation_source/windows/FdWindowsFPU.cpp
+    src/physx_port/foundation_source/windows/FdWindowsMutex.cpp
+    src/physx_port/foundation_source/windows/FdWindowsPrintString.cpp
+    src/physx_port/foundation_source/windows/FdWindowsSList.cpp
+    src/physx_port/foundation_source/windows/FdWindowsSocket.cpp
+    src/physx_port/foundation_source/windows/FdWindowsSync.cpp
+    src/physx_port/foundation_source/windows/FdWindowsThread.cpp
+    src/physx_port/foundation_source/windows/FdWindowsTime.cpp)
+else()
+  list(APPEND FYZZXYZZY_OWNED_FOUNDATION_SOURCES
+    src/physx_port/foundation_source/unix/FdUnixAtomic.cpp
+    src/physx_port/foundation_source/unix/FdUnixFPU.cpp
+    src/physx_port/foundation_source/unix/FdUnixMutex.cpp
+    src/physx_port/foundation_source/unix/FdUnixPrintString.cpp
+    src/physx_port/foundation_source/unix/FdUnixSList.cpp
+    src/physx_port/foundation_source/unix/FdUnixSocket.cpp
+    src/physx_port/foundation_source/unix/FdUnixSync.cpp
+    src/physx_port/foundation_source/unix/FdUnixThread.cpp
+    src/physx_port/foundation_source/unix/FdUnixTime.cpp)
+endif()
+add_library(fyzzxyzzy_physx_source_foundation STATIC
+  ${FYZZXYZZY_OWNED_FOUNDATION_SOURCES})
+target_compile_features(fyzzxyzzy_physx_source_foundation PUBLIC cxx_std_23)
+target_compile_definitions(fyzzxyzzy_physx_source_foundation PUBLIC
+  PX_PHYSX_STATIC_LIB)
+target_include_directories(fyzzxyzzy_physx_source_foundation
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/foundation_source")
+target_link_libraries(fyzzxyzzy_physx_source_foundation PUBLIC Threads::Threads)
+
+add_library(fyzzxyzzy_physx_original_gpu_heap STATIC
+  src/physx_port/gpucommon/PxgHeapMemoryAllocator.cpp
+  src/physx_port/gpucommon/PxgHeapMemoryAllocatorManager.cpp
+  src/physx_port/gpucommon/PxgCudaBuffer.cpp)
+target_compile_features(fyzzxyzzy_physx_original_gpu_heap PUBLIC cxx_std_23)
+target_include_directories(fyzzxyzzy_physx_original_gpu_heap PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port/gpucommon")
+target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC
+  fyzzxyzzy_physx_source_foundation)
 endif() # source-port PhysX heap and SAP host fixtures
 
 # Native compute resources and operations do not depend on Godot or PhysX.
@@ -766,6 +822,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_source_gpu_primitives)
     add_test(NAME fyzzxyzzy_owned_source_roots
       COMMAND fyzzxyzzy_owned_source_roots)
+
+    add_executable(fyzzxyzzy_original_gpu_heap_independent
+      tests/physx_original_gpu_heap_independent.cpp)
+    target_include_directories(fyzzxyzzy_original_gpu_heap_independent PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_original_gpu_heap_independent PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
+    add_test(NAME fyzzxyzzy_original_gpu_heap_independent
+      COMMAND fyzzxyzzy_original_gpu_heap_independent)
 
     set_tests_properties(fyzzxyzzy_owned_pairs_to_sc PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -2980,6 +3046,18 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_source_gpu_primitives_d3d12)
     add_test(NAME fyzzxyzzy_owned_source_roots_d3d12
       COMMAND fyzzxyzzy_owned_source_roots_d3d12)
+
+    add_executable(fyzzxyzzy_original_gpu_heap_independent_d3d12
+      tests/physx_original_gpu_heap_independent.cpp)
+    target_compile_definitions(fyzzxyzzy_original_gpu_heap_independent_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_original_gpu_heap_independent_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_original_gpu_heap_independent_d3d12 PRIVATE
+      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_test(NAME fyzzxyzzy_original_gpu_heap_independent_d3d12
+      COMMAND fyzzxyzzy_original_gpu_heap_independent_d3d12)
 
 
 
