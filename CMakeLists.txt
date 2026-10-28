@@ -901,10 +901,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_executable(fyzzxyzzy_physx_cuda_aabb_launch
         tests/physx_gpu_cuda_aabb_launch.cpp)
       target_include_directories(fyzzxyzzy_physx_cuda_aabb_launch PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
-        "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
       target_link_libraries(fyzzxyzzy_physx_cuda_aabb_launch PRIVATE
-        fyzzxyzzy_physx_gpu_stages fyzzxyzzy_physx_cuda_host_address)
+        fyzzxyzzy_source_gpu_primitives)
       add_dependencies(fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_physx_aabb_shader)
       add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch
         COMMAND fyzzxyzzy_physx_cuda_aabb_launch
@@ -3056,10 +3055,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_definitions(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src"
-      "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(fyzzxyzzy_physx_cuda_aabb_launch_d3d12 PRIVATE
-      fyzzxyzzy_physx_gpu_stages_d3d12 fyzzxyzzy_physx_cuda_host_address)
+      fyzzxyzzy_source_gpu_primitives_d3d12)
     add_dependencies(fyzzxyzzy_physx_cuda_aabb_launch_d3d12
       fyzzxyzzy_d3d12_aabb_shader)
     add_test(NAME fyzzxyzzy_physx_cuda_aabb_launch_d3d12
