@@ -876,8 +876,11 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Second PhysX update did not preserve the three live shapes");
             const auto& nextDesc=sap.descriptor();
             const auto nextGpu=nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
-            require(nextDesc.aabbMngr_changedHandleBitMapWordCounts>0u&&
-                    nextDesc.aabbMngr_changedHandleMap!=nullptr&&
+            require(nextDesc.aabbMngr_changedHandleBitMapWordCounts==1u&&
+                    gpu_address(nextDesc.aabbMngr_changedHandleMap)==
+                        changedDevice.getDevicePtr()&&
+                    gpu_address(nextDesc.aabbMngr_volumeData)==
+                        volumeDevice.getDevicePtr()&&
                     nextDesc.boxHandles[1][0]==
                         reinterpret_cast<physx::PxU32*>(
                             historyAddresses[0][0]),
