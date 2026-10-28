@@ -8,8 +8,8 @@
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
-#include "CmPinnableObject.h"
-#include "CmPinnableArray.h"
+#include "physx_port/common/src/CmPinnableObject.h"
+#include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_gpu/source_sap_mapped_report_view.h"
 #include <array>
 #include <cstdint>
