@@ -36,16 +36,39 @@ prepare_source_sap_single_volume_scene_native(
         throw std::invalid_argument(
             "Source SAP Sc bounds do not alias the original AABB manager arrays");
 
-    // The source manager, not geometry publication, admits volumes.
-    // Reject stale/recycled/unadmitted handles before the bounds writer
-    // can install a non-invalid group and accidentally resurrect a shape.
-    for(const auto handle:live_handles) {
+    // The original Sc shape admission installs filtering based on the
+    // Sc rigid actor ID, which may differ from the native report BodyId.
+    // Bounds writes must neither resurrect a retired source volume nor
+    // silently change its static/kinematic/dynamic filter classification.
+    if(live_boxes.size()!=live_handles.size())
+        throw std::invalid_argument(
+            "Source Sc volumes and live geometry counts disagree");
+    for(std::size_t i=0;i<live_handles.size();++i) {
+        const auto handle=live_handles[i];
         if(handle>=manager.volume_data.size() ||
            handle>=manager.groups.size() ||
            manager.groups[handle]==physx::Bp::FilterGroup::eINVALID ||
            !manager.volume_data[handle].isSingleActor())
             throw std::invalid_argument(
                 "Sc box references a volume not admitted by the source AABB manager");
+        const auto group=manager.groups[handle];
+        const auto motion=live_boxes[i].motion;
+        const bool static_group=group==physx::Bp::getFilterGroup_Statics();
+        const auto type=static_cast<physx::PxU32>(group) &
+                        BP_FILTERING_TYPE_MASK;
+        // ScShapeSimBase::getBPGroup intentionally treats kinematics
+        // with forced notifications as DYNAMIC for broadphase filtering.
+        // Both encodings remain authoritative when the body is kinematic.
+        const bool compatible=
+            motion==native::GpuBroadphaseBox::Motion::Static
+                ? static_group
+                : !static_group &&
+                  (type==physx::Bp::FilterType::DYNAMIC ||
+                   (motion==native::GpuBroadphaseBox::Motion::Kinematic &&
+                    type==physx::Bp::FilterType::KINEMATIC));
+        if(!compatible)
+            throw std::invalid_argument(
+                "Source Sc motion does not match admitted PhysX filter group");
     }
 
     collect_source_sap_single_volume_first_pass_native(manager,handles);
@@ -57,6 +80,7 @@ prepare_source_sap_single_volume_scene_native(
     return prepare_source_sap_scene_update(
         live_boxes,live_handles,arrays,changes,filter,
         manager.persistent_state_changed || bounds_changed,
-        manager.gpu_state_changed,scratch);
+        manager.gpu_state_changed,scratch,
+        true); // mGroups is owned by original Sc shape admission.
 }
 } // namespace fyzz::physx_gpu
