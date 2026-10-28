@@ -1158,6 +1158,18 @@ void execute(Context& context, ShaderBinary translateShader,
             SourceScGpuBroadphaseProducerNative producer(
                 aabb,sap,stream,cohesiveStages,addresses,context,
                 filter,fillStage,mappedRoots,scElementHandles);
+            // Sc's element mapping is authoritative. A mismatched handle
+            // must be rejected before SAP mutates or submits any GPU work.
+            scElementHandles[27u]=0u;
+            bool rejectedForeignElement=false;
+            try {
+                (void)producer.advance(readmittedBoxes,false,false);
+            }catch(const std::invalid_argument&) {
+                rejectedForeignElement=true;
+            }
+            scElementHandles[27u]=readmittedHandle;
+            require(rejectedForeignElement && stream.commands().empty(),
+                    "GPU producer accepted a foreign Sc volume identity");
             const auto beforeFourth=stream.submission_stats().command_batches;
             const auto reports=producer.advance(readmittedBoxes,true,true);
             // The owner enqueues source bitmap retirement after report
@@ -1176,6 +1188,18 @@ void execute(Context& context, ShaderBinary translateShader,
                     histories_match(false) &&
                     stream.submission_stats().command_batches>beforeFourth,
                     "Native GPU producer failed source Sc re-admission/fetch");
+            const auto completedBatches=stream.submission_stats().command_batches;
+            producer.invalidate_after_rollback();
+            bool rejectedStaleHistory=false;
+            try {
+                (void)producer.advance(readmittedBoxes,false,false);
+            }catch(const std::logic_error&) {
+                rejectedStaleHistory=true;
+            }
+            require(rejectedStaleHistory &&
+                    stream.submission_stats().command_batches==completedBatches &&
+                    stream.commands().empty(),
+                    "Sc rollback reused invalid source GPU SAP history");
 
             require(manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
