@@ -4,8 +4,8 @@
 #pragma once
 
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
-#include "ScObjectIDTracker.h"
-#include "BpFiltering.h"
+#include "physx_port/simulationcontroller/src/ScObjectIDTracker.h"
+#include "physx_port/lowlevelaabb/include/BpFiltering.h"
 
 #include <limits>
 #include <stdexcept>

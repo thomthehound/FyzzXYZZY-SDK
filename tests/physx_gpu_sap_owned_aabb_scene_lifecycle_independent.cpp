@@ -26,6 +26,7 @@
 #include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
+#include "physx_gpu/source_sc_element_lifecycle_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -229,9 +230,15 @@ void execute(Context& context, ShaderBinary translateShader,
                  fyzz::native::GpuBroadphaseBox::Motion::Dynamic}
             }};
             const std::array<fyzz::BodyId,3> actorIds{17u,3u,9u};
-            for(std::uint32_t i=0u;i<3u;++i)
-                aabb.admit(i,actorIds[i],distances[i],groups[i],
-                           &sourceElements[i]);
+            physx::Sc::ObjectIDTracker elementIds;
+            for(std::uint32_t i=0u;i<3u;++i) {
+                const auto admittedHandle=SourceScElementLifecycleNative::admit(
+                    elementIds,aabb,actorIds[i],i,distances[i],
+                    fyzz::native::GpuBroadphaseBox::Motion::Dynamic,
+                    &sourceElements[i]);
+                require(admittedHandle==created[i],
+                        "Source Sc element tracker diverged from AABB volume handle");
+            }
             const auto scActors=aabb.volume_to_actor();
             const auto update=aabb.prepare(liveBoxes,created,filter);
             const auto sceneBounds=aabb.scene_bounds();
@@ -1009,8 +1016,9 @@ void execute(Context& context, ShaderBinary translateShader,
             // immediately, yet the Sc identity survives through GPU
             // fetch and source report processing.
             const std::array<physx::Bp::ShapeHandle,1> retiredHandles{1u};
-            require(!aabb.remove(1u),
-                    "Published source volume incorrectly canceled its removal");
+            require(!SourceScElementLifecycleNative::remove(
+                        elementIds,aabb,1u) && elementIds.isDeletedID(1u),
+                    "Source Sc element retirement did not defer volume ID reuse");
             const auto lifetimes=aabb.actor_lifetime();
             bool rejectedReuse=false;
             try {
@@ -1123,10 +1131,15 @@ void execute(Context& context, ShaderBinary translateShader,
             require(scActors[1]==std::numeric_limits<fyzz::BodyId>::max()&&
                     scActors[0]==17u&&scActors[2]==9u,
                     "Original AABB source did not retire exactly the removed Sc identity");
-            aabb.admit(1u,27u,distances[1],groups[1],
-                       &sourceElements[1]);
-            require(scActors[1]==27u,
-                    "Original volume handle remained unavailable after GPU fetch");
+            SourceScElementLifecycleNative::post_reports_cleanup(elementIds);
+            require(!elementIds.isDeletedID(1u),
+                    "Source Sc post-report cleanup retained deleted shape identity");
+            const auto readmittedHandle=SourceScElementLifecycleNative::admit(
+                elementIds,aabb,27u,1u,distances[1],
+                fyzz::native::GpuBroadphaseBox::Motion::Dynamic,
+                &sourceElements[1]);
+            require(readmittedHandle==1u && scActors[readmittedHandle]==27u,
+                    "Original Sc element handle was not recycled after GPU fetch");
 
             // Reuse the source handle only after its completed retirement.
             // The cohesive update/fetch consumes its original GPU owners,
