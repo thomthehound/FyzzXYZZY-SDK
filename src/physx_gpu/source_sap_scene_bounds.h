@@ -3,7 +3,7 @@
 #pragma once
 
 #include "native/scene.h"
-#include "BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "foundation/PxBounds3.h"
 #include "foundation/PxMat33.h"
 #include "foundation/PxTransform.h"
