@@ -6,7 +6,7 @@
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "BpAABBManagerBase.h"
-#include "PxgHeapMemAllocator.h"
+#include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 
 #include <limits>
 #include <span>

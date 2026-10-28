@@ -11,9 +11,12 @@
 #include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace fyzz::physx_gpu {
+class PxgAabbSourceMembersNative;
+class PxgSapSourceMembersNative;
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -47,12 +50,49 @@ struct SourceSapSceneFrameNativeMembers {
 
     SourceSapMappedReportView* mapped_reports = nullptr;
     bool abort_mode = false;
+    // When using the persistent source AABB owner, resolve its GPU
+    // bitmap allocations AFTER preBpUpdate_GPU (which can grow them)
+    // and complete its frame only after successful source GPU fetch.
+    PxgAabbSourceMembersNative* aabb_owner = nullptr;
 };
 
 struct SourceSapSceneFrameNativeResult {
     SourceSapUpdateAdmission update;
     SourceSapFetchedCounts fetch;
 };
+
+// Both source-owner view aliases are verified before any GPU work. The
+// references are original PhysX AABB manager allocations; no registry,
+// lookup loop, or per-frame copy of the source identity table is required.
+void validate_source_sap_owned_aabb_aliases_native(
+    PxgAabbSourceMembersNative& owner,
+    const SourceSapAabbManagerPreUpdateNative& pre,
+    std::span<BodyId> volume_to_actor);
+
+// Full source-owner boundary: admission, one GPU preBroadPhase / gpuDMAUp,
+// source kernel update/fetch, bitmap retirement and AABB frame completion.
+// The original Sc scene retains its element ID tracker until its own
+// postReportsCleanup, after all Sc reports have been consumed.
+struct SourceSapOwnedSceneFrameNativeInputs {
+    std::span<const native::GpuBroadphaseBox> live_boxes;
+    std::span<const physx::Bp::ShapeHandle> live_handles;
+    const physx::Bp::BpFilter& filter;
+    const SourceSapUpdateNativeFrame& update;
+    std::vector<native::Pair>& found;
+    std::vector<native::Pair>& lost;
+    const SourceFillD32NativeStage& bitmap_fill;
+    SourceSapMappedReportView& mapped_reports;
+    bool abort_mode=false;
+};
+
+SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
+    PxgAabbSourceMembersNative& aabb,
+    PxgSapSourceMembersNative& sap,
+    SourceSapOwnedSceneFrameNativeInputs inputs,
+    SourceSapDmaNative& stream,
+    const SourceSapUpdateNativeStages& stages,
+    const CudaDeviceAddressMap& addresses,
+    compute::Context& context);
 
 // Called by the original source owner at its update/fetch boundary.
 // Sc geometry preparation and the AABB manager's handle/bitmap first
