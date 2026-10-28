@@ -149,6 +149,68 @@ struct GpuSapSceneAdmissionFixture {
                 "Quiet GPU SAP membership rebuilt Sc pairs or skipped moving PCM contacts");
     }
 
+    static void verify_gpu_nondynamic_report_filter() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const auto a=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f});
+        const auto b=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.2f,1.0f,0.0f});
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.4f,1.0f,0.0f},1.0f);
+        const auto k0=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.3f,1.0f,0.0f},1.0f);
+        const auto k1=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.3f,1.0f,0.0f},1.0f);
+        scene.set_kinematic(k0,true);
+        scene.set_kinematic(k1,true);
+        const Pair static_static={a,b};
+        const Pair static_dynamic={a,dynamic};
+        const Pair static_kinematic={a,k0};
+        const Pair kinematic_kinematic={k0,k1};
+        // The source SAP legitimately reports all four overlaps;
+        // only the pair containing a dynamic actor has an Sc manager.
+        gpu->set({static_static,static_dynamic,static_kinematic,
+                  kinematic_kinematic},{});
+        scene.advance_collision();
+        if(gpu->rollbacks!=0u || scene.pairs().size()!=1u ||
+           scene.pairs()[0]!=static_dynamic ||
+           scene.found_pairs().size()!=1u ||
+           scene.found_pairs()[0]!=static_dynamic)
+            throw std::runtime_error(
+                "GPU SAP non-dynamic found reports escaped Sc participant filtering");
+        const auto edge=scene.contact_edge_index(static_dynamic);
+        // A report containing only non-dynamic lost pairs must not
+        // rebuild the dynamic contact manager or invalidate the GPU.
+        gpu->set({},{static_static,static_kinematic,kinematic_kinematic});
+        scene.advance_collision();
+        if(gpu->rollbacks!=0u || scene.pairs().size()!=1u ||
+           scene.pairs()[0]!=static_dynamic ||
+           scene.contact_edge_index(static_dynamic)!=edge ||
+           !scene.found_pairs().empty() || !scene.lost_pairs().empty())
+            throw std::runtime_error(
+                "Non-dynamic GPU lost reports changed an existing Sc contact edge");
+        gpu->set({},{static_static,static_dynamic,static_kinematic,
+                       kinematic_kinematic});
+        scene.advance_collision();
+        if(gpu->rollbacks!=0u || !scene.pairs().empty() ||
+           scene.lost_pairs().size()!=1u ||
+           scene.lost_pairs()[0]!=static_dynamic)
+            throw std::runtime_error(
+                "Mixed GPU lost reports failed Sc dynamic-pair retirement");
+        // Filtering is not allowed to hide unsorted or duplicated
+        // source GPU records, even when those records are ineligible.
+        gpu->set({static_static,static_static},{});
+        bool rejected=false;
+        try {scene.advance_collision();}
+        catch(const std::invalid_argument&){rejected=true;}
+        if(!rejected || gpu->rollbacks!=1u || !scene.pairs().empty())
+            throw std::runtime_error(
+                "GPU SAP non-dynamic filter masked malformed raw reports");
+    }
+
     static void verify_bulk_pair_reports() {
         // Exercise both bulk ordered-history walks and sparse binary
         // lookups through the actual Sc/Gu publication boundary.
@@ -14474,6 +14536,7 @@ int main() {
     try {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_bulk_pair_reports();
     fyzz::native::SourceSapEndpointFixture::verify();
     fyzz::native::SourceSapEndpointFixture::verify_pair_manager_states();
