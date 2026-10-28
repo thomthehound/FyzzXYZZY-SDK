@@ -205,6 +205,27 @@ if(BUILD_TESTING)
     COMMAND fyzzxyzzy_physx_cuda_address_test)
 endif()
 
+# The original PhysX broadphase filter is independent of GPU API and the
+# reference PhysX binary. Keep its source code and pair-policy regression
+# in both independent Vulkan and D3D12 builds, not the CPU oracle.
+if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  add_library(fyzzxyzzy_physx_source_bp_filter STATIC
+    src/physx_port/lowlevelaabb/src/BpFiltering.cpp)
+  target_compile_features(fyzzxyzzy_physx_source_bp_filter PUBLIC cxx_std_23)
+  target_include_directories(fyzzxyzzy_physx_source_bp_filter PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+  add_executable(fyzzxyzzy_physx_source_bp_filter_test
+    tests/physx_source_bp_filter_independent.cpp)
+  target_include_directories(fyzzxyzzy_physx_source_bp_filter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+  target_link_libraries(fyzzxyzzy_physx_source_bp_filter_test PRIVATE
+    fyzzxyzzy_physx_source_bp_filter)
+  add_test(NAME fyzzxyzzy_physx_source_bp_filter_test
+    COMMAND fyzzxyzzy_physx_source_bp_filter_test)
+endif()
+
 if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
 # Original PhysX GPU buddy heap source, owned by this independent engine.
 # This is a source port with an injected generic virtual root callback and
