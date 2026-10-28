@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+# SPDX-License-Identifier: Apache-2.0
+name: Alternating source SAP batch validation
+on:
+  push:
+    branches:
+      - ci/sap-audit-alternating-profile-131
+jobs:
+  native-source-batches:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install native Vulkan packages
+        run: bash .github/scripts/install-vulkan.sh
+      - name: Install DXC
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
+            -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/dxc"
+          tar -xzf "${RUNNER_TEMP}/linux-dxc.tar.gz" -C "${RUNNER_TEMP}/dxc"
+          echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
+      - name: Configure original source GPU stages
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+      - name: Build original source and Sc tests
+        run: cmake --build build --target fyzzxyzzy_physx_source_sap_radix_native fyzzxyzzy_native_multi_resource fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_source_sap_scene_boundary fyzzxyzzy_native_scene_smoke --parallel 4
+      - name: Run source GPU and Sc conformance
+        shell: bash
+        run: |
+          ctest --test-dir build -R fyzzxyzzy_physx_source_sap_radix_native --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_native_multi_resource --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_physx_cuda_host_transfer --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_physx_source_sap_scene_boundary --output-on-failure
+          ctest --test-dir build -R fyzzxyzzy_native_scene_smoke --output-on-failure
+      - name: Compare alternating PhysX WR radix command sequences
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          prior="$(git log -2 --format=%H -- src/compute_vulkan.cpp | tail -n 1)"
+          for pass in 1 2; do
+            git show "${prior}:src/compute_vulkan.cpp" > src/compute_vulkan.cpp
+            echo "===== completed LIFO cache / pass ${pass} ====="
+            cmake --build build --target fyzzxyzzy_source_sap_radix_profile_alternating_vulkan --parallel 4
+            git restore -- src/compute_vulkan.cpp
+            echo "===== pipeline-matched native cache / pass ${pass} ====="
+            cmake --build build --target fyzzxyzzy_source_sap_radix_profile_alternating_vulkan --parallel 4
+          done
