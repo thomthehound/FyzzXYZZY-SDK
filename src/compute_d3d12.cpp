@@ -297,6 +297,9 @@ struct Context::Impl {
     // Completed command allocator/list and descriptor heap reuse. Never
     // recycle an in-flight allocation: D3D12 Reset requires GPU completion.
     std::vector<Submission> recycled;
+    // The largest completed source relocation scratch can serve later
+    // submissions. In-flight command lists retain their own allocation.
+    ComPtr<ID3D12Resource> completed_copy_scratch;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -399,7 +402,14 @@ struct Context::Impl {
 
     void recycle_completed(Submission&& submission) {
         submission.owned_upload.Reset(); // GPU completed; staging no longer referenced.
-        submission.owned_copy_scratch.clear(); // GPU-local copies completed.
+        if (!submission.owned_copy_scratch.empty()) {
+            auto& candidate = submission.owned_copy_scratch.front();
+            if (candidate &&
+                (!completed_copy_scratch ||
+                 candidate->GetDesc().Width > completed_copy_scratch->GetDesc().Width))
+                completed_copy_scratch = std::move(candidate);
+            submission.owned_copy_scratch.clear();
+        }
         // The caller must first wait for the submission fence. A cached heap
         // keeps its descriptors only until the next recording overwrites them.
         if (recycled.size() < kMaxRecycled)
@@ -974,11 +984,19 @@ struct Context::Impl {
         // buffer. All such copies in this command batch can share one
         // device-local scratch allocation, with ordered state transitions
         // between uses. Keep it fence-owned by the original submission.
-        if (same_resource_copy_scratch_bytes)
-            submission.owned_copy_scratch.push_back(allocate_resource(
-                device.Get(), same_resource_copy_scratch_bytes,
-                D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST));
+        if (same_resource_copy_scratch_bytes) {
+            ComPtr<ID3D12Resource> scratch;
+            if (completed_copy_scratch &&
+                completed_copy_scratch->GetDesc().Width >=
+                    same_resource_copy_scratch_bytes)
+                scratch = std::move(completed_copy_scratch);
+            else
+                scratch = allocate_resource(
+                    device.Get(), same_resource_copy_scratch_bytes,
+                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            submission.owned_copy_scratch.push_back(std::move(scratch));
+        }
         bool scratch_in_source_state = false;
         if (profile) {
             D3D12_QUERY_HEAP_DESC desc{};
@@ -1191,6 +1209,11 @@ struct Context::Impl {
             transition(submission.commands.Get(), get_buffer(entry.first).resource.Get(),
                        entry.second.state, D3D12_RESOURCE_STATE_COMMON);
         }
+        if (scratch_in_source_state)
+            transition(submission.commands.Get(),
+                       submission.owned_copy_scratch.front().Get(),
+                       D3D12_RESOURCE_STATE_COPY_SOURCE,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
         if (profile) {
             submission.commands->EndQuery(submission.query_heap.Get(),
                                            D3D12_QUERY_TYPE_TIMESTAMP, 1);
