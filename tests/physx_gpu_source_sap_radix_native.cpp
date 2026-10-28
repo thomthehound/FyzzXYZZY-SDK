@@ -198,7 +198,8 @@ void run(Context& context,const SourceSapRadixNativeStage& stage,
 // sortProjectionAndHandlesWR stage, not an invented complete SAP frame.
 // Upload/reset, pipeline creation and allocation are outside all samples.
 void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
-                      std::uint32_t boxes) {
+                      std::uint32_t boxes,
+                      const SourceSapRadixNativeStage* interleaved=nullptr) {
     using Clock=std::chrono::steady_clock;
     constexpr std::size_t axes=3u, fields=7u, hist_words=512u;
     const std::uint32_t keys=boxes*2u;
@@ -295,16 +296,26 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
             host_submit.push_back(elapsed_us(prepared,queued));
             host_submit_wait.push_back(elapsed_us(prepared,completed));
         }
-        if(!timestamp_supported)continue;
-        // A separate reset and timestamped replay measures GPU queue work
-        // without conflating its blocking host wait with CPU submission.
-        context.upload(root,0u,initial.data(),bytes);
-        const auto gpu_ns=context.profile_batch_gpu_nanoseconds(commands);
-        if(!gpu_ns) {
-            timestamp_supported=false;
-            gpu_us.clear();
-        } else if(trial>=warmup) {
-            gpu_us.push_back(*gpu_ns*0.001);
+        if(timestamp_supported) {
+            // Reset/timestamp replay is independent of the CPU timing.
+            context.upload(root,0u,initial.data(),bytes);
+            const auto gpu_ns=context.profile_batch_gpu_nanoseconds(commands);
+            if(!gpu_ns) {
+                timestamp_supported=false;
+                gpu_us.clear();
+            } else if(trial>=warmup) {
+                gpu_us.push_back(*gpu_ns*0.001);
+            }
+        }
+        if(interleaved) {
+            // Original WR radix commands from a second PhysX stage must
+            // retain their own completed descriptor sets across frames.
+            // Neither this submission nor its wait is part of the sample.
+            std::vector<BatchCommand> other;
+            interleaved->append_wr(other,source,radix,map,boxes);
+            require(other.size()==18u,
+                    "Interleaved source WR radix command topology changed");
+            context.wait_submission(context.submit_batch(other));
         }
     }
     // The measured real GPU stage must still produce source-correct
@@ -343,12 +354,12 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
         std::printf(
             "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
             " boxes=%u commands=18 trials=%zu"
-            " wave_count=%u wave_scatter=%u"
+            " interleaved=%u wave_count=%u wave_scatter=%u"
             " median_host_append_us=%.3f median_host_submit_us=%.3f"
             " median_submit_wait_us=%.3f median_gpu_batch_us=%.3f"
             " timed_upload_reset=no gpu_timestamp_replay=yes\n",
             backend,device.name.c_str(),boxes,trials,
-            stage.using_wave_count()?1u:0u,
+            interleaved?1u:0u,stage.using_wave_count()?1u:0u,
             stage.using_wave_scatter()?1u:0u,
             median(host_append),median(host_submit),
             median(host_submit_wait),median(gpu_us));
@@ -356,12 +367,12 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
         std::printf(
             "source_sap_profile scope=wr_radix backend=%s device=\"%s\""
             " boxes=%u commands=18 trials=%zu"
-            " wave_count=%u wave_scatter=%u"
+            " interleaved=%u wave_count=%u wave_scatter=%u"
             " median_host_append_us=%.3f median_host_submit_us=%.3f"
             " median_submit_wait_us=%.3f median_gpu_batch_us=unavailable"
             " timed_upload_reset=no gpu_timestamp_replay=yes\n",
             backend,device.name.c_str(),boxes,trials,
-            stage.using_wave_count()?1u:0u,
+            interleaved?1u:0u,stage.using_wave_count()?1u:0u,
             stage.using_wave_scatter()?1u:0u,
             median(host_append),median(host_submit),
             median(host_submit_wait));
@@ -369,9 +380,13 @@ void profile_wr_radix(Context& context,const SourceSapRadixNativeStage& stage,
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=7 && (argc!=8 || std::string_view(argv[7])!="--benchmark"))
+        const bool benchmark=argc==8 &&
+            std::string_view(argv[7])=="--benchmark";
+        const bool benchmark_alternating=argc==8 &&
+            std::string_view(argv[7])=="--benchmark-alternating";
+        if(argc!=7 && !benchmark && !benchmark_alternating)
             throw std::invalid_argument(
-                "Require six source radix shaders and optional --benchmark");
+                "Require six source radix shaders and optional profiling mode");
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
 #else
@@ -386,11 +401,16 @@ int main(int argc,char** argv) {
         run(context,stage,true,false);
         run(context,portable,false,true);
         std::cout<<"Source WR/WOR stable radix, ranks and original handles PASS\n";
-        if(argc==8) {
+        if(benchmark) {
             profile_wr_radix(context,stage,256u);
             profile_wr_radix(context,portable,256u);
             profile_wr_radix(context,stage,4096u);
             profile_wr_radix(context,portable,4096u);
+        } else if(benchmark_alternating) {
+            profile_wr_radix(context,stage,256u,&portable);
+            profile_wr_radix(context,portable,256u,&stage);
+            profile_wr_radix(context,stage,4096u,&portable);
+            profile_wr_radix(context,portable,4096u,&stage);
         }
     }catch(const std::exception& e) {
         std::cerr<<"Source WR/WOR radix GPU FAILED: "<<e.what()<<'\n';
