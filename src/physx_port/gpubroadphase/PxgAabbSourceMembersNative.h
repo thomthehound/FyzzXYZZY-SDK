@@ -7,7 +7,9 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
-#include "physx_port/lowlevelaabb/include/BpAABBManagerBase.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpVolumeData.h"
+#include "foundation/PxBitUtils.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 
 #include <limits>
@@ -52,10 +54,16 @@ public:
         if(count<=bounds_.size())return;
         if(count>=BP_INVALID_BP_HANDLE-1u)
             throw std::out_of_range("Source AABB volume capacity exceeds PhysX handle range");
-        // The source BoundsArray grows to a power of two and retains a
-        // SIMD-readable extra slot. Its size is the Bp update capacity.
-        if(!bounds_.initEntry(count-1u))
-            throw std::bad_alloc();
+        // Bp::BoundsArray::initEntry increments the requested index and
+        // reserves a power-of-two PinnableArray, including the source's
+        // SIMD-readable extra slot. Retain its ORIGINAL backing storage
+        // without including AABBManagerBase's reference-only GuBounds API.
+        if(count>=bounds_.size()) {
+            const auto capacity=physx::PxNextPowerOfTwo(count);
+            if(!bounds_.reserve(capacity))
+                throw std::bad_alloc();
+            bounds_.forceSize_Unsafe(capacity);
+        }
         const auto capacity=bounds_.size();
         const auto prior=volumes_.size();
         groups_.resize(capacity);
@@ -136,7 +144,7 @@ public:
         }
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
-            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_);
+            scene_bounds(),filter,bounds_changed_,bounds_scratch_);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
         return update;
@@ -170,17 +178,19 @@ public:
         changed_.clear();
         persistent_state_changed_=false;
         gpu_state_changed_=false;
-        bounds_.resetChangedState();
+        bounds_changed_=false;
     }
 
     physx::PxU32 capacity() const noexcept {return bounds_.size();}
-    const physx::Bp::BoundsArray& source_bounds() const noexcept {return bounds_;}
+    const physx::Cm::PinnableArray<physx::PxBounds3>& source_bounds() const noexcept {return bounds_;}
     physx::Cm::PinnableBitMap& source_added() noexcept {return added_;}
     physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
 private:
-    physx::Bp::BoundsArray bounds_;
+    // Bp::BoundsArray::mBounds. BoundsArray is a virtual host wrapper;
+    // its backing PinnableArray is the source-owned Sc/Bp storage.
+    physx::Cm::PinnableArray<physx::PxBounds3> bounds_;
     physx::Cm::PinnableArray<physx::PxReal> distances_;
     physx::Cm::PinnableArray<physx::Bp::FilterGroup::Enum> groups_;
     physx::Cm::PinnableArray<physx::Bp::VolumeData> volumes_;
@@ -191,6 +201,7 @@ private:
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
+    bool bounds_changed_=true;
 };
 
 } // namespace fyzz::physx_gpu
