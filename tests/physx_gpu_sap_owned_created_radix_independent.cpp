@@ -142,6 +142,8 @@ void execute(Context& context, ShaderBinary translateShader,
             require(admission.execute_gpu_stages &&
                     admission.counts.previous_boxes == 0u &&
                     admission.counts.current_boxes == 3u &&
+                    admission.counts.created == 3u &&
+                    admission.counts.projections == 6u &&
                     admission.counts.padded_projections == 8u &&
                     sap.force_update() &&
                     stream.commands().empty(),
