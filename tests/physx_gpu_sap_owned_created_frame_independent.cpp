@@ -21,6 +21,8 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
+#include <variant>
 #include <vector>
 
 using namespace fyzz::compute;
