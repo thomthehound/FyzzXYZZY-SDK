@@ -716,6 +716,34 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_owned_reports COMMAND fyzzxyzzy_owned_reports
       ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
 
+    set(FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES "")
+    foreach(_pair_shader IN ITEMS
+      physx_sap_overlap_work_native
+      physx_sap_overlap_prefix_first_native
+      physx_sap_overlap_prefix_second_native
+      physx_sap_newbounds_pairs_wave_native)
+      set(_source "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/${_pair_shader}.hlsl")
+      set(_output "${CMAKE_CURRENT_BINARY_DIR}/kernels/${_pair_shader}_owned.spv")
+      add_custom_command(OUTPUT "${_output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_0 -E main -Fo "${_output}" "${_source}"
+        DEPENDS "${_source}" VERBATIM)
+      list(APPEND FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES "${_output}")
+    endforeach()
+    add_custom_target(fyzzxyzzy_owned_pair_producer_shaders
+      DEPENDS ${FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES})
+    add_executable(fyzzxyzzy_owned_pairs_to_sc
+      tests/physx_gpu_source_pairs_to_sc_independent.cpp)
+    target_include_directories(fyzzxyzzy_owned_pairs_to_sc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_pairs_to_sc PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_pairs_to_sc
+      fyzzxyzzy_owned_pair_producer_shaders fyzzxyzzy_owned_report_shaders)
+    add_test(NAME fyzzxyzzy_owned_pairs_to_sc COMMAND fyzzxyzzy_owned_pairs_to_sc
+      ${FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES} ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
+    set_tests_properties(fyzzxyzzy_owned_pairs_to_sc PROPERTIES SKIP_RETURN_CODE 77)
+
+
     set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.spv")
     add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
@@ -2885,6 +2913,37 @@ if(FYZZXYZZY_BUILD_D3D12)
       ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
     set_tests_properties(fyzzxyzzy_owned_reports_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+    set(FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES "")
+    foreach(_pair_shader IN ITEMS
+      physx_sap_overlap_work_native
+      physx_sap_overlap_prefix_first_native
+      physx_sap_overlap_prefix_second_native
+      physx_sap_newbounds_pairs_wave_native)
+      set(_source "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/${_pair_shader}.hlsl")
+      set(_output "${CMAKE_CURRENT_BINARY_DIR}/kernels/${_pair_shader}_owned.dxil")
+      add_custom_command(OUTPUT "${_output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+          -Fo "${_output}" "${_source}"
+        DEPENDS "${_source}" VERBATIM)
+      list(APPEND FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES "${_output}")
+    endforeach()
+    add_custom_target(fyzzxyzzy_owned_pair_producer_shaders_d3d12
+      DEPENDS ${FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES})
+    add_executable(fyzzxyzzy_owned_pairs_to_sc_d3d12
+      tests/physx_gpu_source_pairs_to_sc_independent.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_pairs_to_sc_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_pairs_to_sc_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_pairs_to_sc_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_pairs_to_sc_d3d12
+      fyzzxyzzy_owned_pair_producer_shaders_d3d12 fyzzxyzzy_owned_report_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_pairs_to_sc_d3d12
+      COMMAND fyzzxyzzy_owned_pairs_to_sc_d3d12
+      ${FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES} ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
+    set_tests_properties(fyzzxyzzy_owned_pairs_to_sc_d3d12 PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
 
     set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.dxil")
