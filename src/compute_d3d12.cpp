@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -302,6 +304,9 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+    std::array<double,5> source_submit_phases_us{};
+    double source_submit_views_us=0;
+    std::size_t source_submit_samples=0;
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
         if (backend != Backend::D3D12) throw std::invalid_argument("Expected D3D12 backend");
@@ -337,6 +342,19 @@ struct Context::Impl {
     }
 
     ~Impl() {
+        if (source_submit_samples!=0)
+            std::fprintf(stderr,
+                "d3d12_submit_phases samples=%zu preflight_us=%.3f"
+                " acquire_us=%.3f heap_us=%.3f"
+                " record_us=%.3f enqueue_us=%.3f"
+                " descriptor_views_us=%.3f\n",
+                source_submit_samples,
+                source_submit_phases_us[0]/source_submit_samples,
+                source_submit_phases_us[1]/source_submit_samples,
+                source_submit_phases_us[2]/source_submit_samples,
+                source_submit_phases_us[3]/source_submit_samples,
+                source_submit_phases_us[4]/source_submit_samples,
+                source_submit_views_us/source_submit_samples);
         if (queue && fence) {
             try { wait_all(); } catch (...) {}
         }
@@ -940,6 +958,10 @@ struct Context::Impl {
 
     SubmissionId submit_batch(const std::vector<BatchCommand>& commands,
                               bool profile = false) {
+        using ProfileClock=std::chrono::steady_clock;
+        const bool sample=!profile && commands.size()==18u &&
+            std::getenv("FYZZXYZZY_PROFILE_D3D12_SUBMIT")!=nullptr;
+        const auto start=ProfileClock::now();
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
         std::vector<PipelineId> pipeline_sequence;
@@ -965,7 +987,9 @@ struct Context::Impl {
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+        const auto validated=sample?ProfileClock::now():start;
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
+        const auto acquired=sample?ProfileClock::now():start;
         if (profile) {
             D3D12_QUERY_HEAP_DESC desc{};
             desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
@@ -1018,6 +1042,8 @@ struct Context::Impl {
             submission.commands->SetDescriptorHeaps(1, heaps);
         }
 
+        const auto heap_ready=sample?ProfileClock::now():start;
+        double view_us=0;
         // Track states for the entire batch instead of returning each buffer
         // to COMMON after every operation. Keep real RAW/WAW ordering: a
         // transition orders different uses and a UAV barrier orders
@@ -1103,6 +1129,7 @@ struct Context::Impl {
 
             const auto cpu_start = submission.heap->GetCPUDescriptorHandleForHeapStart();
             const auto gpu_start = submission.heap->GetGPUDescriptorHandleForHeapStart();
+            const auto views_start=sample?ProfileClock::now():start;
             for (UINT slot = 0; slot < pipeline.bindings; ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 auto& buffer = get_buffer(binding.buffer);
@@ -1149,6 +1176,9 @@ struct Context::Impl {
                 }
                 cached = next;
             }
+            if(sample)
+                view_us+=std::chrono::duration<double,std::micro>(
+                    ProfileClock::now()-views_start).count();
             submission.commands->SetComputeRootSignature(pipeline.signature.Get());
             submission.commands->SetPipelineState(pipeline.state.Get());
             UINT table_root = 0u;
@@ -1185,7 +1215,20 @@ struct Context::Impl {
                 submission.query_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                 0, 2, submission.query_readback.Get(), 0);
         }
-        return enqueue(std::move(submission));
+        const auto recorded=sample?ProfileClock::now():start;
+        const SubmissionId id=enqueue(std::move(submission));
+        const auto enqueued=sample?ProfileClock::now():start;
+        if(sample) {
+            const std::array<ProfileClock::time_point,6> times{
+                start,validated,acquired,heap_ready,recorded,enqueued};
+            for(std::size_t i=0;i<source_submit_phases_us.size();++i)
+                source_submit_phases_us[i]+=
+                    std::chrono::duration<double,std::micro>(
+                        times[i+1u]-times[i]).count();
+            source_submit_views_us+=view_us;
+            ++source_submit_samples;
+        }
+        return id;
     }
 
     std::optional<double> profile_batch_gpu_nanoseconds(
