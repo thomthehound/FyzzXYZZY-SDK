@@ -305,6 +305,7 @@ struct Context::Impl {
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
     std::array<double,5> source_submit_phases_us{};
+    std::array<double,4> source_queue_phases_us{};
     double source_submit_views_us=0;
     std::size_t source_submit_samples=0;
 
@@ -347,14 +348,20 @@ struct Context::Impl {
                 "d3d12_submit_phases samples=%zu preflight_us=%.3f"
                 " acquire_us=%.3f heap_us=%.3f"
                 " record_us=%.3f enqueue_us=%.3f"
-                " descriptor_views_us=%.3f\n",
+                " descriptor_views_us=%.3f"
+                " close_us=%.3f register_us=%.3f"
+                " execute_us=%.3f signal_us=%.3f\n",
                 source_submit_samples,
                 source_submit_phases_us[0]/source_submit_samples,
                 source_submit_phases_us[1]/source_submit_samples,
                 source_submit_phases_us[2]/source_submit_samples,
                 source_submit_phases_us[3]/source_submit_samples,
                 source_submit_phases_us[4]/source_submit_samples,
-                source_submit_views_us/source_submit_samples);
+                source_submit_views_us/source_submit_samples,
+                source_queue_phases_us[0]/source_submit_samples,
+                source_queue_phases_us[1]/source_submit_samples,
+                source_queue_phases_us[2]/source_submit_samples,
+                source_queue_phases_us[3]/source_submit_samples);
         if (queue && fence) {
             try { wait_all(); } catch (...) {}
         }
@@ -424,11 +431,14 @@ struct Context::Impl {
             recycled.push_back(std::move(submission));
     }
 
-    SubmissionId enqueue(Submission&& submission) {
+    SubmissionId enqueue(Submission&& submission, bool phase_profile=false) {
+        using Clock=std::chrono::steady_clock;
+        const auto begin=phase_profile?Clock::now():Clock::time_point{};
         if (next_submission == std::numeric_limits<SubmissionId>::max() ||
             next_fence == std::numeric_limits<std::uint64_t>::max())
             throw std::overflow_error("D3D12 submission or fence ID range exhausted");
         check(submission.commands->Close(), "Close command list");
+        const auto after_close=phase_profile?Clock::now():begin;
         const SubmissionId id = next_submission;
         const std::uint64_t signal = next_fence;
         submission.fence_value = signal;
@@ -441,11 +451,22 @@ struct Context::Impl {
             throw std::logic_error("D3D12 submission ID already registered");
         ++next_submission;
         ++next_fence;
+        const auto after_register=phase_profile?Clock::now():begin;
         ID3D12CommandList* lists[] = {it->second.commands.Get()};
         queue->ExecuteCommandLists(1, lists);
+        const auto after_execute=phase_profile?Clock::now():begin;
         // A queue-signal failure must not destroy the submitted resources:
         // the owning entry stays recorded until device teardown.
         check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
+        if(phase_profile) {
+            const auto end=Clock::now();
+            const std::array<Clock::time_point,5> times{
+                begin,after_close,after_register,after_execute,end};
+            for(std::size_t i=0;i<source_queue_phases_us.size();++i)
+                source_queue_phases_us[i]+=
+                    std::chrono::duration<double,std::micro>(
+                        times[i+1u]-times[i]).count();
+        }
         return id;
     }
 
@@ -1216,7 +1237,7 @@ struct Context::Impl {
                 0, 2, submission.query_readback.Get(), 0);
         }
         const auto recorded=sample?ProfileClock::now():start;
-        const SubmissionId id=enqueue(std::move(submission));
+        const SubmissionId id=enqueue(std::move(submission),sample);
         const auto enqueued=sample?ProfileClock::now():start;
         if(sample) {
             const std::array<ProfileClock::time_point,6> times{
