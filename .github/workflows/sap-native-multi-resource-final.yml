@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+# SPDX-License-Identifier: Apache-2.0
+name: Native multi-resource final regression
+on:
+  push:
+    branches:
+      - ci/sap-native-multi-resource-final-131
+jobs:
+  conformance:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Vulkan build dependencies
+        run: bash .github/scripts/install-vulkan.sh
+      - name: Install DXC
+        shell: bash
+        run: |
+          curl -fsSL --retry 3 \
+            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
+            -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
+          mkdir -p "${RUNNER_TEMP}/dxc"
+          tar -xzf "${RUNNER_TEMP}/linux-dxc.tar.gz" -C "${RUNNER_TEMP}/dxc"
+          echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
+          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+      - name: Build native multi-resource and ordered-copy conformance
+        run: cmake --build build --target fyzzxyzzy_native_multi_resource --parallel 4
+      - name: Run native compute descriptor and copy regression
+        run: ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource
+ --output-on-failure
