@@ -108,8 +108,25 @@ void exercise(Context& context) {
             mappedRoots.publish_at_fetch(
                 sap.mapped_found_actor_pairs(), sizeof(pair));
             const auto& fetched = *sap.mapped_found_actor_pairs();
-            require(fetched.mVolA == 3u && fetched.mVolB == 9u,
-                    "Original SAP mapped pair report lost GPU publication");
+            require(fetched.mVolA == 3u && fetched.mVolB == 9u &&
+                    &members.broadphase_descriptor == &sap.descriptor(),
+                    "Original SAP mapped found report or descriptor identity changed");
+
+            const auto lostAddress =
+                members.descriptor_inputs.mapped_lost_actor_pairs;
+            require(reportAddress != lostAddress,
+                    "Original SAP found/lost report allocations alias");
+            const auto lostView = addresses.resolve(
+                lostAddress, sizeof(physx::PxgBroadPhasePair));
+            const physx::PxgBroadPhasePair lost(8u, 2u);
+            context.upload(lostView.buffer, lostView.offset,
+                           &lost, sizeof(lost));
+            mappedRoots.publish_at_fetch(
+                sap.mapped_lost_actor_pairs(), sizeof(lost));
+            const auto& fetchedLost = *sap.mapped_lost_actor_pairs();
+            require(fetchedLost.mVolA == 2u && fetchedLost.mVolB == 8u &&
+                    fetched.mVolA == 3u && fetched.mVolB == 9u,
+                    "Original SAP lost-pair publication corrupted found reports");
 
             // The persistent owner reuses the same buddy heap for its
             // per-frame GPU buffers, not an independent allocation arena.
