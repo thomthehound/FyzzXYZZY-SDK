@@ -159,6 +159,10 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Original SAP DMA-up did not admit the created frame");
 
             const auto& descriptor = sap.descriptor();
+            require(descriptor.numPreviousHandles==0u &&
+                    descriptor.numCreatedHandles==3u &&
+                    descriptor.numRemovedHandles==0u,
+                    "Original PhysX GPU descriptor did not retain created-only frame roles");
             const auto gpu_address = [](auto ptr) {
                 return static_cast<CudaDeviceAddressMap::Address>(
                     reinterpret_cast<std::uintptr_t>(ptr));
