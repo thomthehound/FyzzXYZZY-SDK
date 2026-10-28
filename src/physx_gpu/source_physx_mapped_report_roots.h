@@ -6,7 +6,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_mapped_report_view.h"
-#include "CmVirtualAllocatorCallback.h"
+#include "physx_port/common/src/CmVirtualAllocatorCallback.h"
 
 #include <cstddef>
 #include <cstdint>
