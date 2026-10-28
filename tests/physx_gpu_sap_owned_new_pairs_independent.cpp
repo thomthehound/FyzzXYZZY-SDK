@@ -580,7 +580,10 @@ void execute(Context& context, ShaderBinary translateShader,
                 reinterpret_cast<CUdeviceptr>(
                     descriptor.overlapChecksRegion),3u*64u*2u);
             std::uint64_t previousOverlap=0u;
-            for(std::uint32_t slot=0u;slot<3u*64u;++slot) {
+            require(residentDescriptor.regionAccumTotal<=3u*64u,
+                    "Source overlap work exceeds original region allocation");
+            for(std::uint32_t slot=0u;
+                slot<residentDescriptor.regionAccumTotal;++slot) {
                 const auto lo=overlapCounts[slot*2u];
                 const auto hi=overlapCounts[slot*2u+1u];
                 const auto prefix=(std::uint64_t(hi)<<32u)|lo;
