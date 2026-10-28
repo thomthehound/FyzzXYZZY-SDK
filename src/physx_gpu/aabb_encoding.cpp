@@ -103,12 +103,20 @@ AabbEncodingStage::AabbEncodingStage(compute::Context& context,
     compute::ComputePipelineDesc description;
     description.shader = std::move(shader);
     description.storage_buffer_binding_count = 4;
-    description.storage_buffer_views = {
-        compute::StorageBufferViewKind::Structured32Read,
-        compute::StorageBufferViewKind::Structured32Read,
-        compute::StorageBufferViewKind::Structured32Read,
-        compute::StorageBufferViewKind::Structured32ReadWrite
-    };
+    if (description.shader.format == compute::ShaderFormat::Dxil) {
+        // D3D12 states apply to an entire buffer resource, not a PhysX
+        // buddy suballocation. Read through UAVs when the source input
+        // and output views share one native root.
+        description.storage_buffer_views.assign(
+            4u, compute::StorageBufferViewKind::Structured32ReadWrite);
+    } else {
+        description.storage_buffer_views = {
+            compute::StorageBufferViewKind::Structured32Read,
+            compute::StorageBufferViewKind::Structured32Read,
+            compute::StorageBufferViewKind::Structured32Read,
+            compute::StorageBufferViewKind::Structured32ReadWrite
+        };
+    }
     description.push_constant_bytes = sizeof(ShaderParameters);
     const auto& device = context_.device_info();
     descriptor_alignment_ = device.storage_buffer_offset_alignment;
