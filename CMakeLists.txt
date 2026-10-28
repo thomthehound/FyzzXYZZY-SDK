@@ -273,7 +273,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp)
+    src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_sap_created_native.cpp
+    src/physx_gpu/source_sap_incremental_counts_native.cpp
+    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
+    src/physx_gpu/source_sap_incremental_pairs_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -432,11 +436,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sap_updated_native.cpp
-    src/physx_gpu/source_sap_created_native.cpp
     src/physx_gpu/source_sap_radix_native.cpp
-    src/physx_gpu/source_sap_incremental_counts_native.cpp
-    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
-    src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_region_create_native.cpp
@@ -2058,7 +2058,11 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp)
+    src/physx_gpu/source_newbounds_sequence_native.cpp
+    src/physx_gpu/source_sap_created_native.cpp
+    src/physx_gpu/source_sap_incremental_counts_native.cpp
+    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
+    src/physx_gpu/source_sap_incremental_pairs_native.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -2225,11 +2229,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_sapbox_indices_native.cpp
     src/physx_gpu/source_sap_removed_native.cpp
     src/physx_gpu/source_sap_updated_native.cpp
-    src/physx_gpu/source_sap_created_native.cpp
     src/physx_gpu/source_sap_radix_native.cpp
-    src/physx_gpu/source_sap_incremental_counts_native.cpp
-    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
-    src/physx_gpu/source_sap_incremental_pairs_native.cpp
     src/physx_gpu/source_sap_update_native.cpp
     src/physx_gpu/source_sap_scene_frame_native.cpp
     src/physx_gpu/source_region_create_native.cpp
