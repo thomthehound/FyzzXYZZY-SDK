@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "physx_gpu/cuda_device_address_map.h"
-#include "PxgBroadPhaseDesc.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseDesc.h"
 #include <cstdint>
 #include <vector>
 
