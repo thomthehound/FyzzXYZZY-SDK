@@ -5,7 +5,7 @@
 #pragma once
 
 #include "physx_gpu/source_fill_d32_native.h"
-#include "PxgBroadPhaseDesc.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseDesc.h"
 
 namespace fyzz::physx_gpu {
 
