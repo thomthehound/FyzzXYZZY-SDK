@@ -27,6 +27,7 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "physx_gpu/source_sc_element_lifecycle_native.h"
+#include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -1149,27 +1150,56 @@ void execute(Context& context, ShaderBinary translateShader,
             readmitted.position.x=0.75f;
             const std::array<fyzz::native::GpuBroadphaseBox,3> readmittedBoxes{
                 movedBoxes[0],readmitted,movedBoxes[2]};
-            const SourceSapUpdateNativeFrame automaticLayout{};
+            std::vector<physx::Bp::ShapeHandle> scElementHandles(
+                28u,BP_INVALID_BP_HANDLE);
+            scElementHandles[17u]=0u;
+            scElementHandles[27u]=readmittedHandle;
+            scElementHandles[9u]=2u;
+            SourceScGpuBroadphaseProducerNative producer(
+                aabb,sap,stream,cohesiveStages,addresses,context,
+                filter,fillStage,mappedRoots,scElementHandles);
+            // Sc's element mapping is authoritative. A mismatched handle
+            // must be rejected before SAP mutates or submits any GPU work.
+            scElementHandles[27u]=0u;
+            bool rejectedForeignElement=false;
+            try {
+                (void)producer.advance(readmittedBoxes,false,false);
+            }catch(const std::invalid_argument&) {
+                rejectedForeignElement=true;
+            }
+            scElementHandles[27u]=readmittedHandle;
+            require(rejectedForeignElement && stream.commands().empty(),
+                    "GPU producer accepted a foreign Sc volume identity");
             const auto beforeFourth=stream.submission_stats().command_batches;
-            const auto ownedFrame=advance_source_sap_owned_scene_frame_native(
-                aabb,sap,
-                {readmittedBoxes,created,filter,automaticLayout,
-                 scFound,scLost,fillStage,mappedRoots,false},
-                stream,cohesiveStages,addresses,context);
+            const auto reports=producer.advance(readmittedBoxes,true,true);
             // The owner enqueues source bitmap retirement after report
             // fetch. Drain the same stream at teardown, before releasing
             // the pipelines referenced by those queued GPU commands.
             stream.wait_at_fetch();
+            const auto& ownedFrame=producer.last_frame();
             require(ownedFrame.update.execute_gpu_stages &&
                     ownedFrame.update.counts.created==1u &&
                     ownedFrame.update.counts.current_boxes==3u &&
                     ownedFrame.fetch.found_actors==1u &&
                     ownedFrame.fetch.lost_actors==0u &&
-                    scFound==std::vector<fyzz::native::Pair>{{17u,27u}} &&
-                    scLost.empty() && scActors[1]==27u &&
+                    reports.found.size()==1u &&
+                    reports.found.front()==fyzz::native::Pair{17u,27u} &&
+                    reports.lost.empty() && scActors[1]==27u &&
                     histories_match(false) &&
                     stream.submission_stats().command_batches>beforeFourth,
-                    "Cohesive owned GPU SAP frame failed source re-admission/fetch");
+                    "Native GPU producer failed source Sc re-admission/fetch");
+            const auto completedBatches=stream.submission_stats().command_batches;
+            producer.invalidate_after_rollback();
+            bool rejectedStaleHistory=false;
+            try {
+                (void)producer.advance(readmittedBoxes,false,false);
+            }catch(const std::logic_error&) {
+                rejectedStaleHistory=true;
+            }
+            require(rejectedStaleHistory &&
+                    stream.submission_stats().command_batches==completedBatches &&
+                    stream.commands().empty(),
+                    "Sc rollback reused invalid source GPU SAP history");
 
             require(manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
