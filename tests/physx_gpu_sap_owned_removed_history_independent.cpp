@@ -808,6 +808,12 @@ void execute(Context& context, ShaderBinary translateShader,
                     sap.num_boxes()==2u,
                     "Original SAP owner did not retain its previous-frame population");
             const auto& removalDescriptor=sap.descriptor();
+            // The first frame's post-pair integer bounds must survive
+            // original second-frame gpuDMAUp unchanged until deletion.
+            require(read_words(
+                        sap.old_integer_bounds().getDevicePtr(),18u)==
+                        integerBounds,
+                    "Source GPU second-frame DMA did not preserve previous AABBs");
             require(removalDescriptor.numPreviousHandles==3u &&
                     removalDescriptor.numRemovedHandles==1u &&
                     removalDescriptor.numCreatedHandles==0u &&
