@@ -232,6 +232,46 @@ void verify_ordered_same_resource_copies(Context& context) {
         check(actual==expected,
               "Ordered native same-buffer copies violated source dependencies or canaries");
     }
+    // Two distinct source heap roots may relocate concurrently on the
+    // ordered native queue. Their staging resources must remain exclusive
+    // until both completion fences retire, even when the later fence is
+    // reaped first at the original PhysX fetch boundary.
+    const auto second_root=context.create_buffer(
+        words*sizeof(std::uint32_t),MemoryPlacement::DeviceLocal);
+    std::vector<std::uint32_t> initial_a(words),initial_b(words);
+    for(std::uint32_t i=0;i<words;++i) {
+        initial_a[i]=i*43u+37u;
+        initial_b[i]=i*71u+59u;
+    }
+    auto expected_a=initial_a,expected_b=initial_b;
+    auto copy_expected=[&](std::vector<std::uint32_t>& values) {
+        for(const auto& op:copies) {
+            const auto& copy=std::get<CopyCommand>(op);
+            std::copy(values.begin()+copy.source_offset/4u,
+                      values.begin()+(copy.source_offset+copy.bytes)/4u,
+                      values.begin()+copy.destination_offset/4u);
+        }
+    };
+    copy_expected(expected_a);
+    copy_expected(expected_b);
+    context.upload(buffer,0u,initial_a.data(),words*4u);
+    context.upload(second_root,0u,initial_b.data(),words*4u);
+    auto other_copies=copies;
+    for(auto& op:other_copies) {
+        auto& copy=std::get<CopyCommand>(op);
+        copy.source=second_root;
+        copy.destination=second_root;
+    }
+    const auto earlier=context.submit_batch(copies);
+    const auto later=context.submit_batch(other_copies);
+    context.wait_submission(later);
+    context.wait_submission(earlier);
+    std::vector<std::uint32_t> actual_a(words),actual_b(words);
+    context.download(buffer,0u,actual_a.data(),words*4u);
+    context.download(second_root,0u,actual_b.data(),words*4u);
+    check(actual_a==expected_a && actual_b==expected_b,
+          "Concurrent source relocations shared in-flight scratch or changed copy order");
+    context.destroy_buffer(second_root);
     context.destroy_buffer(buffer);
 }
 
