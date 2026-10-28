@@ -488,6 +488,9 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto sortedX=read_words(
                 reinterpret_cast<CUdeviceptr>(
                     descriptor.boxHandles[0][0]),projections);
+            const auto xIndices=read_words(
+                reinterpret_cast<CUdeviceptr>(
+                    descriptor.boxSapBox1D[0]),currentBoxes*2u);
             for(std::uint32_t h=0;h<currentBoxes;++h) {
                 const auto base=h*8u;
                 const auto yz=(last[h][1]-first[h][1]+1u)*
@@ -499,11 +502,8 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(regionRanges[base+3u]==0u &&
                         regionRanges[base+7u]==0u,
                         "Original region buffer padding was overwritten");
-                const auto starts=read_words(
-                    reinterpret_cast<CUdeviceptr>(
-                        descriptor.boxSapBox1D[0]),currentBoxes*2u);
-                startContribution[starts[h*2u]]=yz;
-                regionContribution[starts[h*2u]]=
+                startContribution[xIndices[h*2u]]=yz;
+                regionContribution[xIndices[h*2u]]=
                     (last[h][0]-first[h][0]+1u)*yz;
             }
             std::array<std::uint32_t,projections> expectedStarts{},expectedRegions{};
