@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/cuda_aabb_launch_lowering.h"
-#include "PxgKernelIndices.h"
-#include "PxgBroadPhaseKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgKernelIndices.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseKernelIndices.h"
 
 #include <array>
 #include <cstring>

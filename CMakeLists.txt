@@ -270,6 +270,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
   add_library(fyzzxyzzy_source_gpu_primitives STATIC
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
@@ -715,6 +716,26 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_owned_reports COMMAND fyzzxyzzy_owned_reports
       ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
 
+    set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+        -T cs_6_0 -E main -Fo "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_translate_aabbs_shader
+      DEPENDS "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}")
+    add_executable(fyzzxyzzy_owned_translate_aabbs
+      tests/physx_gpu_cuda_aabb_launch.cpp)
+    target_include_directories(fyzzxyzzy_owned_translate_aabbs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_translate_aabbs PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_translate_aabbs fyzzxyzzy_owned_translate_aabbs_shader)
+    add_test(NAME fyzzxyzzy_owned_translate_aabbs COMMAND fyzzxyzzy_owned_translate_aabbs
+      "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}")
+
+
 
 
 
@@ -726,7 +747,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
   # Translated PhysX GPU stages. These operations preserve upstream data
   # contracts; the PhysX scene integration is introduced incrementally.
   add_library(fyzzxyzzy_physx_gpu_stages STATIC
-    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/created_pairs_arena.cpp
@@ -2384,6 +2404,7 @@ if(FYZZXYZZY_BUILD_D3D12)
   add_library(fyzzxyzzy_source_gpu_primitives_d3d12 STATIC
     src/physx_gpu/source_fill_d32_native.cpp
     src/physx_gpu/aabb_encoding.cpp
+    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/source_overlap_work_native.cpp
     src/physx_gpu/source_overlap_prefix_native.cpp
     src/physx_gpu/source_newbounds_pairs_native.cpp
@@ -2866,6 +2887,30 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_owned_reports_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
+    set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_owned_translate_aabbs_shader_d3d12
+      DEPENDS "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}")
+    add_executable(fyzzxyzzy_owned_translate_aabbs_d3d12
+      tests/physx_gpu_cuda_aabb_launch.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_translate_aabbs_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_translate_aabbs_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_translate_aabbs_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_translate_aabbs_d3d12 fyzzxyzzy_owned_translate_aabbs_shader_d3d12)
+    add_test(NAME fyzzxyzzy_owned_translate_aabbs_d3d12
+      COMMAND fyzzxyzzy_owned_translate_aabbs_d3d12
+      "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}")
+    set_tests_properties(fyzzxyzzy_owned_translate_aabbs_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+
 
 
 
@@ -2875,7 +2920,6 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
   add_library(fyzzxyzzy_physx_gpu_stages_d3d12 STATIC
-    src/physx_gpu/cuda_aabb_launch_lowering.cpp
     src/physx_gpu/mark_removed_pairs_arena.cpp
     src/physx_gpu/removed_projections_arena.cpp
     src/physx_gpu/created_pairs_arena.cpp
