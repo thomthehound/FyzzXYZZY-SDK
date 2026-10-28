@@ -1143,6 +1143,10 @@ void execute(Context& context, ShaderBinary translateShader,
                 {readmittedBoxes,created,filter,automaticLayout,
                  scFound,scLost,fillStage,mappedRoots,false},
                 stream,cohesiveStages,addresses,context);
+            // The owner enqueues source bitmap retirement after report
+            // fetch. Drain the same stream at teardown, before releasing
+            // the pipelines referenced by those queued GPU commands.
+            stream.wait_at_fetch();
             require(ownedFrame.update.execute_gpu_stages &&
                     ownedFrame.update.counts.created==1u &&
                     ownedFrame.update.counts.current_boxes==3u &&
