@@ -46,7 +46,7 @@ SourceSapUpdateNativeFrame make_source_sap_update_frame_native(
         gpu_address(descriptor.newIntegerBounds),
         gpu_address(descriptor.updateData_contactDistances),
         gpu_address(descriptor.updateData_envIDs),
-        {counts.current_boxes,4u,4u,4u,0u,0u,0u}};
+        {counts.capacity,4u,4u,4u,0u,0u,0u}};
     frame.removed={counts.capacity,counts.padded_projections};
     frame.updated={counts.capacity,counts.padded_projections};
     frame.histograms={counts.padded_projections,counts.capacity};

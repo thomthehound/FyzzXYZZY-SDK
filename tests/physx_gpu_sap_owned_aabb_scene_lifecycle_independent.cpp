@@ -287,7 +287,7 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto sourceFrame=make_source_sap_update_frame_native(
                 update,admission.counts,descriptor,
                 dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
-            require(sourceFrame.translation.encoding.count==3u &&
+            require(sourceFrame.translation.encoding.count==admission.counts.capacity &&
                     sourceFrame.translation.encoding.shift_x==4u &&
                     sourceFrame.translation.new_integer_bounds==
                         gpu_address(descriptor.newIntegerBounds) &&
@@ -904,7 +904,7 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto nextLayout=make_source_sap_update_frame_native(
                 moved,admitted.counts,nextDesc,
                 nextDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
-            require(nextLayout.translation.encoding.count==3u &&
+            require(nextLayout.translation.encoding.count==admitted.counts.capacity &&
                     nextLayout.incremental_pairs.report_capacity==
                         sap.max_found_lost_pairs() &&
                     nextLayout.histograms.endpoint_slots==
@@ -924,11 +924,7 @@ void execute(Context& context, ShaderBinary translateShader,
 
             auto& pending=stream.commands();
             append_source_sap_translate_aabbs_native(
-                pending,lowering,{
-                    gpu_address(nextDesc.updateData_fpBounds),
-                    gpu_address(nextDesc.newIntegerBounds),
-                    gpu_address(nextDesc.updateData_contactDistances),0u,
-                    {3u,4u,4u,4u,0u,0u,0u}},true);
+                pending,lowering,nextLayout.translation,true);
             updatedStage.append(pending,nextDesc,addresses,
                                 {admitted.counts.capacity,
                                  admitted.counts.padded_projections});
@@ -1039,7 +1035,7 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto removedLayout=make_source_sap_update_frame_native(
                 retirement,admittedRemoval.counts,removalDesc,
                 retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr());
-            require(removedLayout.translation.encoding.count==2u &&
+            require(removedLayout.translation.encoding.count==admittedRemoval.counts.capacity &&
                     removedLayout.new_pairs.new_bounds.current_boxes==2u &&
                     removedLayout.new_pairs.new_bounds.region_work_capacity==128u &&
                     removedLayout.new_pairs.new_bounds.projection_slots==6u &&
@@ -1049,11 +1045,7 @@ void execute(Context& context, ShaderBinary translateShader,
                 retireDma.descriptor_gpu_buffers.broadphase.getDevicePtr();
             auto& removePending=stream.commands();
             append_source_sap_translate_aabbs_native(
-                removePending,lowering,{
-                    gpu_address(removalDesc.updateData_fpBounds),
-                    gpu_address(removalDesc.newIntegerBounds),
-                    gpu_address(removalDesc.updateData_contactDistances),0u,
-                    {3u,4u,4u,4u,0u,0u,0u}},true);
+                removePending,lowering,removedLayout.translation,true);
             removedStage.append_mark_removed(
                 removePending,removalDesc,addresses,
                 {admittedRemoval.counts.capacity,
