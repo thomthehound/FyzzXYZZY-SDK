@@ -285,7 +285,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
-    src/physx_gpu/source_clear_new_flags_native.cpp)
+    src/physx_gpu/source_clear_new_flags_native.cpp
+    src/physx_gpu/source_sap_report_multi_root.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -686,6 +687,35 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_owned_clear_new COMMAND fyzzxyzzy_owned_clear_new
       "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
 
+    set(FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS "")
+    foreach(_report_pass IN ITEMS first second copy first_wave second_wave)
+      if(_report_pass MATCHES "wave")
+        set(_report_model cs_6_6)
+      else()
+        set(_report_model cs_6_0)
+      endif()
+      set(_report_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_report_pass}_native.hlsl")
+      set(_report_bin "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_report_pass}_native.spv")
+      add_custom_command(OUTPUT "${_report_bin}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T "${_report_model}" -E main
+          -Fo "${_report_bin}" "${_report_src}"
+        DEPENDS "${_report_src}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
+        VERBATIM)
+      list(APPEND FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS "${_report_bin}")
+    endforeach()
+    add_custom_target(fyzzxyzzy_owned_report_shaders
+      DEPENDS ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
+    add_executable(fyzzxyzzy_owned_reports
+      tests/physx_gpu_source_report_multi_root_independent.cpp)
+    target_include_directories(fyzzxyzzy_owned_reports PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_reports PRIVATE fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_owned_reports fyzzxyzzy_owned_report_shaders)
+    add_test(NAME fyzzxyzzy_owned_reports COMMAND fyzzxyzzy_owned_reports
+      ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS})
+
+
 
 
 
@@ -710,7 +740,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
-    src/physx_gpu/source_sap_report_multi_root.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/sap_region_histograms_arena.cpp
@@ -2370,7 +2399,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/source_region_create_native.cpp
     src/physx_gpu/source_region_histograms_native.cpp
     src/physx_gpu/source_active_region_lists_native.cpp
-    src/physx_gpu/source_clear_new_flags_native.cpp)
+    src/physx_gpu/source_clear_new_flags_native.cpp
+    src/physx_gpu/source_sap_report_multi_root.cpp)
   target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
   target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
@@ -2805,6 +2835,38 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_owned_clear_new_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
+    set(FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS "")
+    foreach(_report_pass IN ITEMS first second copy first_wave second_wave)
+      if(_report_pass MATCHES "wave")
+        set(_report_model cs_6_6)
+      else()
+        set(_report_model cs_6_0)
+      endif()
+      set(_report_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_report_pass}_native.hlsl")
+      set(_report_bin "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_report_pass}_native.dxil")
+      add_custom_command(OUTPUT "${_report_bin}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -T "${_report_model}" -E main
+          -Fo "${_report_bin}" "${_report_src}"
+        DEPENDS "${_report_src}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
+        VERBATIM)
+      list(APPEND FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS "${_report_bin}")
+    endforeach()
+    add_custom_target(fyzzxyzzy_owned_report_shaders_d3d12
+      DEPENDS ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
+    add_executable(fyzzxyzzy_owned_reports_d3d12
+      tests/physx_gpu_source_report_multi_root_independent.cpp)
+    target_compile_definitions(fyzzxyzzy_owned_reports_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_owned_reports_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_owned_reports_d3d12 PRIVATE fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_owned_reports_d3d12 fyzzxyzzy_owned_report_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_owned_reports_d3d12 COMMAND fyzzxyzzy_owned_reports_d3d12
+      ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
+    set_tests_properties(fyzzxyzzy_owned_reports_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+
 
 
 
@@ -2827,7 +2889,6 @@ if(FYZZXYZZY_BUILD_D3D12)
     src/physx_gpu/sap_clear_new_flags_arena.cpp
     src/physx_gpu/broadphase_copy_reports_arena.cpp
     src/physx_gpu/broadphase_report_classification_arena.cpp
-    src/physx_gpu/source_sap_report_multi_root.cpp
     src/physx_gpu/sap_host_frame_roles.cpp
     src/physx_gpu/sap_region_producer_arena.cpp
     src/physx_gpu/sap_region_histograms_arena.cpp
