@@ -1895,16 +1895,18 @@ void Scene::update_gpu_pairs(bool force_update) {
         throw std::overflow_error(
             "Source GPU SAP found/lost report capacity overflow");
 
-    // Source GPU pair generation filters original Bp groups, which may
-    // include static/kinematic and kinematic/kinematic overlaps. Sc owns
-    // only contact managers with at least one dynamic actor. Validate
-    // source ordering before discarding ineligible reports, so malformed
-    // GPU output cannot disappear behind the Sc participant filter.
-    const auto eligible=[&](std::span<const Pair> raw,
-                             std::vector<Pair>& kept) {
+    // Source GPU pairs may include non-dynamic overlaps. Found pairs
+    // require a dynamic participant; lost pairs retire members of the
+    // previously published Sc history, even after a motion-class change.
+    // Validate raw ordering before either filter so malformed reports
+    // cannot be hidden by an ineligible overlap.
+    const auto admit=[&](std::span<const Pair> raw,
+                         std::vector<Pair>& kept,bool new_pair) {
         kept.clear();
         Pair last{};
         bool have_last=false;
+        std::size_t previous_index=0;
+        const bool bulk=raw.size()>previous_pairs_.size()/16u;
         for(const Pair pair:raw) {
             if(pair.a>=pair.b || pair.b>=actors_.size() ||
                (have_last && !(last<pair)))
@@ -1912,25 +1914,11 @@ void Scene::update_gpu_pairs(bool force_update) {
                     "Noncanonical or unsorted GPU SAP pair reports");
             last=pair;
             have_last=true;
-            if(actors_[pair.a].kind==Kind::DynamicBox ||
-               actors_[pair.b].kind==Kind::DynamicBox)
-                kept.push_back(pair);
-        }
-    };
-    // Reuse Sc's existing pair-delta scratch storage; neither vector
-    // owns GPU membership or maintains a second broadphase registry.
-    eligible(reports.found,sap_created_pairs_);
-    eligible(reports.lost,sap_deleted_pairs_);
-    const auto& found=sap_created_pairs_;
-    const auto& lost=sap_deleted_pairs_;
+            if(new_pair &&
+               actors_[pair.a].kind!=Kind::DynamicBox &&
+               actors_[pair.b].kind!=Kind::DynamicBox)
+                continue;
 
-    // The filtered streams are canonical and sorted. Compare them to
-    // Sc's published history using sparse lookup or a bulk linear walk.
-    // Lost reports may still name an actor retired after the last fetch.
-    const auto validate=[&](std::span<const Pair> pairs,bool new_pair) {
-        std::size_t previous_index=0;
-        const bool bulk=pairs.size()>previous_pairs_.size()/16u;
-        for(const Pair pair:pairs) {
             bool existing;
             if(bulk) {
                 while(previous_index<previous_pairs_.size() &&
@@ -1942,6 +1930,9 @@ void Scene::update_gpu_pairs(bool force_update) {
                 existing=std::binary_search(
                     previous_pairs_.begin(),previous_pairs_.end(),pair);
             }
+            // A lost GPU overlap that was never admitted to Sc has no
+            // contact manager to retire, regardless of its current kind.
+            if(!new_pair && !existing)continue;
             if(existing==new_pair)
                 throw std::invalid_argument(
                     "GPU SAP pair report contradicts Sc overlap history");
@@ -1956,10 +1947,15 @@ void Scene::update_gpu_pairs(bool force_update) {
                     throw std::invalid_argument(
                         "GPU SAP found pair is not an admitted dynamic overlap");
             }
+            kept.push_back(pair);
         }
     };
-    validate(found,true);
-    validate(lost,false);
+    // Reuse Sc's existing pair-delta scratch storage, with no parallel
+    // GPU membership registry or additional frame history.
+    admit(reports.found,sap_created_pairs_,true);
+    admit(reports.lost,sap_deleted_pairs_,false);
+    const auto& found=sap_created_pairs_;
+    const auto& lost=sap_deleted_pairs_;
 
     // A quiet Sc pair stream needs no merge even when the source GPU
     // reports non-dynamic overlaps or updates existing PCM contacts.
