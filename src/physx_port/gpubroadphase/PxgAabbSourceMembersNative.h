@@ -5,6 +5,7 @@
 
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
+#include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -52,6 +54,8 @@ public:
           changed_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregated_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           volumes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_slots_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
@@ -147,6 +151,22 @@ public:
         aggregate.filterHint=filter_hint;
         aggregate.mEnvID=env_id;
         aggregate_max_shapes_[id]=max_shapes;
+        // Original per-aggregate updateBoundIndices device allocation,
+        // lowered to a stable non-overlapping slice of one source-owned
+        // PxgCudaBuffer so native shaders can bind a single member view.
+        if(aggregate_gpu_member_starts_.size()<=id) {
+            aggregate_gpu_member_starts_.resize(2u*id+1u,0u);
+            aggregate_gpu_member_reservations_.resize(2u*id+1u,0u);
+        }
+        if(aggregate_gpu_member_reservations_[id]<max_shapes) {
+            if(max_shapes>std::numeric_limits<physx::PxU32>::max()-
+                              aggregate_gpu_member_capacity_)
+                throw std::out_of_range("Original aggregate GPU member address range exceeded");
+            aggregate_gpu_member_starts_[id]=aggregate_gpu_member_capacity_;
+            aggregate_gpu_member_reservations_[id]=max_shapes;
+            aggregate_gpu_member_capacity_+=max_shapes;
+        }
+        aggregate_gpu_slot_count_=std::max(aggregate_gpu_slot_count_,id+1u);
         volumes_[root].setUserData(user_data);
         volumes_[root].setVolumeType(physx::Bp::ElementType::eSHAPE);
         volumes_[root].setAggregate(id);
@@ -276,6 +296,72 @@ public:
         --num_active_aggregates_;
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
+    }
+
+    // PxgAABBManager::gpuDmaDataUp source dirty-index lowering.
+    // Only dirty PxgAggregate records and their authoritative
+    // updateBoundIndices are uploaded; reused aggregate handles keep
+    // their previous device-member slice until a larger capacity is
+    // requested. There is no second host membership registry.
+    void queue_aggregate_gpu_dma_up(SourceSapDmaNative& stream) {
+        if(dirty_aggregate_indices_.empty())return;
+        const std::uint64_t record_bytes=
+            std::uint64_t(aggregate_gpu_slot_count_)*
+            sizeof(SourceAggregateGpuNativeRecord);
+        const std::uint64_t member_bytes=
+            std::uint64_t(aggregate_gpu_member_capacity_)*sizeof(physx::PxU32);
+        if(record_bytes>std::numeric_limits<physx::PxU32>::max() ||
+           member_bytes>std::numeric_limits<physx::PxU32>::max())
+            throw std::out_of_range("Original aggregate GPU DMA size exceeded");
+        aggregate_slots_device_.allocateCopyOldDataAsync(
+            record_bytes,stream,PX_FL);
+        aggregate_members_device_.allocateCopyOldDataAsync(
+            member_bytes,stream,PX_FL);
+        gpu_aggregate_record_staging_.resize(dirty_aggregate_indices_.size());
+        for(physx::PxU32 i=0;i<dirty_aggregate_indices_.size();++i) {
+            const auto id=dirty_aggregate_indices_[i];
+            const auto& aggregate=aggregates_[id];
+            gpu_aggregate_record_staging_[i]={
+                aggregate.mIndex,aggregate_gpu_member_starts_[id],
+                aggregate.size,0u};
+            if(aggregate.size>aggregate_gpu_member_reservations_[id])
+                throw std::logic_error(
+                    "Source aggregate GPU member count exceeds reserved capacity");
+        }
+        auto& uploads=stream.upload_scratch();
+        uploads.reserve(2u*dirty_aggregate_indices_.size());
+        for(physx::PxU32 i=0;i<dirty_aggregate_indices_.size();++i) {
+            const auto id=dirty_aggregate_indices_[i];
+            const auto& aggregate=aggregates_[id];
+            uploads.push_back({
+                aggregate_slots_device_.getDevicePtr()+
+                    std::uint64_t(id)*sizeof(SourceAggregateGpuNativeRecord),
+                &gpu_aggregate_record_staging_[i],
+                sizeof(SourceAggregateGpuNativeRecord)});
+            if(aggregate.size)
+                uploads.push_back({
+                    aggregate_members_device_.getDevicePtr()+
+                        std::uint64_t(aggregate_gpu_member_starts_[id])*
+                        sizeof(physx::PxU32),
+                    aggregate.updateBoundIndices,
+                    std::size_t(aggregate.size)*sizeof(physx::PxU32)});
+        }
+        stream.queue_uploads(uploads);
+    }
+
+    // Borrow the original SAP bounds/contact arrays and this AABB owner's
+    // changed bitmap after its normal preBroadPhase upload. The translated
+    // aggregate views point to this owner's actual GPU heap allocations.
+    SourceAggregateGpuNativeBuffers aggregate_gpu_buffers(
+        CudaDeviceAddressMap::Address gpu_bounds,
+        CudaDeviceAddressMap::Address gpu_contact_distances) const noexcept {
+        return {gpu_bounds,gpu_contact_distances,
+            aggregate_slots_device_.getDevicePtr(),
+            aggregate_members_device_.getDevicePtr(),
+            changed_device_.getDevicePtr(),
+            bounds_.size(),aggregate_gpu_slot_count_,
+            aggregate_gpu_member_capacity_,changed_.getWordCount(),
+            aggregate_gpu_slot_count_};
     }
 
     const physx::PxgAggregate& source_aggregate(
@@ -428,12 +514,21 @@ private:
     physx::Cm::PinnableArray<physx::Bp::ShapeHandle> created_,retired_,updated_;
     physx::PxgCudaBuffer added_device_,removed_device_,changed_device_;
     physx::PxgCudaBuffer aggregated_device_,volumes_device_;
+    physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
     // dirty indices are drained only after source GPU fetch.
     physx::PxArray<physx::PxgAggregate> aggregates_;
     std::vector<physx::PxU32> aggregate_max_shapes_;
+    // CUDA per-aggregate member device pointers lowered to reserved
+    // offsets in the same source-managed GPU allocation. CPU membership
+    // stays exclusively in PxgAggregate::updateBoundIndices.
+    std::vector<physx::PxU32> aggregate_gpu_member_starts_;
+    std::vector<physx::PxU32> aggregate_gpu_member_reservations_;
+    std::vector<SourceAggregateGpuNativeRecord> gpu_aggregate_record_staging_;
+    physx::PxU32 aggregate_gpu_slot_count_=0u;
+    physx::PxU32 aggregate_gpu_member_capacity_=0u;
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
