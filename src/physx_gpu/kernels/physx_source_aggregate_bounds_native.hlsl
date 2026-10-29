@@ -24,7 +24,7 @@ RWByteAddressBuffer aggregateSlots : register(u2,space0);
 RWByteAddressBuffer memberIndices : register(u3,space0);
 
 // Root handle, first member in the source index array, current member
-// count and source PxgAggregate::isValid state (0 or 1).
+// count and reserved padding. Validity follows PxgAggregate::isValid.
 struct Parameters {
     uint aggregateCount, reserved0, reserved1, reserved2;
 };
@@ -43,7 +43,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     uint4 descriptor=aggregate<p.aggregateCount
         ? aggregateSlots.Load4(aggregate*16u)
         : uint4(0u,0u,0u,0u);
-    bool valid=aggregate<p.aggregateCount && descriptor.w!=0u;
+    bool valid=aggregate<p.aggregateCount &&
+        descriptor.z!=0u && descriptor.x!=0xffffffffu;
     const float empty=8.5070586659632215e37f; // PX_MAX_REAL * 0.25
     float3 low=float3(empty,empty,empty);
     float3 high=-low;
