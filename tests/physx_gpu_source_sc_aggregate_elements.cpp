@@ -149,6 +149,16 @@ void run(Backend backend) {
             require(rejected,
                 "Original Sc aggregate geometry accepted incorrect member identity");
 
+            rejected=false;
+            try {
+                auto wrong_motion=boxes;
+                wrong_motion[0].motion=
+                    fyzz::native::GpuBroadphaseBox::Motion::Kinematic;
+                (void)owner.prepare(wrong_motion,sc.handles(),filter);
+            }catch(const std::invalid_argument&) {rejected=true;}
+            require(rejected,
+                "Source GPU accepted a Kinematic Sc actor with its old dynamic BP group");
+
             sc.mark_changed(0u,0.4f);
             require(owner.source_changed().boundedTest(member0)!=0u,
                     "Original Sc member edit did not mark the source GPU bitmap");
