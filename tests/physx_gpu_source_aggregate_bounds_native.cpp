@@ -27,7 +27,7 @@ struct Aggregate {
     std::uint32_t root;
     std::uint32_t first;
     std::uint32_t size;
-    std::uint32_t valid;
+    std::uint32_t reserved;
 };
 static_assert(sizeof(Aggregate)==16u);
 
@@ -78,7 +78,7 @@ void verify(Context& context,const char* shader_path,
     const auto original=bounds;
     auto expected=bounds;
     for(const auto& aggregate:aggregates) {
-        if(!aggregate.valid)continue;
+        if(!aggregate.size || aggregate.root==0xffffffffu)continue;
         constexpr float limit=std::numeric_limits<float>::max()*0.25f;
         Bounds combined={{limit,limit,limit},{-limit,-limit,-limit}};
         for(std::uint32_t i=0;i<aggregate.size;++i) {
