@@ -65,6 +65,8 @@ public:
            src.found_source==src.lost_source ||
            src.found_mapped==src.lost_mapped ||
            src.found_source==src.found_mapped ||
+           src.found_source==src.lost_mapped ||
+           src.lost_source==src.found_mapped ||
            src.lost_source==src.lost_mapped)
             throw std::invalid_argument(
                 "Original aggregate report-copy GPU buffers or capacity invalid");
