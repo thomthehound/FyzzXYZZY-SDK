@@ -128,6 +128,20 @@ public:
     // PxgAABBManager releases found/lost tasks. Reap all staging/command
     // tokens; waiting the last ordered submission implies GPU visibility
     // of the preceding submissions on the same Context queue.
+    // At scene teardown there is no caller to propagate a failed source
+    // completion to. Keep the Context responsible for already-submitted
+    // resources and drop only commands that never entered the native queue.
+    // This is not a recovery path: the source scene is being destroyed.
+    bool finish_shutdown() noexcept {
+        try {
+            wait_at_fetch();
+            return true;
+        } catch (...) {
+            pending_.clear();
+            return false;
+        }
+    }
+
     void wait_at_fetch() {
         flush_gpu_commands();
         if(tokens_.empty())return;
