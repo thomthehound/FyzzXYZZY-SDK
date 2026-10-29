@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -104,6 +105,38 @@ void run(fyzz::compute::Backend backend,
     world.step(1.0f/120.0f);
     require(std::isfinite(world.body_state(a).position.x),
         "Original aggregate member dynamic GPU reinsertion failed");
+
+    // The original Dy solver rejects this overlapping rigid body's
+    // unrepresentable inertia AFTER the GPU source fetch. Sc rolls back
+    // while aggregate root, member, and pair histories have advanced.
+    // The next real GPU frame must rebuild those histories from source.
+    const auto unsupported=world.add_dynamic_box(
+        {1.0f,1.0f,1.0f},{6.0f,1.0f,0.0f},
+        std::numeric_limits<float>::max());
+    bool rolled_back=false;
+    try {world.step(1.0f/120.0f);}
+    catch(const std::logic_error&) {rolled_back=true;}
+    require(rolled_back,
+        "Source aggregate GPU World did not reject unrepresentable Dy inertia");
+    world.remove_body(unsupported);
+    world.set_body_position(a,{20.0f,1.0f,0.0f});
+    world.step(1.0f/120.0f);
+    bool lost_after_rebuild=false;
+    for(const auto& e:world.contact_events())
+        if(e.kind==fyzz::ContactEventKind::Lost &&
+           e.body0==a && e.body1==other)
+            lost_after_rebuild=true;
+    require(lost_after_rebuild,
+        "Source aggregate GPU rollback lost Sc touch-retirement publication");
+    world.set_body_position(a,{5.0f,1.0f,0.0f});
+    world.step(1.0f/120.0f);
+    bool found_after_rebuild=false;
+    for(const auto& e:world.contact_events())
+        if(e.kind==fyzz::ContactEventKind::Found &&
+           e.body0==a && e.body1==other)
+            found_after_rebuild=true;
+    require(found_after_rebuild,
+        "Source aggregate GPU rollback did not recover root/root touch publication");
 
     bool live_destroy_rejected=false;
     try {world.destroy_aggregate(root);}
