@@ -94,6 +94,16 @@ void verify(Context& context,ShaderBinary shader) {
         }
         require(rejected && stream.commands().empty(),
                 "Invalid aggregate history mutated the source command stream");
+        rejected=false;
+        try {
+            auto aliased=buffers;
+            aliased.old_integer_bounds=aliased.new_integer_bounds;
+            stage.append(stream,addresses,aliased);
+        }catch(const std::invalid_argument&) {
+            rejected=true;
+        }
+        require(rejected && stream.commands().empty(),
+                "Aliased current and previous aggregate GPU history was admitted");
         stage.append(stream,addresses,buffers);
         require(stream.commands().size()==1u,
                 "Original source aggregate member history is not one GPU stage");
