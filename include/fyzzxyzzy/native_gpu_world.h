@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
 
 namespace fyzz {
 
@@ -52,11 +53,21 @@ enum class NativeGpuSapStage : std::size_t {
 using NativeGpuSapShaders = std::array<
     compute::ShaderBinary,static_cast<std::size_t>(NativeGpuSapStage::Count)>;
 
+// Load the original source SAP shader stages from a build-generated manifest.
+// All 34 compiled stages are required in source dispatch order. The manifest
+// and binaries can be deployed together, with paths relative to the manifest.
+NativeGpuSapShaders load_native_gpu_sap_shaders(
+    compute::Backend backend,const std::filesystem::path& manifest);
+
 // Construct a World with one native Context, original PhysX GPU buddy heap,
 // AABB/SAP owners, stream and source Sc/PCM/Dy scene. No reference PhysX
 // scene or CPU broadphase is selected. The World owns all these resources.
 World create_native_gpu_world(
     compute::Backend backend,NativeGpuSapShaders shaders,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
+
+World create_native_gpu_world(
+    compute::Backend backend,const std::filesystem::path& manifest,
     WorldOptions options={ExecutionMode::NativePortableGpu});
 
 } // namespace fyzz
