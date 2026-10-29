@@ -124,6 +124,26 @@ void verify(Context& context,ShaderBinary shader) {
             }
         context.upload(buffer,current_offset,original_current.data(),sizeof(current));
         context.upload(buffer,previous_offset,original_previous.data(),sizeof(previous));
+        auto just_removed=buffers;
+        just_removed.num_added=0u;
+        just_removed.added_members=0u;
+        stage.append(stream,addresses,just_removed);
+        stream.wait_at_fetch();
+        context.download(buffer,current_offset,current.data(),sizeof(current));
+        context.download(buffer,previous_offset,previous.data(),sizeof(previous));
+        for(std::uint32_t i=0;i<capacity;++i)
+            for(std::uint32_t axis=0;axis<6u;++axis) {
+                const bool is_removed=std::find(
+                    removed.begin(),removed.end(),i)!=removed.end();
+                const auto word=std::size_t(i)*6u+axis;
+                const auto empty=axis<3u?0xff7fffffu:0x00800000u;
+                require(current[word]==(is_removed?empty:original_current[word]) &&
+                        previous[word]==(is_removed?empty:original_previous[word]),
+                        "Source removed-only member history invalidation differs");
+            }
+
+        context.upload(buffer,current_offset,original_current.data(),sizeof(current));
+        context.upload(buffer,previous_offset,original_previous.data(),sizeof(previous));
         stage.append(stream,addresses,buffers);
         stream.wait_at_fetch();
     }
