@@ -165,6 +165,10 @@ public:
     void destroy_aggregate(AggregateId id) override {
         require_scene_elements().destroy_aggregate(id);
     }
+    void remove_actor_from_aggregate(
+        AggregateId aggregate,BodyId actor) override {
+        require_scene_elements().remove_actor_from_aggregate(aggregate,actor);
+    }
     void admit_aggregate_member(
         AggregateId aggregate,BodyId actor,
         native::GpuBroadphaseBox::Motion motion,
