@@ -160,6 +160,10 @@ public:
     void destroy_aggregate(AggregateId id) override {
         producer_->destroy_aggregate(id);
     }
+    void remove_actor_from_aggregate(
+        AggregateId aggregate,BodyId actor) override {
+        producer_->remove_actor_from_aggregate(aggregate,actor);
+    }
     void admit_aggregate_member(
         AggregateId aggregate,BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_offset) override {
