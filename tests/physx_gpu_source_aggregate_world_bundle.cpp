@@ -62,9 +62,17 @@ void run(fyzz::compute::Backend backend,
         root,{0.5f,0.5f,0.5f},{5.0f,1.0f,0.0f},1.0f);
     const auto b=world.add_dynamic_box_to_aggregate(
         root,{0.5f,0.5f,0.5f},{5.4f,1.0f,0.0f},1.0f);
-    // The root is the ONLY SAP endpoint for these two real Sc members.
-    // The original GPU aggregate self-collision stage must report their
-    // overlapping shapes through the shared Sc contact manager.
+    // A source aggregate root requires a distinct AGGREGATE filter
+    // group. Test it against an ordinary static box AND another
+    // aggregate root as well as the within-root member collision.
+    const auto outside=world.add_static_box(
+        {0.5f,0.5f,0.5f},{6.0f,1.0f,0.0f});
+    const auto root2=world.create_aggregate(1u,false);
+    const auto other=world.add_static_box_to_aggregate(
+        root2,{0.5f,0.5f,0.5f},{4.8f,1.0f,0.0f});
+    // Only the original root IDs, not the members, enter SAP. GPU
+    // aggregate member found-pairs must reach the same Sc contact path
+    // for all three classes of overlap.
     world.step(1.0f/120.0f);
     const auto state=world.body_state(body);
     require(std::isfinite(state.position.y) && state.position.y<2.0f,
@@ -74,13 +82,15 @@ void run(fyzz::compute::Backend backend,
     require(std::isfinite(stateA.position.x) &&
             std::isfinite(stateB.position.x),
         "Original GPU aggregate member world states are non-finite");
-    bool found=false;
-    for(const auto& e:world.contact_events())
-        if(e.body0==a && e.body1==b &&
-           e.kind==fyzz::ContactEventKind::Found)
-            found=true;
-    require(found,
-        "Original GPU aggregate self-collision did not reach Sc contact publication");
+    bool self_found=false,static_found=false,cross_aggregate_found=false;
+    for(const auto& e:world.contact_events()) {
+        if(e.kind!=fyzz::ContactEventKind::Found)continue;
+        if(e.body0==a && e.body1==b)self_found=true;
+        if(e.body0==b && e.body1==outside)static_found=true;
+        if(e.body0==a && e.body1==other)cross_aggregate_found=true;
+    }
+    require(self_found && static_found && cross_aggregate_found,
+        "Original GPU aggregate self/root-static/root-root contacts were not published to Sc");
 
     bool live_destroy_rejected=false;
     try {world.destroy_aggregate(root);}
@@ -90,6 +100,8 @@ void run(fyzz::compute::Backend backend,
     world.remove_body(b);
     world.remove_body(a);
     world.destroy_aggregate(root);
+    world.remove_body(other);
+    world.destroy_aggregate(root2);
 }
 }
 int main(int argc,char** argv) {
