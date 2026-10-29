@@ -1286,6 +1286,25 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
         "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}")
+    # Source aggregate.cu::updateAggregateBounds, original 32-lane
+    # aggregate member reduction (4 warps per native workgroup).
+    set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_bounds_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
+      VERBATIM)
+    add_executable(fyzzxyzzy_source_gpu_aggregate_bounds
+      tests/physx_gpu_source_aggregate_bounds_native.cpp)
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds PRIVATE FyzzXYZZY::Compute)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_bounds_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}")
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_bounds fyzzxyzzy_source_gpu_aggregate_bounds_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_bounds
+      COMMAND fyzzxyzzy_source_gpu_aggregate_bounds "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}")
     add_executable(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       tests/physx_gpu_sap_owned_aabb_scene_lifecycle_independent.cpp)
     target_include_directories(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
@@ -4044,6 +4063,27 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
         "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}")
+    # Source aggregate.cu::updateAggregateBounds, original 32-lane
+    # aggregate member reduction (4 warps per native workgroup).
+    set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_bounds_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
+      VERBATIM)
+    add_executable(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12
+      tests/physx_gpu_source_aggregate_bounds_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE FyzzXYZZY::ComputeD3D12)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}")
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_bounds_d3d12
+      COMMAND fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       tests/physx_gpu_sap_owned_aabb_scene_lifecycle_independent.cpp)
     target_compile_definitions(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12 PRIVATE
