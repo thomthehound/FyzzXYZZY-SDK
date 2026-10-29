@@ -84,6 +84,23 @@ public:
         return {found_,lost_,false};
     }
 
+    void mark_shape_bounds_changed(
+        BodyId actor,float contact_offset) override {
+        if(invalidated_)
+            throw std::logic_error(
+                "Source GPU SAP histories require reconstruction after Sc rollback");
+        // The Sc element handle, not the actor ID, addresses the native
+        // AABB manager's changed bitmap and contact-distance array.
+        if(actor>=sc_actor_element_ids_.size())
+            throw std::out_of_range("Source Sc shape has no element handle");
+        const auto handle=sc_actor_element_ids_[actor];
+        const auto owners=aabb_.volume_to_actor();
+        if(handle>=owners.size() || owners[handle]!=actor)
+            throw std::invalid_argument(
+                "Source Sc edited shape has no matching AABB volume");
+        aabb_.mark_changed(handle,contact_offset);
+    }
+
     void invalidate_after_rollback() noexcept override {
         invalidated_=true;
     }

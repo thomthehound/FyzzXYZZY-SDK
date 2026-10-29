@@ -46,6 +46,9 @@ struct GpuSapSceneAdmissionFixture {
                     throw std::runtime_error("Invalid GPU shape input");
             return {found,lost,overflow};
         }
+        void mark_shape_bounds_changed(BodyId,float) override {
+            // This admission fixture supplies fetched reports explicitly.
+        }
         void invalidate_after_rollback() noexcept override {
             ++rollbacks;
         }
