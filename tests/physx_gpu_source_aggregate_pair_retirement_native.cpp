@@ -3,11 +3,13 @@
 #include "fyzzxyzzy/compute.h"
 #include "physx_gpu/source_aggregate_pair_admission_native.h"
 #include "physx_gpu/source_aggregate_pair_retirement_native.h"
+#include "physx_port/gpubroadphase/include/PxgAggregate.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -20,6 +22,9 @@ using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
 
 namespace {
+static_assert(sizeof(physx::PxgAggregatePair)==12u);
+static_assert(offsetof(physx::PxgAggregatePair,isNew)==8u);
+static_assert(offsetof(physx::PxgAggregatePair,isDead)==9u);
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
 }
@@ -127,16 +132,22 @@ void verify(Context& context,ShaderBinary count,ShaderBinary mark,
     require(afterFree==std::array<std::uint32_t,2u>{{6u,capacity}} &&
             afterRemoved==retired.size() && freeStack[0]==77u,
         "Original aggregate GPU retirement lost the free-list high-watermark");
+    const auto source_pair=[&](std::uint32_t slot) {
+        physx::PxgAggregatePair pair{};
+        std::memcpy(&pair,&words[slot*3u],sizeof(pair));
+        return pair;
+    };
     for(std::size_t i=0u;i<retired.size();++i) {
         const auto slot=retired[i];
+        const auto pair=source_pair(slot);
         require(freeStack[1u+i]==slot &&
-                words[slot*3u]==slot+10u &&
-                words[slot*3u+1u]==slot+1000u &&
-                words[slot*3u+2u]==0x00000101u,
-            "Original aggregate GPU retirement corrupted pair identities or free ordering");
+                pair.actorHandle0==slot+10u &&
+                pair.actorHandle1==slot+1000u &&
+                pair.isNew && pair.isDead && pair.pad==0u,
+            "Original aggregate GPU retirement corrupted source pair layout or free ordering");
     }
     for(const auto slot:{0u,254u,258u,518u})
-        require(words[slot*3u+2u]==1u,
+        require(source_pair(slot).isNew && !source_pair(slot).isDead,
             "Original GPU retirement marked a surviving pair dead");
 
     // The next source GPU admission must reuse the newly appended free
@@ -161,10 +172,11 @@ void verify(Context& context,ShaderBinary count,ShaderBinary mark,
             "Source aggregate GPU admission did not consume recycled free slots");
     for(std::uint32_t i=0u;i<3u;++i) {
         const auto slot=retired[retired.size()-1u-i];
-        require(words[slot*3u]==200u+2u*i &&
-                words[slot*3u+1u]==201u+2u*i &&
-                words[slot*3u+2u]==1u,
-            "Original GPU free-list reuse failed to replace dead pair records");
+        const auto pair=source_pair(slot);
+        require(pair.actorHandle0==200u+2u*i &&
+                pair.actorHandle1==201u+2u*i &&
+                pair.isNew && !pair.isDead && pair.pad==0u,
+            "Original GPU free-list reuse failed to replace dead source pair records");
     }
     require(stream.submission_stats().command_batches==2u,
             "Original aggregate retirement/reuse introduced extra GPU fence batches");
