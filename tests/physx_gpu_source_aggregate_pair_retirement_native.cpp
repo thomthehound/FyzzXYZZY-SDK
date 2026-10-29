@@ -180,7 +180,21 @@ void verify(Context& context,ShaderBinary count,ShaderBinary mark,
                 pair.isNew && !pair.isDead && pair.pad==0u,
             "Original GPU free-list reuse failed to replace dead source pair records");
     }
-    require(stream.submission_stats().command_batches==2u,
+    // A subsequent frame with no deleted persistent pairs must leave
+    // the source free stack and pair records untouched. The current
+    // remove bitmap is entirely GPU-owned by the collision stage.
+    deleted.fill(0u);
+    up(bitmap,deleted.data(),sizeof(deleted));
+    retirement.append(stream,addresses,buffers);
+    stream.wait_at_fetch();
+    std::array<std::uint32_t,2u> afterEmpty{};
+    std::uint32_t removedEmpty=~0u;
+    down(freeList,afterEmpty.data(),sizeof(afterEmpty));
+    down(removed,&removedEmpty,sizeof(removedEmpty));
+    require(afterEmpty==afterFree && removedEmpty==0u,
+            "Original aggregate empty-frame retirement changed persistent free IDs");
+
+    require(stream.submission_stats().command_batches==3u,
             "Original aggregate retirement/reuse introduced extra GPU fence batches");
     for(auto it=allocated.rbegin();it!=allocated.rend();++it) {
         std::uint32_t actual=0u;
