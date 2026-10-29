@@ -429,12 +429,45 @@ public:
 
     SourceSapAabbManagerPreUpdateNative pre_update(
         SourceSapPreBroadPhaseBuffers sap) noexcept {
+        const bool aggregate_slots=aggregate_gpu_slot_count_!=0u;
         return {sap,source_sap_aabb_bitmap_native(added_device_,added_),
             source_sap_aabb_bitmap_native(removed_device_,removed_),
             source_sap_aabb_bitmap_native(aggregated_device_,aggregated_),
             source_sap_aabb_bitmap_native(changed_device_,changed_),
             volumes_device_,{volumes_.begin(),volumes_.size()},
-            persistent_state_changed_,gpu_state_changed_,false};
+            persistent_state_changed_,gpu_state_changed_ || aggregate_slots,
+            aggregate_slots};
+    }
+
+    // PxgAABBManager::updateBPFirstPass: validate the exact original
+    // AABB scene arrays, enqueue gpuDmaDataUp for dirty aggregate members,
+    // and return the borrowed source preBpUpdate_GPU descriptor. The
+    // pre-update's original preBroadPhase uploads, followed by the union
+    // and dirty-root kernels, all run on that same source stream.
+    SourceSapAabbManagerPreUpdateNative aggregate_pre_update(
+        const physx::Bp::BroadPhaseUpdateData& update,
+        SourceSapPreBroadPhaseBuffers sap,
+        const SourceAggregateGpuNativeStage& stage,
+        const CudaDeviceAddressMap& addresses,
+        SourceSapDmaNative& stream) {
+        if(!aggregate_gpu_slot_count_)
+            throw std::logic_error("No original aggregate slots for GPU pre-update");
+        validate_pre_broadphase_native(update);
+        if(update.getCapacity()!=bounds_.size() ||
+           update.getAABBs()!=bounds_.begin() ||
+           update.getContactDistance()!=distances_.begin() ||
+           update.getGroups()!=groups_.begin())
+            throw std::invalid_argument(
+                "Aggregate GPU first pass does not borrow original AABB manager arrays");
+        queue_aggregate_gpu_dma_up(stream);
+        auto manager=pre_update(sap);
+        manager.aggregate_stage=&stage;
+        manager.aggregate_addresses=&addresses;
+        manager.aggregate_slots_device=&aggregate_slots_device_;
+        manager.aggregate_members_device=&aggregate_members_device_;
+        manager.aggregate_slots_count=aggregate_gpu_slot_count_;
+        manager.aggregate_member_capacity=aggregate_gpu_member_capacity_;
+        return manager;
     }
     SourceSapAabbReportBitmapNative added_report_bitmap() noexcept {
         return {added_device_.getDevicePtr(),added_device_.getSize(),
