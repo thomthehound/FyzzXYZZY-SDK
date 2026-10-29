@@ -120,6 +120,9 @@ AggregateId World::create_aggregate(
 void World::destroy_aggregate(AggregateId id) {
     impl_->destroy_aggregate(id);
 }
+void World::remove_actor_from_aggregate(AggregateId id,BodyId actor) {
+    impl_->remove_actor_from_aggregate(id,actor);
+}
 
 BodyId World::add_static_box_to_aggregate(
     AggregateId aggregate,Vec3 half_extents,Vec3 position) {
