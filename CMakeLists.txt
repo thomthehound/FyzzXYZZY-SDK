@@ -381,6 +381,22 @@ if(FYZZXYZZY_BUILD_VULKAN)
     FyzzXYZZY::Compute fyzzxyzzy_physx_cuda_host_address)
   set_target_properties(fyzzxyzzy_source_gpu_primitives PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+  # Linkable production World constructor over the independent native source
+  # SAP heap/stages. Shader binaries are supplied by the application.
+  add_library(fyzzxyzzy_native_gpu_world STATIC
+    src/physx_gpu/native_gpu_world.cpp)
+  add_library(FyzzXYZZY::NativeGpuWorld ALIAS fyzzxyzzy_native_gpu_world)
+  target_compile_features(fyzzxyzzy_native_gpu_world PUBLIC cxx_std_23)
+  target_include_directories(fyzzxyzzy_native_gpu_world
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+  target_link_libraries(fyzzxyzzy_native_gpu_world PUBLIC
+    FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
+    fyzzxyzzy_source_gpu_primitives)
+  set_target_properties(fyzzxyzzy_native_gpu_world
+    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
      AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
@@ -1249,8 +1265,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
-      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives
-      FyzzXYZZY::Core)
+      FyzzXYZZY::NativeGpuWorld)
     add_dependencies(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       fyzzxyzzy_owned_translate_aabbs_shader
       fyzzxyzzy_owned_sap_incremental_shaders
@@ -2989,6 +3004,21 @@ if(FYZZXYZZY_BUILD_D3D12)
   target_link_libraries(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
     FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
 
+  add_library(fyzzxyzzy_native_gpu_world_d3d12 STATIC
+    src/physx_gpu/native_gpu_world.cpp)
+  add_library(FyzzXYZZY::NativeGpuWorldD3D12 ALIAS
+    fyzzxyzzy_native_gpu_world_d3d12)
+  target_compile_features(fyzzxyzzy_native_gpu_world_d3d12 PUBLIC cxx_std_23)
+  target_include_directories(fyzzxyzzy_native_gpu_world_d3d12
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+  target_link_libraries(fyzzxyzzy_native_gpu_world_d3d12 PUBLIC
+    FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
+    fyzzxyzzy_source_gpu_primitives_d3d12)
+  set_target_properties(fyzzxyzzy_native_gpu_world_d3d12
+    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
      AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
@@ -3941,8 +3971,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12 PRIVATE
-      fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives_d3d12
-      FyzzXYZZY::Core)
+      FyzzXYZZY::NativeGpuWorldD3D12)
     add_dependencies(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       fyzzxyzzy_owned_translate_aabbs_shader_d3d12
       fyzzxyzzy_owned_sap_incremental_shaders_d3d12
