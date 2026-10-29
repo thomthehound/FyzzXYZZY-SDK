@@ -127,6 +127,25 @@ void run(Backend backend) {
             require(rejected,
                     "Original Sc destroyed aggregate while source members are live");
 
+            // Sc shape simulation disablement removes its AABB membership,
+            // not its ElementSim attachment to the original aggregate.
+            sc.set_simulation_enabled(0u,false);
+            sc.set_simulation_enabled(1u,false);
+            rejected=false;
+            try {sc.destroy_aggregate(root);}
+            catch(const std::logic_error&) {rejected=true;}
+            require(rejected,
+                "Original Sc recycled aggregate ID with disabled members still attached");
+            // Both admits were canceled before GPU publication. The
+            // original Sc element handles and aggregate ID survive.
+            sc.set_simulation_enabled(0u,true);
+            sc.set_simulation_enabled(1u,true);
+            require(sc.handle(0u)==member0 && sc.handle(1u)==member1 &&
+                    sc.aggregate_root_handle(root)==root_handle &&
+                    owner.volume_to_actor()[member0]==0u &&
+                    owner.volume_to_actor()[member1]==1u,
+                    "Source Sc aggregate simulation toggle lost stable element identity");
+
             sc.retire(1u);
             require(!owner.source_aggregated().boundedTest(member1) &&
                     owner.volume_to_actor()[member1]==
