@@ -4,10 +4,30 @@
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 
 namespace fyzz::physx_gpu {
+void append_source_sap_post_aggregate_member_history_native(
+    const physx::PxgBroadPhaseDesc& descriptor,
+    PxgAabbSourceMembersNative& aabb,
+    const SourceAggregateMemberHistoryNativeStage& stage,
+    SourceSapDmaNative& stream,
+    const CudaDeviceAddressMap& addresses) {
+    const auto gpu_address=[](auto pointer) {
+        return static_cast<CudaDeviceAddressMap::Address>(
+            reinterpret_cast<std::uintptr_t>(pointer));
+    };
+    // SAP swaps the PxgCudaBuffer owners while appending GPU commands.
+    // Its descriptor's new/old pointers still identify the exact buffers
+    // used by the current GPU update; owner member names may be reversed.
+    const auto buffers=aabb.aggregate_member_history_buffers(
+        gpu_address(descriptor.newIntegerBounds),
+        gpu_address(descriptor.oldIntegerBounds));
+    stage.append(stream,addresses,buffers);
+}
+
 void validate_source_sap_owned_aabb_aliases_native(
     PxgAabbSourceMembersNative& owner,
     const SourceSapAabbManagerPreUpdateNative& pre,
@@ -38,6 +58,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     if(members.aabb_owner)
         validate_source_sap_owned_aabb_aliases_native(
             *members.aabb_owner,members.aabb_manager,members.volume_to_actor);
+    if(members.aabb_manager.has_aggregates &&
+       (!members.aabb_owner || !members.aggregate_member_history))
+        throw std::logic_error(
+            "Original aggregate post-SAP history requires source AABB owner and GPU stage");
 
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
@@ -71,6 +95,14 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const auto admission=advance_source_sap_frame_native(
         members.aabb_update,dma,stream,force_update,stages,
         addresses,members.update);
+    // Original PxgAABBManager::updateBPSecondPass postBPStage2 begins
+    // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
+    // aggregate members must invalidate the descriptor's integer AABB
+    // histories before projection/self/pair collision stages consume them.
+    if(members.aabb_manager.has_aggregates)
+        append_source_sap_post_aggregate_member_history_native(
+            dma.broadphase_descriptor,*members.aabb_owner,
+            *members.aggregate_member_history,stream,addresses);
     stream.wait_at_fetch();
 
     // Complete both source bitmap D32 view validations before reporting
