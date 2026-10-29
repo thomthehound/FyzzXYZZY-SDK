@@ -18,6 +18,7 @@ namespace fyzz::physx_gpu {
 class PxgAabbSourceMembersNative;
 class PxgSapSourceMembersNative;
 class SourceAggregateMemberHistoryNativeStage;
+class SourceAggregateProjectionNativeStage;
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -58,6 +59,7 @@ struct SourceSapSceneFrameNativeMembers {
     // Optional original aggregate post-SAP kernel, supplied by the same
     // source GPU context when aggregate execution is enabled.
     const SourceAggregateMemberHistoryNativeStage* aggregate_member_history = nullptr;
+    const SourceAggregateProjectionNativeStage* aggregate_projection = nullptr;
 };
 
 struct SourceSapSceneFrameNativeResult {
