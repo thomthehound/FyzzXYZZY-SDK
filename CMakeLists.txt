@@ -1564,6 +1564,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_world_bundle COMMAND fyzzxyzzy_source_gpu_aggregate_world_bundle
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_spirv.manifest")
+    add_executable(fyzzxyzzy_source_sc_aggregate_elements
+      tests/physx_gpu_source_sc_aggregate_elements.cpp)
+    target_include_directories(fyzzxyzzy_source_sc_aggregate_elements PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_sc_aggregate_elements PRIVATE
+      FyzzXYZZY::NativeGpuWorld)
+    add_test(NAME fyzzxyzzy_source_sc_aggregate_elements COMMAND fyzzxyzzy_source_sc_aggregate_elements)
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -4650,6 +4658,16 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    add_executable(fyzzxyzzy_source_sc_aggregate_elements_d3d12
+      tests/physx_gpu_source_sc_aggregate_elements.cpp)
+    target_compile_definitions(fyzzxyzzy_source_sc_aggregate_elements_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_sc_aggregate_elements_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_sc_aggregate_elements_d3d12 PRIVATE
+      FyzzXYZZY::NativeGpuWorldD3D12)
+    add_test(NAME fyzzxyzzy_source_sc_aggregate_elements_d3d12 COMMAND fyzzxyzzy_source_sc_aggregate_elements_d3d12)
+    set_tests_properties(fyzzxyzzy_source_sc_aggregate_elements_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
