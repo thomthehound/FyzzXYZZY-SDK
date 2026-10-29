@@ -225,6 +225,72 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
                 "Original aggregate self-collision previous size history differs");
         actualSlot^=1u;
     }
+    // Source dirty membership changes while the previous projection slot
+    // retains its old member IDs. This specifically guards 3->2 and 2->3
+    // previous-size reads on hardware with subgroups narrower than 32.
+    auto resizedRecords=records;
+    auto resizedMembers=members;
+    auto resizedGroups=groups;
+    for(std::uint32_t delta=0;delta<2u;++delta) {
+        previous=current;
+        if(delta==0u) {
+            resizedRecords[0].size=2u;
+            for(std::uint32_t axis=0u;axis<3u;++axis) {
+                current[2u*6u+axis]=0xff7fffffu;
+                current[2u*6u+axis+3u]=0x00800000u;
+            }
+        }else {
+            resizedRecords[0].size=3u;
+            resizedMembers[2u]=5u;
+            resizedGroups[5u]=3u;
+            for(std::uint32_t axis=0u;axis<3u;++axis) {
+                current[5u*6u+axis]=axis==0u?175u:100u;
+                current[5u*6u+axis+3u]=axis==0u?225u:151u;
+            }
+        }
+        transfer(aggregateRecords,resizedRecords.data(),sizeof(resizedRecords));
+        transfer(gpuMembers,resizedMembers.data(),sizeof(resizedMembers));
+        transfer(groupIds,resizedGroups.data(),sizeof(resizedGroups));
+        transfer(newBounds,current.data(),sizeof(current));
+        transfer(oldBounds,previous.data(),sizeof(previous));
+        const std::array<std::uint32_t,2> zeros{};
+        auto& uploads=stream.upload_scratch();
+        uploads.push_back({counters,zeros.data(),sizeof(zeros)});
+        stream.queue_uploads(uploads);
+        const History& now=history[actualSlot];
+        const History& old=history[actualSlot^1u];
+        SourceAggregateProjectionNativeBuffers projectionSource{
+            newBounds,aggregateRecords,gpuMembers,now.keys,now.handles,
+            scratchKeys,scratchHandles,now.sap,now.masks,now.members,
+            kBounds,kAggregates,kMembers,kAggregates,actualSlot};
+        projectionStage.append(stream,addresses,projectionSource);
+        source.current_handles=now.handles;
+        source.current_sap=now.sap;
+        source.current_member_indices=now.members;
+        source.current_start_masks=now.masks;
+        source.previous_handles=old.handles;
+        source.previous_sap=old.sap;
+        source.previous_member_indices=old.members;
+        source.previous_start_masks=old.masks;
+        collisionStage.append(stream,addresses,source);
+        stream.wait_at_fetch();
+        std::array<std::uint32_t,2> counts{};
+        download(counters,counts.data(),sizeof(counts));
+        require(counts==(delta==0u
+                           ? std::array<std::uint32_t,2>{{0u,1u}}
+                           : std::array<std::uint32_t,2>{{1u,0u}}),
+                "Original GPU aggregate membership change pair history differs");
+        Pair actual{};
+        download(delta==0u?lost:found,&actual,sizeof(actual));
+        require(actual==(delta==0u?Pair{0u,2u}:Pair{0u,5u}),
+                "Original GPU aggregate membership change returned wrong member IDs");
+        std::array<std::uint32_t,kAggregates> sizes{};
+        download(previousSizes,sizes.data(),sizeof(sizes));
+        require(sizes[0]==resizedRecords[0].size,
+                "Original aggregate previous-size publication differed during membership growth/retirement");
+        actualSlot^=1u;
+    }
+
     // A source report overflow never silently drops the event count:
     // both lost pairs are counted even though only one fits in the
     // configured mapped report capacity.
@@ -259,7 +325,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
     download(counters,overflowCounts.data(),sizeof(overflowCounts));
     require(overflowCounts[0]==0u && overflowCounts[1]==2u,
             "Original aggregate GPU self-collision lost pair overflow was not reported");
-    require(stream.submission_stats().command_batches==8u,
+    require(stream.submission_stats().command_batches==10u,
             "Original aggregate pair stage introduced extra GPU command batches");
     stream.wait_at_fetch();
     for(auto iter=allocated.rbegin();iter!=allocated.rend();++iter) {
