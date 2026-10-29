@@ -132,7 +132,7 @@ void verify(Context& context,ShaderBinary count,ShaderBinary mark,
         require(freeStack[1u+i]==slot &&
                 words[slot*3u]==slot+10u &&
                 words[slot*3u+1u]==slot+1000u &&
-                words[slot*3u+2u]==3u,
+                words[slot*3u+2u]==0x00000101u,
             "Original aggregate GPU retirement corrupted pair identities or free ordering");
     }
     for(const auto slot:{0u,254u,258u,518u})
