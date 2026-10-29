@@ -337,10 +337,11 @@ endif()
 set_target_properties(fyzzxyzzy_physx_foundation_lifetime
   PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(BUILD_TESTING AND FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  find_package(Threads REQUIRED)
   add_executable(fyzzxyzzy_physx_foundation_shared_lifetime
     tests/physx_foundation_shared_lifetime.cpp)
   target_link_libraries(fyzzxyzzy_physx_foundation_shared_lifetime PRIVATE
-    FyzzXYZZY::Core fyzzxyzzy_physx_foundation_lifetime)
+    FyzzXYZZY::Core fyzzxyzzy_physx_foundation_lifetime Threads::Threads)
   add_test(NAME fyzzxyzzy_physx_foundation_shared_lifetime
     COMMAND fyzzxyzzy_physx_foundation_shared_lifetime)
 endif()
