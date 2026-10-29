@@ -95,16 +95,12 @@ void run(fyzz::compute::Backend backend,
     // Change an admitted aggregate rigid member's Bp motion group
     // across two real GPU fetches, not just within a host-only fixture.
     // The Sc actor and aggregate membership survive both transitions.
-    std::cerr<<"aggregate motion: switching to kinematic\n";
     world.set_body_kinematic(a,true);
-    std::cerr<<"aggregate motion: kinematic GPU step\n";
     world.step(1.0f/120.0f);
     const auto kinematic_state=world.body_state(a);
     require(std::isfinite(kinematic_state.position.x),
         "Original aggregate member kinematic GPU publication was not finite");
-    std::cerr<<"aggregate motion: switching to dynamic\n";
     world.set_body_kinematic(a,false);
-    std::cerr<<"aggregate motion: dynamic GPU step\n";
     world.step(1.0f/120.0f);
     require(std::isfinite(world.body_state(a).position.x),
         "Original aggregate member dynamic GPU reinsertion failed");
