@@ -8,6 +8,7 @@
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_gpu/source_aggregate_member_history_native.h"
 #include "physx_gpu/source_aggregate_projection_native.h"
+#include "physx_gpu/source_aggregate_self_collision_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -39,7 +40,8 @@ namespace fyzz::physx_gpu {
 class PxgAabbSourceMembersNative final {
 public:
     explicit PxgAabbSourceMembersNative(
-        physx::PxgAllocatorDesc& allocators,physx::PxU32 initial_shapes=0u)
+        physx::PxgAllocatorDesc& allocators,physx::PxU32 initial_shapes=0u,
+        physx::PxU32 aggregate_report_capacity=0u)
         : bounds_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           distances_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           groups_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -62,6 +64,10 @@ public:
           aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           added_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           removed_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          self_previous_sizes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          self_found_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          self_lost_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          self_report_counts_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_keys_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_keys_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_handles_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -75,7 +81,8 @@ public:
           projection_bound_history_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_bound_history_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
-          dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
+          dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_report_capacity_(aggregate_report_capacity) {
         if(initial_shapes)reserve_shapes(initial_shapes);
     }
     ~PxgAabbSourceMembersNative() {
@@ -347,19 +354,22 @@ public:
             record_bytes,stream,PX_FL);
         aggregate_members_device_.allocateCopyOldDataAsync(
             member_bytes,stream,PX_FL);
+        self_previous_sizes_device_.allocateCopyOldDataAsync(
+            std::uint64_t(aggregate_gpu_slot_count_)*sizeof(physx::PxU32),
+            stream,PX_FL);
         gpu_aggregate_record_staging_.resize(dirty_aggregate_indices_.size());
         for(physx::PxU32 i=0;i<dirty_aggregate_indices_.size();++i) {
             const auto id=dirty_aggregate_indices_[i];
             const auto& aggregate=aggregates_[id];
             gpu_aggregate_record_staging_[i]={
                 aggregate.mIndex,aggregate_gpu_member_starts_[id],
-                aggregate.size,0u};
+                aggregate.size,aggregate.filterHint};
             if(aggregate.size>aggregate_gpu_member_reservations_[id])
                 throw std::logic_error(
                     "Source aggregate GPU member count exceeds reserved capacity");
         }
         auto& uploads=stream.upload_scratch();
-        uploads.reserve(2u*dirty_aggregate_indices_.size());
+        uploads.reserve(3u*dirty_aggregate_indices_.size());
         for(physx::PxU32 i=0;i<dirty_aggregate_indices_.size();++i) {
             const auto id=dirty_aggregate_indices_[i];
             const auto& aggregate=aggregates_[id];
@@ -375,6 +385,13 @@ public:
                         sizeof(physx::PxU32),
                     aggregate.updateBoundIndices,
                     std::size_t(aggregate.size)*sizeof(physx::PxU32)});
+            // Source newly allocated aggregate IDs have no prior
+            // self-comparison history, including after deferred reuse.
+            if(aggregate.isNew)
+                uploads.push_back({
+                    self_previous_sizes_device_.getDevicePtr()+
+                        std::uint64_t(id)*sizeof(physx::PxU32),
+                    &self_previous_size_zero_,sizeof(physx::PxU32)});
         }
         stream.queue_uploads(uploads);
     }
@@ -464,6 +481,45 @@ public:
             history.getDevicePtr(),
             bounds_.size(),aggregate_gpu_slot_count_,
             aggregate_gpu_member_capacity_,aggregate_gpu_slot_count_,slot};
+    }
+
+    // Source PxgAggregateDesc found/lost capacity is configuration-owned.
+    // Counters are reset by original GPU DMA before post-SAP collisions,
+    // and a report overflow must be rejected by the later source fetch.
+    void queue_aggregate_self_report_gpu_dma_up(SourceSapDmaNative& stream) {
+        if(!aggregate_report_capacity_)return;
+        if(aggregate_report_capacity_>
+           std::numeric_limits<physx::PxU32>::max()/8u)
+            throw std::out_of_range("Original aggregate GPU report capacity overflow");
+        const auto bytes=std::uint64_t(aggregate_report_capacity_)*8u;
+        self_found_pairs_device_.allocateCopyOldDataAsync(bytes,stream,PX_FL);
+        self_lost_pairs_device_.allocateCopyOldDataAsync(bytes,stream,PX_FL);
+        self_report_counts_device_.allocate(8u,PX_FL);
+        auto& uploads=stream.upload_scratch();
+        uploads.push_back({
+            self_report_counts_device_.getDevicePtr(),
+            self_report_counters_zero_.data(),sizeof(self_report_counters_zero_)});
+        stream.queue_uploads(uploads);
+    }
+
+    SourceAggregateSelfCollisionNativeBuffers aggregate_self_collision_gpu_buffers(
+        CudaDeviceAddressMap::Address new_integer_bounds,
+        CudaDeviceAddressMap::Address old_integer_bounds,
+        CudaDeviceAddressMap::Address gpu_group_ids) const noexcept {
+        const auto current=aggregate_projection_gpu_buffers(new_integer_bounds);
+        const auto previous=aggregate_projection_gpu_buffers(old_integer_bounds,true);
+        return {new_integer_bounds,old_integer_bounds,
+            aggregate_slots_device_.getDevicePtr(),
+            current.sorted_handles,current.sap_boxes,current.bound_index_history,
+            current.start_masks,previous.sorted_handles,previous.sap_boxes,
+            previous.bound_index_history,previous.start_masks,
+            gpu_group_ids,self_previous_sizes_device_.getDevicePtr(),
+            self_found_pairs_device_.getDevicePtr(),
+            self_lost_pairs_device_.getDevicePtr(),
+            self_report_counts_device_.getDevicePtr(),
+            aggregate_gpu_slot_count_,aggregate_gpu_slot_count_,
+            aggregate_gpu_member_capacity_,bounds_.size(),
+            aggregate_report_capacity_};
     }
 
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
@@ -586,6 +642,7 @@ public:
         queue_aggregate_gpu_dma_up(stream);
         queue_aggregate_member_history_gpu_dma_up(stream);
         queue_aggregate_projection_gpu_storage(stream);
+        queue_aggregate_self_report_gpu_dma_up(stream);
         auto manager=pre_update(sap);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
@@ -678,6 +735,9 @@ private:
     physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
     physx::PxgCudaBuffer
         added_aggregate_members_device_,removed_aggregate_members_device_;
+    physx::PxgCudaBuffer self_previous_sizes_device_;
+    physx::PxgCudaBuffer self_found_pairs_device_,self_lost_pairs_device_;
+    physx::PxgCudaBuffer self_report_counts_device_;
     physx::PxgCudaBuffer projection_keys_0_,projection_keys_1_;
     physx::PxgCudaBuffer projection_handles_0_,projection_handles_1_;
     physx::PxgCudaBuffer projection_scratch_keys_device_,projection_scratch_handles_device_;
@@ -699,6 +759,9 @@ private:
     physx::PxU32 aggregate_gpu_slot_count_=0u;
     physx::PxU32 aggregate_gpu_member_capacity_=0u;
     physx::PxU32 aggregate_projection_current_slot_=0u;
+    physx::PxU32 aggregate_report_capacity_=0u;
+    physx::PxU32 self_previous_size_zero_=0u;
+    std::array<physx::PxU32,2> self_report_counters_zero_{{0u,0u}};
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
