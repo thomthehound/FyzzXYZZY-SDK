@@ -1338,6 +1338,35 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(scene.pairs().size()==1u &&
                         scene.pairs().front()==fyzz::native::Pair{a,c},
                         "Source recycled Sc element did not produce GPU overlap");
+
+                // The GPU has the same geometric overlap across both
+                // motion-class changes; Sc re-filters the original Bp
+                // pair without a fabricated CPU SAP crossing.
+                scene.set_kinematic(c,true);
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        scene.lost_pairs().size()==1u &&
+                        scene.lost_pairs().front()==fyzz::native::Pair{a,c},
+                        "Source GPU kinematic refilter retained Sc contact");
+                scene.set_kinematic(c,false);
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.found_pairs().size()==1u &&
+                        scene.found_pairs().front()==fyzz::native::Pair{a,c},
+                        "Source GPU dynamic refilter missed existing overlap");
+
+                // The original SAP deletion/compaction path does not
+                // require a geometric lost crossing for removed volumes.
+                scene.remove(c);
+                scene.advance_collision(false);
+                require(scene.pairs().empty() && scene.contacts().empty() &&
+                        scene.lost_pairs().size()==1u &&
+                        scene.lost_pairs().front()==fyzz::native::Pair{a,c},
+                        "Source GPU removed actor kept a stale Sc contact");
+                scene.advance_collision(false);
+                require(scene.lost_pairs().empty() &&
+                        scene.found_pairs().empty(),
+                        "Source GPU actor removal replayed a retired contact");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()
