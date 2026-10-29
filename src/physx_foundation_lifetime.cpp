@@ -4,21 +4,39 @@
 
 #include "foundation/PxPhysicsVersion.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <mutex>
 #include <stdexcept>
 
 namespace fyzz::physx_runtime {
 namespace {
-std::mutex& foundation_mutex() {
-    static std::mutex mutex;
-    return mutex;
+
+struct FoundationState {
+    std::mutex mutex;
+    std::shared_ptr<Foundation> instance;
+    std::size_t leases=0;
+};
+
+FoundationState& foundation_state() {
+    static FoundationState state;
+    return state;
 }
 
-std::weak_ptr<Foundation>& shared_foundation() {
-    static std::weak_ptr<Foundation> foundation;
-    return foundation;
-}
+// Each acquired Foundation shares a control block with a lease. A strong
+// process-wide reference stays live until the last lease destructor holds
+// the mutex and releases the underlying PhysX singleton. This avoids the
+// expired-weak-reference window between last shared_ptr release and the
+// Foundation destructor that could race PxCreateFoundation.
+struct FoundationLease {
+    ~FoundationLease() noexcept {
+        auto& state=foundation_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if(--state.leases==0)
+            state.instance.reset();
+    }
+};
+
 } // namespace
 
 void Foundation::Errors::reportError(
@@ -35,18 +53,26 @@ Foundation::Foundation()
 }
 
 Foundation::~Foundation() {
-    // Serialize destruction with acquisition: a new PxCreateFoundation
-    // must not race the previous singleton's final release.
-    std::lock_guard<std::mutex> lock(foundation_mutex());
     instance_->release();
 }
 
 std::shared_ptr<Foundation> acquire_foundation() {
-    std::lock_guard<std::mutex> lock(foundation_mutex());
-    if(auto existing=shared_foundation().lock())
-        return existing;
-    auto created=std::make_shared<Foundation>();
-    shared_foundation()=created;
-    return created;
+    auto& state=foundation_state();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if(!state.instance)
+        state.instance=std::make_shared<Foundation>();
+    std::shared_ptr<FoundationLease> token;
+    try {
+        token=std::make_shared<FoundationLease>();
+    } catch (...) {
+        if(state.leases==0)
+            state.instance.reset();
+        throw;
+    }
+    ++state.leases;
+    // The alias retains the lease control block. The actual Foundation is
+    // owned by FoundationState until the final lease releases it under lock.
+    return std::shared_ptr<Foundation>(
+        std::move(token),state.instance.get());
 }
 } // namespace fyzz::physx_runtime
