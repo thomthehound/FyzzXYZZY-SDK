@@ -1417,6 +1417,40 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(scene.pairs().size()==1u &&
                         scene.pairs().front()==fyzz::native::Pair{a,disabled},
                         "Source SAP failed after cancelled shape admission");
+
+                // Sc/Dy can reject a timestep after GPU fetch has already
+                // rotated endpoint histories. Recover the same source
+                // AABB and PxgCudaBroadPhaseSap owners without a new
+                // Scene, alternate SAP or reallocation of Sc element IDs.
+                const auto retainedA=sourceSc->source_element_handle(a);
+                const auto retainedDisabled=
+                    sourceSc->source_element_handle(disabled);
+                sourceSc->invalidate_after_rollback();
+                scene.advance_collision(false);
+                require(sceneSap.num_boxes()==2u &&
+                        sourceSc->last_frame().update.counts.previous_boxes==0u &&
+                        sourceSc->last_frame().update.counts.created==2u &&
+                        scene.pairs().size()==1u &&
+                        scene.pairs().front()==fyzz::native::Pair{a,disabled} &&
+                        scene.found_pairs().empty() &&
+                        scene.lost_pairs().empty() &&
+                        sourceSc->source_element_handle(a)==retainedA &&
+                        sourceSc->source_element_handle(disabled)==retainedDisabled &&
+                        !sceneAabb.source_added().hasAnyBitSet(),
+                        "Original GPU SAP rollback reconstruction failed initial fetch");
+
+                scene.set_position(disabled,{8.0f,0.0f,0.0f});
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        scene.lost_pairs().size()==1u &&
+                        scene.lost_pairs().front()==fyzz::native::Pair{a,disabled},
+                        "Rebuilt original GPU SAP did not retire moved pair");
+                scene.set_position(disabled,{0.3f,0.0f,0.0f});
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.found_pairs().size()==1u &&
+                        scene.found_pairs().front()==fyzz::native::Pair{a,disabled},
+                        "Rebuilt original GPU SAP did not re-admit moved pair");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()
