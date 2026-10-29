@@ -43,7 +43,8 @@ ShaderBinary shader(const char* path) {
 #else
     binary.format=ShaderFormat::Spirv;
 #endif
-    binary.bytes.assign(std::istreambuf_iterator<char>(stream),{});
+    binary.bytes.assign(std::istreambuf_iterator<char>{stream},
+                        std::istreambuf_iterator<char>{});
     require(!binary.bytes.empty(),"Empty source aggregate GPU shader");
     return binary;
 }
