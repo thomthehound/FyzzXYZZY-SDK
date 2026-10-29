@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "fyzzxyzzy/native_gpu_world.h"
+#include "native/scene.h"
+#include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -12,6 +15,52 @@ namespace {
 void require(bool pass,const char* message) {
     if(!pass)throw std::runtime_error(message);
 }
+void verify_aggregate_gpu_rollback(
+    fyzz::compute::Backend backend,
+    const char* sap_manifest,const char* aggregate_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            128u,128u,
+            fyzz::load_native_gpu_aggregate_shaders(backend,aggregate_manifest));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto aggregate=scene.create_aggregate(2u,true);
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,aggregate);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.4f,1.0f,0.0f},1.0f,aggregate);
+    const auto outside=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.0f,0.0f});
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId a,fyzz::BodyId b) {
+        const fyzz::native::Pair expected{std::min(a,b),std::max(a,b)};
+        return std::find(pairs.begin(),pairs.end(),expected)!=pairs.end();
+    };
+    scene.advance_collision();
+    require(contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside),
+            "Aggregate GPU rollback fixture lacks real source pairs");
+
+    // Simulate a failed Sc continuation after GPU fetch. The source
+    // owner must rebuild its own histories, not replay CPU SAP pairs.
+    producer->invalidate_after_rollback();
+    scene.advance_collision();
+    require(producer->last_frame().update.counts.previous_boxes==0u &&
+            producer->last_frame().update.counts.created==2u &&
+            contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside) &&
+            scene.found_pairs().empty() && scene.lost_pairs().empty(),
+            "Aggregate GPU rollback did not preserve Sc pairs after source rebuild");
+    scene.set_position(a,{8.0f,1.0f,0.0f});
+    scene.advance_collision();
+    require(contains(scene.lost_pairs(),a,b) &&
+            !contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside),
+            "Aggregate GPU rebuild did not restore native lost-pair history");
+}
+
 void run(fyzz::compute::Backend backend,
          const char* sap_manifest,const char* aggregate_manifest) {
     bool rejected=false;
@@ -126,6 +175,13 @@ int main(int argc,char** argv) {
         run(fyzz::compute::Backend::D3D12,argv[1],argv[2]);
 #else
         run(fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
+#endif
+#if defined(FYZZXYZZY_TEST_D3D12)
+        verify_aggregate_gpu_rollback(
+            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
+#else
+        verify_aggregate_gpu_rollback(
+            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
 #endif
         std::cout<<"Original source aggregate GPU World stage ownership PASS\n";
         return 0;
