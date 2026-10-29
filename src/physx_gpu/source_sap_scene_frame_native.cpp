@@ -43,7 +43,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     if(members.aabb_manager.has_aggregates &&
        (!members.aabb_owner || !members.aggregate_member_history ||
         !members.aggregate_projection ||
-        !members.aggregate_self_collision))
+        !members.aggregate_self_collision ||
+        !members.aggregate_report_copy || !members.mapped_reports))
         throw std::logic_error(
             "Original aggregate post-SAP requires AABB owner and GPU history stages");
 
@@ -113,8 +114,16 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             address(dma.broadphase_descriptor.oldIntegerBounds),
             address(dma.broadphase_descriptor.updateData_groups));
         members.aggregate_self_collision->append(stream,addresses,self);
+        // Original aggCopyReports follows aggregate pair processing on
+        // this same stream and writes directly into the source mapped heap.
+        const auto copy=members.aabb_owner->aggregate_report_copy_gpu_buffers(
+            *members.mapped_reports);
+        members.aggregate_report_copy->append(stream,addresses,copy);
     }
     stream.wait_at_fetch();
+    if(members.aabb_manager.has_aggregates)
+        (void)members.aabb_owner->fetch_aggregate_mapped_reports(
+            context,addresses,*members.mapped_reports);
 
     // Complete both source bitmap D32 view validations before reporting
     // success to Sc. Reserve the following GPU command queue now so
