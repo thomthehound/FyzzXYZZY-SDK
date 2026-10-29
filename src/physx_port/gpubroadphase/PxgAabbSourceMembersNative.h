@@ -1005,16 +1005,19 @@ public:
             }
         }
         for(physx::PxU32 id=0;id<aggregate_gpu_slot_count_;++id) {
-            if(id>=aggregates_.size() ||
-               aggregates_[id].mIndex==PX_INVALID_U32)continue;
             auto& aggregate=aggregates_[id];
+            // Even retired aggregate slots may still exist on the GPU
+            // when a rejected frame discards their deletion upload.
+            // Publish their empty source records before self collision
+            // dispatch examines the reserved aggregate ID domain.
+            mark_aggregate_dirty(id);
+            if(aggregate.mIndex==PX_INVALID_U32)continue;
             // Fresh GPU projections and self history begin at size zero;
             // do not read stale member bounds or pair slots from the
             // rejected frame's previously published projection buffers.
             aggregate.prevSize=0u;
             aggregate.isNew=true;
             self_state_uploaded_[id]=false;
-            mark_aggregate_dirty(id);
             if(aggregate.size &&
                !added_.growAndSet(aggregate.mIndex))
                 throw std::bad_alloc();
