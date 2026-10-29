@@ -218,67 +218,76 @@ void scanDirection(
         }
     }
 }
+// The source pair's isNew byte is read by every logical lane. Snapshot it
+// before any subgroup may clear it, even when native waves are <32 lanes.
+groupshared uint sourcePairFlags[4];
 [numthreads(32,4,1)]
 void main(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint count=min(pairCount.Load(p.countBias),p.pairCapacity);
-    for(uint id=block.x*4u+lane.y;id<count;id+=p.gridCount*4u) {
-    const uint base=p.pairsBias+id*12u;
-    const uint a=pairs.Load(base),b=pairs.Load(base+4u);
-    const uint flags=pairs.Load(base+8u);
-    if((flags&0x0000ff00u)!=0u) {
-        if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,0u);
-        continue;
-    }
-    if(a>=p.boundsCapacity || b>=p.boundsCapacity) {
-        if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
-        continue;
-    }
-    // The original AABB owner records aggregate IDs in VolumeData's
-    // 32-bit tag after its pointer-sized mUserData. The bit encodings
-    // and its 16-byte x64 stride are those of Bp::VolumeData.
-    const uint tagA=volumeData.Load(p.volumeBias+a*16u+8u);
-    const uint tagB=volumeData.Load(p.volumeBias+b*16u+8u);
-    const bool aggA=tagA!=0xffffffffu && (tagA&1u)!=0u;
-    const bool aggB=tagB!=0xffffffffu && (tagB&1u)!=0u;
-    const uint indexA=tagA>>1u,indexB=tagB>>1u;
-    const uint4 infoA=aggA && indexA<p.aggregateCapacity
-        ? aggregates.Load4(p.aggregateBias+indexA*16u)
-        : uint4(0xffffffffu,0u,0u,0u);
-    const uint4 infoB=aggB && indexB<p.aggregateCapacity
-        ? aggregates.Load4(p.aggregateBias+indexB*16u)
-        : uint4(0xffffffffu,0u,0u,0u);
-    const bool valid= a<p.boundsCapacity && b<p.boundsCapacity &&
-        (!aggA || (indexA<p.aggregateCapacity && infoA.x==a)) &&
-        (!aggB || (indexB<p.aggregateCapacity && infoB.x==b));
-    const bool removed=valid &&
-        (((removedRoots.Load(p.removedRootsBias+(a>>5u)*4u)>>(a&31u))&1u)!=0u ||
-         ((removedRoots.Load(p.removedRootsBias+(b>>5u)*4u)>>(b&31u))&1u)!=0u);
-    if(!valid || removed) {
-        if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
-        continue;
-    }
-    // Source pairs are root/root or root/single. A pair of two ordinary
-    // single volumes never belongs to the aggregate pair stage.
-    if(!aggA && !aggB) {
-        if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
-        continue;
-    }
-    const bool shouldRemove=!intersects(a,b,false);
-    const bool isNew=(flags&0xffu)!=0u;
-    const uint prevA=aggA?previousSizes.Load(p.previousSizesBias+indexA*4u):1u;
-    const uint prevB=aggB?previousSizes.Load(p.previousSizesBias+indexB*4u):1u;
-    for(uint pass=0u;pass<2u;++pass) {
-        const bool old=pass!=0u;
-        if(old && isNew)continue;
-        // Bipartite sweep in BOTH directions. On identical X starts
-        // only the first direction reports to avoid duplicate contacts.
-        scanDirection(a,b,aggA,aggB,infoA,infoB,prevA,prevB,old,true,lane.x);
-        scanDirection(b,a,aggB,aggA,infoB,infoA,prevB,prevA,old,false,lane.x);
-    }
-    if(lane.x==0u) {
-        removePairs.Store(p.removePairsBias+id*4u,shouldRemove?1u:0u);
-        // Original doAggPairCollisions clears isNew in the source slot.
-        pairs.Store(base+8u,flags&0xffffff00u);
-    }
+    for(uint start=block.x*4u;start<count;start+=p.gridCount*4u) {
+        const uint id=start+lane.y;
+        const bool active=id<count;
+        const uint base=p.pairsBias+id*12u;
+        if(lane.x==0u)
+            sourcePairFlags[lane.y]=active?pairs.Load(base+8u):0u;
+        GroupMemoryBarrierWithGroupSync();
+        const uint flags=sourcePairFlags[lane.y];
+        bool remove=false,clearNew=false;
+        if(active && (flags&0x0000ff00u)==0u) {
+            const uint a=pairs.Load(base),b=pairs.Load(base+4u);
+            if(a>=p.boundsCapacity || b>=p.boundsCapacity) {
+                remove=true;
+            } else {
+                // Bp::VolumeData's original mAggregate tag follows the
+                // pointer-sized mUserData at byte 8, stride 16 on x64.
+                const uint tagA=volumeData.Load(p.volumeBias+a*16u+8u);
+                const uint tagB=volumeData.Load(p.volumeBias+b*16u+8u);
+                const bool aggA=tagA!=0xffffffffu && (tagA&1u)!=0u;
+                const bool aggB=tagB!=0xffffffffu && (tagB&1u)!=0u;
+                const uint indexA=tagA>>1u,indexB=tagB>>1u;
+                const uint4 infoA=aggA && indexA<p.aggregateCapacity
+                    ? aggregates.Load4(p.aggregateBias+indexA*16u)
+                    : uint4(0xffffffffu,0u,0u,0u);
+                const uint4 infoB=aggB && indexB<p.aggregateCapacity
+                    ? aggregates.Load4(p.aggregateBias+indexB*16u)
+                    : uint4(0xffffffffu,0u,0u,0u);
+                const bool valid=
+                    (!aggA || (indexA<p.aggregateCapacity && infoA.x==a)) &&
+                    (!aggB || (indexB<p.aggregateCapacity && infoB.x==b));
+                const bool retired=valid &&
+                    (((removedRoots.Load(p.removedRootsBias+(a>>5u)*4u)>>(a&31u))&1u)!=0u ||
+                     ((removedRoots.Load(p.removedRootsBias+(b>>5u)*4u)>>(b&31u))&1u)!=0u);
+                if(!valid || retired || (!aggA && !aggB)) {
+                    remove=true;
+                } else {
+                    remove=!intersects(a,b,false);
+                    const bool isNew=(flags&0xffu)!=0u;
+                    const uint prevA=aggA
+                        ? previousSizes.Load(p.previousSizesBias+indexA*4u):1u;
+                    const uint prevB=aggB
+                        ? previousSizes.Load(p.previousSizesBias+indexB*4u):1u;
+                    for(uint pass=0u;pass<2u;++pass) {
+                        const bool old=pass!=0u;
+                        if(old && isNew)continue;
+                        // Original two-sided bipartite X sweep; ties only
+                        // report in the first direction.
+                        scanDirection(a,b,aggA,aggB,infoA,infoB,
+                            prevA,prevB,old,true,lane.x);
+                        scanDirection(b,a,aggB,aggA,infoB,infoA,
+                            prevB,prevA,old,false,lane.x);
+                    }
+                    clearNew=true;
+                }
+            }
+        }
+        // All physical subgroups must finish pair comparisons before lane
+        // zero publishes the remove bitmap or clears the source isNew byte.
+        // Inactive logical warps participate in every group barrier.
+        GroupMemoryBarrierWithGroupSync();
+        if(active && lane.x==0u) {
+            removePairs.Store(p.removePairsBias+id*4u,remove?1u:0u);
+            if(clearNew)pairs.Store(base+8u,flags&0xffffff00u);
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
 }
