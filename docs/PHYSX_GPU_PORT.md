@@ -19,6 +19,49 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 native source SAP shader bundle
+
+The independent source SAP broadphase is constructed by
+`fyzz::create_native_gpu_world` in `fyzzxyzzy/native_gpu_world.h`.
+The GPU World owns one Vulkan or D3D12 Context, the original PhysX GPU
+buddy heap, source AABB/SAP histories, command stream and all 34 compiled
+source kernels. Found/lost reports enter the existing native Sc/PCM/Dy
+scene. This does not claim an independent GPU Dy solver.
+
+The source-free GPU conformance configuration builds deployable shader
+assets from the same HLSL commands used by the SAP lifecycle tests:
+
+```sh
+cmake -S . -B build-native -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_BUILD_VULKAN=ON
+cmake --build build-native --target fyzzxyzzy_native_gpu_sap_shaders
+```
+
+On Windows select `FYZZXYZZY_BUILD_D3D12=ON` instead of Vulkan and
+build `fyzzxyzzy_native_gpu_sap_shaders_d3d12`. DXC is required at
+configuration. The generated manifests are
+`build-native/kernels/fyzzxyzzy_native_sap_spirv.manifest` and
+`build-native/kernels/fyzzxyzzy_native_sap_dxil.manifest`, respectively.
+Deploy the manifest with its compiled shader files in the same directory;
+the file names in the manifest are relative, not build-machine paths.
+
+The production factory accepts the manifest directly:
+
+```cpp
+fyzz::WorldOptions options{fyzz::ExecutionMode::NativePortableGpu};
+auto world=fyzz::create_native_gpu_world(
+    fyzz::compute::Backend::Vulkan,"kernels/fyzzxyzzy_native_sap_spirv.manifest",
+    options);
+```
+
+The loader rejects missing stages, incorrect stage order, unsupported
+manifest versions, and mismatched backend binaries before GPU World
+construction. The existing Vulkan and D3D12 lifecycle tests independently
+compare all loaded binary stages with their original compiler outputs and
+execute real Sc contact found/lost/quiet frames through this factory.
+The plain `World(WorldOptions{NativePortableGpu})` selector remains
+fail-closed until the SDK's default device and shader deployment policy is
+implemented; it never selects the CPU broadphase as a substitute.
+
 ## Port boundary
 
 FyzzXYZZY ports PhysX GPU physics **into its own native simulation pipeline**, preserving the original source task and dataflow dependencies.
