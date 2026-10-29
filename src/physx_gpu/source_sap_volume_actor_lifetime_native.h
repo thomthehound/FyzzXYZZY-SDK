@@ -85,6 +85,15 @@ inline void validate_source_sap_volume_actor_lifetime_native(
                    (!aggregate_root && !volume.isSingleActor()))
                     throw std::invalid_argument(
                         "Source GPU created handle is neither an original aggregate root nor a single actor");
+            }else if(retired_root && volume.isAggregate()) {
+                // The last member can retire a root from SAP without
+                // destroying the original PxgAggregate record. That
+                // root keeps its VolumeData tag and BP group for later
+                // member re-admission, but has no Sc actor identity.
+                if(groups[handle]==physx::Bp::FilterGroup::eINVALID ||
+                   !volume.getUserData())
+                    throw std::invalid_argument(
+                        "Source removed aggregate root lost its original owner");
             }else if(groups[handle]!=physx::Bp::FilterGroup::eINVALID ||
                      volume.getUserData()) {
                 throw std::invalid_argument(
