@@ -104,7 +104,9 @@ void verify(Context& context,ShaderBinary count,ShaderBinary mark,
     for(std::uint32_t i=0u;i<capacity;++i) {
         words[i*3u]=10u+i;
         words[i*3u+1u]=1000u+i;
-        words[i*3u+2u]=1u; // original isNew bit only
+        // Slot 77 was retired in an earlier frame and is already
+        // present in the source free-index stack.
+        words[i*3u+2u]=i==77u?0x00000101u:1u;
     }
     up(pairs,words.data(),sizeof(words));
     std::array<std::uint32_t,capacity> deleted{};
