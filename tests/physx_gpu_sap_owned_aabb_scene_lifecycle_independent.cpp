@@ -1500,22 +1500,34 @@ void verify_source_shutdown_after_failed_submission(Backend backend) {
 }
 
 void verify_owned_source_world(
-    Backend backend,const std::array<const char*,34>& filenames) {
+    Backend backend,const std::array<const char*,34>& filenames,
+    const char* manifest) {
     bool rejected_missing_stages=false;
     try {
-        (void)fyzz::create_native_gpu_world(backend,{});
+        (void)fyzz::create_native_gpu_world(backend,fyzz::NativeGpuSapShaders{});
     }catch(const std::invalid_argument&) {
         rejected_missing_stages=true;
     }
     require(rejected_missing_stages,
             "Production native GPU World accepted incomplete SAP shaders");
-    fyzz::NativeGpuSapShaders shaders{};
-    for(std::size_t i=0;i<shaders.size();++i)
-        shaders[i]=load_shader(filenames[i]);
+    const auto loaded=fyzz::load_native_gpu_sap_shaders(backend,manifest);
+    for(std::size_t i=0;i<loaded.size();++i)
+        require(loaded[i].bytes==load_shader(filenames[i]).bytes,
+                "Native GPU manifest did not preserve source shader stage order");
+    bool rejected_backend=false;
+    try {
+        (void)fyzz::load_native_gpu_sap_shaders(
+            backend==Backend::Vulkan ? Backend::D3D12 : Backend::Vulkan,
+            manifest);
+    }catch(const std::invalid_argument&) {
+        rejected_backend=true;
+    }
+    require(rejected_backend,
+            "Native GPU manifest accepted a shader of the wrong backend");
     fyzz::WorldOptions options{fyzz::ExecutionMode::NativePortableGpu};
     options.contact_notifications=true;
     fyzz::World world=fyzz::create_native_gpu_world(
-        backend,std::move(shaders),options);
+        backend,manifest,options);
     const auto dynamic=world.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,3.0f,0.0f},1.0f);
     const auto fixed=world.add_static_box(
@@ -1542,7 +1554,7 @@ void verify_owned_source_world(
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 35)
+        if (argc != 36)
             throw std::invalid_argument("Expected source AABB, created, radix, indices, endpoint and region shader paths");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -1584,7 +1596,7 @@ int main(int argc, char** argv) {
 #else
             Backend::Vulkan,
 #endif
-            filenames);
+            filenames,argv[35]);
         std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {

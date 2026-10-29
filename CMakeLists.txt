@@ -1303,38 +1303,91 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_owned_source_sap_shaders
       fyzzxyzzy_owned_report_shaders
       fyzzxyzzy_owned_clear_new_shader)
+    set(FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES
+      "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
+      "${FYZZXYZZY_OWNED_CREATED_SPV}"
+      "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}"
+      "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}"
+      "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}"
+      "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}"
+      "${FYZZXYZZY_OWNED_SAPBOX_SPV}"
+      "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
+      "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
+      "${FYZZXYZZY_OWNED_ACTIVE_writeout_SPV}"
+      "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_SPV}"
+      "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_SPV}"
+      "${FYZZXYZZY_OWNED_ACTIVE_output_SPV}"
+      "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
+      "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
+      "${FYZZXYZZY_OWNED_PAIRS_SPV}"
+      ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS}
+      "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}"
+      "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}"
+      "${FYZZXYZZY_OWNED_UPDATED_SPV}"
+      "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
+      "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
+      "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
+      "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
+    list(LENGTH FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES _sap_shader_count)
+    if(NOT _sap_shader_count EQUAL 34)
+      message(FATAL_ERROR "Native SPIRV SAP shader bundle does not contain 34 stages")
+    endif()
+    set(_sap_names
+      TranslateAabbs
+      CreatedPairs
+      RadixInitialize
+      RadixCount
+      RadixScatter
+      RadixGather
+      SapBoxIndices
+      EndpointHistogramFirst
+      EndpointHistogramSecond
+      FillD32
+      RegionCreate
+      RegionHistogramFirst
+      RegionHistogramWave
+      RegionHistogramSecond
+      ActiveWriteout
+      ActiveWave
+      ActivePortable
+      ActiveOutput
+      OverlapWork
+      OverlapScanFirst
+      OverlapScanSecond
+      NewBoundsPairs
+      ReportFirst
+      ReportSecond
+      ReportCopy
+      ReportWaveFirst
+      ReportWaveSecond
+      RemovedMark
+      RemovedProjections
+      UpdatedBounds
+      IncrementalCountFirst
+      IncrementalCountSecond
+      IncrementalPairs
+      ClearNewFlags
+    )
+    set(_sap_manifest "FYZZXYZZY_SOURCE_SAP_1 SPIRV\n")
+    foreach(_idx RANGE 0 33)
+      list(GET _sap_names ${_idx} _stage)
+      list(GET FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES ${_idx} _binary)
+      get_filename_component(_filename "${_binary}" NAME)
+      string(APPEND _sap_manifest "${_stage} ${_filename}\n")
+    endforeach()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" CONTENT "${_sap_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_sap_shaders
+      DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES})
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
-        "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
-        "${FYZZXYZZY_OWNED_CREATED_SPV}"
-        "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}"
-        "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}"
-        "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}"
-        "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}"
-        "${FYZZXYZZY_OWNED_SAPBOX_SPV}"
-        "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
-        "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
-        "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
-        "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
-        "${FYZZXYZZY_OWNED_ACTIVE_writeout_SPV}"
-        "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_SPV}"
-        "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_SPV}"
-        "${FYZZXYZZY_OWNED_ACTIVE_output_SPV}"
-        "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
-        "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
-        "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
-        "${FYZZXYZZY_OWNED_PAIRS_SPV}"
-        ${FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS}
-        "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}"
-        "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}"
-        "${FYZZXYZZY_OWNED_UPDATED_SPV}"
-        "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
-        "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
-        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
-        "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
+        ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES}
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest")
 
 
 
@@ -4010,38 +4063,91 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_owned_source_sap_shaders_d3d12
       fyzzxyzzy_owned_report_shaders_d3d12
       fyzzxyzzy_owned_clear_new_shader_d3d12)
+    set(FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES
+      "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
+      "${FYZZXYZZY_OWNED_CREATED_DXIL}"
+      "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}"
+      "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}"
+      "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}"
+      "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}"
+      "${FYZZXYZZY_OWNED_SAPBOX_DXIL}"
+      "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
+      "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
+      "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
+      "${FYZZXYZZY_OWNED_ACTIVE_writeout_DXIL}"
+      "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_DXIL}"
+      "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_DXIL}"
+      "${FYZZXYZZY_OWNED_ACTIVE_output_DXIL}"
+      "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
+      "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
+      "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
+      ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS}
+      "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}"
+      "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}"
+      "${FYZZXYZZY_OWNED_UPDATED_DXIL}"
+      "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
+      "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
+      "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
+      "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}")
+    list(LENGTH FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES _sap_shader_count)
+    if(NOT _sap_shader_count EQUAL 34)
+      message(FATAL_ERROR "Native DXIL SAP shader bundle does not contain 34 stages")
+    endif()
+    set(_sap_names
+      TranslateAabbs
+      CreatedPairs
+      RadixInitialize
+      RadixCount
+      RadixScatter
+      RadixGather
+      SapBoxIndices
+      EndpointHistogramFirst
+      EndpointHistogramSecond
+      FillD32
+      RegionCreate
+      RegionHistogramFirst
+      RegionHistogramWave
+      RegionHistogramSecond
+      ActiveWriteout
+      ActiveWave
+      ActivePortable
+      ActiveOutput
+      OverlapWork
+      OverlapScanFirst
+      OverlapScanSecond
+      NewBoundsPairs
+      ReportFirst
+      ReportSecond
+      ReportCopy
+      ReportWaveFirst
+      ReportWaveSecond
+      RemovedMark
+      RemovedProjections
+      UpdatedBounds
+      IncrementalCountFirst
+      IncrementalCountSecond
+      IncrementalPairs
+      ClearNewFlags
+    )
+    set(_sap_manifest "FYZZXYZZY_SOURCE_SAP_1 DXIL\n")
+    foreach(_idx RANGE 0 33)
+      list(GET _sap_names ${_idx} _stage)
+      list(GET FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES ${_idx} _binary)
+      get_filename_component(_filename "${_binary}" NAME)
+      string(APPEND _sap_manifest "${_stage} ${_filename}\n")
+    endforeach()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest" CONTENT "${_sap_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_sap_shaders_d3d12
+      DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES})
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
-        "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
-        "${FYZZXYZZY_OWNED_CREATED_DXIL}"
-        "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}"
-        "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}"
-        "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}"
-        "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}"
-        "${FYZZXYZZY_OWNED_SAPBOX_DXIL}"
-        "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
-        "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
-        "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
-        "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
-        "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
-        "${FYZZXYZZY_OWNED_ACTIVE_writeout_DXIL}"
-        "${FYZZXYZZY_OWNED_ACTIVE_compute_wave_DXIL}"
-        "${FYZZXYZZY_OWNED_ACTIVE_compute_portable_DXIL}"
-        "${FYZZXYZZY_OWNED_ACTIVE_output_DXIL}"
-        "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
-        "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
-        "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
-        "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
-        ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS}
-        "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}"
-        "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}"
-        "${FYZZXYZZY_OWNED_UPDATED_DXIL}"
-        "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
-        "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
-        "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
-        "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}")
+        ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_new_pairs_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_report_fetch_d3d12 PROPERTIES
