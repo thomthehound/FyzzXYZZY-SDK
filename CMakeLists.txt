@@ -319,6 +319,24 @@ target_link_libraries(fyzzxyzzy_physx_original_gpu_heap PUBLIC
   fyzzxyzzy_physx_source_foundation)
 endif() # source-port PhysX heap and SAP host fixtures
 
+# One process-wide source Foundation, shared by reference CPU Physics and
+# the native source GPU allocator. It owns no PhysX scene or GPU device.
+add_library(fyzzxyzzy_physx_foundation_lifetime STATIC
+  src/physx_foundation_lifetime.cpp)
+target_compile_features(fyzzxyzzy_physx_foundation_lifetime PUBLIC cxx_std_23)
+target_include_directories(fyzzxyzzy_physx_foundation_lifetime
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  target_link_libraries(fyzzxyzzy_physx_foundation_lifetime PUBLIC physx_lib)
+  target_link_libraries(fyzzxyzzy_reference_physx_cpu PRIVATE
+    fyzzxyzzy_physx_foundation_lifetime)
+else()
+  target_link_libraries(fyzzxyzzy_physx_foundation_lifetime PUBLIC
+    fyzzxyzzy_physx_source_foundation)
+endif()
+set_target_properties(fyzzxyzzy_physx_foundation_lifetime
+  PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 if(FYZZXYZZY_BUILD_VULKAN)
@@ -393,7 +411,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
   target_link_libraries(fyzzxyzzy_native_gpu_world PUBLIC
     FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
-    fyzzxyzzy_source_gpu_primitives)
+    fyzzxyzzy_source_gpu_primitives fyzzxyzzy_physx_foundation_lifetime)
   set_target_properties(fyzzxyzzy_native_gpu_world
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -3015,7 +3033,8 @@ if(FYZZXYZZY_BUILD_D3D12)
             "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
   target_link_libraries(fyzzxyzzy_native_gpu_world_d3d12 PUBLIC
     FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
-    fyzzxyzzy_source_gpu_primitives_d3d12)
+    fyzzxyzzy_source_gpu_primitives_d3d12
+    fyzzxyzzy_physx_foundation_lifetime)
   set_target_properties(fyzzxyzzy_native_gpu_world_d3d12
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
