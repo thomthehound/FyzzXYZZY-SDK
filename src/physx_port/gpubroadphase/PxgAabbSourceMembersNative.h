@@ -6,6 +6,7 @@
 #include "physx_gpu/source_sap_single_volume_scene_native.h"
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
+#include "physx_gpu/source_aggregate_member_history_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -49,6 +50,8 @@ public:
           created_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           retired_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           updated_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+          added_aggregate_members_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+          removed_aggregate_members_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           added_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           removed_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           changed_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -56,6 +59,8 @@ public:
           volumes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_slots_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          added_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          removed_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
@@ -196,6 +201,13 @@ public:
            handle>=BP_INVALID_BP_HANDLE-1u ||
            aggregate.size>=aggregate_max_shapes_[id])
             throw std::invalid_argument("Invalid original aggregate member admission");
+        // Published member handles remain retired until the source fetch
+        // consumes their lost reports. The original deferred ID lifecycle
+        // prevents remove/re-admit aliasing within that interval.
+        for(const auto pending:removed_aggregate_members_)
+            if(pending==handle)
+                throw std::logic_error(
+                    "Original aggregate member handle awaits GPU fetch retirement");
         reserve_shapes(handle+1u);
         if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID ||
            volume_to_actor_[handle]!=std::numeric_limits<BodyId>::max())
@@ -218,6 +230,7 @@ public:
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
+        added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
     }
@@ -264,6 +277,10 @@ public:
             if(!changed_.growAndSet(aggregate.mIndex))
                 throw std::bad_alloc();
         }
+        // Source PxgAABBManager cancels admission on same-frame removal;
+        // otherwise the old and new GPU integer AABBs must be retired.
+        if(!added_aggregate_members_.findAndReplaceWithLast(handle))
+            removed_aggregate_members_.pushBack(handle);
         changed_.boundedReset(handle);
         aggregated_.boundedReset(handle);
         groups_[handle]=physx::Bp::FilterGroup::eINVALID;
@@ -349,6 +366,46 @@ public:
         stream.queue_uploads(uploads);
     }
 
+    // Source gpuDmaDataUp uploads added and deleted aggregate members from
+    // the same host lists used by markAddedAndDeletedAggregatedBounds.
+    // The native history invalidation dispatch follows the SAP update,
+    // before aggregate collision-history kernels on the shared stream.
+    void queue_aggregate_member_history_gpu_dma_up(SourceSapDmaNative& stream) {
+        const auto added=added_aggregate_members_.size();
+        const auto removed=removed_aggregate_members_.size();
+        if(!added && !removed)return;
+        const auto checked_bytes=[](physx::PxU32 count) {
+            if(std::uint64_t(count)*sizeof(physx::PxU32)>
+               std::numeric_limits<physx::PxU32>::max())
+                throw std::out_of_range(
+                    "Original aggregate member history DMA capacity exceeded");
+            return std::size_t(count)*sizeof(physx::PxU32);
+        };
+        const auto added_bytes=checked_bytes(added);
+        const auto removed_bytes=checked_bytes(removed);
+        if(added_bytes)added_aggregate_members_device_.allocate(added_bytes,PX_FL);
+        if(removed_bytes)removed_aggregate_members_device_.allocate(removed_bytes,PX_FL);
+        auto& uploads=stream.upload_scratch();
+        uploads.reserve(2u);
+        if(added_bytes)uploads.push_back({
+            added_aggregate_members_device_.getDevicePtr(),
+            added_aggregate_members_.begin(),added_bytes});
+        if(removed_bytes)uploads.push_back({
+            removed_aggregate_members_device_.getDevicePtr(),
+            removed_aggregate_members_.begin(),removed_bytes});
+        stream.queue_uploads(uploads);
+    }
+
+    SourceAggregateMemberHistoryNativeBuffers aggregate_member_history_buffers(
+        CudaDeviceAddressMap::Address new_bounds,
+        CudaDeviceAddressMap::Address old_bounds) const noexcept {
+        return {new_bounds,old_bounds,
+            added_aggregate_members_device_.getDevicePtr(),
+            removed_aggregate_members_device_.getDevicePtr(),
+            bounds_.size(),added_aggregate_members_.size(),
+            removed_aggregate_members_.size()};
+    }
+
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
     // changed bitmap after its normal preBroadPhase upload. The translated
     // aggregate views point to this owner's actual GPU heap allocations.
@@ -378,6 +435,8 @@ public:
             aggregates_[id].isNew=false;
         dirty_aggregate_indices_.resetOrClear();
         dirty_aggregates_.clear();
+        added_aggregate_members_.resetOrClear();
+        removed_aggregate_members_.resetOrClear();
         aggregate_ids_.processDeferredIds();
     }
     physx::Cm::PinnableBitMap& source_aggregated() noexcept {
@@ -460,6 +519,7 @@ public:
             throw std::invalid_argument(
                 "Aggregate GPU first pass does not borrow original AABB manager arrays");
         queue_aggregate_gpu_dma_up(stream);
+        queue_aggregate_member_history_gpu_dma_up(stream);
         auto manager=pre_update(sap);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
@@ -545,9 +605,13 @@ private:
     physx::Cm::PinnableArray<physx::Bp::VolumeData> volumes_;
     physx::Cm::PinnableBitMap added_,removed_,changed_,aggregated_;
     physx::Cm::PinnableArray<physx::Bp::ShapeHandle> created_,retired_,updated_;
+    physx::Cm::PinnableArray<physx::Bp::ShapeHandle>
+        added_aggregate_members_,removed_aggregate_members_;
     physx::PxgCudaBuffer added_device_,removed_device_,changed_device_;
     physx::PxgCudaBuffer aggregated_device_,volumes_device_;
     physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
+    physx::PxgCudaBuffer
+        added_aggregate_members_device_,removed_aggregate_members_device_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their

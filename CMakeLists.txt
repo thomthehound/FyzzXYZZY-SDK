@@ -1317,6 +1317,29 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_bounds
       COMMAND fyzzxyzzy_source_gpu_aggregate_bounds "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}")
+    # Original aggregate.cu added/deleted member integer-AABB history.
+    set(FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_members_history_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_member_history_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_member_history
+      tests/physx_gpu_source_aggregate_member_history_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_member_history PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_member_history PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_member_history
+      fyzzxyzzy_source_gpu_aggregate_member_history_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_member_history
+      COMMAND fyzzxyzzy_source_gpu_aggregate_member_history
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -1325,11 +1348,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
     target_link_libraries(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
       FyzzXYZZY::NativeGpuWorld)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
-      fyzzxyzzy_source_gpu_aggregate_bounds_shader)
+      fyzzxyzzy_source_gpu_aggregate_bounds_shader
+      fyzzxyzzy_source_gpu_aggregate_member_history_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}")
     add_executable(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       tests/physx_gpu_sap_owned_aabb_scene_lifecycle_independent.cpp)
     target_include_directories(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
@@ -4120,6 +4145,32 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_bounds_d3d12
       COMMAND fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}")
+    set(FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_members_history_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
+      tests/physx_gpu_source_aggregate_member_history_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
+      fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
+      COMMAND fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
@@ -4130,11 +4181,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_link_libraries(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
       FyzzXYZZY::NativeGpuWorldD3D12)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
-      fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader)
+      fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
