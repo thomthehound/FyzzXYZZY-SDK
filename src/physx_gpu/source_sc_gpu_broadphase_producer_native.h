@@ -5,6 +5,7 @@
 #include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
+#include "physx_gpu/source_sc_scene_elements_native.h"
 
 #include <limits>
 #include <optional>
@@ -36,10 +37,32 @@ public:
         : aabb_(aabb), sap_(sap), stream_(stream), stages_(stages),
           addresses_(addresses), context_(context), filter_(filter),
           bitmap_fill_(bitmap_fill), mapped_reports_(mapped_reports),
-          sc_actor_element_ids_(sc_actor_element_ids) {
+          sc_actor_element_ids_(&sc_actor_element_ids) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument(
                 "Source Sc GPU broadphase stream has a different device owner");
+    }
+
+    // Native Scene mode: retain original Sc ElementSim identity and
+    // ObjectIDTracker through the complete source GPU report lifecycle.
+    SourceScGpuBroadphaseProducerNative(
+        PxgAabbSourceMembersNative& aabb,
+        PxgSapSourceMembersNative& sap,
+        SourceSapDmaNative& stream,
+        const SourceSapUpdateNativeStages& stages,
+        const CudaDeviceAddressMap& addresses,
+        compute::Context& context,
+        const physx::Bp::BpFilter& filter,
+        const SourceFillD32NativeStage& bitmap_fill,
+        SourceSapMappedReportView& mapped_reports)
+        : aabb_(aabb),sap_(sap),stream_(stream),stages_(stages),
+          addresses_(addresses),context_(context),filter_(filter),
+          bitmap_fill_(bitmap_fill),mapped_reports_(mapped_reports),
+          source_sc_elements_(std::make_unique<SourceScSceneElementsNative>(aabb)) {
+        if(!stream_.bound_to(context_,addresses_))
+            throw std::invalid_argument(
+                "Source Sc GPU broadphase stream has a different device owner");
+        sc_actor_element_ids_=&source_sc_elements_->handles();
     }
 
     native::GpuBroadphaseReports advance(
@@ -55,9 +78,9 @@ public:
         handles_.clear();
         handles_.reserve(live_boxes.size());
         for(const auto& box:live_boxes) {
-            if(box.id>=sc_actor_element_ids_.size())
+            if(box.id>=sc_actor_element_ids_->size())
                 throw std::out_of_range("Source Sc actor has no element handle");
-            const auto handle=sc_actor_element_ids_[box.id];
+            const auto handle=(*sc_actor_element_ids_)[box.id];
             if(handle>=source_actors.size() ||
                source_actors[handle]!=box.id)
                 throw std::invalid_argument(
@@ -91,14 +114,39 @@ public:
                 "Source GPU SAP histories require reconstruction after Sc rollback");
         // The Sc element handle, not the actor ID, addresses the native
         // AABB manager's changed bitmap and contact-distance array.
-        if(actor>=sc_actor_element_ids_.size())
+        if(actor>=sc_actor_element_ids_->size())
             throw std::out_of_range("Source Sc shape has no element handle");
-        const auto handle=sc_actor_element_ids_[actor];
+        const auto handle=(*sc_actor_element_ids_)[actor];
         const auto owners=aabb_.volume_to_actor();
         if(handle>=owners.size() || owners[handle]!=actor)
             throw std::invalid_argument(
                 "Source Sc edited shape has no matching AABB volume");
         aabb_.mark_changed(handle,contact_offset);
+    }
+
+    void admit_shape(BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
+        require_scene_elements().admit(actor,motion,contact_distance);
+    }
+    void retire_shape(BodyId actor) override {
+        require_scene_elements().retire(actor);
+    }
+    void set_shape_simulation_enabled(BodyId actor,bool enabled) override {
+        require_scene_elements().set_simulation_enabled(actor,enabled);
+    }
+    void post_reports_cleanup() override {
+        if(source_sc_elements_)source_sc_elements_->post_reports_cleanup();
+    }
+
+    physx::Bp::ShapeHandle source_element_handle(BodyId actor) const {
+        if(!source_sc_elements_)
+            throw std::logic_error("Source Sc element ownership is borrowed");
+        return source_sc_elements_->handle(actor);
+    }
+    bool source_element_deleted(physx::Bp::ShapeHandle handle) const {
+        if(!source_sc_elements_)
+            throw std::logic_error("Source Sc element ownership is borrowed");
+        return source_sc_elements_->element_deleted(handle);
     }
 
     void invalidate_after_rollback() noexcept override {
@@ -112,6 +160,15 @@ public:
     }
 
 private:
+    SourceScSceneElementsNative& require_scene_elements() {
+        if(invalidated_)
+            throw std::logic_error(
+                "Source GPU SAP histories require reconstruction after Sc rollback");
+        if(!source_sc_elements_)
+            throw std::logic_error("Source Sc element admission is borrowed");
+        return *source_sc_elements_;
+    }
+
     PxgAabbSourceMembersNative& aabb_;
     PxgSapSourceMembersNative& sap_;
     SourceSapDmaNative& stream_;
@@ -121,7 +178,8 @@ private:
     const physx::Bp::BpFilter& filter_;
     const SourceFillD32NativeStage& bitmap_fill_;
     SourceSapMappedReportView& mapped_reports_;
-    const std::vector<physx::Bp::ShapeHandle>& sc_actor_element_ids_;
+    std::unique_ptr<SourceScSceneElementsNative> source_sc_elements_;
+    const std::vector<physx::Bp::ShapeHandle>* sc_actor_element_ids_=nullptr;
     std::vector<physx::Bp::ShapeHandle> handles_;
     std::vector<native::Pair> found_,lost_;
     std::optional<SourceSapSceneFrameNativeResult> last_frame_;

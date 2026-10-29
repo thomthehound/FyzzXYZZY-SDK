@@ -193,6 +193,9 @@ BodyId Scene::add(Actor actor) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
+    if(gpu_broadphase_ && actor.kind==Kind::StaticPlane)
+        throw std::logic_error(
+            "Native GPU SAP does not admit infinite plane shapes");
     // Edge publications are noexcept: preallocate one kinematic slot
     // for every possible actor before making this admission visible.
     for(auto* graph:{&speculative_islands_,&accurate_islands_}) {
@@ -208,6 +211,19 @@ BodyId Scene::add(Actor actor) {
         const auto capacity=live_actor_ids_.capacity();
         live_actor_ids_.reserve(capacity+
             std::max<std::size_t>(capacity,8));
+    }
+    // Native storage must not reallocate after original Sc ID admission.
+    if(actors_.size()==actors_.capacity()) {
+        const auto capacity=actors_.capacity();
+        actors_.reserve(capacity+std::max<std::size_t>(capacity,8));
+    }
+    if(gpu_broadphase_) {
+        const auto motion=actor.kind==Kind::StaticBox
+            ? GpuBroadphaseBox::Motion::Static
+            : actor.kind==Kind::KinematicBox
+                ? GpuBroadphaseBox::Motion::Kinematic
+                : GpuBroadphaseBox::Motion::Dynamic;
+        gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
     }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
@@ -711,6 +727,11 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
 void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     auto& actor=require(id);
     if(actor.simulation_shape_enabled==enabled)return;
+    // The source AABB removal/addition can reject the Sc shape. Run
+    // that source preflight before clearing any existing PCM/friction
+    // working set or publishing the native shape flag.
+    if(gpu_broadphase_)
+        gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
     // Retire the previous contact history on this source flag change.
     // The following SAP publication is the authority for edge loss,
@@ -833,6 +854,16 @@ void Scene::remove(BodyId id) {
         speculative_islands_.activating_nodes.reserve(actors_.size());
         accurate_islands_.activating_nodes.reserve(actors_.size());
     }
+    // Before removing the source volume, reserve all native graph work
+    // that can grow during contact-manager and constraint retirement.
+    std::size_t incident=0;
+    for(EdgeIndex edge:active_constraint_handles_) {
+        const Pair pair=island_edges_[edge].pair;
+        incident+=(pair.a==id || pair.b==id);
+    }
+    retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
+    // The source AABB retains its actor identity through GPU lost fetch.
+    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
     // Sc actor retirement removes physical contact-manager edges. A
     // dormant or sleep-ready rigid body resting on the retired actor
     // cannot continue sleeping without its supporting contact: revoke
@@ -858,12 +889,6 @@ void Scene::remove(BodyId id) {
     // ScConstraintInteraction retires every edge incident to an actor
     // before the island node can be invalidated. The same shared handle
     // pool and edge-instance disconnect path handles explicit deletion.
-    std::size_t incident=0;
-    for(EdgeIndex edge:active_constraint_handles_) {
-        const Pair pair=island_edges_[edge].pair;
-        incident+=(pair.a==id || pair.b==id);
-    }
-    retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
     for(std::size_t cursor=0;cursor<active_constraint_handles_.size();) {
         const EdgeIndex edge=active_constraint_handles_[cursor];
         const Pair pair=island_edges_[edge].pair;
@@ -9187,6 +9212,7 @@ void Scene::advance_collision_internal(
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.
     update_island_connectivity();
+    if(gpu_broadphase_)gpu_broadphase_->post_reports_cleanup();
     dirty_ = false;
     ++frame_index_;
 }

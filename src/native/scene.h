@@ -86,6 +86,12 @@ public:
     // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
+    // Sc::ActorSim/ElementSim own original actor and element IDs.
+    virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
+    virtual void retire_shape(BodyId)=0;
+    virtual void set_shape_simulation_enabled(BodyId,bool)=0;
+    // Sc::Scene::postReportsCleanup follows fetched GPU/Sc publication.
+    virtual void post_reports_cleanup()=0;
     // The source GPU has already advanced its histories at fetch. A
     // rejected Sc/Dy transaction invalidates that frame; the owner must
     // reconstruct its GPU histories from the next authoritative scene.
