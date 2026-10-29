@@ -533,23 +533,33 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             require((download_changed()&(1u<<3u))!=0u,
                     "Aggregate root changed bit was lost on persistent frame");
 
-            // An already-published member cannot reclaim its retired
-            // source shape ID until GPU lost reports have been fetched.
-            // Rejected readmission leaves the pending removal intact.
+            // A published Sc member may be disabled and re-enabled before
+            // fetch, but no other Sc actor may steal its pending ID.
+            // The original previous GPU member history must survive the
+            // cancellation without a synthetic remove/re-add report.
             aabb.remove_aggregate_member(5u);
             require(aabb.actor_lifetime().volume_to_actor[5u]==15u,
                     "Original aggregate lost report discarded its retired actor identity");
             bool rejected_readmission=false;
             try {
                 aabb.admit_aggregate_member(
-                    id,5u,15u,0.75f,
-                    physx::Bp::getFilterGroup_Dynamics(15u,false),
+                    id,5u,16u,0.75f,
+                    physx::Bp::getFilterGroup_Dynamics(16u,false),
                     elements.data());
             } catch(const std::logic_error&) {
                 rejected_readmission=true;
             }
             require(rejected_readmission,
-                    "Source retired aggregate member was readmitted before GPU fetch");
+                    "Original pending aggregate member ID was stolen by another Sc actor");
+            aabb.admit_aggregate_member(
+                id,5u,15u,0.75f,
+                physx::Bp::getFilterGroup_Dynamics(15u,false),
+                elements.data());
+            require(aabb.actor_lifetime().volume_to_actor[5u]==15u &&
+                    aabb.source_changed().boundedTest(5u) &&
+                    aabb.source_aggregated().boundedTest(5u),
+                    "Same Sc aggregate member failed to cancel original pending retirement");
+            aabb.remove_aggregate_member(5u);
             const std::span<const fyzz::native::GpuBroadphaseBox> survivor{
                 sc_boxes.data(),1u};
             const std::span<const physx::Bp::ShapeHandle> survivor_handle{
