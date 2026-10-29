@@ -691,20 +691,18 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         gpu_broadphase_->set_shape_motion(
             id,enabled ? GpuBroadphaseBox::Motion::Kinematic
                        : GpuBroadphaseBox::Motion::Dynamic);
-    // A kinematic has no accurate island node. Remove contact-manager
-    // array entries whose other endpoint also has no dynamic node while
-    // the old island ownership still identifies their source array.
-    // The manager itself remains live for Gu and Sc notifications.
-    if(enabled)
-        for(EdgeIndex edge_id:active_edge_handles_) {
-            const auto& edge=island_edges_[edge_id];
-            if(!edge.live || !edge.connected ||
-               (edge.pair.a!=id && edge.pair.b!=id))continue;
-            const BodyId partner=edge.pair.a==id
-                ? edge.pair.b:edge.pair.a;
-            if(actors_[partner].kind!=Kind::DynamicBox)
-                remove_accurate_island_edge(edge_id);
-        }
+    // The previous source island owns the indexed contact-manager
+    // entries until the rigid node's motion class changes. Detach every
+    // incident indexed edge while its old dynamic endpoint still
+    // identifies that island. The full first pass reindexes surviving
+    // Gu managers under the new dynamic endpoints without replacing
+    // their Sc contact-manager handles.
+    for(EdgeIndex edge_id:active_edge_handles_) {
+        const auto& edge=island_edges_[edge_id];
+        if(edge.live && edge.indexed_accurate &&
+           (edge.pair.a==id || edge.pair.b==id))
+            remove_accurate_island_edge(edge_id);
+    }
     // No target has been authored: the kinematic body has no external
     // motion and is not eligible for Dy solver-body integration.
     erase_shape_friction_history(id);
