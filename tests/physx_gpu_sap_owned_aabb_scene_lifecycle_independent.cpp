@@ -1526,6 +1526,45 @@ void verify_owned_source_world(
             "Native GPU manifest accepted a shader of the wrong backend");
     fyzz::WorldOptions options{fyzz::ExecutionMode::NativePortableGpu};
     options.contact_notifications=true;
+
+    // The original SAP has no endpoint allocations before the first
+    // admitted shape, or after its last retirement. A forced empty update
+    // must still fetch the zero report counters, exchange source history,
+    // and leave Sc able to admit later actors.
+    {
+        auto empty=fyzz::create_native_gpu_world(backend,manifest,options);
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Fresh original GPU SAP World failed zero-volume fetch");
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Original GPU SAP replayed reports on empty quiet frame");
+        const auto sole=empty.add_static_box(
+            {0.5f,0.5f,0.5f},{0.0f,3.0f,0.0f});
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Original GPU SAP emitted a pair for a sole shape");
+        empty.set_body_simulation_shape_enabled(sole,false);
+        empty.step(1.0f/60.0f);
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Source GPU SAP failed to converge after last shape disable");
+        empty.set_body_simulation_shape_enabled(sole,true);
+        empty.step(1.0f/60.0f);
+        empty.remove_body(sole);
+        empty.step(1.0f/60.0f);
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Source GPU SAP failed last actor removal/empty convergence");
+        const auto successor=empty.add_static_box(
+            {0.5f,0.5f,0.5f},{1.0f,3.0f,0.0f});
+        require(successor!=sole,
+                "Sc actor generation reused a retired public identity");
+        empty.step(1.0f/60.0f);
+        require(empty.contact_events().empty(),
+                "Original GPU SAP could not re-admit after zero-volume frame");
+    }
+
     fyzz::World world=fyzz::create_native_gpu_world(
         backend,manifest,options);
     const auto dynamic=world.add_dynamic_box(
