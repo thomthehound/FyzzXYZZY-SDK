@@ -23,6 +23,7 @@
 #include <iterator>
 #include <algorithm>
 #include <initializer_list>
+#include <span>
 #include <stdexcept>
 #include <vector>
 #include <utility>
