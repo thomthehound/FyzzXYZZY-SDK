@@ -242,7 +242,8 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
         }else {
             resizedRecords[0].size=3u;
             resizedMembers[2u]=5u;
-            resizedGroups[5u]=3u;
+            // Match member 1's BP group: only the member 0/5 pair is admissible.
+            resizedGroups[5u]=groups[1u];
             for(std::uint32_t axis=0u;axis<3u;++axis) {
                 current[5u*6u+axis]=axis==0u?175u:100u;
                 current[5u*6u+axis+3u]=axis==0u?225u:151u;
