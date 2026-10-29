@@ -223,6 +223,10 @@ public:
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
+        // The source member ID can be readmitted before GPU fetch. Cancel
+        // its pending deletion but retain new admission so the prior
+        // integer AABB is invalidated without clearing its current bounds.
+        removed_aggregate_members_.findAndReplaceWithLast(handle);
         added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
