@@ -9,6 +9,9 @@
 #include "physx_gpu/source_aggregate_member_history_native.h"
 #include "physx_gpu/source_aggregate_projection_native.h"
 #include "physx_gpu/source_aggregate_self_collision_native.h"
+#include "physx_gpu/source_aggregate_report_copy_native.h"
+#include "physx_gpu/source_sap_mapped_report_view.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -69,6 +72,12 @@ public:
           self_found_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           self_lost_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           self_report_counts_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_found_mapped_(allocators.hostMappedAlloc,
+              physx::PxsHeapStats::eBROADPHASE,
+              physx::Cm::PinnableAllocatorFallback::eDISABLED),
+          aggregate_lost_mapped_(allocators.hostMappedAlloc,
+              physx::PxsHeapStats::eBROADPHASE,
+              physx::Cm::PinnableAllocatorFallback::eDISABLED),
           projection_keys_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_keys_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_handles_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -84,6 +93,10 @@ public:
           aggregate_report_capacity_(aggregate_report_capacity),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
+        if(aggregate_report_capacity_ &&
+           (!aggregate_found_mapped_.reserve(aggregate_report_capacity_) ||
+            !aggregate_lost_mapped_.reserve(aggregate_report_capacity_)))
+            throw std::bad_alloc();
         if(initial_shapes)reserve_shapes(initial_shapes);
     }
     ~PxgAabbSourceMembersNative() {
@@ -530,6 +543,57 @@ public:
             aggregate_report_capacity_};
     }
 
+    SourceAggregateReportCopyNativeBuffers aggregate_report_copy_gpu_buffers(
+        const SourceSapMappedReportView& mapped) const {
+        if(!aggregate_report_capacity_)
+            throw std::logic_error(
+                "Original aggregate mapped report capacity not configured");
+        const auto bytes=std::size_t(aggregate_report_capacity_)*
+                          sizeof(physx::PxgBroadPhasePair);
+        return {self_found_pairs_device_.getDevicePtr(),
+            self_lost_pairs_device_.getDevicePtr(),
+            mapped.device_address(aggregate_found_mapped_.begin(),bytes),
+            mapped.device_address(aggregate_lost_mapped_.begin(),bytes),
+            self_report_counts_device_.getDevicePtr(),
+            aggregate_report_capacity_};
+    }
+
+    struct AggregateReports {
+        std::span<const physx::PxgBroadPhasePair> found,lost;
+    };
+    // After the original source stream's fetch fence, validate BOTH
+    // shared counters before publishing either source mapped array.
+    // Sc's source report processing owns deduplication and classification.
+    AggregateReports fetch_aggregate_mapped_reports(
+        compute::Context& context,
+        const CudaDeviceAddressMap& addresses,
+        SourceSapMappedReportView& mapped) {
+        if(!aggregate_report_capacity_)
+            throw std::logic_error(
+                "Original aggregate report fetch has no configured capacity");
+        std::array<physx::PxU32,2> counts{};
+        const auto view=addresses.resolve(
+            self_report_counts_device_.getDevicePtr(),sizeof(counts));
+        context.download(view.buffer,view.offset,counts.data(),sizeof(counts));
+        if(counts[0]>aggregate_report_capacity_ ||
+           counts[1]>aggregate_report_capacity_)
+            throw std::overflow_error(
+                "Original aggregate GPU found/lost member report capacity overflow");
+        const auto found_bytes=std::size_t(counts[0])*
+                                sizeof(physx::PxgBroadPhasePair);
+        const auto lost_bytes=std::size_t(counts[1])*
+                               sizeof(physx::PxgBroadPhasePair);
+        if(found_bytes)mapped.publish_at_fetch(
+            aggregate_found_mapped_.begin(),found_bytes);
+        if(lost_bytes)mapped.publish_at_fetch(
+            aggregate_lost_mapped_.begin(),lost_bytes);
+        aggregate_found_mapped_.forceSize_Unsafe(counts[0]);
+        aggregate_lost_mapped_.forceSize_Unsafe(counts[1]);
+        return {
+            {aggregate_found_mapped_.begin(),aggregate_found_mapped_.size()},
+            {aggregate_lost_mapped_.begin(),aggregate_lost_mapped_.size()}};
+    }
+
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
     // changed bitmap after its normal preBroadPhase upload. The translated
     // aggregate views point to this owner's actual GPU heap allocations.
@@ -746,6 +810,8 @@ private:
     physx::PxgCudaBuffer self_previous_sizes_device_;
     physx::PxgCudaBuffer self_found_pairs_device_,self_lost_pairs_device_;
     physx::PxgCudaBuffer self_report_counts_device_;
+    physx::Cm::PinnableArray<physx::PxgBroadPhasePair>
+        aggregate_found_mapped_,aggregate_lost_mapped_;
     physx::PxgCudaBuffer projection_keys_0_,projection_keys_1_;
     physx::PxgCudaBuffer projection_handles_0_,projection_handles_1_;
     physx::PxgCudaBuffer projection_scratch_keys_device_,projection_scratch_handles_device_;

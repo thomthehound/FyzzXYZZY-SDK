@@ -64,7 +64,7 @@ ShaderBinary load(const char* path) {
 }
 void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             ShaderBinary member_history_shader,ShaderBinary projection_shader,
-            ShaderBinary self_collision_shader) {
+            ShaderBinary self_collision_shader,ShaderBinary report_copy_shader) {
     Foundation foundation;
     Context context(backend);
     CudaDeviceAddressMap addresses;
@@ -94,6 +94,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 context,std::move(projection_shader));
             SourceAggregateSelfCollisionNativeStage self_stage(
                 context,std::move(self_collision_shader));
+            SourceAggregateReportCopyNativeStage copy_stage(
+                context,std::move(report_copy_shader));
             physx::PxgCudaBuffer new_integer_bounds(
                 allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
             physx::PxgCudaBuffer old_integer_bounds(
@@ -197,8 +199,10 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         self_gpu.aggregate_count>=1u,
                         "Source AABB owner aggregate report config lost");
                 self_stage.append(stream,addresses,self_gpu);
+                const auto copied=aabb.aggregate_report_copy_gpu_buffers(mapped);
+                copy_stage.append(stream,addresses,copied);
                 require(stream.commands().size()==
-                            4u+std::uint32_t(added_members.size()!=0u ||
+                            5u+std::uint32_t(added_members.size()!=0u ||
                                              removed_members.size()!=0u),
                         "Original AABB aggregate GPU stage order or member-history dispatch differs");
                 stream.wait_at_fetch();
@@ -312,7 +316,16 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 require(aggregate_counts[0]<=self_gpu.report_capacity &&
                         aggregate_counts[1]<=self_gpu.report_capacity,
                         "Original source aggregate member report overflow");
+                const auto reports=aabb.fetch_aggregate_mapped_reports(
+                    context,addresses,mapped);
+                require(reports.found.size()==aggregate_counts[0] &&
+                        reports.lost.size()==aggregate_counts[1],
+                        "Source mapped aggregate report copy differs from shared counters");
                 if(projection_frame==0u) {
+                    require(reports.found.size()==1u &&
+                            reports.found[0].mVolA==4u &&
+                            reports.found[0].mVolB==5u,
+                            "Original mapped report heap did not publish aggregate self-contact");
                     require(aggregate_counts[0]==1u && aggregate_counts[1]==0u,
                         "Source-owned aggregate GPU failed to publish its first self-contact");
                     std::array<physx::PxU32,2> found_member{};
@@ -446,7 +459,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=6)throw std::invalid_argument("Expected aggregate bounds, mark, member-history, projection and self-collision shaders");
+        if(argc!=7)throw std::invalid_argument("Expected aggregate bounds, mark, member-history, projection, self-collision and report-copy shaders");
         verify(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12,
@@ -454,7 +467,7 @@ int main(int argc,char** argv) {
             Backend::Vulkan,
 #endif
             load(argv[1]),load(argv[2]),load(argv[3]),load(argv[4]),
-            load(argv[5]));
+            load(argv[5]),load(argv[6]));
         std::cout<<"Original PhysX aggregate AABB GPU first/second pass PASS\n";
         return 0;
     }catch(const std::exception& error) {
