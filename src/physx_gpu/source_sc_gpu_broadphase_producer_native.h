@@ -121,7 +121,15 @@ public:
         if(handle>=owners.size() || owners[handle]!=actor)
             throw std::invalid_argument(
                 "Source Sc edited shape has no matching AABB volume");
-        aabb_.mark_changed(handle,contact_offset);
+        if(source_sc_elements_)
+            source_sc_elements_->mark_changed(actor,contact_offset);
+        else
+            aabb_.mark_changed(handle,contact_offset);
+    }
+
+    void set_shape_motion(BodyId actor,
+                          native::GpuBroadphaseBox::Motion motion) override {
+        require_scene_elements().set_motion(actor,motion);
     }
 
     void admit_shape(BodyId actor,
