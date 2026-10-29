@@ -1519,6 +1519,51 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_COUNT}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}")
+    # The production Sc owner requires the complete twelve-stage original
+    # aggregate bundle in the same Context as the existing SAP manifest.
+    set(FYZZXYZZY_NATIVE_GPU_AGGREGATE_SPV_BINARIES
+      "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_COUNT}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
+    set(_aggregate_stage_names
+      Bounds
+      MarkBounds
+      MemberHistory
+      Projection
+      SelfCollision
+      PairAdmit
+      PairPublish
+      PersistentCollisions
+      PairRetireHistogram
+      PairRetireMark
+      PairRetirePublish
+      CopyReports)
+    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE SPIRV\\n")
+    foreach(_index RANGE 0 11)
+      list(GET _aggregate_stage_names ${_index} _stage)
+      list(GET FYZZXYZZY_NATIVE_GPU_AGGREGATE_SPV_BINARIES ${_index} _binary)
+      get_filename_component(_filename "${_binary}" NAME)
+      string(APPEND _aggregate_manifest "${_stage} ${_filename}\\n")
+    endforeach()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_spirv.manifest" CONTENT "${_aggregate_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_aggregate_shaders
+      DEPENDS ${FYZZXYZZY_NATIVE_GPU_AGGREGATE_SPV_BINARIES})
+    add_executable(fyzzxyzzy_source_gpu_aggregate_world_bundle
+      tests/physx_gpu_source_aggregate_world_bundle.cpp)
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_world_bundle PRIVATE FyzzXYZZY::NativeGpuWorld)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle fyzzxyzzy_native_gpu_aggregate_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_world_bundle COMMAND fyzzxyzzy_source_gpu_aggregate_world_bundle
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_spirv.manifest")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -1638,6 +1683,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest" CONTENT "${_sap_manifest}")
     add_custom_target(fyzzxyzzy_native_gpu_sap_shaders
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES})
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle
+      fyzzxyzzy_native_gpu_sap_shaders)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
         ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES}
@@ -4556,6 +4603,53 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_MARK}"
       "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_PUBLISH}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # The production Sc owner requires the complete twelve-stage original
+    # aggregate bundle in the same Context as the existing SAP manifest.
+    set(FYZZXYZZY_NATIVE_GPU_AGGREGATE_DXIL_BINARIES
+      "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_COUNT}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_MARK}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_PUBLISH}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
+    set(_aggregate_stage_names
+      Bounds
+      MarkBounds
+      MemberHistory
+      Projection
+      SelfCollision
+      PairAdmit
+      PairPublish
+      PersistentCollisions
+      PairRetireHistogram
+      PairRetireMark
+      PairRetirePublish
+      CopyReports)
+    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE DXIL\\n")
+    foreach(_index RANGE 0 11)
+      list(GET _aggregate_stage_names ${_index} _stage)
+      list(GET FYZZXYZZY_NATIVE_GPU_AGGREGATE_DXIL_BINARIES ${_index} _binary)
+      get_filename_component(_filename "${_binary}" NAME)
+      string(APPEND _aggregate_manifest "${_stage} ${_filename}\\n")
+    endforeach()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest" CONTENT "${_aggregate_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_aggregate_shaders_d3d12
+      DEPENDS ${FYZZXYZZY_NATIVE_GPU_AGGREGATE_DXIL_BINARIES})
+    add_executable(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
+      tests/physx_gpu_source_aggregate_world_bundle.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PRIVATE FyzzXYZZY::NativeGpuWorldD3D12)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 fyzzxyzzy_native_gpu_aggregate_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 COMMAND fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
@@ -4682,6 +4776,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest" CONTENT "${_sap_manifest}")
     add_custom_target(fyzzxyzzy_native_gpu_sap_shaders_d3d12
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES})
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
+      fyzzxyzzy_native_gpu_sap_shaders_d3d12)
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}
