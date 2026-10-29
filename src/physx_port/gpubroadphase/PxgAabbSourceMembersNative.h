@@ -120,7 +120,7 @@ public:
     // PxgAABBManager::createAggregate. An empty aggregate has no BP
     // endpoint; its root enters SAP only when its first member arrives.
     physx::Bp::AggregateHandle create_aggregate(
-        physx::Bp::BoundsIndex root,
+        physx::Bp::ShapeHandle root,
         physx::Bp::FilterGroup::Enum group,
         void* user_data,physx::PxU32 max_shapes,
         physx::PxU32 env_id=PX_INVALID_U32,
