@@ -12,6 +12,7 @@
 #include "physx_gpu/source_aggregate_report_copy_native.h"
 #include "physx_gpu/source_aggregate_pair_admission_native.h"
 #include "physx_gpu/source_aggregate_pair_retirement_native.h"
+#include "physx_gpu/source_aggregate_persistent_collisions_native.h"
 #include "physx_gpu/source_sap_mapped_report_view.h"
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 #include "physx_port/common/src/CmPinnableArray.h"
@@ -657,6 +658,31 @@ public:
             aggregate_pair_count_device_.getDevicePtr(),
             aggregate_pair_overflow_device_.getDevicePtr(),
             found_root_report_capacity,aggregate_pair_capacity_};
+    }
+    SourceAggregatePersistentCollisionNativeBuffers aggregate_persistent_collision_gpu_buffers(
+        CudaDeviceAddressMap::Address current_bounds,
+        CudaDeviceAddressMap::Address previous_bounds,
+        CudaDeviceAddressMap::Address volume_data,
+        CudaDeviceAddressMap::Address group_ids,
+        CudaDeviceAddressMap::Address removed_root_bitmap) const noexcept {
+        const auto current=aggregate_projection_gpu_buffers(current_bounds);
+        const auto previous=aggregate_projection_gpu_buffers(previous_bounds,true);
+        return {current_bounds,previous_bounds,volume_data,
+            aggregate_slots_device_.getDevicePtr(),
+            current.sorted_projections,current.sorted_handles,
+            current.bound_index_history,current.start_masks,
+            previous.sorted_projections,previous.sorted_handles,
+            previous.bound_index_history,previous.start_masks,
+            self_previous_sizes_device_.getDevicePtr(),group_ids,
+            aggregate_pair_slots_device_.getDevicePtr(),
+            aggregate_pair_count_device_.getDevicePtr(),
+            removed_root_bitmap,aggregate_pair_remove_bitmap_device_.getDevicePtr(),
+            self_found_pairs_device_.getDevicePtr(),
+            self_lost_pairs_device_.getDevicePtr(),
+            self_report_counts_device_.getDevicePtr(),
+            aggregate_pair_capacity_,aggregate_gpu_slot_count_,
+            aggregate_gpu_member_capacity_,bounds_.size(),
+            aggregate_report_capacity_};
     }
     SourceAggregatePairRetirementNativeBuffers aggregate_pair_retirement_gpu_buffers() const noexcept {
         return {aggregate_pair_slots_device_.getDevicePtr(),
