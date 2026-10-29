@@ -99,10 +99,28 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
     // aggregate members must invalidate the descriptor's integer AABB
     // histories before projection/self/pair collision stages consume them.
-    if(members.aabb_manager.has_aggregates)
+    if(members.aabb_manager.has_aggregates) {
+        const auto address=[](auto pointer) {
+            return static_cast<CudaDeviceAddressMap::Address>(
+                reinterpret_cast<std::uintptr_t>(pointer));
+        };
+        // SAP swaps PxgCudaBuffer owners when a GPU update is enqueued.
+        // Verify that its descriptor continues to designate the GPU
+        // frame's actual current/previous allocations after that swap.
+        const auto current=admission.execute_gpu_stages
+            ? dma.old_integer_bounds.getDevicePtr()
+            : dma.new_integer_bounds.getDevicePtr();
+        const auto previous=admission.execute_gpu_stages
+            ? dma.new_integer_bounds.getDevicePtr()
+            : dma.old_integer_bounds.getDevicePtr();
+        if(address(dma.broadphase_descriptor.newIntegerBounds)!=current ||
+           address(dma.broadphase_descriptor.oldIntegerBounds)!=previous)
+            throw std::logic_error(
+                "Original SAP integer history descriptor differs from source owner after update");
         append_source_sap_post_aggregate_member_history_native(
             dma.broadphase_descriptor,*members.aabb_owner,
             *members.aggregate_member_history,stream,addresses);
+    }
     stream.wait_at_fetch();
 
     // Complete both source bitmap D32 view validations before reporting
