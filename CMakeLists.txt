@@ -1399,6 +1399,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_report_copy
+      tests/physx_gpu_source_aggregate_report_copy_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_report_copy PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_report_copy PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_report_copy
+      fyzzxyzzy_source_gpu_aggregate_copy_report_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_report_copy
+      COMMAND fyzzxyzzy_source_gpu_aggregate_report_copy
+        "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -4302,6 +4313,21 @@ if(FYZZXYZZY_BUILD_D3D12)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+      tests/physx_gpu_source_aggregate_report_copy_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+      fyzzxyzzy_source_gpu_aggregate_copy_report_d3d12_shader)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+      COMMAND fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+        "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
