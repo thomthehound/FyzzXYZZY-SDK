@@ -225,7 +225,41 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
                 "Original aggregate self-collision previous size history differs");
         actualSlot^=1u;
     }
-    require(stream.submission_stats().command_batches==7u,
+    // A source report overflow never silently drops the event count:
+    // both lost pairs are counted even though only one fits in the
+    // configured mapped report capacity.
+    previous=current;
+    current[0u]=301u;
+    current[3u]=351u;
+    transfer(newBounds,current.data(),sizeof(current));
+    transfer(oldBounds,previous.data(),sizeof(previous));
+    const std::array<std::uint32_t,2> zeroCounts{};
+    auto& finalUploads=stream.upload_scratch();
+    finalUploads.push_back({counters,zeroCounts.data(),sizeof(zeroCounts)});
+    stream.queue_uploads(finalUploads);
+    const History& now=history[actualSlot];
+    const History& old=history[actualSlot^1u];
+    SourceAggregateProjectionNativeBuffers projectionSource{
+        newBounds,aggregateRecords,gpuMembers,now.keys,now.handles,
+        scratchKeys,scratchHandles,now.sap,now.masks,now.members,
+        kBounds,kAggregates,kMembers,kAggregates,actualSlot};
+    projectionStage.append(stream,addresses,projectionSource);
+    source.current_handles=now.handles;
+    source.current_sap=now.sap;
+    source.current_member_indices=now.members;
+    source.current_start_masks=now.masks;
+    source.previous_handles=old.handles;
+    source.previous_sap=old.sap;
+    source.previous_member_indices=old.members;
+    source.previous_start_masks=old.masks;
+    source.report_capacity=1u;
+    collisionStage.append(stream,addresses,source);
+    stream.wait_at_fetch();
+    std::array<std::uint32_t,2> overflowCounts{};
+    download(counters,overflowCounts.data(),sizeof(overflowCounts));
+    require(overflowCounts[0]==0u && overflowCounts[1]==2u,
+            "Original aggregate GPU self-collision lost pair overflow was not reported");
+    require(stream.submission_stats().command_batches==8u,
             "Original aggregate pair stage introduced extra GPU command batches");
     stream.wait_at_fetch();
     for(auto iter=allocated.rbegin();iter!=allocated.rend();++iter) {
