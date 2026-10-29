@@ -177,6 +177,50 @@ void execute(Context& context, ShaderBinary translateShader,
             }
             require(rejectedAggregateWorld,
                     "Source Sc incorrectly admitted incomplete aggregate reports");
+
+            // Source PxgAABBManager::gpuDmaDataUp must upload the original
+            // member identities and slot descriptor to its real PhysX
+            // GPU heap. Read them back at the source fetch boundary.
+            const auto fetch_aggregate_gpu_record=[&](physx::PxU32 slot) {
+                const auto gpu=aggregateAabb.aggregate_gpu_buffers(0u,0u);
+                require(slot<gpu.aggregate_count,
+                        "Original source GPU aggregate slot missing");
+                const auto location=addresses.resolve(
+                    gpu.aggregate_slots+
+                        std::uint64_t(slot)*sizeof(SourceAggregateGpuNativeRecord),
+                    sizeof(SourceAggregateGpuNativeRecord));
+                SourceAggregateGpuNativeRecord record{};
+                context.download(location.buffer,location.offset,
+                                 &record,sizeof(record));
+                return record;
+            };
+            const auto fetch_aggregate_gpu_member=[&](physx::PxU32 offset) {
+                const auto gpu=aggregateAabb.aggregate_gpu_buffers(0u,0u);
+                require(offset<gpu.member_indices_capacity,
+                        "Source aggregate GPU member allocation too short");
+                const auto location=addresses.resolve(
+                    gpu.member_indices+std::uint64_t(offset)*sizeof(physx::PxU32),
+                    sizeof(physx::PxU32));
+                physx::PxU32 value=PX_INVALID_U32;
+                context.download(location.buffer,location.offset,
+                                 &value,sizeof(value));
+                return value;
+            };
+            aggregateAabb.queue_aggregate_gpu_dma_up(stream);
+            stream.wait_at_fetch();
+            const auto firstGpu=fetch_aggregate_gpu_record(root);
+            require(firstGpu.root==3u && firstGpu.size==2u &&
+                    fetch_aggregate_gpu_member(firstGpu.first_member)==4u &&
+                    fetch_aggregate_gpu_member(firstGpu.first_member+1u)==5u,
+                    "Original aggregate member DMA did not publish source owner identities");
+            const auto uploaded_before=stream.submission_stats().upload_bytes;
+            // A dirty root with an unchanged allocation copies exactly
+            // its source record and live member list, not every shape.
+            aggregateAabb.queue_aggregate_gpu_dma_up(stream);
+            stream.wait_at_fetch();
+            require(stream.submission_stats().upload_bytes-uploaded_before==
+                        sizeof(SourceAggregateGpuNativeRecord)+2u*sizeof(physx::PxU32),
+                    "Aggregate DMA reuploaded unrelated source member capacity");
             require(aggregateAabb.source_aggregate(root).size==2u &&
                     aggregateAabb.source_added().boundedTest(3u) &&
                     !aggregateAabb.source_added().boundedTest(4u) &&
@@ -190,6 +234,12 @@ void execute(Context& context, ShaderBinary translateShader,
                     aggregateAabb.scene_bounds().contact_distances[4u]==0.375f,
                     "Aggregate member edit bypassed original GPU changed map");
             aggregateAabb.remove_aggregate_member(4u);
+            aggregateAabb.queue_aggregate_gpu_dma_up(stream);
+            stream.wait_at_fetch();
+            const auto afterRemoval=fetch_aggregate_gpu_record(root);
+            require(afterRemoval.size==1u &&
+                    fetch_aggregate_gpu_member(afterRemoval.first_member)==5u,
+                    "Source aggregate GPU DMA did not follow swapped member identity");
             require(!aggregateAabb.source_changed().boundedTest(4u),
                     "Retired aggregate member leaked a changed handle bit");
             require(aggregateAabb.source_aggregate(root).size==1u &&
@@ -202,6 +252,11 @@ void execute(Context& context, ShaderBinary translateShader,
                     aggregateAabb.source_aggregate(root).size==0u,
                     "Removing last unpublished member did not cancel root admission");
             aggregateAabb.destroy_aggregate(root);
+            aggregateAabb.queue_aggregate_gpu_dma_up(stream);
+            stream.wait_at_fetch();
+            const auto retiredGpu=fetch_aggregate_gpu_record(root);
+            require(retiredGpu.root==PX_INVALID_U32 && retiredGpu.size==0u,
+                    "Original source GPU aggregate slot survived root destruction");
             const auto next=aggregateAabb.create_aggregate(
                 6u,physx::Bp::getFilterGroup_Statics(),sourceElements.data(),1u);
             require(next!=root &&
