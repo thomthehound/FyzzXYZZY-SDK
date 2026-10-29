@@ -1614,6 +1614,7 @@ struct ConstraintIslandSourceFixture {
         // The two floor managers and the 1D edge share one active island.
         // The dynamic/dynamic joint must conflict with both floor rows.
         for(bool reversed:{false,true}) {
+            std::fprintf(stderr,"mixed partition: reversed=%d admission\n",int(reversed));
             Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
             scene.add_static_floor(0.0f);
             const Vec3 left{-1.0f,0.49f,0.0f};
@@ -1629,7 +1630,9 @@ struct ConstraintIslandSourceFixture {
             scene.set_dynamics(a,d);
             scene.set_dynamics(b,d);
             scene.add_distance_constraint(a,b,1.5f);
+            std::fprintf(stderr,"mixed partition: step start\n");
             scene.step(1.0f/120.0f);
+            std::fprintf(stderr,"mixed partition: step returned\n");
             if(scene.indexed_managers_.size()!=2 ||
                scene.indexed_distance_constraints_.size()!=1 ||
                scene.constraint_descriptors_.size()!=3 ||
@@ -1668,6 +1671,7 @@ struct ConstraintIslandSourceFixture {
                                 "Contact and 1D edge share dynamic body in same partition");
                 }
             }
+            std::fprintf(stderr,"mixed partition: checks done\n");
             if(!(std::abs(scene.body_state(a).position.x-
                           scene.body_state(b).position.x)<2.0f))
                 throw std::runtime_error(
