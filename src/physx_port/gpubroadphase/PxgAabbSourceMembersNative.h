@@ -836,10 +836,10 @@ public:
                 const bool compatible=
                     motion==native::GpuBroadphaseBox::Motion::Static
                         ? static_group
-                        : !static_group &&
-                          (type==physx::Bp::FilterType::DYNAMIC ||
-                           (motion==native::GpuBroadphaseBox::Motion::Kinematic &&
-                            type==physx::Bp::FilterType::KINEMATIC));
+                        : !static_group && type==(
+                            motion==native::GpuBroadphaseBox::Motion::Kinematic
+                                ? physx::Bp::FilterType::KINEMATIC
+                                : physx::Bp::FilterType::DYNAMIC);
                 if(!compatible)
                     throw std::invalid_argument(
                         "Source aggregate member motion differs from original Sc BP group");
