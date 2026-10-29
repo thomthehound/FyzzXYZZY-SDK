@@ -49,6 +49,7 @@ RWByteAddressBuffer boundIndicesHistory : register(u9,space0);
 // All storage uses original per-aggregate reserved member slices. Each
 // current/previous slot has 2 endpoints per reserved member, one SAP box
 // and one member index per member, and at least one mask word per member.
+// The current slot is selected by its source-owned device pointers.
 // The shader never touches the other historical slot.
 struct Parameters {
     uint aggregateCount, memberCapacity, boundsCapacity, currentSlot;
@@ -79,9 +80,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint numMembers=active?descriptor.z:0u;
     const uint count=numMembers*2u;
     const uint firstMember=descriptor.y;
-    const uint currentProjectionStart=p.currentSlot*(2u*p.memberCapacity)+
-                                      firstMember*2u;
-    const uint currentMemberStart=p.currentSlot*p.memberCapacity+firstMember;
+    const uint currentProjectionStart=firstMember*2u;
+    const uint currentMemberStart=firstMember;
     const uint scratchStart=firstMember*2u;
 
     if(lane.x==0u)projectionCounts[lane.y]=count;
