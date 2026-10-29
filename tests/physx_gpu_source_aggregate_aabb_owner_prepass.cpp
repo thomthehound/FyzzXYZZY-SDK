@@ -233,6 +233,16 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     projection_gpu.bound_index_history,2u*m);
                 const auto& aggregate=aabb.source_aggregate(id);
                 if(aggregate.size) {
+                    SourceAggregateGpuNativeRecord descriptor{};
+                    const auto gpu_record=addresses.resolve(
+                        projection_gpu.aggregate_slots+
+                            std::uint64_t(id)*sizeof(descriptor),sizeof(descriptor));
+                    context.download(gpu_record.buffer,gpu_record.offset,
+                                     &descriptor,sizeof(descriptor));
+                    require(descriptor.root==aggregate.mIndex &&
+                            descriptor.size==aggregate.size &&
+                            std::uint64_t(descriptor.first_member)+descriptor.size<=m,
+                            "Original GPU aggregate slot/member descriptor differs from AABB owner");
                     std::vector<std::pair<physx::PxU32,physx::PxU32>> expected;
                     for(physx::PxU32 local=0;local<aggregate.size;++local) {
                         const auto handle=aggregate.updateBoundIndices[local];
@@ -241,11 +251,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     }
                     std::stable_sort(expected.begin(),expected.end(),
                         [](const auto& a,const auto& b){return a.first<b.first;});
-                    // This fixture's first original aggregate owns the
-                    // first reserved source member slice.
-                    const auto projection_base=
-                        projection_gpu.current_slot*(2u*m);
-                    const auto member_base=projection_gpu.current_slot*m;
+                    const auto projection_base=2u*descriptor.first_member;
+                    const auto member_base=descriptor.first_member;
                     for(physx::PxU32 j=0;j<expected.size();++j) {
                         if(sorted[projection_base+j]!=expected[j].first ||
                            sorted_handles[projection_base+j]!=expected[j].second)
