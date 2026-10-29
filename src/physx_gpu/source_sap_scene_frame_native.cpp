@@ -68,7 +68,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
     validate_source_sap_volume_actor_lifetime_native(
-        volume_lifetime,members.aabb_update);
+        volume_lifetime,members.aabb_update,
+        members.aabb_manager.has_aggregates);
 
     // PxgAABBManager::preBpUpdate_GPU executes before SAP update().
     // Its original device bitmap and VolumeData buffers are used by
@@ -251,15 +252,18 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     // The original Sc/ElementSim handles and PxgAABBManager-owned
     // VolumeData, groups, bounds and delta bitmaps define this frame.
     // No SAP-local handle allocator or second geometry/identity history.
+    // An unavailable aggregate shader bundle cannot mutate even the
+    // original host AABB arrays. Reject before source geometry staging.
+    const auto original_pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
+    if(original_pre_update.has_aggregates && !inputs.aggregate_stages)
+        throw std::logic_error(
+            "Original aggregate Sc frame requires the complete source GPU kernel bundle");
     const auto update=aabb.prepare(
         inputs.live_boxes,inputs.live_handles,inputs.filter);
     const auto lifetime=aabb.actor_lifetime();
     // SourceSapSceneFrameNativeMembers borrows this view by reference;
     // keep the borrowed original member aliases alive through GPU fetch.
     const auto source_pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
-    if(source_pre_update.has_aggregates && !inputs.aggregate_stages)
-        throw std::logic_error(
-            "Original aggregate Sc frame requires the complete source GPU kernel bundle");
     const auto pre_update=source_pre_update.has_aggregates
         ? aabb.aggregate_pre_update(
             update,sap.pre_broadphase_buffers(),
