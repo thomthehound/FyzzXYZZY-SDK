@@ -81,9 +81,9 @@ public:
           projection_start_masks_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_bound_history_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_bound_history_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_report_capacity_(aggregate_report_capacity),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
-          dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
-          aggregate_report_capacity_(aggregate_report_capacity) {
+          dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
     }
     ~PxgAabbSourceMembersNative() {
