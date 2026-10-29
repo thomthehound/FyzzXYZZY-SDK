@@ -19,6 +19,35 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 source aggregate GPU AABB prepass
+
+`PxgAabbSourceMembersNative::aggregate_pre_update` now connects
+the source dirty aggregate membership DMA to the existing
+`SourceSapAabbManagerPreUpdateNative` boundary. The source
+`pre_update_source_sap_aabb_manager_native` performs its original
+added/removed/aggregated/changed bitmap and
+`PxgCudaBroadPhaseSap::preBroadPhase` bounds, contact-distance and
+group uploads before appending translated
+`aggregate.cu::updateAggregateBounds` and
+`markAggregateBoundsUpdatedBitmap` kernels. Both use the borrowed
+`PxgCudaBuffer` heap allocations and the existing source command
+stream. One GPU command batch runs both shaders, with no intermediate
+CPU reduction or readback.
+
+The native owner conformance runs those stages on actual GPU buffers
+owned by `PxgAabbSourceMembersNative` and
+`PxgSapSourceMembersNative` (Vulkan/SPIR-V and D3D12/DXIL).
+It tests inflated union roots, source member-to-root changed-bit
+promotion, movement/contact-distance edits, member removal,
+and invalidation after aggregate destruction. Original AABB
+post-fetch cleanup retires dirty IDs only after GPU completion.
+
+This gate only connects aggregate AABB *prepasses*. The complete
+`PxgAABBManager::postBPStage2` aggregate self-collision,
+aggregate-pair classification/history, and Sc member contact
+reporting are not yet connected, so public aggregate World
+execution continues to fail closed.
+
 ## N2 source aggregate GPU membership DMA
 
 The original `PxgAABBManager` GPU DMA path now uses
