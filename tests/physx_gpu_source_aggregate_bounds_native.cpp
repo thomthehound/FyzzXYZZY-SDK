@@ -54,12 +54,13 @@ void verify(Context& context,const char* shader_path,
             const char* changed_shader_path) {
     // Original PxgAggregate::updateBoundIndices list: one aggregate has
     // more than a warp of shapes, one is inactive and two are partial.
-    constexpr std::array<Aggregate,5> aggregates{{
-        {80u,0u,3u,1u},
-        {81u,3u,1u,1u},
-        {82u,4u,0u,0u},
-        {83u,4u,2u,1u},
-        {84u,6u,35u,1u}
+    constexpr std::array<Aggregate,6> aggregates{{
+        {80u,0u,3u,0u},
+        {81u,3u,1u,0u},
+        {82u,4u,0u,0u},           // Unadmitted empty aggregate.
+        {83u,4u,2u,0u},
+        {84u,6u,35u,0u},
+        {0xffffffffu,6u,1u,0u}   // Retired aggregate slot.
     }};
     std::array<std::uint32_t,41> members{};
     for(std::size_t i=0;i<members.size();++i)
