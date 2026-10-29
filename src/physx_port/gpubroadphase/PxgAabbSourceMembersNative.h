@@ -11,9 +11,9 @@
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
 #include "physx_port/lowlevelaabb/include/BpSourceBoundsArrayNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include "foundation/PxMemory.h"
 #include "physx_port/gpubroadphase/include/PxgAggregate.h"
 #include "physx_port/common/src/CmIDPool.h"
-#include "foundation/PxMemory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -302,7 +302,7 @@ public:
         // Aggregate root pairs require source aggregate expansion before
         // Sc publication. Never reinterpret them as single-actor pairs.
         for(const auto& aggregate:aggregates_)
-            if(aggregate.isValid())
+            if(aggregate.size && aggregate.mIndex!=PX_INVALID_U32)
                 throw std::logic_error(
                     "Source aggregate GPU pair expansion not yet installed");
         // Sc owns actor identity, while PxgAABBManager owns the volume
@@ -380,6 +380,7 @@ public:
     physx::PxU32 capacity() const noexcept {return bounds_.size();}
     const physx::Bp::SourceBoundsArrayNative& source_bounds() const noexcept {return bounds_;}
     physx::Cm::PinnableBitMap& source_added() noexcept {return added_;}
+    physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
     physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
