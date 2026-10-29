@@ -189,7 +189,7 @@ T source_hop_pop(std::vector<T>& heap, HigherPriority higher) {
 }
 } // namespace
 
-BodyId Scene::add(Actor actor) {
+BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
@@ -217,13 +217,20 @@ BodyId Scene::add(Actor actor) {
         const auto capacity=actors_.capacity();
         actors_.reserve(capacity+std::max<std::size_t>(capacity,8));
     }
+    if(aggregate && !gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate authoring requires native GPU AABB owner");
     if(gpu_broadphase_) {
         const auto motion=actor.kind==Kind::StaticBox
             ? GpuBroadphaseBox::Motion::Static
             : actor.kind==Kind::KinematicBox
                 ? GpuBroadphaseBox::Motion::Kinematic
                 : GpuBroadphaseBox::Motion::Dynamic;
-        gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+        if(aggregate)
+            gpu_broadphase_->admit_aggregate_member(
+                *aggregate,id,motion,actor.contact_offset);
+        else
+            gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
     }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
@@ -235,13 +242,14 @@ BodyId Scene::add(Actor actor) {
     island_topology_dirty_ |= dynamic_node;
     return id;
 }
-BodyId Scene::add_static_box(Vec3 h, Vec3 p) {
+BodyId Scene::add_static_box(
+    Vec3 h,Vec3 p,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     Actor a;
     a.kind = Kind::StaticBox;
     a.half_extents = h;
     a.position = p;
-    return add(a);
+    return add(a,aggregate);
 }
 BodyId Scene::add_static_floor(float height) {
     if (!std::isfinite(height))
@@ -251,7 +259,8 @@ BodyId Scene::add_static_floor(float height) {
     a.position = {0.0f, height, 0.0f};
     return add(a);
 }
-BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
+BodyId Scene::add_dynamic_box(
+    Vec3 h,Vec3 p,float density,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     if (!std::isfinite(density) || density <= 0.0f)
         throw std::invalid_argument("Native scene density must be finite and positive");
@@ -311,7 +320,23 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
     // Keep the pre-existing tiny-mass TRANSLATION stress case admitted.
     // It is not an angular-body admission and must not silently run
     // with zero/infinite substitute inertia in the actual source solver.
-    return add(a);
+    return add(a,aggregate);
+}
+
+AggregateId Scene::create_aggregate(
+    std::uint32_t max_shapes,bool self_collision) {
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    if(!max_shapes)
+        throw std::invalid_argument("Original PhysX aggregate capacity is zero");
+    return gpu_broadphase_->create_aggregate(max_shapes,self_collision);
+}
+void Scene::destroy_aggregate(AggregateId id) {
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    gpu_broadphase_->destroy_aggregate(id);
 }
 Scene::Actor& Scene::require(BodyId id) {
     if (id >= actors_.size() || !actors_[id].alive)
@@ -9334,6 +9359,21 @@ public:
     }
     BodyId add_dynamic_box(Vec3 h, Vec3 p, float density) override {
         return scene_.add_dynamic_box(h, p, density);
+    }
+    AggregateId create_aggregate(
+        std::uint32_t max_shapes,bool self_collision) override {
+        return scene_.create_aggregate(max_shapes,self_collision);
+    }
+    void destroy_aggregate(AggregateId id) override {
+        scene_.destroy_aggregate(id);
+    }
+    BodyId add_static_box_to_aggregate(
+        AggregateId aggregate,Vec3 h,Vec3 p) override {
+        return scene_.add_static_box(h,p,aggregate);
+    }
+    BodyId add_dynamic_box_to_aggregate(
+        AggregateId aggregate,Vec3 h,Vec3 p,float density) override {
+        return scene_.add_dynamic_box(h,p,density,aggregate);
     }
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {
