@@ -153,6 +153,28 @@ public:
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         require_scene_elements().admit(actor,motion,contact_distance);
     }
+    AggregateId create_aggregate(
+        std::uint32_t max_shapes,bool self_collision) override {
+        if(!aggregate_stages_)
+            throw std::logic_error(
+                "Native Sc aggregate admission requires complete source GPU kernels");
+        return require_scene_elements().create_aggregate(
+            max_shapes,physx::Bp::getFilterGroup_Statics(),
+            self_collision?1u:0u);
+    }
+    void destroy_aggregate(AggregateId id) override {
+        require_scene_elements().destroy_aggregate(id);
+    }
+    void admit_aggregate_member(
+        AggregateId aggregate,BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,
+        float contact_distance) override {
+        if(!aggregate_stages_)
+            throw std::logic_error(
+                "Native Sc aggregate member requires complete source GPU kernels");
+        require_scene_elements().admit_aggregate_member(
+            aggregate,actor,motion,contact_distance);
+    }
     void retire_shape(BodyId actor) override {
         require_scene_elements().retire(actor);
     }
