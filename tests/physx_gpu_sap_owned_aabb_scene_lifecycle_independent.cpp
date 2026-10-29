@@ -1190,16 +1190,20 @@ void execute(Context& context, ShaderBinary translateShader,
                     "Native GPU producer failed source Sc re-admission/fetch");
             const auto completedBatches=stream.submission_stats().command_batches;
             producer.invalidate_after_rollback();
-            bool rejectedStaleHistory=false;
-            try {
-                (void)producer.advance(readmittedBoxes,false,false);
-            }catch(const std::logic_error&) {
-                rejectedStaleHistory=true;
-            }
-            require(rejectedStaleHistory &&
-                    stream.submission_stats().command_batches==completedBatches &&
+            const auto rebuiltReports=
+                producer.advance(readmittedBoxes,false,false);
+            stream.wait_at_fetch();
+            require(rebuiltReports.full_rebuild &&
+                    rebuiltReports.found.size()==1u &&
+                    rebuiltReports.found.front()==fyzz::native::Pair{17u,27u} &&
+                    rebuiltReports.lost.empty() &&
+                    producer.last_frame().update.counts.previous_boxes==0u &&
+                    producer.last_frame().update.counts.created==3u &&
+                    producer.last_frame().update.counts.current_boxes==3u &&
+                    scActors[0]==17u && scActors[1]==27u && scActors[2]==9u &&
+                    stream.submission_stats().command_batches>completedBatches &&
                     stream.commands().empty(),
-                    "Sc rollback reused invalid source GPU SAP history");
+                    "Source GPU rollback failed complete Sc-volume re-admission");
 
             // Actual native Sc/Gu consumes GPU SAP reports rather than
             // a CPU broadphase oracle. Source element IDs and changed
