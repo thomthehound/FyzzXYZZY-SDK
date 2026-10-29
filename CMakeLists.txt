@@ -1388,6 +1388,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND fyzzxyzzy_source_gpu_aggregate_self_collision
         "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}")
+    set(FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_copy_reports_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -1399,14 +1410,16 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_source_gpu_aggregate_bounds_shader
       fyzzxyzzy_source_gpu_aggregate_member_history_shader
       fyzzxyzzy_source_gpu_aggregate_projection_shader
-      fyzzxyzzy_source_gpu_aggregate_self_collision_shader)
+      fyzzxyzzy_source_gpu_aggregate_self_collision_shader
+      fyzzxyzzy_source_gpu_aggregate_copy_report_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
     add_executable(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       tests/physx_gpu_sap_owned_aabb_scene_lifecycle_independent.cpp)
     target_include_directories(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
@@ -4278,6 +4291,17 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    set(FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_copy_reports_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_d3d12_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
@@ -4291,14 +4315,16 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader
       fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader
       fyzzxyzzy_source_gpu_aggregate_projection_d3d12_shader
-      fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12_shader)
+      fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_copy_report_d3d12_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
