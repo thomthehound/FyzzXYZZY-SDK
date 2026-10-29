@@ -126,6 +126,7 @@ struct RigidBodyDynamics {
 };
 
 using BodyId = std::uint32_t;
+using AggregateId = std::uint32_t;
 // World-visible identity includes a generation. Native IslandSim
 // EdgeIndex and ScConstraintSim's recycled IDTracker slot are private.
 using ConstraintId = std::uint64_t;
@@ -202,6 +203,22 @@ public:
     virtual BodyId add_static_box(Vec3 half_extents, Vec3 position) = 0;
     virtual BodyId add_static_floor(float height) = 0;
     virtual BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density) = 0;
+    // A PxAggregate root has an original Sc ElementSim but is not a
+    // standalone actor. Unsupported backends reject this contract.
+    virtual AggregateId create_aggregate(std::uint32_t,bool) {
+        throw std::logic_error("This backend has no PhysX aggregate owner");
+    }
+    virtual void destroy_aggregate(AggregateId) {
+        throw std::logic_error("This backend has no PhysX aggregate owner");
+    }
+    virtual BodyId add_static_box_to_aggregate(
+        AggregateId,Vec3,Vec3) {
+        throw std::logic_error("This backend cannot admit aggregate shapes");
+    }
+    virtual BodyId add_dynamic_box_to_aggregate(
+        AggregateId,Vec3,Vec3,float) {
+        throw std::logic_error("This backend cannot admit aggregate shapes");
+    }
     // ScConstraintSim / Dy 1D center-anchor equal-limit distance row.
     virtual ConstraintId add_center_distance_constraint(
         BodyId, BodyId, float) {
@@ -296,6 +313,12 @@ public:
     BodyId add_static_box(Vec3 half_extents, Vec3 position);
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
+    void destroy_aggregate(AggregateId id);
+    BodyId add_static_box_to_aggregate(
+        AggregateId aggregate,Vec3 half_extents,Vec3 position);
+    BodyId add_dynamic_box_to_aggregate(
+        AggregateId aggregate,Vec3 half_extents,Vec3 position,float density);
     // Equal-limit, center-anchored, hard distance constraint. Joint
     // orientation/anchors, spring flags and breaking are not admitted.
     // ConstraintId is scoped to this World and invalid after removal.
