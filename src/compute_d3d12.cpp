@@ -305,6 +305,9 @@ struct Context::Impl {
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
     std::uint64_t next_fence = 1;
+    // ExecuteCommandLists can succeed even if queue->Signal fails. This
+    // fence value must never be used as a completion target.
+    std::uint64_t first_unsignaled_fence = 0;
 
     explicit Impl(Backend backend, std::uint32_t ordinal) {
         if (backend != Backend::D3D12) throw std::invalid_argument("Expected D3D12 backend");
@@ -417,6 +420,9 @@ struct Context::Impl {
     }
 
     SubmissionId enqueue(Submission&& submission) {
+        if (first_unsignaled_fence)
+            throw std::runtime_error(
+                "D3D12 queue cannot submit after a failed completion signal");
         if (next_submission == std::numeric_limits<SubmissionId>::max() ||
             next_fence == std::numeric_limits<std::uint64_t>::max())
             throw std::overflow_error("D3D12 submission or fence ID range exhausted");
@@ -435,9 +441,14 @@ struct Context::Impl {
         ++next_fence;
         ID3D12CommandList* lists[] = {it->second.commands.Get()};
         queue->ExecuteCommandLists(1, lists);
-        // A queue-signal failure must not destroy the submitted resources:
-        // the owning entry stays recorded until device teardown.
-        check(queue->Signal(fence.Get(), signal), "Signal D3D12 fence");
+        // The command list has executed even if the signal fails. Keep
+        // its resources owned by submissions, but never wait on this
+        // unsignaled value or submit further work on the poisoned queue.
+        const HRESULT signal_result = queue->Signal(fence.Get(), signal);
+        if (FAILED(signal_result)) {
+            first_unsignaled_fence = signal;
+            check(signal_result, "Signal D3D12 fence");
+        }
         return id;
     }
 
@@ -475,6 +486,9 @@ struct Context::Impl {
                 "D3D12 device removed during GPU submission (HRESULT " +
                 std::to_string(static_cast<unsigned long>(reason)) + ")");
         }
+        if (first_unsignaled_fence && value >= first_unsignaled_fence)
+            throw std::runtime_error(
+                "D3D12 submission has no completion fence after queue signal failure");
         if (completed >= value) return;
         check(fence->SetEventOnCompletion(value, completion_event),
               "SetEventOnCompletion");
