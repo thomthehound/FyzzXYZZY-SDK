@@ -1593,6 +1593,11 @@ void verify_owned_source_world(
     require(world.contact_events().empty(),
             "GPU SAP replayed removed actor contact on quiet frame");
 
+    // The earlier contact solve may have displaced the dynamic box.
+    // Author a known overlap before assessing newly admitted SAP pairs,
+    // rather than interpreting a physically separated pair as lost history.
+    world.set_body_velocity(dynamic,{0.0f,0.0f,0.0f});
+    world.set_body_position(dynamic,{0.0f,3.0f,0.0f});
     const auto successor=world.add_static_box(
         {0.5f,0.5f,0.5f},{0.5f,3.0f,0.0f});
     require(successor!=fixed,
