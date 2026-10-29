@@ -691,6 +691,20 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         gpu_broadphase_->set_shape_motion(
             id,enabled ? GpuBroadphaseBox::Motion::Kinematic
                        : GpuBroadphaseBox::Motion::Dynamic);
+    // A kinematic has no accurate island node. Remove contact-manager
+    // array entries whose other endpoint also has no dynamic node while
+    // the old island ownership still identifies their source array.
+    // The manager itself remains live for Gu and Sc notifications.
+    if(enabled)
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            const auto& edge=island_edges_[edge_id];
+            if(!edge.live || !edge.connected ||
+               (edge.pair.a!=id && edge.pair.b!=id))continue;
+            const BodyId partner=edge.pair.a==id
+                ? edge.pair.b:edge.pair.a;
+            if(actors_[partner].kind!=Kind::DynamicBox)
+                remove_accurate_island_edge(edge_id);
+        }
     // No target has been authored: the kinematic body has no external
     // motion and is not eligible for Dy solver-body integration.
     erase_shape_friction_history(id);
@@ -4920,6 +4934,20 @@ void Scene::update_island_connectivity() {
         // connected component that retains their original root.
         speculative_island_count_=rebuild_graph(speculative_islands_,false);
         accurate_island_count_=rebuild_graph(accurate_islands_,true);
+        // Reclassified rigid bodies may reconnect an existing Gu manager
+        // without emitting a new touch-found report. Index those live
+        // managers in their newly admitted dynamic island after the
+        // original full node/edge reconciliation.
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            const auto& edge=island_edges_[edge_id];
+            if(!edge.live || !edge.connected || edge.indexed_accurate)continue;
+            const BodyId node=dynamic_node(edge.pair.a)
+                ? edge.pair.a:edge.pair.b;
+            if(!dynamic_node(node))continue;
+            const auto owner=accurate_islands_.node_island[node];
+            if(owner!=IslandGraph::invalid)
+                append_accurate_island_edge(edge_id,owner);
+        }
         accurate_island_nodes_.clear();
         for(std::size_t i=0;i<actors_.size();++i)
             if(dynamic_node(static_cast<BodyId>(i)))
