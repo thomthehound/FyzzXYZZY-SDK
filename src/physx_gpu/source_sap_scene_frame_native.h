@@ -102,16 +102,6 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const CudaDeviceAddressMap& addresses,
     compute::Context& context);
 
-// Original post-BP aggregate member-history kernel. The SAP descriptor's
-// device pointer fields remain authoritative even after PxgCudaBuffer
-// ownership swaps. Append after SAP update, before aggregate collision.
-void append_source_sap_post_aggregate_member_history_native(
-    const physx::PxgBroadPhaseDesc& descriptor,
-    PxgAabbSourceMembersNative& aabb,
-    const SourceAggregateMemberHistoryNativeStage& stage,
-    SourceSapDmaNative& stream,
-    const CudaDeviceAddressMap& addresses);
-
 // Called by the original source owner at its update/fetch boundary.
 // Sc geometry preparation and the AABB manager's handle/bitmap first
 // pass MUST have run first. This call performs its native GPU pre-update,
