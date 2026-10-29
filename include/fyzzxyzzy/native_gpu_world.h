@@ -6,12 +6,51 @@
 #include "fyzzxyzzy/world.h"
 
 #include <array>
+#include <cstddef>
 
 namespace fyzz {
 
-// Compiled source SAP stages in the original update/fetch dispatch order.
-// The caller owns shader compilation and supplies either SPIR-V or DXIL.
-using NativeGpuSapShaders = std::array<compute::ShaderBinary,34>;
+// Compiled source SAP stages in update/fetch dispatch order. Each stage
+// contains SPIR-V for Vulkan or DXIL for D3D12, never source HLSL.
+enum class NativeGpuSapStage : std::size_t {
+    TranslateAabbs,
+    CreatedPairs,
+    RadixInitialize,
+    RadixCount,
+    RadixScatter,
+    RadixGather,
+    SapBoxIndices,
+    EndpointHistogramFirst,
+    EndpointHistogramSecond,
+    FillD32,
+    RegionCreate,
+    RegionHistogramFirst,
+    RegionHistogramWave,
+    RegionHistogramSecond,
+    ActiveWriteout,
+    ActiveWave,
+    ActivePortable,
+    ActiveOutput,
+    OverlapWork,
+    OverlapScanFirst,
+    OverlapScanSecond,
+    NewBoundsPairs,
+    ReportFirst,
+    ReportSecond,
+    ReportCopy,
+    ReportWaveFirst,
+    ReportWaveSecond,
+    RemovedMark,
+    RemovedProjections,
+    UpdatedBounds,
+    IncrementalCountFirst,
+    IncrementalCountSecond,
+    IncrementalPairs,
+    ClearNewFlags,
+    Count
+};
+using NativeGpuSapShaders = std::array<
+    compute::ShaderBinary,static_cast<std::size_t>(NativeGpuSapStage::Count)>;
 
 // Construct a World with one native Context, original PhysX GPU buddy heap,
 // AABB/SAP owners, stream and source Sc/PCM/Dy scene. No reference PhysX
