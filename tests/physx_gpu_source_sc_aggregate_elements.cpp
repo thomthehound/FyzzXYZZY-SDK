@@ -104,6 +104,24 @@ void run(Backend backend) {
                     owner.volume_to_actor()[member1]==1u,
                     "Source Sc allocated duplicate or detached aggregate member IDs");
 
+            // ScBodySim::switchToKinematic and switchToDynamic keep the
+            // original aggregate member ElementSim and reinsert it with
+            // its newly calculated Bp motion group.
+            const auto dynamic_group=owner.scene_bounds().groups[member0];
+            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Kinematic);
+            require(sc.handle(0u)==member0 &&
+                    owner.volume_to_actor()[member0]==0u &&
+                    owner.source_aggregated().boundedTest(member0) &&
+                    (owner.scene_bounds().groups[member0]&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::KINEMATIC &&
+                    owner.scene_bounds().groups[member0]!=dynamic_group,
+                    "Kinematic aggregate member lost original ID or Bp filtering group");
+            sc.set_motion(0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic);
+            require(owner.scene_bounds().groups[member0]==dynamic_group &&
+                    owner.source_aggregated().boundedTest(member0) &&
+                    sc.aggregate_root_handle(root)==root_handle,
+                    "Dynamic aggregate member failed original source Bp reinsertion");
+
             const std::array<fyzz::native::GpuBroadphaseBox,3> boxes{{
                 box(0u,-1.0f,fyzz::native::GpuBroadphaseBox::Motion::Dynamic),
                 box(1u,1.0f,fyzz::native::GpuBroadphaseBox::Motion::Dynamic),
