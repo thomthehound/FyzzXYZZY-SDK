@@ -42,7 +42,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             *members.aabb_owner,members.aabb_manager,members.volume_to_actor);
     if(members.aabb_manager.has_aggregates &&
        (!members.aabb_owner || !members.aggregate_member_history ||
-        !members.aggregate_projection))
+        !members.aggregate_projection ||
+        !members.aggregate_self_collision))
         throw std::logic_error(
             "Original aggregate post-SAP requires AABB owner and GPU history stages");
 
@@ -107,6 +108,11 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         const auto projections=members.aabb_owner->aggregate_projection_gpu_buffers(
             current_integer_address);
         members.aggregate_projection->append(stream,addresses,projections);
+        const auto self=members.aabb_owner->aggregate_self_collision_gpu_buffers(
+            current_integer_address,
+            address(dma.broadphase_descriptor.oldIntegerBounds),
+            address(dma.broadphase_descriptor.updateData_groups));
+        members.aggregate_self_collision->append(stream,addresses,self);
     }
     stream.wait_at_fetch();
 
