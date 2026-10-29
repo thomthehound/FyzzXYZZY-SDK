@@ -212,6 +212,23 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     new_integer_bounds.getDevicePtr());
                 projection_stage.append(stream,addresses,projection_gpu);
                 const auto group_buffer=sap.pre_broadphase_buffers().groups.getDevicePtr();
+                const auto collision_gpu=aabb.aggregate_persistent_collision_gpu_buffers(
+                    new_integer_bounds.getDevicePtr(),
+                    old_integer_bounds.getDevicePtr(),
+                    manager.volume_data_device.getDevicePtr(),
+                    group_buffer,manager.removed.device.getDevicePtr());
+                require(collision_gpu.pair_capacity==32u &&
+                        collision_gpu.report_capacity==16u &&
+                        collision_gpu.volume_data==manager.volume_data_device.getDevicePtr() &&
+                        collision_gpu.current_keys==projection_gpu.sorted_projections &&
+                        collision_gpu.current_members==projection_gpu.bound_index_history &&
+                        collision_gpu.current_keys!=collision_gpu.previous_keys &&
+                        collision_gpu.remove_pair_bitmap==
+                            retirement_buffers.remove_bitmap &&
+                        collision_gpu.aggregate_pairs==retirement_buffers.aggregate_pairs,
+                        "Original persistent aggregate root-pair collision did not borrow source owner");
+                (void)addresses.resolve(collision_gpu.volume_data,
+                    aabb.capacity()*sizeof(physx::Bp::VolumeData));
                 const auto self_gpu=aabb.aggregate_self_collision_gpu_buffers(
                     new_integer_bounds.getDevicePtr(),
                     old_integer_bounds.getDevicePtr(),group_buffer);
@@ -398,6 +415,31 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             require((bit&(1u<<3u))!=0u &&
                     (bit&((1u<<4u)|(1u<<5u)))==0u,
                     "Original source aggregate GPU dirty bitmap did not promote root");
+
+            // Original persistent-pair capacity and candidate overflow
+            // reject mapped reports before Sc receives incomplete contacts.
+            const auto pair_state=aabb.aggregate_pair_admission_gpu_buffers(
+                0u,0u,16u);
+            const auto overflow_view=addresses.resolve(
+                pair_state.overflow_reports,3u*sizeof(physx::PxU32));
+            for(const std::array<physx::PxU32,3> flags:
+                {std::array<physx::PxU32,3>{{32u,1u,0u}},
+                 std::array<physx::PxU32,3>{{32u,0u,1u}}}) {
+                context.upload(overflow_view.buffer,overflow_view.offset,
+                               flags.data(),sizeof(flags));
+                bool rejected=false;
+                try {
+                    (void)aabb.fetch_aggregate_mapped_reports(
+                        context,addresses,mapped);
+                } catch(const std::overflow_error&) {
+                    rejected=true;
+                }
+                require(rejected,
+                    "Source mapped GPU aggregate fetch suppressed root-pair overflow");
+            }
+            const std::array<physx::PxU32,3> cleared_overflow{};
+            context.upload(overflow_view.buffer,overflow_view.offset,
+                           cleared_overflow.data(),sizeof(cleared_overflow));
 
             // Grow reserved aggregate membership between GPU frames.
             // The next sort writes slot 1, and the former slot 0 must

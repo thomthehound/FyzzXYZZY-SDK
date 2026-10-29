@@ -1489,6 +1489,36 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}"
         "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
         "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}")
+    # aggregate.cu::doAggPairCollisions, original GPU root pair member sweep.
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_persistent_collisions_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_shader DEPENDS "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_persistent_collisions
+      tests/physx_gpu_source_aggregate_persistent_collisions_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_persistent_collisions PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_persistent_collisions PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_persistent_collisions
+      fyzzxyzzy_source_gpu_aggregate_persistent_collisions_shader
+      fyzzxyzzy_source_gpu_aggregate_projection_shader
+      fyzzxyzzy_source_gpu_aggregate_self_collision_shader
+      fyzzxyzzy_source_gpu_aggregate_pair_retirement_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_persistent_collisions COMMAND fyzzxyzzy_source_gpu_aggregate_persistent_collisions
+      "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_COUNT}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_MARK}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_SPV_PUBLISH}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -4494,6 +4524,38 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_pair_retirement_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # aggregate.cu::doAggPairCollisions, original GPU root pair member sweep.
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_persistent_collisions_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12_shader DEPENDS "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12
+      tests/physx_gpu_source_aggregate_persistent_collisions_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12
+      fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_projection_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_pair_retirement_d3d12_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 COMMAND fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12
+      "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_COUNT}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_MARK}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_RETIRE_DXIL_PUBLISH}")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12 PRIVATE
