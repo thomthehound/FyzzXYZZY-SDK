@@ -1307,7 +1307,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
       VERBATIM)
     add_executable(fyzzxyzzy_source_gpu_aggregate_bounds
       tests/physx_gpu_source_aggregate_bounds_native.cpp)
-    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds PRIVATE FyzzXYZZY::Compute)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_bounds PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds PRIVATE FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_bounds_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
               "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}")
@@ -4094,8 +4096,10 @@ if(FYZZXYZZY_BUILD_D3D12)
       VERBATIM)
     add_executable(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12
       tests/physx_gpu_source_aggregate_bounds_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
-    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE FyzzXYZZY::ComputeD3D12)
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
               "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}")

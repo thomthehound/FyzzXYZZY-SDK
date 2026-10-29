@@ -32,6 +32,23 @@ and invalid-aggregate skip are retained on Vulkan and D3D12.
 The CUDA warp XOR shuffles are lowered to 32-lane shared-memory
 reductions, independent of the adapter's native subgroup width.
 
+The source-native host stage now lives in
+`src/physx_gpu/source_aggregate_gpu_native.h`. It borrows the
+original AABB manager's GPU bounds, distances, aggregate records,
+member indices, and changed-bit storage via `CudaDeviceAddressMap`.
+Both kernels append to the existing `SourceSapDmaNative` stream with
+explicit read/write resource intents, one transactional append, and
+one source fetch fence. Native buffer bindings and shader-local
+address offsets are lowered from the five original allocation views;
+several `PxgCudaBuffer` allocations may occupy one physical buddy
+heap root. The independent Vulkan/D3D12 conformance now exercises
+this shared-root case with nonzero offsets on both stages.
+
+The stage adapter is ready for `PxgAABBManager::gpuDmaDataUp` and
+`computeAggregateBounds` integration, but World does not yet admit
+aggregated shapes. No second aggregate registry or per-frame CPU
+reduction has been introduced.
+
 The standalone conformance uses actual GPU dispatch for one- and
 multi-member aggregates, a 35-member aggregate spanning two warp
 iterations, inactive aggregates and a second workgroup. It compares

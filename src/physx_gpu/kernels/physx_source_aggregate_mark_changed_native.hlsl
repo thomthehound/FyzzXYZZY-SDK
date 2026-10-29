@@ -18,7 +18,8 @@ RWByteAddressBuffer memberIndices : register(u1,space0);
 #endif
 RWByteAddressBuffer changedAabbManagerHandles : register(u2,space0);
 struct Parameters {
-    uint aggregateCount,reserved0,reserved1,reserved2;
+    uint aggregateCount, boundsBias, contactBias, aggregateBias;
+    uint memberBias, changedBias, reserved0, reserved1;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -29,17 +30,17 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=group.x*4u+lane.y;
     if(index>=p.aggregateCount)return;
-    const uint4 aggregate=aggregateSlots.Load4(index*16u);
+    const uint4 aggregate=aggregateSlots.Load4(p.aggregateBias+index*16u);
     if(aggregate.z==0u || aggregate.x==0xffffffffu)return;
     if(lane.x==0u) {
         uint ignored;
         changedAabbManagerHandles.InterlockedOr(
-            (aggregate.x>>5u)*4u,1u<<(aggregate.x&31u),ignored);
+            p.changedBias+(aggregate.x>>5u)*4u,1u<<(aggregate.x&31u),ignored);
     }
     for(uint i=lane.x;i<aggregate.z;i+=32u) {
-        const uint member=memberIndices.Load((aggregate.y+i)*4u);
+        const uint member=memberIndices.Load(p.memberBias+(aggregate.y+i)*4u);
         uint ignored;
         changedAabbManagerHandles.InterlockedAnd(
-            (member>>5u)*4u,~(1u<<(member&31u)),ignored);
+            p.changedBias+(member>>5u)*4u,~(1u<<(member&31u)),ignored);
     }
 }
