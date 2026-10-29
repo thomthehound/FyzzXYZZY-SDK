@@ -19,8 +19,9 @@ namespace fyzz::physx_gpu {
 
 // PxgAggregate double-buffered sortedProjections, sortedHandles, sapBox1D,
 // startMasks and boundIndices, lowered to source-heap-backed reserved slices.
-// Each current/previous slot contains exactly the original per-aggregate
-// arrays. The caller owns slot rotation at the successful report fetch.
+// Current and previous slots are independent source heap allocations.
+// The caller selects the current slot and rotates only at successful fetch,
+// preserving old history when capacity grows without a repack.
 struct SourceAggregateProjectionNativeBuffers {
     CudaDeviceAddressMap::Address integer_bounds=0;
     CudaDeviceAddressMap::Address aggregate_slots=0;
@@ -105,10 +106,10 @@ public:
             source_allocation_bytes(src.member_capacity,4u),
             2u,compute::BufferAccess::Read,6u);
         const auto projections=view(src.sorted_projections,
-            source_allocation_bytes(src.member_capacity,16u),
+            source_allocation_bytes(src.member_capacity,8u),
             3u,compute::BufferAccess::ReadWrite,7u);
         const auto handles=view(src.sorted_handles,
-            source_allocation_bytes(src.member_capacity,16u),
+            source_allocation_bytes(src.member_capacity,8u),
             4u,compute::BufferAccess::ReadWrite,8u);
         const auto scratch_projections=view(src.scratch_projections,
             source_allocation_bytes(src.member_capacity,8u),
@@ -117,13 +118,13 @@ public:
             source_allocation_bytes(src.member_capacity,8u),
             6u,compute::BufferAccess::ReadWrite,10u);
         const auto sap_boxes=view(src.sap_boxes,
-            source_allocation_bytes(src.member_capacity,16u),
+            source_allocation_bytes(src.member_capacity,8u),
             7u,compute::BufferAccess::Write,11u);
         const auto start_masks=view(src.start_masks,
-            source_allocation_bytes(src.member_capacity,8u),
+            source_allocation_bytes(src.member_capacity,4u),
             8u,compute::BufferAccess::Write,12u);
         const auto history=view(src.bound_index_history,
-            source_allocation_bytes(src.member_capacity,8u),
+            source_allocation_bytes(src.member_capacity,4u),
             9u,compute::BufferAccess::Write,13u);
 
         compute::DispatchCommand command{};
