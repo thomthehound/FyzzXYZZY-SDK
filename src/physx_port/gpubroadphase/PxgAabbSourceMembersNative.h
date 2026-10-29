@@ -201,6 +201,13 @@ public:
            handle>=BP_INVALID_BP_HANDLE-1u ||
            aggregate.size>=aggregate_max_shapes_[id])
             throw std::invalid_argument("Invalid original aggregate member admission");
+        // Published member handles remain retired until the source fetch
+        // consumes their lost reports. The original deferred ID lifecycle
+        // prevents remove/re-admit aliasing within that interval.
+        for(const auto pending:removed_aggregate_members_)
+            if(pending==handle)
+                throw std::logic_error(
+                    "Original aggregate member handle awaits GPU fetch retirement");
         reserve_shapes(handle+1u);
         if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID ||
            volume_to_actor_[handle]!=std::numeric_limits<BodyId>::max())
@@ -223,10 +230,6 @@ public:
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
-        // The source member ID can be readmitted before GPU fetch. Cancel
-        // its pending deletion but retain new admission so the prior
-        // integer AABB is invalidated without clearing its current bounds.
-        removed_aggregate_members_.findAndReplaceWithLast(handle);
         added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
