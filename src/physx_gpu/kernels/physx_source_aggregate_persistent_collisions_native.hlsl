@@ -228,8 +228,11 @@ void main(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         const uint id=start+lane.y;
         const bool active=id<count;
         const uint base=p.pairsBias+id*12u;
-        if(lane.x==0u)
-            sourcePairFlags[lane.y]=active?pairs.Load(base+8u):0u;
+        if(lane.x==0u) {
+            uint flags=0u;
+            if(active)flags=pairs.Load(base+8u);
+            sourcePairFlags[lane.y]=flags;
+        }
         GroupMemoryBarrierWithGroupSync();
         const uint flags=sourcePairFlags[lane.y];
         bool remove=false,clearNew=false;
