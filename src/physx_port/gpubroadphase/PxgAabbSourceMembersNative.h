@@ -381,7 +381,6 @@ public:
     const physx::Bp::SourceBoundsArrayNative& source_bounds() const noexcept {return bounds_;}
     physx::Cm::PinnableBitMap& source_added() noexcept {return added_;}
     physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
-    physx::Cm::PinnableBitMap& source_removed() noexcept {return removed_;}
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
 private:
