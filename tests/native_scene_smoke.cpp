@@ -10386,9 +10386,11 @@ void verify_source_activity_rollback() {
 }
 
 void verify_native_rigid_integration_and_island_lifecycle() {
+    std::fprintf(stderr,"rigid lifecycle begin\n");
     using fyzz::native::Scene;
     // End-to-end native CPU execution, without a reference PxScene.
     {
+        std::fprintf(stderr,"rigid lifecycle phase 1\n");
         Scene falling_scene{Scene::ContactGenerator::DiagnosticLegacyGu};
         falling_scene.add_static_floor(0);
         const auto falling = falling_scene.add_dynamic_box(
@@ -10419,6 +10421,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Native CPU actor retirement failed to publish touch loss");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 2\n");
         // The provisional translation-only mass admission must not
         // silently turn a constrained rigid body into a rotation-locked
         // one when source PxReal angular inertia is not representable.
@@ -10448,6 +10451,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 3\n");
         Scene stacked{Scene::ContactGenerator::DiagnosticLegacyGu};
         const auto ground=stacked.add_static_box({2,0.5f,2},{0,-0.5f,0});
         const auto lower = stacked.add_dynamic_box(
@@ -10518,6 +10522,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 4\n");
         // Tiny mass can still have a representable inverse mass while
         // its source angular tensor is not representable. Contact PGS
         // must reject this geometry instead of using a zero tensor.
@@ -10581,6 +10586,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 5\n");
         // Inverse mass can remain representable when a source PxReal box
         // inertia component underflows, overflows or has an
         // unrepresentable inverse. Those are translation-only bodies,
@@ -10619,6 +10625,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 6\n");
         // Two individually finite extreme inputs must pass through the
         // exact PhysX unconstrained-velocity clamp before contact prep.
         // Preserve finite impulse state without a custom wide dot product.
@@ -10641,6 +10648,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "High-speed dynamic pair lost its contact");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 7\n");
         // Regression for a second float overflow: relative velocity and
         // impulse remain finite in double, but unequal inverse masses
         // previously overflowed one body's float velocity on writeback.
@@ -10669,6 +10677,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Source unconstrained linear-speed clamp failed zero-bias contact");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 8\n");
         // A free body uses the same source default velocity clamp, so
         // safety is independent of whether contacts are generated.
         Scene unopposed{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -10692,6 +10701,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Finite squared velocity failed PhysX source clamp");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 9\n");
         // Velocity authoring has no full-manifold invalidation scan:
         // an isolated edit changes only the selected actor's velocity.
         Scene authoring{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -10712,6 +10722,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 10\n");
         // Source inertia is directional and density-scaled. The same
         // world torque impulse must produce different angular velocity
         // for a rectangular body on its distinct principal axes.
@@ -10746,6 +10757,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         expect(rejected,"Static floor accepted angular impulse");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 11\n");
         // Queued angular impulses are consumed at the next scene step
         // even when static contacts are present. Normal contact rows
         // must now accept the resulting rotated body without replaying
@@ -10767,6 +10779,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Angular motion failed to continue without replaying torque");
     }
     {
+        std::fprintf(stderr,"rigid lifecycle phase 12\n");
         // Source ScBodyCore creation counter and Dy::sleepCheck: motion
         // readiness precedes whole-island deactivation. Once a rigid
         // body rests on its static floor it must stop integrating gravity
@@ -10822,6 +10835,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 13\n");
         // PxsIslandSim::processLostEdges(third pass) consumes the *prior*
         // frame's Dy::sleepCheck readiness. The frame in which the body
         // first becomes ready is not allowed to deactivate it immediately.
@@ -10862,6 +10876,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     // from the previously published Gu manager, just as for a static
     // support edit, even when the new topology no longer connects them.
     {
+        std::fprintf(stderr,"rigid lifecycle phase 14\n");
         Scene moved_peer{Scene::ContactGenerator::DiagnosticLegacyGu};
         moved_peer.add_static_floor(0.0f);
         const auto left=moved_peer.add_dynamic_box(
@@ -10935,6 +10950,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 15\n");
         // A geometry-only query also publishes changed island membership
         // and may consume an authored node wake, without a numerical
         // solver step. Its accurate active-node index must not vanish
@@ -10976,6 +10992,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 16\n");
         // Rejected steps must preserve retained source active-node
         // spans, their actual storage, and their published elements.
         // A failure after a newly ready body deactivates exercises
@@ -11060,6 +11077,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 17\n");
         // PxsIslandSim::wakeIslands captures its initially active rigid
         // prefix before admitting newly activated nodes. Deactivating
         // an initial member must use source markInactive's prefix-tail
@@ -11135,6 +11153,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     verify_speculative_active_node_lifecycle();
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 18\n");
         // Source accurate active-node indexing must stay dense and
         // bidirectional through third-pass sleep, user wake, and
         // reactivation. The separate deactivation output is published
@@ -11189,6 +11208,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 19\n");
         // The source active-island list is a strict subset of all accurate
         // islands. Dormant bodies remain in the persistent source graph
         // but are excluded from unconstrained integration and PGS. An
@@ -11235,6 +11255,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     // Ensure a rejected step does not clear that pending wake indicator:
     // the next quiet query still propagates to the sleeping island peer.
     {
+        std::fprintf(stderr,"rigid lifecycle phase 20\n");
         Scene pending_query{Scene::ContactGenerator::DiagnosticLegacyGu};
         pending_query.add_static_floor(0.0f);
         const auto left=pending_query.add_dynamic_box(
@@ -11263,6 +11284,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 21\n");
         // A rejected Dy step rebuilds the active accurate island view
         // after source wake/deactivation. The previous published active
         // batch count must survive rollback without copying the list.
@@ -11296,6 +11318,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 22\n");
         // IslandSim::activateNode clears an already-awake node's ready
         // flag when a new contact wakes its island. A body that just
         // reached readiness must still resolve the newly added static
@@ -11325,6 +11348,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 23\n");
         // IslandSim::activateIslandInternal wakes connected rigid nodes,
         // not only the node explicitly edited by a user. A persistent
         // dynamic contact must admit both nodes together on reactivation.
@@ -11351,6 +11375,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 24\n");
         // IslandSim::wakeIslands consumes an actual authored activation,
         // including when a collision-only query is otherwise quiet.
         // An already-awake neighbor is not itself a perpetual wake event.
@@ -11394,6 +11419,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 25\n");
         // The speculative graph may contain a pair of overlapping AABBs
         // whose rotated Gu boxes never touch. PhysX's third pass uses
         // accurate islands to decide rigid-body deactivation; only
@@ -11538,6 +11564,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 26\n");
         // Newly published contacts and island activation precede
         // unconstrained velocity integration. On a later overflow,
         // failure atomicity must roll back both the fresh contact
@@ -11585,6 +11612,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 27\n");
         // Sc static-actor pose authoring invalidates interactions with
         // an already sleeping rigid body. Reusing the existing accurate
         // contact managers wakes the touched actor before subsequent
@@ -11607,6 +11635,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 28\n");
         // A geometry-only Gu publication can create a static touch
         // before the next step. IslandSim::wakeIslands consumes it at
         // publication, not from a one-frame event stream that may be
@@ -11635,6 +11664,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
     }
 
     {
+        std::fprintf(stderr,"rigid lifecycle phase 29\n");
         // Sc::Scene destroys contact-manager links when a supporting
         // static actor is retired. A sleeping box must wake and resume
         // falling rather than remain indefinitely suspended in space.
@@ -11657,6 +11687,7 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                "Source rigid body did not fall after losing static support");
     }
 
+    std::fprintf(stderr,"rigid lifecycle complete\n");
 }
 
 void verify_source_rigid_lock_flags() {
@@ -14742,6 +14773,7 @@ int run_native_scene_smoke() {
     verify_sparse_motion_checkpoint();
     verify_native_rigid_integration_and_island_lifecycle();
 
+    std::fprintf(stderr,"rigid lifecycle returned\n");
     // Exercise the actual World selection, not only the owner fixture.
     fyzz::World native_world(fyzz::WorldOptions{fyzz::ExecutionMode::NativeCpu});
     auto owned = native_world.add_dynamic_box({0.5f,0.5f,0.5f}, {0,1,0}, 1);
