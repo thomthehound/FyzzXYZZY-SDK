@@ -63,7 +63,8 @@ ShaderBinary load(const char* path) {
     return bin;
 }
 void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
-            ShaderBinary member_history_shader,ShaderBinary projection_shader) {
+            ShaderBinary member_history_shader,ShaderBinary projection_shader,
+            ShaderBinary self_collision_shader) {
     Foundation foundation;
     Context context(backend);
     CudaDeviceAddressMap addresses;
@@ -83,7 +84,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             1u<<20u,device,pinned,mapped,abort,&aborted);
         auto allocators=physx::PxgCreateAllocatorDesc(heap);
         {
-            PxgAabbSourceMembersNative aabb(allocators,8u);
+            PxgAabbSourceMembersNative aabb(allocators,8u,16u);
             PxgSapSourceMembersNative sap(allocators,32u,16u);
             SourceAggregateGpuNativeStage stage(
                 context,std::move(bounds_shader),std::move(mark_shader));
@@ -91,6 +92,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 context,std::move(member_history_shader));
             SourceAggregateProjectionNativeStage projection_stage(
                 context,std::move(projection_shader));
+            SourceAggregateSelfCollisionNativeStage self_stage(
+                context,std::move(self_collision_shader));
             physx::PxgCudaBuffer new_integer_bounds(
                 allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
             physx::PxgCudaBuffer old_integer_bounds(
@@ -101,13 +104,18 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             std::vector<std::uint32_t> original_new(integer_words);
             std::vector<std::uint32_t> original_old(integer_words);
             for(std::size_t i=0;i<integer_words;++i) {
-                original_new[i]=0x80001000u+static_cast<std::uint32_t>(i);
-                original_old[i]=0x80002000u+static_cast<std::uint32_t>(i);
+                const auto handle=static_cast<std::uint32_t>(i/6u);
+                const auto axis=static_cast<std::uint32_t>(i%6u);
+                original_new[i]=0x80001000u+handle*4u+
+                    (axis<3u?axis*4u:0x41u+(axis-3u)*4u);
+                original_old[i]=0x80002000u+handle*4u+
+                    (axis<3u?axis*4u:0x41u+(axis-3u)*4u);
             }
 
             alignas(16) std::array<std::uint32_t,4> elements{};
             const auto id=aabb.create_aggregate(
-                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),3u);
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),3u,
+                PX_INVALID_U32,1u);
             aabb.admit_aggregate_member(
                 id,4u,14u,0.25f,
                 physx::Bp::getFilterGroup_Dynamics(14u,false),
@@ -181,8 +189,16 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 const auto projection_gpu=aabb.aggregate_projection_gpu_buffers(
                     new_integer_bounds.getDevicePtr());
                 projection_stage.append(stream,addresses,projection_gpu);
+                const auto group_buffer=sap.pre_broadphase_buffers().groups.getDevicePtr();
+                const auto self_gpu=aabb.aggregate_self_collision_gpu_buffers(
+                    new_integer_bounds.getDevicePtr(),
+                    old_integer_bounds.getDevicePtr(),group_buffer);
+                require(self_gpu.report_capacity==16u &&
+                        self_gpu.aggregate_count>=1u,
+                        "Source AABB owner aggregate report config lost");
+                self_stage.append(stream,addresses,self_gpu);
                 require(stream.commands().size()==
-                            3u+std::uint32_t(added_members.size()!=0u ||
+                            4u+std::uint32_t(added_members.size()!=0u ||
                                              removed_members.size()!=0u),
                         "Original AABB aggregate GPU stage order or member-history dispatch differs");
                 stream.wait_at_fetch();
@@ -285,6 +301,27 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         require(masks[member_base+word]==ballot,
                                 "Original aggregate GPU start masks differ");
                     }
+                }
+                std::array<physx::PxU32,2> aggregate_counts{};
+                {
+                    const auto view=addresses.resolve(
+                        self_gpu.found_lost_counts,sizeof(aggregate_counts));
+                    context.download(view.buffer,view.offset,
+                                     aggregate_counts.data(),sizeof(aggregate_counts));
+                }
+                require(aggregate_counts[0]<=self_gpu.report_capacity &&
+                        aggregate_counts[1]<=self_gpu.report_capacity,
+                        "Original source aggregate member report overflow");
+                if(projection_frame==0u) {
+                    require(aggregate_counts[0]==1u && aggregate_counts[1]==0u,
+                        "Source-owned aggregate GPU failed to publish its first self-contact");
+                    std::array<physx::PxU32,2> found_member{};
+                    const auto view=addresses.resolve(
+                        self_gpu.found_pairs,sizeof(found_member));
+                    context.download(view.buffer,view.offset,
+                                     found_member.data(),sizeof(found_member));
+                    require(found_member[0]==4u && found_member[1]==5u,
+                        "Original GPU aggregate self-contact uses wrong Sc shape handles");
                 }
                 require(stream.submission_stats().command_batches==before+1u,
                         "Original AABB source aggregate stages split GPU command batches");
@@ -409,14 +446,15 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=5)throw std::invalid_argument("Expected source aggregate bounds, mark, member-history and projection shaders");
+        if(argc!=6)throw std::invalid_argument("Expected aggregate bounds, mark, member-history, projection and self-collision shaders");
         verify(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12,
 #else
             Backend::Vulkan,
 #endif
-            load(argv[1]),load(argv[2]),load(argv[3]),load(argv[4]));
+            load(argv[1]),load(argv[2]),load(argv[3]),load(argv[4]),
+            load(argv[5]));
         std::cout<<"Original PhysX aggregate AABB GPU first/second pass PASS\n";
         return 0;
     }catch(const std::exception& error) {
