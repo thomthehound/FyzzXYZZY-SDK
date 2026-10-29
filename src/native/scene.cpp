@@ -727,6 +727,11 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
 void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
     auto& actor=require(id);
     if(actor.simulation_shape_enabled==enabled)return;
+    // The source AABB removal/addition can reject the Sc shape. Run
+    // that source preflight before clearing any existing PCM/friction
+    // working set or publishing the native shape flag.
+    if(gpu_broadphase_)
+        gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     // NpShape::setFlag(eSIMULATION_SHAPE) refilters the sole shape.
     // Retire the previous contact history on this source flag change.
     // The following SAP publication is the authority for edge loss,
@@ -738,8 +743,6 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
             if(edge.pair.a==id || edge.pair.b==id)
                 edge.pcm_cache={};
         }
-    if(gpu_broadphase_)
-        gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     actor.simulation_shape_enabled=enabled;
     broadphase_endpoint_membership_dirty_=true;
     dirty_=true;
@@ -844,8 +847,6 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
 }
 void Scene::remove(BodyId id) {
     auto& actor=require(id);
-    // The source AABB retains the actor identity through GPU lost fetch.
-    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     // Retirement may wake multiple sleeping Gu partners. Reserve both
     // graph-local event queues before touching partner motion flags.
@@ -853,6 +854,16 @@ void Scene::remove(BodyId id) {
         speculative_islands_.activating_nodes.reserve(actors_.size());
         accurate_islands_.activating_nodes.reserve(actors_.size());
     }
+    // Before removing the source volume, reserve all native graph work
+    // that can grow during contact-manager and constraint retirement.
+    std::size_t incident=0;
+    for(EdgeIndex edge:active_constraint_handles_) {
+        const Pair pair=island_edges_[edge].pair;
+        incident+=(pair.a==id || pair.b==id);
+    }
+    retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
+    // The source AABB retains its actor identity through GPU lost fetch.
+    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
     // Sc actor retirement removes physical contact-manager edges. A
     // dormant or sleep-ready rigid body resting on the retired actor
     // cannot continue sleeping without its supporting contact: revoke
@@ -878,12 +889,6 @@ void Scene::remove(BodyId id) {
     // ScConstraintInteraction retires every edge incident to an actor
     // before the island node can be invalidated. The same shared handle
     // pool and edge-instance disconnect path handles explicit deletion.
-    std::size_t incident=0;
-    for(EdgeIndex edge:active_constraint_handles_) {
-        const Pair pair=island_edges_[edge].pair;
-        incident+=(pair.a==id || pair.b==id);
-    }
-    retired_edge_handles_.reserve(retired_edge_handles_.size()+incident);
     for(std::size_t cursor=0;cursor<active_constraint_handles_.size();) {
         const EdgeIndex edge=active_constraint_handles_[cursor];
         const Pair pair=island_edges_[edge].pair;
