@@ -250,17 +250,24 @@ public:
            handle>=BP_INVALID_BP_HANDLE-1u ||
            aggregate.size>=aggregate_max_shapes_[id])
             throw std::invalid_argument("Invalid original aggregate member admission");
-        // Published member handles remain retired until the source fetch
-        // consumes their lost reports. The original deferred ID lifecycle
-        // prevents remove/re-admit aliasing within that interval.
-        for(const auto pending:removed_aggregate_members_)
-            if(pending==handle)
-                throw std::logic_error(
-                    "Original aggregate member handle awaits GPU fetch retirement");
+        // An original ScShapeSim can disable and re-enable its SAME
+        // member before fetch. Its prior source actor identity and
+        // aggregate owner survive inside the original VolumeData slot.
+        // A different actor or aggregate cannot claim the retired ID.
+        const bool canceled_retirement=
+            std::find(removed_aggregate_members_.begin(),
+                      removed_aggregate_members_.end(),handle)!=
+            removed_aggregate_members_.end();
         reserve_shapes(handle+1u);
         if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID ||
-           volume_to_actor_[handle]!=std::numeric_limits<BodyId>::max())
-            throw std::logic_error("Source aggregate member handle already live");
+           (canceled_retirement
+               ? (volume_to_actor_[handle]!=actor ||
+                  !volumes_[handle].isAggregated() ||
+                  volumes_[handle].getAggregateOwner()!=id)
+               : volume_to_actor_[handle]!=
+                    std::numeric_limits<BodyId>::max()))
+            throw std::logic_error(
+                "Original aggregate member handle has a different live or retired owner");
         if(!aggregate.size) {
             if(removed_.boundedTest(aggregate.mIndex))
                 removed_.boundedReset(aggregate.mIndex);
@@ -279,7 +286,16 @@ public:
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
-        added_aggregate_members_.pushBack(handle);
+        if(canceled_retirement) {
+            // No member-history removal/addition is emitted: the GPU
+            // still owns its previous bound and comparison history.
+            // The re-enabled member's current geometry must be restaged.
+            if(!removed_aggregate_members_.findAndReplaceWithLast(handle))
+                throw std::logic_error(
+                    "Original aggregate pending retirement disappeared");
+            if(!changed_.growAndSet(handle))throw std::bad_alloc();
+        }else
+            added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
     }
@@ -337,6 +353,10 @@ public:
         groups_[handle]=physx::Bp::FilterGroup::eINVALID;
         distances_[handle]=0.0f;
         volumes_[handle].reset();
+        // Until the original fetch retires this handle, preserve its
+        // aggregate tag for same-Sc-shape removal cancellation. The
+        // inactive group and null user data keep it out of live BP.
+        if(!unpublished)volumes_[handle].setAggregated(id);
         bounds_.setBounds(physx::PxBounds3::empty(),handle);
         // Original lost GPU member reports may still reference the
         // retired source volume. Keep its Sc actor identity through the
@@ -747,8 +767,10 @@ public:
         added_aggregate_members_.resetOrClear();
         // Retire the original source-to-Sc actor identities only after
         // all GPU aggregate lost reports have been fetched and admitted.
-        for(const auto handle:removed_aggregate_members_)
+        for(const auto handle:removed_aggregate_members_) {
             volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
+            volumes_[handle].reset();
+        }
         removed_aggregate_members_.resetOrClear();
         if(aggregate_gpu_slot_count_)aggregate_projection_current_slot_^=1u;
         aggregate_ids_.processDeferredIds();
