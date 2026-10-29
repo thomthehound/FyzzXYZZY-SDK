@@ -262,6 +262,21 @@ void execute(Context& context, ShaderBinary translateShader,
             require(next!=root &&
                     aggregateAabb.dirty_aggregate_indices().size()==2u,
                     "Original aggregate ID was reused before deferred cleanup");
+            aggregateAabb.admit_aggregate_member(next,8u,42u,0.125f,
+                physx::Bp::getFilterGroup_Dynamics(42u,false),
+                sourceElements.data());
+            aggregateAabb.queue_aggregate_gpu_dma_up(stream);
+            stream.wait_at_fetch();
+            const auto grownGpu=fetch_aggregate_gpu_record(next);
+            const auto retiredAfterGrowth=fetch_aggregate_gpu_record(root);
+            require(grownGpu.root==6u && grownGpu.size==1u &&
+                    retiredAfterGrowth.root==PX_INVALID_U32 &&
+                    retiredAfterGrowth.size==0u &&
+                    grownGpu.first_member!=firstGpu.first_member &&
+                    fetch_aggregate_gpu_member(grownGpu.first_member)==8u &&
+                    fetch_aggregate_gpu_member(firstGpu.first_member)==5u,
+                    "Source aggregate GPU buffer growth overwrote previous allocation");
+            aggregateAabb.remove_aggregate_member(8u);
             aggregateAabb.destroy_aggregate(next);
             aggregateAabb.finish_aggregate_report_fetch();
             const auto recycled=aggregateAabb.create_aggregate(
