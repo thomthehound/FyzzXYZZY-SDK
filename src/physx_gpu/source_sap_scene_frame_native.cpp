@@ -168,7 +168,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
                 source_found,volume_lifetime);
             std::span<const physx::PxgBroadPhasePair> aggregate_found;
             std::span<const physx::PxgBroadPhasePair> aggregate_lost;
-            if(members.aabb_manager.has_aggregates) {
+            if(members.aabb_manager.has_aggregates &&
+               !members.abort_mode) {
                 // These original mapped arrays have been written by the
                 // source aggCopyReports GPU stage on the SAME source
                 // stream. Fetch both only after SAP's own count/overflow
