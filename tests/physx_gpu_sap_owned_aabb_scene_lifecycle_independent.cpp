@@ -286,6 +286,10 @@ void execute(Context& context, ShaderBinary translateShader,
             aggregateAabb.destroy_aggregate(recycled);
             aggregateAabb.finish_aggregate_report_fetch();
         }
+        // The standalone aggregate DMA case has already used the same
+        // original stream. Measure subsequent SAP submissions relative
+        // to that completed source work, not from process startup.
+        const auto sap_command_baseline=stream.submission_stats().command_batches;
         {
             PxgSapSourceMembersNative sap(allocators, 32u, 16u);
             PxgAabbSourceMembersNative aabb(allocators,3u);
@@ -640,7 +644,8 @@ void execute(Context& context, ShaderBinary translateShader,
 
             // No download or cross-queue wait until original source fetch.
             stream.wait_at_fetch();
-            require(stream.submission_stats().command_batches==1u,
+            require(stream.submission_stats().command_batches==
+                        sap_command_baseline+1u,
                     "Source-owned SAP GPU histories split command submissions");
             manager.flushDeferredDeallocs();
 
