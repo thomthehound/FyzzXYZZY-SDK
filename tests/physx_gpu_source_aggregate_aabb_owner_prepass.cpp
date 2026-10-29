@@ -243,6 +243,22 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             require((download_changed()&(1u<<3u))!=0u,
                     "Aggregate root changed bit was lost on persistent frame");
 
+            // Readmit a previously published member before fetch. The
+            // source AABB owner must cancel its pending removal, while the
+            // GPU invalidates only the previous AABB for the new admission.
+            aabb.remove_aggregate_member(5u);
+            aabb.admit_aggregate_member(
+                id,5u,15u,0.75f,
+                physx::Bp::getFilterGroup_Dynamics(15u,false),
+                elements.data());
+            geometry.bounds[5u]=physx::PxBounds3(
+                physx::PxVec3(-5.0f,-1.0f,1.0f),
+                physx::PxVec3(-3.0f,4.0f,3.0f));
+            aabb.mark_aggregate_member_changed(5u,0.75f);
+            run_source_prepass({5u},{});
+            verify_bounds(download_bounds(3u),
+                          {-5.75f,-1.75f,-0.25f,1.25f,4.75f,3.75f});
+
             aabb.remove_aggregate_member(5u);
             run_source_prepass({},{5u});
             verify_bounds(download_bounds(3u),
