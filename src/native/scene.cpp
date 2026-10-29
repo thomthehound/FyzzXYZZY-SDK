@@ -354,6 +354,11 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     if(changing_pose) {
         speculative_islands_.activating_nodes.reserve(actors_.size());
         accurate_islands_.activating_nodes.reserve(actors_.size());
+        // Validate the source-owned volume and mark its original GPU
+        // changed bitmap BEFORE wake, Gu/PCM cache or actor mutation.
+        // A failed source owner cannot leave half-authored Sc motion.
+        if(gpu_broadphase_ && actor.simulation_shape_enabled)
+            gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
     }
     // NpRigidDynamic::setGlobalPose wakes even on an idempotent edit.
     if(actor.kind==Kind::DynamicBox) {
@@ -390,10 +395,6 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         if(invalidated)dirty_=true;
     }
     if(!changing_pose)return;
-    // ScShapeSim::updateBounds queues this volume in PxgAABBManager's
-    // original changed bitmap before publishing the authored transform.
-    if(gpu_broadphase_ && actor.simulation_shape_enabled)
-        gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
     erase_shape_friction_history(id);
