@@ -1268,15 +1268,53 @@ void execute(Context& context, ShaderBinary translateShader,
                         !sceneAabb.source_changed().hasAnyBitSet(),
                         "Native GPU SAP did not fetch integrated Dy shape bounds");
                 const auto retainedHandle=sourceSc->source_element_handle(b);
+                // Cancelling a pending GPU removal must still update
+                // bounds if the disabled shape moved in the meantime.
                 scene.set_shape_simulation_enabled(b,false);
                 require(sceneAabb.volume_to_actor()[retainedHandle]==b &&
                         !sourceSc->source_element_deleted(retainedHandle),
                         "Shape flag refiltering released its Sc element ID");
-                scene.advance_collision(false);
+                scene.set_position(b,{1.2f,0.0f,0.0f});
+                scene.set_shape_offsets(b,0.08f,0.0f);
                 scene.set_shape_simulation_enabled(b,true);
                 require(sourceSc->source_element_handle(b)==retainedHandle &&
-                        sceneAabb.volume_to_actor()[retainedHandle]==b,
-                        "Re-enabled shape lost its original Sc element ID");
+                        sceneAabb.volume_to_actor()[retainedHandle]==b &&
+                        sceneAabb.source_changed().boundedTest(retainedHandle)!=0 &&
+                        sceneAabb.scene_bounds().contact_distances[retainedHandle]==0.08f,
+                        "Re-enabled shape lost its Sc ID, moved bounds or contact offset");
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.pairs().front()==fyzz::native::Pair{a,b} &&
+                        !sceneAabb.source_changed().hasAnyBitSet(),
+                        "Cancelled GPU removal failed moved-shape rediscovery");
+
+                // Kinematic transitions update the source Bp group and
+                // reinsert the SAME element handle as ScBodySim does.
+                scene.set_position(b,{6.0f,0.0f,0.0f});
+                scene.advance_collision(false);
+                require(scene.pairs().empty(),
+                        "Source GPU failed to retire the moved overlap");
+                scene.set_kinematic(b,true);
+                require(sceneAabb.scene_bounds().groups[retainedHandle]==
+                        physx::Bp::getFilterGroup_Dynamics(1u,true),
+                        "Source Sc kinematic group was not reinserted");
+                scene.advance_collision(false);
+                scene.set_kinematic(b,false);
+                require(sceneAabb.scene_bounds().groups[retainedHandle]==
+                        physx::Bp::getFilterGroup_Dynamics(1u,false),
+                        "Source Sc dynamic group was not restored");
+                scene.advance_collision(false);
+
+                // A fetched removal and later re-admission preserve the
+                // ElementSim ID independently of its AABB live state.
+                scene.set_shape_simulation_enabled(b,false);
+                scene.advance_collision(false);
+                scene.set_shape_offsets(b,0.10f,0.0f);
+                scene.set_shape_simulation_enabled(b,true);
+                require(sourceSc->source_element_handle(b)==retainedHandle &&
+                        sceneAabb.volume_to_actor()[retainedHandle]==b &&
+                        sceneAabb.scene_bounds().contact_distances[retainedHandle]==0.10f,
+                        "Re-admission after fetch lost disabled Sc contact distance");
                 scene.advance_collision(false);
 
                 // Sc::ElementSim releases the ID at actor retirement,

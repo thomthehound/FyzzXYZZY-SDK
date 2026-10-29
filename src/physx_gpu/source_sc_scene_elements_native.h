@@ -80,8 +80,15 @@ public:
             const auto group=physx::Bp::getFilterGroup(
                 is_static,element.rigid_id,
                 element.motion==native::GpuBroadphaseBox::Motion::Kinematic);
-            aabb_.admit(handles_[actor],actor,element.contact_distance,
-                        group,&element);
+            const auto handle=handles_[actor];
+            const bool canceled_removed=
+                aabb_.source_removed().boundedTest(handle)!=0;
+            aabb_.admit(handle,actor,element.contact_distance,group,&element);
+            // If re-admission cancels a prior remove, there is no new
+            // created handle to trigger a bounds upload. The actor may
+            // have moved while the shape was disabled.
+            if(canceled_removed)
+                aabb_.mark_changed(handle,element.contact_distance);
         }else {
             // This is a shape-flag change, NOT ElementSim destruction.
             // Do not release its Sc shape ID or actor ID.
@@ -92,10 +99,36 @@ public:
 
     void mark_changed(BodyId actor,float contact_distance) {
         auto& element=live(actor);
-        if(!element.in_aabb)
-            throw std::logic_error("Source Sc inactive shape cannot mark GPU bounds");
-        aabb_.mark_changed(handles_[actor],contact_distance);
+        // ScShapeCore retains contact distance across eSIMULATION_SHAPE
+        // disablement. Only an admitted AABB volume can have a changed
+        // bitmap bit; a disabled shape remembers the distance for re-add.
+        if(element.in_aabb)
+            aabb_.mark_changed(handles_[actor],contact_distance);
         element.contact_distance=contact_distance;
+    }
+
+    void set_motion(BodyId actor,native::GpuBroadphaseBox::Motion motion) {
+        auto& element=live(actor);
+        if(element.motion==motion)return;
+        if(motion==native::GpuBroadphaseBox::Motion::Static ||
+           element.motion==native::GpuBroadphaseBox::Motion::Static)
+            throw std::invalid_argument(
+                "Source Sc shape cannot switch between static and rigid");
+        if(element.in_aabb) {
+            // ScBodySim::switchTo{Kinematic,Dynamic} invokes
+            // ShapeSimBase::updateBPGroup: setBPGroup then
+            // reinsertBroadPhase for the SAME ElementSim ID.
+            // Source bitmap cancellation alone does not upload bounds,
+            // so mark that volume changed after the source reinsertion.
+            const auto handle=handles_[actor];
+            const auto group=physx::Bp::getFilterGroup(
+                false,element.rigid_id,
+                motion==native::GpuBroadphaseBox::Motion::Kinematic);
+            aabb_.remove(handle);
+            aabb_.admit(handle,actor,element.contact_distance,group,&element);
+            aabb_.mark_changed(handle,element.contact_distance);
+        }
+        element.motion=motion;
     }
 
     void post_reports_cleanup() {
