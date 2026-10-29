@@ -20,6 +20,7 @@
 #include "physx_port/common/src/CmIDPool.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <cstdint>
