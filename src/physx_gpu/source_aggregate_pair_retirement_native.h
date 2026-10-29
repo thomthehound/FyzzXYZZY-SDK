@@ -53,6 +53,14 @@ public:
         descriptor.storage_buffer_views.assign(
             7u,compute::StorageBufferViewKind::RawReadWrite);
         descriptor.push_constant_bytes=48u;
+        // SPIR-V preserves the three source entrypoint names; DXIL
+        // already contains the selected entry and the native D3D12
+        // pipeline contract requires its default "main".
+        if(histogram_shader.format==compute::ShaderFormat::Spirv) {
+            histogram_shader.entry_point="histogram";
+            mark_shader.entry_point="mark";
+            publish_shader.entry_point="publish";
+        }
         try {
             descriptor.shader=std::move(histogram_shader);
             histogram_=context.create_compute_pipeline(descriptor);
