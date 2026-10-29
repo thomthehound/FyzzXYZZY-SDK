@@ -419,8 +419,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
   target_link_libraries(fyzzxyzzy_native_gpu_world PUBLIC
-    FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
-    fyzzxyzzy_source_gpu_primitives fyzzxyzzy_physx_foundation_lifetime)
+    FyzzXYZZY::Core fyzzxyzzy_source_gpu_primitives
+    fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_physx_foundation_lifetime)
   set_target_properties(fyzzxyzzy_native_gpu_world
     PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
