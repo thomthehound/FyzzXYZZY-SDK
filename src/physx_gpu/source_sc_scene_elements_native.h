@@ -58,15 +58,47 @@ public:
         }
     }
 
+    // PxAggregate::removeActor removes the ScShapeSim from its aggregate
+    // and re-admits the actor to the scene. The previous ElementSim handle
+    // remains retired through GPU fetch; its old reports retain actor data.
+    // The surviving actor and Sc rigid ID do not change.
+    void remove_actor_from_aggregate(
+        physx::Bp::AggregateHandle id,BodyId actor) {
+        (void)aggregate_root(id);
+        auto& element=live(actor);
+        if(element.aggregate_id!=id)
+            throw std::invalid_argument(
+                "Source Sc actor does not belong to the aggregate");
+        const auto old_handle=handles_[actor];
+        const auto new_handle=elements_.createID();
+        try {
+            if(element.in_aabb) {
+                const auto group=physx::Bp::getFilterGroup(
+                    element.motion==native::GpuBroadphaseBox::Motion::Static,
+                    element.rigid_id,
+                    element.motion==native::GpuBroadphaseBox::Motion::Kinematic);
+                aabb_.admit(new_handle,actor,element.contact_distance,
+                            group,&element);
+            }
+        }catch(...) {
+            elements_.releaseID(new_handle);
+            throw;
+        }
+        if(element.in_aabb)
+            aabb_.remove_aggregate_member(old_handle);
+        elements_.releaseID(old_handle);
+        handles_[actor]=new_handle;
+        element.aggregate_id=PX_INVALID_U32;
+    }
+
+    // PxAggregate::release detaches the actors into its Sc scene rather
+    // than destroying their rigid bodies. Root retirement follows the
+    // original AABB member-removal and ID-recycling barriers.
     void destroy_aggregate(physx::Bp::AggregateHandle id) {
         auto& root=aggregate_root(id);
-        // Disabling simulation removes AABB membership but does not
-        // remove the Sc::ElementSim. Such members still own this root
-        // and must not acquire a different aggregate on ID recycling.
         for(const auto& member:records_)
             if(member.live && member.aggregate_id==id)
-                throw std::logic_error(
-                    "Cannot destroy original Sc aggregate with attached members");
+                remove_actor_from_aggregate(id,member.actor);
         aabb_.destroy_aggregate(id);
         elements_.releaseID(root.root);
         root.live=false;
