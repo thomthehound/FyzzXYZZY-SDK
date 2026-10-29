@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_scene_frame_native.h"
+#include "physx_gpu/source_aggregate_post_sap_member_history_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
@@ -9,25 +10,6 @@
 #include <utility>
 
 namespace fyzz::physx_gpu {
-void append_source_sap_post_aggregate_member_history_native(
-    const physx::PxgBroadPhaseDesc& descriptor,
-    PxgAabbSourceMembersNative& aabb,
-    const SourceAggregateMemberHistoryNativeStage& stage,
-    SourceSapDmaNative& stream,
-    const CudaDeviceAddressMap& addresses) {
-    const auto gpu_address=[](auto pointer) {
-        return static_cast<CudaDeviceAddressMap::Address>(
-            reinterpret_cast<std::uintptr_t>(pointer));
-    };
-    // SAP swaps the PxgCudaBuffer owners while appending GPU commands.
-    // Its descriptor's new/old pointers still identify the exact buffers
-    // used by the current GPU update; owner member names may be reversed.
-    const auto buffers=aabb.aggregate_member_history_buffers(
-        gpu_address(descriptor.newIntegerBounds),
-        gpu_address(descriptor.oldIntegerBounds));
-    stage.append(stream,addresses,buffers);
-}
-
 void validate_source_sap_owned_aabb_aliases_native(
     PxgAabbSourceMembersNative& owner,
     const SourceSapAabbManagerPreUpdateNative& pre,
