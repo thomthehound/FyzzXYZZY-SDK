@@ -2476,13 +2476,7 @@ void Scene::remove_accurate_island_edge(EdgeIndex id) {
     auto& last_ref=constraint?island.last_constraint:island.last_contact;
     auto& count=constraint?island.constraint_count:island.contact_count;
     if(first==invalid_edge || !count)
-        throw std::logic_error(
-            "PhysX accurate island edge list underflow: edge="+
-            std::to_string(id)+" pair="+std::to_string(pair.a)+","+
-            std::to_string(pair.b)+" selected_node="+
-            std::to_string(node)+" owner="+std::to_string(owner)+
-            " first="+std::to_string(first)+
-            " count="+std::to_string(count));
+        throw std::logic_error("PhysX accurate island edge list underflow");
     step_checkpoint_.save_graph_ownership(*this);
     const EdgeIndex last=last_ref;
     const EdgeIndex before=island_edges_[id].island_prev;
