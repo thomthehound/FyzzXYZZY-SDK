@@ -23,18 +23,21 @@ namespace fyzz::physx_gpu {
 // into the single Sc stream for N1's existing contact-manager lifecycle.
 // Caller retains both output allocations across source updates; no second
 // SAP registry, GPU history or simulation clock is created here.
-inline void lower_source_sap_actor_reports_to_sc(
-    std::span<const physx::PxgBroadPhasePair> source_found,
-    std::span<const physx::PxgBroadPhasePair> source_lost,
+// Original PxgAABBManager::processFoundPairs/processLostPairs combine
+// source SAP actor reports and postBPStage2 aggregate member reports. The
+// existing Sc pair destination is their ONE publication path. No host
+// broadphase, second registry or extra frame state is introduced.
+inline void lower_source_sap_and_aggregate_reports_to_sc(
+    std::span<const physx::PxgBroadPhasePair> actor_found,
+    std::span<const physx::PxgBroadPhasePair> actor_lost,
+    std::span<const physx::PxgBroadPhasePair> aggregate_found,
+    std::span<const physx::PxgBroadPhasePair> aggregate_lost,
     std::span<const BodyId> volume_to_actor,
     std::vector<native::Pair>& found,
     std::vector<native::Pair>& lost) {
     if(&found==&lost)
-        throw std::invalid_argument("Source GPU SAP pair outputs alias");
+        throw std::invalid_argument("Source GPU Sc found/lost outputs alias");
 
-    // Verify BOTH result streams before modifying either consumer buffer.
-    // PxgBroadPhasePair::mVolA/B are sorted by volume handle, which need
-    // not preserve actor ID order across source volume recycling.
     const auto check=[&](std::span<const physx::PxgBroadPhasePair> pairs) {
         for(const auto& p:pairs) {
             if(p.mVolA>=p.mVolB ||
@@ -43,28 +46,51 @@ inline void lower_source_sap_actor_reports_to_sc(
                volume_to_actor[p.mVolB]==std::numeric_limits<BodyId>::max() ||
                volume_to_actor[p.mVolA]==volume_to_actor[p.mVolB])
                 throw std::out_of_range(
-                    "Original SAP result references an invalid source volume handle");
+                    "Original source GPU result references an invalid Sc volume handle");
         }
     };
-    check(source_found);
-    check(source_lost);
-    found.reserve(source_found.size());
-    lost.reserve(source_lost.size());
-    const auto lower=[&](std::span<const physx::PxgBroadPhasePair> source,
-                         std::vector<native::Pair>& target) {
-        target.clear();
-        for(const auto& p:source) {
-            const BodyId a=volume_to_actor[p.mVolA];
-            const BodyId b=volume_to_actor[p.mVolB];
-            target.push_back({std::min(a,b),std::max(a,b)});
-        }
-        // GPU report order is not necessarily actor order, but avoid an
-        // O(n log n) sort when the lowered Sc keys are already ordered.
-        if(!std::is_sorted(target.begin(),target.end()))
-            std::sort(target.begin(),target.end());
-        target.erase(std::unique(target.begin(),target.end()),target.end());
+    // Verify all four original report streams before changing either Sc
+    // destination. Aggregate lost pairs may reference retired members,
+    // whose original source actor identities survive until this fetch.
+    check(actor_found);
+    check(actor_lost);
+    check(aggregate_found);
+    check(aggregate_lost);
+    found.reserve(actor_found.size()+aggregate_found.size());
+    lost.reserve(actor_lost.size()+aggregate_lost.size());
+    const auto lower=[&](std::span<const physx::PxgBroadPhasePair> actors,
+                         std::span<const physx::PxgBroadPhasePair> aggregates,
+                         std::vector<native::Pair>& destination) {
+        destination.clear();
+        const auto append=[&](std::span<const physx::PxgBroadPhasePair> pairs) {
+            for(const auto& p:pairs) {
+                const BodyId a=volume_to_actor[p.mVolA];
+                const BodyId b=volume_to_actor[p.mVolB];
+                destination.push_back({std::min(a,b),std::max(a,b)});
+            }
+        };
+        append(actors);
+        append(aggregates);
+        // Sorting is already required by the original report
+        // classification. Duplicate shape and root-member reports for
+        // a single Sc actor pair must not cause a second contact manager.
+        if(!std::is_sorted(destination.begin(),destination.end()))
+            std::sort(destination.begin(),destination.end());
+        destination.erase(
+            std::unique(destination.begin(),destination.end()),
+            destination.end());
     };
-    lower(source_found,found);
-    lower(source_lost,lost);
+    lower(actor_found,aggregate_found,found);
+    lower(actor_lost,aggregate_lost,lost);
+}
+
+inline void lower_source_sap_actor_reports_to_sc(
+    std::span<const physx::PxgBroadPhasePair> source_found,
+    std::span<const physx::PxgBroadPhasePair> source_lost,
+    std::span<const BodyId> volume_to_actor,
+    std::vector<native::Pair>& found,
+    std::vector<native::Pair>& lost) {
+    lower_source_sap_and_aggregate_reports_to_sc(
+        source_found,source_lost,{},{},volume_to_actor,found,lost);
 }
 } // namespace fyzz::physx_gpu
