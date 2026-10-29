@@ -81,6 +81,20 @@ void run(Backend backend) {
             sc.admit(2u,fyzz::native::GpuBroadphaseBox::Motion::Static,0.0f);
             const auto member0=sc.handle(0u),member1=sc.handle(1u);
             const auto ordinary=sc.handle(2u);
+            const auto root2=sc.create_aggregate(
+                1u,physx::Bp::getFilterGroup_Statics(),0u);
+            const auto second_root_handle=sc.aggregate_root_handle(root2);
+            const auto group0=owner.scene_bounds().groups[root_handle];
+            const auto group1=owner.scene_bounds().groups[second_root_handle];
+            require(group0!=group1 &&
+                    group0!=physx::Bp::getFilterGroup_Statics() &&
+                    group1!=physx::Bp::getFilterGroup_Statics() &&
+                    (group0&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::AGGREGATE &&
+                    (group1&BP_FILTERING_TYPE_MASK)==
+                        physx::Bp::FilterType::AGGREGATE,
+                    "Original source Sc aggregate roots reused static or duplicate BP groups");
+            sc.destroy_aggregate(root2);
             require(member0!=member1 && member0!=root_handle &&
                     member1!=root_handle && ordinary!=root_handle &&
                     owner.source_aggregated().boundedTest(member0) &&
