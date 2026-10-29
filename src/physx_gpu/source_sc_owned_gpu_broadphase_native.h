@@ -29,6 +29,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <utility>
@@ -81,9 +82,8 @@ public:
           device_callback_(device_roots_,&stream_),
           pinned_roots_(context_,addresses_,stream_),
           mapped_roots_(context_,addresses_,stream_),
-          manager_(std::make_unique<physx::PxgHeapMemoryAllocatorManager>(
-              1u<<20u,device_callback_,pinned_roots_,mapped_roots_,
-              abort_source,&aborted_)),
+          manager_(std::in_place,1u<<20u,device_callback_,
+                   pinned_roots_,mapped_roots_,abort_source,&aborted_),
           allocators_(physx::PxgCreateAllocatorDesc(*manager_)),
           sap_(std::make_unique<PxgSapSourceMembersNative>(
               allocators_,max_pairs,max_aggregate_pairs)),
@@ -181,7 +181,7 @@ private:
     SourcePhysxDeviceRootCallback device_callback_;
     SourcePhysxMappedReportRoots pinned_roots_,mapped_roots_;
     bool aborted_=false;
-    std::unique_ptr<physx::PxgHeapMemoryAllocatorManager> manager_;
+    std::optional<physx::PxgHeapMemoryAllocatorManager> manager_;
     physx::PxgAllocatorDesc allocators_;
     std::unique_ptr<PxgSapSourceMembersNative> sap_;
     std::unique_ptr<PxgAabbSourceMembersNative> aabb_;
