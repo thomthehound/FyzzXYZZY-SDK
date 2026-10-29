@@ -97,6 +97,20 @@ bool append_source_sap_admitted_update_native(
         throw std::invalid_argument(
             "Source SAP GPU descriptor or integer-bounds owner disagrees with gpuDMAUp");
 
+    // With no previous, created or removed volumes there are no SAP
+    // endpoints to sort or histogram. The source gpuDMAUp has already
+    // uploaded a freshly zeroed PxgBroadPhaseDesc (including found/lost
+    // counters), and fetch must still publish that descriptor and rotate
+    // the original histories. Do not manufacture endpoint allocations or
+    // launch 32x256 kernels against a zero-length view.
+    if(!descriptor.numPreviousHandles &&
+       !descriptor.numCreatedHandles &&
+       !descriptor.numRemovedHandles) {
+        physx::PxgCudaBuffer::swapBuffer(
+            new_integer_bounds,old_integer_bounds);
+        return true;
+    }
+
     auto& pending=stream.update_scratch();
     SourceSapUpdateHeadNative head{
         frame.translation,frame.removed,frame.updated,
