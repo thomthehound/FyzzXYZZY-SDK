@@ -69,6 +69,7 @@ public:
         if(!count)return;
         if(!src.bounds_capacity || !src.new_integer_bounds ||
            !src.old_integer_bounds ||
+           src.new_integer_bounds==src.old_integer_bounds ||
            (src.num_added && !src.added_members) ||
            (src.num_removed && !src.removed_members))
             throw std::invalid_argument(
