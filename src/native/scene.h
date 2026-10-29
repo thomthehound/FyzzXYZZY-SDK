@@ -1624,6 +1624,10 @@ private:
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
     std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     bool sap_pair_registry_dirty_=true;
+    // Sc's existing BP pair membership retains GPU-reported overlaps
+    // that have no current contact manager. Explicit Sc refiltering
+    // consumes it only on authored actor/shape or motion-class edits.
+    bool gpu_pair_refilter_dirty_=false;
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
