@@ -124,7 +124,7 @@ public:
             5u,compute::BufferAccess::Write,9u);
         const auto overflow=view(src.overflow_reports,12u,
             6u,compute::BufferAccess::Write,10u);
-        const std::array<compute::BufferView,7> bindings{
+        const std::array<compute::BufferBinding,7> bindings{
             descriptor,root_pairs,pair_slots,free_indices,
             free_list,pair_count,overflow};
         const auto append_one=[&](compute::PipelineId pipeline,
