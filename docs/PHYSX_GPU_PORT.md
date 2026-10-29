@@ -19,6 +19,35 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 source aggregate GPU membership DMA
+
+The original `PxgAABBManager` GPU DMA path now uses
+`PxgAabbSourceMembersNative::queue_aggregate_gpu_dma_up` to publish
+dirty `PxgAggregate` slots and their authoritative
+`updateBoundIndices` members through the **same** PhysX GPU heap
+and `SourceSapDmaNative` stream. Logical per-aggregate device member
+pointers are lowered into stable reserved slices of one source-owned
+`PxgCudaBuffer` so Vulkan/D3D12 can bind the original membership
+without a second host registry. The source's member allocation is
+retained on deferred ID reuse, and grown only when the new aggregate
+capacity exceeds its prior reservation.
+
+Each source dirty index sends one 16-byte native descriptor and only
+its live members. The two device buffers retain existing bytes across
+capacity growth using `PxgCudaBuffer::allocateCopyOldDataAsync`.
+No frame-time full-member repack, extra command queue, CPU overlap
+test or second pair lifecycle is introduced. The native GPU AABB
+regression downloads the real PhysX-heap source descriptors and
+member slices to verify admission, selective upload size,
+swap-with-last updates and destroyed-slot invalidation.
+
+The previously translated union-bounds and changed-bitmap kernels
+can consume these owner-produced aggregate descriptors via
+`aggregate_gpu_buffers`, using the ordinary SAP GPU bounds,
+contact distances and AABB changed bitmap. Executing these stages
+within full Sc aggregate preBroadPhase/report processing is the next
+gate, not something this DMA admission alone claims to support.
+
 ## N2 source AABB aggregate membership
 
 `PxgAabbSourceMembersNative` now owns the original PhysX
