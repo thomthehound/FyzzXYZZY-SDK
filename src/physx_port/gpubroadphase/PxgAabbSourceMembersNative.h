@@ -975,21 +975,49 @@ public:
     // Every still-live source volume becomes a fresh created handle.
     // The next Sc geometry publication refreshes all authored bounds.
     void reset_for_source_rebuild() {
-        if(num_active_aggregates_)
-            throw std::logic_error(
-                "Source aggregate history reconstruction requires aggregate GPU reports");
+        // A rejected Sc/Dy frame invalidates all GPU comparison history,
+        // not the authoritative Sc VolumeData or PxgAggregate membership.
+        // Re-enter the original create path for live single volumes and
+        // nonempty aggregate roots; members are GPU geometry, not SAP boxes.
         added_.clear();
         removed_.clear();
         changed_.clear();
         aggregated_.clear();
+        added_aggregate_members_.resetOrClear();
+        removed_aggregate_members_.resetOrClear();
+        dirty_aggregates_.clear();
+        dirty_aggregate_indices_.resetOrClear();
+        aggregate_projection_current_slot_=0u;
+        aggregate_pair_storage_initialized_=false;
+
         for(physx::PxU32 handle=0;handle<groups_.size();++handle) {
-            if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID) {
-                if(!added_.growAndSet(handle))throw std::bad_alloc();
-            } else {
-                // Retired handles have no SAP history after reset.
+            if(groups_[handle]==physx::Bp::FilterGroup::eINVALID) {
+                // Lost reports from the abandoned GPU history will not
+                // be fetched. Retired handles release their actor mapping.
                 volume_to_actor_[handle]=
                     std::numeric_limits<BodyId>::max();
+                volumes_[handle].reset();
+            } else if(volumes_[handle].isAggregated()) {
+                if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
+                added_aggregate_members_.pushBack(handle);
+            } else if(!volumes_[handle].isAggregate()) {
+                if(!added_.growAndSet(handle))throw std::bad_alloc();
             }
+        }
+        for(physx::PxU32 id=0;id<aggregate_gpu_slot_count_;++id) {
+            if(id>=aggregates_.size() ||
+               aggregates_[id].mIndex==PX_INVALID_U32)continue;
+            auto& aggregate=aggregates_[id];
+            // Fresh GPU projections and self history begin at size zero;
+            // do not read stale member bounds or pair slots from the
+            // rejected frame's previously published projection buffers.
+            aggregate.prevSize=0u;
+            aggregate.isNew=true;
+            self_state_uploaded_[id]=false;
+            mark_aggregate_dirty(id);
+            if(aggregate.size &&
+               !added_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
         }
         persistent_state_changed_=true;
         gpu_state_changed_=false;
