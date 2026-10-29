@@ -214,7 +214,14 @@ void verify(Context& context,ShaderBinary shader) {
         encoded_bounds[members[70u]*6u]=94u;
         encoded_bounds[members[70u]*6u+3u]=109u;
         context.upload(root,boundsOffset,encoded_bounds.data(),boundsBytes);
+        // Source PxgAggregate flips pointers between two independently
+        // allocated slot views; it never shifts a previous-slot offset.
         source.current_slot=1u;
+        source.sorted_projections+=kMembers*8u;
+        source.sorted_handles+=kMembers*8u;
+        source.sap_boxes+=kMembers*8u;
+        source.start_masks+=kMembers*4u;
+        source.bound_index_history+=kMembers*4u;
         stage.append(stream,addresses,source);
         stream.wait_at_fetch();
         download();
