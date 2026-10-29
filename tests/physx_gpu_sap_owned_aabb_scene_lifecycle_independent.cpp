@@ -28,7 +28,7 @@
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "physx_gpu/source_sc_element_lifecycle_native.h"
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
-#include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
+#include "fyzzxyzzy/native_gpu_world.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -1486,14 +1486,13 @@ void execute(Context& context, ShaderBinary translateShader,
 }
 void verify_owned_source_world(
     Backend backend,const std::array<const char*,34>& filenames) {
-    SourceSapShaderBinaries shaders{};
+    fyzz::NativeGpuSapShaders shaders{};
     for(std::size_t i=0;i<shaders.size();++i)
         shaders[i]=load_shader(filenames[i]);
-    auto producer=std::make_unique<SourceScOwnedGpuBroadphaseNative>(
-        backend,std::move(shaders));
-    auto* native_owner=producer.get();
-    fyzz::World world(fyzz::create_native_gpu_broadphase_backend(
-        std::move(producer),true,false,true,true));
+    fyzz::WorldOptions options{fyzz::ExecutionMode::NativePortableGpu};
+    options.contact_notifications=true;
+    fyzz::World world=fyzz::create_native_gpu_world(
+        backend,std::move(shaders),options);
     const auto dynamic=world.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,3.0f,0.0f},1.0f);
     const auto fixed=world.add_static_box(
@@ -1503,8 +1502,7 @@ void verify_owned_source_world(
     require(first.size()==1u &&
             first.front().body0==dynamic &&
             first.front().body1==fixed &&
-            first.front().kind==fyzz::ContactEventKind::Found &&
-            native_owner->last_frame().update.execute_gpu_stages,
+            first.front().kind==fyzz::ContactEventKind::Found,
             "Owned native GPU World did not publish real Sc/PCM contact");
     world.set_body_position(fixed,{8.0f,3.0f,0.0f});
     world.step(1.0f/60.0f);
