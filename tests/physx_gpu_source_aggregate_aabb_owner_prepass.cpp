@@ -5,6 +5,7 @@
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
+#include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "extensions/PxDefaultAllocator.h"
@@ -162,7 +163,17 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 stream.queue_uploads(integer_uploads);
                 const auto before=stream.submission_stats().command_batches;
                 pre_update_source_sap_aabb_manager_native(update,manager,stream);
-                history_stage.append(stream,addresses,source_history);
+                // The post-SAP stage consumes descriptor pointers, not the
+                // swap-sensitive C++ names of the source GPU buffers.
+                auto& bp=sap.descriptor();
+                bp.newIntegerBounds=reinterpret_cast<
+                    decltype(bp.newIntegerBounds)>(
+                        static_cast<std::uintptr_t>(new_integer_bounds.getDevicePtr()));
+                bp.oldIntegerBounds=reinterpret_cast<
+                    decltype(bp.oldIntegerBounds)>(
+                        static_cast<std::uintptr_t>(old_integer_bounds.getDevicePtr()));
+                append_source_sap_post_aggregate_member_history_native(
+                    bp,aabb,history_stage,stream,addresses);
                 require(stream.commands().size()==
                             2u+std::uint32_t(added_members.size()!=0u ||
                                              removed_members.size()!=0u),
