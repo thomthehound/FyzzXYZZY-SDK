@@ -180,6 +180,17 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             }
             require(rejected_root_as_actor,
                     "Original aggregate Sc admitted root as standalone actor geometry");
+            auto mismatched_motion=sc_boxes;
+            mismatched_motion[0].motion=
+                fyzz::native::GpuBroadphaseBox::Motion::Static;
+            bool rejected_motion=false;
+            try {
+                (void)aabb.prepare(mismatched_motion,sc_members,filter);
+            }catch(const std::invalid_argument&) {
+                rejected_motion=true;
+            }
+            require(rejected_motion,
+                    "Original Sc aggregate changed its source BP filter group from geometry input");
 
             std::uint32_t projection_frame=0u;
             const auto run_source_prepass=[&](
