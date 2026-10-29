@@ -62,13 +62,18 @@ public:
           aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           added_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           removed_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          projection_keys_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          projection_handles_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_keys_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_keys_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_handles_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_handles_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_scratch_keys_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           projection_scratch_handles_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          projection_sap_boxes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          projection_start_masks_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          projection_bound_history_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_sap_boxes_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_sap_boxes_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_start_masks_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_start_masks_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_bound_history_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_bound_history_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
@@ -414,39 +419,51 @@ public:
             removed_aggregate_members_.size()};
     }
 
-    // Source per-aggregate double-buffered endpoint/membership histories.
-    // Reserved member slices stay stable for the lifetime of the aggregate;
-    // original PxgCudaBuffer growth preserves both slots on the same stream.
+    // The two original PxgAggregate history slots are separate PhysX GPU
+    // allocations. Each grows with the source reserved-member domain and
+    // retains its own prefix; growing one must never relocate the other.
     void queue_aggregate_projection_gpu_storage(SourceSapDmaNative& stream) {
         const auto members=std::uint64_t(aggregate_gpu_member_capacity_);
         if(!members)return;
-        if(members>std::numeric_limits<physx::PxU32>::max()/16u)
-            throw std::out_of_range("Original aggregate projection GPU buffers exceed byte range");
-        projection_keys_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
-        projection_handles_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
-        projection_scratch_keys_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
-        projection_scratch_handles_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
-        projection_sap_boxes_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
-        // Native-lowered mask slices reserve one word per maximum member,
-        // preserving nonoverlap for aggregates of every admitted capacity.
-        projection_start_masks_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
-        projection_bound_history_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        if(members>std::numeric_limits<physx::PxU32>::max()/8u)
+            throw std::out_of_range(
+                "Original aggregate projection GPU buffers exceed byte range");
+        for(auto* buffer:{
+            &projection_keys_0_,&projection_keys_1_,
+            &projection_handles_0_,&projection_handles_1_,
+            &projection_scratch_keys_device_,
+            &projection_scratch_handles_device_,
+            &projection_sap_boxes_0_,&projection_sap_boxes_1_})
+            buffer->allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        // A mask slot reserves one word per maximum member to preserve
+        // nonoverlapping per-aggregate ranges across every capacity.
+        for(auto* buffer:{
+            &projection_start_masks_0_,&projection_start_masks_1_,
+            &projection_bound_history_0_,&projection_bound_history_1_})
+            buffer->allocateCopyOldDataAsync(members*4u,stream,PX_FL);
     }
+
     SourceAggregateProjectionNativeBuffers aggregate_projection_gpu_buffers(
-        CudaDeviceAddressMap::Address current_integer_bounds) const noexcept {
+        CudaDeviceAddressMap::Address current_integer_bounds,
+        bool previous=false) const noexcept {
+        const auto slot=aggregate_projection_current_slot_^physx::PxU32(previous);
+        const auto& keys=slot?projection_keys_1_:projection_keys_0_;
+        const auto& handles=slot?projection_handles_1_:projection_handles_0_;
+        const auto& sap=slot?projection_sap_boxes_1_:projection_sap_boxes_0_;
+        const auto& masks=slot?projection_start_masks_1_:projection_start_masks_0_;
+        const auto& history=slot?projection_bound_history_1_:projection_bound_history_0_;
         return {current_integer_bounds,
             aggregate_slots_device_.getDevicePtr(),
             aggregate_members_device_.getDevicePtr(),
-            projection_keys_device_.getDevicePtr(),
-            projection_handles_device_.getDevicePtr(),
+            keys.getDevicePtr(),
+            handles.getDevicePtr(),
             projection_scratch_keys_device_.getDevicePtr(),
             projection_scratch_handles_device_.getDevicePtr(),
-            projection_sap_boxes_device_.getDevicePtr(),
-            projection_start_masks_device_.getDevicePtr(),
-            projection_bound_history_device_.getDevicePtr(),
+            sap.getDevicePtr(),
+            masks.getDevicePtr(),
+            history.getDevicePtr(),
             bounds_.size(),aggregate_gpu_slot_count_,
-            aggregate_gpu_member_capacity_,aggregate_gpu_slot_count_,
-            aggregate_projection_current_slot_};
+            aggregate_gpu_member_capacity_,aggregate_gpu_slot_count_,slot};
     }
 
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
@@ -657,10 +674,12 @@ private:
     physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
     physx::PxgCudaBuffer
         added_aggregate_members_device_,removed_aggregate_members_device_;
-    physx::PxgCudaBuffer projection_keys_device_,projection_handles_device_;
+    physx::PxgCudaBuffer projection_keys_0_,projection_keys_1_;
+    physx::PxgCudaBuffer projection_handles_0_,projection_handles_1_;
     physx::PxgCudaBuffer projection_scratch_keys_device_,projection_scratch_handles_device_;
-    physx::PxgCudaBuffer projection_sap_boxes_device_,projection_start_masks_device_;
-    physx::PxgCudaBuffer projection_bound_history_device_;
+    physx::PxgCudaBuffer projection_sap_boxes_0_,projection_sap_boxes_1_;
+    physx::PxgCudaBuffer projection_start_masks_0_,projection_start_masks_1_;
+    physx::PxgCudaBuffer projection_bound_history_0_,projection_bound_history_1_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
