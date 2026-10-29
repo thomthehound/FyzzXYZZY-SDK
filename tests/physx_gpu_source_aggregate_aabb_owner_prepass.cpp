@@ -84,7 +84,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             1u<<20u,device,pinned,mapped,abort,&aborted);
         auto allocators=physx::PxgCreateAllocatorDesc(heap);
         {
-            PxgAabbSourceMembersNative aabb(allocators,8u,16u);
+            PxgAabbSourceMembersNative aabb(allocators,8u,16u,32u);
             PxgSapSourceMembersNative sap(allocators,32u,16u);
             SourceAggregateGpuNativeStage stage(
                 context,std::move(bounds_shader),std::move(mark_shader));
@@ -191,6 +191,23 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         static_cast<std::uintptr_t>(old_integer_bounds.getDevicePtr()));
                 append_source_sap_post_aggregate_member_history_native(
                     bp,aabb,history_stage,stream,addresses);
+                const auto retirement_buffers=
+                    aabb.aggregate_pair_retirement_gpu_buffers();
+                require(retirement_buffers.aggregate_pair_capacity==32u &&
+                        retirement_buffers.aggregate_pairs!=0u &&
+                        retirement_buffers.remove_bitmap!=0u &&
+                        retirement_buffers.remove_histogram!=0u &&
+                        retirement_buffers.removed_count!=0u,
+                        "Original AABB GPU owner lacks persistent aggregate pair retirement storage");
+                (void)addresses.resolve(
+                    retirement_buffers.remove_bitmap,
+                    32u*sizeof(physx::PxU32));
+                (void)addresses.resolve(
+                    retirement_buffers.remove_histogram,
+                    sizeof(physx::PxU32));
+                (void)addresses.resolve(
+                    retirement_buffers.removed_count,
+                    sizeof(physx::PxU32));
                 const auto projection_gpu=aabb.aggregate_projection_gpu_buffers(
                     new_integer_bounds.getDevicePtr());
                 projection_stage.append(stream,addresses,projection_gpu);

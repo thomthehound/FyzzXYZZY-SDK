@@ -11,6 +11,7 @@
 #include "physx_gpu/source_aggregate_self_collision_native.h"
 #include "physx_gpu/source_aggregate_report_copy_native.h"
 #include "physx_gpu/source_aggregate_pair_admission_native.h"
+#include "physx_gpu/source_aggregate_pair_retirement_native.h"
 #include "physx_gpu/source_sap_mapped_report_view.h"
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 #include "physx_port/common/src/CmPinnableArray.h"
@@ -79,6 +80,9 @@ public:
           aggregate_pair_free_list_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_pair_count_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_pair_overflow_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_pair_remove_bitmap_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_pair_remove_histogram_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_pair_removed_count_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_found_mapped_(allocators.hostMappedAlloc,
               physx::PxsHeapStats::eBROADPHASE,
               physx::Cm::PinnableAllocatorFallback::eDISABLED),
@@ -625,6 +629,11 @@ public:
         aggregate_pair_free_list_device_.allocate(8u,PX_FL);
         aggregate_pair_count_device_.allocate(4u,PX_FL);
         aggregate_pair_overflow_device_.allocate(12u,PX_FL);
+        aggregate_pair_remove_bitmap_device_.allocateCopyOldDataAsync(
+            count*4u,stream,PX_FL);
+        aggregate_pair_remove_histogram_device_.allocateCopyOldDataAsync(
+            ((count+255u)/256u)*4u,stream,PX_FL);
+        aggregate_pair_removed_count_device_.allocate(4u,PX_FL);
         if(!aggregate_pair_storage_initialized_) {
             auto& uploads=stream.upload_scratch();
             uploads.push_back({aggregate_pair_free_list_device_.getDevicePtr(),
@@ -648,6 +657,16 @@ public:
             aggregate_pair_count_device_.getDevicePtr(),
             aggregate_pair_overflow_device_.getDevicePtr(),
             found_root_report_capacity,aggregate_pair_capacity_};
+    }
+    SourceAggregatePairRetirementNativeBuffers aggregate_pair_retirement_gpu_buffers() const noexcept {
+        return {aggregate_pair_slots_device_.getDevicePtr(),
+            aggregate_pair_remove_bitmap_device_.getDevicePtr(),
+            aggregate_pair_remove_histogram_device_.getDevicePtr(),
+            aggregate_pair_free_indices_device_.getDevicePtr(),
+            aggregate_pair_free_list_device_.getDevicePtr(),
+            aggregate_pair_count_device_.getDevicePtr(),
+            aggregate_pair_removed_count_device_.getDevicePtr(),
+            aggregate_pair_capacity_};
     }
     physx::PxU32 aggregate_pair_capacity() const noexcept {
         return aggregate_pair_capacity_;
@@ -879,6 +898,9 @@ private:
     physx::PxgCudaBuffer aggregate_pair_free_list_device_;
     physx::PxgCudaBuffer aggregate_pair_count_device_;
     physx::PxgCudaBuffer aggregate_pair_overflow_device_;
+    physx::PxgCudaBuffer aggregate_pair_remove_bitmap_device_;
+    physx::PxgCudaBuffer aggregate_pair_remove_histogram_device_;
+    physx::PxgCudaBuffer aggregate_pair_removed_count_device_;
     physx::Cm::PinnableArray<physx::PxgBroadPhasePair>
         aggregate_found_mapped_,aggregate_lost_mapped_;
     physx::PxgCudaBuffer projection_keys_0_,projection_keys_1_;
