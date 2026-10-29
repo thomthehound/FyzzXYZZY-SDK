@@ -59,9 +59,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         validate_source_sap_owned_aabb_aliases_native(
             *members.aabb_owner,members.aabb_manager,members.volume_to_actor);
     if(members.aabb_manager.has_aggregates &&
-       (!members.aabb_owner || !members.aggregate_member_history))
+       (!members.aabb_owner || !members.aggregate_member_history ||
+        !members.aggregate_projection))
         throw std::logic_error(
-            "Original aggregate post-SAP history requires source AABB owner and GPU stage");
+            "Original aggregate post-SAP requires AABB owner and GPU history stages");
 
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
@@ -99,10 +100,18 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
     // aggregate members must invalidate the descriptor's integer AABB
     // histories before projection/self/pair collision stages consume them.
-    if(members.aabb_manager.has_aggregates)
+    if(members.aabb_manager.has_aggregates) {
         append_source_sap_post_aggregate_member_history_native(
             dma.broadphase_descriptor,*members.aabb_owner,
             *members.aggregate_member_history,stream,addresses);
+        const auto current_integer_address=
+            static_cast<CudaDeviceAddressMap::Address>(
+                reinterpret_cast<std::uintptr_t>(
+                    dma.broadphase_descriptor.newIntegerBounds));
+        const auto projections=members.aabb_owner->aggregate_projection_gpu_buffers(
+            current_integer_address);
+        members.aggregate_projection->append(stream,addresses,projections);
+    }
     stream.wait_at_fetch();
 
     // Complete both source bitmap D32 view validations before reporting
