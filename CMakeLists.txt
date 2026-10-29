@@ -1372,12 +1372,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
       FyzzXYZZY::NativeGpuWorld)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       fyzzxyzzy_source_gpu_aggregate_bounds_shader
-      fyzzxyzzy_source_gpu_aggregate_member_history_shader)
+      fyzzxyzzy_source_gpu_aggregate_member_history_shader
+      fyzzxyzzy_source_gpu_aggregate_projection_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}")
     add_executable(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       tests/physx_gpu_sap_owned_aabb_scene_lifecycle_independent.cpp)
     target_include_directories(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle PRIVATE
@@ -4231,12 +4233,14 @@ if(FYZZXYZZY_BUILD_D3D12)
       FyzzXYZZY::NativeGpuWorldD3D12)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       fyzzxyzzy_source_gpu_aggregate_bounds_d3d12_shader
-      fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader)
+      fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader
+      fyzzxyzzy_source_gpu_aggregate_projection_d3d12_shader)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       COMMAND fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
         "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}"
-        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}")
+        "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
+        "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
