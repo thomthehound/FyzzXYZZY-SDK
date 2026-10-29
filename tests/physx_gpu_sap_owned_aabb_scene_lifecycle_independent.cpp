@@ -1339,9 +1339,16 @@ void execute(Context& context, ShaderBinary translateShader,
                         scene.pairs().front()==fyzz::native::Pair{a,c},
                         "Source recycled Sc element did not produce GPU overlap");
 
-                // The GPU has the same geometric overlap across both
-                // motion-class changes; Sc re-filters the original Bp
-                // pair without a fabricated CPU SAP crossing.
+                // Both actors are ordinary dynamic bodies initially.
+                // The first kinematic switch leaves one dynamic actor,
+                // so the contact must survive; the second removes the
+                // last dynamic actor without any geometric separation.
+                scene.set_kinematic(a,true);
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.found_pairs().empty() &&
+                        scene.lost_pairs().empty(),
+                        "Source GPU refilter removed a still-eligible contact");
                 scene.set_kinematic(c,true);
                 scene.advance_collision(false);
                 require(scene.pairs().empty() &&
