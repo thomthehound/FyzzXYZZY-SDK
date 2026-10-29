@@ -185,7 +185,13 @@ void execute(Context& context, ShaderBinary translateShader,
                     aggregateAabb.source_aggregated().boundedTest(5u) &&
                     aggregateAabb.dirty_aggregate_indices().size()==1u,
                     "Source aggregate members received separate BP admission");
+            aggregateAabb.mark_aggregate_member_changed(4u,0.375f);
+            require(aggregateAabb.source_changed().boundedTest(4u) &&
+                    aggregateAabb.scene_bounds().contact_distances[4u]==0.375f,
+                    "Aggregate member edit bypassed original GPU changed map");
             aggregateAabb.remove_aggregate_member(4u);
+            require(!aggregateAabb.source_changed().boundedTest(4u),
+                    "Retired aggregate member leaked a changed handle bit");
             require(aggregateAabb.source_aggregate(root).size==1u &&
                     aggregateAabb.source_aggregate(root).updateBoundIndices[0]==5u &&
                     !aggregateAabb.source_aggregated().boundedTest(4u),
