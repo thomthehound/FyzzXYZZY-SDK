@@ -336,6 +336,14 @@ else()
 endif()
 set_target_properties(fyzzxyzzy_physx_foundation_lifetime
   PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(BUILD_TESTING AND FYZZXYZZY_ENABLE_PHYSX_SOURCE)
+  add_executable(fyzzxyzzy_physx_foundation_shared_lifetime
+    tests/physx_foundation_shared_lifetime.cpp)
+  target_link_libraries(fyzzxyzzy_physx_foundation_shared_lifetime PRIVATE
+    FyzzXYZZY::Core fyzzxyzzy_physx_foundation_lifetime)
+  add_test(NAME fyzzxyzzy_physx_foundation_shared_lifetime
+    COMMAND fyzzxyzzy_physx_foundation_shared_lifetime)
+endif()
 
 # Native compute resources and operations do not depend on Godot or PhysX.
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
