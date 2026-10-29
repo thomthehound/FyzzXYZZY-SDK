@@ -337,6 +337,19 @@ void Scene::destroy_aggregate(AggregateId id) {
         throw std::logic_error(
             "Original PhysX aggregate requires native GPU broadphase");
     gpu_broadphase_->destroy_aggregate(id);
+    gpu_pair_refilter_dirty_=true;
+    broadphase_endpoint_membership_dirty_=true;
+    dirty_=true;
+}
+void Scene::remove_actor_from_aggregate(AggregateId aggregate,BodyId id) {
+    (void)require(id);
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    gpu_broadphase_->remove_actor_from_aggregate(aggregate,id);
+    gpu_pair_refilter_dirty_=true;
+    broadphase_endpoint_membership_dirty_=true;
+    dirty_=true;
 }
 Scene::Actor& Scene::require(BodyId id) {
     if (id >= actors_.size() || !actors_[id].alive)
@@ -2047,8 +2060,18 @@ void Scene::update_gpu_pairs(bool force_update) {
     // including static/kinematic pairs ignored by Sc's contact filter.
     // The original SapPairManager coalesces created/removed handles and
     // compacts them only after the GPU report streams are validated.
-    for(const Pair pair:reports.found)sap_pairs_.add(pair);
-    for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+    // An Sc actor reinserted from an aggregate has a new ElementSim
+    // handle. Its old aggregate reports may retire the same actor pair
+    // that its new standalone SAP handle reports as found. When source
+    // authoring requests refiltering, consume retirements before found
+    // admissions so the final Sc overlap retains its canonical identity.
+    if(gpu_pair_refilter_dirty_) {
+        for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+        for(const Pair pair:reports.found)sap_pairs_.add(pair);
+    } else {
+        for(const Pair pair:reports.found)sap_pairs_.add(pair);
+        for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+    }
 
     // GPU volume removal emits no geometric crossing/lost pair. Retire
     // the BP membership here after an explicit Sc actor/shape edit,
@@ -9394,6 +9417,9 @@ public:
     }
     void destroy_aggregate(AggregateId id) override {
         scene_.destroy_aggregate(id);
+    }
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor) override {
+        scene_.remove_actor_from_aggregate(id,actor);
     }
     BodyId add_static_box_to_aggregate(
         AggregateId aggregate,Vec3 h,Vec3 p) override {
