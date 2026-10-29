@@ -99,6 +99,9 @@ public:
     virtual void destroy_aggregate(AggregateId) {
         throw std::logic_error("Source GPU broadphase has no aggregate stages");
     }
+    virtual void remove_actor_from_aggregate(AggregateId,BodyId) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
     virtual void admit_aggregate_member(
         AggregateId,BodyId,GpuBroadphaseBox::Motion,float) {
         throw std::logic_error("Source GPU broadphase has no aggregate stages");
@@ -256,6 +259,7 @@ public:
         std::optional<AggregateId> aggregate=std::nullopt);
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor);
     void set_position(BodyId id, Vec3 position);
     void set_pose(BodyId id, Vec3 position, Quat orientation);
     void set_velocity(BodyId id, Vec3 velocity);
