@@ -1548,6 +1548,68 @@ void verify_owned_source_world(
     world.step(1.0f/60.0f);
     require(world.contact_events().empty(),
             "Owned source World replayed GPU contact reports on quiet frame");
+
+    // Force several original PxgAABBManager and SAP storage growth steps.
+    // These boxes have no overlapping bounds, so a GPU-produced contact
+    // report here would be stale history or an invalid Sc element mapping.
+    for(unsigned i=0;i<136u;++i)
+        (void)world.add_static_box(
+            {0.25f,0.25f,0.25f},{100.0f+3.0f*i,3.0f,0.0f});
+    world.step(1.0f/60.0f);
+    require(world.contact_events().empty(),
+            "Original GPU SAP capacity growth replayed a retired contact");
+
+    const auto expect_event=[&](fyzz::ContactEventKind kind,
+                               fyzz::BodyId a,fyzz::BodyId b,
+                               const char* message) {
+        const auto events=world.contact_events();
+        require(events.size()==1u &&
+                events.front().kind==kind &&
+                events.front().body0==a && events.front().body1==b,
+                message);
+    };
+    world.set_body_position(fixed,{0.5f,3.0f,0.0f});
+    world.step(1.0f/60.0f);
+    expect_event(fyzz::ContactEventKind::Found,dynamic,fixed,
+                 "Original GPU SAP failed to reacquire pair after AABB growth");
+
+    // PxShapeFlag::eSIMULATION_SHAPE removes the shape from broadphase,
+    // without removing its Sc rigid actor. Re-admit the same identity and
+    // verify the next GPU fetch recreates the pair just once.
+    world.set_body_simulation_shape_enabled(fixed,false);
+    world.step(1.0f/60.0f);
+    expect_event(fyzz::ContactEventKind::Lost,dynamic,fixed,
+                 "GPU SAP failed to retire a disabled Sc simulation shape");
+    world.set_body_simulation_shape_enabled(fixed,true);
+    world.step(1.0f/60.0f);
+    expect_event(fyzz::ContactEventKind::Found,dynamic,fixed,
+                 "GPU SAP failed to re-admit the same Sc simulation shape");
+
+    world.remove_body(fixed);
+    world.step(1.0f/60.0f);
+    expect_event(fyzz::ContactEventKind::Lost,dynamic,fixed,
+                 "GPU SAP did not publish removed-shape lost contact");
+    world.step(1.0f/60.0f);
+    require(world.contact_events().empty(),
+            "GPU SAP replayed removed actor contact on quiet frame");
+
+    const auto successor=world.add_static_box(
+        {0.5f,0.5f,0.5f},{0.5f,3.0f,0.0f});
+    require(successor!=fixed,
+            "Native Scene reused a retired public actor identity");
+    world.step(1.0f/60.0f);
+    expect_event(fyzz::ContactEventKind::Found,dynamic,successor,
+                 "GPU SAP failed Sc pair reporting after actor removal/re-admission");
+
+    // An actor created and retired before preBroadPhase never reaches
+    // source endpoint history and cannot produce found/lost reports.
+    const auto cancelled=world.add_static_box(
+        {0.5f,0.5f,0.5f},{0.5f,3.0f,0.0f});
+    world.remove_body(cancelled);
+    world.step(1.0f/60.0f);
+    for(const auto& event:world.contact_events())
+        require(event.body0!=cancelled && event.body1!=cancelled,
+                "Cancelled Sc admission leaked into GPU SAP report history");
 }
 
 } // namespace
