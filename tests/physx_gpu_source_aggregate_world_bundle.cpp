@@ -59,6 +59,27 @@ void verify_aggregate_gpu_rollback(
             !contains(scene.pairs(),a,b) &&
             contains(scene.pairs(),b,outside),
             "Aggregate GPU rebuild did not restore native lost-pair history");
+
+    // An unchanged actor overlap is not a new Sc pair merely because
+    // the source AABB owner replaces an aggregate ElementSim handle.
+    // Subsequent removal from the released aggregate must retain the
+    // standalone GPU history, including a real later lost crossing.
+    scene.remove_actor_from_aggregate(aggregate,b);
+    scene.advance_collision();
+    require(contains(scene.pairs(),b,outside) &&
+            std::count(scene.pairs().begin(),scene.pairs().end(),
+                       fyzz::native::Pair{std::min(b,outside),
+                                          std::max(b,outside)})==1,
+            "Aggregate actor removal duplicated or retired a live Sc overlap");
+    scene.destroy_aggregate(aggregate);
+    scene.advance_collision();
+    require(contains(scene.pairs(),b,outside),
+            "Aggregate release lost a surviving standalone GPU overlap");
+    scene.set_position(b,{16.0f,1.0f,0.0f});
+    scene.advance_collision();
+    require(contains(scene.lost_pairs(),b,outside) &&
+            !contains(scene.pairs(),b,outside),
+            "Released actor failed source GPU lost-pair retirement");
 }
 
 void run(fyzz::compute::Backend backend,
