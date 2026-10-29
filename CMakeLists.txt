@@ -1547,12 +1547,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       PairRetireMark
       PairRetirePublish
       CopyReports)
-    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE SPIRV\\n")
+    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE SPIRV\n")
     foreach(_index RANGE 0 11)
       list(GET _aggregate_stage_names ${_index} _stage)
       list(GET FYZZXYZZY_NATIVE_GPU_AGGREGATE_SPV_BINARIES ${_index} _binary)
       get_filename_component(_filename "${_binary}" NAME)
-      string(APPEND _aggregate_manifest "${_stage} ${_filename}\\n")
+      string(APPEND _aggregate_manifest "${_stage} ${_filename}\n")
     endforeach()
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_spirv.manifest" CONTENT "${_aggregate_manifest}")
     add_custom_target(fyzzxyzzy_native_gpu_aggregate_shaders
@@ -4631,12 +4631,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       PairRetireMark
       PairRetirePublish
       CopyReports)
-    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE DXIL\\n")
+    set(_aggregate_manifest "FYZZXYZZY_SOURCE_AGGREGATE DXIL\n")
     foreach(_index RANGE 0 11)
       list(GET _aggregate_stage_names ${_index} _stage)
       list(GET FYZZXYZZY_NATIVE_GPU_AGGREGATE_DXIL_BINARIES ${_index} _binary)
       get_filename_component(_filename "${_binary}" NAME)
-      string(APPEND _aggregate_manifest "${_stage} ${_filename}\\n")
+      string(APPEND _aggregate_manifest "${_stage} ${_filename}\n")
     endforeach()
     file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest" CONTENT "${_aggregate_manifest}")
     add_custom_target(fyzzxyzzy_native_gpu_aggregate_shaders_d3d12
