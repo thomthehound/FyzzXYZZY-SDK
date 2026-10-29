@@ -58,11 +58,13 @@ public:
         descriptor.storage_buffer_views.assign(
             7u,compute::StorageBufferViewKind::RawReadWrite);
         descriptor.push_constant_bytes=48u;
-        // Both binaries are compiled from named HLSL entrypoints. Vulkan
-        // must request the same SPIR-V entrypoint, not ShaderBinary's
-        // default "main"; DXIL already contains its selected entry.
-        admit_shader.entry_point="admit";
-        publish_shader.entry_point="publish";
+        // Named HLSL entries survive as SPIR-V OpEntryPoint names.
+        // DXIL already contains its selected entry, and the native
+        // D3D12 backend requires ShaderBinary's default "main" ABI.
+        if(admit_shader.format==compute::ShaderFormat::Spirv) {
+            admit_shader.entry_point="admit";
+            publish_shader.entry_point="publish";
+        }
         descriptor.shader=std::move(admit_shader);
         try {
             admit_=context.create_compute_pipeline(descriptor);
