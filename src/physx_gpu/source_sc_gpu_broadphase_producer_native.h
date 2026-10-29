@@ -116,15 +116,19 @@ public:
         // AABB manager's changed bitmap and contact-distance array.
         if(actor>=sc_actor_element_ids_->size())
             throw std::out_of_range("Source Sc shape has no element handle");
+        // The owned Sc ElementSim survives removal from broadphase.
+        // It retains shape metadata even after AABB actor identity was
+        // retired by a previous completed fetch.
+        if(source_sc_elements_) {
+            source_sc_elements_->mark_changed(actor,contact_offset);
+            return;
+        }
         const auto handle=(*sc_actor_element_ids_)[actor];
         const auto owners=aabb_.volume_to_actor();
         if(handle>=owners.size() || owners[handle]!=actor)
             throw std::invalid_argument(
                 "Source Sc edited shape has no matching AABB volume");
-        if(source_sc_elements_)
-            source_sc_elements_->mark_changed(actor,contact_offset);
-        else
-            aabb_.mark_changed(handle,contact_offset);
+        aabb_.mark_changed(handle,contact_offset);
     }
 
     void set_shape_motion(BodyId actor,
