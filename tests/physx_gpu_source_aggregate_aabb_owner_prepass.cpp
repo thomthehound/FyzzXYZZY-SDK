@@ -312,6 +312,21 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     (bit&((1u<<4u)|(1u<<5u)))==0u,
                     "Original source aggregate GPU dirty bitmap did not promote root");
 
+            // Grow reserved aggregate membership between GPU frames.
+            // The next sort writes slot 1, and the former slot 0 must
+            // remain byte-identical after every source heap allocation grows.
+            const auto previous_slot=aabb.aggregate_projection_gpu_buffers(
+                new_integer_bounds.getDevicePtr(),true);
+            std::array<physx::PxU32,6> before_growth{};
+            {
+                const auto view=addresses.resolve(
+                    previous_slot.sorted_projections,sizeof(before_growth));
+                context.download(view.buffer,view.offset,
+                    before_growth.data(),sizeof(before_growth));
+            }
+            const auto empty_id=aabb.create_aggregate(
+                7u,physx::Bp::getFilterGroup_Statics(),elements.data(),8u);
+
             // The second source frame uses existing membership storage.
             // Bounds and contact-offset changes are still authored by
             // the same AABB owner, not a test-specific aggregate resolver.
@@ -322,6 +337,19 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             run_source_prepass({},{});
             verify_bounds(download_bounds(3u),
                           {-5.75f,-1.75f,-0.25f,1.25f,4.75f,3.75f});
+            const auto preserved_slot=aabb.aggregate_projection_gpu_buffers(
+                new_integer_bounds.getDevicePtr());
+            require(preserved_slot.member_capacity>previous_slot.member_capacity,
+                    "Aggregate reserved membership did not grow across GPU frames");
+            std::array<physx::PxU32,6> after_growth{};
+            {
+                const auto view=addresses.resolve(
+                    preserved_slot.sorted_projections,sizeof(after_growth));
+                context.download(view.buffer,view.offset,
+                    after_growth.data(),sizeof(after_growth));
+            }
+            require(after_growth==before_growth,
+                    "Original previous aggregate projection history was lost on GPU heap growth");
             require((download_changed()&(1u<<3u))!=0u,
                     "Aggregate root changed bit was lost on persistent frame");
 
@@ -347,6 +375,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     "Retired aggregate member leaked GPU changed bits");
             aabb.remove_aggregate_member(4u);
             aabb.destroy_aggregate(id);
+            aabb.destroy_aggregate(empty_id);
             run_source_prepass({},{4u});
             require((download_changed()&(1u<<3u))==0u,
                     "Retired source aggregate root was reintroduced by GPU bitmap");
