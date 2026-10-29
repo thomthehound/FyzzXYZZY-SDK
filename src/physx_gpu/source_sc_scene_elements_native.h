@@ -159,22 +159,28 @@ public:
            element.motion==native::GpuBroadphaseBox::Motion::Static)
             throw std::invalid_argument(
                 "Source Sc shape cannot switch between static and rigid");
-        if(element.in_aabb && element.aggregate_id!=PX_INVALID_U32)
-            throw std::logic_error(
-                "Source aggregate member BP group change requires original fetch retirement");
         if(element.in_aabb) {
-            // ScBodySim::switchTo{Kinematic,Dynamic} invokes
-            // ShapeSimBase::updateBPGroup: setBPGroup then
-            // reinsertBroadPhase for the SAME ElementSim ID.
-            // Source bitmap cancellation alone does not upload bounds,
-            // so mark that volume changed after the source reinsertion.
+            // ScBodySim::switchTo{Kinematic,Dynamic} re-inserts the
+            // original ElementSim with its new Bp group. Aggregated
+            // shapes re-enter the same PxgAggregate member list, never
+            // the standalone SAP endpoint list. A pending GPU member
+            // retirement is canceled for this same shape identity.
             const auto handle=handles_[actor];
             const auto group=physx::Bp::getFilterGroup(
                 false,element.rigid_id,
                 motion==native::GpuBroadphaseBox::Motion::Kinematic);
-            aabb_.remove(handle);
-            aabb_.admit(handle,actor,element.contact_distance,group,&element);
-            aabb_.mark_changed(handle,element.contact_distance);
+            if(element.aggregate_id!=PX_INVALID_U32) {
+                aabb_.remove_aggregate_member(handle);
+                aabb_.admit_aggregate_member(
+                    element.aggregate_id,handle,actor,
+                    element.contact_distance,group,&element);
+                aabb_.mark_aggregate_member_changed(
+                    handle,element.contact_distance);
+            }else {
+                aabb_.remove(handle);
+                aabb_.admit(handle,actor,element.contact_distance,group,&element);
+                aabb_.mark_changed(handle,element.contact_distance);
+            }
         }
         element.motion=motion;
     }
