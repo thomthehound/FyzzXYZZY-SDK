@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -63,6 +64,51 @@ struct Root {
         image.at(offset/4u+index)=value;
     }
 };
+void verify_source_aggregate_sc_union() {
+    // Different original volume handles may identify one Sc actor pair.
+    // Aggregate member reports and SAP reports must publish once through
+    // the SAME contact-manager destination with canonical actor IDs.
+    std::array<fyzz::BodyId,7> actors{
+        7u,3u,5u,11u,12u,17u,
+        std::numeric_limits<fyzz::BodyId>::max()};
+    const std::array<Pair,1> sap_found{{{0u,1u}}};
+    const std::array<Pair,2> agg_found{{{0u,1u},{0u,3u}}};
+    const std::array<Pair,1> sap_lost{{{0u,5u}}};
+    const std::array<Pair,2> agg_lost{{{0u,5u},{3u,4u}}};
+    std::vector<fyzz::native::Pair> found,lost;
+    lower_source_sap_and_aggregate_reports_to_sc(
+        sap_found,sap_lost,agg_found,agg_lost,actors,found,lost);
+    check(found==std::vector<fyzz::native::Pair>{{3u,7u},{7u,11u}} &&
+          lost==std::vector<fyzz::native::Pair>{{7u,17u},{11u,12u}},
+          "Original aggregate report merge duplicated or misclassified Sc pairs");
+
+    const auto previous_found=found,previous_lost=lost;
+    const std::array<Pair,1> invalid_aggregate{{{0u,6u}}};
+    bool rejected=false;
+    try {
+        lower_source_sap_and_aggregate_reports_to_sc(
+            sap_found,sap_lost,invalid_aggregate,agg_lost,
+            actors,found,lost);
+    }catch(const std::out_of_range&) {rejected=true;}
+    check(rejected && found==previous_found && lost==previous_lost,
+          "Invalid aggregate GPU report partially published to Sc");
+
+    rejected=false;
+    try {
+        lower_source_sap_and_aggregate_reports_to_sc(
+            sap_found,sap_lost,agg_found,agg_lost,
+            actors,found,found);
+    }catch(const std::invalid_argument&) {rejected=true;}
+    check(rejected && found==previous_found && lost==previous_lost,
+          "Aliased aggregate Sc destinations were admitted");
+
+    lower_source_sap_actor_reports_to_sc(
+        sap_found,sap_lost,actors,found,lost);
+    check(found==std::vector<fyzz::native::Pair>{{3u,7u}} &&
+          lost==std::vector<fyzz::native::Pair>{{7u,17u}},
+          "Aggregate Sc union changed original actor-only SAP publication");
+}
+
 void run(Context& ctx,const SourceNewBoundsSequenceNativeStage& producer,
          const SourceSapReportNativeStage& reporter,
          bool shared,bool matching_group) {
@@ -210,6 +256,7 @@ void run(Context& ctx,const SourceNewBoundsSequenceNativeStage& producer,
 int main(int argc,char** argv) {
     try {
         if(argc!=10)throw std::invalid_argument("Require four producer and five report shaders");
+        verify_source_aggregate_sc_union();
         Context ctx(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
