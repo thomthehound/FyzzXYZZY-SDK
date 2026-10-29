@@ -110,9 +110,10 @@ void mark(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             const uint position=numFree+globalBase+
                 (partial[lane.x]-1u);
             if(position<p.capacity) {
-                // PxgAggregatePair bitfield: isNew=bit0, isDead=bit1.
+                // PxgAggregatePair stores consecutive uint8 booleans:
+                // byte 0 is isNew, byte 1 is isDead (then uint16 pad).
                 const uint word=p.pairBias+index*12u+8u;
-                aggregatePairs.Store(word,aggregatePairs.Load(word)|2u);
+                aggregatePairs.Store(word,aggregatePairs.Load(word)|0x00000100u);
                 freeIndices.Store(p.indicesBias+position*4u,index);
             }
         }
