@@ -4,6 +4,7 @@
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 #include "fyzzxyzzy/native_gpu_world.h"
+#include "physx_foundation_lifetime.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_translate_aabbs_native.h"
@@ -42,26 +43,6 @@ namespace fyzz::physx_gpu {
 using SourceSapShaderBinaries = NativeGpuSapShaders;
 
 class SourceScOwnedGpuBroadphaseNative final : public native::GpuBroadphaseProducer {
-    struct FoundationOwner {
-        struct Errors final : physx::PxErrorCallback {
-            void reportError(physx::PxErrorCode::Enum,
-                             const char*,const char*,int) override {}
-        };
-        physx::PxDefaultAllocator allocator;
-        Errors errors;
-        physx::PxFoundation* instance=nullptr;
-        FoundationOwner() {
-            instance=PxCreateFoundation(PX_PHYSICS_VERSION,allocator,errors);
-            if(!instance)
-                throw std::runtime_error("Native PhysX Foundation creation failed");
-        }
-        ~FoundationOwner() { instance->release(); }
-    };
-
-    static FoundationOwner& foundation() {
-        static FoundationOwner owner;
-        return owner;
-    }
     static compute::ShaderBinary take_shader(
         SourceSapShaderBinaries& shaders,NativeGpuSapStage stage) {
         return std::move(shaders[static_cast<std::size_t>(stage)]);
@@ -75,7 +56,7 @@ public:
         compute::Backend backend,SourceSapShaderBinaries shaders,
         std::uint32_t max_pairs=32768u,
         std::uint32_t max_aggregate_pairs=32768u)
-        : foundation_(foundation()),
+        : foundation_(physx_runtime::acquire_foundation()),
           context_(backend),
           stream_(context_,addresses_),
           device_roots_(context_,addresses_),
@@ -171,9 +152,8 @@ public:
     }
 
 private:
-    // The Foundation is shared across independent native GPU scenes.
-    // References and root allocators outlive every source buffer and stage.
-    FoundationOwner& foundation_;
+    // Shared with the reference PhysX runtime; released after GPU owners.
+    std::shared_ptr<physx_runtime::Foundation> foundation_;
     compute::Context context_;
     CudaDeviceAddressMap addresses_;
     SourceSapDmaNative stream_;
