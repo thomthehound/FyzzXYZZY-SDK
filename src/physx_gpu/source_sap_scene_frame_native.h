@@ -17,6 +17,7 @@
 namespace fyzz::physx_gpu {
 class PxgAabbSourceMembersNative;
 class PxgSapSourceMembersNative;
+class SourceAggregateMemberHistoryNativeStage;
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -54,6 +55,9 @@ struct SourceSapSceneFrameNativeMembers {
     // bitmap allocations AFTER preBpUpdate_GPU (which can grow them)
     // and complete its frame only after successful source GPU fetch.
     PxgAabbSourceMembersNative* aabb_owner = nullptr;
+    // Optional original aggregate post-SAP kernel, supplied by the same
+    // source GPU context when aggregate execution is enabled.
+    const SourceAggregateMemberHistoryNativeStage* aggregate_member_history = nullptr;
 };
 
 struct SourceSapSceneFrameNativeResult {
@@ -95,6 +99,16 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
     compute::Context& context);
+
+// Original post-BP aggregate member-history kernel. The SAP descriptor's
+// device pointer fields remain authoritative even after PxgCudaBuffer
+// ownership swaps. Append after SAP update, before aggregate collision.
+void append_source_sap_post_aggregate_member_history_native(
+    const physx::PxgBroadPhaseDesc& descriptor,
+    PxgAabbSourceMembersNative& aabb,
+    const SourceAggregateMemberHistoryNativeStage& stage,
+    SourceSapDmaNative& stream,
+    const CudaDeviceAddressMap& addresses);
 
 // Called by the original source owner at its update/fetch boundary.
 // Sc geometry preparation and the AABB manager's handle/bitmap first
