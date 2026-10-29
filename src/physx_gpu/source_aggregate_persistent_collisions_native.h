@@ -112,6 +112,7 @@ public:
         std::array<std::uint32_t,28> params{
             src.pair_capacity,src.aggregate_capacity,
             src.member_capacity,src.bounds_capacity,src.report_capacity};
+        params[26u]=static_cast<std::uint32_t>(groups);
         const auto view=[&](std::uint32_t slot,
                             CudaDeviceAddressMap::Address address,
                             std::size_t bytes,
