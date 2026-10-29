@@ -1309,11 +1309,12 @@ void execute(Context& context, ShaderBinary translateShader,
                 // ElementSim ID independently of its AABB live state.
                 scene.set_shape_simulation_enabled(b,false);
                 scene.advance_collision(false);
+                scene.set_shape_offsets(b,0.10f,0.0f);
                 scene.set_shape_simulation_enabled(b,true);
                 require(sourceSc->source_element_handle(b)==retainedHandle &&
                         sceneAabb.volume_to_actor()[retainedHandle]==b &&
-                        sceneAabb.scene_bounds().contact_distances[retainedHandle]==0.08f,
-                        "Re-admission after fetch lost source Sc metadata");
+                        sceneAabb.scene_bounds().contact_distances[retainedHandle]==0.10f,
+                        "Re-admission after fetch lost disabled Sc contact distance");
                 scene.advance_collision(false);
 
                 // Sc::ElementSim releases the ID at actor retirement,
