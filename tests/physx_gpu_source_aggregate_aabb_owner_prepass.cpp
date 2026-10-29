@@ -25,6 +25,7 @@
 #include <initializer_list>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 
 using namespace fyzz::physx_gpu;
 using namespace fyzz::compute;
@@ -62,7 +63,7 @@ ShaderBinary load(const char* path) {
     return bin;
 }
 void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
-            ShaderBinary member_history_shader) {
+            ShaderBinary member_history_shader,ShaderBinary projection_shader) {
     Foundation foundation;
     Context context(backend);
     CudaDeviceAddressMap addresses;
@@ -88,6 +89,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 context,std::move(bounds_shader),std::move(mark_shader));
             SourceAggregateMemberHistoryNativeStage history_stage(
                 context,std::move(member_history_shader));
+            SourceAggregateProjectionNativeStage projection_stage(
+                context,std::move(projection_shader));
             physx::PxgCudaBuffer new_integer_bounds(
                 allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE);
             physx::PxgCudaBuffer old_integer_bounds(
@@ -174,8 +177,11 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         static_cast<std::uintptr_t>(old_integer_bounds.getDevicePtr()));
                 append_source_sap_post_aggregate_member_history_native(
                     bp,aabb,history_stage,stream,addresses);
+                const auto projection_gpu=aabb.aggregate_projection_gpu_buffers(
+                    new_integer_bounds.getDevicePtr());
+                projection_stage.append(stream,addresses,projection_gpu);
                 require(stream.commands().size()==
-                            2u+std::uint32_t(added_members.size()!=0u ||
+                            3u+std::uint32_t(added_members.size()!=0u ||
                                              removed_members.size()!=0u),
                         "Original AABB aggregate GPU stage order or member-history dispatch differs");
                 stream.wait_at_fetch();
@@ -203,9 +209,74 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                                 "Original AABB manager GPU member history differs after source fetch");
                     }
                 }
+                // The source AABB owner owns all persistent projection
+                // histories, not the GPU test fixture.
+                const auto download_words=[&](CudaDeviceAddressMap::Address ptr,
+                                              std::size_t words) {
+                    std::vector<physx::PxU32> result(words);
+                    const auto view=addresses.resolve(ptr,words*sizeof(physx::PxU32));
+                    context.download(view.buffer,view.offset,
+                                     result.data(),words*sizeof(physx::PxU32));
+                    return result;
+                };
+                const auto m=projection_gpu.member_capacity;
+                const auto sorted=download_words(
+                    projection_gpu.sorted_projections,4u*m);
+                const auto sorted_handles=download_words(
+                    projection_gpu.sorted_handles,4u*m);
+                const auto sap_boxes=download_words(
+                    projection_gpu.sap_boxes,4u*m);
+                const auto masks=download_words(
+                    projection_gpu.start_masks,2u*m);
+                const auto member_history=download_words(
+                    projection_gpu.bound_index_history,2u*m);
+                const auto& aggregate=aabb.source_aggregate(id);
+                if(aggregate.size) {
+                    std::vector<std::pair<physx::PxU32,physx::PxU32>> expected;
+                    for(physx::PxU32 local=0;local<aggregate.size;++local) {
+                        const auto handle=aggregate.updateBoundIndices[local];
+                        expected.emplace_back(new_values[handle*6u],(local<<3u)|1u);
+                        expected.emplace_back(new_values[handle*6u+3u],local<<3u);
+                    }
+                    std::stable_sort(expected.begin(),expected.end(),
+                        [](const auto& a,const auto& b){return a.first<b.first;});
+                    const auto projection_base=
+                        projection_gpu.current_slot*(2u*m)+
+                        2u*projection_gpu.member_capacity*
+                            0u; // Aggregate 0 begins at the first reserved slice.
+                    const auto member_base=projection_gpu.current_slot*m;
+                    for(physx::PxU32 j=0;j<expected.size();++j) {
+                        require(sorted[projection_base+j]==expected[j].first &&
+                                sorted_handles[projection_base+j]==expected[j].second,
+                                "Original aggregate projection GPU radix order differs");
+                        const auto local=expected[j].second>>3u;
+                        const bool is_start=(expected[j].second&1u)!=0u;
+                        require(sap_boxes[projection_base+local*2u+
+                                          (is_start?0u:1u)]==j,
+                                "Original aggregate local GPU SAP indices differ");
+                    }
+                    for(physx::PxU32 local=0;local<aggregate.size;++local)
+                        require(member_history[member_base+local]==
+                                    aggregate.updateBoundIndices[local],
+                                "Original aggregate GPU member history differs");
+                    for(physx::PxU32 word=0;word<(expected.size()+31u)/32u;++word) {
+                        physx::PxU32 ballot=0u;
+                        for(physx::PxU32 bit=0;bit<32u;++bit) {
+                            const auto j=word*32u+bit;
+                            if(j<expected.size() && (expected[j].second&1u))
+                                ballot|=1u<<bit;
+                        }
+                        require(masks[member_base+word]==ballot,
+                                "Original aggregate GPU start masks differ");
+                    }
+                }
                 require(stream.submission_stats().command_batches==before+1u,
                         "Original AABB source aggregate stages split GPU command batches");
                 aabb.complete_fetch(update);
+                const auto next=aabb.aggregate_projection_gpu_buffers(
+                    new_integer_bounds.getDevicePtr());
+                require(next.current_slot==(projection_gpu.current_slot^1u),
+                        "Original aggregate GPU projection history failed to rotate at fetch");
             };
             const auto download_bounds=[&](physx::PxU32 handle) {
                 const auto sap_buffers=sap.pre_broadphase_buffers();
@@ -290,14 +361,14 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=4)throw std::invalid_argument("Expected source aggregate bounds, mark and member-history shaders");
+        if(argc!=5)throw std::invalid_argument("Expected source aggregate bounds, mark, member-history and projection shaders");
         verify(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12,
 #else
             Backend::Vulkan,
 #endif
-            load(argv[1]),load(argv[2]),load(argv[3]));
+            load(argv[1]),load(argv[2]),load(argv[3]),load(argv[4]));
         std::cout<<"Original PhysX aggregate AABB GPU first/second pass PASS\n";
         return 0;
     }catch(const std::exception& error) {
