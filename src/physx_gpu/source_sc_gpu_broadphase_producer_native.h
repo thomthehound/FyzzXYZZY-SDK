@@ -68,9 +68,18 @@ public:
     native::GpuBroadphaseReports advance(
         std::span<const native::GpuBroadphaseBox> live_boxes,
         bool force_update, bool /* geometry_dirty */) override {
-        if(invalidated_)
-            throw std::logic_error(
-                "Source GPU SAP histories require reconstruction after Sc rollback");
+        // A rejected Sc/Dy frame may have advanced the source GPU
+        // endpoint histories before Sc's transaction was rolled back.
+        // Drain that same original stream, discard only source SAP
+        // history counters, and republish all still-admitted AABB
+        // handles on the ordinary create-only GPU path.
+        bool rebuilt=false;
+        if(invalidated_) {
+            stream_.wait_at_fetch();
+            aabb_.reset_for_source_rebuild();
+            sap_.reset_for_source_rebuild();
+            rebuilt=true;
+        }
         // Resolve Sc-owned element handles without allocating a second
         // identity table. The AABB manager's live volume mapping is the
         // authority, including after post-report ID recycling.
@@ -104,7 +113,8 @@ public:
             invalidated_=true;
             throw;
         }
-        return {found_,lost_,false};
+        invalidated_=false;
+        return {found_,lost_,false,rebuilt};
     }
 
     void mark_shape_bounds_changed(

@@ -173,6 +173,30 @@ public:
         bounds_.resetChangedState();
     }
 
+    // Source GPU SAP history was invalidated after a rejected Sc/Dy
+    // frame. Rebuild from the ORIGINAL AABB manager's admitted volumes:
+    // no additional actor/handle pool and no CPU geometry overlap pass.
+    // Every still-live source volume becomes a fresh created handle.
+    // The next Sc geometry publication refreshes all authored bounds.
+    void reset_for_source_rebuild() {
+        added_.clear();
+        removed_.clear();
+        changed_.clear();
+        aggregated_.clear();
+        for(physx::PxU32 handle=0;handle<groups_.size();++handle) {
+            if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID) {
+                if(!added_.growAndSet(handle))throw std::bad_alloc();
+            } else {
+                // Retired handles have no SAP history after reset.
+                volume_to_actor_[handle]=
+                    std::numeric_limits<BodyId>::max();
+            }
+        }
+        persistent_state_changed_=true;
+        gpu_state_changed_=false;
+        bounds_.resetChangedState();
+    }
+
     physx::PxU32 capacity() const noexcept {return bounds_.size();}
     const physx::Bp::SourceBoundsArrayNative& source_bounds() const noexcept {return bounds_;}
     physx::Cm::PinnableBitMap& source_added() noexcept {return added_;}
