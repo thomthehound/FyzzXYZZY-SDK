@@ -260,6 +260,7 @@ struct Context::Impl {
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
+    mutable bool device_lost = false;
     VkPhysicalDeviceLimits limits{};
     std::uint32_t timestamp_valid_bits = 0;
 
@@ -421,6 +422,7 @@ struct Context::Impl {
             submit.pCommandBuffers = &commands;
             const VkResult status = vkQueueSubmit(queue, 1, &submit, fence);
             if (status != VK_SUCCESS) {
+                if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
                 submissions.erase(id);
                 require(status, "vkQueueSubmit");
             }
@@ -456,6 +458,7 @@ struct Context::Impl {
         if (status == VK_NOT_READY) {
             return false;
         }
+        if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
         require(status, "vkGetFenceStatus");
         return true;
     }
@@ -466,8 +469,10 @@ struct Context::Impl {
             throw std::out_of_range("Unknown compute submission ID");
         }
         const VkFence fence = it->second.fence;
-        require(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
-                "vkWaitForFences");
+        const VkResult result=vkWaitForFences(
+            device,1,&fence,VK_TRUE,UINT64_MAX);
+        if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
+        require(result,"vkWaitForFences");
         retire_submission(it->second);
         submissions.erase(it);
         release_retired_through(id);
@@ -1002,11 +1007,15 @@ struct Context::Impl {
     }
 
     void destroy_pipeline(PipelineId id) {
-        wait_all();
-        auto it = pipelines.find(id);
-        if (it == pipelines.end()) {
+        auto it=pipelines.find(id);
+        if(it==pipelines.end())
             throw std::out_of_range("Unknown compute pipeline ID");
-        }
+        // A lost device can never complete its old fences. The source
+        // stage destructor cannot retry that failed wait while unwinding
+        // the frame. Keep the pipeline alive in this Context until its
+        // final vkDeviceWaitIdle/vkDestroyDevice cleanup instead.
+        if(device_lost)return;
+        wait_all();
         destroy_pipeline_handles(it->second);
         pipelines.erase(it);
     }
