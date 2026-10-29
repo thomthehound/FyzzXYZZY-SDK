@@ -491,8 +491,12 @@ public:
         return {dirty_aggregate_indices_.begin(),dirty_aggregate_indices_.size()};
     }
     void finish_aggregate_report_fetch() {
-        for(const auto id:dirty_aggregate_indices())
+        for(const auto id:dirty_aggregate_indices()) {
+            // Original clearDirtyAggregates retires the source per-frame
+            // size history only after GPU aggregate reports are fetched.
+            aggregates_[id].prevSize=aggregates_[id].size;
             aggregates_[id].isNew=false;
+        }
         dirty_aggregate_indices_.resetOrClear();
         dirty_aggregates_.clear();
         added_aggregate_members_.resetOrClear();
