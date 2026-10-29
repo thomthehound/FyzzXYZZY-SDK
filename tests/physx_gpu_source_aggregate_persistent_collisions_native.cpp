@@ -162,7 +162,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision,
     require(rejected && stream.commands().empty(),
             "Source persistent GPU pair collision admitted invalid memory ownership");
 
-    for(std::uint32_t frame=0;frame<2u;++frame) {
+    for(std::uint32_t frame=0;frame<3u;++frame) {
         if(frame!=0u) {
             previous=current;
             assign(1u,310u,410u);
@@ -174,12 +174,13 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision,
         put(old_bounds,previous.data(),sizeof(previous));
         const std::array<std::uint32_t,2> zero_reports{};
         put(reports,zero_reports.data(),sizeof(zero_reports));
-        const History& now=history[frame];
-        const History& old=history[frame^1u];
+        const auto slot=frame&1u;
+        const History& now=history[slot];
+        const History& old=history[slot^1u];
         SourceAggregateProjectionNativeBuffers p{
             current_bounds,aggregates,members,now.keys,now.handles,
             scratch_keys,scratch_handles,now.sap,now.masks,now.members,
-            kBounds,kAggregates,kMembers,kAggregates,frame};
+            kBounds,kAggregates,kMembers,kAggregates,slot};
         projection_stage.append(stream,addresses,p);
 
         SourceAggregatePersistentCollisionNativeBuffers collision_buffers{
@@ -211,16 +212,19 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision,
 
         std::array<std::uint32_t,2> counters{};
         get(reports,counters.data(),sizeof(counters));
-        require(counters==(frame==0u
-                              ?std::array<std::uint32_t,2>{{3u,0u}}
-                              :std::array<std::uint32_t,2>{{0u,3u}}),
+        const auto expected_counts=frame==0u
+            ? std::array<std::uint32_t,2>{{3u,0u}}
+            : frame==1u
+                ? std::array<std::uint32_t,2>{{0u,3u}}
+                : std::array<std::uint32_t,2>{{0u,0u}};
+        require(counters==expected_counts,
                 "Original persistent aggregate GPU found/lost member history differs");
         std::vector<Pair> result(counters[frame==0u?0u:1u]);
         if(!result.empty())
             get(frame==0u?found:lost,result.data(),result.size()*sizeof(Pair));
         std::sort(result.begin(),result.end());
         const std::vector<Pair> expected{{2u,4u},{2u,6u},{3u,5u}};
-        require(result==expected,
+        require(frame==2u?result.empty():result==expected,
                 "Original aggregate–actor/aggregate–aggregate GPU member pairs differ");
 
         std::array<physx::PxgAggregatePair,2u> slot_state{};
@@ -242,7 +246,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision,
     require(final_list==std::array<std::uint32_t,2>{{2u,2u}} &&
             retired==std::array<std::uint32_t,2>{{0u,1u}},
             "Source aggregate root retirement failed to return both persistent GPU slots");
-    require(stream.submission_stats().command_batches==2u,
+    require(stream.submission_stats().command_batches==3u,
             "Original persistent aggregate collisions added a second GPU submission");
     for(auto it=allocated.rbegin();it!=allocated.rend();++it) {
         addresses.unregister_slice(it->address);
