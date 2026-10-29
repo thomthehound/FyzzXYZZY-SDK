@@ -19,6 +19,28 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 GPU aggregate union bounds source translation
+
+The native aggregate bounds shader
+`src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl`
+ports `gpubroadphase/src/CUDA/aggregate.cu::updateAggregateBounds`.
+The source's 32-lane per-aggregate minimum/maximum reduction (four
+warps per workgroup), contact-distance inflation, root-handle write
+and invalid-aggregate skip are retained on Vulkan and D3D12.
+The CUDA warp XOR shuffles are lowered to 32-lane shared-memory
+reductions, independent of the adapter's native subgroup width.
+
+The standalone conformance uses actual GPU dispatch for one- and
+multi-member aggregates, a 35-member aggregate spanning two warp
+iterations, inactive aggregates and a second workgroup. It compares
+the resulting `PxBounds3` envelopes with an independent host oracle.
+This is the source `computeAggregateBounds` kernel translation,
+**not** a claim that `PxgAABBManager::createAggregate`, GPU aggregate
+self-collision, pair expansion, or Sc aggregate report publication are
+implemented. The original GPU aggregate member/descriptor allocation,
+the sorting/collision stages, and aggregate pair report retirement
+must be integrated before N2 supports aggregate actors in World.
+
 ## N2 native source SAP shader bundle
 
 The independent source SAP broadphase is constructed by
