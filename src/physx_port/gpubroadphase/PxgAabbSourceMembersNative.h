@@ -777,12 +777,76 @@ public:
         if(live.size()!=handles.size())
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
-        // Aggregate root pairs require source aggregate expansion before
-        // Sc publication. Even an empty aggregate must not acquire a
-        // single-volume endpoint; keep this O(1) on ordinary scenes.
-        if(num_active_aggregates_)
-            throw std::logic_error(
-                "Source aggregate GPU pair expansion not yet installed");
+        // The original PxgAABBManager first pass owns the root's BP
+        // created/removed handles, while Sc supplies the actual member
+        // geometry. A root is NOT a shape in live actor geometry.
+        if(num_active_aggregates_ || aggregate_gpu_slot_count_) {
+            for(std::size_t i=0;i<live.size();++i) {
+                const auto handle=handles[i];
+                if(handle>=volumes_.size() ||
+                   handle>=volume_to_actor_.size() ||
+                   volume_to_actor_[handle]!=live[i].id ||
+                   groups_[handle]==physx::Bp::FilterGroup::eINVALID ||
+                   !volumes_[handle].getUserData() ||
+                   volumes_[handle].isAggregate())
+                    throw std::invalid_argument(
+                        "Source aggregate Sc geometry does not match original member/actor ownership");
+                const auto group=groups_[handle];
+                const bool static_group=
+                    group==physx::Bp::getFilterGroup_Statics();
+                const auto type=static_cast<physx::PxU32>(group)&
+                    BP_FILTERING_TYPE_MASK;
+                const auto motion=live[i].motion;
+                const bool compatible=
+                    motion==native::GpuBroadphaseBox::Motion::Static
+                        ? static_group
+                        : !static_group &&
+                          (type==physx::Bp::FilterType::DYNAMIC ||
+                           (motion==native::GpuBroadphaseBox::Motion::Kinematic &&
+                            type==physx::Bp::FilterType::KINEMATIC));
+                if(!compatible)
+                    throw std::invalid_argument(
+                        "Source aggregate member motion differs from original Sc BP group");
+            }
+            collect_source_sap_single_volume_first_pass_native(
+                single_volumes(),{created_,retired_,updated_});
+            // Original first-pass aggregate member admissions are not
+            // BP created handles. They still need their initial bounds
+            // staged into the owner's host arrays before gpuDmaDataUp.
+            aggregate_geometry_created_.clear();
+            aggregate_geometry_created_.reserve(
+                created_.size()+added_aggregate_members_.size());
+            for(const auto handle:created_)
+                if(volumes_[handle].isSingleActor())
+                    aggregate_geometry_created_.push_back(handle);
+            for(const auto handle:added_aggregate_members_)
+                aggregate_geometry_created_.push_back(handle);
+            std::sort(aggregate_geometry_created_.begin(),
+                      aggregate_geometry_created_.end());
+            if(std::adjacent_find(aggregate_geometry_created_.begin(),
+                                  aggregate_geometry_created_.end())!=
+               aggregate_geometry_created_.end())
+                throw std::logic_error(
+                    "Original AABB aggregate geometry admitted a source handle twice");
+            const SourceSapSceneFrameChanges geometry_changes{
+                {aggregate_geometry_created_.data(),
+                 aggregate_geometry_created_.size()},
+                {},{},
+                {changed_.getWords(),changed_.getWordCount()}};
+            write_source_sap_scene_bounds(
+                live,handles,scene_bounds(),bounds_scratch_,
+                &geometry_changes,true);
+            const auto update=physx::Bp::BroadPhaseUpdateData(
+                created_.begin(),created_.size(),
+                nullptr,0u,retired_.begin(),retired_.size(),
+                bounds_.begin(),groups_.begin(),distances_.begin(),
+                bounds_.size(),filter,
+                persistent_state_changed_||bounds_.hasChanged(),
+                gpu_state_changed_||aggregate_gpu_slot_count_!=0u);
+            validate_source_sap_volume_actor_lifetime_native(
+                actor_lifetime(),update,true);
+            return update;
+        }
         // Sc owns actor identity, while PxgAABBManager owns the volume
         // handle. Their persistent admission binding must agree before
         // changing any bounds, groups, handle lists, or GPU descriptors.
@@ -950,6 +1014,9 @@ private:
     physx::PxgCudaBuffer projection_bound_history_0_,projection_bound_history_1_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
+    // Transient original first-pass member geometry handles; Bp root
+    // deltas and all persistent identity/history remain AABB-owned.
+    std::vector<physx::Bp::ShapeHandle> aggregate_geometry_created_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
     // dirty indices are drained only after source GPU fetch.
     physx::PxArray<physx::PxgAggregate> aggregates_;
