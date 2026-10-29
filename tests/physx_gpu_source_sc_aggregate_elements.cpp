@@ -9,6 +9,7 @@
 #include "foundation/PxPhysicsVersion.h"
 #include "fyzzxyzzy/compute.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -167,6 +168,11 @@ void run(Backend backend) {
                     owner.source_aggregate(root).prevSize==2u,
                     "Original source aggregate frame did not retire previous size");
             owner.reset_for_source_rebuild();
+            const auto dirty=owner.dirty_aggregate_indices();
+            require(dirty.size()==2u &&
+                    std::find(dirty.begin(),dirty.end(),root)!=dirty.end() &&
+                    std::find(dirty.begin(),dirty.end(),root2)!=dirty.end(),
+                    "Source GPU rollback omitted the retired aggregate descriptor slot");
             require(owner.source_aggregate(root).isNew &&
                     owner.source_aggregate(root).prevSize==0u &&
                     owner.source_aggregated().boundedTest(member0) &&
