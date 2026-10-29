@@ -145,6 +145,78 @@ void execute(Context& context, ShaderBinary translateShader,
             1u << 20u, deviceCallback, pinnedRoots, mappedRoots, abort, &aborted);
         auto allocators = physx::PxgCreateAllocatorDesc(manager);
         {
+            // Original PxgAABBManager::createAggregate/addBounds/removeBounds
+            // owns the root's BP admission. Members never receive their
+            // own broadphase endpoints. IDs are deferred until cleanup.
+            PxgAabbSourceMembersNative aggregateAabb(allocators);
+            alignas(16) std::array<std::uint32_t,4> sourceElements{};
+            const auto root=aggregateAabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),sourceElements.data(),4u);
+            require(root==0u &&
+                    aggregateAabb.source_aggregate(root).size==0u &&
+                    aggregateAabb.actor_lifetime().volume_data[3u].isAggregate() &&
+                    !aggregateAabb.source_added().boundedTest(3u) &&
+                    aggregateAabb.dirty_aggregate_indices().size()==1u,
+                    "Original aggregate creation admitted empty root to SAP");
+            aggregateAabb.admit_aggregate_member(root,4u,40u,0.125f,
+                physx::Bp::getFilterGroup_Dynamics(40u,false),
+                sourceElements.data());
+            aggregateAabb.admit_aggregate_member(root,5u,41u,0.25f,
+                physx::Bp::getFilterGroup_Dynamics(41u,false),
+                sourceElements.data());
+            // The public single-actor scene bridge cannot expand
+            // aggregate root reports to Sc member pairs yet. Its owner
+            // must reject an aggregate frame instead of reporting the
+            // root as an ordinary rigid actor.
+            bool rejectedAggregateWorld=false;
+            try {
+                const physx::Bp::BpFilter filter(false,false);
+                (void)aggregateAabb.prepare({}, {}, filter);
+            }catch(const std::logic_error&) {
+                rejectedAggregateWorld=true;
+            }
+            require(rejectedAggregateWorld,
+                    "Source Sc incorrectly admitted incomplete aggregate reports");
+            require(aggregateAabb.source_aggregate(root).size==2u &&
+                    aggregateAabb.source_added().boundedTest(3u) &&
+                    !aggregateAabb.source_added().boundedTest(4u) &&
+                    !aggregateAabb.source_added().boundedTest(5u) &&
+                    aggregateAabb.source_aggregated().boundedTest(4u) &&
+                    aggregateAabb.source_aggregated().boundedTest(5u) &&
+                    aggregateAabb.dirty_aggregate_indices().size()==1u,
+                    "Source aggregate members received separate BP admission");
+            aggregateAabb.mark_aggregate_member_changed(4u,0.375f);
+            require(aggregateAabb.source_changed().boundedTest(4u) &&
+                    aggregateAabb.scene_bounds().contact_distances[4u]==0.375f,
+                    "Aggregate member edit bypassed original GPU changed map");
+            aggregateAabb.remove_aggregate_member(4u);
+            require(!aggregateAabb.source_changed().boundedTest(4u),
+                    "Retired aggregate member leaked a changed handle bit");
+            require(aggregateAabb.source_aggregate(root).size==1u &&
+                    aggregateAabb.source_aggregate(root).updateBoundIndices[0]==5u &&
+                    !aggregateAabb.source_aggregated().boundedTest(4u),
+                    "Original aggregate removeBounds did not swap last member");
+            aggregateAabb.remove_aggregate_member(5u);
+            require(!aggregateAabb.source_added().boundedTest(3u) &&
+                    !aggregateAabb.source_removed().boundedTest(3u) &&
+                    aggregateAabb.source_aggregate(root).size==0u,
+                    "Removing last unpublished member did not cancel root admission");
+            aggregateAabb.destroy_aggregate(root);
+            const auto next=aggregateAabb.create_aggregate(
+                6u,physx::Bp::getFilterGroup_Statics(),sourceElements.data(),1u);
+            require(next!=root &&
+                    aggregateAabb.dirty_aggregate_indices().size()==2u,
+                    "Original aggregate ID was reused before deferred cleanup");
+            aggregateAabb.destroy_aggregate(next);
+            aggregateAabb.finish_aggregate_report_fetch();
+            const auto recycled=aggregateAabb.create_aggregate(
+                7u,physx::Bp::getFilterGroup_Statics(),sourceElements.data(),1u);
+            require(recycled==root || recycled==next,
+                    "Source aggregate deferred-ID pool failed to recycle");
+            aggregateAabb.destroy_aggregate(recycled);
+            aggregateAabb.finish_aggregate_report_fetch();
+        }
+        {
             PxgSapSourceMembersNative sap(allocators, 32u, 16u);
             PxgAabbSourceMembersNative aabb(allocators,3u);
             std::array<std::uint32_t,3> sourceElements{17u,3u,9u};

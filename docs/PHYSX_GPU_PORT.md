@@ -19,6 +19,31 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 source AABB aggregate membership
+
+`PxgAabbSourceMembersNative` now owns the original PhysX
+`PxgAggregate` records and `Cm::DeferredIDPool` alongside its existing
+source `Bp::VolumeData`, group, distance, bounds, and handle bitmaps.
+Its aggregate creation follows `PxgAABBManager::createAggregate`:
+the root is initialized with an empty `PxBounds3` and does not enter
+SAP until the first shape is admitted. Aggregate member
+`VolumeData::setAggregated` encodes ownership without creating a
+second SAP endpoint. The membership array uses source
+`updateBoundIndices`; removals swap with the last live member,
+retire the root when its last member disappears, and defer aggregate
+ID reuse until report cleanup.
+
+The source-owned GPU AABB conformance test exercises empty-root
+creation, first/second member admission, dirty-index deduplication,
+swap-with-last removal, same-frame root admission cancellation,
+and deferred aggregate ID recycling. This validates the original
+AABB-manager host ownership transitions. Scene `World` deliberately
+does not yet accept aggregate roots: SAP pair expansion and Sc
+member-level report publication are still missing. The existing
+single-volume scene preparation explicitly fails closed when it
+encounters a live aggregate rather than misrepresenting a root as
+an ordinary rigid actor.
+
 ## N2 GPU aggregate union bounds source translation
 
 The native aggregate bounds and changed-bitmap shaders
