@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "fyzzxyzzy/compute.h"
+#include "physx_gpu/source_aggregate_gpu_native.h"
 
 #include <algorithm>
 #include <array>
@@ -23,13 +24,7 @@ struct Bounds {
 };
 static_assert(sizeof(Bounds)==24u);
 
-struct Aggregate {
-    std::uint32_t root;
-    std::uint32_t first;
-    std::uint32_t size;
-    std::uint32_t reserved;
-};
-static_assert(sizeof(Aggregate)==16u);
+using Aggregate=fyzz::physx_gpu::SourceAggregateGpuNativeRecord;
 
 void require(bool condition,const char* reason) {
     if(!condition)throw std::runtime_error(reason);
@@ -83,7 +78,7 @@ void verify(Context& context,const char* shader_path,
         constexpr float limit=std::numeric_limits<float>::max()*0.25f;
         Bounds combined={{limit,limit,limit},{-limit,-limit,-limit}};
         for(std::uint32_t i=0;i<aggregate.size;++i) {
-            const auto id=members[aggregate.first+i];
+            const auto id=members[aggregate.first_member+i];
             for(unsigned axis=0;axis<3u;++axis) {
                 combined.minimum[axis]=std::min(
                     combined.minimum[axis],
@@ -97,74 +92,63 @@ void verify(Context& context,const char* shader_path,
         expected_changed[aggregate.root>>5u] |=
             1u<<(aggregate.root&31u);
         for(std::uint32_t i=0;i<aggregate.size;++i) {
-            const auto member=members[aggregate.first+i];
+            const auto member=members[aggregate.first_member+i];
             expected_changed[member>>5u] &=
                 ~(1u<<(member&31u));
         }
     }
 
-    const auto a=context.create_buffer(sizeof(bounds));
-    const auto b=context.create_buffer(sizeof(distances));
-    const auto c=context.create_buffer(sizeof(aggregates));
-    const auto d=context.create_buffer(sizeof(members));
-    const auto e=context.create_buffer(sizeof(changed));
-    context.upload(a,0u,bounds.data(),sizeof(bounds));
-    context.upload(b,0u,distances.data(),sizeof(distances));
-    context.upload(c,0u,aggregates.data(),sizeof(aggregates));
-    context.upload(d,0u,members.data(),sizeof(members));
-    context.upload(e,0u,changed.data(),sizeof(changed));
+    // PhysX's original device allocator can place multiple independent
+    // PxgCudaBuffers in one buddy-heap root. These five 4-byte-aligned
+    // slices intentionally start at different offsets within that root.
+    constexpr std::size_t bounds_off=4u;
+    constexpr std::size_t distances_off=bounds_off+sizeof(bounds)+4u;
+    constexpr std::size_t aggregates_off=distances_off+sizeof(distances)+4u;
+    constexpr std::size_t members_off=aggregates_off+sizeof(aggregates)+4u;
+    constexpr std::size_t changed_off=members_off+sizeof(members)+4u;
+    const auto root=context.create_buffer(changed_off+sizeof(changed)+4u);
+    context.upload(root,bounds_off,bounds.data(),sizeof(bounds));
+    context.upload(root,distances_off,distances.data(),sizeof(distances));
+    context.upload(root,aggregates_off,aggregates.data(),sizeof(aggregates));
+    context.upload(root,members_off,members.data(),sizeof(members));
+    context.upload(root,changed_off,changed.data(),sizeof(changed));
 
-    ComputePipelineDesc pipeline;
-    pipeline.shader=shader(shader_path);
-    pipeline.storage_buffer_binding_count=4u;
-    pipeline.push_constant_bytes=16u;
-    pipeline.storage_buffer_views.assign(
-        4u,StorageBufferViewKind::RawReadWrite);
-    const auto program=context.create_compute_pipeline(pipeline);
-    ComputePipelineDesc changed_pipeline;
-    changed_pipeline.shader=shader(changed_shader_path);
-    changed_pipeline.storage_buffer_binding_count=3u;
-    changed_pipeline.push_constant_bytes=16u;
-    changed_pipeline.storage_buffer_views.assign(
-        3u,StorageBufferViewKind::RawReadWrite);
-    const auto mark_program=context.create_compute_pipeline(changed_pipeline);
-    const std::array<BufferBinding,4> bindings{{
-        {0u,a,0u,sizeof(bounds),BufferAccess::ReadWrite},
-        {1u,b,0u,sizeof(distances),BufferAccess::Read},
-        {2u,c,0u,sizeof(aggregates),BufferAccess::Read},
-        {3u,d,0u,sizeof(members),BufferAccess::Read}
-    }};
-    constexpr std::array<std::uint32_t,4> params{{
-        static_cast<std::uint32_t>(aggregates.size()),0u,0u,0u
-    }};
-    // Source order: computeAggregateBounds then GPU changed-handle
-    // bitmap translation. Both stages run in one ordered native batch,
-    // with no CPU readback between the aggregate and SAP handoff.
-    DispatchCommand union_command;
-    union_command.pipeline=program;
-    union_command.groups={2u,1u,1u};
-    union_command.buffers.assign(bindings.begin(),bindings.end());
-    union_command.push_constants.resize(sizeof(params));
-    std::memcpy(union_command.push_constants.data(),
-                params.data(),sizeof(params));
-    DispatchCommand mark_command;
-    mark_command.pipeline=mark_program;
-    mark_command.groups={2u,1u,1u};
-    mark_command.buffers={
-        {0u,c,0u,sizeof(aggregates),BufferAccess::Read},
-        {1u,d,0u,sizeof(members),BufferAccess::Read},
-        {2u,e,0u,sizeof(changed),BufferAccess::ReadWrite}
-    };
-    mark_command.push_constants.resize(sizeof(params));
-    std::memcpy(mark_command.push_constants.data(),
-                params.data(),sizeof(params));
-    const std::vector<BatchCommand> commands{
-        std::move(union_command),std::move(mark_command)
-    };
-    const auto ticket=context.submit_batch(commands);
-    context.wait_submission(ticket);
-    context.download(a,0u,bounds.data(),sizeof(bounds));
-    context.download(e,0u,changed.data(),sizeof(changed));
+    using namespace fyzz::physx_gpu;
+    CudaDeviceAddressMap addresses;
+    const auto bound_address=addresses.register_slice(
+        root,bounds_off,sizeof(bounds));
+    const auto distance_address=addresses.register_slice(
+        root,distances_off,sizeof(distances));
+    const auto aggregate_address=addresses.register_slice(
+        root,aggregates_off,sizeof(aggregates));
+    const auto member_address=addresses.register_slice(
+        root,members_off,sizeof(members));
+    const auto changed_address=addresses.register_slice(
+        root,changed_off,sizeof(changed));
+    SourceSapDmaNative stream(context,addresses);
+    {
+        SourceAggregateGpuNativeStage stage(
+            context,shader(shader_path),shader(changed_shader_path));
+        const SourceAggregateGpuNativeBuffers source{
+            bound_address,distance_address,aggregate_address,
+            member_address,changed_address,
+            static_cast<std::uint32_t>(bounds.size()),
+            static_cast<std::uint32_t>(aggregates.size()),
+            static_cast<std::uint32_t>(members.size()),
+            static_cast<std::uint32_t>(changed.size()),
+            static_cast<std::uint32_t>(aggregates.size())
+        };
+        stage.append(stream,addresses,source);
+        require(stream.commands().size()==2u,
+                "Original aggregate owner did not append both GPU stages");
+        // No intermediate host readback: original aggregate stages
+        // share the source queue and complete at the native fetch fence.
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Source aggregate owner submitted separate GPU queues");
+    }
+    context.download(root,bounds_off,bounds.data(),sizeof(bounds));
+    context.download(root,changed_off,changed.data(),sizeof(changed));
     require(changed==expected_changed,
             "Original GPU aggregate root/member changed bitmap does not match source");
 
@@ -179,13 +163,14 @@ void verify(Context& context,const char* shader_path,
     require(bounds[82].minimum[0]==original[82].minimum[0] &&
             bounds[82].maximum[0]==original[82].maximum[0],
             "Unadmitted aggregate modified a source BP volume");
-    context.destroy_compute_pipeline(mark_program);
-    context.destroy_compute_pipeline(program);
-    context.destroy_buffer(e);
-    context.destroy_buffer(d);
-    context.destroy_buffer(c);
-    context.destroy_buffer(b);
-    context.destroy_buffer(a);
+    addresses.unregister_slice(changed_address);
+    addresses.unregister_slice(member_address);
+    addresses.unregister_slice(aggregate_address);
+    addresses.unregister_slice(distance_address);
+    addresses.unregister_slice(bound_address);
+    require(addresses.live_allocations()==0u,
+            "Original source aggregate GPU address mappings leaked");
+    context.destroy_buffer(root);
 }
 } // namespace
 

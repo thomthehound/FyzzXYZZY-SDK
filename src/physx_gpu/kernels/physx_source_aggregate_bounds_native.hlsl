@@ -26,7 +26,8 @@ RWByteAddressBuffer memberIndices : register(u3,space0);
 // Root handle, first member in the source index array, current member
 // count and reserved padding. Validity follows PxgAggregate::isValid.
 struct Parameters {
-    uint aggregateCount, reserved0, reserved1, reserved2;
+    uint aggregateCount, boundsBias, contactBias, aggregateBias;
+    uint memberBias, changedBias, reserved0, reserved1;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -41,7 +42,7 @@ groupshared float3 maxOfWarp[4][32];
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     uint aggregate=group.x*4u+lane.y;
     uint4 descriptor=aggregate<p.aggregateCount
-        ? aggregateSlots.Load4(aggregate*16u)
+        ? aggregateSlots.Load4(p.aggregateBias+aggregate*16u)
         : uint4(0u,0u,0u,0u);
     bool valid=aggregate<p.aggregateCount &&
         descriptor.z!=0u && descriptor.x!=0xffffffffu;
@@ -50,10 +51,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     float3 high=-low;
     if(valid) {
         for(uint i=lane.x;i<descriptor.z;i+=32u) {
-            uint handle=memberIndices.Load((descriptor.y+i)*4u);
-            float3 memberLow=asfloat(bounds.Load3(handle*24u));
-            float3 memberHigh=asfloat(bounds.Load3(handle*24u+12u));
-            float inflate=asfloat(contactDistances.Load(handle*4u));
+            uint handle=memberIndices.Load(p.memberBias+(descriptor.y+i)*4u);
+            float3 memberLow=asfloat(bounds.Load3(p.boundsBias+handle*24u));
+            float3 memberHigh=asfloat(bounds.Load3(p.boundsBias+handle*24u+12u));
+            float inflate=asfloat(contactDistances.Load(p.contactBias+handle*4u));
             low=min(low,memberLow-inflate);
             high=max(high,memberHigh+inflate);
         }
@@ -75,7 +76,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         GroupMemoryBarrierWithGroupSync();
     }
     if(valid && lane.x==0u) {
-        bounds.Store3(descriptor.x*24u,asuint(minOfWarp[lane.y][0]));
-        bounds.Store3(descriptor.x*24u+12u,asuint(maxOfWarp[lane.y][0]));
+        bounds.Store3(p.boundsBias+descriptor.x*24u,asuint(minOfWarp[lane.y][0]));
+        bounds.Store3(p.boundsBias+descriptor.x*24u+12u,asuint(maxOfWarp[lane.y][0]));
     }
 }
