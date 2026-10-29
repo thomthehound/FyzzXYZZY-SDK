@@ -125,6 +125,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader)
                 stream.wait_at_fetch();
                 require(stream.submission_stats().command_batches==before+1u,
                         "Original AABB source aggregate stages split GPU command batches");
+                aabb.complete_fetch(update);
             };
             const auto download_bounds=[&](physx::PxU32 handle) {
                 const auto sap_buffers=sap.pre_broadphase_buffers();
@@ -163,7 +164,6 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader)
             // The second source frame uses existing membership storage.
             // Bounds and contact-offset changes are still authored by
             // the same AABB owner, not a test-specific aggregate resolver.
-            aabb.finish_aggregate_report_fetch();
             geometry.bounds[5u]=physx::PxBounds3(
                 physx::PxVec3(-5.0f,-1.0f,1.0f),
                 physx::PxVec3(-3.0f,4.0f,3.0f));
