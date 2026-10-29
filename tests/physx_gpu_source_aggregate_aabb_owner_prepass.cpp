@@ -23,6 +23,7 @@
 #include <iterator>
 #include <algorithm>
 #include <initializer_list>
+#include <span>
 #include <stdexcept>
 #include <vector>
 #include <utility>
@@ -147,6 +148,49 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         std::numeric_limits<fyzz::BodyId>::max(),
                     "Canceled aggregate admission retained an unpublished Sc actor");
             const physx::Bp::BpFilter filter(false,false);
+            // Source Sc publishes only actor/member geometry. The root
+            // belongs to PxgAggregate, appears in the ORIGINAL BP
+            // created list, and never becomes a standalone Sc shape.
+            const std::array<fyzz::native::GpuBroadphaseBox,2> sc_boxes{{
+                {14u,{-0.5f,0.0f,1.0f},{1.5f,1.0f,1.0f},
+                 fyzz::Quat{},0.25f,
+                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic},
+                {15u,{3.5f,0.0f,-2.0f},{0.5f,2.0f,1.0f},
+                 fyzz::Quat{},0.5f,
+                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic}
+            }};
+            const std::array<physx::Bp::ShapeHandle,2> sc_members{{4u,5u}};
+            const auto source_frame=aabb.prepare(sc_boxes,sc_members,filter);
+            require(source_frame.getNumCreatedHandles()==1u &&
+                    source_frame.getCreatedHandles()[0]==3u &&
+                    source_frame.getNumRemovedHandles()==0u &&
+                    source_frame.getNumUpdatedHandles()==0u &&
+                    source_frame.getGpuStateChanged(),
+                    "Original aggregate Sc first pass promoted a member instead of its BP root");
+            require(aabb.scene_bounds().bounds[3u].isEmpty() &&
+                    aabb.scene_bounds().bounds[4u].minimum.x==-2.0f &&
+                    aabb.scene_bounds().bounds[5u].minimum.x==3.0f,
+                    "Original Sc aggregate first pass did not stage member bounds before GPU root union");
+            bool rejected_root_as_actor=false;
+            const std::array<physx::Bp::ShapeHandle,2> invalid_members{{3u,5u}};
+            try {
+                (void)aabb.prepare(sc_boxes,invalid_members,filter);
+            }catch(const std::invalid_argument&) {
+                rejected_root_as_actor=true;
+            }
+            require(rejected_root_as_actor,
+                    "Original aggregate Sc admitted root as standalone actor geometry");
+            auto mismatched_motion=sc_boxes;
+            mismatched_motion[0].motion=
+                fyzz::native::GpuBroadphaseBox::Motion::Static;
+            bool rejected_motion=false;
+            try {
+                (void)aabb.prepare(mismatched_motion,sc_members,filter);
+            }catch(const std::invalid_argument&) {
+                rejected_motion=true;
+            }
+            require(rejected_motion,
+                    "Original Sc aggregate changed its source BP filter group from geometry input");
 
             std::uint32_t projection_frame=0u;
             const auto run_source_prepass=[&](
@@ -463,6 +507,11 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             const auto before_growth=sample_previous(previous_slot);
             const auto empty_id=aabb.create_aggregate(
                 7u,physx::Bp::getFilterGroup_Statics(),elements.data(),8u);
+            const auto empty_frame=aabb.prepare(sc_boxes,sc_members,filter);
+            require(empty_frame.getNumCreatedHandles()==0u &&
+                    empty_frame.getNumRemovedHandles()==0u &&
+                    aabb.scene_bounds().bounds[7u].isEmpty(),
+                    "Empty original aggregate manufactured a source SAP root endpoint");
 
             // The second source frame uses existing membership storage.
             // Bounds and contact-offset changes are still authored by
@@ -501,6 +550,14 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             }
             require(rejected_readmission,
                     "Source retired aggregate member was readmitted before GPU fetch");
+            const std::span<const fyzz::native::GpuBroadphaseBox> survivor{
+                sc_boxes.data(),1u};
+            const std::span<const physx::Bp::ShapeHandle> survivor_handle{
+                sc_members.data(),1u};
+            const auto reduced=aabb.prepare(survivor,survivor_handle,filter);
+            require(reduced.getNumCreatedHandles()==0u &&
+                    reduced.getNumRemovedHandles()==0u,
+                    "Source aggregate member retirement incorrectly removed live SAP root");
             run_source_prepass({},{5u});
             require(aabb.actor_lifetime().volume_to_actor[5u]==
                         std::numeric_limits<fyzz::BodyId>::max(),
@@ -514,6 +571,13 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     "Original aggregate final member lost its Sc actor before fetch");
             aabb.destroy_aggregate(id);
             aabb.destroy_aggregate(empty_id);
+            const std::span<const fyzz::native::GpuBroadphaseBox> none{};
+            const std::span<const physx::Bp::ShapeHandle> no_handles{};
+            const auto retired_root=aabb.prepare(none,no_handles,filter);
+            require(retired_root.getNumRemovedHandles()==1u &&
+                    retired_root.getRemovedHandles()[0]==3u &&
+                    retired_root.getNumCreatedHandles()==0u,
+                    "Last source aggregate member did not retire its original SAP root");
             run_source_prepass({},{4u});
             require(aabb.actor_lifetime().volume_to_actor[4u]==
                         std::numeric_limits<fyzz::BodyId>::max(),
