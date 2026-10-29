@@ -1486,6 +1486,14 @@ void execute(Context& context, ShaderBinary translateShader,
 }
 void verify_owned_source_world(
     Backend backend,const std::array<const char*,34>& filenames) {
+    bool rejected_missing_stages=false;
+    try {
+        (void)fyzz::create_native_gpu_world(backend,{});
+    }catch(const std::invalid_argument&) {
+        rejected_missing_stages=true;
+    }
+    require(rejected_missing_stages,
+            "Production native GPU World accepted incomplete SAP shaders");
     fyzz::NativeGpuSapShaders shaders{};
     for(std::size_t i=0;i<shaders.size();++i)
         shaders[i]=load_shader(filenames[i]);
