@@ -50,7 +50,8 @@ inline void admit_source_sap_volume_actor_identity_native(
 // additional handle allocator, or host-side broadphase is involved.
 inline void validate_source_sap_volume_actor_lifetime_native(
     SourceSapVolumeActorLifetimeNative state,
-    const physx::Bp::BroadPhaseUpdateData& update) {
+    const physx::Bp::BroadPhaseUpdateData& update,
+    bool has_aggregate_roots=false) {
     const auto capacity=update.getCapacity();
     if(state.volume_to_actor.size()<capacity ||
        state.volume_data.size()<capacity)
@@ -64,19 +65,28 @@ inline void validate_source_sap_volume_actor_lifetime_native(
                 "Source AABB handle deltas lack their original manager arrays");
         for(physx::PxU32 i=0;i<count;++i) {
             const auto handle=handles[i];
-            if(handle>=capacity ||
+            if(handle>=capacity)
+                throw std::out_of_range(
+                    "Original SAP delta references an invalid source handle");
+            const auto& volume=state.volume_data[handle];
+            const bool aggregate_root=has_aggregate_roots && created &&
+                volume.isAggregate();
+            const bool retired_root=has_aggregate_roots && !created &&
+                state.volume_to_actor[handle]==
+                    std::numeric_limits<BodyId>::max();
+            if(!aggregate_root && !retired_root &&
                state.volume_to_actor[handle]==
                    std::numeric_limits<BodyId>::max())
                 throw std::out_of_range(
                     "Original SAP delta has no retained Sc actor identity");
-            const auto& volume=state.volume_data[handle];
             if(created) {
                 if(groups[handle]==physx::Bp::FilterGroup::eINVALID ||
-                   !volume.isSingleActor() || !volume.getUserData())
+                   !volume.getUserData() ||
+                   (!aggregate_root && !volume.isSingleActor()))
                     throw std::invalid_argument(
-                        "Source GPU created handle is not an admitted single volume");
-            } else if(groups[handle]!=physx::Bp::FilterGroup::eINVALID ||
-                      volume.getUserData()) {
+                        "Source GPU created handle is neither an original aggregate root nor a single actor");
+            }else if(groups[handle]!=physx::Bp::FilterGroup::eINVALID ||
+                     volume.getUserData()) {
                 throw std::invalid_argument(
                     "Source GPU removed handle still owns a live volume");
             }
