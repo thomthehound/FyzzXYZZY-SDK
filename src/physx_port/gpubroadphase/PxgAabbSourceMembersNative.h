@@ -969,30 +969,60 @@ public:
         finish_aggregate_report_fetch();
     }
 
-    // Source GPU SAP history was invalidated after a rejected Sc/Dy
-    // frame. Rebuild from the ORIGINAL AABB manager's admitted volumes:
-    // no additional actor/handle pool and no CPU geometry overlap pass.
-    // Every still-live source volume becomes a fresh created handle.
-    // The next Sc geometry publication refreshes all authored bounds.
+    // The rejected Sc/Dy frame invalidates SAP endpoint and aggregate
+    // comparison histories, not Sc ElementSim identities. Re-admit live
+    // single volumes and nonempty aggregate roots to SAP; aggregated
+    // members have their own GPU history and are never SAP endpoints.
     void reset_for_source_rebuild() {
-        if(num_active_aggregates_)
-            throw std::logic_error(
-                "Source aggregate history reconstruction requires aggregate GPU reports");
         added_.clear();
         removed_.clear();
         changed_.clear();
         aggregated_.clear();
+        added_aggregate_members_.resetOrClear();
+        removed_aggregate_members_.resetOrClear();
+        dirty_aggregate_indices_.resetOrClear();
+        dirty_aggregates_.clear();
         for(physx::PxU32 handle=0;handle<groups_.size();++handle) {
-            if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID) {
-                if(!added_.growAndSet(handle))throw std::bad_alloc();
-            } else {
-                // Retired handles have no SAP history after reset.
+            if(groups_[handle]==physx::Bp::FilterGroup::eINVALID) {
+                // Retired handles have no GPU history to preserve.
                 volume_to_actor_[handle]=
                     std::numeric_limits<BodyId>::max();
+                volumes_[handle].reset();
+                continue;
             }
+            if(volumes_[handle].isAggregated()) {
+                if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
+                added_aggregate_members_.pushBack(handle);
+            } else if(volumes_[handle].isAggregate()) {
+                const auto id=volumes_[handle].getAggregateOwner();
+                const auto& aggregate=checked_aggregate(id);
+                if(aggregate.mIndex!=handle)
+                    throw std::logic_error(
+                        "Source aggregate root lost original AABB ownership");
+                if(aggregate.size && !added_.growAndSet(handle))
+                    throw std::bad_alloc();
+            } else if(volumes_[handle].isSingleActor()) {
+                if(!added_.growAndSet(handle))throw std::bad_alloc();
+            } else
+                throw std::logic_error(
+                    "Live source AABB volume has no original shape type");
         }
+        // Source GPU aggregate descriptors and previous-size histories
+        // are invalid even for a root that was retired before rollback.
+        // Re-upload every allocated slot, retaining only live host members.
+        for(physx::PxU32 id=0;id<aggregate_gpu_slot_count_;++id) {
+            auto& aggregate=aggregates_[id];
+            if(aggregate.mIndex!=PX_INVALID_U32) {
+                aggregate.prevSize=0u;
+                aggregate.isNew=true;
+                self_state_uploaded_[id]=false;
+            }
+            mark_aggregate_dirty(id);
+        }
+        aggregate_pair_storage_initialized_=false;
+        aggregate_projection_current_slot_=0u;
         persistent_state_changed_=true;
-        gpu_state_changed_=false;
+        gpu_state_changed_=aggregate_gpu_slot_count_!=0u;
         bounds_.resetChangedState();
     }
 
