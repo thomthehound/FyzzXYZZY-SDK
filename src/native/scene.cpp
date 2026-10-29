@@ -660,6 +660,12 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // wake publications before mutating actor type or graph ownership.
     speculative_islands_.activating_nodes.reserve(actors_.size());
     accurate_islands_.activating_nodes.reserve(actors_.size());
+    // Original ScBodySim switches the AABB group before refiltering its
+    // interactions; do not leave the GPU volume in its previous class.
+    if(gpu_broadphase_)
+        gpu_broadphase_->set_shape_motion(
+            id,enabled ? GpuBroadphaseBox::Motion::Kinematic
+                       : GpuBroadphaseBox::Motion::Dynamic);
     // No target has been authored: the kinematic body has no external
     // motion and is not eligible for Dy solver-body integration.
     erase_shape_friction_history(id);
@@ -762,7 +768,7 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
        actor.rest_offset==rest_offset)return;
     // AABBManagerBase::setContactDistance owns the source GPU changed bit
     // and the new distance; keep that publication ahead of scene edits.
-    if(gpu_broadphase_ && actor.simulation_shape_enabled)
+    if(gpu_broadphase_)
         gpu_broadphase_->mark_shape_bounds_changed(id,contact_offset);
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
