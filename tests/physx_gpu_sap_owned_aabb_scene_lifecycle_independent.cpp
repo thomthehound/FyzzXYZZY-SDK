@@ -1266,6 +1266,15 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(scene.pairs().empty() &&
                         !sceneAabb.source_changed().hasAnyBitSet(),
                         "Source GPU contact-distance edit was not fetched/retired");
+                // Dy integration publishes Sc's next-frame shape bounds
+                // through the SAME original AABB manager changed map.
+                scene.step(1.0f/60.0f);
+                require(sceneAabb.source_changed().hasAnyBitSet(),
+                        "Native Dy afterIntegration did not dirty source GPU bounds");
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        !sceneAabb.source_changed().hasAnyBitSet(),
+                        "Native GPU SAP did not fetch integrated Dy shape bounds");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()
