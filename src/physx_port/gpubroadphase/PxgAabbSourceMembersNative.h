@@ -7,6 +7,7 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_gpu/source_aggregate_member_history_native.h"
+#include "physx_gpu/source_aggregate_projection_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -61,6 +62,13 @@ public:
           aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           added_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           removed_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_keys_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_handles_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_scratch_keys_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_scratch_handles_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_sap_boxes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_start_masks_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_bound_history_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
@@ -406,6 +414,41 @@ public:
             removed_aggregate_members_.size()};
     }
 
+    // Source per-aggregate double-buffered endpoint/membership histories.
+    // Reserved member slices stay stable for the lifetime of the aggregate;
+    // original PxgCudaBuffer growth preserves both slots on the same stream.
+    void queue_aggregate_projection_gpu_storage(SourceSapDmaNative& stream) {
+        const auto members=std::uint64_t(aggregate_gpu_member_capacity_);
+        if(!members)return;
+        if(members>std::numeric_limits<physx::PxU32>::max()/16u)
+            throw std::out_of_range("Original aggregate projection GPU buffers exceed byte range");
+        projection_keys_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
+        projection_handles_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
+        projection_scratch_keys_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        projection_scratch_handles_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        projection_sap_boxes_device_.allocateCopyOldDataAsync(members*16u,stream,PX_FL);
+        // Native-lowered mask slices reserve one word per maximum member,
+        // preserving nonoverlap for aggregates of every admitted capacity.
+        projection_start_masks_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        projection_bound_history_device_.allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+    }
+    SourceAggregateProjectionNativeBuffers aggregate_projection_gpu_buffers(
+        CudaDeviceAddressMap::Address current_integer_bounds) const noexcept {
+        return {current_integer_bounds,
+            aggregate_slots_device_.getDevicePtr(),
+            aggregate_members_device_.getDevicePtr(),
+            projection_keys_device_.getDevicePtr(),
+            projection_handles_device_.getDevicePtr(),
+            projection_scratch_keys_device_.getDevicePtr(),
+            projection_scratch_handles_device_.getDevicePtr(),
+            projection_sap_boxes_device_.getDevicePtr(),
+            projection_start_masks_device_.getDevicePtr(),
+            projection_bound_history_device_.getDevicePtr(),
+            bounds_.size(),aggregate_gpu_slot_count_,
+            aggregate_gpu_member_capacity_,aggregate_gpu_slot_count_,
+            aggregate_projection_current_slot_};
+    }
+
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
     // changed bitmap after its normal preBroadPhase upload. The translated
     // aggregate views point to this owner's actual GPU heap allocations.
@@ -437,6 +480,7 @@ public:
         dirty_aggregates_.clear();
         added_aggregate_members_.resetOrClear();
         removed_aggregate_members_.resetOrClear();
+        if(aggregate_gpu_slot_count_)aggregate_projection_current_slot_^=1u;
         aggregate_ids_.processDeferredIds();
     }
     physx::Cm::PinnableBitMap& source_aggregated() noexcept {
@@ -520,6 +564,7 @@ public:
                 "Aggregate GPU first pass does not borrow original AABB manager arrays");
         queue_aggregate_gpu_dma_up(stream);
         queue_aggregate_member_history_gpu_dma_up(stream);
+        queue_aggregate_projection_gpu_storage(stream);
         auto manager=pre_update(sap);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
@@ -612,6 +657,10 @@ private:
     physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
     physx::PxgCudaBuffer
         added_aggregate_members_device_,removed_aggregate_members_device_;
+    physx::PxgCudaBuffer projection_keys_device_,projection_handles_device_;
+    physx::PxgCudaBuffer projection_scratch_keys_device_,projection_scratch_handles_device_;
+    physx::PxgCudaBuffer projection_sap_boxes_device_,projection_start_masks_device_;
+    physx::PxgCudaBuffer projection_bound_history_device_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
@@ -626,6 +675,7 @@ private:
     std::vector<SourceAggregateGpuNativeRecord> gpu_aggregate_record_staging_;
     physx::PxU32 aggregate_gpu_slot_count_=0u;
     physx::PxU32 aggregate_gpu_member_capacity_=0u;
+    physx::PxU32 aggregate_projection_current_slot_=0u;
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
