@@ -96,7 +96,7 @@ struct Parameters {
     uint currentMasksBias, previousKeysBias, previousHandlesBias, previousMembersBias;
     uint previousMasksBias, previousSizesBias, groupsBias, pairsBias;
     uint countBias, removedRootsBias, removePairsBias, foundBias;
-    uint lostBias, reportsBias, reserved0, reserved1;
+    uint lostBias, reportsBias, gridCount, reserved1;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -220,15 +220,18 @@ void scanDirection(
 }
 [numthreads(32,4,1)]
 void main(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
-    const uint id=block.x*4u+lane.y;
     const uint count=min(pairCount.Load(p.countBias),p.pairCapacity);
-    if(id>=count)return;
+    for(uint id=block.x*4u+lane.y;id<count;id+=p.gridCount*4u) {
     const uint base=p.pairsBias+id*12u;
     const uint a=pairs.Load(base),b=pairs.Load(base+4u);
     const uint flags=pairs.Load(base+8u);
     if((flags&0x0000ff00u)!=0u) {
         if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,0u);
-        return;
+        continue;
+    }
+    if(a>=p.boundsCapacity || b>=p.boundsCapacity) {
+        if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
+        continue;
     }
     // The original AABB owner records aggregate IDs in VolumeData's
     // 32-bit tag after its pointer-sized mUserData. The bit encodings
@@ -252,13 +255,13 @@ void main(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
          ((removedRoots.Load(p.removedRootsBias+(b>>5u)*4u)>>(b&31u))&1u)!=0u);
     if(!valid || removed) {
         if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
-        return;
+        continue;
     }
     // Source pairs are root/root or root/single. A pair of two ordinary
     // single volumes never belongs to the aggregate pair stage.
     if(!aggA && !aggB) {
         if(lane.x==0u)removePairs.Store(p.removePairsBias+id*4u,1u);
-        return;
+        continue;
     }
     const bool shouldRemove=!intersects(a,b,false);
     const bool isNew=(flags&0xffu)!=0u;
@@ -276,5 +279,6 @@ void main(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         removePairs.Store(p.removePairsBias+id*4u,shouldRemove?1u:0u);
         // Original doAggPairCollisions clears isNew in the source slot.
         pairs.Store(base+8u,flags&0xffffff00u);
+    }
     }
 }
