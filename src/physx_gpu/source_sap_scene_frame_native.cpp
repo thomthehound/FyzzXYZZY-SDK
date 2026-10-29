@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_scene_frame_native.h"
+#include "physx_gpu/source_aggregate_post_sap_member_history_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 
@@ -38,6 +40,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     if(members.aabb_owner)
         validate_source_sap_owned_aabb_aliases_native(
             *members.aabb_owner,members.aabb_manager,members.volume_to_actor);
+    if(members.aabb_manager.has_aggregates &&
+       (!members.aabb_owner || !members.aggregate_member_history))
+        throw std::logic_error(
+            "Original aggregate post-SAP history requires source AABB owner and GPU stage");
 
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
@@ -71,6 +77,32 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     const auto admission=advance_source_sap_frame_native(
         members.aabb_update,dma,stream,force_update,stages,
         addresses,members.update);
+    // Original PxgAABBManager::updateBPSecondPass postBPStage2 begins
+    // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
+    // aggregate members must invalidate the descriptor's integer AABB
+    // histories before projection/self/pair collision stages consume them.
+    if(members.aabb_manager.has_aggregates) {
+        const auto address=[](auto pointer) {
+            return static_cast<CudaDeviceAddressMap::Address>(
+                reinterpret_cast<std::uintptr_t>(pointer));
+        };
+        // SAP swaps PxgCudaBuffer owners when a GPU update is enqueued.
+        // Verify that its descriptor continues to designate the GPU
+        // frame's actual current/previous allocations after that swap.
+        const auto current=admission.execute_gpu_stages
+            ? dma.old_integer_bounds.getDevicePtr()
+            : dma.new_integer_bounds.getDevicePtr();
+        const auto previous=admission.execute_gpu_stages
+            ? dma.new_integer_bounds.getDevicePtr()
+            : dma.old_integer_bounds.getDevicePtr();
+        if(address(dma.broadphase_descriptor.newIntegerBounds)!=current ||
+           address(dma.broadphase_descriptor.oldIntegerBounds)!=previous)
+            throw std::logic_error(
+                "Original SAP integer history descriptor differs from source owner after update");
+        append_source_sap_post_aggregate_member_history_native(
+            dma.broadphase_descriptor,*members.aabb_owner,
+            *members.aggregate_member_history,stream,addresses);
+    }
     stream.wait_at_fetch();
 
     // Complete both source bitmap D32 view validations before reporting
