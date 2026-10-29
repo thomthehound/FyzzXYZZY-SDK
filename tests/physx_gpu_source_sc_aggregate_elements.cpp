@@ -201,6 +201,84 @@ void run(Backend backend) {
             require(!sc.element_deleted(root_handle),
                 "Original Sc aggregate root ID was not retired at cleanup");
         }
+        {
+            // A rejected Sc/Dy frame discards GPU histories after the
+            // preceding source fetch. Recreate only standalone SAP
+            // volumes and aggregate roots; their members retain their
+            // original Sc IDs and enter aggregate history admission.
+            PxgAabbSourceMembersNative owner(allocators,16u,32u,64u);
+            SourceScSceneElementsNative sc(owner);
+            const auto root0=sc.create_aggregate(
+                2u,physx::Bp::getFilterGroup_Statics(),1u);
+            const auto root1=sc.create_aggregate(
+                1u,physx::Bp::getFilterGroup_Statics(),0u);
+            sc.admit_aggregate_member(
+                root0,0u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic,0.15f);
+            sc.admit_aggregate_member(
+                root0,1u,fyzz::native::GpuBroadphaseBox::Motion::Dynamic,0.15f);
+            sc.admit_aggregate_member(
+                root1,2u,fyzz::native::GpuBroadphaseBox::Motion::Static,0.0f);
+            sc.admit(3u,fyzz::native::GpuBroadphaseBox::Motion::Static,0.0f);
+            const auto root_handle0=sc.aggregate_root_handle(root0);
+            const auto root_handle1=sc.aggregate_root_handle(root1);
+            const auto member0=sc.handle(0u);
+            const auto member1=sc.handle(1u);
+            const auto member2=sc.handle(2u);
+            const auto ordinary=sc.handle(3u);
+            const std::array<fyzz::native::GpuBroadphaseBox,4> boxes{{
+                box(0u,0.0f,fyzz::native::GpuBroadphaseBox::Motion::Dynamic),
+                box(1u,0.4f,fyzz::native::GpuBroadphaseBox::Motion::Dynamic),
+                box(2u,0.6f,fyzz::native::GpuBroadphaseBox::Motion::Static),
+                box(3u,1.0f,fyzz::native::GpuBroadphaseBox::Motion::Static)
+            }};
+            const physx::Bp::BpFilter filter(false,false);
+            const auto first=owner.prepare(boxes,sc.handles(),filter);
+            require(first.getNumCreatedHandles()==3u,
+                "Original first aggregate source fetch did not admit both roots");
+            // Complete the source host fetch lifecycle; the GPU
+            // reconvergence itself is exercised by the World bundle.
+            owner.complete_fetch(first);
+            require(owner.dirty_aggregate_indices().empty() &&
+                    !owner.source_added().boundedTest(root_handle0),
+                "Original successful fetch did not retire AABB dirty history");
+            sc.mark_changed(0u,0.35f);
+            owner.reset_for_source_rebuild();
+            require(owner.source_added().boundedTest(root_handle0) &&
+                    owner.source_added().boundedTest(root_handle1) &&
+                    owner.source_added().boundedTest(ordinary) &&
+                    !owner.source_added().boundedTest(member0) &&
+                    !owner.source_added().boundedTest(member1) &&
+                    !owner.source_added().boundedTest(member2) &&
+                    owner.source_aggregated().boundedTest(member0) &&
+                    owner.source_aggregated().boundedTest(member1) &&
+                    owner.source_aggregated().boundedTest(member2) &&
+                    owner.dirty_aggregate_indices().size()==2u &&
+                    owner.source_aggregate(root0).isNew &&
+                    owner.source_aggregate(root0).prevSize==0u &&
+                    owner.source_aggregate(root1).isNew &&
+                    sc.handle(0u)==member0 && sc.handle(1u)==member1 &&
+                    sc.handle(2u)==member2,
+                    "Source rollback reconstructed members as SAP endpoints or lost Sc identities");
+            const auto restored=owner.prepare(boxes,sc.handles(),filter);
+            require(restored.getNumCreatedHandles()==3u &&
+                    restored.getCreatedHandles()[0]==root_handle0 &&
+                    restored.getCreatedHandles()[1]==root_handle1 &&
+                    restored.getCreatedHandles()[2]==ordinary &&
+                    owner.volume_to_actor()[member0]==0u &&
+                    owner.volume_to_actor()[member1]==1u &&
+                    owner.volume_to_actor()[member2]==2u &&
+                    owner.scene_bounds().groups[root_handle0]!=
+                        owner.scene_bounds().groups[root_handle1],
+                    "Original AABB rollback did not recreate source aggregate roots");
+            owner.complete_fetch(restored);
+            sc.retire(0u);
+            sc.retire(1u);
+            sc.retire(2u);
+            sc.retire(3u);
+            sc.destroy_aggregate(root0);
+            sc.destroy_aggregate(root1);
+            sc.post_reports_cleanup();
+        }
         heap.flushDeferredDeallocs();
     }
     roots.close(&stream);
