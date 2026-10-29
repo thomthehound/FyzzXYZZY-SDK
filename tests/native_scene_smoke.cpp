@@ -14705,6 +14705,8 @@ int main() {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_removed_actor_without_lost_report();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_persistent_pair_motion_refilter();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_lost_after_kinematic_transition();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_bulk_pair_reports();
     fyzz::native::SourceSapEndpointFixture::verify();
