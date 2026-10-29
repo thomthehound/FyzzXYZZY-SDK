@@ -55,6 +55,7 @@ struct GpuSapSceneAdmissionFixture {
         void admit_shape(BodyId,GpuBroadphaseBox::Motion,float) override {}
         void retire_shape(BodyId) override {}
         void set_shape_simulation_enabled(BodyId,bool) override {}
+        void set_shape_motion(BodyId,GpuBroadphaseBox::Motion) override {}
         void post_reports_cleanup() override {}
         void invalidate_after_rollback() noexcept override {
             ++rollbacks;
