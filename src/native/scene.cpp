@@ -727,6 +727,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     // Quiet frames retain persistent source island handles.
     island_topology_dirty_=true;
     broadphase_endpoint_membership_dirty_=true;
+    if(gpu_broadphase_)gpu_pair_refilter_dirty_=true;
     dirty_=true;
 }
 
@@ -751,6 +752,7 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
         }
     actor.simulation_shape_enabled=enabled;
     broadphase_endpoint_membership_dirty_=true;
+    if(gpu_broadphase_)gpu_pair_refilter_dirty_=true;
     dirty_=true;
 }
 
@@ -912,6 +914,7 @@ void Scene::remove(BodyId id) {
         std::erase(active_kinematic_targets_,id);
         actor.kinematic_tracked=false;
     }
+    if(gpu_broadphase_)gpu_pair_refilter_dirty_=true;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
 }
@@ -1944,18 +1947,21 @@ void Scene::update_gpu_pairs(bool force_update) {
         throw std::overflow_error(
             "Source GPU SAP found/lost report capacity overflow");
 
-    // Source GPU pairs may include non-dynamic overlaps. Found pairs
-    // require a dynamic participant; lost pairs retire members of the
-    // previously published Sc history, even after a motion-class change.
-    // Validate raw ordering before either filter so malformed reports
-    // cannot be hidden by an ineligible overlap.
-    const auto admit=[&](std::span<const Pair> raw,
-                         std::vector<Pair>& kept,bool new_pair) {
-        kept.clear();
+    // GPU reports describe original Bp membership, which includes
+    // overlaps that are currently ineligible for Sc contact managers.
+    // The existing source BP pair hash retains those memberships for
+    // ScShapeSim/ScBodySim refiltering. This is NOT another CPU SAP:
+    // only GPU found/lost reports can insert an overlap.
+    if(sap_pair_registry_dirty_) {
+        // A rejected GPU transaction invalidates the hardware owner.
+        // Reconstruct the consumer's last published Sc state for the
+        // scripted rollback fixture; a real GPU owner must be rebuilt.
+        sap_pairs_.seed(previous_pairs_);
+        sap_pair_registry_dirty_=false;
+    }
+    const auto validate=[&](std::span<const Pair> raw,bool found) {
         Pair last{};
         bool have_last=false;
-        std::size_t previous_index=0;
-        const bool bulk=raw.size()>previous_pairs_.size()/16u;
         for(const Pair pair:raw) {
             if(pair.a>=pair.b || pair.b>=actors_.size() ||
                (have_last && !(last<pair)))
@@ -1963,11 +1969,75 @@ void Scene::update_gpu_pairs(bool force_update) {
                     "Noncanonical or unsorted GPU SAP pair reports");
             last=pair;
             have_last=true;
+            if(found) {
+                const auto& a=actors_[pair.a];
+                const auto& b=actors_[pair.b];
+                if(!a.alive || !b.alive ||
+                   !a.simulation_shape_enabled ||
+                   !b.simulation_shape_enabled ||
+                   a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+                    throw std::invalid_argument(
+                        "GPU SAP found pair references inactive Sc shapes");
+            }
+        }
+    };
+    validate(reports.found,true);
+    validate(reports.lost,false);
+
+    // Keep the original BP overlap hash in sync with GPU membership,
+    // including static/kinematic pairs ignored by Sc's contact filter.
+    // The original SapPairManager coalesces created/removed handles and
+    // compacts them only after the GPU report streams are validated.
+    for(const Pair pair:reports.found)sap_pairs_.add(pair);
+    for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+
+    // GPU volume removal emits no geometric crossing/lost pair. Retire
+    // the BP membership here after an explicit Sc actor/shape edit,
+    // before it can be carried forward as an active contact manager.
+    if(gpu_pair_refilter_dirty_)
+        for(const Pair pair:sap_pairs_.active_pairs) {
+            const Actor& a=actors_[pair.a];
+            const Actor& b=actors_[pair.b];
+            if(!a.alive || !b.alive ||
+               !a.simulation_shape_enabled || !b.simulation_shape_enabled)
+                sap_pairs_.remove(pair);
+        }
+    // These are already-owned source BP scratch vectors. Sc's sorted
+    // delta vectors remain available for normal sparse publication.
+    sap_pairs_.finish(broadphase_candidate_deltas_,
+                      broadphase_crossed_pairs_);
+
+    // PhysX ScShapeSim::updateBPGroup refilters existing overlap
+    // interactions without requiring another endpoint crossing.
+    // This is the only path that walks all GPU-reported BP memberships;
+    // quiet frames and ordinary found/lost reports remain sparse.
+    if(gpu_pair_refilter_dirty_) {
+        pending_pairs_.clear();
+        pending_pairs_.reserve(sap_pairs_.active_pairs.size());
+        for(const Pair pair:sap_pairs_.active_pairs)
+            if(actors_[pair.a].kind==Kind::DynamicBox ||
+               actors_[pair.b].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(pair);
+        std::sort(pending_pairs_.begin(),pending_pairs_.end());
+        broadphase_pair_membership_changed_=
+            pending_pairs_!=previous_pairs_;
+        gpu_pair_refilter_dirty_=false;
+        return;
+    }
+
+    // On ordinary frames Sc consumes only source found/lost deltas.
+    // Lost reports retire previously admitted contacts; reports for
+    // non-dynamic BP overlaps have no contact managers to retire.
+    const auto admit=[&](std::span<const Pair> raw,
+                         std::vector<Pair>& kept,bool new_pair) {
+        kept.clear();
+        std::size_t previous_index=0;
+        const bool bulk=raw.size()>previous_pairs_.size()/16u;
+        for(const Pair pair:raw) {
             if(new_pair &&
                actors_[pair.a].kind!=Kind::DynamicBox &&
                actors_[pair.b].kind!=Kind::DynamicBox)
                 continue;
-
             bool existing;
             if(bulk) {
                 while(previous_index<previous_pairs_.size() &&
@@ -1979,28 +2049,13 @@ void Scene::update_gpu_pairs(bool force_update) {
                 existing=std::binary_search(
                     previous_pairs_.begin(),previous_pairs_.end(),pair);
             }
-            // A lost GPU overlap that was never admitted to Sc has no
-            // contact manager to retire, regardless of its current kind.
             if(!new_pair && !existing)continue;
             if(existing==new_pair)
                 throw std::invalid_argument(
                     "GPU SAP pair report contradicts Sc overlap history");
-            if(new_pair) {
-                const Actor& a=actors_[pair.a];
-                const Actor& b=actors_[pair.b];
-                if(!a.alive || !b.alive ||
-                   !a.simulation_shape_enabled ||
-                   !b.simulation_shape_enabled ||
-                   a.kind==Kind::StaticPlane ||
-                   b.kind==Kind::StaticPlane)
-                    throw std::invalid_argument(
-                        "GPU SAP found pair is not an admitted dynamic overlap");
-            }
             kept.push_back(pair);
         }
     };
-    // Reuse Sc's existing pair-delta scratch storage, with no parallel
-    // GPU membership registry or additional frame history.
     admit(reports.found,sap_created_pairs_,true);
     admit(reports.lost,sap_deleted_pairs_,false);
     const auto& found=sap_created_pairs_;
