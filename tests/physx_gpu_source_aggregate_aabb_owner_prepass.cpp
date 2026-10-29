@@ -135,6 +135,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             aabb.remove_aggregate_member(6u);
             const physx::Bp::BpFilter filter(false,false);
 
+            std::uint32_t projection_frame=0u;
             const auto run_source_prepass=[&](
                 std::initializer_list<physx::PxU32> added_members,
                 std::initializer_list<physx::PxU32> removed_members) {
@@ -246,9 +247,17 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         projection_gpu.current_slot*(2u*m);
                     const auto member_base=projection_gpu.current_slot*m;
                     for(physx::PxU32 j=0;j<expected.size();++j) {
-                        require(sorted[projection_base+j]==expected[j].first &&
-                                sorted_handles[projection_base+j]==expected[j].second,
-                                "Original aggregate projection GPU radix order differs");
+                        if(sorted[projection_base+j]!=expected[j].first ||
+                           sorted_handles[projection_base+j]!=expected[j].second)
+                            throw std::runtime_error(
+                                "Original aggregate projection GPU radix order differs: frame="+
+                                std::to_string(projection_frame)+
+                                " slot="+std::to_string(projection_gpu.current_slot)+
+                                " member="+std::to_string(j)+
+                                " key="+std::to_string(sorted[projection_base+j])+
+                                " expectedKey="+std::to_string(expected[j].first)+
+                                " handle="+std::to_string(sorted_handles[projection_base+j])+
+                                " expectedHandle="+std::to_string(expected[j].second));
                         const auto local=expected[j].second>>3u;
                         const bool is_start=(expected[j].second&1u)!=0u;
                         require(sap_boxes[projection_base+local*2u+
@@ -273,6 +282,7 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 require(stream.submission_stats().command_batches==before+1u,
                         "Original AABB source aggregate stages split GPU command batches");
                 aabb.complete_fetch(update);
+                ++projection_frame;
                 const auto next=aabb.aggregate_projection_gpu_buffers(
                     new_integer_bounds.getDevicePtr());
                 require(next.current_slot==(projection_gpu.current_slot^1u),
