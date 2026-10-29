@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -58,14 +59,22 @@ public:
             7u,compute::StorageBufferViewKind::RawReadWrite);
         descriptor.push_constant_bytes=48u;
         descriptor.shader=std::move(admit_shader);
-        admit_=context.create_compute_pipeline(descriptor);
+        try {
+            admit_=context.create_compute_pipeline(descriptor);
+        }catch(const std::exception& error) {
+            throw std::runtime_error(
+                std::string("Source aggregate pair admit GPU pipeline: ")+
+                error.what());
+        }
         try {
             descriptor.shader=std::move(publish_shader);
             publish_=context.create_compute_pipeline(descriptor);
-        }catch(...) {
+        }catch(const std::exception& error) {
             context.destroy_compute_pipeline(admit_);
             admit_=0;
-            throw;
+            throw std::runtime_error(
+                std::string("Source aggregate pair publish GPU pipeline: ")+
+                error.what());
         }
     }
     ~SourceAggregatePairAdmissionNativeStage() {
