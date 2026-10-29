@@ -157,6 +157,7 @@ public:
         aggregated_.growAndReset(root);
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
+        ++num_active_aggregates_;
         return id;
     }
 
@@ -255,6 +256,7 @@ public:
         aggregate.reset();
         aggregate_max_shapes_[id]=0u;
         aggregate_ids_.deferredFreeID(id);
+        --num_active_aggregates_;
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
     }
@@ -300,11 +302,11 @@ public:
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
         // Aggregate root pairs require source aggregate expansion before
-        // Sc publication. Never reinterpret them as single-actor pairs.
-        for(const auto& aggregate:aggregates_)
-            if(aggregate.size && aggregate.mIndex!=PX_INVALID_U32)
-                throw std::logic_error(
-                    "Source aggregate GPU pair expansion not yet installed");
+        // Sc publication. Even an empty aggregate must not acquire a
+        // single-volume endpoint; keep this O(1) on ordinary scenes.
+        if(num_active_aggregates_)
+            throw std::logic_error(
+                "Source aggregate GPU pair expansion not yet installed");
         // Sc owns actor identity, while PxgAABBManager owns the volume
         // handle. Their persistent admission binding must agree before
         // changing any bounds, groups, handle lists, or GPU descriptors.
@@ -344,13 +346,14 @@ public:
     // D32 retirement commands have been enqueued on the same stream.
     // The GPU frame path owns history rotation and pair publication;
     // there is no second clock, stream wait or pair state in this class.
-    void complete_fetch(const physx::Bp::BroadPhaseUpdateData& update) noexcept {
+    void complete_fetch(const physx::Bp::BroadPhaseUpdateData& update) {
         clear_source_sap_single_volume_report_bitmaps_native(single_volumes());
         retire_source_sap_volume_actor_lifetime_native(actor_lifetime(),update);
         changed_.clear();
         persistent_state_changed_=false;
         gpu_state_changed_=false;
         bounds_.resetChangedState();
+        finish_aggregate_report_fetch();
     }
 
     // Source GPU SAP history was invalidated after a rejected Sc/Dy
@@ -359,6 +362,9 @@ public:
     // Every still-live source volume becomes a fresh created handle.
     // The next Sc geometry publication refreshes all authored bounds.
     void reset_for_source_rebuild() {
+        if(num_active_aggregates_)
+            throw std::logic_error(
+                "Source aggregate history reconstruction requires aggregate GPU reports");
         added_.clear();
         removed_.clear();
         changed_.clear();
@@ -414,6 +420,7 @@ private:
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
+    physx::PxU32 num_active_aggregates_=0u;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
 };
 
