@@ -1207,29 +1207,21 @@ void execute(Context& context, ShaderBinary translateShader,
             {
                 PxgSapSourceMembersNative sceneSap(allocators,32u,16u);
                 PxgAabbSourceMembersNative sceneAabb(allocators,2u);
-                physx::Sc::ObjectIDTracker sceneElements;
-                std::array<std::uint32_t,2> elementData{0u,1u};
-                std::vector<physx::Bp::ShapeHandle> elementHandles(
-                    2u,BP_INVALID_BP_HANDLE);
                 fyzz::native::Scene scene;
-                scene.set_gpu_broadphase(
+                auto sceneProducer=
                     std::make_unique<SourceScGpuBroadphaseProducerNative>(
                         sceneAabb,sceneSap,stream,cohesiveStages,
-                        addresses,context,filter,fillStage,mappedRoots,
-                        elementHandles));
+                        addresses,context,filter,fillStage,mappedRoots);
+                auto* sourceSc=sceneProducer.get();
+                scene.set_gpu_broadphase(std::move(sceneProducer));
                 const auto a=scene.add_dynamic_box(
                     {1.0f,1.0f,1.0f},{0.0f,0.0f,0.0f},1.0f);
                 const auto b=scene.add_dynamic_box(
                     {1.0f,1.0f,1.0f},{1.2f,0.0f,0.0f},1.0f);
                 require(a==0u && b==1u,"Native Sc GPU actor admission changed");
-                for(const fyzz::BodyId actor:{a,b}) {
-                    const auto handle=SourceScElementLifecycleNative::admit(
-                        sceneElements,sceneAabb,actor,actor,0.02f,
-                        fyzz::native::GpuBroadphaseBox::Motion::Dynamic,
-                        &elementData[actor]);
-                    elementHandles[actor]=handle;
-                    require(handle==actor,"Original Sc element ID ordering changed");
-                }
+                require(sourceSc->source_element_handle(a)==0u &&
+                        sourceSc->source_element_handle(b)==1u,
+                        "Native Scene admission did not use original Sc element IDs");
                 scene.advance_collision(true);
                 require(scene.pairs().size()==1u &&
                         scene.pairs().front()==fyzz::native::Pair{0u,1u} &&
@@ -1240,7 +1232,7 @@ void execute(Context& context, ShaderBinary translateShader,
 
                 scene.set_position(b,{6.0f,0.0f,0.0f});
                 require(sceneAabb.source_changed().boundedTest(
-                            elementHandles[b])!=0,
+                            sourceSc->source_element_handle(b))!=0,
                         "Authored Sc transform did not mark the source GPU bitmap");
                 scene.advance_collision(false);
                 require(!sceneAabb.source_changed().hasAnyBitSet(),
@@ -1260,7 +1252,7 @@ void execute(Context& context, ShaderBinary translateShader,
                         "Quiet GPU Sc frame replayed a stale overlap report");
                 scene.set_shape_offsets(b,0.04f,0.0f);
                 require(sceneAabb.source_changed().boundedTest(
-                            elementHandles[b])!=0,
+                            sourceSc->source_element_handle(b))!=0,
                         "Source Sc contact-offset edit missed its GPU changed bitmap");
                 scene.advance_collision(false);
                 require(scene.pairs().empty() &&
@@ -1275,6 +1267,39 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(scene.pairs().empty() &&
                         !sceneAabb.source_changed().hasAnyBitSet(),
                         "Native GPU SAP did not fetch integrated Dy shape bounds");
+                const auto retainedHandle=sourceSc->source_element_handle(b);
+                scene.set_shape_simulation_enabled(b,false);
+                require(sceneAabb.volume_to_actor()[retainedHandle]==b &&
+                        !sourceSc->source_element_deleted(retainedHandle),
+                        "Shape flag refiltering released its Sc element ID");
+                scene.advance_collision(false);
+                scene.set_shape_simulation_enabled(b,true);
+                require(sourceSc->source_element_handle(b)==retainedHandle &&
+                        sceneAabb.volume_to_actor()[retainedHandle]==b,
+                        "Re-enabled shape lost its original Sc element ID");
+                scene.advance_collision(false);
+
+                // Sc::ElementSim releases the ID at actor retirement,
+                // but the GPU AABB manager retains its actor identity
+                // until lost reports are fetched and published.
+                scene.remove(b);
+                require(sourceSc->source_element_deleted(retainedHandle) &&
+                        sceneAabb.volume_to_actor()[retainedHandle]==b,
+                        "Actor retirement discarded GPU report identity early");
+                scene.advance_collision(false);
+                require(!sourceSc->source_element_deleted(retainedHandle) &&
+                        sceneAabb.volume_to_actor()[retainedHandle]==
+                            std::numeric_limits<fyzz::BodyId>::max(),
+                        "Sc postReportsCleanup missed deferred GPU ID retirement");
+                const auto c=scene.add_dynamic_box(
+                    {1.0f,1.0f,1.0f},{1.2f,0.0f,0.0f},1.0f);
+                require(c==2u &&
+                        sourceSc->source_element_handle(c)==retainedHandle,
+                        "Original Sc element ID not recycled after GPU fetch");
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.pairs().front()==fyzz::native::Pair{a,c},
+                        "Source recycled Sc element did not produce GPU overlap");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()
