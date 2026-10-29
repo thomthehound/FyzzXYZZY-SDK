@@ -11,7 +11,12 @@
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
 #include "physx_port/lowlevelaabb/include/BpSourceBoundsArrayNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
+#include "physx_port/gpubroadphase/include/PxgAggregate.h"
+#include "physx_port/common/src/CmIDPool.h"
+#include "foundation/PxMemory.h"
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -20,11 +25,13 @@
 namespace fyzz::physx_gpu {
 
 // Persistent original PxgAABBManager/AABBManagerBase member storage for
-// single-actor GPU broadphase volumes. The original BoundsArray, pinned
+// GPU broadphase volumes. The original BoundsArray, pinned
 // group/distance/VolumeData arrays, PinnableBitMaps, PinnableArray handle
 // lists and PxgCudaBuffers have ONE owner for the lifetime of a scene.
 // Source shape handles originate at Sc/Bp admission, not from a second
-// SAP allocator. Aggregate admission is intentionally unsupported.
+// SAP allocator. Aggregate members use original PxgAggregate records and
+// deferred aggregate IDs; GPU aggregate collision/report publication remains
+// gated until the source aggregate device buffers and tasks are connected.
 class PxgAabbSourceMembersNative final {
 public:
     explicit PxgAabbSourceMembersNative(
@@ -44,8 +51,13 @@ public:
           removed_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           changed_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregated_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          volumes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE) {
+          volumes_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
+          dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
+    }
+    ~PxgAabbSourceMembersNative() {
+        for(auto& aggregate:aggregates_)aggregate.reset();
     }
     PxgAabbSourceMembersNative(const PxgAabbSourceMembersNative&)=delete;
     PxgAabbSourceMembersNative& operator=(const PxgAabbSourceMembersNative&)=delete;
@@ -105,6 +117,168 @@ public:
             single_volumes(),actor_lifetime(),handle,
             contact_distance,group,user_data,actor);
     }
+    // PxgAABBManager::createAggregate. An empty aggregate has no BP
+    // endpoint; its root enters SAP only when its first member arrives.
+    physx::Bp::AggregateHandle create_aggregate(
+        physx::Bp::BoundsIndex root,
+        physx::Bp::FilterGroup::Enum group,
+        void* user_data,physx::PxU32 max_shapes,
+        physx::PxU32 env_id=PX_INVALID_U32,
+        physx::PxU32 filter_hint=0u) {
+        if(!max_shapes || group==physx::Bp::FilterGroup::eINVALID ||
+           !user_data || (reinterpret_cast<std::uintptr_t>(user_data)&3u) ||
+           root>=BP_INVALID_BP_HANDLE-1u)
+            throw std::invalid_argument("Original source aggregate root admission invalid");
+        reserve_shapes(root+1u);
+        if(groups_[root]!=physx::Bp::FilterGroup::eINVALID)
+            throw std::logic_error("Source aggregate root already admitted");
+        const auto id=aggregate_ids_.getNewID();
+        if(id>=std::numeric_limits<physx::PxU32>::max()/2u)
+            throw std::out_of_range("PhysX aggregate ID exceeds VolumeData encoding");
+        if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
+        if(aggregate_max_shapes_.size()<=id)
+            aggregate_max_shapes_.resize(2u*id+1u);
+        auto& aggregate=aggregates_[id];
+        aggregate.reset();
+        aggregate.updateBoundIndices=PX_ALLOCATE(
+            physx::PxU32,max_shapes,"updateBoundIndices");
+        if(!aggregate.updateBoundIndices)throw std::bad_alloc();
+        aggregate.mIndex=root;
+        aggregate.filterHint=filter_hint;
+        aggregate.mEnvID=env_id;
+        aggregate_max_shapes_[id]=max_shapes;
+        volumes_[root].setUserData(user_data);
+        volumes_[root].setVolumeType(physx::Bp::ElementType::eSHAPE);
+        volumes_[root].setAggregate(id);
+        groups_[root]=group;
+        distances_[root]=0.0f;
+        bounds_.setBounds(physx::PxBounds3::empty(),root);
+        added_.growAndReset(root);
+        aggregated_.growAndReset(root);
+        persistent_state_changed_=true;
+        mark_aggregate_dirty(id);
+        return id;
+    }
+
+    // PxgAABBManager::addBounds aggregate branch. Members are never
+    // independent SAP boxes: the first member registers the root only.
+    void admit_aggregate_member(
+        physx::Bp::AggregateHandle id,
+        physx::Bp::ShapeHandle handle,BodyId actor,
+        physx::PxReal contact_distance,
+        physx::Bp::FilterGroup::Enum group,void* user_data) {
+        auto& aggregate=checked_aggregate(id);
+        if(!user_data || (reinterpret_cast<std::uintptr_t>(user_data)&3u) ||
+           group==physx::Bp::FilterGroup::eINVALID ||
+           !std::isfinite(contact_distance) || contact_distance<0.0f ||
+           handle==aggregate.mIndex ||
+           handle>=BP_INVALID_BP_HANDLE-1u ||
+           aggregate.size>=aggregate_max_shapes_[id])
+            throw std::invalid_argument("Invalid original aggregate member admission");
+        reserve_shapes(handle+1u);
+        if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID ||
+           volume_to_actor_[handle]!=std::numeric_limits<BodyId>::max())
+            throw std::logic_error("Source aggregate member handle already live");
+        if(!aggregate.size) {
+            if(removed_.boundedTest(aggregate.mIndex))
+                removed_.boundedReset(aggregate.mIndex);
+            else if(!added_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
+        } else if(!added_.boundedTest(aggregate.mIndex)) {
+            if(!changed_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
+        }
+        if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
+        auto& volume=volumes_[handle];
+        volume.setUserData(user_data);
+        volume.setVolumeType(physx::Bp::ElementType::eSHAPE);
+        volume.setAggregated(id);
+        groups_[handle]=group;
+        distances_[handle]=contact_distance;
+        volume_to_actor_[handle]=actor;
+        aggregate.updateBoundIndices[aggregate.size++]=handle;
+        mark_aggregate_dirty(id);
+        persistent_state_changed_=true;
+    }
+
+    // PxgAABBManager::removeBounds: swap-with-last source member removal.
+    // Removing the final member cancels an unpublished root or retires
+    // the previously published root at the normal BP fetch boundary.
+    bool remove_aggregate_member(physx::Bp::ShapeHandle handle) {
+        if(handle>=volumes_.size() || !volumes_[handle].isAggregated() ||
+           groups_[handle]==physx::Bp::FilterGroup::eINVALID)
+            throw std::invalid_argument("Original aggregate member is not live");
+        const auto id=volumes_[handle].getAggregateOwner();
+        auto& aggregate=checked_aggregate(id);
+        physx::PxU32 i=0u;
+        while(i<aggregate.size && aggregate.updateBoundIndices[i]!=handle)++i;
+        if(i==aggregate.size)throw std::logic_error(
+            "Source aggregate VolumeData differs from member array");
+        aggregate.updateBoundIndices[i]=
+            aggregate.updateBoundIndices[--aggregate.size];
+        if(!aggregate.size) {
+            if(added_.boundedTest(aggregate.mIndex))
+                added_.boundedReset(aggregate.mIndex);
+            else if(!removed_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
+            changed_.boundedReset(aggregate.mIndex);
+        }else if(!removed_.boundedTest(aggregate.mIndex)) {
+            if(!changed_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
+        }
+        changed_.boundedReset(handle);
+        aggregated_.boundedReset(handle);
+        groups_[handle]=physx::Bp::FilterGroup::eINVALID;
+        distances_[handle]=0.0f;
+        volumes_[handle].reset();
+        bounds_.setBounds(physx::PxBounds3::empty(),handle);
+        volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
+        mark_aggregate_dirty(id);
+        persistent_state_changed_=true;
+        return aggregate.size==0u;
+    }
+
+    // PxgAABBManager::destroyAggregate requires all member bounds
+    // retired; ID reuse remains deferred until source post-fetch cleanup.
+    void destroy_aggregate(physx::Bp::AggregateHandle id) {
+        auto& aggregate=checked_aggregate(id);
+        if(aggregate.size)
+            throw std::logic_error("Cannot destroy original aggregate with live members");
+        const auto root=aggregate.mIndex;
+        added_.boundedReset(root);
+        changed_.boundedReset(root);
+        aggregated_.boundedReset(root);
+        groups_[root]=physx::Bp::FilterGroup::eINVALID;
+        distances_[root]=0.0f;
+        volumes_[root].reset();
+        bounds_.setBounds(physx::PxBounds3::empty(),root);
+        aggregate.reset();
+        aggregate_max_shapes_[id]=0u;
+        aggregate_ids_.deferredFreeID(id);
+        persistent_state_changed_=true;
+        mark_aggregate_dirty(id);
+    }
+
+    const physx::PxgAggregate& source_aggregate(
+        physx::Bp::AggregateHandle id) const {
+        if(id>=aggregates_.size())throw std::out_of_range(
+            "Original PxgAggregate slot unavailable");
+        return aggregates_[id];
+    }
+    std::span<const physx::PxU32> dirty_aggregate_indices() const noexcept {
+        return {dirty_aggregate_indices_.begin(),dirty_aggregate_indices_.size()};
+    }
+    void finish_aggregate_report_fetch() {
+        for(const auto id:dirty_aggregate_indices())
+            aggregates_[id].isNew=false;
+        dirty_aggregate_indices_.resetOrClear();
+        dirty_aggregates_.clear();
+        aggregate_ids_.processDeferredIds();
+    }
+    physx::Cm::PinnableBitMap& source_aggregated() noexcept {
+        return aggregated_;
+    }
+
     bool remove(physx::Bp::ShapeHandle handle) {
         return remove_source_sap_single_volume_actor_native(
             single_volumes(),actor_lifetime(),handle);
@@ -125,6 +299,12 @@ public:
         if(live.size()!=handles.size())
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
+        // Aggregate root pairs require source aggregate expansion before
+        // Sc publication. Never reinterpret them as single-actor pairs.
+        for(const auto& aggregate:aggregates_)
+            if(aggregate.isValid())
+                throw std::logic_error(
+                    "Source aggregate GPU pair expansion not yet installed");
         // Sc owns actor identity, while PxgAABBManager owns the volume
         // handle. Their persistent admission binding must agree before
         // changing any bounds, groups, handle lists, or GPU descriptors.
@@ -204,6 +384,19 @@ public:
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
 private:
+    physx::PxgAggregate& checked_aggregate(physx::Bp::AggregateHandle id) {
+        if(id>=aggregates_.size() ||
+           aggregates_[id].mIndex==PX_INVALID_U32)
+            throw std::out_of_range("Original PhysX aggregate handle is inactive");
+        return aggregates_[id];
+    }
+    void mark_aggregate_dirty(physx::Bp::AggregateHandle id) {
+        if(!dirty_aggregates_.boundedTest(id)) {
+            if(!dirty_aggregates_.growAndSet(id))throw std::bad_alloc();
+            dirty_aggregate_indices_.pushBack(id);
+        }
+    }
+
     physx::Bp::SourceBoundsArrayNative bounds_;
     physx::Cm::PinnableArray<physx::PxReal> distances_;
     physx::Cm::PinnableArray<physx::Bp::FilterGroup::Enum> groups_;
@@ -214,6 +407,13 @@ private:
     physx::PxgCudaBuffer aggregated_device_,volumes_device_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
+    // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
+    // dirty indices are drained only after source GPU fetch.
+    physx::PxArray<physx::PxgAggregate> aggregates_;
+    std::vector<physx::PxU32> aggregate_max_shapes_;
+    physx::Cm::DeferredIDPool aggregate_ids_;
+    physx::Cm::PinnableBitMap dirty_aggregates_;
+    physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
 };
 
