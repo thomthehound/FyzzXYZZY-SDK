@@ -898,11 +898,14 @@ struct Context::Impl {
 
     void destroy_pipeline(PipelineId id) {
         get_pipeline(id);
-        // A removed D3D12 device cannot complete outstanding fences.
-        // Pipeline COM resources can still be released; do not let a
-        // cleanup wait throw during unwinding and hide the dispatch fault.
-        if (SUCCEEDED(device->GetDeviceRemovedReason()))
-            wait_all();
+        // A removed D3D12 device or a queue whose completion signal
+        // failed cannot complete outstanding fences. Preserve the PSO
+        // and root signature in the Context until final COM teardown;
+        // no stage destructor may retry that impossible fence wait.
+        if(first_unsignaled_fence ||
+           FAILED(device->GetDeviceRemovedReason()))
+            return;
+        wait_all();
         pipelines.erase(id);
     }
 

@@ -1484,6 +1484,21 @@ void execute(Context& context, ShaderBinary translateShader,
             !aborted && !foundation.errors.reported,
             "Created SAP GPU frame leaked native resources");
 }
+void verify_source_shutdown_after_failed_submission(Backend backend) {
+    Context context(backend);
+    CudaDeviceAddressMap addresses;
+    SourceSapDmaNative stream(context,addresses);
+    require(stream.finish_shutdown(),
+            "Clean source GPU stream failed shutdown");
+    // A rejected source batch leaves its commands queued. Destruction must
+    // not resubmit that same invalid work after the first backend failure.
+    stream.commands().emplace_back(CopyCommand{0,0,0,0,4});
+    require(!stream.finish_shutdown() && stream.commands().empty(),
+            "Failed source stream could not abandon unsubmitted work");
+    require(stream.submit()==0 && stream.finish_shutdown(),
+            "Source stream retried failed commands during retirement");
+}
+
 void verify_owned_source_world(
     Backend backend,const std::array<const char*,34>& filenames) {
     bool rejected_missing_stages=false;
@@ -1553,6 +1568,13 @@ int main(int argc, char** argv) {
                 load_shader(argv[29]), load_shader(argv[30]),
                 load_shader(argv[31]), load_shader(argv[32]),
                 load_shader(argv[33]), load_shader(argv[34]));
+        verify_source_shutdown_after_failed_submission(
+#if defined(FYZZXYZZY_TEST_D3D12)
+            Backend::D3D12
+#else
+            Backend::Vulkan
+#endif
+        );
         std::array<const char*,34> filenames{};
         for(std::size_t i=0;i<filenames.size();++i)
             filenames[i]=argv[i+1u];

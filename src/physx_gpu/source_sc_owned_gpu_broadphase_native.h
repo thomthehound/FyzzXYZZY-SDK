@@ -114,12 +114,20 @@ public:
         // Original report-retirement commands remain on the source stream
         // after Sc publication. Complete them before releasing SAP/AABB
         // allocations, pipeline objects or the owning native Context.
-        stream_.wait_at_fetch();
+        // A failed queue/fence was already reported by the frame; teardown
+        // must not terminate while unwinding that exception. The Context
+        // retains submitted resources until its own final queue cleanup.
+        (void)stream_.finish_shutdown();
         aabb_.reset();
         sap_.reset();
         manager_->flushDeferredDeallocs();
         manager_.reset();
-        device_roots_.close(&stream_);
+        try {
+            device_roots_.close(&stream_);
+        } catch (...) {
+            // SourcePhysxHeapRoots owns all remaining roots and performs
+            // non-throwing retirement during member destruction.
+        }
     }
 
     native::GpuBroadphaseReports advance(
