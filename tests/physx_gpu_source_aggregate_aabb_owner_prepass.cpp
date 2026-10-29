@@ -317,13 +317,21 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             // remain byte-identical after every source heap allocation grows.
             const auto previous_slot=aabb.aggregate_projection_gpu_buffers(
                 new_integer_bounds.getDevicePtr(),true);
-            std::array<physx::PxU32,6> before_growth{};
-            {
-                const auto view=addresses.resolve(
-                    previous_slot.sorted_projections,sizeof(before_growth));
-                context.download(view.buffer,view.offset,
-                    before_growth.data(),sizeof(before_growth));
-            }
+            const auto sample_previous=[&](
+                const SourceAggregateProjectionNativeBuffers& slot) {
+                std::array<std::array<physx::PxU32,6>,5> saved{};
+                const std::array<CudaDeviceAddressMap::Address,5> pointers{
+                    slot.sorted_projections,slot.sorted_handles,
+                    slot.sap_boxes,slot.start_masks,slot.bound_index_history};
+                for(std::size_t i=0;i<pointers.size();++i) {
+                    const auto view=addresses.resolve(
+                        pointers[i],sizeof(saved[i]));
+                    context.download(view.buffer,view.offset,
+                                     saved[i].data(),sizeof(saved[i]));
+                }
+                return saved;
+            };
+            const auto before_growth=sample_previous(previous_slot);
             const auto empty_id=aabb.create_aggregate(
                 7u,physx::Bp::getFilterGroup_Statics(),elements.data(),8u);
 
@@ -341,15 +349,9 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 new_integer_bounds.getDevicePtr());
             require(preserved_slot.member_capacity>previous_slot.member_capacity,
                     "Aggregate reserved membership did not grow across GPU frames");
-            std::array<physx::PxU32,6> after_growth{};
-            {
-                const auto view=addresses.resolve(
-                    preserved_slot.sorted_projections,sizeof(after_growth));
-                context.download(view.buffer,view.offset,
-                    after_growth.data(),sizeof(after_growth));
-            }
+            const auto after_growth=sample_previous(preserved_slot);
             require(after_growth==before_growth,
-                    "Original previous aggregate projection history was lost on GPU heap growth");
+                    "Original previous aggregate projection, handles, SAP boxes, masks or member history was lost on GPU heap growth");
             require((download_changed()&(1u<<3u))!=0u,
                     "Aggregate root changed bit was lost on persistent frame");
 
