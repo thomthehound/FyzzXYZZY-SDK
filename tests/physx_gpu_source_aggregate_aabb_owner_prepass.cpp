@@ -240,10 +240,10 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     }
                     std::stable_sort(expected.begin(),expected.end(),
                         [](const auto& a,const auto& b){return a.first<b.first;});
+                    // This fixture's first original aggregate owns the
+                    // first reserved source member slice.
                     const auto projection_base=
-                        projection_gpu.current_slot*(2u*m)+
-                        2u*projection_gpu.member_capacity*
-                            0u; // Aggregate 0 begins at the first reserved slice.
+                        projection_gpu.current_slot*(2u*m);
                     const auto member_base=projection_gpu.current_slot*m;
                     for(physx::PxU32 j=0;j<expected.size();++j) {
                         require(sorted[projection_base+j]==expected[j].first &&
