@@ -17,6 +17,7 @@
 namespace fyzz::physx_gpu {
 class PxgAabbSourceMembersNative;
 class PxgSapSourceMembersNative;
+class SourceAggregateGpuNativeStage;
 class SourceAggregateMemberHistoryNativeStage;
 class SourceAggregateProjectionNativeStage;
 class SourceAggregateSelfCollisionNativeStage;
@@ -24,6 +25,19 @@ class SourceAggregateReportCopyNativeStage;
 class SourceAggregatePairAdmissionNativeStage;
 class SourceAggregatePersistentCollisionNativeStage;
 class SourceAggregatePairRetirementNativeStage;
+
+// Original aggregate stages are owned by the same device Context as SAP.
+// This borrows kernel pipelines; it never owns a second GPU stream.
+struct SourceSapAggregateStagesNative {
+    const SourceAggregateGpuNativeStage& bounds;
+    const SourceAggregateMemberHistoryNativeStage& member_history;
+    const SourceAggregateProjectionNativeStage& projection;
+    const SourceAggregateSelfCollisionNativeStage& self_collision;
+    const SourceAggregateReportCopyNativeStage& report_copy;
+    const SourceAggregatePairAdmissionNativeStage& pair_admission;
+    const SourceAggregatePersistentCollisionNativeStage& pair_collisions;
+    const SourceAggregatePairRetirementNativeStage& pair_retirement;
+};
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -101,6 +115,7 @@ struct SourceSapOwnedSceneFrameNativeInputs {
     const SourceFillD32NativeStage& bitmap_fill;
     SourceSapMappedReportView& mapped_reports;
     bool abort_mode=false;
+    const SourceSapAggregateStagesNative* aggregate_stages=nullptr;
 };
 
 SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(

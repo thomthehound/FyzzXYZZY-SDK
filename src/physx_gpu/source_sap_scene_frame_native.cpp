@@ -256,7 +256,16 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     const auto lifetime=aabb.actor_lifetime();
     // SourceSapSceneFrameNativeMembers borrows this view by reference;
     // keep the borrowed original member aliases alive through GPU fetch.
-    const auto pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
+    const auto source_pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
+    if(source_pre_update.has_aggregates && !inputs.aggregate_stages)
+        throw std::logic_error(
+            "Original aggregate Sc frame requires the complete source GPU kernel bundle");
+    const auto pre_update=source_pre_update.has_aggregates
+        ? aabb.aggregate_pre_update(
+            update,sap.pre_broadphase_buffers(),
+            inputs.aggregate_stages->bounds,addresses,stream)
+        : source_pre_update;
+    const auto* aggregate=inputs.aggregate_stages;
     const SourceSapSceneFrameNativeMembers members{
         update,
         pre_update,
@@ -271,7 +280,14 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         {},{}, // bitmap device aliases resolve after preBpUpdate_GPU
         &inputs.mapped_reports,
         inputs.abort_mode,
-        &aabb
+        &aabb,
+        aggregate?&aggregate->member_history:nullptr,
+        aggregate?&aggregate->projection:nullptr,
+        aggregate?&aggregate->self_collision:nullptr,
+        aggregate?&aggregate->report_copy:nullptr,
+        aggregate?&aggregate->pair_admission:nullptr,
+        aggregate?&aggregate->pair_collisions:nullptr,
+        aggregate?&aggregate->pair_retirement:nullptr
     };
     return advance_source_sap_scene_frame_native(
         members,stream,sap.force_update(),stages,addresses,context);

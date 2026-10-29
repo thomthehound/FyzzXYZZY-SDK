@@ -54,10 +54,12 @@ public:
         compute::Context& context,
         const physx::Bp::BpFilter& filter,
         const SourceFillD32NativeStage& bitmap_fill,
-        SourceSapMappedReportView& mapped_reports)
+        SourceSapMappedReportView& mapped_reports,
+        const SourceSapAggregateStagesNative* aggregate_stages=nullptr)
         : aabb_(aabb),sap_(sap),stream_(stream),stages_(stages),
           addresses_(addresses),context_(context),filter_(filter),
           bitmap_fill_(bitmap_fill),mapped_reports_(mapped_reports),
+          aggregate_stages_(aggregate_stages),
           source_sc_elements_(std::make_unique<SourceScSceneElementsNative>(aabb)) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument(
@@ -105,7 +107,7 @@ public:
             last_frame_=advance_source_sap_owned_scene_frame_native(
                 aabb_,sap_,
                 {live_boxes,handles_,filter_,source_frame,found_,lost_,
-                 bitmap_fill_,mapped_reports_,false},
+                 bitmap_fill_,mapped_reports_,false,aggregate_stages_},
                 stream_,stages_,addresses_,context_);
         } catch(...) {
             // The source GPU submission and fetch may already have advanced.
@@ -200,6 +202,7 @@ private:
     const physx::Bp::BpFilter& filter_;
     const SourceFillD32NativeStage& bitmap_fill_;
     SourceSapMappedReportView& mapped_reports_;
+    const SourceSapAggregateStagesNative* aggregate_stages_=nullptr;
     std::unique_ptr<SourceScSceneElementsNative> source_sc_elements_;
     const std::vector<physx::Bp::ShapeHandle>* sc_actor_element_ids_=nullptr;
     std::vector<physx::Bp::ShapeHandle> handles_;

@@ -55,56 +55,73 @@ constexpr std::array<std::string_view,
     "IncrementalPairs",
     "ClearNewFlags",
 }};
+constexpr std::array<std::string_view,
+    static_cast<std::size_t>(NativeGpuAggregateStage::Count)> aggregate_stage_names{{
+    "Bounds","MarkBounds","MemberHistory","Projection","SelfCollision",
+    "PairAdmit","PairPublish","PersistentCollisions","PairRetireHistogram",
+    "PairRetireMark","PairRetirePublish","CopyReports"
+}};
 
-} // namespace
-
-NativeGpuSapShaders load_native_gpu_sap_shaders(
-    compute::Backend backend,const std::filesystem::path& manifest_path) {
+template<std::size_t Count>
+std::array<compute::ShaderBinary,Count> load_source_shader_bundle(
+    compute::Backend backend,const std::filesystem::path& manifest_path,
+    std::string_view source_name,std::string_view source_header,
+    const std::array<std::string_view,Count>& names) {
     if(backend!=compute::Backend::Vulkan &&
        backend!=compute::Backend::D3D12)
-        throw std::invalid_argument("Unknown native GPU SAP backend");
-
+        throw std::invalid_argument("Unknown native GPU backend");
+    const auto prefix="Native GPU "+std::string(source_name);
     std::ifstream manifest(manifest_path);
     if(!manifest)
-        throw std::runtime_error("Native GPU SAP shader manifest is missing");
+        throw std::runtime_error(prefix+" shader manifest is missing");
     std::string line;
-    const auto expected_header=backend==compute::Backend::Vulkan
-        ? "FYZZXYZZY_SOURCE_SAP_1 SPIRV"
-        : "FYZZXYZZY_SOURCE_SAP_1 DXIL";
+    const auto expected_header=std::string(source_header)+
+        (backend==compute::Backend::Vulkan?" SPIRV":" DXIL");
     if(!std::getline(manifest,line) || line!=expected_header)
-        throw std::invalid_argument(
-            "Native GPU SAP shader manifest backend/version mismatch");
-
-    NativeGpuSapShaders shaders{};
+        throw std::invalid_argument(prefix+" shader manifest backend/version mismatch");
     const auto format=backend==compute::Backend::Vulkan
         ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
-    for(std::size_t i=0;i<source_stage_names.size();++i) {
+    std::array<compute::ShaderBinary,Count> shaders{};
+    for(std::size_t i=0;i<Count;++i) {
         if(!std::getline(manifest,line))
-            throw std::invalid_argument("Native GPU SAP shader manifest is incomplete");
+            throw std::invalid_argument(prefix+" shader manifest is incomplete");
         std::istringstream tokens(line);
         std::string stage,filename,extra;
         if(!(tokens>>stage>>filename) || tokens>>extra ||
-           stage!=source_stage_names[i] ||
-           filename=="." || filename==".." ||
+           stage!=names[i] || filename=="." || filename==".." ||
            std::filesystem::path(filename).filename()!=filename)
-            throw std::invalid_argument(
-                "Native GPU SAP shader manifest stage or path mismatch");
+            throw std::invalid_argument(prefix+" shader manifest stage or path mismatch");
         const auto asset=manifest_path.parent_path()/filename;
         std::ifstream file(asset,std::ios::binary);
         if(!file)
             throw std::runtime_error(
-                "Missing native source SAP compiled shader: "+asset.string());
+                "Missing native source "+std::string(source_name)+
+                " compiled shader: "+asset.string());
         shaders[i].format=format;
-        shaders[i].bytes.assign(
-            std::istreambuf_iterator<char>(file),
-            std::istreambuf_iterator<char>());
+        shaders[i].bytes.assign(std::istreambuf_iterator<char>(file),
+                                std::istreambuf_iterator<char>());
         if(shaders[i].bytes.empty() || file.bad())
-            throw std::runtime_error(
-                "Empty or unreadable native source SAP shader: "+asset.string());
+            throw std::runtime_error("Empty or unreadable native source "+
+                std::string(source_name)+" shader: "+asset.string());
     }
     if(std::getline(manifest,line))
-        throw std::invalid_argument("Native GPU SAP shader manifest has extra stages");
+        throw std::invalid_argument(prefix+" shader manifest has extra stages");
     return shaders;
+}
+
+} // namespace
+
+NativeGpuSapShaders load_native_gpu_sap_shaders(
+    compute::Backend backend,const std::filesystem::path& manifest) {
+    return load_source_shader_bundle(
+        backend,manifest,"SAP","FYZZXYZZY_SOURCE_SAP_1",source_stage_names);
+}
+
+NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
+    compute::Backend backend,const std::filesystem::path& manifest) {
+    return load_source_shader_bundle(
+        backend,manifest,"aggregate","FYZZXYZZY_SOURCE_AGGREGATE",
+        aggregate_stage_names);
 }
 
 World create_native_gpu_world(
@@ -130,6 +147,37 @@ World create_native_gpu_world(
     return World(create_native_gpu_broadphase_backend(
         std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,std::move(shaders)),
+        options.contact_notifications,options.enhanced_determinism,
+        options.pcm_plane_box,options.pcm_box_box));
+}
+
+World create_native_gpu_world(
+    compute::Backend backend,const std::filesystem::path& sap_manifest,
+    const std::filesystem::path& aggregate_manifest,WorldOptions options) {
+    return create_native_gpu_world(
+        backend,load_native_gpu_sap_shaders(backend,sap_manifest),
+        load_native_gpu_aggregate_shaders(backend,aggregate_manifest),options);
+}
+
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuAggregateShaders aggregates,WorldOptions options) {
+    if(options.execution!=ExecutionMode::NativePortableGpu)
+        throw std::invalid_argument(
+            "Native GPU World requires NativePortableGpu execution");
+    const auto format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    for(const auto& shader:sap)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument(
+                "Native GPU SAP requires the complete compiled backend shader set");
+    for(const auto& shader:aggregates)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument(
+                "Native GPU aggregate requires the complete compiled backend shader set");
+    return World(create_native_gpu_broadphase_backend(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,std::move(sap),32768u,32768u,std::move(aggregates)),
         options.contact_notifications,options.enhanced_determinism,
         options.pcm_plane_box,options.pcm_box_box));
 }

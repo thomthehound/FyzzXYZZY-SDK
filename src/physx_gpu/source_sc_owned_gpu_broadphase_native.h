@@ -3,6 +3,7 @@
 #pragma once
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
+#include "physx_gpu/source_sap_aggregate_owned_stages_native.h"
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "physx_foundation_lifetime.h"
 #include "physx_gpu/source_physx_root_callback.h"
@@ -55,7 +56,8 @@ public:
     explicit SourceScOwnedGpuBroadphaseNative(
         compute::Backend backend,SourceSapShaderBinaries shaders,
         std::uint32_t max_pairs=32768u,
-        std::uint32_t max_aggregate_pairs=32768u)
+        std::uint32_t max_aggregate_pairs=32768u,
+        std::optional<NativeGpuAggregateShaders> aggregate_shaders=std::nullopt)
         : foundation_(physx_runtime::acquire_foundation()),
           context_(backend),
           stream_(context_,addresses_),
@@ -68,7 +70,9 @@ public:
           allocators_(physx::PxgCreateAllocatorDesc(*manager_)),
           sap_(std::make_unique<PxgSapSourceMembersNative>(
               allocators_,max_pairs,max_aggregate_pairs)),
-          aabb_(std::make_unique<PxgAabbSourceMembersNative>(allocators_)),
+          aabb_(std::make_unique<PxgAabbSourceMembersNative>(
+              allocators_,0u,aggregate_shaders?max_aggregate_pairs:0u,
+              aggregate_shaders?max_aggregate_pairs:0u)),
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
@@ -101,9 +105,14 @@ public:
                   comparisons_,incremental_,indices_,created_,regions_,
                   clear_,reports_},
           filter_(false,false),
+          aggregate_stages_(aggregate_shaders
+              ? std::make_unique<SourceSapAggregateOwnedStagesNative>(
+                  context_,std::move(*aggregate_shaders))
+              : nullptr),
           producer_(std::make_unique<SourceScGpuBroadphaseProducerNative>(
               *aabb_,*sap_,stream_,stages_,addresses_,context_,filter_,
-              fill_,mapped_roots_)) {}
+              fill_,mapped_roots_,
+              aggregate_stages_?&aggregate_stages_->borrowed():nullptr)) {}
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
     SourceScOwnedGpuBroadphaseNative& operator=(
@@ -197,6 +206,7 @@ private:
     SourceClearNewFlagsNativeStage clear_;
     SourceSapUpdateNativeStages stages_;
     physx::Bp::BpFilter filter_;
+    std::unique_ptr<SourceSapAggregateOwnedStagesNative> aggregate_stages_;
     std::unique_ptr<SourceScGpuBroadphaseProducerNative> producer_;
 };
 
