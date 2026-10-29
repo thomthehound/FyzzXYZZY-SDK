@@ -240,6 +240,87 @@ struct GpuSapSceneAdmissionFixture {
                 "GPU SAP non-dynamic filter masked malformed raw reports");
     }
 
+    static void verify_gpu_removed_actor_without_lost_report() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const BodyId dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+        const BodyId fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.25f,1.0f,0.0f});
+        const Pair pair{std::min(dynamic,fixed),std::max(dynamic,fixed)};
+        gpu->set({pair},{});
+        scene.advance_collision();
+        if(scene.pairs().size()!=1u || scene.contacts().empty())
+            throw std::runtime_error(
+                "GPU removed-actor setup did not establish Sc contact");
+        // Original source SAP removal compacts deleted volumes without
+        // necessarily emitting a lost crossing. Sc must retire its own
+        // contact manager even when both fetched streams are quiet.
+        scene.remove(fixed);
+        gpu->set({},{});
+        scene.advance_collision(false);
+        if(!scene.pairs().empty() || !scene.contacts().empty() ||
+           scene.lost_pairs().size()!=1u || scene.lost_pairs()[0]!=pair ||
+           gpu->rollbacks!=0u || !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "Deleted GPU volume retained its Sc contact without a lost report");
+        scene.advance_collision(false);
+        if(!scene.lost_pairs().empty() || !scene.found_pairs().empty())
+            throw std::runtime_error(
+                "Deleted GPU contact manager replayed a second lost report");
+    }
+
+    static void verify_gpu_persistent_pair_motion_refilter() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const BodyId dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+        const BodyId fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.25f,1.0f,0.0f});
+        const Pair pair{std::min(dynamic,fixed),std::max(dynamic,fixed)};
+        // Source GPU reported this overlap while no dynamic participant
+        // existed. Sc retained its BP membership but no contact manager.
+        scene.set_kinematic(dynamic,true);
+        gpu->set({pair},{});
+        scene.advance_collision(false);
+        if(!scene.pairs().empty() || !scene.contacts().empty())
+            throw std::runtime_error(
+                "GPU kinematic/static overlap entered Sc contact history");
+        // No geometric crossing when only ScBodySim's motion flag changes.
+        scene.set_kinematic(dynamic,false);
+        gpu->set({},{});
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u || scene.pairs()[0]!=pair ||
+           scene.found_pairs().size()!=1u || scene.contacts().empty())
+            throw std::runtime_error(
+                "Existing GPU overlap not admitted on kinematic-to-dynamic refilter");
+        const auto original_edge=scene.contacts()[0].edge_handle;
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u ||
+           scene.contacts()[0].edge_handle!=original_edge ||
+           !scene.found_pairs().empty() || !scene.lost_pairs().empty())
+            throw std::runtime_error(
+                "Quiet GPU overlap refilter reconstructed unchanged Sc contact");
+
+        scene.set_kinematic(dynamic,true);
+        scene.advance_collision(false);
+        if(!scene.pairs().empty() || !scene.contacts().empty() ||
+           scene.lost_pairs().size()!=1u || scene.lost_pairs()[0]!=pair)
+            throw std::runtime_error(
+                "GPU dynamic-to-kinematic refilter retained ineligible contact");
+        scene.set_kinematic(dynamic,false);
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u || scene.found_pairs().size()!=1u ||
+           scene.found_pairs()[0]!=pair || scene.contacts().empty() ||
+           gpu->rollbacks!=0u || !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "GPU refilter failed to re-admit unchanged dynamic overlap");
+    }
+
     static void verify_gpu_lost_after_kinematic_transition() {
         Scene scene;
         auto producer=std::make_unique<FetchedReports>();
