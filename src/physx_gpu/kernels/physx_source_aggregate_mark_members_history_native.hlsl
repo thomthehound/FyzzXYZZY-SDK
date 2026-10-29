@@ -31,11 +31,6 @@ struct Parameters {
 ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 
-void clearAabb(RWByteAddressBuffer bounds,uint address) {
-    bounds.Store3(address,uint3(0xff7fffffu,0xff7fffffu,0xff7fffffu));
-    bounds.Store3(address+12u,uint3(0x00800000u,0x00800000u,0x00800000u));
-}
-
 [numthreads(128,2,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint i=group.x*128u+lane.x;
@@ -47,6 +42,12 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // Handles are source AABB-manager admission IDs validated before DMA.
     if(handle>=p.boundsCapacity)return;
     const uint offset=handle*24u;
-    if(removed)clearAabb(newBounds,p.newBias+offset);
-    clearAabb(oldBounds,p.oldBias+offset);
+    const uint3 minimum=uint3(0xff7fffffu,0xff7fffffu,0xff7fffffu);
+    const uint3 maximum=uint3(0x00800000u,0x00800000u,0x00800000u);
+    if(removed) {
+        newBounds.Store3(p.newBias+offset,minimum);
+        newBounds.Store3(p.newBias+offset+12u,maximum);
+    }
+    oldBounds.Store3(p.oldBias+offset,minimum);
+    oldBounds.Store3(p.oldBias+offset+12u,maximum);
 }
