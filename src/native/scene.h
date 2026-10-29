@@ -90,6 +90,7 @@ public:
     virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
     virtual void retire_shape(BodyId)=0;
     virtual void set_shape_simulation_enabled(BodyId,bool)=0;
+    virtual void set_shape_motion(BodyId,GpuBroadphaseBox::Motion)=0;
     // Sc::Scene::postReportsCleanup follows fetched GPU/Sc publication.
     virtual void post_reports_cleanup()=0;
     // The source GPU has already advanced its histories at fetch. A
