@@ -1434,7 +1434,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_executable(fyzzxyzzy_source_gpu_aggregate_pair_admission
       tests/physx_gpu_source_aggregate_pair_admission_native.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_pair_admission PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_source_gpu_aggregate_pair_admission PRIVATE
       FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_pair_admission
@@ -4387,7 +4388,8 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
     target_link_libraries(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
