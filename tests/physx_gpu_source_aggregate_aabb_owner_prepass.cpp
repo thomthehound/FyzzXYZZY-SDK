@@ -416,6 +416,31 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     (bit&((1u<<4u)|(1u<<5u)))==0u,
                     "Original source aggregate GPU dirty bitmap did not promote root");
 
+            // Original persistent-pair capacity and candidate overflow
+            // reject mapped reports before Sc receives incomplete contacts.
+            const auto pair_state=aabb.aggregate_pair_admission_gpu_buffers(
+                0u,0u,16u);
+            const auto overflow_view=addresses.resolve(
+                pair_state.overflow_reports,3u*sizeof(physx::PxU32));
+            for(const std::array<physx::PxU32,3> flags:
+                {std::array<physx::PxU32,3>{{32u,1u,0u}},
+                 std::array<physx::PxU32,3>{{32u,0u,1u}}}) {
+                context.upload(overflow_view.buffer,overflow_view.offset,
+                               flags.data(),sizeof(flags));
+                bool rejected=false;
+                try {
+                    (void)aabb.fetch_aggregate_mapped_reports(
+                        context,addresses,mapped);
+                } catch(const std::overflow_error&) {
+                    rejected=true;
+                }
+                require(rejected,
+                    "Source mapped GPU aggregate fetch suppressed root-pair overflow");
+            }
+            const std::array<physx::PxU32,3> cleared_overflow{};
+            context.upload(overflow_view.buffer,overflow_view.offset,
+                           cleared_overflow.data(),sizeof(cleared_overflow));
+
             // Grow reserved aggregate membership between GPU frames.
             // The next sort writes slot 1, and the former slot 0 must
             // remain byte-identical after every source heap allocation grows.
