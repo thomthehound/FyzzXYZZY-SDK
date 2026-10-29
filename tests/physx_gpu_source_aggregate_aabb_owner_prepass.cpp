@@ -212,6 +212,23 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     new_integer_bounds.getDevicePtr());
                 projection_stage.append(stream,addresses,projection_gpu);
                 const auto group_buffer=sap.pre_broadphase_buffers().groups.getDevicePtr();
+                const auto collision_gpu=aabb.aggregate_persistent_collision_gpu_buffers(
+                    new_integer_bounds.getDevicePtr(),
+                    old_integer_bounds.getDevicePtr(),
+                    manager.volume_data_device.getDevicePtr(),
+                    group_buffer,manager.removed.device.getDevicePtr());
+                require(collision_gpu.pair_capacity==32u &&
+                        collision_gpu.report_capacity==16u &&
+                        collision_gpu.volume_data==manager.volume_data_device.getDevicePtr() &&
+                        collision_gpu.current_keys==projection_gpu.sorted_projections &&
+                        collision_gpu.current_members==projection_gpu.bound_index_history &&
+                        collision_gpu.current_keys!=collision_gpu.previous_keys &&
+                        collision_gpu.remove_pair_bitmap==
+                            retirement_buffers.remove_bitmap &&
+                        collision_gpu.aggregate_pairs==retirement_buffers.aggregate_pairs,
+                        "Original persistent aggregate root-pair collision did not borrow source owner");
+                (void)addresses.resolve(collision_gpu.volume_data,
+                    aabb.capacity()*sizeof(physx::Bp::VolumeData));
                 const auto self_gpu=aabb.aggregate_self_collision_gpu_buffers(
                     new_integer_bounds.getDevicePtr(),
                     old_integer_bounds.getDevicePtr(),group_buffer);
