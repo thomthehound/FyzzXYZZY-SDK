@@ -37,7 +37,7 @@ int main() {
     {
         World reference(WorldOptions{ExecutionMode::ReferencePhysXCpu});
         auto next=physx_runtime::acquire_foundation();
-        if(!&next->get())
+        if(physx::PxIsFoundationValid()!=&next->get())
             throw std::runtime_error("Foundation was not recreated");
         reference.step(1.0f/120.0f);
     }
