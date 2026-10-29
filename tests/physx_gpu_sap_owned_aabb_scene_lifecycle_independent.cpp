@@ -1374,6 +1374,49 @@ void execute(Context& context, ShaderBinary translateShader,
                 require(scene.lost_pairs().empty() &&
                         scene.found_pairs().empty(),
                         "Source GPU actor removal replayed a retired contact");
+
+                // A newly admitted shape has no GPU SAP endpoints until
+                // the first fetch. A changed bit on a cancelled addition
+                // must never enter the GPU updated-pairs kernel.
+                const auto ephemeral=scene.add_dynamic_box(
+                    {1.0f,1.0f,1.0f},{0.25f,0.0f,0.0f},1.0f);
+                const auto ephemeralHandle=
+                    sourceSc->source_element_handle(ephemeral);
+                scene.set_position(ephemeral,{0.5f,0.0f,0.0f});
+                require(sceneAabb.source_added().boundedTest(ephemeralHandle)!=0 &&
+                        sceneAabb.source_changed().boundedTest(ephemeralHandle)!=0,
+                        "Unpublished source shape did not hold both source bits");
+                scene.remove(ephemeral);
+                require(!sceneAabb.source_added().boundedTest(ephemeralHandle) &&
+                        !sceneAabb.source_removed().boundedTest(ephemeralHandle) &&
+                        !sceneAabb.source_changed().boundedTest(ephemeralHandle),
+                        "Cancelled source AABB addition leaked GPU changed bit");
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        scene.found_pairs().empty() &&
+                        scene.lost_pairs().empty(),
+                        "Cancelled GPU shape corrupted surviving SAP state");
+
+                const auto disabled=scene.add_dynamic_box(
+                    {1.0f,1.0f,1.0f},{0.3f,0.0f,0.0f},1.0f);
+                const auto disabledHandle=sourceSc->source_element_handle(disabled);
+                scene.set_shape_offsets(disabled,0.12f,0.0f);
+                require(sceneAabb.source_added().boundedTest(disabledHandle)!=0 &&
+                        sceneAabb.source_changed().boundedTest(disabledHandle)!=0,
+                        "Unpublished offset edit did not mark source GPU volume");
+                scene.set_shape_simulation_enabled(disabled,false);
+                require(!sceneAabb.source_added().boundedTest(disabledHandle) &&
+                        !sceneAabb.source_removed().boundedTest(disabledHandle) &&
+                        !sceneAabb.source_changed().boundedTest(disabledHandle),
+                        "Disabled unpublished shape leaked GPU update bit");
+                scene.advance_collision(false);
+                require(scene.pairs().empty(),
+                        "Cancelled unpublished shape entered GPU SAP history");
+                scene.set_shape_simulation_enabled(disabled,true);
+                scene.advance_collision(false);
+                require(scene.pairs().size()==1u &&
+                        scene.pairs().front()==fyzz::native::Pair{a,disabled},
+                        "Source SAP failed after cancelled shape admission");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()

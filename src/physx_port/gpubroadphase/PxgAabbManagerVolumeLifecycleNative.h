@@ -134,6 +134,12 @@ inline bool remove_source_sap_single_volume_native(
     const bool cancelled=m.added.boundedTest(index)!=0;
     if(cancelled)m.added.boundedReset(index);
     else if(!m.removed.growAndSet(index))throw std::bad_alloc();
+    // An unpublished added volume has no GPU SAP endpoint indices.
+    // Changed bounds may already have been authored while it was
+    // pending admission; do not let the updated-pairs kernel consume
+    // a handle that never reached source SAP history. Published
+    // removals likewise cannot be updated after deletion.
+    m.changed.boundedReset(index);
     m.aggregated.boundedReset(index);
     m.groups[index]=physx::Bp::FilterGroup::eINVALID;
     m.contact_distances[index]=0.0f;
