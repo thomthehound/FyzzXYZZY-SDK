@@ -276,10 +276,15 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
         stream.wait_at_fetch();
         std::array<std::uint32_t,2> counts{};
         download(counters,counts.data(),sizeof(counts));
-        require(counts==(delta==0u
-                           ? std::array<std::uint32_t,2>{{0u,1u}}
-                           : std::array<std::uint32_t,2>{{1u,0u}}),
-                "Original GPU aggregate membership change pair history differs");
+        if(counts!=(delta==0u
+                        ? std::array<std::uint32_t,2>{{0u,1u}}
+                        : std::array<std::uint32_t,2>{{1u,0u}}))
+            throw std::runtime_error(
+                "Original aggregate GPU membership delta="+
+                std::to_string(delta)+
+                " found="+std::to_string(counts[0])+
+                " lost="+std::to_string(counts[1])+
+                " differs from source pair history");
         Pair actual{};
         download(delta==0u?lost:found,&actual,sizeof(actual));
         require(actual==(delta==0u?Pair{0u,2u}:Pair{0u,5u}),
