@@ -1443,12 +1443,21 @@ void execute(Context& context, ShaderBinary translateShader,
                         !sceneAabb.source_added().hasAnyBitSet(),
                         "Original GPU SAP rollback reconstruction failed initial fetch");
 
+                // Sc actor/shape edits are allowed after GPU rollback,
+                // before any new GPU fetch. They must become the
+                // authoritative initial bounds in that rebuilt frame.
+                sourceSc->invalidate_after_rollback();
                 scene.set_position(disabled,{8.0f,0.0f,0.0f});
+                scene.set_shape_offsets(disabled,0.16f,0.0f);
                 scene.advance_collision(false);
-                require(scene.pairs().empty() &&
+                require(sceneSap.num_boxes()==2u &&
+                        sourceSc->last_frame().update.counts.previous_boxes==0u &&
+                        sourceSc->last_frame().update.counts.created==2u &&
+                        sceneAabb.scene_bounds().contact_distances[retainedDisabled]==0.16f &&
+                        scene.pairs().empty() &&
                         scene.lost_pairs().size()==1u &&
                         scene.lost_pairs().front()==fyzz::native::Pair{a,disabled},
-                        "Rebuilt original GPU SAP did not retire moved pair");
+                        "Source GPU rebuild lost Sc pose/offset edit authored after rollback");
                 scene.set_position(disabled,{0.3f,0.0f,0.0f});
                 scene.advance_collision(false);
                 require(scene.pairs().size()==1u &&

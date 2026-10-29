@@ -119,9 +119,10 @@ public:
 
     void mark_shape_bounds_changed(
         BodyId actor,float contact_offset) override {
-        if(invalidated_)
-            throw std::logic_error(
-                "Source GPU SAP histories require reconstruction after Sc rollback");
+        // Authored Sc shape edits remain valid after a rejected frame.
+        // The NEXT GPU fetch reconstructs the original SAP histories
+        // from these authoritative live actor bounds and contact data.
+        // Reject stale GPU execution, not source Sc shape authoring.
         // The Sc element handle, not the actor ID, addresses the native
         // AABB manager's changed bitmap and contact-distance array.
         if(actor>=sc_actor_element_ids_->size())
@@ -183,9 +184,8 @@ public:
 
 private:
     SourceScSceneElementsNative& require_scene_elements() {
-        if(invalidated_)
-            throw std::logic_error(
-                "Source GPU SAP histories require reconstruction after Sc rollback");
+        // Sc::ActorSim/ElementSim lifecycle remains authoritative even
+        // while old GPU SAP endpoint histories await reconstruction.
         if(!source_sc_elements_)
             throw std::logic_error("Source Sc element admission is borrowed");
         return *source_sc_elements_;
