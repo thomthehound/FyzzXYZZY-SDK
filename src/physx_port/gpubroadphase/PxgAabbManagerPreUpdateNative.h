@@ -6,6 +6,7 @@
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
 
@@ -37,6 +38,14 @@ struct SourceSapAabbManagerPreUpdateNative {
     bool persistent_state_changed = false;
     bool gpu_state_changed = false;
     bool has_aggregates = false;
+    // Borrow the same original GPU AABB owner for aggregate source stages.
+    // Absent on ordinary single-volume scenes; no parallel aggregate path.
+    const SourceAggregateGpuNativeStage* aggregate_stage = nullptr;
+    const CudaDeviceAddressMap* aggregate_addresses = nullptr;
+    physx::PxgCudaBuffer* aggregate_slots_device = nullptr;
+    physx::PxgCudaBuffer* aggregate_members_device = nullptr;
+    physx::PxU32 aggregate_slots_count = 0;
+    physx::PxU32 aggregate_member_capacity = 0;
 };
 
 inline SourceSapAabbManagerDescriptorView
@@ -61,9 +70,12 @@ inline void pre_update_source_sap_aabb_manager_native(
     const physx::Bp::BroadPhaseUpdateData& update,
     const SourceSapAabbManagerPreUpdateNative& manager,
     SourceSapDmaNative& stream) {
-    if(manager.has_aggregates)
+    if(manager.has_aggregates &&
+       (!manager.aggregate_stage || !manager.aggregate_addresses ||
+        !manager.aggregate_slots_device || !manager.aggregate_members_device ||
+        !manager.aggregate_slots_count || !manager.aggregate_member_capacity))
         throw std::logic_error(
-            "GPU aggregate update requires the source aggregate owner");
+            "GPU aggregate update requires the source aggregate GPU stage and owner");
     const bool state_changed =
         manager.persistent_state_changed || update.getStateChanged();
     if(!state_changed && !manager.gpu_state_changed)return;
@@ -135,6 +147,25 @@ inline void pre_update_source_sap_aabb_manager_native(
         uploads.reserve(1u);
         append_bitmap(uploads,manager.changed,changed_bytes);
         stream.queue_uploads(uploads);
+    }
+
+    // PxgAABBManager::computeAggregateBounds (first pass), followed by
+    // markAggregateBoundsBitmap (second pass before SAP update). The
+    // already-uploaded source bounds, distances and dirty bitmap, plus
+    // the owner's aggregate/member buffers, are passed unchanged.
+    if(manager.has_aggregates) {
+        const auto gpu=SourceAggregateGpuNativeBuffers{
+            manager.sap.bounds.getDevicePtr(),
+            manager.sap.contact_distances.getDevicePtr(),
+            manager.aggregate_slots_device->getDevicePtr(),
+            manager.aggregate_members_device->getDevicePtr(),
+            manager.changed.device.getDevicePtr(),
+            capacity,manager.aggregate_slots_count,
+            manager.aggregate_member_capacity,
+            static_cast<physx::PxU32>(manager.changed.words.size()),
+            manager.aggregate_slots_count};
+        manager.aggregate_stage->append(
+            stream,*manager.aggregate_addresses,gpu);
     }
 }
 
