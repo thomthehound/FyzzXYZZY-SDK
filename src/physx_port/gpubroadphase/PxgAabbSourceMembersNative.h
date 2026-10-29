@@ -598,6 +598,19 @@ public:
            counts[1]>aggregate_report_capacity_)
             throw std::overflow_error(
                 "Original aggregate GPU found/lost member report capacity overflow");
+        if(aggregate_pair_capacity_) {
+            // Original PxgAggregateDesc also reports persistent root-pair
+            // capacity and candidate overflows. An in-range member report
+            // count cannot make a truncated root-pair pool valid.
+            std::array<physx::PxU32,3> overflow{};
+            const auto state=addresses.resolve(
+                aggregate_pair_overflow_device_.getDevicePtr(),sizeof(overflow));
+            context.download(state.buffer,state.offset,
+                             overflow.data(),sizeof(overflow));
+            if(overflow[1u] || overflow[2u])
+                throw std::overflow_error(
+                    "Original GPU persistent aggregate-root pair capacity overflow");
+        }
         const auto found_bytes=std::size_t(counts[0])*
                                 sizeof(physx::PxgBroadPhasePair);
         const auto lost_bytes=std::size_t(counts[1])*
