@@ -1489,7 +1489,7 @@ void verify_owned_source_world(
     const char* manifest) {
     bool rejected_missing_stages=false;
     try {
-        (void)fyzz::create_native_gpu_world(backend,{});
+        (void)fyzz::create_native_gpu_world(backend,fyzz::NativeGpuSapShaders{});
     }catch(const std::invalid_argument&) {
         rejected_missing_stages=true;
     }
