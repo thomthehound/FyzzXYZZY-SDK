@@ -143,6 +143,9 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 physx::Bp::getFilterGroup_Dynamics(16u,false),
                 elements.data());
             aabb.remove_aggregate_member(6u);
+            require(aabb.actor_lifetime().volume_to_actor[6u]==
+                        std::numeric_limits<fyzz::BodyId>::max(),
+                    "Canceled aggregate admission retained an unpublished Sc actor");
             const physx::Bp::BpFilter filter(false,false);
 
             std::uint32_t projection_frame=0u;
@@ -426,6 +429,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             // source shape ID until GPU lost reports have been fetched.
             // Rejected readmission leaves the pending removal intact.
             aabb.remove_aggregate_member(5u);
+            require(aabb.actor_lifetime().volume_to_actor[5u]==15u,
+                    "Original aggregate lost report discarded its retired actor identity");
             bool rejected_readmission=false;
             try {
                 aabb.admit_aggregate_member(
@@ -438,14 +443,22 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             require(rejected_readmission,
                     "Source retired aggregate member was readmitted before GPU fetch");
             run_source_prepass({},{5u});
+            require(aabb.actor_lifetime().volume_to_actor[5u]==
+                        std::numeric_limits<fyzz::BodyId>::max(),
+                    "Source aggregate retired actor identity survived successful report fetch");
             verify_bounds(download_bounds(3u),
                           {-2.25f,-1.25f,-0.25f,1.25f,1.25f,2.25f});
             require((download_changed()&((1u<<4u)|(1u<<5u)))==0u,
                     "Retired aggregate member leaked GPU changed bits");
             aabb.remove_aggregate_member(4u);
+            require(aabb.actor_lifetime().volume_to_actor[4u]==14u,
+                    "Original aggregate final member lost its Sc actor before fetch");
             aabb.destroy_aggregate(id);
             aabb.destroy_aggregate(empty_id);
             run_source_prepass({},{4u});
+            require(aabb.actor_lifetime().volume_to_actor[4u]==
+                        std::numeric_limits<fyzz::BodyId>::max(),
+                    "Original final aggregate member actor identity outlived fetch");
             require((download_changed()&(1u<<3u))==0u,
                     "Retired source aggregate root was reintroduced by GPU bitmap");
 

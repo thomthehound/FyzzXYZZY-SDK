@@ -315,7 +315,9 @@ public:
         }
         // Source PxgAABBManager cancels admission on same-frame removal;
         // otherwise the old and new GPU integer AABBs must be retired.
-        if(!added_aggregate_members_.findAndReplaceWithLast(handle))
+        const bool unpublished=
+            added_aggregate_members_.findAndReplaceWithLast(handle);
+        if(!unpublished)
             removed_aggregate_members_.pushBack(handle);
         changed_.boundedReset(handle);
         aggregated_.boundedReset(handle);
@@ -323,7 +325,11 @@ public:
         distances_[handle]=0.0f;
         volumes_[handle].reset();
         bounds_.setBounds(physx::PxBounds3::empty(),handle);
-        volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
+        // Original lost GPU member reports may still reference the
+        // retired source volume. Keep its Sc actor identity through the
+        // successful fetch; same-frame canceled admission has no history.
+        if(unpublished)
+            volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
         return aggregate.size==0u;
@@ -628,6 +634,10 @@ public:
         dirty_aggregate_indices_.resetOrClear();
         dirty_aggregates_.clear();
         added_aggregate_members_.resetOrClear();
+        // Retire the original source-to-Sc actor identities only after
+        // all GPU aggregate lost reports have been fetched and admitted.
+        for(const auto handle:removed_aggregate_members_)
+            volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
         removed_aggregate_members_.resetOrClear();
         if(aggregate_gpu_slot_count_)aggregate_projection_current_slot_^=1u;
         aggregate_ids_.processDeferredIds();
