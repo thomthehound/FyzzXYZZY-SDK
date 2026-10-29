@@ -192,43 +192,54 @@ void run(Backend backend) {
             require(owner.source_changed().boundedTest(member0)!=0u,
                     "Original Sc member edit did not mark the source GPU bitmap");
 
-            rejected=false;
-            try {sc.destroy_aggregate(root);}
-            catch(const std::logic_error&) {rejected=true;}
-            require(rejected,
-                    "Original Sc destroyed aggregate while source members are live");
-
-            // Sc shape simulation disablement removes its AABB membership,
-            // not its ElementSim attachment to the original aggregate.
-            sc.set_simulation_enabled(0u,false);
-            sc.set_simulation_enabled(1u,false);
-            rejected=false;
-            try {sc.destroy_aggregate(root);}
-            catch(const std::logic_error&) {rejected=true;}
-            require(rejected,
-                "Original Sc recycled aggregate ID with disabled members still attached");
-            // Both admits were canceled before GPU publication. The
-            // original Sc element handles and aggregate ID survive.
-            sc.set_simulation_enabled(0u,true);
-            sc.set_simulation_enabled(1u,true);
-            require(sc.handle(0u)==member0 && sc.handle(1u)==member1 &&
-                    sc.aggregate_root_handle(root)==root_handle &&
+            // The source release contract returns member actors to
+            // the scene. Re-admission acquires a new ElementSim identity
+            // while old aggregate reports retain their retired handle.
+            owner.complete_fetch(rebuilt);
+            sc.remove_actor_from_aggregate(root,0u);
+            const auto standalone0=sc.handle(0u);
+            require(standalone0!=member0 &&
+                    sc.element_deleted(member0) &&
+                    !owner.source_aggregated().boundedTest(member0) &&
                     owner.volume_to_actor()[member0]==0u &&
-                    owner.volume_to_actor()[member1]==1u,
-                    "Source Sc aggregate simulation toggle lost stable element identity");
-
-            sc.retire(1u);
-            require(!owner.source_aggregated().boundedTest(member1) &&
-                    owner.volume_to_actor()[member1]==
+                    owner.volume_to_actor()[standalone0]==0u &&
+                    owner.scene_bounds().groups[standalone0]==dynamic_group,
+                    "Aggregate removeActor lost the surviving Sc actor or pending GPU identity");
+            const auto detached=owner.prepare(boxes,sc.handles(),filter);
+            require(detached.getNumCreatedHandles()==1u &&
+                    detached.getCreatedHandles()[0]==standalone0,
+                    "Source aggregate actor removal did not create a standalone SAP endpoint");
+            owner.complete_fetch(detached);
+            require(owner.volume_to_actor()[member0]==
                         std::numeric_limits<fyzz::BodyId>::max(),
-                    "Canceled member admission retained a source actor identity");
-            sc.retire(0u);
+                    "Source removed aggregate handle survived GPU report cleanup");
+
+            // Simulation-disabled members remain attached to the
+            // aggregate until release, but must return as disabled
+            // standalone actors with fresh, unrecycled Sc identities.
+            sc.set_simulation_enabled(1u,false);
             sc.destroy_aggregate(root);
-            require(sc.element_deleted(root_handle),
-                "Original Sc aggregate root ID was not deferred until postReportsCleanup");
+            const auto standalone1=sc.handle(1u);
+            require(standalone1!=member1 &&
+                    sc.element_deleted(member1) &&
+                    sc.element_deleted(root_handle) &&
+                    !owner.source_aggregated().boundedTest(member1),
+                    "Original aggregate release failed to return disabled Sc actor");
+            sc.set_simulation_enabled(1u,true);
+            const auto released=owner.prepare(boxes,sc.handles(),filter);
+            require(released.getNumCreatedHandles()==1u &&
+                    released.getCreatedHandles()[0]==standalone1,
+                    "Released Sc actor failed standalone SAP reinsertion");
+            owner.complete_fetch(released);
+            require(owner.volume_to_actor()[standalone1]==1u,
+                    "Released source Sc actor lost its standalone owner");
             sc.post_reports_cleanup();
-            require(!sc.element_deleted(root_handle),
-                "Original Sc aggregate root ID was not retired at cleanup");
+            require(!sc.element_deleted(root_handle) &&
+                    !sc.element_deleted(member0) &&
+                    !sc.element_deleted(member1),
+                "Released original Sc member IDs were not retired at cleanup");
+            sc.retire(1u);
+            sc.retire(0u);
         }
         heap.flushDeferredDeallocs();
     }
