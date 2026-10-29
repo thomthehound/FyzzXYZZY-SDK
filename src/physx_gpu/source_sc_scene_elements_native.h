@@ -60,6 +60,13 @@ public:
 
     void destroy_aggregate(physx::Bp::AggregateHandle id) {
         auto& root=aggregate_root(id);
+        // Disabling simulation removes AABB membership but does not
+        // remove the Sc::ElementSim. Such members still own this root
+        // and must not acquire a different aggregate on ID recycling.
+        for(const auto& member:records_)
+            if(member.live && member.aggregate_id==id)
+                throw std::logic_error(
+                    "Cannot destroy original Sc aggregate with attached members");
         aabb_.destroy_aggregate(id);
         elements_.releaseID(root.root);
         root.live=false;
