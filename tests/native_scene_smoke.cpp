@@ -37,6 +37,7 @@ struct GpuSapSceneAdmissionFixture {
         std::vector<Pair> found,lost;
         std::size_t fetches=0,rollbacks=0;
         bool overflow=false;
+        bool reject_bounds=false;
         GpuBroadphaseReports advance(
             std::span<const GpuBroadphaseBox> boxes,
             bool,bool) override {
@@ -47,6 +48,8 @@ struct GpuSapSceneAdmissionFixture {
             return {found,lost,overflow};
         }
         void mark_shape_bounds_changed(BodyId,float) override {
+            if(reject_bounds)
+                throw std::logic_error("Rejected GPU source volume edit");
             // This admission fixture supplies fetched reports explicitly.
         }
         void invalidate_after_rollback() noexcept override {
@@ -83,6 +86,24 @@ struct GpuSapSceneAdmissionFixture {
            !scene.lost_pairs().empty() || scene.pairs().size()!=1)
             throw std::runtime_error(
                 "GPU SAP quiet frame lost Sc contact-manager identity");
+        // Source AABB validation is an Sc edit preflight. A rejected
+        // source volume must not mutate wake state, geometry or Gu PCM.
+        const auto prior_pose=scene.body_state(b);
+        const auto prior_dirty=scene.dirty_;
+        gpu->reject_bounds=true;
+        bool rejected_authored_pose=false;
+        try {scene.set_position(b,{8.0f,1.0f,0.0f});}
+        catch(const std::logic_error&) {rejected_authored_pose=true;}
+        gpu->reject_bounds=false;
+        const auto after_rejection=scene.body_state(b);
+        if(!rejected_authored_pose ||
+           after_rejection.position.x!=prior_pose.position.x ||
+           after_rejection.position.y!=prior_pose.position.y ||
+           after_rejection.position.z!=prior_pose.position.z ||
+           scene.dirty_!=prior_dirty)
+            throw std::runtime_error(
+                "Source GPU volume rejection partially authored Sc pose");
+
         // Invalid fetched reports must fail atomically and invalidate
         // source GPU histories before the next real publication.
         gpu->set({pair},{});
