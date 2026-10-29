@@ -110,6 +110,35 @@ BodyId World::add_dynamic_box(Vec3 half_extents, Vec3 position, float density) {
     return impl_->add_dynamic_box(half_extents, position, density);
 }
 
+AggregateId World::create_aggregate(
+    std::uint32_t max_shapes,bool self_collision) {
+    if(!max_shapes)
+        throw std::invalid_argument("Original PhysX aggregate cannot be empty-capacity");
+    return impl_->create_aggregate(max_shapes,self_collision);
+}
+
+void World::destroy_aggregate(AggregateId id) {
+    impl_->destroy_aggregate(id);
+}
+
+BodyId World::add_static_box_to_aggregate(
+    AggregateId aggregate,Vec3 half_extents,Vec3 position) {
+    validate_half_extents(half_extents);
+    validate_position(position);
+    return impl_->add_static_box_to_aggregate(
+        aggregate,half_extents,position);
+}
+
+BodyId World::add_dynamic_box_to_aggregate(
+    AggregateId aggregate,Vec3 half_extents,Vec3 position,float density) {
+    validate_half_extents(half_extents);
+    validate_position(position);
+    if(!std::isfinite(density) || density<=0.0f)
+        throw std::invalid_argument("Density must be finite and positive");
+    return impl_->add_dynamic_box_to_aggregate(
+        aggregate,half_extents,position,density);
+}
+
 ConstraintId World::add_center_distance_constraint(
     BodyId a,BodyId b,float distance) {
     if(a==b || !std::isfinite(distance) || distance<0.0f)
