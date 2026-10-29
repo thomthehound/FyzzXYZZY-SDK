@@ -154,16 +154,27 @@ void run(fyzz::compute::Backend backend,
     require(std::isfinite(world.body_state(a).position.x),
         "Original aggregate member dynamic GPU reinsertion failed");
 
-    bool live_destroy_rejected=false;
-    try {world.destroy_aggregate(root);}
-    catch(const std::logic_error&) {live_destroy_rejected=true;}
-    require(live_destroy_rejected,
-        "Native GPU World destroyed a root with attached Sc members");
+    // PhysX removeActor returns the existing actor to the scene.
+    // It retains its public BodyId while its old aggregate ElementSim
+    // retires and its new standalone SAP endpoint produces GPU pairs.
+    world.remove_actor_from_aggregate(root,b);
+    world.step(1.0f/120.0f);
+    require(std::isfinite(world.body_state(b).position.x) &&
+            std::isfinite(world.body_state(a).position.x),
+        "Removed aggregate actor did not survive independent GPU reinsertion");
+
+    // PxAggregate::release returns all remaining members to the scene,
+    // including actors of another aggregate. No member is destroyed.
+    world.destroy_aggregate(root);
+    world.destroy_aggregate(root2);
+    world.step(1.0f/120.0f);
+    require(std::isfinite(world.body_state(a).position.x) &&
+            std::isfinite(world.body_state(b).position.x) &&
+            std::isfinite(world.body_state(other).position.x),
+        "Source aggregate release destroyed or orphaned live Sc actors");
     world.remove_body(b);
     world.remove_body(a);
-    world.destroy_aggregate(root);
     world.remove_body(other);
-    world.destroy_aggregate(root2);
 }
 }
 int main(int argc,char** argv) {
