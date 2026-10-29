@@ -69,32 +69,7 @@ public:
     // The surviving actor and Sc rigid ID do not change.
     void remove_actor_from_aggregate(
         physx::Bp::AggregateHandle id,BodyId actor) {
-        auto& root=aggregate_root(id);
-        auto& element=live(actor);
-        if(element.aggregate_id!=id)
-            throw std::invalid_argument(
-                "Source Sc actor does not belong to the aggregate");
-        const auto old_handle=handles_[actor];
-        const auto new_handle=elements_.createID();
-        try {
-            if(element.in_aabb) {
-                const auto group=physx::Bp::getFilterGroup(
-                    element.motion==native::GpuBroadphaseBox::Motion::Static,
-                    element.rigid_id,
-                    element.motion==native::GpuBroadphaseBox::Motion::Kinematic);
-                aabb_.admit(new_handle,actor,element.contact_distance,
-                            group,&element);
-            }
-        }catch(...) {
-            elements_.releaseID(new_handle);
-            throw;
-        }
-        if(element.in_aabb)
-            aabb_.remove_aggregate_member(old_handle);
-        elements_.releaseID(old_handle);
-        handles_[actor]=new_handle;
-        element.aggregate_id=PX_INVALID_U32;
-        std::erase(root.attached_actors,actor);
+        remove_actor_from_root(aggregate_root(id),actor);
     }
 
     // PxAggregate::release detaches the actors into its Sc scene rather
@@ -103,7 +78,7 @@ public:
     void destroy_aggregate(physx::Bp::AggregateHandle id) {
         auto& root=aggregate_root(id);
         while(!root.attached_actors.empty())
-            remove_actor_from_aggregate(id,root.attached_actors.back());
+            remove_actor_from_root(root,root.attached_actors.back());
         aabb_.destroy_aggregate(id);
         elements_.releaseID(root.root);
         root.live=false;
@@ -124,6 +99,8 @@ public:
         admit_actor(actor,motion,contact_distance,aggregate);
         // Reserved at aggregate creation; source Sc attachment is
         // distinct from the AABB manager's enabled-shape member array.
+        records_[actor].aggregate_attachment_index=
+            static_cast<physx::PxU32>(root.attached_actors.size());
         root.attached_actors.push_back(actor);
     }
 
@@ -139,8 +116,8 @@ public:
         }else
             elements_.releaseID(handle);
         if(element.aggregate_id!=PX_INVALID_U32)
-            std::erase(
-                aggregate_root(element.aggregate_id).attached_actors,actor);
+            unlink_attached_actor(
+                aggregate_root(element.aggregate_id),element);
         actor_ids_.releaseID(element.rigid_id);
         element.live=false;
         element.in_aabb=false;
@@ -262,6 +239,7 @@ private:
         float contact_distance;
         bool live,in_aabb;
         physx::Bp::AggregateHandle aggregate_id=PX_INVALID_U32;
+        physx::PxU32 aggregate_attachment_index=PX_INVALID_U32;
     };
     struct AggregateRoot {
         physx::Bp::ShapeHandle root;
@@ -276,6 +254,48 @@ private:
         for(auto& root:aggregate_roots_)
             if(root.live && root.id==id)return root;
         throw std::out_of_range("Unknown or retired source Sc aggregate");
+    }
+    // NpAggregate/Sc actor attachments are indexed independently of
+    // PxgAggregate's enabled-bounds array. Swap-last keeps actor removal
+    // and aggregate release linear in the number of attached actors.
+    void unlink_attached_actor(AggregateRoot& root,Element& element) {
+        const auto index=element.aggregate_attachment_index;
+        if(index>=root.attached_actors.size() ||
+           root.attached_actors[index]!=element.actor)
+            throw std::logic_error(
+                "Original Sc aggregate actor attachment index is invalid");
+        const BodyId tail=root.attached_actors.back();
+        root.attached_actors[index]=tail;
+        records_[tail].aggregate_attachment_index=index;
+        root.attached_actors.pop_back();
+        element.aggregate_attachment_index=PX_INVALID_U32;
+    }
+    void remove_actor_from_root(AggregateRoot& root,BodyId actor) {
+        auto& element=live(actor);
+        if(element.aggregate_id!=root.id)
+            throw std::invalid_argument(
+                "Source Sc actor does not belong to the aggregate");
+        const auto old_handle=handles_[actor];
+        const auto new_handle=elements_.createID();
+        try {
+            if(element.in_aabb) {
+                const auto group=physx::Bp::getFilterGroup(
+                    element.motion==native::GpuBroadphaseBox::Motion::Static,
+                    element.rigid_id,
+                    element.motion==native::GpuBroadphaseBox::Motion::Kinematic);
+                aabb_.admit(new_handle,actor,element.contact_distance,
+                            group,&element);
+            }
+        }catch(...) {
+            elements_.releaseID(new_handle);
+            throw;
+        }
+        if(element.in_aabb)
+            aabb_.remove_aggregate_member(old_handle);
+        elements_.releaseID(old_handle);
+        handles_[actor]=new_handle;
+        unlink_attached_actor(root,element);
+        element.aggregate_id=PX_INVALID_U32;
     }
     void admit_actor(
         BodyId actor,native::GpuBroadphaseBox::Motion motion,
