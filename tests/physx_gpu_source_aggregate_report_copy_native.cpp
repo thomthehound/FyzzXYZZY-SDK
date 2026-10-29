@@ -3,6 +3,7 @@
 #include "fyzzxyzzy/compute.h"
 #include "physx_gpu/source_aggregate_report_copy_native.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
