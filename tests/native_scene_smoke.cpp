@@ -10385,7 +10385,7 @@ void verify_source_activity_rollback() {
 
 }
 
-void verify_native_rigid_integration_and_island_lifecycle() {
+void verify_native_rigid_contact_integration() {
     using fyzz::native::Scene;
     // End-to-end native CPU execution, without a reference PxScene.
     {
@@ -10766,6 +10766,10 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         expect(std::isfinite(rotating_contact.body_state(id).angular_velocity.x),
                "Angular motion failed to continue without replaying torque");
     }
+}
+
+void verify_native_rigid_sleep_progression() {
+    using fyzz::native::Scene;
     {
         // Source ScBodyCore creation counter and Dy::sleepCheck: motion
         // readiness precedes whole-island deactivation. Once a rigid
@@ -11128,7 +11132,10 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                partitions.active_accurate_nodes().size()==2,
                "Previous initial-active suffix replayed on next frame");
     }
+}
 
+void verify_native_rigid_active_island_lifecycle() {
+    using fyzz::native::Scene;
     verify_idempotent_pose_autowake();
     verify_active_pose_preserves_sleep_filter();
     verify_simultaneous_initial_sleep_compaction();
@@ -11392,7 +11399,10 @@ void verify_native_rigid_integration_and_island_lifecycle() {
         expect(!queued_wake.body_is_sleeping(right),
                "Quiet collision publication discarded the queued source wake");
     }
+}
 
+void verify_native_speculative_sleep_repair() {
+    using fyzz::native::Scene;
     {
         // The speculative graph may contain a pair of overlapping AABBs
         // whose rotated Gu boxes never touch. PhysX's third pass uses
@@ -11536,7 +11546,10 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                distinct_sleep.activated_speculative_contact_edges().empty(),
                "Already awake rigid body incorrectly reactivated active edges");
     }
+}
 
+void verify_native_rigid_wake_retirement() {
+    using fyzz::native::Scene;
     {
         // Newly published contacts and island activation precede
         // unconstrained velocity integration. On a later overflow,
@@ -11656,7 +11669,14 @@ void verify_native_rigid_integration_and_island_lifecycle() {
                removed_support.body_state(box).velocity.y<0.0f,
                "Source rigid body did not fall after losing static support");
     }
+}
 
+void verify_native_rigid_integration_and_island_lifecycle() {
+    verify_native_rigid_contact_integration();
+    verify_native_rigid_sleep_progression();
+    verify_native_rigid_active_island_lifecycle();
+    verify_native_speculative_sleep_repair();
+    verify_native_rigid_wake_retirement();
 }
 
 void verify_source_rigid_lock_flags() {

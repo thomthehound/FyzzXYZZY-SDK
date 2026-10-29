@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <exception>
 #include <stop_token>
 #include <thread>
@@ -92,6 +93,19 @@ public:
         BodyId actor,float contact_offset)=0;
     // Sc::ActorSim/ElementSim own original actor and element IDs.
     virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
+    virtual AggregateId create_aggregate(std::uint32_t,bool) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void destroy_aggregate(AggregateId) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void remove_actor_from_aggregate(AggregateId,BodyId) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void admit_aggregate_member(
+        AggregateId,BodyId,GpuBroadphaseBox::Motion,float) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
     virtual void retire_shape(BodyId)=0;
     virtual void set_shape_simulation_enabled(BodyId,bool)=0;
     virtual void set_shape_motion(BodyId,GpuBroadphaseBox::Motion)=0;
@@ -236,9 +250,16 @@ public:
         return contact_event_points_;
     }
 
-    BodyId add_static_box(Vec3 half_extents, Vec3 position);
+    BodyId add_static_box(
+        Vec3 half_extents,Vec3 position,
+        std::optional<AggregateId> aggregate=std::nullopt);
     BodyId add_static_floor(float height);
-    BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    BodyId add_dynamic_box(
+        Vec3 half_extents,Vec3 position,float density,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
+    void destroy_aggregate(AggregateId id);
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor);
     void set_position(BodyId id, Vec3 position);
     void set_pose(BodyId id, Vec3 position, Quat orientation);
     void set_velocity(BodyId id, Vec3 velocity);
@@ -817,7 +838,7 @@ private:
         std::array<std::uint32_t,6> published_bounds{};
         std::array<std::array<std::uint32_t,2>,3> endpoint_positions{};
     };
-    BodyId add(Actor actor);
+    BodyId add(Actor actor,std::optional<AggregateId> aggregate=std::nullopt);
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
     // Shared Gu collision progression, independent of Dy solver execution.

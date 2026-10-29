@@ -39,9 +39,14 @@ public:
            root_group==physx::Bp::FilterGroup::eINVALID)
             throw std::invalid_argument("Invalid original Sc aggregate root");
         const auto root=elements_.createID();
+        const auto prior_roots=aggregate_roots_.size();
         try {
-            aggregate_roots_.push_back({root,PX_INVALID_U32,true});
+            aggregate_roots_.push_back(
+                {root,PX_INVALID_U32,true,max_shapes,{}});
+            aggregate_roots_.back().attached_actors.reserve(max_shapes);
         }catch(...) {
+            if(aggregate_roots_.size()!=prior_roots)
+                aggregate_roots_.pop_back();
             elements_.releaseID(root);
             throw;
         }
@@ -58,15 +63,22 @@ public:
         }
     }
 
+    // PxAggregate::removeActor removes the ScShapeSim from its aggregate
+    // and re-admits the actor to the scene. The previous ElementSim handle
+    // remains retired through GPU fetch; its old reports retain actor data.
+    // The surviving actor and Sc rigid ID do not change.
+    void remove_actor_from_aggregate(
+        physx::Bp::AggregateHandle id,BodyId actor) {
+        remove_actor_from_root(aggregate_root(id),actor);
+    }
+
+    // PxAggregate::release detaches the actors into its Sc scene rather
+    // than destroying their rigid bodies. Root retirement follows the
+    // original AABB member-removal and ID-recycling barriers.
     void destroy_aggregate(physx::Bp::AggregateHandle id) {
         auto& root=aggregate_root(id);
-        // Disabling simulation removes AABB membership but does not
-        // remove the Sc::ElementSim. Such members still own this root
-        // and must not acquire a different aggregate on ID recycling.
-        for(const auto& member:records_)
-            if(member.live && member.aggregate_id==id)
-                throw std::logic_error(
-                    "Cannot destroy original Sc aggregate with attached members");
+        while(!root.attached_actors.empty())
+            remove_actor_from_root(root,root.attached_actors.back());
         aabb_.destroy_aggregate(id);
         elements_.releaseID(root.root);
         root.live=false;
@@ -80,8 +92,16 @@ public:
     void admit_aggregate_member(
         physx::Bp::AggregateHandle aggregate,BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) {
-        (void)aggregate_root(aggregate);
+        auto& root=aggregate_root(aggregate);
+        if(root.attached_actors.size()>=root.max_shapes)
+            throw std::invalid_argument(
+                "Original Sc aggregate actor capacity exceeded");
         admit_actor(actor,motion,contact_distance,aggregate);
+        // Reserved at aggregate creation; source Sc attachment is
+        // distinct from the AABB manager's enabled-shape member array.
+        records_[actor].aggregate_attachment_index=
+            static_cast<physx::PxU32>(root.attached_actors.size());
+        root.attached_actors.push_back(actor);
     }
 
     void retire(BodyId actor) {
@@ -95,6 +115,9 @@ public:
                 SourceScElementLifecycleNative::remove(elements_,aabb_,handle);
         }else
             elements_.releaseID(handle);
+        if(element.aggregate_id!=PX_INVALID_U32)
+            unlink_attached_actor(
+                aggregate_root(element.aggregate_id),element);
         actor_ids_.releaseID(element.rigid_id);
         element.live=false;
         element.in_aabb=false;
@@ -159,22 +182,28 @@ public:
            element.motion==native::GpuBroadphaseBox::Motion::Static)
             throw std::invalid_argument(
                 "Source Sc shape cannot switch between static and rigid");
-        if(element.in_aabb && element.aggregate_id!=PX_INVALID_U32)
-            throw std::logic_error(
-                "Source aggregate member BP group change requires original fetch retirement");
         if(element.in_aabb) {
-            // ScBodySim::switchTo{Kinematic,Dynamic} invokes
-            // ShapeSimBase::updateBPGroup: setBPGroup then
-            // reinsertBroadPhase for the SAME ElementSim ID.
-            // Source bitmap cancellation alone does not upload bounds,
-            // so mark that volume changed after the source reinsertion.
+            // ScBodySim::switchTo{Kinematic,Dynamic} re-inserts the
+            // original ElementSim with its new Bp group. Aggregated
+            // shapes re-enter the same PxgAggregate member list, never
+            // the standalone SAP endpoint list. A pending GPU member
+            // retirement is canceled for this same shape identity.
             const auto handle=handles_[actor];
             const auto group=physx::Bp::getFilterGroup(
                 false,element.rigid_id,
                 motion==native::GpuBroadphaseBox::Motion::Kinematic);
-            aabb_.remove(handle);
-            aabb_.admit(handle,actor,element.contact_distance,group,&element);
-            aabb_.mark_changed(handle,element.contact_distance);
+            if(element.aggregate_id!=PX_INVALID_U32) {
+                aabb_.remove_aggregate_member(handle);
+                aabb_.admit_aggregate_member(
+                    element.aggregate_id,handle,actor,
+                    element.contact_distance,group,&element);
+                aabb_.mark_aggregate_member_changed(
+                    handle,element.contact_distance);
+            }else {
+                aabb_.remove(handle);
+                aabb_.admit(handle,actor,element.contact_distance,group,&element);
+                aabb_.mark_changed(handle,element.contact_distance);
+            }
         }
         element.motion=motion;
     }
@@ -210,16 +239,63 @@ private:
         float contact_distance;
         bool live,in_aabb;
         physx::Bp::AggregateHandle aggregate_id=PX_INVALID_U32;
+        physx::PxU32 aggregate_attachment_index=PX_INVALID_U32;
     };
     struct AggregateRoot {
         physx::Bp::ShapeHandle root;
         physx::Bp::AggregateHandle id;
         bool live;
+        physx::PxU32 max_shapes;
+        // Sc actor attachment survives eSIMULATION_SHAPE disablement;
+        // PxgAggregate::updateBoundIndices stores enabled BP members.
+        std::vector<BodyId> attached_actors;
     };
     AggregateRoot& aggregate_root(physx::Bp::AggregateHandle id) {
         for(auto& root:aggregate_roots_)
             if(root.live && root.id==id)return root;
         throw std::out_of_range("Unknown or retired source Sc aggregate");
+    }
+    // NpAggregate/Sc actor attachments are indexed independently of
+    // PxgAggregate's enabled-bounds array. Swap-last keeps actor removal
+    // and aggregate release linear in the number of attached actors.
+    void unlink_attached_actor(AggregateRoot& root,Element& element) {
+        const auto index=element.aggregate_attachment_index;
+        if(index>=root.attached_actors.size() ||
+           root.attached_actors[index]!=element.actor)
+            throw std::logic_error(
+                "Original Sc aggregate actor attachment index is invalid");
+        const BodyId tail=root.attached_actors.back();
+        root.attached_actors[index]=tail;
+        records_[tail].aggregate_attachment_index=index;
+        root.attached_actors.pop_back();
+        element.aggregate_attachment_index=PX_INVALID_U32;
+    }
+    void remove_actor_from_root(AggregateRoot& root,BodyId actor) {
+        auto& element=live(actor);
+        if(element.aggregate_id!=root.id)
+            throw std::invalid_argument(
+                "Source Sc actor does not belong to the aggregate");
+        const auto old_handle=handles_[actor];
+        const auto new_handle=elements_.createID();
+        try {
+            if(element.in_aabb) {
+                const auto group=physx::Bp::getFilterGroup(
+                    element.motion==native::GpuBroadphaseBox::Motion::Static,
+                    element.rigid_id,
+                    element.motion==native::GpuBroadphaseBox::Motion::Kinematic);
+                aabb_.admit(new_handle,actor,element.contact_distance,
+                            group,&element);
+            }
+        }catch(...) {
+            elements_.releaseID(new_handle);
+            throw;
+        }
+        if(element.in_aabb)
+            aabb_.remove_aggregate_member(old_handle);
+        elements_.releaseID(old_handle);
+        handles_[actor]=new_handle;
+        unlink_attached_actor(root,element);
+        element.aggregate_id=PX_INVALID_U32;
     }
     void admit_actor(
         BodyId actor,native::GpuBroadphaseBox::Motion motion,

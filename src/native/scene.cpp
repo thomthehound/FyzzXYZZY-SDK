@@ -189,7 +189,7 @@ T source_hop_pop(std::vector<T>& heap, HigherPriority higher) {
 }
 } // namespace
 
-BodyId Scene::add(Actor actor) {
+BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
@@ -217,13 +217,20 @@ BodyId Scene::add(Actor actor) {
         const auto capacity=actors_.capacity();
         actors_.reserve(capacity+std::max<std::size_t>(capacity,8));
     }
+    if(aggregate && !gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate authoring requires native GPU AABB owner");
     if(gpu_broadphase_) {
         const auto motion=actor.kind==Kind::StaticBox
             ? GpuBroadphaseBox::Motion::Static
             : actor.kind==Kind::KinematicBox
                 ? GpuBroadphaseBox::Motion::Kinematic
                 : GpuBroadphaseBox::Motion::Dynamic;
-        gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+        if(aggregate)
+            gpu_broadphase_->admit_aggregate_member(
+                *aggregate,id,motion,actor.contact_offset);
+        else
+            gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
     }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
@@ -235,13 +242,14 @@ BodyId Scene::add(Actor actor) {
     island_topology_dirty_ |= dynamic_node;
     return id;
 }
-BodyId Scene::add_static_box(Vec3 h, Vec3 p) {
+BodyId Scene::add_static_box(
+    Vec3 h,Vec3 p,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     Actor a;
     a.kind = Kind::StaticBox;
     a.half_extents = h;
     a.position = p;
-    return add(a);
+    return add(a,aggregate);
 }
 BodyId Scene::add_static_floor(float height) {
     if (!std::isfinite(height))
@@ -251,7 +259,8 @@ BodyId Scene::add_static_floor(float height) {
     a.position = {0.0f, height, 0.0f};
     return add(a);
 }
-BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
+BodyId Scene::add_dynamic_box(
+    Vec3 h,Vec3 p,float density,std::optional<AggregateId> aggregate) {
     validate_box(h, p);
     if (!std::isfinite(density) || density <= 0.0f)
         throw std::invalid_argument("Native scene density must be finite and positive");
@@ -311,7 +320,36 @@ BodyId Scene::add_dynamic_box(Vec3 h, Vec3 p, float density) {
     // Keep the pre-existing tiny-mass TRANSLATION stress case admitted.
     // It is not an angular-body admission and must not silently run
     // with zero/infinite substitute inertia in the actual source solver.
-    return add(a);
+    return add(a,aggregate);
+}
+
+AggregateId Scene::create_aggregate(
+    std::uint32_t max_shapes,bool self_collision) {
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    if(!max_shapes)
+        throw std::invalid_argument("Original PhysX aggregate capacity is zero");
+    return gpu_broadphase_->create_aggregate(max_shapes,self_collision);
+}
+void Scene::destroy_aggregate(AggregateId id) {
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    gpu_broadphase_->destroy_aggregate(id);
+    gpu_pair_refilter_dirty_=true;
+    broadphase_endpoint_membership_dirty_=true;
+    dirty_=true;
+}
+void Scene::remove_actor_from_aggregate(AggregateId aggregate,BodyId id) {
+    (void)require(id);
+    if(!gpu_broadphase_)
+        throw std::logic_error(
+            "Original PhysX aggregate requires native GPU broadphase");
+    gpu_broadphase_->remove_actor_from_aggregate(aggregate,id);
+    gpu_pair_refilter_dirty_=true;
+    broadphase_endpoint_membership_dirty_=true;
+    dirty_=true;
 }
 Scene::Actor& Scene::require(BodyId id) {
     if (id >= actors_.size() || !actors_[id].alive)
@@ -666,6 +704,19 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
         gpu_broadphase_->set_shape_motion(
             id,enabled ? GpuBroadphaseBox::Motion::Kinematic
                        : GpuBroadphaseBox::Motion::Dynamic);
+    // The previous source island owns the indexed contact-manager
+    // entries until the rigid node's motion class changes. Detach every
+    // incident indexed edge while its old dynamic endpoint still
+    // identifies that island. The full first pass reindexes surviving
+    // Gu managers under the new dynamic endpoints without replacing
+    // their Sc contact-manager handles.
+    if(gpu_broadphase_)
+        for(EdgeIndex edge_id:active_edge_handles_) {
+            const auto& edge=island_edges_[edge_id];
+            if(edge.live && edge.indexed_accurate &&
+               (edge.pair.a==id || edge.pair.b==id))
+                remove_accurate_island_edge(edge_id);
+        }
     // No target has been authored: the kinematic body has no external
     // motion and is not eligible for Dy solver-body integration.
     erase_shape_friction_history(id);
@@ -2009,8 +2060,18 @@ void Scene::update_gpu_pairs(bool force_update) {
     // including static/kinematic pairs ignored by Sc's contact filter.
     // The original SapPairManager coalesces created/removed handles and
     // compacts them only after the GPU report streams are validated.
-    for(const Pair pair:reports.found)sap_pairs_.add(pair);
-    for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+    // An Sc actor reinserted from an aggregate has a new ElementSim
+    // handle. Its old aggregate reports may retire the same actor pair
+    // that its new standalone SAP handle reports as found. When source
+    // authoring requests refiltering, consume retirements before found
+    // admissions so the final Sc overlap retains its canonical identity.
+    if(gpu_pair_refilter_dirty_) {
+        for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+        for(const Pair pair:reports.found)sap_pairs_.add(pair);
+    } else {
+        for(const Pair pair:reports.found)sap_pairs_.add(pair);
+        for(const Pair pair:reports.lost)sap_pairs_.remove(pair);
+    }
 
     // GPU volume removal emits no geometric crossing/lost pair. Retire
     // the BP membership here after an explicit Sc actor/shape edit,
@@ -4895,6 +4956,21 @@ void Scene::update_island_connectivity() {
         // connected component that retains their original root.
         speculative_island_count_=rebuild_graph(speculative_islands_,false);
         accurate_island_count_=rebuild_graph(accurate_islands_,true);
+        // Reclassified rigid bodies may reconnect an existing Gu manager
+        // without emitting a new touch-found report. Index those live
+        // managers in their newly admitted dynamic island after the
+        // original full node/edge reconciliation.
+        if(gpu_broadphase_)
+            for(EdgeIndex edge_id:active_edge_handles_) {
+                const auto& edge=island_edges_[edge_id];
+                if(!edge.live || !edge.connected || edge.indexed_accurate)continue;
+                const BodyId node=dynamic_node(edge.pair.a)
+                    ? edge.pair.a:edge.pair.b;
+                if(!dynamic_node(node))continue;
+                const auto owner=accurate_islands_.node_island[node];
+                if(owner!=IslandGraph::invalid)
+                    append_accurate_island_edge(edge_id,owner);
+            }
         accurate_island_nodes_.clear();
         for(std::size_t i=0;i<actors_.size();++i)
             if(dynamic_node(static_cast<BodyId>(i)))
@@ -9334,6 +9410,24 @@ public:
     }
     BodyId add_dynamic_box(Vec3 h, Vec3 p, float density) override {
         return scene_.add_dynamic_box(h, p, density);
+    }
+    AggregateId create_aggregate(
+        std::uint32_t max_shapes,bool self_collision) override {
+        return scene_.create_aggregate(max_shapes,self_collision);
+    }
+    void destroy_aggregate(AggregateId id) override {
+        scene_.destroy_aggregate(id);
+    }
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor) override {
+        scene_.remove_actor_from_aggregate(id,actor);
+    }
+    BodyId add_static_box_to_aggregate(
+        AggregateId aggregate,Vec3 h,Vec3 p) override {
+        return scene_.add_static_box(h,p,aggregate);
+    }
+    BodyId add_dynamic_box_to_aggregate(
+        AggregateId aggregate,Vec3 h,Vec3 p,float density) override {
+        return scene_.add_dynamic_box(h,p,density,aggregate);
     }
     ConstraintId add_center_distance_constraint(
         BodyId a,BodyId b,float distance) override {

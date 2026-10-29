@@ -224,7 +224,16 @@ public:
         volumes_[root].setUserData(user_data);
         volumes_[root].setVolumeType(physx::Bp::ElementType::eSHAPE);
         volumes_[root].setAggregate(id);
+#if BP_USE_AGGREGATE_GROUP_TAIL
+        // Original AABBManagerBase::getAggregateGroup, including its
+        // free-group stack. Root groups must never equal each other or
+        // the shared static group: root/root and root/static pairs
+        // otherwise disappear before aggregate member collision tests.
+        groups_[root]=original_aggregate_group();
+        PX_UNUSED(group);
+#else
         groups_[root]=group;
+#endif
         distances_[root]=0.0f;
         bounds_.setBounds(physx::PxBounds3::empty(),root);
         added_.growAndReset(root);
@@ -378,6 +387,11 @@ public:
         added_.boundedReset(root);
         changed_.boundedReset(root);
         aggregated_.boundedReset(root);
+#if BP_USE_AGGREGATE_GROUP_TAIL
+        // AABBManagerBase::releaseAggregateGroup at the same source
+        // aggregate teardown boundary, not at GPU report fetch.
+        free_aggregate_groups_.push_back(groups_[root]);
+#endif
         groups_[root]=physx::Bp::FilterGroup::eINVALID;
         distances_[root]=0.0f;
         volumes_[root].reset();
@@ -822,10 +836,10 @@ public:
                 const bool compatible=
                     motion==native::GpuBroadphaseBox::Motion::Static
                         ? static_group
-                        : !static_group &&
-                          (type==physx::Bp::FilterType::DYNAMIC ||
-                           (motion==native::GpuBroadphaseBox::Motion::Kinematic &&
-                            type==physx::Bp::FilterType::KINEMATIC));
+                        : !static_group && type==(
+                            motion==native::GpuBroadphaseBox::Motion::Kinematic
+                                ? physx::Bp::FilterType::KINEMATIC
+                                : physx::Bp::FilterType::DYNAMIC);
                 if(!compatible)
                     throw std::invalid_argument(
                         "Source aggregate member motion differs from original Sc BP group");
@@ -961,21 +975,52 @@ public:
     // Every still-live source volume becomes a fresh created handle.
     // The next Sc geometry publication refreshes all authored bounds.
     void reset_for_source_rebuild() {
-        if(num_active_aggregates_)
-            throw std::logic_error(
-                "Source aggregate history reconstruction requires aggregate GPU reports");
+        // A rejected Sc/Dy frame invalidates all GPU comparison history,
+        // not the authoritative Sc VolumeData or PxgAggregate membership.
+        // Re-enter the original create path for live single volumes and
+        // nonempty aggregate roots; members are GPU geometry, not SAP boxes.
         added_.clear();
         removed_.clear();
         changed_.clear();
         aggregated_.clear();
+        added_aggregate_members_.resetOrClear();
+        removed_aggregate_members_.resetOrClear();
+        dirty_aggregates_.clear();
+        dirty_aggregate_indices_.resetOrClear();
+        aggregate_projection_current_slot_=0u;
+        aggregate_pair_storage_initialized_=false;
+
         for(physx::PxU32 handle=0;handle<groups_.size();++handle) {
-            if(groups_[handle]!=physx::Bp::FilterGroup::eINVALID) {
-                if(!added_.growAndSet(handle))throw std::bad_alloc();
-            } else {
-                // Retired handles have no SAP history after reset.
+            if(groups_[handle]==physx::Bp::FilterGroup::eINVALID) {
+                // Lost reports from the abandoned GPU history will not
+                // be fetched. Retired handles release their actor mapping.
                 volume_to_actor_[handle]=
                     std::numeric_limits<BodyId>::max();
+                volumes_[handle].reset();
+            } else if(volumes_[handle].isAggregated()) {
+                if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
+                added_aggregate_members_.pushBack(handle);
+            } else if(!volumes_[handle].isAggregate()) {
+                if(!added_.growAndSet(handle))throw std::bad_alloc();
             }
+        }
+        for(physx::PxU32 id=0;id<aggregate_gpu_slot_count_;++id) {
+            auto& aggregate=aggregates_[id];
+            // Even retired aggregate slots may still exist on the GPU
+            // when a rejected frame discards their deletion upload.
+            // Publish their empty source records before self collision
+            // dispatch examines the reserved aggregate ID domain.
+            mark_aggregate_dirty(id);
+            if(aggregate.mIndex==PX_INVALID_U32)continue;
+            // Fresh GPU projections and self history begin at size zero;
+            // do not read stale member bounds or pair slots from the
+            // rejected frame's previously published projection buffers.
+            aggregate.prevSize=0u;
+            aggregate.isNew=true;
+            self_state_uploaded_[id]=false;
+            if(aggregate.size &&
+               !added_.growAndSet(aggregate.mIndex))
+                throw std::bad_alloc();
         }
         persistent_state_changed_=true;
         gpu_state_changed_=false;
@@ -989,6 +1034,23 @@ public:
     physx::Cm::PinnableBitMap& source_changed() noexcept {return changed_;}
 
 private:
+#if BP_USE_AGGREGATE_GROUP_TAIL
+    physx::Bp::FilterGroup::Enum original_aggregate_group() {
+        if(!free_aggregate_groups_.empty()) {
+            const auto group=free_aggregate_groups_.back();
+            free_aggregate_groups_.pop_back();
+            return group;
+        }
+        // The original tail starts at eAGGREGATE_BASE and uses the
+        // low three bits for FilterType::AGGREGATE.
+        if(aggregate_group_tide_<=physx::Bp::FilterGroup::eDYNAMICS_BASE)
+            throw std::out_of_range("Original aggregate BP filter group tail exhausted");
+        const auto id=aggregate_group_tide_--;
+        return physx::Bp::FilterGroup::Enum(
+            (id<<BP_FILTERING_TYPE_SHIFT_BIT) |
+            physx::Bp::FilterType::AGGREGATE);
+    }
+#endif
     physx::PxgAggregate& checked_aggregate(physx::Bp::AggregateHandle id) {
         if(id>=aggregates_.size() ||
            aggregates_[id].mIndex==PX_INVALID_U32)
@@ -1005,6 +1067,11 @@ private:
     physx::Bp::SourceBoundsArrayNative bounds_;
     physx::Cm::PinnableArray<physx::PxReal> distances_;
     physx::Cm::PinnableArray<physx::Bp::FilterGroup::Enum> groups_;
+#if BP_USE_AGGREGATE_GROUP_TAIL
+    physx::PxU32 aggregate_group_tide_=
+        physx::Bp::FilterGroup::eAGGREGATE_BASE;
+    std::vector<physx::Bp::FilterGroup::Enum> free_aggregate_groups_;
+#endif
     physx::Cm::PinnableArray<physx::Bp::VolumeData> volumes_;
     physx::Cm::PinnableBitMap added_,removed_,changed_,aggregated_;
     physx::Cm::PinnableArray<physx::Bp::ShapeHandle> created_,retired_,updated_;

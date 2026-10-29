@@ -153,6 +153,23 @@ public:
                      float offset) override {
         producer_->admit_shape(id,motion,offset);
     }
+    AggregateId create_aggregate(
+        std::uint32_t max_shapes,bool self_collision) override {
+        return producer_->create_aggregate(max_shapes,self_collision);
+    }
+    void destroy_aggregate(AggregateId id) override {
+        producer_->destroy_aggregate(id);
+    }
+    void remove_actor_from_aggregate(
+        AggregateId aggregate,BodyId actor) override {
+        producer_->remove_actor_from_aggregate(aggregate,actor);
+    }
+    void admit_aggregate_member(
+        AggregateId aggregate,BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,float contact_offset) override {
+        producer_->admit_aggregate_member(
+            aggregate,actor,motion,contact_offset);
+    }
     void retire_shape(BodyId id) override { producer_->retire_shape(id); }
     void set_shape_simulation_enabled(BodyId id,bool enabled) override {
         producer_->set_shape_simulation_enabled(id,enabled);
