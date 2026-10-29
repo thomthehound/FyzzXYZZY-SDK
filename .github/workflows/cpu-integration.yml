@@ -440,7 +440,7 @@ jobs:
         run: |
           cmake --build build-native --config Release --parallel 4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release --output-on-failure
+          ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
