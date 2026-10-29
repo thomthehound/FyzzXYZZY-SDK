@@ -1239,8 +1239,12 @@ void execute(Context& context, ShaderBinary translateShader,
                         "GPU found overlap failed native Sc/Gu admission");
 
                 scene.set_position(b,{6.0f,0.0f,0.0f});
-                sceneAabb.mark_changed(elementHandles[b],0.02f);
+                require(sceneAabb.source_changed().boundedTest(
+                            elementHandles[b])!=0,
+                        "Authored Sc transform did not mark the source GPU bitmap");
                 scene.advance_collision(false);
+                require(!sceneAabb.source_changed().hasAnyBitSet(),
+                        "Sc GPU changed bitmap was not retired after fetch");
                 require(scene.pairs().empty() &&
                         scene.found_pairs().empty() &&
                         scene.lost_pairs().size()==1u &&
@@ -1254,6 +1258,14 @@ void execute(Context& context, ShaderBinary translateShader,
                         scene.found_pairs().empty() &&
                         scene.lost_pairs().empty(),
                         "Quiet GPU Sc frame replayed a stale overlap report");
+                scene.set_shape_offsets(b,0.04f,0.0f);
+                require(sceneAabb.source_changed().boundedTest(
+                            elementHandles[b])!=0,
+                        "Source Sc contact-offset edit missed its GPU changed bitmap");
+                scene.advance_collision(false);
+                require(scene.pairs().empty() &&
+                        !sceneAabb.source_changed().hasAnyBitSet(),
+                        "Source GPU contact-distance edit was not fetched/retired");
                 stream.wait_at_fetch();
             }
             require(manager.getDeviceHeapStats()

@@ -81,6 +81,11 @@ public:
     virtual GpuBroadphaseReports advance(
         std::span<const GpuBroadphaseBox> live_boxes,
         bool force_update,bool geometry_dirty)=0;
+    // ScShapeSim's authored transform/contact-distance changes and
+    // ScPipeline::afterIntegration mark the original PxgAABBManager
+    // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
+    virtual void mark_shape_bounds_changed(
+        BodyId actor,float contact_offset)=0;
     // The source GPU has already advanced its histories at fetch. A
     // rejected Sc/Dy transaction invalidates that frame; the owner must
     // reconstruct its GPU histories from the next authoritative scene.

@@ -390,6 +390,10 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
         if(invalidated)dirty_=true;
     }
     if(!changing_pose)return;
+    // ScShapeSim::updateBounds queues this volume in PxgAABBManager's
+    // original changed bitmap before publishing the authored transform.
+    if(gpu_broadphase_ && actor.simulation_shape_enabled)
+        gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
     // Authored transforms are discontinuities: retained strong-friction
     // anchors must not bridge either a translation or an orientation edit.
     erase_shape_friction_history(id);
@@ -734,6 +738,10 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     auto& actor=require(id);
     if(actor.contact_offset==contact_offset &&
        actor.rest_offset==rest_offset)return;
+    // AABBManagerBase::setContactDistance owns the source GPU changed bit
+    // and the new distance; keep that publication ahead of scene edits.
+    if(gpu_broadphase_ && actor.simulation_shape_enabled)
+        gpu_broadphase_->mark_shape_bounds_changed(id,contact_offset);
     // An authored shape change invalidates prior friction correlation;
     // retire only this shape's anchors in the existing scene-owned cache.
     erase_shape_friction_history(id);
@@ -1692,17 +1700,26 @@ void Scene::after_integration_cached_bounds() {
     for(BodyId id:active_kinematic_targets_) {
         auto& actor=actors_[id];
         if(actor.alive && actor.kind==Kind::KinematicBox &&
-           !actor.cached_bounds_current)
+           !actor.cached_bounds_current) {
+            if(gpu_broadphase_ && actor.simulation_shape_enabled)
+                gpu_broadphase_->mark_shape_bounds_changed(
+                    id,actor.contact_offset);
             update_actor_bounds(actor);
+        }
     }
     for(const auto& task:solver_tasks_)
         for(std::size_t batch=task.first_batch;batch<task.batch_end;++batch) {
             const auto island=active_accurate_island_batches_[batch];
             for(std::size_t index=accurate_island_offsets_[island];
                 index<accurate_island_offsets_[island+1];++index) {
-                Actor& body=actors_[accurate_island_nodes_[index]];
-                if(!body.sleeping)
+                const BodyId id=accurate_island_nodes_[index];
+                Actor& body=actors_[id];
+                if(!body.sleeping) {
+                    if(gpu_broadphase_ && body.simulation_shape_enabled)
+                        gpu_broadphase_->mark_shape_bounds_changed(
+                            id,body.contact_offset);
                     update_actor_bounds(body);
+                }
             }
         }
 }
