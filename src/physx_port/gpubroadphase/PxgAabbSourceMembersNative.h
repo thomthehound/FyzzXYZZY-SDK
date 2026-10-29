@@ -183,7 +183,9 @@ public:
         if(aggregate_gpu_member_starts_.size()<=id) {
             aggregate_gpu_member_starts_.resize(2u*id+1u,0u);
             aggregate_gpu_member_reservations_.resize(2u*id+1u,0u);
+            self_state_uploaded_.resize(2u*id+1u,false);
         }
+        self_state_uploaded_[id]=false;
         if(aggregate_gpu_member_reservations_[id]<max_shapes) {
             if(max_shapes>std::numeric_limits<physx::PxU32>::max()-
                               aggregate_gpu_member_capacity_)
@@ -388,13 +390,18 @@ public:
                     std::size_t(aggregate.size)*sizeof(physx::PxU32)});
             // Source newly allocated aggregate IDs have no prior
             // self-comparison history, including after deferred reuse.
-            if(aggregate.isNew)
+            if(!self_state_uploaded_[id])
                 uploads.push_back({
                     self_previous_sizes_device_.getDevicePtr()+
                         std::uint64_t(id)*sizeof(physx::PxU32),
                     &self_previous_size_zero_,sizeof(physx::PxU32)});
         }
         stream.queue_uploads(uploads);
+        // The original GPU previous-size history is initialized once per
+        // aggregate-ID lifetime, not on every same-frame dirty DMA. Host
+        // isNew remains owned by PxgAggregate until successful fetch.
+        for(const auto id:dirty_aggregate_indices_)
+            self_state_uploaded_[id]=true;
     }
 
     // Source gpuDmaDataUp uploads added and deleted aggregate members from
@@ -756,6 +763,7 @@ private:
     // stays exclusively in PxgAggregate::updateBoundIndices.
     std::vector<physx::PxU32> aggregate_gpu_member_starts_;
     std::vector<physx::PxU32> aggregate_gpu_member_reservations_;
+    std::vector<bool> self_state_uploaded_;
     std::vector<SourceAggregateGpuNativeRecord> gpu_aggregate_record_staging_;
     physx::PxU32 aggregate_gpu_slot_count_=0u;
     physx::PxU32 aggregate_gpu_member_capacity_=0u;
