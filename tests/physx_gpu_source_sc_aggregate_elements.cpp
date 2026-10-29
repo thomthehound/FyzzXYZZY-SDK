@@ -159,6 +159,29 @@ void run(Backend backend) {
             require(rejected,
                 "Source GPU accepted a Kinematic Sc actor with its old dynamic BP group");
 
+            // Recover after a completed aggregate GPU generation. The
+            // original AABB owner must republish only real SAP endpoints,
+            // while every still-live member regains its GPU bounds history.
+            owner.complete_fetch(frame);
+            require(!owner.source_aggregate(root).isNew &&
+                    owner.source_aggregate(root).prevSize==2u,
+                    "Original source aggregate frame did not retire previous size");
+            owner.reset_for_source_rebuild();
+            require(owner.source_aggregate(root).isNew &&
+                    owner.source_aggregate(root).prevSize==0u &&
+                    owner.source_aggregated().boundedTest(member0) &&
+                    owner.source_aggregated().boundedTest(member1) &&
+                    owner.volume_to_actor()[member0]==0u &&
+                    owner.volume_to_actor()[member1]==1u,
+                    "Aggregate recovery lost source membership or previous-size reset");
+            const auto rebuilt=owner.prepare(boxes,sc.handles(),filter);
+            require(rebuilt.getNumCreatedHandles()==2u &&
+                    rebuilt.getCreatedHandles()[0]==root_handle &&
+                    rebuilt.getCreatedHandles()[1]==ordinary &&
+                    rebuilt.getNumRemovedHandles()==0u &&
+                    rebuilt.getNumUpdatedHandles()==0u,
+                    "Aggregate recovery replayed members as SAP endpoints");
+
             sc.mark_changed(0u,0.4f);
             require(owner.source_changed().boundedTest(member0)!=0u,
                     "Original Sc member edit did not mark the source GPU bitmap");
