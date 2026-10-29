@@ -3,6 +3,7 @@
 #pragma once
 
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
+#include "fyzzxyzzy/native_gpu_world.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "physx_gpu/source_sap_translate_aabbs_native.h"
@@ -37,7 +38,7 @@ namespace fyzz::physx_gpu {
 // The source GPU stage order is the same for SPIR-V and DXIL. A production
 // shader provider supplies compiled stages; the scene never invokes DXC
 // while stepping or silently selects a CPU broadphase.
-using SourceSapShaderBinaries = std::array<compute::ShaderBinary, 34>;
+using SourceSapShaderBinaries = NativeGpuSapShaders;
 
 class SourceScOwnedGpuBroadphaseNative final : public native::GpuBroadphaseProducer {
     struct FoundationOwner {
@@ -59,6 +60,10 @@ class SourceScOwnedGpuBroadphaseNative final : public native::GpuBroadphaseProdu
     static FoundationOwner& foundation() {
         static FoundationOwner owner;
         return owner;
+    }
+    static compute::ShaderBinary take_shader(
+        SourceSapShaderBinaries& shaders,NativeGpuSapStage stage) {
+        return std::move(shaders[static_cast<std::size_t>(stage)]);
     }
     static void abort_source(void* state) noexcept {
         *static_cast<bool*>(state)=true;
@@ -83,34 +88,34 @@ public:
           sap_(std::make_unique<PxgSapSourceMembersNative>(
               allocators_,max_pairs,max_aggregate_pairs)),
           aabb_(std::make_unique<PxgAabbSourceMembersNative>(allocators_)),
-          encoding_(context_,std::move(shaders[0])),
+          encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
           lowering_(addresses_,encoding_),
-          created_(context_,std::move(shaders[1])),
-          radix_(context_,std::move(shaders[2]),std::move(shaders[3]),
-                 std::move(shaders[4]),std::move(shaders[5])),
-          indices_(context_,std::move(shaders[6])),
-          histograms_(context_,std::move(shaders[7]),std::move(shaders[8])),
-          fill_(context_,std::move(shaders[9])),
-          region_(context_,std::move(shaders[10]),fill_),
+          created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
+          radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
+                 take_shader(shaders,NativeGpuSapStage::RadixScatter),take_shader(shaders,NativeGpuSapStage::RadixGather)),
+          indices_(context_,take_shader(shaders,NativeGpuSapStage::SapBoxIndices)),
+          histograms_(context_,take_shader(shaders,NativeGpuSapStage::EndpointHistogramFirst),take_shader(shaders,NativeGpuSapStage::EndpointHistogramSecond)),
+          fill_(context_,take_shader(shaders,NativeGpuSapStage::FillD32)),
+          region_(context_,take_shader(shaders,NativeGpuSapStage::RegionCreate),fill_),
           region_histograms_(
-              context_,std::move(shaders[11]),std::move(shaders[12]),
-              std::move(shaders[13])),
-          active_(context_,std::move(shaders[14]),std::move(shaders[15]),
-                  std::move(shaders[16]),std::move(shaders[17])),
-          overlap_(context_,std::move(shaders[18])),
-          prefix_(context_,std::move(shaders[19]),std::move(shaders[20])),
-          newbounds_pairs_(context_,std::move(shaders[21])),
+              context_,take_shader(shaders,NativeGpuSapStage::RegionHistogramFirst),take_shader(shaders,NativeGpuSapStage::RegionHistogramWave),
+              take_shader(shaders,NativeGpuSapStage::RegionHistogramSecond)),
+          active_(context_,take_shader(shaders,NativeGpuSapStage::ActiveWriteout),take_shader(shaders,NativeGpuSapStage::ActiveWave),
+                  take_shader(shaders,NativeGpuSapStage::ActivePortable),take_shader(shaders,NativeGpuSapStage::ActiveOutput)),
+          overlap_(context_,take_shader(shaders,NativeGpuSapStage::OverlapWork)),
+          prefix_(context_,take_shader(shaders,NativeGpuSapStage::OverlapScanFirst),take_shader(shaders,NativeGpuSapStage::OverlapScanSecond)),
+          newbounds_pairs_(context_,take_shader(shaders,NativeGpuSapStage::NewBoundsPairs)),
           newbounds_(overlap_,prefix_,newbounds_pairs_),
           regions_(region_,region_histograms_,active_,newbounds_),
-          reports_(context_,std::move(shaders[22]),std::move(shaders[23]),
-                   std::move(shaders[24]),std::move(shaders[25]),
-                   std::move(shaders[26])),
-          removed_(context_,std::move(shaders[27]),std::move(shaders[28])),
-          updated_(context_,std::move(shaders[29])),
-          comparisons_(context_,std::move(shaders[30]),
-                       std::move(shaders[31])),
-          incremental_(context_,std::move(shaders[32])),
-          clear_(context_,std::move(shaders[33])),
+          reports_(context_,take_shader(shaders,NativeGpuSapStage::ReportFirst),take_shader(shaders,NativeGpuSapStage::ReportSecond),
+                   take_shader(shaders,NativeGpuSapStage::ReportCopy),take_shader(shaders,NativeGpuSapStage::ReportWaveFirst),
+                   take_shader(shaders,NativeGpuSapStage::ReportWaveSecond)),
+          removed_(context_,take_shader(shaders,NativeGpuSapStage::RemovedMark),take_shader(shaders,NativeGpuSapStage::RemovedProjections)),
+          updated_(context_,take_shader(shaders,NativeGpuSapStage::UpdatedBounds)),
+          comparisons_(context_,take_shader(shaders,NativeGpuSapStage::IncrementalCountFirst),
+                       take_shader(shaders,NativeGpuSapStage::IncrementalCountSecond)),
+          incremental_(context_,take_shader(shaders,NativeGpuSapStage::IncrementalPairs)),
+          clear_(context_,take_shader(shaders,NativeGpuSapStage::ClearNewFlags)),
           stages_{lowering_,removed_,updated_,radix_,histograms_,
                   comparisons_,incremental_,indices_,created_,regions_,
                   clear_,reports_},
