@@ -7,6 +7,7 @@
 #include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_gpu/source_aggregate_member_history_native.h"
+#include "physx_gpu/source_aggregate_projection_native.h"
 #include "physx_port/common/src/CmPinnableArray.h"
 #include "physx_port/common/src/CmPinnableBitMap.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
@@ -61,6 +62,18 @@ public:
           aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           added_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           removed_aggregate_members_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_keys_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_keys_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_handles_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_handles_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_scratch_keys_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_scratch_handles_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_sap_boxes_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_sap_boxes_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_start_masks_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_start_masks_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_bound_history_0_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          projection_bound_history_1_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregates_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE),
           dirty_aggregate_indices_(allocators.hostAlloc,physx::PxsHeapStats::eBROADPHASE) {
         if(initial_shapes)reserve_shapes(initial_shapes);
@@ -406,6 +419,53 @@ public:
             removed_aggregate_members_.size()};
     }
 
+    // The two original PxgAggregate history slots are separate PhysX GPU
+    // allocations. Each grows with the source reserved-member domain and
+    // retains its own prefix; growing one must never relocate the other.
+    void queue_aggregate_projection_gpu_storage(SourceSapDmaNative& stream) {
+        const auto members=std::uint64_t(aggregate_gpu_member_capacity_);
+        if(!members)return;
+        if(members>std::numeric_limits<physx::PxU32>::max()/8u)
+            throw std::out_of_range(
+                "Original aggregate projection GPU buffers exceed byte range");
+        for(auto* buffer:{
+            &projection_keys_0_,&projection_keys_1_,
+            &projection_handles_0_,&projection_handles_1_,
+            &projection_scratch_keys_device_,
+            &projection_scratch_handles_device_,
+            &projection_sap_boxes_0_,&projection_sap_boxes_1_})
+            buffer->allocateCopyOldDataAsync(members*8u,stream,PX_FL);
+        // A mask slot reserves one word per maximum member to preserve
+        // nonoverlapping per-aggregate ranges across every capacity.
+        for(auto* buffer:{
+            &projection_start_masks_0_,&projection_start_masks_1_,
+            &projection_bound_history_0_,&projection_bound_history_1_})
+            buffer->allocateCopyOldDataAsync(members*4u,stream,PX_FL);
+    }
+
+    SourceAggregateProjectionNativeBuffers aggregate_projection_gpu_buffers(
+        CudaDeviceAddressMap::Address current_integer_bounds,
+        bool previous=false) const noexcept {
+        const auto slot=aggregate_projection_current_slot_^physx::PxU32(previous);
+        const auto& keys=slot?projection_keys_1_:projection_keys_0_;
+        const auto& handles=slot?projection_handles_1_:projection_handles_0_;
+        const auto& sap=slot?projection_sap_boxes_1_:projection_sap_boxes_0_;
+        const auto& masks=slot?projection_start_masks_1_:projection_start_masks_0_;
+        const auto& history=slot?projection_bound_history_1_:projection_bound_history_0_;
+        return {current_integer_bounds,
+            aggregate_slots_device_.getDevicePtr(),
+            aggregate_members_device_.getDevicePtr(),
+            keys.getDevicePtr(),
+            handles.getDevicePtr(),
+            projection_scratch_keys_device_.getDevicePtr(),
+            projection_scratch_handles_device_.getDevicePtr(),
+            sap.getDevicePtr(),
+            masks.getDevicePtr(),
+            history.getDevicePtr(),
+            bounds_.size(),aggregate_gpu_slot_count_,
+            aggregate_gpu_member_capacity_,aggregate_gpu_slot_count_,slot};
+    }
+
     // Borrow the original SAP bounds/contact arrays and this AABB owner's
     // changed bitmap after its normal preBroadPhase upload. The translated
     // aggregate views point to this owner's actual GPU heap allocations.
@@ -431,12 +491,17 @@ public:
         return {dirty_aggregate_indices_.begin(),dirty_aggregate_indices_.size()};
     }
     void finish_aggregate_report_fetch() {
-        for(const auto id:dirty_aggregate_indices())
+        for(const auto id:dirty_aggregate_indices()) {
+            // Original clearDirtyAggregates retires the source per-frame
+            // size history only after GPU aggregate reports are fetched.
+            aggregates_[id].prevSize=aggregates_[id].size;
             aggregates_[id].isNew=false;
+        }
         dirty_aggregate_indices_.resetOrClear();
         dirty_aggregates_.clear();
         added_aggregate_members_.resetOrClear();
         removed_aggregate_members_.resetOrClear();
+        if(aggregate_gpu_slot_count_)aggregate_projection_current_slot_^=1u;
         aggregate_ids_.processDeferredIds();
     }
     physx::Cm::PinnableBitMap& source_aggregated() noexcept {
@@ -520,6 +585,7 @@ public:
                 "Aggregate GPU first pass does not borrow original AABB manager arrays");
         queue_aggregate_gpu_dma_up(stream);
         queue_aggregate_member_history_gpu_dma_up(stream);
+        queue_aggregate_projection_gpu_storage(stream);
         auto manager=pre_update(sap);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
@@ -612,6 +678,12 @@ private:
     physx::PxgCudaBuffer aggregate_slots_device_,aggregate_members_device_;
     physx::PxgCudaBuffer
         added_aggregate_members_device_,removed_aggregate_members_device_;
+    physx::PxgCudaBuffer projection_keys_0_,projection_keys_1_;
+    physx::PxgCudaBuffer projection_handles_0_,projection_handles_1_;
+    physx::PxgCudaBuffer projection_scratch_keys_device_,projection_scratch_handles_device_;
+    physx::PxgCudaBuffer projection_sap_boxes_0_,projection_sap_boxes_1_;
+    physx::PxgCudaBuffer projection_start_masks_0_,projection_start_masks_1_;
+    physx::PxgCudaBuffer projection_bound_history_0_,projection_bound_history_1_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
     // Original PxgAABBManager::mAggregates and mAggregatesIdPool. Their
@@ -626,6 +698,7 @@ private:
     std::vector<SourceAggregateGpuNativeRecord> gpu_aggregate_record_staging_;
     physx::PxU32 aggregate_gpu_slot_count_=0u;
     physx::PxU32 aggregate_gpu_member_capacity_=0u;
+    physx::PxU32 aggregate_projection_current_slot_=0u;
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
