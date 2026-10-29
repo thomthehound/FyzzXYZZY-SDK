@@ -47,13 +47,49 @@ void run(fyzz::compute::Backend backend,
     // Context as the thirty-four source SAP kernels. The ordinary
     // actor-only scene continues to use exactly the same Sc/PCM/Dy path.
     auto world=fyzz::create_native_gpu_world(
-        backend,std::move(sap),std::move(aggregate));
+        backend,std::move(sap),std::move(aggregate),
+        {fyzz::ExecutionMode::NativePortableGpu,true});
     const auto body=world.add_dynamic_box(
         {0.25f,0.25f,0.25f},{0.0f,2.0f,0.0f},1.0f);
+
+    bool rejected_aggregate=false;
+    try { (void)world.create_aggregate(0u,true); }
+    catch(const std::invalid_argument&) {rejected_aggregate=true;}
+    require(rejected_aggregate,"Original GPU World accepted zero-capacity aggregate");
+
+    const auto root=world.create_aggregate(3u,true);
+    const auto a=world.add_dynamic_box_to_aggregate(
+        root,{0.5f,0.5f,0.5f},{5.0f,1.0f,0.0f},1.0f);
+    const auto b=world.add_dynamic_box_to_aggregate(
+        root,{0.5f,0.5f,0.5f},{5.4f,1.0f,0.0f},1.0f);
+    // The root is the ONLY SAP endpoint for these two real Sc members.
+    // The original GPU aggregate self-collision stage must report their
+    // overlapping shapes through the shared Sc contact manager.
     world.step(1.0f/120.0f);
     const auto state=world.body_state(body);
     require(std::isfinite(state.position.y) && state.position.y<2.0f,
         "Aggregate-enabled source GPU World changed ordinary Sc body integration");
+    const auto stateA=world.body_state(a);
+    const auto stateB=world.body_state(b);
+    require(std::isfinite(stateA.position.x) &&
+            std::isfinite(stateB.position.x),
+        "Original GPU aggregate member world states are non-finite");
+    bool found=false;
+    for(const auto& e:world.contact_events())
+        if(e.body0==a && e.body1==b &&
+           e.kind==fyzz::ContactEventKind::Found)
+            found=true;
+    require(found,
+        "Original GPU aggregate self-collision did not reach Sc contact publication");
+
+    bool live_destroy_rejected=false;
+    try {world.destroy_aggregate(root);}
+    catch(const std::logic_error&) {live_destroy_rejected=true;}
+    require(live_destroy_rejected,
+        "Native GPU World destroyed a root with attached Sc members");
+    world.remove_body(b);
+    world.remove_body(a);
+    world.destroy_aggregate(root);
 }
 }
 int main(int argc,char** argv) {
