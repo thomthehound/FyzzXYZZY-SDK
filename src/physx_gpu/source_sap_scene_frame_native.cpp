@@ -48,6 +48,11 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         throw std::logic_error(
             "Original aggregate post-SAP requires AABB owner and GPU history stages");
 
+    if(members.aabb_owner && members.aabb_owner->aggregate_pair_capacity() &&
+       !members.aggregate_pair_admission)
+        throw std::logic_error(
+            "Original aggregate root-pair pool requires source GPU admission stage");
+
     // The source manager's handle/bitmap first pass has already created
     // this frame's authoritative Bp update. Validate its GPU dirty flag
     // before queuing any source heap allocation or transfer.
@@ -114,6 +119,13 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             address(dma.broadphase_descriptor.oldIntegerBounds),
             address(dma.broadphase_descriptor.updateData_groups));
         members.aggregate_self_collision->append(stream,addresses,self);
+        if(members.aabb_owner->aggregate_pair_capacity()) {
+            const auto pair_buffers=members.aabb_owner->aggregate_pair_admission_gpu_buffers(
+                members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
+                address(dma.broadphase_descriptor.foundAggPairReport),
+                dma.broadphase_descriptor.max_found_lost_agg_pairs);
+            members.aggregate_pair_admission->append(stream,addresses,pair_buffers);
+        }
         // Original aggCopyReports follows aggregate pair processing on
         // this same stream and writes directly into the source mapped heap.
         const auto copy=members.aabb_owner->aggregate_report_copy_gpu_buffers(

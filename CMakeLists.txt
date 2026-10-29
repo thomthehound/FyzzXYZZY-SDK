@@ -1410,6 +1410,40 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_report_copy
       COMMAND fyzzxyzzy_source_gpu_aggregate_report_copy
         "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
+    # Original aggregate.cu::addAggPairsStage1 and addAggPairsStage2.
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_pair_admit_native.spv")
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_pair_publish_native.spv")
+    add_custom_command(OUTPUT
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E admit
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E publish
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_pair_admission_shaders
+      DEPENDS
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_pair_admission
+      tests/physx_gpu_source_aggregate_pair_admission_native.cpp)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_pair_admission PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_pair_admission PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_pair_admission
+      fyzzxyzzy_source_gpu_aggregate_pair_admission_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_pair_admission
+      COMMAND fyzzxyzzy_source_gpu_aggregate_pair_admission
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_SPV}"
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass PRIVATE
@@ -4327,6 +4361,44 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
         "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
+      PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    # Original aggregate.cu::addAggPairsStage1 and addAggPairsStage2.
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_pair_admit_native.dxil")
+    set(FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_pair_publish_native.dxil")
+    add_custom_command(OUTPUT
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL}"
+      "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E admit
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E publish
+        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_pair_admission_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12_shaders
+      DEPENDS
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL}"
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}")
+    add_executable(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
+      tests/physx_gpu_source_aggregate_pair_admission_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_link_libraries(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
+      fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12_shaders)
+    add_test(NAME fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
+      COMMAND fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_ADMIT_DXIL}"
+        "${FYZZXYZZY_SOURCE_AGG_PAIR_PUBLISH_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_pair_admission_d3d12
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_executable(fyzzxyzzy_source_gpu_aggregate_aabb_owner_prepass_d3d12
       tests/physx_gpu_source_aggregate_aabb_owner_prepass.cpp)

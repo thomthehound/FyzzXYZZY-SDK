@@ -21,6 +21,7 @@ class SourceAggregateMemberHistoryNativeStage;
 class SourceAggregateProjectionNativeStage;
 class SourceAggregateSelfCollisionNativeStage;
 class SourceAggregateReportCopyNativeStage;
+class SourceAggregatePairAdmissionNativeStage;
 
 // One borrowed PxgAABBManager/PxgCudaBroadPhaseSap scene frame. Handles,
 // memory, buffers, GPU stream, task completion and pinned report
@@ -64,6 +65,7 @@ struct SourceSapSceneFrameNativeMembers {
     const SourceAggregateProjectionNativeStage* aggregate_projection = nullptr;
     const SourceAggregateSelfCollisionNativeStage* aggregate_self_collision = nullptr;
     const SourceAggregateReportCopyNativeStage* aggregate_report_copy = nullptr;
+    const SourceAggregatePairAdmissionNativeStage* aggregate_pair_admission = nullptr;
 };
 
 struct SourceSapSceneFrameNativeResult {
