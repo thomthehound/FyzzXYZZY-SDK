@@ -5,7 +5,7 @@
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
-#include "physx_gpu/source_sap_scene_frame_native.h"
+#include "physx_gpu/source_aggregate_post_sap_member_history_native.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_physx_mapped_report_roots.h"
 #include "extensions/PxDefaultAllocator.h"
