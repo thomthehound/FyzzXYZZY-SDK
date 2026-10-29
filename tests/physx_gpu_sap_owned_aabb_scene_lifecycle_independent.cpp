@@ -164,6 +164,19 @@ void execute(Context& context, ShaderBinary translateShader,
             aggregateAabb.admit_aggregate_member(root,5u,41u,0.25f,
                 physx::Bp::getFilterGroup_Dynamics(41u,false),
                 sourceElements.data());
+            // The public single-actor scene bridge cannot expand
+            // aggregate root reports to Sc member pairs yet. Its owner
+            // must reject an aggregate frame instead of reporting the
+            // root as an ordinary rigid actor.
+            bool rejectedAggregateWorld=false;
+            try {
+                const physx::Bp::BpFilter filter(false,false);
+                (void)aggregateAabb.prepare({}, {}, filter);
+            }catch(const std::logic_error&) {
+                rejectedAggregateWorld=true;
+            }
+            require(rejectedAggregateWorld,
+                    "Source Sc incorrectly admitted incomplete aggregate reports");
             require(aggregateAabb.source_aggregate(root).size==2u &&
                     aggregateAabb.source_added().boundedTest(3u) &&
                     !aggregateAabb.source_added().boundedTest(4u) &&
