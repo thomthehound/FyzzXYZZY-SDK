@@ -41,6 +41,17 @@ public:
     physx::PxgCudaBuffer& old_integer_bounds() noexcept {return oldIntegerBounds_;}
     bool& force_update() noexcept {return forceUpdate_;}
     physx::PxU32 num_boxes() const noexcept {return numBoxes_;}
+    // Re-enter the original CUDA SAP initial-frame admission path after
+    // a rejected Sc/Dy frame. Persistent PhysX GPU buffers stay with
+    // their existing buddy heaps; previous endpoint counts are discarded.
+    // All live AABB volumes must be republished as created before DMA.
+    void reset_for_source_rebuild() noexcept {
+        numBoxes_=0u;
+        createdCount_=removedCount_=updatedCount_=0u;
+        regionAccumTotal_=startRegionAccumTotal_=0u;
+        overlapChecksTotal_=0u;
+        forceUpdate_=true;
+    }
     physx::PxgBroadPhasePair* mapped_found_actor_pairs() noexcept {
         return mappedFound_.begin();
     }

@@ -1952,10 +1952,10 @@ void Scene::update_gpu_pairs(bool force_update) {
     // The existing source BP pair hash retains those memberships for
     // ScShapeSim/ScBodySim refiltering. This is NOT another CPU SAP:
     // only GPU found/lost reports can insert an overlap.
-    if(sap_pair_registry_dirty_) {
-        // A rejected GPU transaction invalidates the hardware owner.
-        // Reconstruct the consumer's last published Sc state for the
-        // scripted rollback fixture; a real GPU owner must be rebuilt.
+    if(sap_pair_registry_dirty_ && !reports.full_rebuild) {
+        // Scripted GPU fixtures may resume after a rejected Sc frame.
+        // Their delta-only report contract retains Sc's last published
+        // contacts. The real source owner returns a full GPU rebuild.
         sap_pairs_.seed(previous_pairs_);
         sap_pair_registry_dirty_=false;
     }
@@ -1983,6 +1983,27 @@ void Scene::update_gpu_pairs(bool force_update) {
     };
     validate(reports.found,true);
     validate(reports.lost,false);
+
+    if(reports.full_rebuild) {
+        if(!reports.lost.empty())
+            throw std::invalid_argument(
+                "Reconstructed source GPU SAP returned prior-frame lost pairs");
+        // This is the COMPLETE initial source GPU BP membership, including
+        // overlaps previously ineligible for Sc contacts. Re-seeding from
+        // previous_pairs_ would permanently lose those memberships.
+        sap_pairs_.seed(reports.found);
+        sap_pair_registry_dirty_=false;
+        gpu_pair_refilter_dirty_=false;
+        pending_pairs_.clear();
+        pending_pairs_.reserve(reports.found.size());
+        for(const Pair pair:reports.found)
+            if(actors_[pair.a].kind==Kind::DynamicBox ||
+               actors_[pair.b].kind==Kind::DynamicBox)
+                pending_pairs_.push_back(pair);
+        broadphase_pair_membership_changed_=
+            pending_pairs_!=previous_pairs_;
+        return;
+    }
 
     // Keep the original BP overlap hash in sync with GPU membership,
     // including static/kinematic pairs ignored by Sc's contact filter.

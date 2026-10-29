@@ -74,6 +74,10 @@ struct GpuBroadphaseReports {
     std::span<const Pair> found;
     std::span<const Pair> lost;
     bool overflow=false;
+    // Source SAP was rebuilt from zero previous GPU endpoints.
+    // 'found' is the COMPLETE original BP overlap membership, not a
+    // delta against previous Sc contacts (which omit non-dynamic pairs).
+    bool full_rebuild=false;
 };
 class GpuBroadphaseProducer {
 public:

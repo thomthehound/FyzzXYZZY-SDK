@@ -37,6 +37,7 @@ struct GpuSapSceneAdmissionFixture {
         std::vector<Pair> found,lost;
         std::size_t fetches=0,rollbacks=0;
         bool overflow=false;
+        bool full_rebuild=false;
         bool reject_bounds=false;
         GpuBroadphaseReports advance(
             std::span<const GpuBroadphaseBox> boxes,
@@ -45,7 +46,7 @@ struct GpuSapSceneAdmissionFixture {
             for(const auto& b:boxes)
                 if(b.id==std::numeric_limits<BodyId>::max())
                     throw std::runtime_error("Invalid GPU shape input");
-            return {found,lost,overflow};
+            return {found,lost,overflow,full_rebuild};
         }
         void mark_shape_bounds_changed(BodyId,float) override {
             if(reject_bounds)
@@ -319,6 +320,68 @@ struct GpuSapSceneAdmissionFixture {
            gpu->rollbacks!=0u || !scene.sap_volumes_.empty())
             throw std::runtime_error(
                 "GPU refilter failed to re-admit unchanged dynamic overlap");
+    }
+
+    static void verify_gpu_full_history_reconstruction() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        const auto dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+        const auto fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{0.25f,1.0f,0.0f});
+        const auto future_dynamic=scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{8.0f,1.0f,0.0f},1.0f);
+        const auto future_fixed=scene.add_static_box(
+            {0.5f,0.5f,0.5f},{8.25f,1.0f,0.0f});
+        const Pair contacted{dynamic,fixed};
+        const Pair ineligible{future_dynamic,future_fixed};
+        scene.set_kinematic(future_dynamic,true);
+        gpu->set({contacted,ineligible},{});
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u || scene.pairs()[0]!=contacted ||
+           scene.contacts().empty())
+            throw std::runtime_error(
+                "Source Sc initial BP reports failed eligible contact");
+        const auto edge=scene.contact_edge_index(contacted);
+
+        // GPU SAP begins with zero historical endpoints after rollback.
+        // Its complete found stream includes overlaps Sc never admitted.
+        // Replaying it as a delta would reject the existing contact and
+        // seeding from previous Sc contacts would lose the ineligible pair.
+        gpu->full_rebuild=true;
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u || scene.pairs()[0]!=contacted ||
+           scene.contact_edge_index(contacted)!=edge ||
+           !scene.found_pairs().empty() || !scene.lost_pairs().empty() ||
+           gpu->rollbacks!=0u)
+            throw std::runtime_error(
+                "Full source GPU reconstruction recreated existing Sc manager");
+
+        gpu->full_rebuild=false;
+        gpu->set({},{});
+        scene.set_kinematic(future_dynamic,false);
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=2u ||
+           scene.found_pairs().size()!=1u ||
+           scene.found_pairs()[0]!=ineligible ||
+           scene.contact_edge_index(contacted)!=edge)
+            throw std::runtime_error(
+                "GPU reconstruction lost a non-contact overlap needed by Sc refilter");
+
+        // A second full rebuild after removal must delete only the
+        // invalidated Sc manager, even if GPU emits no lost crossing.
+        scene.remove(fixed);
+        gpu->full_rebuild=true;
+        gpu->set({ineligible},{});
+        scene.advance_collision(false);
+        if(scene.pairs().size()!=1u || scene.pairs()[0]!=ineligible ||
+           scene.lost_pairs().size()!=1u ||
+           scene.lost_pairs()[0]!=contacted ||
+           gpu->rollbacks!=0u || !scene.sap_volumes_.empty())
+            throw std::runtime_error(
+                "Source full-rebuild GPU membership failed Sc removed-pair retirement");
     }
 
     static void verify_gpu_lost_after_kinematic_transition() {
@@ -14707,6 +14770,7 @@ int main() {
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_removed_actor_without_lost_report();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_persistent_pair_motion_refilter();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_full_history_reconstruction();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_lost_after_kinematic_transition();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_bulk_pair_reports();
     fyzz::native::SourceSapEndpointFixture::verify();
