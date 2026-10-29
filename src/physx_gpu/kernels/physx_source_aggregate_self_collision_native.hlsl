@@ -99,9 +99,17 @@ bool intersects(uint handleA,uint handleB,bool previous) {
     }
     return all(minA<=maxB)&&all(minB<=maxA);
 }
+groupshared uint priorSizes[4];
 [numthreads(32,4,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint aggregate=group.x*4u+lane.y;
+    // All physical subgroups snapshot historical sizes before any lane
+    // can publish the next frame's count. Even inactive logical warps
+    // participate in the full 128-thread group barrier.
+    if(lane.x==0u)
+        priorSizes[lane.y]=aggregate<p.aggregateCount
+            ? previousSizes.Load(p.previousSizesBias+aggregate*4u) : 0u;
+    GroupMemoryBarrierWithGroupSync();
     if(aggregate>=p.aggregateCount)return;
     const uint4 record=aggregates.Load4(p.aggregateBias+aggregate*16u);
     const bool valid=record.x!=0xffffffffu && record.z!=0u;
@@ -109,7 +117,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint first=record.y;
     // PxGetAggregateSelfCollisionBit(filterHint) is the low source bit.
     const bool collide=valid && (record.w&1u)!=0u;
-    const uint prior=previousSizes.Load(p.previousSizesBias+aggregate*4u);
+    const uint prior=priorSizes[lane.y];
     // The same source GPU aggregate slot owns prevSize. Do not consume old
     // sorted arrays until a previous frame has successfully published them.
     if(collide) {
