@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -49,7 +50,8 @@ ShaderBinary shader(const char* path) {
     return binary;
 }
 
-void verify(Context& context,const char* shader_path) {
+void verify(Context& context,const char* shader_path,
+            const char* changed_shader_path) {
     // Original PxgAggregate::updateBoundIndices list: one aggregate has
     // more than a warp of shapes, one is inactive and two are partial.
     constexpr std::array<Aggregate,5> aggregates{{
@@ -69,6 +71,10 @@ void verify(Context& context,const char* shader_path) {
         bounds[i]={{x,-2.0f,-3.0f},{x+1.0f,2.0f,3.0f}};
         distances[i]=i%3u==0u?0.5f:0.25f;
     }
+    std::array<std::uint32_t,3> changed{};
+    for(const auto member:members)
+        changed[member>>5u] |= 1u<<(member&31u);
+    auto expected_changed=changed;
     const auto original=bounds;
     auto expected=bounds;
     for(const auto& aggregate:aggregates) {
@@ -87,16 +93,25 @@ void verify(Context& context,const char* shader_path) {
             }
         }
         expected[aggregate.root]=combined;
+        expected_changed[aggregate.root>>5u] |=
+            1u<<(aggregate.root&31u);
+        for(std::uint32_t i=0;i<aggregate.size;++i) {
+            const auto member=members[aggregate.first+i];
+            expected_changed[member>>5u] &=
+                ~(1u<<(member&31u));
+        }
     }
 
     const auto a=context.create_buffer(sizeof(bounds));
     const auto b=context.create_buffer(sizeof(distances));
     const auto c=context.create_buffer(sizeof(aggregates));
     const auto d=context.create_buffer(sizeof(members));
+    const auto e=context.create_buffer(sizeof(changed));
     context.upload(a,0u,bounds.data(),sizeof(bounds));
     context.upload(b,0u,distances.data(),sizeof(distances));
     context.upload(c,0u,aggregates.data(),sizeof(aggregates));
     context.upload(d,0u,members.data(),sizeof(members));
+    context.upload(e,0u,changed.data(),sizeof(changed));
 
     ComputePipelineDesc pipeline;
     pipeline.shader=shader(shader_path);
@@ -105,6 +120,13 @@ void verify(Context& context,const char* shader_path) {
     pipeline.storage_buffer_views.assign(
         4u,StorageBufferViewKind::RawReadWrite);
     const auto program=context.create_compute_pipeline(pipeline);
+    ComputePipelineDesc changed_pipeline;
+    changed_pipeline.shader=shader(changed_shader_path);
+    changed_pipeline.storage_buffer_binding_count=3u;
+    changed_pipeline.push_constant_bytes=16u;
+    changed_pipeline.storage_buffer_views.assign(
+        3u,StorageBufferViewKind::RawReadWrite);
+    const auto mark_program=context.create_compute_pipeline(changed_pipeline);
     const std::array<BufferBinding,4> bindings{{
         {0u,a,0u,sizeof(bounds),BufferAccess::ReadWrite},
         {1u,b,0u,sizeof(distances),BufferAccess::Read},
@@ -114,12 +136,36 @@ void verify(Context& context,const char* shader_path) {
     constexpr std::array<std::uint32_t,4> params{{
         static_cast<std::uint32_t>(aggregates.size()),0u,0u,0u
     }};
-    const auto ticket=context.submit_dispatch(
-        program,{2u,1u,1u},
-        std::vector<BufferBinding>(bindings.begin(),bindings.end()),
-        params.data(),sizeof(params));
+    // Source order: computeAggregateBounds then GPU changed-handle
+    // bitmap translation. Both stages run in one ordered native batch,
+    // with no CPU readback between the aggregate and SAP handoff.
+    DispatchCommand union_command;
+    union_command.pipeline=program;
+    union_command.groups={2u,1u,1u};
+    union_command.buffers.assign(bindings.begin(),bindings.end());
+    union_command.push_constants.resize(sizeof(params));
+    std::memcpy(union_command.push_constants.data(),
+                params.data(),sizeof(params));
+    DispatchCommand mark_command;
+    mark_command.pipeline=mark_program;
+    mark_command.groups={2u,1u,1u};
+    mark_command.buffers={
+        {0u,c,0u,sizeof(aggregates),BufferAccess::Read},
+        {1u,d,0u,sizeof(members),BufferAccess::Read},
+        {2u,e,0u,sizeof(changed),BufferAccess::ReadWrite}
+    };
+    mark_command.push_constants.resize(sizeof(params));
+    std::memcpy(mark_command.push_constants.data(),
+                params.data(),sizeof(params));
+    const std::vector<BatchCommand> commands{
+        std::move(union_command),std::move(mark_command)
+    };
+    const auto ticket=context.submit_batch(commands);
     context.wait_submission(ticket);
     context.download(a,0u,bounds.data(),sizeof(bounds));
+    context.download(e,0u,changed.data(),sizeof(changed));
+    require(changed==expected_changed,
+            "Original GPU aggregate root/member changed bitmap does not match source");
 
     for(std::size_t id=0;id<bounds.size();++id)
         for(unsigned axis=0;axis<3u;++axis) {
@@ -132,7 +178,9 @@ void verify(Context& context,const char* shader_path) {
     require(bounds[82].minimum[0]==original[82].minimum[0] &&
             bounds[82].maximum[0]==original[82].maximum[0],
             "Unadmitted aggregate modified a source BP volume");
+    context.destroy_compute_pipeline(mark_program);
     context.destroy_compute_pipeline(program);
+    context.destroy_buffer(e);
     context.destroy_buffer(d);
     context.destroy_buffer(c);
     context.destroy_buffer(b);
@@ -142,13 +190,13 @@ void verify(Context& context,const char* shader_path) {
 
 int main(int argc,char** argv) {
     try {
-        require(argc==2,"Expected compiled original aggregate bounds shader");
+        require(argc==3,"Expected compiled original aggregate bounds and changed-map shaders");
 #if defined(FYZZXYZZY_TEST_D3D12)
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1]);
+        verify(context,argv[1],argv[2]);
         std::cout<<"Original source GPU aggregate union bounds PASS\n";
         return 0;
     } catch(const std::exception& e) {
