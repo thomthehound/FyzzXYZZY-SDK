@@ -122,6 +122,13 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 physx::PxVec3(4.0f,2.0f,-1.0f));
             aabb.mark_aggregate_member_changed(4u,0.25f);
             aabb.mark_aggregate_member_changed(5u,0.5f);
+            // Same-frame admission and removal cancel rather than creating
+            // a spurious history-invalidating removed member.
+            aabb.admit_aggregate_member(
+                id,6u,16u,0.1f,
+                physx::Bp::getFilterGroup_Dynamics(16u,false),
+                elements.data());
+            aabb.remove_aggregate_member(6u);
             const physx::Bp::BpFilter filter(false,false);
 
             const auto run_source_prepass=[&](
@@ -157,8 +164,8 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                 pre_update_source_sap_aabb_manager_native(update,manager,stream);
                 history_stage.append(stream,addresses,source_history);
                 require(stream.commands().size()==
-                            2u+std::uint32_t(!added_members.size()==false ||
-                                             !removed_members.size()==false),
+                            2u+std::uint32_t(added_members.size()!=0u ||
+                                             removed_members.size()!=0u),
                         "Original AABB aggregate GPU stage order or member-history dispatch differs");
                 stream.wait_at_fetch();
                 std::vector<std::uint32_t> new_values(integer_words);
