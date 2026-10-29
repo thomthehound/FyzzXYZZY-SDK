@@ -94,6 +94,9 @@ void mark(uint3 block:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             GroupMemoryBarrierWithGroupSync();
         }
         const uint globalBase=partial[255u];
+        // All native subgroups must snapshot the global block prefix
+        // before any lane reuses the shared scan array for local flags.
+        GroupMemoryBarrierWithGroupSync();
         const uint index=chunk*256u+lane.x;
         const uint flagged=index<count &&
             removeBitmap.Load(p.bitmapBias+index*4u)!=0u?1u:0u;
