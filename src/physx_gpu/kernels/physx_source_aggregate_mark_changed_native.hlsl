@@ -30,7 +30,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     const uint index=group.x*4u+lane.y;
     if(index>=p.aggregateCount)return;
     const uint4 aggregate=aggregateSlots.Load4(index*16u);
-    if(aggregate.w==0u)return;
+    if(aggregate.z==0u || aggregate.x==0xffffffffu)return;
     if(lane.x==0u) {
         uint ignored;
         changedAabbManagerHandles.InterlockedOr(
