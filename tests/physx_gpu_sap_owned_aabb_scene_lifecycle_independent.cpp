@@ -28,6 +28,7 @@
 #include "physx_gpu/source_sap_volume_actor_lifetime_native.h"
 #include "physx_gpu/source_sc_element_lifecycle_native.h"
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
+#include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -1483,6 +1484,39 @@ void execute(Context& context, ShaderBinary translateShader,
             !aborted && !foundation.errors.reported,
             "Created SAP GPU frame leaked native resources");
 }
+void verify_owned_source_world(
+    Backend backend,const std::array<const char*,34>& filenames) {
+    SourceSapShaderBinaries shaders{};
+    for(std::size_t i=0;i<shaders.size();++i)
+        shaders[i]=load_shader(filenames[i]);
+    auto producer=std::make_unique<SourceScOwnedGpuBroadphaseNative>(
+        backend,std::move(shaders));
+    auto* native_owner=producer.get();
+    fyzz::World world(fyzz::create_native_gpu_broadphase_backend(
+        std::move(producer),true,false,true,true));
+    const auto dynamic=world.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,3.0f,0.0f},1.0f);
+    const auto fixed=world.add_static_box(
+        {0.5f,0.5f,0.5f},{0.5f,3.0f,0.0f});
+    world.step(1.0f/60.0f);
+    const auto first=world.contact_events();
+    require(first.size()==1u &&
+            first.front().body0==dynamic &&
+            first.front().body1==fixed &&
+            first.front().kind==fyzz::ContactEventKind::Found &&
+            native_owner->last_frame().update.execute_gpu_stages,
+            "Owned native GPU World did not publish real Sc/PCM contact");
+    world.set_body_position(fixed,{8.0f,3.0f,0.0f});
+    world.step(1.0f/60.0f);
+    const auto lost=world.contact_events();
+    require(lost.size()==1u &&
+            lost.front().kind==fyzz::ContactEventKind::Lost,
+            "Owned native GPU World did not retire separated contact");
+    world.step(1.0f/60.0f);
+    require(world.contact_events().empty(),
+            "Owned source World replayed GPU contact reports on quiet frame");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1513,6 +1547,16 @@ int main(int argc, char** argv) {
                 load_shader(argv[29]), load_shader(argv[30]),
                 load_shader(argv[31]), load_shader(argv[32]),
                 load_shader(argv[33]), load_shader(argv[34]));
+        std::array<const char*,34> filenames{};
+        for(std::size_t i=0;i<filenames.size();++i)
+            filenames[i]=argv[i+1u];
+        verify_owned_source_world(
+#if defined(FYZZXYZZY_TEST_D3D12)
+            Backend::D3D12,
+#else
+            Backend::Vulkan,
+#endif
+            filenames);
         std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {
