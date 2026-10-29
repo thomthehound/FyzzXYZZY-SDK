@@ -211,6 +211,9 @@ public:
     virtual void destroy_aggregate(AggregateId) {
         throw std::logic_error("This backend has no PhysX aggregate owner");
     }
+    virtual void remove_actor_from_aggregate(AggregateId,BodyId) {
+        throw std::logic_error("This backend has no PhysX aggregate owner");
+    }
     virtual BodyId add_static_box_to_aggregate(
         AggregateId,Vec3,Vec3) {
         throw std::logic_error("This backend cannot admit aggregate shapes");
@@ -315,6 +318,7 @@ public:
     BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor);
     BodyId add_static_box_to_aggregate(
         AggregateId aggregate,Vec3 half_extents,Vec3 position);
     BodyId add_dynamic_box_to_aggregate(
