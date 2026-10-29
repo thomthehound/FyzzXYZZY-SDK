@@ -147,6 +147,38 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                         std::numeric_limits<fyzz::BodyId>::max(),
                     "Canceled aggregate admission retained an unpublished Sc actor");
             const physx::Bp::BpFilter filter(false,false);
+            // Source Sc publishes only actor/member geometry. The root
+            // belongs to PxgAggregate, appears in the ORIGINAL BP
+            // created list, and never becomes a standalone Sc shape.
+            const std::array<fyzz::native::GpuBroadphaseBox,2> sc_boxes{{
+                {14u,{-0.5f,0.0f,1.0f},{1.5f,1.0f,1.0f},
+                 fyzz::Quat{},0.25f,
+                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic},
+                {15u,{3.5f,0.0f,-2.0f},{0.5f,2.0f,1.0f},
+                 fyzz::Quat{},0.5f,
+                 fyzz::native::GpuBroadphaseBox::Motion::Dynamic}
+            }};
+            const std::array<physx::Bp::ShapeHandle,2> sc_members{{4u,5u}};
+            const auto source_frame=aabb.prepare(sc_boxes,sc_members,filter);
+            require(source_frame.getNumCreatedHandles()==1u &&
+                    source_frame.getCreatedHandles()[0]==3u &&
+                    source_frame.getNumRemovedHandles()==0u &&
+                    source_frame.getNumUpdatedHandles()==0u &&
+                    source_frame.getGpuStateChanged(),
+                    "Original aggregate Sc first pass promoted a member instead of its BP root");
+            require(aabb.scene_bounds().bounds[3u].isEmpty() &&
+                    aabb.scene_bounds().bounds[4u].minimum.x==-2.0f &&
+                    aabb.scene_bounds().bounds[5u].minimum.x==3.0f,
+                    "Original Sc aggregate first pass did not stage member bounds before GPU root union");
+            bool rejected_root_as_actor=false;
+            const std::array<physx::Bp::ShapeHandle,2> invalid_members{{3u,5u}};
+            try {
+                (void)aabb.prepare(sc_boxes,invalid_members,filter);
+            }catch(const std::invalid_argument&) {
+                rejected_root_as_actor=true;
+            }
+            require(rejected_root_as_actor,
+                    "Original aggregate Sc admitted root as standalone actor geometry");
 
             std::uint32_t projection_frame=0u;
             const auto run_source_prepass=[&](
