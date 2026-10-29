@@ -92,6 +92,19 @@ void run(fyzz::compute::Backend backend,
     require(self_found && static_found && cross_aggregate_found,
         "Original GPU aggregate self/root-static/root-root contacts were not published to Sc");
 
+    // Change an admitted aggregate rigid member's Bp motion group
+    // across two real GPU fetches, not just within a host-only fixture.
+    // The Sc actor and aggregate membership survive both transitions.
+    world.set_body_kinematic(a,true);
+    world.step(1.0f/120.0f);
+    const auto kinematic_state=world.body_state(a);
+    require(std::isfinite(kinematic_state.position.x),
+        "Original aggregate member kinematic GPU publication was not finite");
+    world.set_body_kinematic(a,false);
+    world.step(1.0f/120.0f);
+    require(std::isfinite(world.body_state(a).position.x),
+        "Original aggregate member dynamic GPU reinsertion failed");
+
     bool live_destroy_rejected=false;
     try {world.destroy_aggregate(root);}
     catch(const std::logic_error&) {live_destroy_rejected=true;}
