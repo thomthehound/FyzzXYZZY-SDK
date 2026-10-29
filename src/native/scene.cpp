@@ -193,6 +193,9 @@ BodyId Scene::add(Actor actor) {
     if (actors_.size() >= std::numeric_limits<BodyId>::max())
         throw std::overflow_error("Native scene body identifier exhausted");
     const auto id = static_cast<BodyId>(actors_.size());
+    if(gpu_broadphase_ && actor.kind==Kind::StaticPlane)
+        throw std::logic_error(
+            "Native GPU SAP does not admit infinite plane shapes");
     // Edge publications are noexcept: preallocate one kinematic slot
     // for every possible actor before making this admission visible.
     for(auto* graph:{&speculative_islands_,&accurate_islands_}) {
@@ -208,6 +211,19 @@ BodyId Scene::add(Actor actor) {
         const auto capacity=live_actor_ids_.capacity();
         live_actor_ids_.reserve(capacity+
             std::max<std::size_t>(capacity,8));
+    }
+    // Native storage must not reallocate after original Sc ID admission.
+    if(actors_.size()==actors_.capacity()) {
+        const auto capacity=actors_.capacity();
+        actors_.reserve(capacity+std::max<std::size_t>(capacity,8));
+    }
+    if(gpu_broadphase_) {
+        const auto motion=actor.kind==Kind::StaticBox
+            ? GpuBroadphaseBox::Motion::Static
+            : actor.kind==Kind::KinematicBox
+                ? GpuBroadphaseBox::Motion::Kinematic
+                : GpuBroadphaseBox::Motion::Dynamic;
+        gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
     }
     actors_.push_back(actor);
     live_actor_ids_.push_back(id);
@@ -722,6 +738,8 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
             if(edge.pair.a==id || edge.pair.b==id)
                 edge.pcm_cache={};
         }
+    if(gpu_broadphase_)
+        gpu_broadphase_->set_shape_simulation_enabled(id,enabled);
     actor.simulation_shape_enabled=enabled;
     broadphase_endpoint_membership_dirty_=true;
     dirty_=true;
@@ -826,6 +844,8 @@ void Scene::set_contact_report_threshold(BodyId id, float force) {
 }
 void Scene::remove(BodyId id) {
     auto& actor=require(id);
+    // The source AABB retains the actor identity through GPU lost fetch.
+    if(gpu_broadphase_)gpu_broadphase_->retire_shape(id);
     const bool dynamic_node=actor.kind==Kind::DynamicBox;
     // Retirement may wake multiple sleeping Gu partners. Reserve both
     // graph-local event queues before touching partner motion flags.
@@ -9187,6 +9207,7 @@ void Scene::advance_collision_internal(
     // Source first speculative and second accurate pass: edge insertion
     // and active body admission, but no lost-edge island splitting yet.
     update_island_connectivity();
+    if(gpu_broadphase_)gpu_broadphase_->post_reports_cleanup();
     dirty_ = false;
     ++frame_index_;
 }
