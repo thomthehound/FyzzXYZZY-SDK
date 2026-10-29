@@ -121,9 +121,6 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         members.aggregate_report_copy->append(stream,addresses,copy);
     }
     stream.wait_at_fetch();
-    if(members.aabb_manager.has_aggregates)
-        (void)members.aabb_owner->fetch_aggregate_mapped_reports(
-            context,addresses,*members.mapped_reports);
 
     // Complete both source bitmap D32 view validations before reporting
     // success to Sc. Reserve the following GPU command queue now so
@@ -169,9 +166,33 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             // handles via the original source-to-Sc identity mapping.
             validate_source_sap_found_volume_lifetime_native(
                 source_found,volume_lifetime);
-            lower_source_sap_actor_reports_to_sc(
-                source_found,source_lost,members.volume_to_actor,
-                members.found,members.lost);
+            std::span<const physx::PxgBroadPhasePair> aggregate_found;
+            std::span<const physx::PxgBroadPhasePair> aggregate_lost;
+            if(members.aabb_manager.has_aggregates) {
+                // These original mapped arrays have been written by the
+                // source aggCopyReports GPU stage on the SAME source
+                // stream. Fetch both only after SAP's own count/overflow
+                // checks and before committing either Sc destination.
+                const auto reports=members.aabb_owner->
+                    fetch_aggregate_mapped_reports(
+                        context,addresses,*members.mapped_reports);
+                aggregate_found=reports.found;
+                aggregate_lost=reports.lost;
+                for(const auto& pair:aggregate_found) {
+                    if(pair.mVolA>=pair.mVolB ||
+                       pair.mVolB>=volume_lifetime.volume_data.size())
+                        throw std::out_of_range(
+                            "Original aggregate GPU found an invalid source volume");
+                    const auto& a=volume_lifetime.volume_data[pair.mVolA];
+                    const auto& b=volume_lifetime.volume_data[pair.mVolB];
+                    if(!a.getUserData() || !b.getUserData())
+                        throw std::invalid_argument(
+                            "Original aggregate GPU found a retired Sc shape");
+                }
+            }
+            lower_source_sap_and_aggregate_reports_to_sc(
+                source_found,source_lost,aggregate_found,aggregate_lost,
+                members.volume_to_actor,members.found,members.lost);
         });
     // Source processFoundPairs/processLostPairs clear added/removed maps
     // only after the completed GPU report and Sc admission. These D32
