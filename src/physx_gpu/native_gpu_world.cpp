@@ -150,4 +150,35 @@ World create_native_gpu_world(
         options.contact_notifications,options.enhanced_determinism,
         options.pcm_plane_box,options.pcm_box_box));
 }
+
+World create_native_gpu_world(
+    compute::Backend backend,const std::filesystem::path& sap_manifest,
+    const std::filesystem::path& aggregate_manifest,WorldOptions options) {
+    return create_native_gpu_world(
+        backend,load_native_gpu_sap_shaders(backend,sap_manifest),
+        load_native_gpu_aggregate_shaders(backend,aggregate_manifest),options);
+}
+
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuAggregateShaders aggregates,WorldOptions options) {
+    if(options.execution!=ExecutionMode::NativePortableGpu)
+        throw std::invalid_argument(
+            "Native GPU World requires NativePortableGpu execution");
+    const auto format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    for(const auto& shader:sap)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument(
+                "Native GPU SAP requires the complete compiled backend shader set");
+    for(const auto& shader:aggregates)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument(
+                "Native GPU aggregate requires the complete compiled backend shader set");
+    return World(create_native_gpu_broadphase_backend(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,std::move(sap),32768u,32768u,std::move(aggregates)),
+        options.contact_notifications,options.enhanced_determinism,
+        options.pcm_plane_box,options.pcm_box_box));
+}
 } // namespace fyzz
