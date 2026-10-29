@@ -21,9 +21,11 @@ D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed ext
 
 ## N2 GPU aggregate union bounds source translation
 
-The native aggregate bounds shader
-`src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl`
-ports `gpubroadphase/src/CUDA/aggregate.cu::updateAggregateBounds`.
+The native aggregate bounds and changed-bitmap shaders
+`src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl` and
+`src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl`
+port `gpubroadphase/src/CUDA/aggregate.cu::updateAggregateBounds`
+and `markAggregateBoundsUpdatedBitmap` in the original update order.
 The source's 32-lane per-aggregate minimum/maximum reduction (four
 warps per workgroup), contact-distance inflation, root-handle write
 and invalid-aggregate skip are retained on Vulkan and D3D12.
@@ -33,7 +35,9 @@ reductions, independent of the adapter's native subgroup width.
 The standalone conformance uses actual GPU dispatch for one- and
 multi-member aggregates, a 35-member aggregate spanning two warp
 iterations, inactive aggregates and a second workgroup. It compares
-the resulting `PxBounds3` envelopes with an independent host oracle.
+the resulting `PxBounds3` envelopes and source aggregate-root/member
+dirty-bit transitions with independent host oracles. The two kernels
+execute in one ordered GPU batch with no intervening CPU readback.
 This is the source `computeAggregateBounds` kernel translation,
 **not** a claim that `PxgAABBManager::createAggregate`, GPU aggregate
 self-collision, pair expansion, or Sc aggregate report publication are
