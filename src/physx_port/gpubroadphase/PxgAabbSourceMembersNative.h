@@ -202,6 +202,23 @@ public:
         persistent_state_changed_=true;
     }
 
+    // AABBManagerBase::setContactDistance / source changed bitmap.
+    // Aggregate member motion or contact-offset changes remain keyed by
+    // the member's original shape handle. The existing GPU aggregate
+    // dirty-bit stage will promote those bits to the root SAP endpoint.
+    void mark_aggregate_member_changed(
+        physx::Bp::ShapeHandle handle,physx::PxReal contact_distance) {
+        if(handle>=volumes_.size() || !volumes_[handle].isAggregated() ||
+           groups_[handle]==physx::Bp::FilterGroup::eINVALID ||
+           !std::isfinite(contact_distance) || contact_distance<0.0f)
+            throw std::invalid_argument("Original aggregate member changed while inactive");
+        const auto id=volumes_[handle].getAggregateOwner();
+        (void)checked_aggregate(id);
+        if(!changed_.growAndSet(handle))throw std::bad_alloc();
+        distances_[handle]=contact_distance;
+        persistent_state_changed_=true;
+    }
+
     // PxgAABBManager::removeBounds: swap-with-last source member removal.
     // Removing the final member cancels an unpublished root or retires
     // the previously published root at the normal BP fetch boundary.
