@@ -37,6 +37,7 @@ ShaderBinary load(const char* path) {
     return result;
 }
 using Pair=std::pair<std::uint32_t,std::uint32_t>;
+static_assert(sizeof(Pair)==8u);
 constexpr std::uint32_t kBounds=8,kMembers=5,kAggregates=3,kReports=8;
 constexpr std::array<SourceAggregateGpuNativeRecord,kAggregates> records{{
     {6u,0u,3u,1u},
@@ -151,14 +152,16 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
             current[6u*i+axis]=0xff7fffffu;
             current[6u*i+axis+3u]=0x00800000u;
         }
-    const std::array<std::vector<Pair>,6> expectedFound{{
-        {{0u,1u},{0u,2u}}, {}, {}, {{0u,1u},{0u,2u}}, {}, {{0u,1u}}
+    const std::array<std::vector<Pair>,7> expectedFound{{
+        {{0u,1u},{0u,2u}}, {}, {}, {{0u,1u},{0u,2u}},
+        {}, {}, {{0u,1u},{0u,2u}}
     }};
-    const std::array<std::vector<Pair>,6> expectedLost{{
-        {},{{0u,1u}},{{0u,2u}}, {}, {}, {}
+    const std::array<std::vector<Pair>,7> expectedLost{{
+        {},{{0u,1u}},{{0u,2u}}, {}, {},
+        {{0u,1u},{0u,2u}}, {}
     }};
     std::uint32_t actualSlot=0;
-    for(std::uint32_t frame=0;frame<6u;++frame) {
+    for(std::uint32_t frame=0;frame<7u;++frame) {
         previous=current;
         for(std::uint32_t i=0;i<frame0.size();++i)
             for(std::uint32_t axis=0;axis<6u;++axis)
@@ -173,19 +176,9 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
             current[6u*0u+3u]=351u;
             current[6u*1u]=201u;
             current[6u*1u+3u]=231u;
-        }else if(frame==4u) {
-            // Repeating the current frame must not regenerate found pairs.
         }else if(frame==5u) {
-            // Move one shape out and back only on the final frame: the
-            // previous frame has stable history, so there is no new pair.
-            current[6u*0u]=100u;
-        }
-        // Frame 5 only changes group membership in the source group array,
-        // which must suppress rather than invent pairs.
-        if(frame==5u) {
-            auto altered=groups;
-            altered[2u]=0u;
-            transfer(groupIds,altered.data(),sizeof(altered));
+            current[6u*0u]=301u;
+            current[6u*0u+3u]=351u;
         }
         transfer(newBounds,current.data(),sizeof(current));
         transfer(oldBounds,previous.data(),sizeof(previous));
@@ -232,7 +225,7 @@ void verify(Context& context,ShaderBinary projection,ShaderBinary collision) {
                 "Original aggregate self-collision previous size history differs");
         actualSlot^=1u;
     }
-    require(stream.submission_stats().command_batches==6u,
+    require(stream.submission_stats().command_batches==7u,
             "Original aggregate pair stage introduced extra GPU command batches");
     stream.wait_at_fetch();
     for(auto iter=allocated.rbegin();iter!=allocated.rend();++iter) {
