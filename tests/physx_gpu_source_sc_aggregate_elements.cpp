@@ -240,6 +240,24 @@ void run(Backend backend) {
                 "Released original Sc member IDs were not retired at cleanup");
             sc.retire(1u);
             sc.retire(0u);
+
+            // A disabled shape still occupies its PxAggregate actor
+            // attachment slot even though it is absent from BP members.
+            const auto limited=sc.create_aggregate(
+                1u,physx::Bp::getFilterGroup_Statics(),0u);
+            sc.admit_aggregate_member(
+                limited,3u,fyzz::native::GpuBroadphaseBox::Motion::Static,0.0f);
+            sc.set_simulation_enabled(3u,false);
+            bool full=false;
+            try {
+                sc.admit_aggregate_member(
+                    limited,4u,
+                    fyzz::native::GpuBroadphaseBox::Motion::Static,0.0f);
+            }catch(const std::invalid_argument&) {full=true;}
+            require(full,
+                "Disabled original Sc actor incorrectly freed aggregate capacity");
+            sc.destroy_aggregate(limited);
+            sc.retire(3u);
         }
         heap.flushDeferredDeallocs();
     }
