@@ -124,26 +124,51 @@ public:
     PxgAabbSourceMembersNative& operator=(const PxgAabbSourceMembersNative&)=delete;
 
     void reserve_shapes(physx::PxU32 count) {
-        if(count<=bounds_.size())return;
         if(count>=BP_INVALID_BP_HANDLE-1u)
-            throw std::out_of_range("Source AABB volume capacity exceeds PhysX handle range");
-        if(!bounds_.initEntry(count-1u))
+            throw std::out_of_range(
+                "Source AABB volume capacity exceeds PhysX handle range");
+        const auto complete=[&] {
+            const auto capacity=bounds_.size();
+            const auto has_bits=[&](const auto& bitmap) {
+                return std::uint64_t(bitmap.getWordCount())*32u>=capacity;
+            };
+            return count<=capacity &&
+                groups_.size()==capacity &&
+                volumes_.size()==capacity &&
+                distances_.size()==capacity &&
+                volume_to_actor_.size()==capacity &&
+                has_bits(added_) && has_bits(removed_) &&
+                has_bits(changed_) && has_bits(aggregated_);
+        };
+        if(complete())return;
+        if(count>bounds_.size() && !bounds_.initEntry(count-1u))
             throw std::bad_alloc();
         const auto capacity=bounds_.size();
-        const auto prior=volumes_.size();
-        groups_.resize(capacity);
-        volumes_.resize(capacity);
-        distances_.resize(capacity);
+
+        // PxArray::resize returns false on allocation failure. Initialize
+        // each newly acquired range immediately, before another source
+        // allocation can fail. A retry completes partially grown arrays
+        // without replacing live source volume identities or BP groups.
+        const auto prior_groups=groups_.size();
+        if(!groups_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_groups;i<capacity;++i)
+            groups_[i]=physx::Bp::FilterGroup::eINVALID;
+
+        const auto prior_volumes=volumes_.size();
+        if(!volumes_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_volumes;i<capacity;++i)
+            volumes_[i].reset();
+
+        const auto prior_distances=distances_.size();
+        if(!distances_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_distances;i<capacity;++i)
+            distances_[i]=0.0f;
+
         volume_to_actor_.resize(capacity,
             std::numeric_limits<BodyId>::max());
         if(!added_.resize(capacity) || !removed_.resize(capacity) ||
            !changed_.resize(capacity) || !aggregated_.resize(capacity))
             throw std::bad_alloc();
-        for(auto i=prior;i<capacity;++i) {
-            volumes_[i].reset();
-            groups_[i]=physx::Bp::FilterGroup::eINVALID;
-            distances_[i]=0.0f;
-        }
         persistent_state_changed_=true;
     }
 
