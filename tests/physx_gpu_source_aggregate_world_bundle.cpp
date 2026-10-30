@@ -405,8 +405,73 @@ void verify_combined_actor_aggregate_report_fetch(
             "Mixed source GPU reports failed to recreate retired actor/aggregate pairs");
 }
 
+void verify_source_gpu_body_shape_frame_handoff(
+    fyzz::compute::Backend backend,const char* sap_manifest) {
+    // One native Sc scene owns kinematic pose publication. The original
+    // GPU AABB manager must consume the changed shape after the source
+    // postSolver/afterIntegration boundary, including orientation-only edits.
+    fyzz::native::Scene scene;
+    scene.set_gpu_broadphase(std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest)));
+    const auto rotating=scene.add_dynamic_box(
+        {0.15f,0.15f,1.0f},{0.0f,0.0f,0.0f},1.0f);
+    const auto obstacle=scene.add_static_box(
+        {0.2f,0.2f,0.2f},{0.95f,0.0f,0.0f});
+    const fyzz::native::Pair overlap{
+        std::min(rotating,obstacle),std::max(rotating,obstacle)};
+    const auto has_pair=[&](std::span<const fyzz::native::Pair> pairs) {
+        return std::find(pairs.begin(),pairs.end(),overlap)!=pairs.end();
+    };
+    scene.set_kinematic(rotating,true);
+    scene.step(1.0f/120.0f);
+    require(!has_pair(scene.pairs()),
+        "Source GPU SAP admitted separated, unrotated kinematic shape");
+    const float half_turn=std::sqrt(0.5f);
+    scene.set_kinematic_target(rotating,{0.0f,0.0f,0.0f},
+                               {0.0f,half_turn,0.0f,half_turn});
+    scene.step(1.0f/120.0f);
+    scene.advance_collision();
+    require(has_pair(scene.pairs()) && has_pair(scene.found_pairs()),
+        "Source GPU SAP missed orientation-only kinematic shape update");
+    scene.advance_collision();
+    require(has_pair(scene.pairs()) && scene.found_pairs().empty() &&
+            scene.lost_pairs().empty(),
+        "Source GPU SAP lost persistent rotated kinematic overlap");
+    scene.set_kinematic_target(rotating,{0.0f,0.0f,0.0f},
+                               {0.0f,0.0f,0.0f,1.0f});
+    scene.step(1.0f/120.0f);
+    scene.advance_collision();
+    require(!has_pair(scene.pairs()) && has_pair(scene.lost_pairs()),
+        "Source GPU SAP missed orientation-only kinematic separation");
+
+    // Dy integrates a dynamic body after the GPU broadphase update.
+    // The next frame must consume afterIntegration's changed-volume bit
+    // rather than replaying the previous source endpoint projections.
+    fyzz::native::Scene moving;
+    moving.set_gpu_broadphase(std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest)));
+    const auto body=moving.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,2.0f,0.0f},1.0f);
+    const auto fixed=moving.add_static_box(
+        {0.5f,0.5f,0.5f},{1.9f,2.0f,0.0f});
+    const fyzz::native::Pair dynamic_pair{
+        std::min(body,fixed),std::max(body,fixed)};
+    moving.set_velocity(body,{8.0f,0.0f,0.0f});
+    moving.step(1.0f/8.0f);
+    require(std::find(moving.pairs().begin(),moving.pairs().end(),
+                      dynamic_pair)==moving.pairs().end(),
+        "Source GPU SAP published future Dy pose before integration");
+    moving.advance_collision();
+    require(std::find(moving.found_pairs().begin(),moving.found_pairs().end(),
+                      dynamic_pair)!=moving.found_pairs().end(),
+        "Source GPU SAP missed CPU Dy-integrated shape at next fetch");
+}
+
 void run(fyzz::compute::Backend backend,
          const char* sap_manifest,const char* aggregate_manifest) {
+    verify_source_gpu_body_shape_frame_handoff(backend,sap_manifest);
     bool rejected=false;
     try {
         (void)fyzz::load_native_gpu_aggregate_shaders(
