@@ -8,6 +8,8 @@
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
+#include <algorithm>
+#include <bit>
 #include <limits>
 #include <optional>
 #include <span>
@@ -50,29 +52,54 @@ contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
     const auto updated_count=update.getNumUpdatedHandles();
     if((created_count && !created) || (updated_count && !updated))
         throw std::invalid_argument("Source GPU AABB delta handle array missing");
+
     physx::PxU32 first=capacity,last=0u;
-    physx::PxU32 created_index=0u,updated_index=0u;
-    bool gap=false;
-    for(physx::PxU32 i=0u;i<capacity;++i) {
-        const bool in_created=created_index<created_count &&
-                              created[created_index]==i;
-        const bool in_updated=updated_index<updated_count &&
-                              updated[updated_index]==i;
-        if(in_created)++created_index;
-        if(in_updated)++updated_index;
-        // Original PinnableBitMap::boundedTest treats unallocated high
-        // words as zero; changed storage grows independently of bounds.
-        const bool dirty=((i>>5u)<changed.size() &&
-                          (changed[i>>5u] & (1u<<(i&31u)))!=0u) ||
-                         in_created || in_updated;
-        if(dirty) {
-            if(gap)return std::nullopt;
-            if(first==capacity)first=i;
-            last=i+1u;
-        }else if(first!=capacity)gap=true;
+    std::uint64_t count=0u;
+    const auto include=[&](physx::PxU32 handle) {
+        first=std::min(first,handle);
+        last=std::max(last,handle+1u);
+    };
+    // Scan the existing source bitmap in machine words, not every
+    // possible volume. Missing high words mean zero in PinnableBitMap.
+    const auto words=std::min<std::size_t>(
+        changed.size(),(std::uint64_t(capacity)+31u)/32u);
+    for(std::size_t w=0;w<words;++w) {
+        auto bits=changed[w];
+        if(w+1u==((std::uint64_t(capacity)+31u)/32u) &&
+           (capacity&31u)!=0u)
+            bits&=(1u<<(capacity&31u))-1u;
+        if(!bits)continue;
+        include(static_cast<physx::PxU32>(w*32u+std::countr_zero(bits)));
+        include(static_cast<physx::PxU32>(
+            w*32u+31u-std::countl_zero(bits)));
+        count+=std::popcount(bits);
     }
-    if(created_index!=created_count || updated_index!=updated_count)
-        throw std::out_of_range("Source GPU AABB delta handle outside capacity");
+
+    // Merge the source's ascending created/updated handle lists. The
+    // changed bitmap may already contain those handles, so count each
+    // physical AABB exactly once without allocating a second dirty map.
+    physx::PxU32 ci=0u,ui=0u;
+    while(ci<created_count || ui<updated_count) {
+        const auto next_created=ci<created_count
+            ? created[ci] : std::numeric_limits<physx::PxU32>::max();
+        const auto next_updated=ui<updated_count
+            ? updated[ui] : std::numeric_limits<physx::PxU32>::max();
+        const auto handle=std::min(next_created,next_updated);
+        if(handle>=capacity)
+            throw std::out_of_range(
+                "Source GPU AABB delta handle outside capacity");
+        while(ci<created_count && created[ci]==handle)++ci;
+        while(ui<updated_count && updated[ui]==handle)++ui;
+        include(handle);
+        const bool already_changed=(handle>>5u)<changed.size() &&
+            (changed[handle>>5u] & (1u<<(handle&31u)))!=0u;
+        if(!already_changed)++count;
+    }
+
+    if(first==capacity)return std::pair{capacity,physx::PxU32{0u}};
+    // No holes: the source can publish one smaller contiguous span
+    // without overwriting quiet, possibly GPU-generated aggregate bounds.
+    if(std::uint64_t(last)-first!=count)return std::nullopt;
     return std::pair{first,last};
 }
 
