@@ -15,9 +15,11 @@ See also [the multi-month GPU port program, blockers and acceptance gates](GPU_P
 and the [broadphase source-to-port worksheet](GPU_BROADPHASE_TRACE.md).
 **All GPU work is also bound by the [GPU performance contract](GPU_PORT_PERFORMANCE.md)**, which requires explicit review of throughput costs and modern hardware primitives for every deviation from source PhysX.
 
-Status: initial source-grounded execution-path audit. This is a port dependency
-map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
-D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
+Status: source-grounded execution trace and historical port dependency map.
+The bounded native AABB/SAP and aggregate broadphase is now integrated on
+Vulkan and D3D12, publishing reports to native CPU Sc/PCM/Dy. The wider GPU
+narrowphase, rigid solver and remaining subsystems are not yet integrated;
+see the [active capability roadmap](ROADMAP.md) for their acceptance gates.
 
 ## N2 source aggregate GPU AABB prepass
 
