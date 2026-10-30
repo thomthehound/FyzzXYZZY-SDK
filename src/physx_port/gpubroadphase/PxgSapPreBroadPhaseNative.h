@@ -45,7 +45,8 @@ void append_pre_broadphase_native_uploads(
     // The source AABB manager's original changed-handle bitmap. When
     // provided, unchanged resident bounds may be retained on the device.
     std::span<const physx::PxU32> changed_handles = {},
-    bool source_owned_changes = false);
+    bool source_owned_changes = false,
+    bool device_generated_bounds = false);
 
 // Source: PxgCudaBroadPhaseSap::preBroadPhase, including its conditional
 // bounds upload and unconditional contact-distance/group uploads.
