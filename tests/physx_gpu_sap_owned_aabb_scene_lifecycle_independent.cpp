@@ -423,7 +423,12 @@ void execute(Context& context, ShaderBinary translateShader,
             }
             require(rejectedCopiedBitmap,
                     "Original source frame admitted a copied GPU added-handle bitmap");
+            const auto upload_batches_before=
+                stream.submission_stats().upload_batches;
             pre_update_source_sap_aabb_manager_native(update,aabbPre,stream);
+            require(stream.submission_stats().upload_batches==
+                    upload_batches_before+1u,
+                    "Source AABB pre-update split consecutive GPU uploads");
             const auto aabbView=source_sap_aabb_descriptor_native(aabbPre);
             auto dma=sap.dma_up_members(&aabbView,mappedRoots);
             const auto admission = begin_sap_update_native(

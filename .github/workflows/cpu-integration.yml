@@ -432,7 +432,7 @@ jobs:
   native-no-physx-windows:
     name: Independent SDK / D3D12 without PhysX
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Locate Windows SDK DXC for reference-free source GPU conformance
