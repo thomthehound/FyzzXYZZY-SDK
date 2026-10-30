@@ -243,6 +243,39 @@ void verify(Context& context,ShaderBinary shader) {
                     "Original aggregate previous member/mask history was overwritten");
         require(stream.submission_stats().command_batches==2u,
                 "Original aggregate projection histories split their source fetch");
+        // A third GPU frame reuses the first history slot after the second
+        // frame has consumed it. The large aggregate crosses eight 32-lane
+        // chunks, and equal-key stable scatter must not overwrite slot one.
+        const auto second_projections=projections;
+        const auto second_handles=handles;
+        const auto second_sap=sap;
+        const auto second_masks=masks;
+        const auto second_history=history;
+        encoded_bounds[members[130u]*6u]=42u;
+        encoded_bounds[members[130u]*6u+3u]=54u;
+        context.upload(root,boundsOffset,encoded_bounds.data(),boundsBytes);
+        source.current_slot=0u;
+        source.sorted_projections-=kMembers*8u;
+        source.sorted_handles-=kMembers*8u;
+        source.sap_boxes-=kMembers*8u;
+        source.start_masks-=kMembers*4u;
+        source.bound_index_history-=kMembers*4u;
+        stage.append(stream,addresses,source);
+        stream.wait_at_fetch();
+        download();
+        validate_slot(encoded_bounds,members,0u,
+                      projections,handles,sap,masks,history);
+        for(std::uint32_t i=2u*kMembers;i<4u*kMembers;++i)
+            require(projections[i]==second_projections[i] &&
+                    handles[i]==second_handles[i] &&
+                    sap[i]==second_sap[i],
+                    "Aggregate radix third frame overwrote previous projection slot");
+        for(std::uint32_t i=kMembers;i<2u*kMembers;++i)
+            require(masks[i]==second_masks[i] &&
+                    history[i]==second_history[i],
+                    "Aggregate radix third frame overwrote previous mask/member history");
+        require(stream.submission_stats().command_batches==3u,
+                "Aggregate third-frame radix history added an unnecessary submission");
         // Invalid and unadmitted source aggregate records cannot write a
         // projection/history slot through the shared root allocation.
         require(projections[2u*41u]==kCanary,
