@@ -714,9 +714,9 @@ private:
         // publication. Active nodes do not reawaken peers every frame.
         bool activating=false;
         std::array<std::uint32_t, 6> encoded_bounds{};
-        // ScPipeline::afterIntegration publishes a transform-derived
-        // shape AABB after each active rigid body's pose integration.
-        // The following broadphase consumes it without recomputation.
+        // ScPipeline::afterIntegration publishes shape changes to the
+        // selected broadphase. Native CPU caches encoded endpoints; native
+        // GPU marks the source AABB manager's changed volume instead.
         bool cached_bounds_current=false;
         // PxsRigidBody::mLastCCDTransform: the pose at the start of
         // this frame's Dy integration. afterIntegration uses it only
@@ -844,6 +844,7 @@ private:
     // Shared Gu collision progression, independent of Dy solver execution.
     void advance_collision_internal(bool force_update, bool checkpointed);
     void update_actor_bounds(Actor& actor);
+    void publish_integrated_shape_bounds(BodyId id,Actor& actor);
     void update_bounds();
     void after_integration_cached_bounds();
     void remember_pre_integration_pose(BodyId id) noexcept;

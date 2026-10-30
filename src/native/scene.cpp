@@ -1013,6 +1013,18 @@ void Scene::update_actor_bounds(Actor& actor) {
         actor.encoded_bounds=encoded;
         actor.cached_bounds_current=true;
 }
+void Scene::publish_integrated_shape_bounds(BodyId id,Actor& actor) {
+    if(!gpu_broadphase_) {
+        update_actor_bounds(actor);
+        return;
+    }
+    // ScPipeline::afterIntegration: the source GPU AABB manager owns
+    // the changed-volume bitmap and its float bounds. Never build the
+    // CPU SAP's unused integer endpoints for a GPU-selected scene.
+    if(actor.simulation_shape_enabled)
+        gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
+    actor.cached_bounds_current=true;
+}
 void Scene::update_bounds() {
     // BpBroadPhaseSap::batchCreate/mBoxBoundsMinMax:
     // min and max endpoints are retained on every axis and mapped
@@ -1771,7 +1783,7 @@ void Scene::reconcile_integrated_deactivations() {
         body.sleep_linear_acc={};
         body.sleep_angular_acc={};
         body.cached_bounds_current=false;
-        update_actor_bounds(body);
+        publish_integrated_shape_bounds(id,body);
         dirty_=true;
     }
 }
@@ -1787,10 +1799,7 @@ void Scene::after_integration_cached_bounds() {
         auto& actor=actors_[id];
         if(actor.alive && actor.kind==Kind::KinematicBox &&
            !actor.cached_bounds_current) {
-            if(gpu_broadphase_ && actor.simulation_shape_enabled)
-                gpu_broadphase_->mark_shape_bounds_changed(
-                    id,actor.contact_offset);
-            update_actor_bounds(actor);
+            publish_integrated_shape_bounds(id,actor);
         }
     }
     for(const auto& task:solver_tasks_)
@@ -1801,10 +1810,7 @@ void Scene::after_integration_cached_bounds() {
                 const BodyId id=accurate_island_nodes_[index];
                 Actor& body=actors_[id];
                 if(!body.sleeping) {
-                    if(gpu_broadphase_ && body.simulation_shape_enabled)
-                        gpu_broadphase_->mark_shape_bounds_changed(
-                            id,body.contact_offset);
-                    update_actor_bounds(body);
+                    publish_integrated_shape_bounds(id,body);
                 }
             }
         }
