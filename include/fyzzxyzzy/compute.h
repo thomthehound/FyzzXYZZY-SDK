@@ -148,6 +148,15 @@ struct UploadSpan {
     std::size_t bytes = 0;
 };
 
+// Multiple GPU-to-host outputs share one native readback resource and
+// completion fence. Each destination receives only its requested bytes.
+struct DownloadSpan {
+    BufferId source = 0;
+    std::size_t source_offset = 0;
+    void* data = nullptr;
+    std::size_t bytes = 0;
+};
+
 struct CopyCommand {
     BufferId source = 0;
     std::size_t source_offset = 0;
@@ -223,6 +232,9 @@ public:
     SubmissionId submit_upload_batch(const std::vector<UploadSpan>& uploads);
 
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
+    // One submission and wait for all nonempty device-local readbacks.
+    // Source buffer ownership and original CPU output addresses are retained.
+    void download_batch(const std::vector<DownloadSpan>& downloads) const;
 
     // Submits a GPU transfer and completes it before returning.
     // Operations on a Context are synchronous and not thread-safe yet.

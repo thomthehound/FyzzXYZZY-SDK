@@ -257,6 +257,10 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
+    // The synchronous source fetch reuses one completed transfer-only
+    // host-visible readback arena; it never overlaps another GPU fetch.
+    BufferId readback_staging_ = 0;
+    std::size_t readback_staging_bytes_ = 0;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -537,7 +541,8 @@ struct Context::Impl {
                 ? (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT)
-                : VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+                : (VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT);
             create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             require(vkCreateBuffer(device, &create, nullptr, &resource.buffer),
                     "vkCreateBuffer");
@@ -883,6 +888,68 @@ struct Context::Impl {
             throw;
         }
         release_buffer(staging);
+    }
+
+    void download_batch(const std::vector<DownloadSpan>& downloads) {
+        if(downloads.empty())return;
+        std::size_t bytes=0;
+        for(const auto& item:downloads) {
+            const auto& source=get(item.source);
+            validate_range(source.bytes,item.source_offset,item.bytes);
+            if(!item.data || !item.bytes ||
+               (item.source_offset&3u) || (item.bytes&3u) ||
+               item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
+                throw std::invalid_argument("Invalid Vulkan GPU readback span");
+            bytes+=item.bytes;
+        }
+        // The fetch is synchronous, so completed readback memory can be
+        // reused without a per-frame VkBuffer or device-memory allocation.
+        if(bytes>readback_staging_bytes_) {
+            if(readback_staging_)destroy_buffer(readback_staging_);
+            readback_staging_=0;
+            readback_staging_bytes_=0;
+            readback_staging_=create_buffer(
+                bytes,MemoryPlacement::HostVisible,false);
+            readback_staging_bytes_=bytes;
+        }
+        const auto staging_id=readback_staging_;
+        bool enqueued=false;
+        try {
+            std::vector<BatchCommand> copies;
+            copies.reserve(downloads.size());
+            std::size_t offset=0;
+            for(const auto& item:downloads) {
+                copies.emplace_back(CopyCommand{
+                    item.source,item.source_offset,staging_id,offset,
+                    item.bytes});
+                offset+=item.bytes;
+            }
+            const auto submission=submit_batch(copies);
+            enqueued=true;
+            wait_submission(submission);
+            enqueued=false;
+            const auto& buffer=get(staging_id);
+            void* mapped=nullptr;
+            require(vkMapMemory(device,buffer.memory,0,VK_WHOLE_SIZE,0,&mapped),
+                    "vkMapMemory batched GPU readback");
+            offset=0;
+            for(const auto& item:downloads) {
+                std::memcpy(item.data,
+                    static_cast<const std::uint8_t*>(mapped)+offset,
+                    item.bytes);
+                offset+=item.bytes;
+            }
+            vkUnmapMemory(device,buffer.memory);
+        } catch(...) {
+            if(enqueued) {
+                // The GPU still owns this arena until its outstanding
+                // source transfer completes; never recycle it early.
+                readback_staging_=0;
+                readback_staging_bytes_=0;
+                retire_buffer(staging_id);
+            }
+            throw;
+        }
     }
 
     const Pipeline& get_pipeline(PipelineId id) const {
@@ -1700,6 +1767,10 @@ SubmissionId Context::submit_upload_batch(const std::vector<UploadSpan>& uploads
 
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
     impl_->transfer(id, offset, data, bytes, false);
+}
+
+void Context::download_batch(const std::vector<DownloadSpan>& downloads) const {
+    impl_->download_batch(downloads);
 }
 
 void Context::copy_buffer(BufferId source, std::size_t source_offset,

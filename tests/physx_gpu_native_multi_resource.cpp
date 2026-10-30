@@ -124,11 +124,18 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     std::vector<std::uint32_t> actual_second(second.size());
     std::vector<std::uint32_t> actual_output(output.size());
     std::vector<std::uint32_t> actual_mirror(mirror.size());
-    context.download(source_a, 0u, actual_first.data(), first_bytes);
-    if (!shared_backing)
-        context.download(source_b, 0u, actual_second.data(), second.size() * 4u);
-    context.download(destination, 0u, actual_output.data(), output.size() * 4u);
-    context.download(snapshot, 0u, actual_mirror.data(), mirror.size() * 4u);
+    std::vector<DownloadSpan> readback{{
+        source_a,0u,actual_first.data(),first_bytes}};
+    if(!shared_backing)
+        readback.push_back({
+            source_b,0u,actual_second.data(),second.size()*4u});
+    readback.push_back({
+        destination,0u,actual_output.data(),output.size()*4u});
+    readback.push_back({
+        snapshot,0u,actual_mirror.data(),mirror.size()*4u});
+    // Fetch GPU-written outputs and a dependent device copy together.
+    // Multiple ranges may share one backing heap without separate fences.
+    context.download_batch(readback);
 
     for (std::size_t i = 0; i < kElements; ++i) {
         const auto a = static_cast<std::uint32_t>(10u + i);
@@ -328,6 +335,53 @@ void profile_ordered_same_resource_copies(Context& context) {
     context.destroy_buffer(root);
 }
 
+void verify_batched_gpu_readback(Context& context) {
+    const std::array<std::uint32_t,16> a{{
+        3u,5u,7u,11u,13u,17u,19u,23u,
+        29u,31u,37u,41u,43u,47u,53u,59u}};
+    const std::array<std::uint32_t,16> b{{
+        61u,67u,71u,73u,79u,83u,89u,97u,
+        101u,103u,107u,109u,113u,127u,131u,137u}};
+    const auto gpu_a=context.create_buffer(sizeof(a),MemoryPlacement::DeviceLocal);
+    const auto gpu_b=context.create_buffer(sizeof(b),MemoryPlacement::DeviceLocal);
+    context.upload(gpu_a,0u,a.data(),sizeof(a));
+    context.upload(gpu_b,0u,b.data(),sizeof(b));
+    std::array<std::uint32_t,8> out_a{},out_b{},out_repeated{};
+    out_a.fill(kOutputCanary);
+    out_b.fill(kOutputCanary);
+    out_repeated.fill(kOutputCanary);
+    const std::vector<DownloadSpan> transfers{{
+        gpu_a,2u*4u,out_a.data()+1u,4u*4u},{
+        gpu_b,5u*4u,out_b.data()+2u,3u*4u},{
+        gpu_a,9u*4u,out_repeated.data()+3u,2u*4u}};
+    auto invalid=transfers;
+    invalid.back().source_offset=sizeof(a);
+    bool rejected=false;
+    try{context.download_batch(invalid);}
+    catch(const std::out_of_range&){rejected=true;}
+    check(rejected && out_a[1]==kOutputCanary &&
+          out_b[2]==kOutputCanary &&
+          out_repeated[3]==kOutputCanary,
+          "Invalid late GPU readback span published partial CPU data");
+    context.download_batch(transfers);
+    for(std::size_t i=0;i<4u;++i)
+        check(out_a[i+1u]==a[i+2u],
+              "Packed GPU readback from first resource differs");
+    for(std::size_t i=0;i<3u;++i)
+        check(out_b[i+2u]==b[i+5u],
+              "Packed GPU readback from second resource differs");
+    for(std::size_t i=0;i<2u;++i)
+        check(out_repeated[i+3u]==a[i+9u],
+              "Packed GPU readback repeated source aliases differ");
+    check(out_a.front()==kOutputCanary && out_a.back()==kOutputCanary &&
+          out_b.front()==kOutputCanary && out_b.back()==kOutputCanary &&
+          out_repeated.front()==kOutputCanary &&
+          out_repeated.back()==kOutputCanary,
+          "Packed GPU readback overwrote destination canaries");
+    context.destroy_buffer(gpu_b);
+    context.destroy_buffer(gpu_a);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -364,6 +418,7 @@ int main(int argc, char** argv) {
         run_case(context, pipeline, false);
         run_case(context, pipeline, true);
         verify_ordered_same_resource_copies(context);
+        verify_batched_gpu_readback(context);
         if(benchmark)
             profile_ordered_same_resource_copies(context);
         context.destroy_compute_pipeline(pipeline);

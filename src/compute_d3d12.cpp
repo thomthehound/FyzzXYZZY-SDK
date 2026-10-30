@@ -300,6 +300,10 @@ struct Context::Impl {
     // The largest completed source relocation scratch can serve later
     // submissions. In-flight command lists retain their own allocation.
     ComPtr<ID3D12Resource> completed_copy_scratch;
+    // The source report fetch waits for completion before its next use.
+    // One completed READBACK heap serves subsequent batches.
+    ComPtr<ID3D12Resource> completed_readback;
+    std::vector<BufferId> readback_sources;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -782,6 +786,57 @@ struct Context::Impl {
         std::memcpy(data, mapped, bytes);
         D3D12_RANGE written{0, 0};
         staging->Unmap(0, &written);
+    }
+
+    void download_batch(const std::vector<DownloadSpan>& downloads) {
+        if(downloads.empty())return;
+        std::size_t bytes=0;
+        readback_sources.clear();
+        readback_sources.reserve(downloads.size());
+        for(const auto& item:downloads) {
+            const auto& source=get_buffer(item.source);
+            validate_range(source.bytes,item.source_offset,item.bytes);
+            if(!item.data || !item.bytes ||
+               (item.source_offset&3u) || (item.bytes&3u) ||
+               item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
+                throw std::invalid_argument("Invalid D3D12 GPU readback span");
+            bytes+=item.bytes;
+            if(std::find(readback_sources.begin(),readback_sources.end(),
+                         item.source)==readback_sources.end())
+                readback_sources.push_back(item.source);
+        }
+        auto staging=std::move(completed_readback);
+        if(!staging || staging->GetDesc().Width<bytes)
+            staging=allocate_resource(device.Get(),bytes,
+                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+        Submission cmd=new_commands();
+        for(const auto id:readback_sources)
+            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
+                D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
+        std::size_t offset=0;
+        for(const auto& item:downloads) {
+            cmd.commands->CopyBufferRegion(staging.Get(),offset,
+                get_buffer(item.source).resource.Get(),item.source_offset,
+                item.bytes);
+            offset+=item.bytes;
+        }
+        for(const auto id:readback_sources)
+            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
+                D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
+        wait_submission(enqueue(std::move(cmd)));
+        void* mapped=nullptr;
+        D3D12_RANGE read{0,bytes};
+        check(staging->Map(0,&read,&mapped),"Map batched GPU readback");
+        offset=0;
+        for(const auto& item:downloads) {
+            std::memcpy(item.data,
+                static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
+            offset+=item.bytes;
+        }
+        D3D12_RANGE written{0,0};
+        staging->Unmap(0,&written);
+        completed_readback=std::move(staging);
     }
 
     PipelineId create_pipeline(const ComputePipelineDesc& desc) {
@@ -1300,6 +1355,10 @@ SubmissionId Context::submit_upload_batch(const std::vector<UploadSpan>& uploads
 }
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
     impl_->download(id, offset, data, bytes);
+}
+
+void Context::download_batch(const std::vector<DownloadSpan>& downloads) const {
+    impl_->download_batch(downloads);
 }
 void Context::copy_buffer(BufferId source, std::size_t so, BufferId dest,
                           std::size_t dst, std::size_t count) {

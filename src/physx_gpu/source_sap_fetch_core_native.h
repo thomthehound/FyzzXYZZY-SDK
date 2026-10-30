@@ -10,6 +10,7 @@
 #include "physx_port/gpubroadphase/include/PxgBroadPhasePairReport.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -141,8 +142,11 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
         // fence. publish_at_fetch() performs no second wait if all source
         // tokens have been reaped; direct mappings need NO CPU copy.
         // The original staged fallback copies only these consumed bytes.
-        if (found_bytes) mapped_roots->publish_at_fetch(found.data, found_bytes);
-        if (lost_bytes) mapped_roots->publish_at_fetch(lost.data, lost_bytes);
+        if(found_bytes || lost_bytes) {
+            const std::array<SourceSapMappedReportSpan,2> reports{{
+                {found.data,found_bytes},{lost.data,lost_bytes}}};
+            mapped_roots->publish_batch_at_fetch(reports);
+        }
     } else {
         // Legacy caller-owned PhysX destinations (not mapped by callback):
         // preserve the original guarded GPU-to-CPU result transfer.
