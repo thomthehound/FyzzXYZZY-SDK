@@ -482,6 +482,30 @@ struct Context::Impl {
         release_retired_through(id);
     }
 
+    void wait_submissions(std::span<const SubmissionId> ordered) {
+        if(ordered.empty())return;
+        SubmissionId previous=0;
+        for(const auto id:ordered) {
+            if(id<=previous || submissions.find(id)==submissions.end())
+                throw std::invalid_argument(
+                    "Vulkan GPU retire batch requires live ordered submissions");
+            previous=id;
+        }
+        const VkFence fence=submissions.find(ordered.back())->second.fence;
+        const VkResult status=vkWaitForFences(
+            device,1,&fence,VK_TRUE,UINT64_MAX);
+        if(status==VK_ERROR_DEVICE_LOST)device_lost=true;
+        require(status,"vkWaitForFences source batch");
+        // One ordered queue: the newest completed fence covers every
+        // earlier source upload and kernel allocation.
+        for(const auto id:ordered) {
+            auto it=submissions.find(id);
+            retire_submission(it->second);
+            submissions.erase(it);
+        }
+        release_retired_through(ordered.back());
+    }
+
     void wait_all() {
         while (!submissions.empty()) {
             wait_submission(submissions.begin()->first);
@@ -1813,6 +1837,9 @@ bool Context::submission_complete(SubmissionId id) const {
 }
 
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
+void Context::wait_submissions(std::span<const SubmissionId> ordered) {
+    impl_->wait_submissions(ordered);
+}
 
 SubmissionId Context::submit_batch(const std::vector<BatchCommand>& commands) {
     return impl_->submit_batch(commands);
