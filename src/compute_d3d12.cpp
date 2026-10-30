@@ -529,6 +529,28 @@ struct Context::Impl {
         release_retired_through(completed);
     }
 
+    void wait_submissions(std::span<const SubmissionId> ordered) {
+        if(ordered.empty())return;
+        SubmissionId previous=0;
+        for(const auto id:ordered) {
+            if(id<=previous || submissions.find(id)==submissions.end())
+                throw std::invalid_argument(
+                    "D3D12 GPU retire batch requires live ordered submissions");
+            previous=id;
+        }
+        // Reserve the completed resource pool before mutating submission
+        // ownership, then wait only for the newest queue fence.
+        if(recycled.capacity()<kMaxRecycled)recycled.reserve(kMaxRecycled);
+        const auto last_fence=submissions.at(ordered.back()).fence_value;
+        wait_value(last_fence);
+        for(const auto id:ordered) {
+            auto it=submissions.find(id);
+            recycle_completed(std::move(it->second));
+            submissions.erase(it);
+        }
+        release_retired_through(last_fence);
+    }
+
     void wait_all() {
         if (submissions.empty()) return;
         const auto completed = next_fence - 1;
@@ -1398,6 +1420,9 @@ bool Context::submission_complete(SubmissionId id) const {
     return impl_->fence->GetCompletedValue() >= it->second.fence_value;
 }
 void Context::wait_submission(SubmissionId id) { impl_->wait_submission(id); }
+void Context::wait_submissions(std::span<const SubmissionId> ordered) {
+    impl_->wait_submissions(ordered);
+}
 SubmissionId Context::submit_batch(const std::vector<BatchCommand>& commands) {
     return impl_->submit_batch(commands);
 }
