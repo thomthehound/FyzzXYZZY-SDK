@@ -59,13 +59,20 @@ void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
     const uint block=group.x,axis=group.y;
     const uint input=axis==0u?p.kx:(axis==1u?p.ky:p.kz);
     const uint output=axis==0u?p.hx:(axis==1u?p.hy:p.hz);
-    if(thread.x<16u)totals[thread.x]=0u;
-    GroupMemoryBarrierWithGroupSync();
     const uint vectors=(p.numKeys+3u)/4u;
     const uint required=(vectors+1023u)/1024u;
     const uint iterations=(required+31u)/32u;
     const uint first=min(iterations*block*1024u,vectors);
     const uint last=min(first+iterations*1024u,vectors);
+    // The source histogram always has 32 partitions, including empty
+    // ones. Publish their zero bins without launching shared atomics.
+    if(first==last) {
+        if(thread.x<16u)
+            count_store(axis,output+(thread.x*32u+block)*4u,0u);
+        return;
+    }
+    if(thread.x<16u)totals[thread.x]=0u;
+    GroupMemoryBarrierWithGroupSync();
     for(uint v=first+thread.x;v<last;v+=1024u) {
         [unroll]for(uint lane=0u;lane<4u;++lane) {
             const uint index=v*4u+lane;
