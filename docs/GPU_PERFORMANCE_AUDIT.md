@@ -92,6 +92,12 @@ before touching. Separate *upstream-native* costs from port costs.
 
 ## SIMD implementation guardrails
 
+- **Warp-coupled stages must declare their physical width:** the compute
+  pipeline enforces a nonzero requirement at creation; native DXIL must
+  also carry matching `[WaveSize]` metadata. A native 32-lane probe
+  shader checks the selected execution width. Width-agnostic wave
+  reductions remain available at other subgroup widths; real AMD
+  acceptance and masked/divergent-warp parity are separate gates.
 - **Wave subgroup size is a runtime capability**, not a fixed CUDA 32.
   An HLSL `WavePrefixSum` must work on the actual contiguous logical
   keys; if physical subgroup assignment is unspecified, give each
