@@ -295,7 +295,6 @@ public:
         volume_to_actor_[handle]=actor;
         const bool first_member=aggregate.size==0u;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
-        if(first_member)++num_nonempty_aggregates_;
         if(canceled_retirement) {
             // No member-history removal/addition is emitted: the GPU
             // still owns its previous bound and comparison history.
@@ -308,6 +307,7 @@ public:
             added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
+        if(first_member)++num_nonempty_aggregates_;
     }
 
     // AABBManagerBase::setContactDistance / source changed bitmap.
@@ -342,7 +342,6 @@ public:
             "Source aggregate VolumeData differs from member array");
         aggregate.updateBoundIndices[i]=
             aggregate.updateBoundIndices[--aggregate.size];
-        if(!aggregate.size)--num_nonempty_aggregates_;
         if(!aggregate.size) {
             if(added_.boundedTest(aggregate.mIndex))
                 added_.boundedReset(aggregate.mIndex);
@@ -376,6 +375,7 @@ public:
             volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
+        if(!aggregate.size)--num_nonempty_aggregates_;
         return aggregate.size==0u;
     }
 
