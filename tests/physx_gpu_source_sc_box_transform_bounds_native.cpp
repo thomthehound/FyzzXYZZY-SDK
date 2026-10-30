@@ -49,13 +49,16 @@ ShaderBinary load(const char* path) {
 void verify(Context& context,const char* shader) {
     using namespace fyzz::physx_gpu;
     constexpr float c=0.7071067811865476f;
-    std::array<SourceScBoxTransformInputNative,3> shapes{{
+    std::array<SourceScBoxTransformInputNative,4> shapes{{
         {1u,{2.f,3.f,4.f},{0.f,0.f,0.f,1.f},
          {1.f,2.f,3.f},0u},
         {6u,{4.f,-2.f,0.f},{0.f,0.f,c,c},
          {2.f,1.f,3.f},0u},
         {31u,{0.f,10.f,0.f},{c,0.f,0.f,c},
-         {1.f,2.f,3.f},0u}
+         {1.f,2.f,3.f},0u},
+        {12u,{1.5f,-2.2f,0.75f},
+         {0.09539871f,0.19079742f,0.28619614f,0.93412376f},
+         {0.5f,1.2f,2.3f},0u}
     }};
     constexpr std::uint32_t capacity=32u;
     constexpr Bounds unchanged{{-88.f,-77.f,-66.f},{88.f,77.f,66.f}};
@@ -107,6 +110,8 @@ void verify(Context& context,const char* shader) {
         check_bounds(1u,{1.f,1.f,1.f},{3.f,5.f,7.f});
         check_bounds(6u,{3.f,-4.f,-3.f},{5.f,0.f,3.f});
         check_bounds(31u,{-1.f,7.f,-2.f},{1.f,13.f,2.f});
+        check_bounds(12u,{-0.42506928f,-3.62586260f,-1.83653189f},
+                         {3.42506928f,-0.77413740f,3.33653189f});
         for(std::size_t shape=0;shape<shapes.size();++shape) {
             const auto index=shapes[shape].element_index;
             for(unsigned i=0;i<4u;++i)
