@@ -142,7 +142,7 @@ uint generate(float3x3 frame,float3 framePosition,
         4u,5u,5u,7u,7u,6u,6u,4u,
         0u,4u,1u,5u,2u,6u,3u,7u
     };
-    [unroll]
+    [loop]
     for(uint index=0u;index<12u;++index) {
         uint first=edge[index*2u],second=edge[index*2u+1u];
         if(!(penetrating[first]||penetrating[second]))continue;
