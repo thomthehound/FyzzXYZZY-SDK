@@ -38,6 +38,12 @@ public:
         if(!max_shapes ||
            root_group==physx::Bp::FilterGroup::eINVALID)
             throw std::invalid_argument("Invalid original Sc aggregate root");
+        // The GPU member arena uses source 32-bit byte addresses.
+        // Reject impossible reservations before reserving the Sc list.
+        if(max_shapes>std::numeric_limits<physx::PxU32>::max()/
+                          sizeof(physx::PxU32))
+            throw std::out_of_range(
+                "Original Sc aggregate maxShapes exceeds GPU member address range");
         const auto root=elements_.createID();
         const auto prior_roots=aggregate_roots_.size();
         try {
