@@ -669,7 +669,7 @@ public:
     std::array<SourceSapMappedReportSpan,2>
     validated_aggregate_report_spans(
         const std::array<physx::PxU32,2>& counts,
-        const std::array<physx::PxU32,3>& overflow) const {
+        const std::array<physx::PxU32,3>& overflow) {
         if(!aggregate_report_capacity_)
             throw std::logic_error(
                 "Original aggregate report fetch has no configured capacity");
