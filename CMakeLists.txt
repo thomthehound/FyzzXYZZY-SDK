@@ -1304,6 +1304,29 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
         "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}")
+    # Source Sc box transform-cache and shared bounds update.
+    set(FYZZXYZZY_SC_BOX_BOUNDS_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_box_transform_bounds_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sc_box_bounds_shader
+      DEPENDS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}")
+    add_executable(fyzzxyzzy_source_sc_box_bounds
+      tests/physx_gpu_source_sc_box_transform_bounds_native.cpp)
+    target_include_directories(fyzzxyzzy_source_sc_box_bounds PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_sc_box_bounds PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_sc_box_bounds
+      fyzzxyzzy_source_sc_box_bounds_shader)
+    add_test(NAME fyzzxyzzy_source_sc_box_bounds
+      COMMAND fyzzxyzzy_source_sc_box_bounds "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}")
+
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV
@@ -4412,6 +4435,32 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
         "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
         "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}")
+    set(FYZZXYZZY_SC_BOX_BOUNDS_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_box_transform_bounds_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_sc_box_bounds_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}")
+    add_executable(fyzzxyzzy_source_sc_box_bounds_d3d12
+      tests/physx_gpu_source_sc_box_transform_bounds_native.cpp)
+    target_compile_definitions(fyzzxyzzy_source_sc_box_bounds_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_sc_box_bounds_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_sc_box_bounds_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_sc_box_bounds_d3d12
+      fyzzxyzzy_source_sc_box_bounds_shader_d3d12)
+    add_test(NAME fyzzxyzzy_source_sc_box_bounds_d3d12
+      COMMAND fyzzxyzzy_source_sc_box_bounds_d3d12 "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_sc_box_bounds_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL
