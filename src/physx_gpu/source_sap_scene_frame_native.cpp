@@ -6,6 +6,7 @@
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -147,8 +148,16 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
         const auto copy=members.aabb_owner->aggregate_report_copy_gpu_buffers(
             *members.mapped_reports);
         members.aggregate_report_copy->append(stream,addresses,copy);
+        if(!members.abort_mode)
+            members.aabb_owner->queue_aggregate_fetch_snapshot(
+                stream,members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
     }
     stream.wait_at_fetch();
+    std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
+        aggregate_snapshot;
+    if(members.aabb_manager.has_aggregates && !members.abort_mode)
+        aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
+            context,addresses);
 
     // Complete both source bitmap D32 view validations before reporting
     // success to Sc. Reserve the following GPU command queue now so
@@ -203,8 +212,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
                 // stream. Fetch both only after SAP's own count/overflow
                 // checks and before committing either Sc destination.
                 const auto reports=members.aabb_owner->
-                    fetch_aggregate_mapped_reports(
-                        context,addresses,*members.mapped_reports);
+                    publish_aggregate_mapped_reports(
+                        *members.mapped_reports,
+                        aggregate_snapshot->counts,
+                        aggregate_snapshot->pair_overflow);
                 aggregate_found=reports.found;
                 aggregate_lost=reports.lost;
                 for(const auto& pair:aggregate_found) {
@@ -222,7 +233,8 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             lower_source_sap_and_aggregate_reports_to_sc(
                 source_found,source_lost,aggregate_found,aggregate_lost,
                 members.volume_to_actor,members.found,members.lost);
-        });
+        },
+        aggregate_snapshot ? &aggregate_snapshot->broadphase : nullptr);
     // Source processFoundPairs/processLostPairs clear added/removed maps
     // only after the completed GPU report and Sc admission. These D32
     // dispatches are enqueued on the SAME stream; no fetch-time host wait.

@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <cstdint>
 #include <span>
@@ -76,6 +77,7 @@ public:
           self_found_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           self_lost_pairs_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           self_report_counts_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          aggregate_fetch_snapshot_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_pair_slots_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_pair_free_indices_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           aggregate_pair_free_list_device_(allocators.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
@@ -110,6 +112,9 @@ public:
            (!aggregate_found_mapped_.reserve(aggregate_report_capacity_) ||
             !aggregate_lost_mapped_.reserve(aggregate_report_capacity_)))
             throw std::bad_alloc();
+        if(aggregate_report_capacity_)
+            aggregate_fetch_snapshot_device_.allocate(
+                sizeof(AggregateFetchSnapshot),PX_FL);
         if(initial_shapes)reserve_shapes(initial_shapes);
     }
     ~PxgAabbSourceMembersNative() {
@@ -612,40 +617,60 @@ public:
             aggregate_report_capacity_};
     }
 
+    struct AggregateFetchSnapshot {
+        physx::PxgBroadPhaseDesc broadphase{};
+        std::array<physx::PxU32,2> counts{};
+        std::array<physx::PxU32,3> pair_overflow{};
+    };
+    // Capture the source descriptor and aggregate counters after the
+    // original GPU kernels, on the SAME stream before the fetch fence.
+    void queue_aggregate_fetch_snapshot(
+        SourceSapDmaNative& stream,
+        CudaDeviceAddressMap::Address broadphase_descriptor) {
+        if(!aggregate_report_capacity_ || !broadphase_descriptor)
+            throw std::logic_error("Source aggregate fetch snapshot owner unavailable");
+        const auto start=aggregate_fetch_snapshot_device_.getDevicePtr();
+        stream.queue_device_copy(start,
+            broadphase_descriptor,sizeof(physx::PxgBroadPhaseDesc));
+        stream.queue_device_copy(
+            start+offsetof(AggregateFetchSnapshot,counts),
+            self_report_counts_device_.getDevicePtr(),
+            sizeof(AggregateFetchSnapshot::counts));
+        if(aggregate_pair_capacity_)
+            stream.queue_device_copy(
+                start+offsetof(AggregateFetchSnapshot,pair_overflow),
+                aggregate_pair_overflow_device_.getDevicePtr(),
+                sizeof(AggregateFetchSnapshot::pair_overflow));
+    }
+    AggregateFetchSnapshot download_aggregate_fetch_snapshot(
+        compute::Context& context,
+        const CudaDeviceAddressMap& addresses) const {
+        AggregateFetchSnapshot snapshot{};
+        const auto source=addresses.resolve(
+            aggregate_fetch_snapshot_device_.getDevicePtr(),
+            sizeof(snapshot));
+        context.download(source.buffer,source.offset,&snapshot,sizeof(snapshot));
+        return snapshot;
+    }
     struct AggregateReports {
         std::span<const physx::PxgBroadPhasePair> found,lost;
     };
-    // After the original source stream's fetch fence, validate BOTH
-    // shared counters before publishing either source mapped array.
-    // Sc's source report processing owns deduplication and classification.
-    AggregateReports fetch_aggregate_mapped_reports(
-        compute::Context& context,
-        const CudaDeviceAddressMap& addresses,
-        SourceSapMappedReportView& mapped) {
+    // Only the original GPU report and overflow counters authorize source
+    // mapped-array publication and subsequent Sc classification.
+    AggregateReports publish_aggregate_mapped_reports(
+        SourceSapMappedReportView& mapped,
+        const std::array<physx::PxU32,2>& counts,
+        const std::array<physx::PxU32,3>& overflow) {
         if(!aggregate_report_capacity_)
             throw std::logic_error(
                 "Original aggregate report fetch has no configured capacity");
-        std::array<physx::PxU32,2> counts{};
-        const auto view=addresses.resolve(
-            self_report_counts_device_.getDevicePtr(),sizeof(counts));
-        context.download(view.buffer,view.offset,counts.data(),sizeof(counts));
         if(counts[0]>aggregate_report_capacity_ ||
            counts[1]>aggregate_report_capacity_)
             throw std::overflow_error(
                 "Original aggregate GPU found/lost member report capacity overflow");
-        if(aggregate_pair_capacity_) {
-            // Original PxgAggregateDesc also reports persistent root-pair
-            // capacity and candidate overflows. An in-range member report
-            // count cannot make a truncated root-pair pool valid.
-            std::array<physx::PxU32,3> overflow{};
-            const auto state=addresses.resolve(
-                aggregate_pair_overflow_device_.getDevicePtr(),sizeof(overflow));
-            context.download(state.buffer,state.offset,
-                             overflow.data(),sizeof(overflow));
-            if(overflow[1u] || overflow[2u])
-                throw std::overflow_error(
-                    "Original GPU persistent aggregate-root pair capacity overflow");
-        }
+        if(aggregate_pair_capacity_ && (overflow[1u] || overflow[2u]))
+            throw std::overflow_error(
+                "Original GPU persistent aggregate-root pair capacity overflow");
         const auto found_bytes=std::size_t(counts[0])*
                                 sizeof(physx::PxgBroadPhasePair);
         const auto lost_bytes=std::size_t(counts[1])*
@@ -659,6 +684,25 @@ public:
         return {
             {aggregate_found_mapped_.begin(),aggregate_found_mapped_.size()},
             {aggregate_lost_mapped_.begin(),aggregate_lost_mapped_.size()}};
+    }
+    // Independent aggregate kernel tests fetch the original source device
+    // buffers directly; scene execution consumes the stream-owned snapshot.
+    AggregateReports fetch_aggregate_mapped_reports(
+        compute::Context& context,
+        const CudaDeviceAddressMap& addresses,
+        SourceSapMappedReportView& mapped) {
+        std::array<physx::PxU32,2> counts{};
+        const auto view=addresses.resolve(
+            self_report_counts_device_.getDevicePtr(),sizeof(counts));
+        context.download(view.buffer,view.offset,counts.data(),sizeof(counts));
+        std::array<physx::PxU32,3> overflow{};
+        if(aggregate_pair_capacity_) {
+            const auto source=addresses.resolve(
+                aggregate_pair_overflow_device_.getDevicePtr(),sizeof(overflow));
+            context.download(source.buffer,source.offset,
+                             overflow.data(),sizeof(overflow));
+        }
+        return publish_aggregate_mapped_reports(mapped,counts,overflow);
     }
 
     // Original PxgAggregateDesc pair slots and free-list are one source
@@ -1096,6 +1140,7 @@ private:
     physx::PxgCudaBuffer self_previous_sizes_device_;
     physx::PxgCudaBuffer self_found_pairs_device_,self_lost_pairs_device_;
     physx::PxgCudaBuffer self_report_counts_device_;
+    physx::PxgCudaBuffer aggregate_fetch_snapshot_device_;
     physx::PxgCudaBuffer aggregate_pair_slots_device_;
     physx::PxgCudaBuffer aggregate_pair_free_indices_device_;
     physx::PxgCudaBuffer aggregate_pair_free_list_device_;
