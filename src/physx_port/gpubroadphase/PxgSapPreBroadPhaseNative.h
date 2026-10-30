@@ -9,11 +9,13 @@
 
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "foundation/PxBounds3.h"
+#include <vector>
 
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
 
 namespace fyzz::physx_gpu {
 class SourceSapDmaNative;
+struct SourceSapUpload;
 
 // Original PxgCudaBroadPhaseSap member buffers used in preBroadPhase().
 // The enclosing PhysX broadphase remains their owner. This borrowed view
@@ -31,6 +33,14 @@ struct SourceSapPreBroadPhaseBuffers {
 // AABB-manager bitmap transfer can enter the same GPU frame.
 void validate_pre_broadphase_native(
     const physx::Bp::BroadPhaseUpdateData& update);
+
+// Append the source preBroadPhase allocations and HtoD records to the
+// current AABB-manager transfer group. The owning caller commits all
+// adjacent source uploads as one ordered native submission.
+void append_pre_broadphase_native_uploads(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapPreBroadPhaseBuffers buffers,
+    std::vector<SourceSapUpload>& uploads);
 
 // Source: PxgCudaBroadPhaseSap::preBroadPhase, including its conditional
 // bounds upload and unconditional contact-distance/group uploads.
