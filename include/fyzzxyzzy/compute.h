@@ -71,6 +71,11 @@ struct DeviceInfo {
     bool supports_int64_shader = false;
     bool supports_int64_wave = false; // 64-bit subgroup add/prefix is enabled.
     std::uint32_t subgroup_size = 0;
+    std::uint32_t min_subgroup_size = 0;
+    std::uint32_t max_subgroup_size = 0;
+    // Vulkan: enabled subgroupSizeControl and compute-stage required-size support.
+    // D3D12: SM6.6 WaveOps with an advertised selectable wave range.
+    bool supports_required_subgroup_size = false;
     std::uint32_t shader_model = 0; // D3D_SHADER_MODEL enum value, 0 on Vulkan.
 };
 
@@ -114,6 +119,10 @@ struct ComputePipelineDesc {
     std::uint32_t storage_buffer_binding_count = 0;
     std::uint32_t push_constant_bytes = 0;
     std::vector<StorageBufferViewKind> storage_buffer_views;
+    // Zero leaves the wave width implementation-selected. A nonzero value
+    // requires that physical width, not a logical-warp emulation.
+    // D3D12 shaders must also encode the same [WaveSize] in their DXIL.
+    std::uint32_t required_subgroup_size = 0;
 };
 
 // Source-derived *access intent*, not a request to change shader bindings.
