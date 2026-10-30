@@ -162,6 +162,16 @@ void run(Context& context,const SourceSapRadixNativeStage& stage,
         const auto base=axis*perAxis;
         const auto projections=read(base);
         const auto ranks=read(base+(wr?1u:6u));
+        // The last source radix pass (bits 28..31) leaves six normal
+        // keys in digit 0 and two padded sentinels in digit 15.
+        // All 31 empty partitions MUST publish zero histogram bins,
+        // even though their GPU workgroups skip shared-memory reduction.
+        const auto histogram=read(base+4u);
+        for(std::uint32_t digit=0u;digit<16u;++digit)
+            for(std::uint32_t block=0u;block<32u;++block)
+                require(histogram[digit*32u+block]==
+                    (block==0u?(digit==0u?6u:(digit==15u?2u:0u)):0u),
+                    "Original source radix emitted a nonzero empty partition or incorrect histogram");
         for(std::uint32_t i=0u;i<keys;++i) {
             require(projections[i]==expected[axis][i].first,
                     "Source radix stable projection order differs from PhysX");
