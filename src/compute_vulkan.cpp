@@ -257,6 +257,10 @@ struct Context::Impl {
     // completion and must never fail from host allocation pressure.
     std::array<CachedBatch, kMaxCachedBatches> cached_batches{};
     std::size_t cached_batch_count = 0;
+    // The synchronous source fetch reuses one completed transfer-only
+    // host-visible readback arena; it never overlaps another GPU fetch.
+    BufferId readback_staging_ = 0;
+    std::size_t readback_staging_bytes_ = 0;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
     SubmissionId next_submission = 1;
@@ -898,10 +902,17 @@ struct Context::Impl {
                 throw std::invalid_argument("Invalid Vulkan GPU readback span");
             bytes+=item.bytes;
         }
-        // A transfer-only host-visible staging root is sufficient; no
-        // descriptor slot or shader-visible storage is consumed.
-        const auto staging_id=create_buffer(
-            bytes,MemoryPlacement::HostVisible,false);
+        // The fetch is synchronous, so completed readback memory can be
+        // reused without a per-frame VkBuffer or device-memory allocation.
+        if(bytes>readback_staging_bytes_) {
+            if(readback_staging_)destroy_buffer(readback_staging_);
+            readback_staging_=0;
+            readback_staging_bytes_=0;
+            readback_staging_=create_buffer(
+                bytes,MemoryPlacement::HostVisible,false);
+            readback_staging_bytes_=bytes;
+        }
+        const auto staging_id=readback_staging_;
         bool enqueued=false;
         try {
             std::vector<BatchCommand> copies;
@@ -929,10 +940,14 @@ struct Context::Impl {
                 offset+=item.bytes;
             }
             vkUnmapMemory(device,buffer.memory);
-            destroy_buffer(staging_id);
         } catch(...) {
-            if(enqueued)retire_buffer(staging_id);
-            else destroy_buffer(staging_id);
+            if(enqueued) {
+                // The GPU still owns this arena until its outstanding
+                // source transfer completes; never recycle it early.
+                readback_staging_=0;
+                readback_staging_bytes_=0;
+                retire_buffer(staging_id);
+            }
             throw;
         }
     }
