@@ -14,6 +14,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 using namespace fyzz::compute;
@@ -40,17 +41,31 @@ void verify(Context& context,const char* transform_shader,
             const char* axis_shader,const char* contacts_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
-    const std::array<SourceScBoxTransformInputNative,4> boxes{{
+    const std::array<SourceScBoxTransformInputNative,6> boxes{{
         {1u,{0.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,3.f},0.2f},
         {6u,{1.25f,0.1f,0.f},{0.f,0.f,z,w},{1.f,1.5f,2.5f},0.3f},
         {31u,{30.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,2.f},0.1f},
-        {12u,{0.3f,0.4f,2.f},{z,0.f,0.f,w},{1.f,1.f,1.f},0.125f}
+        {12u,{0.3f,0.4f,2.f},{z,0.f,0.f,w},{1.f,1.f,1.f},0.125f},
+        {9u,{0.f,1.1f,-1.f},{0.f,z,0.f,w},{0.75f,1.7f,0.5f},0.15f},
+        {20u,{-0.1f,-0.2f,0.75f},{0.f,0.f,0.707106781f,0.707106781f},
+         {2.f,0.45f,0.8f},0.35f}
     }};
-    std::array<SourceGuBoxPairAxisNative,8> pairs{{
+    constexpr std::size_t fixed_pairs=6u;
+    std::array<SourceGuBoxPairAxisNative,
+               fixed_pairs+6u*5u*7u+2u> pairs{{
         {1u,6u,0u},{1u,6u,1u},{6u,1u,0u},
-        {1u,31u,0u},{1u,12u,0u},{6u,12u,0u},
-        {31u,31u,0u},{1u,6u,0u}
+        {1u,31u,0u},{1u,12u,0u},{6u,12u,0u}
     }};
+    constexpr std::array<std::uint32_t,6> ids{1u,6u,31u,12u,9u,20u};
+    std::size_t next=fixed_pairs;
+    for(const auto a:ids)
+        for(const auto b:ids)
+            if(a!=b)
+                for(std::uint32_t axis=0u;axis<=6u;++axis)
+                    pairs[next++]={a,b,axis};
+    pairs[next++]={31u,31u,0u};
+    pairs[next++]={1u,6u,0u};
+    require(next==pairs.size(),"Gu pair coverage fixture size mismatch");
     constexpr std::uint32_t contacts_per_pair=80u;
     for(std::uint32_t i=0u;i<pairs.size();++i) {
         pairs[i].contact_offset=i*contacts_per_pair;
@@ -59,7 +74,8 @@ void verify(Context& context,const char* transform_shader,
     constexpr std::uint32_t capacity=32u;
     std::array<std::uint32_t,pairs.size()> results{};
     std::array<SourceGuBoxPairResultNative,pairs.size()> manifolds{};
-    std::array<SourceGuBoxContactNative,pairs.size()*contacts_per_pair> gpu_contacts{};
+    std::vector<SourceGuBoxContactNative> gpu_contacts(
+        pairs.size()*contacts_per_pair);
     const std::size_t input_offset=4u;
     const std::size_t bounds_offset=input_offset+sizeof(boxes)+12u;
     const std::size_t transform_offset=bounds_offset+capacity*24u+4u;
@@ -68,7 +84,8 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t axis_offset=pair_offset+sizeof(pairs)+4u;
     const std::size_t result_offset=axis_offset+sizeof(results)+4u;
     const std::size_t contact_offset=result_offset+sizeof(manifolds)+4u;
-    const auto root=context.create_buffer(contact_offset+sizeof(gpu_contacts)+16u);
+    const auto root=context.create_buffer(
+        contact_offset+gpu_contacts.size()*sizeof(gpu_contacts[0])+16u);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
     CudaDeviceAddressMap addresses;
@@ -79,7 +96,8 @@ void verify(Context& context,const char* transform_shader,
     const auto pair_data=addresses.register_slice(root,pair_offset,sizeof(pairs));
     const auto axes=addresses.register_slice(root,axis_offset,sizeof(results));
     const auto result_data=addresses.register_slice(root,result_offset,sizeof(manifolds));
-    const auto contact_data=addresses.register_slice(root,contact_offset,sizeof(gpu_contacts));
+    const auto contact_data=addresses.register_slice(
+        root,contact_offset,gpu_contacts.size()*sizeof(gpu_contacts[0]));
     {
         SourceScBoxTransformBoundsNativeStage producer(
             context,shader(transform_shader));
@@ -101,7 +119,8 @@ void verify(Context& context,const char* transform_shader,
     }
     context.download(root,axis_offset,results.data(),sizeof(results));
     context.download(root,result_offset,manifolds.data(),sizeof(manifolds));
-    context.download(root,contact_offset,gpu_contacts.data(),sizeof(gpu_contacts));
+    context.download(root,contact_offset,gpu_contacts.data(),
+                     gpu_contacts.size()*sizeof(gpu_contacts[0]));
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
     for(const auto& box:boxes)by_id[box.element_index]=box;
     unsigned matched=0;
