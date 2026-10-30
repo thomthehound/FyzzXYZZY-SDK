@@ -31,10 +31,10 @@ void validate_pre_broadphase_native(
 
 }
 
-void pre_broadphase_native(
+void append_pre_broadphase_native_uploads(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapPreBroadPhaseBuffers buffers,
-    SourceSapDmaNative& stream) {
+    std::vector<SourceSapUpload>& uploads) {
     validate_pre_broadphase_native(update);
     const auto capacity = update.getCapacity();
     const auto bounds_bytes = capacity * sizeof(physx::PxBounds3);
@@ -54,11 +54,9 @@ void pre_broadphase_native(
     if (update.getStateChanged())
         buffers.bounds.allocate(bounds_bytes, PX_FL);
 
-    // Four consecutive upstream memcpyHtoDAsync calls are one ordered
-    // native upload group. Context snapshots the host bytes at enqueue,
-    // and its queue/fences retain staging until PhysX's fetch boundary.
-    auto& uploads=stream.upload_scratch();
-    uploads.reserve(4);
+    // Adjacent source HtoD records have no intervening GPU work.
+    // The enclosing AABB-manager pre-update owns their submission.
+    uploads.reserve(uploads.size()+4u);
     if (update.getStateChanged())
         uploads.push_back({buffers.bounds.getDevicePtr(),
                            update.getAABBs(), bounds_bytes});
@@ -69,6 +67,14 @@ void pre_broadphase_native(
     if (update.getEnvIDs())
         uploads.push_back({buffers.environment_ids.getDevicePtr(),
                            update.getEnvIDs(), env_bytes});
+}
+
+void pre_broadphase_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapPreBroadPhaseBuffers buffers,
+    SourceSapDmaNative& stream) {
+    auto& uploads=stream.upload_scratch();
+    append_pre_broadphase_native_uploads(update,buffers,uploads);
     stream.queue_uploads(uploads);
 }
 
