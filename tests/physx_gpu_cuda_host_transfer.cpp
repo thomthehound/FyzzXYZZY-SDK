@@ -1516,9 +1516,10 @@ void exercise_original_sap_source_members_native(Context& context) {
                 "Malformed preBroadPhase group array partially queued manager bitmaps");
 
         pre_update_source_sap_aabb_manager_native(first,manager,stream);
-        if(stream.submission_stats().upload_batches!=4u)
+        if(stream.submission_stats().upload_batches!=1u ||
+           stream.submission_stats().upload_spans!=9u)
             throw std::runtime_error(
-                "Original source AABB first-pass GPU transfer ordering changed");
+                "Source AABB first pass must batch the nine original HtoD spans");
         const auto gpu_manager=source_sap_aabb_descriptor_native(manager);
         auto managedMembers=source.dma_up_members(&gpu_manager,mapped);
         const auto counts=gpu_dma_up_sap_frame_native(first,managedMembers,stream);
