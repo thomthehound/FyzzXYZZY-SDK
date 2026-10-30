@@ -116,6 +116,7 @@ struct SourceSapOwnedSceneFrameNativeInputs {
     SourceSapMappedReportView& mapped_reports;
     bool abort_mode=false;
     const SourceSapAggregateStagesNative* aggregate_stages=nullptr;
+    const SourceSapGpuBoxTransformOwnersNative* gpu_box_owners=nullptr;
 };
 
 SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
