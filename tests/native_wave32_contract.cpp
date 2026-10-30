@@ -49,6 +49,29 @@ int main(int argc,char** argv) {
         catch(const std::invalid_argument&){rejected=true;}
         if(!rejected)throw std::runtime_error("Non-power-of-two wave width admitted");
 
+#ifndef FYZZXYZZY_TEST_D3D12
+        // A fixed-size request must execute with that physical width,
+        // including when it equals the device's reported default.
+        if(info.supports_required_subgroup_size) {
+            desc.required_subgroup_size=info.subgroup_size;
+            const auto native=context.create_compute_pipeline(desc);
+            std::array<std::uint32_t,4> observed{0u,0u,0u,0u};
+            const auto gpu=context.create_buffer(sizeof(observed),MemoryPlacement::DeviceLocal);
+            context.upload(gpu,0u,observed.data(),sizeof(observed));
+            const std::array<std::uint32_t,4> push{4u,0u,0u,0u};
+            context.dispatch(native,{1u,1u,1u},
+                             {{0u,gpu,0u,sizeof(observed),BufferAccess::Write}},
+                             push.data(),sizeof(push));
+            context.download(gpu,0u,observed.data(),sizeof(observed));
+            if(observed[0]!=0u || observed[1]!=info.subgroup_size ||
+               observed[2]!=0u || observed[3]!=0u)
+                throw std::runtime_error("Explicit Vulkan subgroup width was not enforced");
+            context.destroy_buffer(gpu);
+            context.destroy_compute_pipeline(native);
+            std::cout << "Explicit Vulkan subgroup width " << info.subgroup_size
+                      << " executed correctly\\n";
+        }
+#endif
         desc.required_subgroup_size=32u;
         const bool supported=info.subgroup_size==32u ||
             (info.supports_required_subgroup_size &&
