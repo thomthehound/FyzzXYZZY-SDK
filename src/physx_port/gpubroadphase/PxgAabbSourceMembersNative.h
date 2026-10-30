@@ -236,7 +236,9 @@ public:
             if(id>=std::numeric_limits<physx::PxU32>::max()/2u)
                 throw std::out_of_range(
                     "PhysX aggregate ID exceeds VolumeData encoding");
-            if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
+            if(aggregates_.size()<=id &&
+               !aggregates_.resize(2u*id+1u))
+                throw std::bad_alloc();
             if(aggregate_max_shapes_.size()<=id)
                 aggregate_max_shapes_.resize(2u*id+1u);
             if(aggregate_gpu_member_starts_.size()<=id)
@@ -1255,8 +1257,11 @@ private:
     }
     void mark_aggregate_dirty(physx::Bp::AggregateHandle id) {
         if(!dirty_aggregates_.boundedTest(id)) {
-            if(!dirty_aggregates_.growAndSet(id))throw std::bad_alloc();
-            dirty_aggregate_indices_.pushBack(id);
+            if(!dirty_aggregates_.growAndReset(id))
+                throw std::bad_alloc();
+            if(!dirty_aggregate_indices_.pushBack(id))
+                throw std::bad_alloc();
+            dirty_aggregates_.set(id);
         }
     }
 
