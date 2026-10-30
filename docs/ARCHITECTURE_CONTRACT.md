@@ -58,13 +58,12 @@ does not mean a native FyzzXYZZY scene is executing it**. Keep the reference
 PhysX CPU baseline independent; experimental `world_vulkan` and `*_arena`
 demonstrations are not substitutes for integrated production physics.
 
-Track exact implementation gates and known absent connections. In particular,
-[GPU broadphase G3](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/101)
-is **not complete** until a FyzzXYZZY-owned native scene and task graph
-execute source-derived GPU SAP on supported backends and publish correct
-multi-frame found/lost pair state to native narrowphase and CPU dynamics.
-A modified `PxScene`, a reference PhysX scheduler, or an isolated GPU
-fixture cannot satisfy this gate.
+Track the exact production boundary and absent connections against the
+[active capability roadmap](ROADMAP.md). The admitted native GPU broadphase
+now publishes source-derived multi-frame found/lost pairs into native
+Sc/PCM/Dy on Vulkan and D3D12; GPU narrowphase and rigid dynamics are not
+yet integrated. A separate reference scene, test-only GPU fixture, or
+independent simulation scheduler cannot substitute for either capability.
 
 ### Source fidelity is a release criterion, not just an intent
 
