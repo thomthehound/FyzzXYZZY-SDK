@@ -330,10 +330,73 @@ void test_source_scene_boundary() {
             lost[0]==native::Pair{9u,11u},
             "Rejected source lost handle partially published Sc pair reports");
 }
+
+void test_gpu_box_records() {
+    std::array<physx::PxBounds3,40> bounds{};
+    for(auto& b:bounds)b=physx::PxBounds3::empty();
+    std::array<physx::PxReal,40> offsets{};
+    std::array<physx::Bp::FilterGroup::Enum,40> groups{};
+    groups.fill(physx::Bp::FilterGroup::eINVALID);
+    const SourceSapSceneBounds arrays{bounds,offsets,groups};
+    SourceSapSceneBoundsScratch scratch;
+    physx::Bp::BpFilter filter(false,false);
+    constexpr float rotation=0.7071067811865476f;
+    std::array<native::GpuBroadphaseBox,2> boxes{{
+        {17u,{3.f,4.f,5.f},{2.f,1.f,3.f},
+            {0.f,0.f,rotation,rotation},0.25f,
+            native::GpuBroadphaseBox::Motion::Dynamic},
+        {9u,{-2.f,0.f,1.f},{1.f,2.f,1.f},
+            {},0.125f,native::GpuBroadphaseBox::Motion::Static}
+    }};
+    const std::array<physx::Bp::ShapeHandle,2> handles{36u,2u};
+    const std::array<physx::Bp::ShapeHandle,2> created{2u,36u};
+    std::vector<SourceScBoxTransformInputNative> records;
+    const auto initial=prepare_source_sap_scene_update(
+        boxes,handles,arrays,{created,{},{}} ,filter,true,true,
+        scratch,true,&records);
+    require(initial.getNumCreatedHandles()==2u &&
+            records.size()==2u &&
+            records[0].element_index==36u &&
+            records[1].element_index==2u &&
+            records[0].position[0]==3.f &&
+            records[0].orientation[2]==rotation &&
+            records[0].orientation[3]==rotation &&
+            records[0].half_extents[2]==3.f &&
+            bounds[36].isEmpty() && bounds[2].isEmpty(),
+            "GPU source box producer changed host AABB or lost original element index");
+
+    boxes[0].position.x=7.f;
+    boxes[1].position.x=-30.f;
+    const std::array<physx::PxU32,2> changed{0u,1u<<4u};
+    (void)prepare_source_sap_scene_update(
+        boxes,handles,arrays,{{},{},{},changed},filter,true,true,
+        scratch,true,&records);
+    require(records.size()==1u &&
+            records[0].element_index==36u &&
+            records[0].position[0]==7.f &&
+            bounds[36].isEmpty() && bounds[2].isEmpty(),
+            "GPU source changed-handle bitmap staged an unchanged shape");
+    (void)prepare_source_sap_scene_update(
+        boxes,handles,arrays,{{},{},{}},filter,false,false,
+        scratch,true,&records);
+    require(records.empty() && bounds[36].isEmpty(),
+            "Quiet GPU source frame published redundant box transforms");
+
+    boxes[1].half_extents.x=-1.f;
+    bool rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            boxes,handles,arrays,{created,{},{}} ,filter,true,true,
+            scratch,true,&records);
+    }catch(const std::invalid_argument&){rejected=true;}
+    require(rejected && records.empty() && bounds[2].isEmpty(),
+            "Invalid GPU shape input partially published box transforms");
+}
 }
 int main(){
     try{
         test_source_scene_boundary();
+        test_gpu_box_records();
         std::cout<<"Original SAP scene AABB and report boundary PASS\n";
     }catch(const std::exception& e){
         std::cerr<<"Original SAP scene boundary FAILED: "<<e.what()<<'\n';
