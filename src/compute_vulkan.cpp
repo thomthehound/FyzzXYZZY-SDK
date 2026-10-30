@@ -40,9 +40,11 @@ VkInstance create_instance() {
         vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
     if (getVersion)
         require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
-    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_2
-        ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
-            ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0);
+    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_4
+        ? VK_API_VERSION_1_4 : (runtimeVersion >= VK_API_VERSION_1_3
+            ? VK_API_VERSION_1_3 : (runtimeVersion >= VK_API_VERSION_1_2
+                ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
+                    ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0)));
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -113,6 +115,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             info.max_storage_buffer_range = limits.maxStorageBufferRange;
             info.storage_buffer_offset_alignment = limits.minStorageBufferOffsetAlignment;
             info.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
+            bool has_compute_required_size = false;
             // Vulkan 1.0 loader/device pairs have no core subgroup
             // properties. Keep their old compute path and disable the
             // native-wave optimization instead of rejecting the context.
@@ -121,14 +124,30 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             if (getProperties2 && properties.apiVersion >= VK_API_VERSION_1_1) {
                 VkPhysicalDeviceSubgroupProperties subgroup{};
                 subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+                VkPhysicalDeviceSubgroupSizeControlProperties size_properties{};
+                if (properties.apiVersion >= VK_API_VERSION_1_3) {
+                    size_properties.sType =
+                        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+                    subgroup.pNext = &size_properties;
+                }
                 VkPhysicalDeviceProperties2 queried{};
                 queried.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
                 queried.pNext = &subgroup;
                 getProperties2(physical, &queried);
                 info.subgroup_size = subgroup.subgroupSize;
+                info.min_subgroup_size = subgroup.subgroupSize;
+                info.max_subgroup_size = subgroup.subgroupSize;
                 info.supports_wave_arithmetic =
                     (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
                     (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+                has_compute_required_size =
+                    properties.apiVersion >= VK_API_VERSION_1_3 &&
+                    (size_properties.requiredSubgroupSizeStages &
+                     VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+                if (has_compute_required_size) {
+                    info.min_subgroup_size = size_properties.minSubgroupSize;
+                    info.max_subgroup_size = size_properties.maxSubgroupSize;
+                }
             }
             // Query shader integer and extended subgroup types once per
             // physical device. Only Vulkan >=1.2 offers the core 64-bit
@@ -143,6 +162,12 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                     VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
                     extended.sType =
                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
+                    VkPhysicalDeviceSubgroupSizeControlFeatures size_features{};
+                    if (properties.apiVersion >= VK_API_VERSION_1_3) {
+                        size_features.sType =
+                            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+                        extended.pNext = &size_features;
+                    }
                     VkPhysicalDeviceFeatures2 features{};
                     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                     features.pNext = &extended;
@@ -151,6 +176,12 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                     info.supports_int64_wave = info.supports_int64_shader &&
                         info.supports_wave_arithmetic &&
                         extended.shaderSubgroupExtendedTypes == VK_TRUE;
+                    info.supports_required_subgroup_size =
+                        properties.apiVersion >= VK_API_VERSION_1_3 &&
+                        size_features.subgroupSizeControl == VK_TRUE &&
+                        has_compute_required_size &&
+                        info.min_subgroup_size != 0u &&
+                        info.min_subgroup_size <= info.max_subgroup_size;
                 }
             }
             for (std::size_t j = 0; j < 3; ++j) {
@@ -312,6 +343,16 @@ struct Context::Impl {
                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES;
                 extended.shaderSubgroupExtendedTypes = VK_TRUE;
                 create.pNext = &extended;
+            }
+            VkPhysicalDeviceSubgroupSizeControlFeatures size_control{};
+            if (info.supports_required_subgroup_size) {
+                size_control.sType =
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+                size_control.subgroupSizeControl = VK_TRUE;
+                if (info.supports_int64_wave)
+                    extended.pNext = &size_control;
+                else
+                    create.pNext = &size_control;
             }
             require(vkCreateDevice(physical, &create, nullptr, &device), "vkCreateDevice");
             vkGetDeviceQueue(device, selected.queue_family, 0, &queue);
@@ -1072,6 +1113,26 @@ struct Context::Impl {
             stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
             stage.module = shader;
             stage.pName = desc.shader.entry_point.c_str();
+            VkPipelineShaderStageRequiredSubgroupSizeCreateInfo required_size{};
+            if (const auto width = desc.required_subgroup_size) {
+                // SPIR-V 1.6 can vary subgroup size without the varying-size
+                // pipeline flag. Only an explicit required-size stage contract
+                // or an older fixed-default shader guarantees physical width.
+                const bool fixed_default =
+                    width == info.subgroup_size && words[1] < 0x00010600u;
+                if ((width & (width-1u)) != 0u ||
+                    width < info.min_subgroup_size ||
+                    width > info.max_subgroup_size ||
+                    (!info.supports_required_subgroup_size && !fixed_default))
+                    throw std::invalid_argument(
+                        "Required Vulkan subgroup width is unsupported by this device");
+                if (info.supports_required_subgroup_size) {
+                    required_size.sType =
+                        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+                    required_size.requiredSubgroupSize = width;
+                    stage.pNext = &required_size;
+                }
+            }
 
             VkComputePipelineCreateInfo create{};
             create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
