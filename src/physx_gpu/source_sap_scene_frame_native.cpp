@@ -35,7 +35,7 @@ namespace {
 // Queue source SAP and aggregate work before blocking Sc report
 // publication. Their device allocations remain owned through fetch.
 SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
-    SourceSapSceneFrameNativeMembers members,
+    const SourceSapSceneFrameNativeMembers& members,
     SourceSapDmaNative& stream,
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
@@ -162,7 +162,7 @@ SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
 // waits only after all dependent GPU work on the source stream has been
 // queued; the source frame's AABB and SAP allocations remain live here.
 SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
-    SourceSapSceneFrameNativeMembers members,
+    const SourceSapSceneFrameNativeMembers& members,
     const SourceSapUpdateAdmission& admission,
     SourceSapDmaNative& stream,
     const CudaDeviceAddressMap& addresses,
