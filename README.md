@@ -13,29 +13,36 @@ Godot 4.7 is the first target consumer and acceptance harness, **not a core
 dependency**. The SDK is intended to support Linux, Windows, native C++
 applications and other host engines.
 
-The SDK provides a source-derived native CPU rigid scene for admitted box
-and plane contacts, PCM narrowphase, rigid PGS and island lifecycle.
-The standalone `World` constructor retains the transitional CPU reference
-default until the N4 migration boundary; select `ExecutionMode::NativeCpu`
-to use the independent engine. The Godot 4.7 GDExtension selects NativeCpu
-explicitly and exercises its rigid scene in headless acceptance.
-The portable GPU physics scene remains unimplemented.
-Linux and Windows builds are covered by GitHub Actions.
+The native CPU scene implements an admitted box/plane rigid-body subset
+with source-derived SAP, PCM narrowphase, island/task ownership, Dy PGS
+dynamics, materials, constraints and contact reporting. This is not complete
+PhysX CPU feature coverage.
 
-The optional standalone Vulkan compute backend supports device and buffer
-management, transfers, SPIR-V dispatch, ordered batches and submission
-synchronization. The GPU translation now includes independently tested PhysX SAP broadphase
-kernels and source-ordered stage chains, with known high-priority initial
-CUDA-to-HLSL performance regressions remediated. Integration into FyzzXYZZY's **own** scene and task graph, native GPU
-execution, and hardware performance acceptance remain pending.
-Its independent floor/contact demonstration is opt-in only
-(`FYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON`) and does not constitute a
-PhysX GPU port. Production GPU physics requires porting PhysX's original
-algorithms, GPU contexts, scene orchestration and dataflow.
+The native GPU World now integrates source-derived AABB/SAP and aggregate
+broadphase on **Vulkan and D3D12** with persistent frame histories, found/lost
+pair publication and the same native Sc/PCM/Dy scene. This is a **hybrid**
+pipeline: narrowphase and rigid solving remain on the CPU. GPU narrowphase,
+GPU dynamics, broader geometry, articulations and deformables are not yet
+production features.
+
+Use `ExecutionMode::NativeCpu` for the independent CPU scene. The ordinary
+`World` default still uses the optional reference CPU backend, and direct
+`WorldOptions::NativePortableGpu` construction is not admitted. The explicit
+`create_native_gpu_world(...)` factory in `fyzzxyzzy/native_gpu_world.h`
+constructs the source-derived GPU-broadphase hybrid with compiled shader
+bundles. There is no implicit reference-physics or CPU-SAP fallback in that
+mode. The Godot adapter currently exercises native CPU execution.
+
+Both native GPU backends have reference-free SDK builds and device-executed
+conformance coverage. CI software Vulkan and Windows D3D12 WARP establish
+functional/API behavior, not representative hardware performance.
+
+**[Current capabilities and implementation priorities](docs/ROADMAP.md)**
+is the authoritative roadmap. Older numbered migration and GPU execution
+gates are historical source-intake records, not parallel milestone programs.
 
 - [Native engine ownership and migration plan](docs/NATIVE_ENGINE_MIGRATION.md)
 - [SDK-wide enforced architecture contract](docs/ARCHITECTURE_CONTRACT.md)
-- [Development roadmap](docs/ROADMAP.md)
 - [CPU SDK build and testing](docs/BUILDING.md)
 - [Portable compute backend](docs/COMPUTE.md)
 - [PhysX GPU port architecture and traceability](docs/PHYSX_GPU_PORT.md)
