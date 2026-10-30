@@ -347,6 +347,12 @@ public:
                     std::numeric_limits<BodyId>::max()))
             throw std::logic_error(
                 "Original aggregate member handle has a different live or retired owner");
+        if(!dirty_aggregate_indices_.reserve(
+               dirty_aggregate_indices_.size()+1u) ||
+           (!canceled_retirement &&
+            !added_aggregate_members_.reserve(
+                added_aggregate_members_.size()+1u)))
+            throw std::bad_alloc();
         if(!aggregate.size) {
             if(removed_.boundedTest(aggregate.mIndex))
                 removed_.boundedReset(aggregate.mIndex);
@@ -374,8 +380,8 @@ public:
                 throw std::logic_error(
                     "Original aggregate pending retirement disappeared");
             if(!changed_.growAndSet(handle))throw std::bad_alloc();
-        }else
-            added_aggregate_members_.pushBack(handle);
+        }else if(!added_aggregate_members_.pushBack(handle))
+            throw std::bad_alloc();
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
         if(first_member)++num_nonempty_aggregates_;
@@ -411,6 +417,16 @@ public:
         while(i<aggregate.size && aggregate.updateBoundIndices[i]!=handle)++i;
         if(i==aggregate.size)throw std::logic_error(
             "Source aggregate VolumeData differs from member array");
+        const bool unpublished_candidate=
+            std::find(added_aggregate_members_.begin(),
+                      added_aggregate_members_.end(),handle)!=
+                added_aggregate_members_.end();
+        if(!dirty_aggregate_indices_.reserve(
+               dirty_aggregate_indices_.size()+1u) ||
+           (!unpublished_candidate &&
+            !removed_aggregate_members_.reserve(
+                removed_aggregate_members_.size()+1u)))
+            throw std::bad_alloc();
         aggregate.updateBoundIndices[i]=
             aggregate.updateBoundIndices[--aggregate.size];
         if(!aggregate.size) {
@@ -427,8 +443,8 @@ public:
         // otherwise the old and new GPU integer AABBs must be retired.
         const bool unpublished=
             added_aggregate_members_.findAndReplaceWithLast(handle);
-        if(!unpublished)
-            removed_aggregate_members_.pushBack(handle);
+        if(!unpublished && !removed_aggregate_members_.pushBack(handle))
+            throw std::bad_alloc();
         changed_.boundedReset(handle);
         aggregated_.boundedReset(handle);
         groups_[handle]=physx::Bp::FilterGroup::eINVALID;
@@ -460,6 +476,9 @@ public:
         // history can reuse this range only after source fetch completes.
         free_aggregate_member_slices_.reserve(
             free_aggregate_member_slices_.size()+1u);
+        if(!dirty_aggregate_indices_.reserve(
+            dirty_aggregate_indices_.size()+1u))
+            throw std::bad_alloc();
         const auto root=aggregate.mIndex;
         added_.boundedReset(root);
         changed_.boundedReset(root);
@@ -1143,7 +1162,8 @@ public:
                 volumes_[handle].reset();
             } else if(volumes_[handle].isAggregated()) {
                 if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
-                added_aggregate_members_.pushBack(handle);
+                if(!added_aggregate_members_.pushBack(handle))
+                    throw std::bad_alloc();
             } else if(!volumes_[handle].isAggregate()) {
                 if(!added_.growAndSet(handle))throw std::bad_alloc();
             }
