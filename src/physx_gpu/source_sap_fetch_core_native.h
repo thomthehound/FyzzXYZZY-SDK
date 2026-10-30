@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <utility>
 
@@ -65,7 +66,8 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
     RotateHistories&& rotate_histories,
     SourceSapMappedReportView* mapped_roots,
     PublishActorPairs&& publish_actor_pairs,
-    const physx::PxgBroadPhaseDesc* source_snapshot=nullptr) {
+    const physx::PxgBroadPhaseDesc* source_snapshot=nullptr,
+    std::span<const SourceSapMappedReportSpan> additional_reports={}) {
 
     const auto desc_source = addresses.resolve(
         descriptor_address, sizeof(physx::PxgBroadPhaseDesc));
@@ -142,12 +144,21 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
         // fence. publish_at_fetch() performs no second wait if all source
         // tokens have been reaped; direct mappings need NO CPU copy.
         // The original staged fallback copies only these consumed bytes.
-        if(found_bytes || lost_bytes) {
-            const std::array<SourceSapMappedReportSpan,2> reports{{
-                {found.data,found_bytes},{lost.data,lost_bytes}}};
-            mapped_roots->publish_batch_at_fetch(reports);
-        }
+        if(additional_reports.size()>2u)
+            throw std::invalid_argument("Source fetch supports at most two aggregate reports");
+        std::array<SourceSapMappedReportSpan,4> reports{{
+            {found.data,found_bytes},{lost.data,lost_bytes},{},{}
+        }};
+        std::copy(additional_reports.begin(),additional_reports.end(),
+                  reports.begin()+2u);
+        const auto count=2u+additional_reports.size();
+        if(std::any_of(reports.begin(),reports.begin()+count,
+                       [](const auto& report){return report.bytes!=0u;}))
+            mapped_roots->publish_batch_at_fetch(
+                std::span<const SourceSapMappedReportSpan>(reports.data(),count));
     } else {
+        if(!additional_reports.empty())
+            throw std::invalid_argument("Aggregate reports require mapped source allocation");
         // Legacy caller-owned PhysX destinations (not mapped by callback):
         // preserve the original guarded GPU-to-CPU result transfer.
         if (found_bytes)

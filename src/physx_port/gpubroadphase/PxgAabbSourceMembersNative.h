@@ -663,10 +663,11 @@ public:
     struct AggregateReports {
         std::span<const physx::PxgBroadPhasePair> found,lost;
     };
-    // Only the original GPU report and overflow counters authorize source
-    // mapped-array publication and subsequent Sc classification.
-    AggregateReports publish_aggregate_mapped_reports(
-        SourceSapMappedReportView& mapped,
+    // Validate source GPU report capacity before any actor or aggregate
+    // payload becomes visible to Sc. Aggregate report arrays remain owned
+    // by the original mapped PhysX heap.
+    std::array<SourceSapMappedReportSpan,2>
+    validated_aggregate_report_spans(
         const std::array<physx::PxU32,2>& counts,
         const std::array<physx::PxU32,3>& overflow) {
         if(!aggregate_report_capacity_)
@@ -679,21 +680,28 @@ public:
         if(aggregate_pair_capacity_ && (overflow[1u] || overflow[2u]))
             throw std::overflow_error(
                 "Original GPU persistent aggregate-root pair capacity overflow");
-        const auto found_bytes=std::size_t(counts[0])*
-                                sizeof(physx::PxgBroadPhasePair);
-        const auto lost_bytes=std::size_t(counts[1])*
-                               sizeof(physx::PxgBroadPhasePair);
-        if(found_bytes || lost_bytes) {
-            const std::array<SourceSapMappedReportSpan,2> reports{{
-                {aggregate_found_mapped_.begin(),found_bytes},
-                {aggregate_lost_mapped_.begin(),lost_bytes}}};
-            mapped.publish_batch_at_fetch(reports);
-        }
+        return {{
+            {aggregate_found_mapped_.begin(),
+             std::size_t(counts[0])*sizeof(physx::PxgBroadPhasePair)},
+            {aggregate_lost_mapped_.begin(),
+             std::size_t(counts[1])*sizeof(physx::PxgBroadPhasePair)}}};
+    }
+    AggregateReports complete_aggregate_mapped_reports(
+        const std::array<physx::PxU32,2>& counts) {
         aggregate_found_mapped_.forceSize_Unsafe(counts[0]);
         aggregate_lost_mapped_.forceSize_Unsafe(counts[1]);
         return {
             {aggregate_found_mapped_.begin(),aggregate_found_mapped_.size()},
             {aggregate_lost_mapped_.begin(),aggregate_lost_mapped_.size()}};
+    }
+    AggregateReports publish_aggregate_mapped_reports(
+        SourceSapMappedReportView& mapped,
+        const std::array<physx::PxU32,2>& counts,
+        const std::array<physx::PxU32,3>& overflow) {
+        const auto spans=validated_aggregate_report_spans(counts,overflow);
+        if(spans[0].bytes || spans[1].bytes)
+            mapped.publish_batch_at_fetch(spans);
+        return complete_aggregate_mapped_reports(counts);
     }
     // Independent aggregate kernel tests fetch the original source device
     // buffers directly; scene execution consumes the stream-owned snapshot.
