@@ -170,6 +170,17 @@ lanes, divergence, barriers, atomics, reductions, shared memory, and
 inter-workgroup ordering. Never substitute an apparently analogous shuffle
 without proving the original active-lane contract.
 
+The native compute pipeline now carries an explicit physical subgroup-width
+requirement for warp-coupled kernels. The Vulkan backend enables and
+requests selectable subgroup size only where available, or uses the fixed
+subgroup size when it already matches. D3D12 checks the wave-size range
+and requires the matching wave-size annotation in compiled SM6.6 DXIL.
+Both backends reject incompatible requirements at pipeline creation.
+Width-agnostic GPU algorithms retain their native-width execution and
+are not automatically pinned to 32. A wave32 execution test is a first
+gate, not a substitute for divergence, mask and synchronization parity
+or real GPU performance measurements.
+
 Relevant external feature mechanisms are
 [Vulkan subgroup-size control](https://docs.vulkan.org/guide/latest/subgroups.html)
 and [D3D12/HLSL Shader Model 6.6 WaveSize](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_WaveSize.html).
