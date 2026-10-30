@@ -1814,9 +1814,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Vulkan compute/memory/dispatch tests remain usable without it.
     option(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST
       "Enable PhysX GPU AABB HLSL/SPIR-V acceptance test (requires DXC)" OFF)
-    if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST)
-      # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
-      # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
+    if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST OR FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
       find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
@@ -1836,6 +1834,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       add_test(NAME fyzzxyzzy_wave32_contract
         COMMAND fyzzxyzzy_wave32_contract "${FYZZXYZZY_WAVE32_SPV}")
 
+    endif()
+    if(FYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST)
+      # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
+      # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
+      find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
       set(FYZZXYZZY_MULTI_RESOURCE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
       add_custom_command(
@@ -4916,7 +4919,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
   option(FYZZXYZZY_BUILD_D3D12_AABB_TEST
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
-  if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
+  if(BUILD_TESTING AND (FYZZXYZZY_BUILD_D3D12_AABB_TEST OR FYZZXYZZY_BUILD_SOURCE_GPU_TESTS))
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_WAVE32_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.dxil")
@@ -4938,6 +4941,9 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_wave32_contract_d3d12
       COMMAND fyzzxyzzy_wave32_contract_d3d12 "${FYZZXYZZY_WAVE32_DXIL}")
 
+  endif()
+  if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
+    find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_MULTI_RESOURCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.dxil")
     add_custom_command(
