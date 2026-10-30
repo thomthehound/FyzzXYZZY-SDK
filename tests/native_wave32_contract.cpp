@@ -73,10 +73,15 @@ int main(int argc,char** argv) {
         }
 #endif
         desc.required_subgroup_size=32u;
+#ifdef FYZZXYZZY_TEST_D3D12
+        const bool supported=info.supports_required_subgroup_size &&
+            info.min_subgroup_size<=32u && info.max_subgroup_size>=32u;
+#else
         const bool supported=info.subgroup_size==32u ||
             (info.supports_required_subgroup_size &&
              info.min_subgroup_size<=32u &&
              info.max_subgroup_size>=32u);
+#endif
         if(!supported) {
             rejected=false;
             try {(void)context.create_compute_pipeline(desc);}
