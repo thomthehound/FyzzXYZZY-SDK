@@ -83,8 +83,13 @@ public:
 		// PT: if it fails, optionally fallback to regular allocator
 		if(mFlags & PxU32(Flag::eFALLBACK))
 		{
-			mFlags &= PxU32(Flag::eFALLBACK); // pinned-state bit = 0 -> non-pinned allocation
-			return PxReflectionAllocator<T>::allocate(size, file, line);
+			// The current array still owns its previous pinned allocation
+			// until the replacement succeeds. Preserve its deallocation
+			// route when the fallback returns null or throws.
+			void* fallback = PxReflectionAllocator<T>::allocate(size, file, line);
+			if(fallback)
+				mFlags &= PxU32(Flag::eFALLBACK);
+			return fallback;
 		}
 
 		// No fallback requested, forwarding pinned OOM
