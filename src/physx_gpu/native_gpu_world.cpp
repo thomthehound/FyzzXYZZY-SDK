@@ -54,6 +54,7 @@ constexpr std::array<std::string_view,
     "IncrementalCountSecond",
     "IncrementalPairs",
     "ClearNewFlags",
+    "BoxTransformBounds",
 }};
 constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuAggregateStage::Count)> aggregate_stage_names{{
