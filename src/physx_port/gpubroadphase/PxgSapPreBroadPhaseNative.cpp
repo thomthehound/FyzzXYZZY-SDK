@@ -129,7 +129,7 @@ void append_pre_broadphase_native_uploads(
         buffers.bounds.getSize()>=bounds_bytes;
     // Compute the interval before changing any source heap allocation.
     // An uninitialized or grown buffer still needs the complete upload.
-    const auto dirty_interval=bounds_resident && !changed_handles.empty()
+    const auto dirty_interval=bounds_resident && source_owned_changes
         ? contiguous_dirty_bounds(update,changed_handles)
         : std::nullopt;
 
@@ -147,7 +147,7 @@ void append_pre_broadphase_native_uploads(
     // The enclosing AABB-manager pre-update owns their submission.
     uploads.reserve(uploads.size()+4u);
     if(update.getStateChanged()) {
-        if(!bounds_resident || changed_handles.empty() || !dirty_interval) {
+        if(!bounds_resident || !source_owned_changes || !dirty_interval) {
             uploads.push_back({buffers.bounds.getDevicePtr(),
                                update.getAABBs(),bounds_bytes});
         }else if(dirty_interval->first!=capacity) {
