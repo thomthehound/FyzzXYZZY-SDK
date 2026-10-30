@@ -971,9 +971,22 @@ public:
         std::span<const native::GpuBroadphaseBox> live,
         std::span<const physx::Bp::ShapeHandle> handles,
         const physx::Bp::BpFilter& filter,
-        bool gpu_bounds = false) {
+        bool gpu_bounds = false,
+        bool republish_all_gpu_bounds = false) {
         box_transform_records_.clear();
         auto* records=gpu_bounds ? &box_transform_records_ : nullptr;
+        const auto republish_all=[&] {
+            if(!republish_all_gpu_bounds)return;
+            box_transform_records_.clear();
+            box_transform_records_.reserve(live.size());
+            for(std::size_t i=0;i<live.size();++i) {
+                const auto& b=live[i];
+                box_transform_records_.push_back({handles[i],
+                    {b.position.x,b.position.y,b.position.z},
+                    {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
+                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},0u});
+            }
+        };
         if(live.size()!=handles.size())
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
@@ -1045,6 +1058,7 @@ public:
                 gpu_state_changed_||aggregate_gpu_work_pending());
             validate_source_sap_volume_actor_lifetime_native(
                 actor_lifetime(),update,true);
+            republish_all();
             return update;
         }
         // Sc owns actor identity, while PxgAABBManager owns the volume
@@ -1061,6 +1075,7 @@ public:
             scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,records);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
+        republish_all();
         return update;
     }
 
