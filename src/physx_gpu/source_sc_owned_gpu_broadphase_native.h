@@ -77,7 +77,8 @@ public:
           box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
           box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
           box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
-          box_owners_{box_transforms_,box_input_,box_cache_},
+          box_geometry_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          box_owners_{box_transforms_,box_input_,box_cache_,box_geometry_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -134,6 +135,7 @@ public:
         (void)stream_.finish_shutdown();
         box_input_.deallocate();
         box_cache_.deallocate();
+        box_geometry_.deallocate();
         aabb_.reset();
         sap_.reset();
         manager_->flushDeferredDeallocs();
@@ -209,7 +211,7 @@ private:
 
     AabbEncodingStage encoding_;
     SourceScBoxTransformBoundsNativeStage box_transforms_;
-    physx::PxgCudaBuffer box_input_,box_cache_;
+    physx::PxgCudaBuffer box_input_,box_cache_,box_geometry_;
     SourceSapGpuBoxTransformOwnersNative box_owners_;
     CudaAabbLaunchLowering lowering_;
     SourceSapCreatedNativeStage created_;

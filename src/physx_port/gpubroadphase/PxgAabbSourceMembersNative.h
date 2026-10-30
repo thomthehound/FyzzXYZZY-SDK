@@ -984,7 +984,8 @@ public:
                 box_transform_records_.push_back({handles[i],
                     {b.position.x,b.position.y,b.position.z},
                     {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
-                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},0u});
+                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},
+                    b.contact_offset});
             }
         };
         if(live.size()!=handles.size())

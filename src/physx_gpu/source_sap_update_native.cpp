@@ -209,6 +209,7 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
             stream,gpu_box_transforms->addresses,
             gpu_box_transforms->input_device.getDevicePtr(),gpu_bounds,
             gpu_box_transforms->cached_transforms.getDevicePtr(),
+            gpu_box_transforms->cached_geometry.getDevicePtr(),
             static_cast<std::uint32_t>(gpu_box_transforms->changed.size()),
             update.getCapacity());
     }

@@ -318,7 +318,7 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         const auto& owner=*inputs.gpu_box_owners;
         gpu_boxes.emplace(SourceSapGpuBoxTransformsNative{
             owner.stage,addresses,owner.input_device,owner.cached_transforms,
-            aabb.box_transform_records()});
+            owner.cached_geometry,aabb.box_transform_records()});
     }
     const auto lifetime=aabb.actor_lifetime();
     // SourceSapSceneFrameNativeMembers borrows this view by reference;

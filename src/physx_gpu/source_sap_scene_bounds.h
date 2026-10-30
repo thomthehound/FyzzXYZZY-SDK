@@ -209,7 +209,8 @@ inline void write_source_sap_scene_bounds(
             gpu_records->push_back({handle,
                 {b.position.x,b.position.y,b.position.z},
                 {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
-                {b.half_extents.x,b.half_extents.y,b.half_extents.z},0u});
+                {b.half_extents.x,b.half_extents.y,b.half_extents.z},
+                b.contact_offset});
         }else {
             output.bounds[handle]=scratch.prepared_bounds[i];
         }
