@@ -155,9 +155,13 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     stream.wait_at_fetch();
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
-    if(members.aabb_manager.has_aggregates && !members.abort_mode)
+    std::array<SourceSapMappedReportSpan,2> aggregate_payloads{};
+    if(members.aabb_manager.has_aggregates && !members.abort_mode) {
         aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
             context,addresses);
+        aggregate_payloads=members.aabb_owner->validated_aggregate_report_spans(
+            aggregate_snapshot->counts,aggregate_snapshot->pair_overflow);
+    }
 
     // Complete both source bitmap D32 view validations before reporting
     // success to Sc. Reserve the following GPU command queue now so
@@ -212,10 +216,7 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
                 // stream. Fetch both only after SAP's own count/overflow
                 // checks and before committing either Sc destination.
                 const auto reports=members.aabb_owner->
-                    publish_aggregate_mapped_reports(
-                        *members.mapped_reports,
-                        aggregate_snapshot->counts,
-                        aggregate_snapshot->pair_overflow);
+                    complete_aggregate_mapped_reports(aggregate_snapshot->counts);
                 aggregate_found=reports.found;
                 aggregate_lost=reports.lost;
                 for(const auto& pair:aggregate_found) {
@@ -234,7 +235,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
                 source_found,source_lost,aggregate_found,aggregate_lost,
                 members.volume_to_actor,members.found,members.lost);
         },
-        aggregate_snapshot ? &aggregate_snapshot->broadphase : nullptr);
+        aggregate_snapshot ? &aggregate_snapshot->broadphase : nullptr,
+        aggregate_snapshot
+            ? std::span<const SourceSapMappedReportSpan>(aggregate_payloads)
+            : std::span<const SourceSapMappedReportSpan>{});
     // Source processFoundPairs/processLostPairs clear added/removed maps
     // only after the completed GPU report and Sc admission. These D32
     // dispatches are enqueued on the SAME stream; no fetch-time host wait.
