@@ -416,8 +416,11 @@ void verify_source_gpu_body_shape_frame_handoff(
             backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest)));
     const auto rotating=scene.add_dynamic_box(
         {0.15f,0.15f,1.0f},{0.0f,0.0f,0.0f},1.0f);
-    const auto obstacle=scene.add_static_box(
-        {0.2f,0.2f,0.2f},{0.95f,0.0f,0.0f});
+    const auto obstacle=scene.add_dynamic_box(
+        {0.2f,0.2f,0.2f},{0.95f,0.0f,0.0f},1.0f);
+    fyzz::RigidBodyDynamics obstacle_dynamics{};
+    obstacle_dynamics.gravity_enabled=false;
+    scene.set_dynamics(obstacle,obstacle_dynamics);
     const fyzz::native::Pair overlap{
         std::min(rotating,obstacle),std::max(rotating,obstacle)};
     const auto has_pair=[&](std::span<const fyzz::native::Pair> pairs) {
