@@ -309,6 +309,8 @@ jobs:
           New-ItemProperty -Path $key -Name DumpCount -PropertyType DWord -Value 2 -Force | Out-Null
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
+      - name: Stress native scene worker and teardown
+        run: ctest --test-dir build -C Release -R '^fyzzxyzzy_native_scene_smoke$' --repeat until-fail:32 --output-on-failure
       - name: Preserve native scene crash dumps
         if: failure()
         uses: actions/upload-artifact@v4

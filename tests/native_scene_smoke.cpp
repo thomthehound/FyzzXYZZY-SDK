@@ -11871,7 +11871,7 @@ void verify_source_spatial_velocity_mods() {
     }
 }
 
-int run_native_scene_smoke() {
+void verify_smoke_pair_admission_and_retirement() {
     using fyzz::native::Scene;
     Scene scene, independent;
     auto wall = scene.add_static_box({1,1,1}, {0,0,0});
@@ -12021,6 +12021,10 @@ int run_native_scene_smoke() {
                handles.active_contact_edge_count()==1,
                "Retired contact edge handle was not returned to source pool");
     }
+}
+
+void verify_smoke_island_and_broadphase_scenarios() {
+    using fyzz::native::Scene;
 
     // PxsSimpleIslandManager's two distinct IslandSim graphs, for the
     // currently admitted all-awake rigid-body subset. Broadphase
@@ -12974,6 +12978,10 @@ int run_native_scene_smoke() {
                static_world.solver_partition_count()==1,
                "Static world island split changed conflict-free solver partitioning");
     }
+}
+
+void verify_smoke_contact_manifolds_and_partitioning() {
+    using fyzz::native::Scene;
 
     // The same scene must distinguish SAP candidate overlaps from actual
     // shape contacts, and preserve touch found/lost across quiet frames.
@@ -13430,6 +13438,10 @@ int run_native_scene_smoke() {
                std::isfinite(crowded.body_state(center).position.x),
                "Source constraint partition did not reset on next frame");
     }
+}
+
+void verify_smoke_contact_writeback_and_rollback() {
+    using fyzz::native::Scene;
 
     verify_island_contact_manager_order();
     verify_split_contact_manager_migration();
@@ -13877,6 +13889,10 @@ int run_native_scene_smoke() {
                "Quiet event rollback changed successful retry state");
         (void)floor_b;
     }
+}
+
+void verify_smoke_dynamics_recovery_and_thresholds() {
+    using fyzz::native::Scene;
 
     // A failing Dy step must not publish its unconstrained velocities,
     // consume pending torque, advance topology/frame history, or replace
@@ -14391,6 +14407,10 @@ int run_native_scene_smoke() {
                changes[0].normal_impulse==0.0,
                "Dy exceeded stream failed to retire when pair threshold rose");
     }
+}
+
+void verify_smoke_material_and_world_behavior() {
+    using fyzz::native::Scene;
 
     // PhysX PxRigidDynamic::getContactReportThreshold and
     // DyThresholdTable group all static contacts through the ONE static
@@ -14658,6 +14678,15 @@ int run_native_scene_smoke() {
     }
 #endif
 
+}
+
+int run_native_scene_smoke() {
+    verify_smoke_pair_admission_and_retirement();
+    verify_smoke_island_and_broadphase_scenarios();
+    verify_smoke_contact_manifolds_and_partitioning();
+    verify_smoke_contact_writeback_and_rollback();
+    verify_smoke_dynamics_recovery_and_thresholds();
+    verify_smoke_material_and_world_behavior();
     verify_demand_driven_island_ownership_checkpoint();
     verify_source_contact_edge_deactivations();
     verify_source_retired_bridge_deactivation();
