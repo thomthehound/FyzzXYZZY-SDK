@@ -124,7 +124,7 @@ uint classify(uint a,uint b,uint previousAxis) {
 void main(uint3 thread : SV_DispatchThreadID) {
     uint index=thread.x;
     if(index>=p.pairCount)return;
-    uint base=p.pairBias+index*16u;
+    uint base=p.pairBias+index*24u;
     uint a=pairs.Load(base);
     uint b=pairs.Load(base+4u);
     uint previousAxis=pairs.Load(base+8u);
