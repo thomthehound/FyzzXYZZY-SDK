@@ -36,12 +36,14 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 
 float3x3 quaternionBasis(float4 q) {
-    float xx=q.x*q.x, yy=q.y*q.y, zz=q.z*q.z;
-    float xy=q.x*q.y, xz=q.x*q.z, yz=q.y*q.z;
-    float wx=q.w*q.x, wy=q.w*q.y, wz=q.w*q.z;
-    float3 c0=float3(1.f-2.f*(yy+zz),2.f*(xy+wz),2.f*(xz-wy));
-    float3 c1=float3(2.f*(xy-wz),1.f-2.f*(xx+zz),2.f*(yz+wx));
-    float3 c2=float3(2.f*(xz+wy),2.f*(yz-wx),1.f-2.f*(xx+yy));
+    // Preserve Gu's PxMat33T construction order, including 1-yy-zz.
+    float x2=q.x+q.x, y2=q.y+q.y, z2=q.z+q.z;
+    float xx=x2*q.x, yy=y2*q.y, zz=z2*q.z;
+    float xy=x2*q.y, xz=x2*q.z, xw=x2*q.w;
+    float yz=y2*q.z, yw=y2*q.w, zw=z2*q.w;
+    float3 c0=float3(1.f-yy-zz,xy+zw,xz-yw);
+    float3 c1=float3(xy-zw,1.f-xx-zz,yz+xw);
+    float3 c2=float3(xz+yw,yz-xw,1.f-xx-yy);
     // Rows correspond to the three basis columns.
     return float3x3(c0,c1,c2);
 }
