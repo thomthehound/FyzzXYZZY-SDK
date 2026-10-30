@@ -199,10 +199,7 @@ inline void write_source_sap_scene_bounds(
         }
     }
 
-    if(gpu_records) {
-        gpu_records->clear();
-        gpu_records->reserve(boxes.size());
-    }
+    if(gpu_records)gpu_records->clear();
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
         if(changes && scratch.visit_epochs[handle]!=changed_epoch)
