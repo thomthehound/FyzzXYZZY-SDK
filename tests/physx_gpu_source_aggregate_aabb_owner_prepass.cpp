@@ -223,7 +223,10 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
                     integer_words*4u});
                 stream.queue_uploads(integer_uploads);
                 const auto before=stream.submission_stats().command_batches;
+                const auto before_uploads=stream.submission_stats().upload_batches;
                 pre_update_source_sap_aabb_manager_native(update,manager,stream);
+                require(stream.submission_stats().upload_batches==before_uploads+1u,
+                        "Aggregate AABB pre-update split consecutive GPU uploads");
                 // The post-SAP stage consumes descriptor pointers, not the
                 // swap-sensitive C++ names of the source GPU buffers.
                 auto& bp=sap.descriptor();
