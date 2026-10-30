@@ -300,6 +300,9 @@ struct Context::Impl {
     // The largest completed source relocation scratch can serve later
     // submissions. In-flight command lists retain their own allocation.
     ComPtr<ID3D12Resource> completed_copy_scratch;
+    // The source report fetch waits for completion before its next use.
+    // One completed READBACK heap serves subsequent batches.
+    ComPtr<ID3D12Resource> completed_readback;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -799,9 +802,11 @@ struct Context::Impl {
             bytes+=item.bytes;
             sources.insert(item.source);
         }
-        auto staging=allocate_resource(device.Get(),bytes,
-            D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
-            D3D12_RESOURCE_STATE_COPY_DEST);
+        auto staging=std::move(completed_readback);
+        if(!staging || staging->GetDesc().Width<bytes)
+            staging=allocate_resource(device.Get(),bytes,
+                D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
         Submission cmd=new_commands();
         for(const auto id:sources)
             transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
@@ -828,6 +833,7 @@ struct Context::Impl {
         }
         D3D12_RANGE written{0,0};
         staging->Unmap(0,&written);
+        completed_readback=std::move(staging);
     }
 
     PipelineId create_pipeline(const ComputePipelineDesc& desc) {
