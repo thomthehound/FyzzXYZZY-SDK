@@ -17,12 +17,17 @@ RWByteAddressBuffer bounds : register(u1,space0);
 [[vk::binding(2,0)]]
 #endif
 RWByteAddressBuffer transforms : register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3,0)]]
+#endif
+RWByteAddressBuffer geometry : register(u3,space0);
 
 struct Parameters {
     uint shapeCount;
     uint shapesBias;
     uint boundsBias;
     uint transformsBias;
+    uint geometryBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -39,6 +44,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     const float3 center=asfloat(shapes.Load3(base+4u));
     const float4 q=asfloat(shapes.Load4(base+16u));
     const float3 e=asfloat(shapes.Load3(base+32u));
+    const float contactDistance=asfloat(shapes.Load(base+44u));
 
     // PxMat33(quaternion), three column vectors. updateCacheAndBound's
     // eBOX branch uses basisExtent, then center +/- world-space extents.
@@ -63,4 +69,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     transforms.Store4(cache,asuint(q));
     transforms.Store3(cache+16u,asuint(center));
     transforms.Store(cache+28u,0u);
+
+    const uint geometryBase=p.geometryBias+index*16u;
+    geometry.Store3(geometryBase,asuint(e));
+    geometry.Store(geometryBase+12u,asuint(contactDistance));
 }
