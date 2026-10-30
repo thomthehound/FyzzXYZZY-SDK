@@ -30,13 +30,16 @@ void validate_source_sap_owned_aabb_aliases_native(
             "Source SAP frame does not borrow its original AABB manager owner");
 }
 
-SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
-    SourceSapSceneFrameNativeMembers members,
+namespace {
+
+// Queue source SAP and aggregate work before blocking Sc report
+// publication. Their device allocations remain owned through fetch.
+SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
+    const SourceSapSceneFrameNativeMembers& members,
     SourceSapDmaNative& stream,
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
-    const CudaDeviceAddressMap& addresses,
-    compute::Context& context) {
+    const CudaDeviceAddressMap& addresses) {
 
     if(members.aabb_owner)
         validate_source_sap_owned_aabb_aliases_native(
@@ -152,6 +155,20 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
             members.aabb_owner->queue_aggregate_fetch_snapshot(
                 stream,members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr());
     }
+    return admission;
+}
+
+// Sc publication is a separate boundary from GPU pair production. This
+// waits only after all dependent GPU work on the source stream has been
+// queued; the source frame's AABB and SAP allocations remain live here.
+SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
+    const SourceSapSceneFrameNativeMembers& members,
+    const SourceSapUpdateAdmission& admission,
+    SourceSapDmaNative& stream,
+    const CudaDeviceAddressMap& addresses,
+    compute::Context& context) {
+    const SourceSapVolumeActorLifetimeNative volume_lifetime{
+        members.volume_to_actor,members.aabb_manager.volume_data};
     stream.wait_at_fetch();
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
@@ -256,6 +273,21 @@ SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     return {admission,fetched};
 }
 
+} // namespace
+
+SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
+    SourceSapSceneFrameNativeMembers members,
+    SourceSapDmaNative& stream,
+    bool& force_update,
+    const SourceSapUpdateNativeStages& stages,
+    const CudaDeviceAddressMap& addresses,
+    compute::Context& context) {
+    const auto admission=queue_source_sap_scene_frame_native(
+        members,stream,force_update,stages,addresses);
+    return fetch_source_sap_scene_frame_native(
+        members,admission,stream,addresses,context);
+}
+
 SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     PxgAabbSourceMembersNative& aabb,
     PxgSapSourceMembersNative& sap,
@@ -309,7 +341,9 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         aggregate?&aggregate->pair_collisions:nullptr,
         aggregate?&aggregate->pair_retirement:nullptr
     };
-    return advance_source_sap_scene_frame_native(
-        members,stream,sap.force_update(),stages,addresses,context);
+    const auto admission=queue_source_sap_scene_frame_native(
+        members,stream,sap.force_update(),stages,addresses);
+    return fetch_source_sap_scene_frame_native(
+        members,admission,stream,addresses,context);
 }
 } // namespace fyzz::physx_gpu

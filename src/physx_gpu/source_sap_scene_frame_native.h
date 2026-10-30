@@ -129,9 +129,10 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
 
 // Called by the original source owner at its update/fetch boundary.
 // Sc geometry preparation and the AABB manager's handle/bitmap first
-// pass MUST have run first. This call performs its native GPU pre-update,
-// SAP gpuDMAUp/update, source fence completion, actor report publication
-// and seven fetch-time history swaps on the same original stream.
+// pass MUST have run first. GPU SAP and aggregate commands are queued
+// before the Sc host fetch boundary; the source owner retains device
+// state and allocations throughout. This call performs the complete
+// update, report publication and seven fetch-time history swaps.
 // Output spans remain owned by the source/Sc consumers.
 SourceSapSceneFrameNativeResult advance_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,

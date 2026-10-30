@@ -19,8 +19,10 @@ kernel implementation when the new compute model permits a demonstrably
 better solution without changing those semantics.
 
 Godot is a consumer and validation path; the SDK must also build and operate
-without Godot or a reference PhysX runtime. The reference CPU backend remains
-an independent comparison oracle, never a hidden production fallback.
+without Godot or a reference PhysX runtime. **GPU compute is the primary
+execution target.** Native CPU execution remains the supported-hardware
+fallback and conformance mode; the separate reference CPU backend is an
+independent comparison oracle, never a hidden production substitute.
 
 ## Delivered foundation and current limits
 
@@ -61,6 +63,8 @@ projection oracle or separate scheduler.
 through the corresponding GPU broadphase work across multiple frames,
 including growth, retirement, sleep/kinematic changes and failed publication.
 The source task order and host/device transfer contracts are observable.
+The GPU shape/transform and bounds data must remain resident for subsequent
+narrowphase and dynamics stages; the CPU-owned N2 hybrid input is transitional.
 
 ### GPU narrowphase and contact streams
 
@@ -71,9 +75,11 @@ support only as the corresponding source path is brought into production;
 do not replace unsupported cases with invented collision rules.
 
 **Acceptance:** native GPU-produced contacts, not just broadphase candidate
-pairs, feed the existing island/constraint owners across creation, motion,
-separation and retirement. Validate exact stream contracts and numerical
-contact behavior on Vulkan and D3D12.
+pairs, feed the same scene's GPU constraint preparation across creation,
+motion, separation and retirement. CPU Sc contact-manager publication remains
+the transitional N2 hybrid path, not a required host readback between GPU
+broadphase, narrowphase and solving. Validate exact stream contracts and
+numerical contact behavior on Vulkan and D3D12.
 
 ### GPU rigid solving and integration
 
