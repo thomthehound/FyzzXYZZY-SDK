@@ -345,7 +345,7 @@ void verify_retired_aggregate_stops_gpu_work(
 
     // Reusing the source aggregate ID after idle must reinitialize its
     // own projection history and publish genuine member contacts.
-    const auto next=scene.create_aggregate(1u,true);
+    const auto next=scene.create_aggregate(5u,true);
     const auto other=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.5f,1.0f,0.0f},1.0f,next);
     scene.advance_collision();

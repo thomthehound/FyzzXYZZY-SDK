@@ -217,13 +217,12 @@ public:
             self_state_uploaded_.resize(2u*id+1u,false);
         }
         self_state_uploaded_[id]=false;
+        // Source aggregate IDs are recycled only after GPU report fetch.
+        // Keep the source-owned member arena stable for all live histories.
         if(aggregate_gpu_member_reservations_[id]<max_shapes) {
-            if(max_shapes>std::numeric_limits<physx::PxU32>::max()-
-                              aggregate_gpu_member_capacity_)
-                throw std::out_of_range("Original aggregate GPU member address range exceeded");
-            aggregate_gpu_member_starts_[id]=aggregate_gpu_member_capacity_;
+            aggregate_gpu_member_starts_[id]=allocate_aggregate_member_slice(
+                max_shapes);
             aggregate_gpu_member_reservations_[id]=max_shapes;
-            aggregate_gpu_member_capacity_+=max_shapes;
         }
         aggregate_gpu_slot_count_=std::max(aggregate_gpu_slot_count_,id+1u);
         volumes_[root].setUserData(user_data);
@@ -390,6 +389,10 @@ public:
         auto& aggregate=checked_aggregate(id);
         if(aggregate.size)
             throw std::logic_error("Cannot destroy original aggregate with live members");
+        // Reserve the retirement record before mutating the root. GPU
+        // history can reuse this range only after source fetch completes.
+        free_aggregate_member_slices_.reserve(
+            free_aggregate_member_slices_.size()+1u);
         const auto root=aggregate.mIndex;
         added_.boundedReset(root);
         changed_.boundedReset(root);
@@ -405,6 +408,11 @@ public:
         bounds_.setBounds(physx::PxBounds3::empty(),root);
         aggregate.reset();
         aggregate_max_shapes_[id]=0u;
+        free_aggregate_member_slices_.push_back({
+            aggregate_gpu_member_starts_[id],
+            aggregate_gpu_member_reservations_[id],true});
+        aggregate_gpu_member_starts_[id]=0u;
+        aggregate_gpu_member_reservations_[id]=0u;
         aggregate_ids_.deferredFreeID(id);
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
@@ -833,6 +841,8 @@ public:
         }
         removed_aggregate_members_.resetOrClear();
         if(advanced_aggregate_history)aggregate_projection_current_slot_^=1u;
+        // Only completed source GPU histories release member storage.
+        for(auto& slice:free_aggregate_member_slices_)slice.pending=false;
         aggregate_ids_.processDeferredIds();
     }
     physx::Cm::PinnableBitMap& source_aggregated() noexcept {
@@ -1044,6 +1054,8 @@ public:
         dirty_aggregate_indices_.resetOrClear();
         aggregate_projection_current_slot_=0u;
         aggregate_pair_storage_initialized_=false;
+        // The rollback caller already waited the abandoned source stream.
+        for(auto& slice:free_aggregate_member_slices_)slice.pending=false;
 
         for(physx::PxU32 handle=0;handle<groups_.size();++handle) {
             if(groups_[handle]==physx::Bp::FilterGroup::eINVALID) {
@@ -1106,6 +1118,56 @@ private:
             physx::Bp::FilterType::AGGREGATE);
     }
 #endif
+    struct AggregateMemberSlice {
+        physx::PxU32 first=0u,count=0u;
+        bool pending=false;
+    };
+    // Only aggregate creation visits this free list; no per-frame
+    // compaction, GPU history copies or relocation of live source slots.
+    physx::PxU32 allocate_aggregate_member_slice(physx::PxU32 count) {
+        std::sort(free_aggregate_member_slices_.begin(),
+                  free_aggregate_member_slices_.end(),
+                  [](const auto& a,const auto& b) {
+                      return a.first<b.first;
+                  });
+        std::size_t write=0;
+        for(const auto slice:free_aggregate_member_slices_) {
+            if(write && !slice.pending &&
+               !free_aggregate_member_slices_[write-1u].pending &&
+               free_aggregate_member_slices_[write-1u].first+
+                   free_aggregate_member_slices_[write-1u].count==
+                   slice.first) {
+                free_aggregate_member_slices_[write-1u].count+=slice.count;
+            } else free_aggregate_member_slices_[write++]=slice;
+        }
+        free_aggregate_member_slices_.resize(write);
+        // Trimming only the completed tail permits capacity growth in
+        // place on aggregate-ID reuse without discarding GPU allocation.
+        while(!free_aggregate_member_slices_.empty()) {
+            const auto& tail=free_aggregate_member_slices_.back();
+            if(tail.pending ||
+               tail.first+tail.count!=aggregate_gpu_member_capacity_)break;
+            aggregate_gpu_member_capacity_=tail.first;
+            free_aggregate_member_slices_.pop_back();
+        }
+        for(std::size_t i=0;i<free_aggregate_member_slices_.size();++i) {
+            auto& slice=free_aggregate_member_slices_[i];
+            if(slice.pending || slice.count<count)continue;
+            const auto first=slice.first;
+            slice.first+=count;
+            slice.count-=count;
+            if(!slice.count)free_aggregate_member_slices_.erase(
+                free_aggregate_member_slices_.begin()+i);
+            return first;
+        }
+        if(count>std::numeric_limits<physx::PxU32>::max()-
+                     aggregate_gpu_member_capacity_)
+            throw std::out_of_range(
+                "Original aggregate GPU member address range exceeded");
+        const auto first=aggregate_gpu_member_capacity_;
+        aggregate_gpu_member_capacity_+=count;
+        return first;
+    }
     physx::PxgAggregate& checked_aggregate(physx::Bp::AggregateHandle id) {
         if(id>=aggregates_.size() ||
            aggregates_[id].mIndex==PX_INVALID_U32)
@@ -1171,6 +1233,7 @@ private:
     // stays exclusively in PxgAggregate::updateBoundIndices.
     std::vector<physx::PxU32> aggregate_gpu_member_starts_;
     std::vector<physx::PxU32> aggregate_gpu_member_reservations_;
+    std::vector<AggregateMemberSlice> free_aggregate_member_slices_;
     std::vector<bool> self_state_uploaded_;
     std::vector<SourceAggregateGpuNativeRecord> gpu_aggregate_record_staging_;
     physx::PxU32 aggregate_gpu_slot_count_=0u;

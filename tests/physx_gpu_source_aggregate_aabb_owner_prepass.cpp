@@ -595,6 +595,72 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             require((download_changed()&(1u<<3u))==0u,
                     "Retired source aggregate root was reintroduced by GPU bitmap");
 
+            // Original aggregate IDs can be reused with progressively
+            // larger maxShapes. GPU member slices must be recycled only
+            // after source report fetch, without retaining every old size.
+            const auto member_domain=[&] {
+                return aabb.aggregate_gpu_buffers(0u,0u).member_indices_capacity;
+            };
+            const auto original_domain=member_domain();
+            for(physx::PxU32 max_shapes=3u;max_shapes<=18u;++max_shapes) {
+                const auto recycled=aabb.create_aggregate(
+                    3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                    max_shapes,PX_INVALID_U32,1u);
+                require(member_domain()<=original_domain+18u,
+                        "Aggregate member GPU arena grew with historical ID reuse");
+                aabb.destroy_aggregate(recycled);
+                aabb.finish_aggregate_report_fetch();
+            }
+            // A destroyed aggregate's slice is not available until its
+            // original fetch completes. A second root admitted before
+            // that boundary must own disjoint GPU member storage.
+            const auto first=aabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                9u,PX_INVALID_U32,1u);
+            const auto occupied=member_domain();
+            aabb.destroy_aggregate(first);
+            const auto overlapping=aabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                9u,PX_INVALID_U32,1u);
+            require(member_domain()>=occupied+9u &&
+                    aabb.source_aggregate(overlapping).mIndex==3u,
+                    "Unfetched source aggregate GPU history slice was reused");
+            aabb.finish_aggregate_report_fetch();
+            aabb.destroy_aggregate(overlapping);
+            aabb.finish_aggregate_report_fetch();
+            const auto larger=aabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                20u,PX_INVALID_U32,1u);
+            require(member_domain()<=original_domain+20u,
+                    "Retired aggregate GPU slices did not coalesce for larger reuse");
+            aabb.destroy_aggregate(larger);
+            aabb.finish_aggregate_report_fetch();
+
+            // Two adjacent completed holes can satisfy a larger new
+            // aggregate without relocating the still-live tail root.
+            const auto left=aabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                4u,PX_INVALID_U32,1u);
+            const auto middle=aabb.create_aggregate(
+                7u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                6u,PX_INVALID_U32,1u);
+            const auto tail=aabb.create_aggregate(
+                8u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                2u,PX_INVALID_U32,1u);
+            const auto full_domain=member_domain();
+            aabb.destroy_aggregate(left);
+            aabb.destroy_aggregate(middle);
+            aabb.finish_aggregate_report_fetch();
+            const auto coalesced=aabb.create_aggregate(
+                9u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                9u,PX_INVALID_U32,1u);
+            require(member_domain()==full_domain &&
+                    aabb.source_aggregate(tail).mIndex==8u,
+                    "Completed interior aggregate GPU slices were not coalesced");
+            aabb.destroy_aggregate(coalesced);
+            aabb.destroy_aggregate(tail);
+            aabb.finish_aggregate_report_fetch();
+
             stream.wait_at_fetch();
         }
         heap.flushDeferredDeallocs();
