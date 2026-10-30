@@ -1818,6 +1818,24 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX broadphase.cu::translateAABBsLaunch is compiled from one HLSL
       # source for Vulkan SPIR-V and (in Windows CI) D3D12 DXIL.
       find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+      # Verify a physically fixed 32-lane subgroup through actual shader execution.
+      set(FYZZXYZZY_WAVE32_SPV
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
+      add_custom_command(
+        OUTPUT "${FYZZXYZZY_WAVE32_SPV}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
+          -T cs_6_6 -E main -Fo "${FYZZXYZZY_WAVE32_SPV}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
+        VERBATIM)
+      add_custom_target(fyzzxyzzy_wave32_spv DEPENDS "${FYZZXYZZY_WAVE32_SPV}")
+      add_executable(fyzzxyzzy_wave32_contract tests/native_wave32_contract.cpp)
+      target_link_libraries(fyzzxyzzy_wave32_contract PRIVATE FyzzXYZZY::Compute)
+      add_dependencies(fyzzxyzzy_wave32_contract fyzzxyzzy_wave32_spv)
+      add_test(NAME fyzzxyzzy_wave32_contract
+        COMMAND fyzzxyzzy_wave32_contract "${FYZZXYZZY_WAVE32_SPV}")
+
       set(FYZZXYZZY_MULTI_RESOURCE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
       add_custom_command(
@@ -4900,6 +4918,26 @@ if(FYZZXYZZY_BUILD_D3D12)
     "Enable native D3D12 PhysX AABB conformance test (requires DXC)" OFF)
   if(BUILD_TESTING AND FYZZXYZZY_BUILD_D3D12_AABB_TEST)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
+    set(FYZZXYZZY_WAVE32_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.dxil")
+    add_custom_command(
+      OUTPUT "${FYZZXYZZY_WAVE32_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_WAVE32_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_wave32_dxil DEPENDS "${FYZZXYZZY_WAVE32_DXIL}")
+    add_executable(fyzzxyzzy_wave32_contract_d3d12 tests/native_wave32_contract.cpp)
+    target_compile_definitions(fyzzxyzzy_wave32_contract_d3d12 PRIVATE
+      FYZZXYZZY_TEST_D3D12=1)
+    target_link_libraries(fyzzxyzzy_wave32_contract_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12)
+    add_dependencies(fyzzxyzzy_wave32_contract_d3d12 fyzzxyzzy_wave32_dxil)
+    add_test(NAME fyzzxyzzy_wave32_contract_d3d12
+      COMMAND fyzzxyzzy_wave32_contract_d3d12 "${FYZZXYZZY_WAVE32_DXIL}")
+
     set(FYZZXYZZY_MULTI_RESOURCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.dxil")
     add_custom_command(
