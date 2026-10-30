@@ -636,6 +636,31 @@ void verify(Backend backend,ShaderBinary bounds_shader,ShaderBinary mark_shader,
             aabb.destroy_aggregate(larger);
             aabb.finish_aggregate_report_fetch();
 
+            // Two adjacent completed holes can satisfy a larger new
+            // aggregate without relocating the still-live tail root.
+            const auto left=aabb.create_aggregate(
+                3u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                4u,PX_INVALID_U32,1u);
+            const auto middle=aabb.create_aggregate(
+                7u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                6u,PX_INVALID_U32,1u);
+            const auto tail=aabb.create_aggregate(
+                8u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                2u,PX_INVALID_U32,1u);
+            const auto full_domain=member_domain();
+            aabb.destroy_aggregate(left);
+            aabb.destroy_aggregate(middle);
+            aabb.finish_aggregate_report_fetch();
+            const auto coalesced=aabb.create_aggregate(
+                9u,physx::Bp::getFilterGroup_Statics(),elements.data(),
+                9u,PX_INVALID_U32,1u);
+            require(member_domain()==full_domain &&
+                    aabb.source_aggregate(tail).mIndex==8u,
+                    "Completed interior aggregate GPU slices were not coalesced");
+            aabb.destroy_aggregate(coalesced);
+            aabb.destroy_aggregate(tail);
+            aabb.finish_aggregate_report_fetch();
+
             stream.wait_at_fetch();
         }
         heap.flushDeferredDeallocs();
