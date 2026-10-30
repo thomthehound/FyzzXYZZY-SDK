@@ -302,7 +302,7 @@ jobs:
         run: |
           $dumpFolder = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-native-scene-dumps'
           New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
-          $key = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\fyzzxyzzy_native_scene_smoke.exe'
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\fyzzxyzzy_native_scene_smoke.exe'
           New-Item -Path $key -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumpFolder -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
