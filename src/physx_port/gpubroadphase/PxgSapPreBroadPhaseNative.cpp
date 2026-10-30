@@ -110,7 +110,8 @@ void append_pre_broadphase_native_uploads(
     SourceSapPreBroadPhaseBuffers buffers,
     std::vector<SourceSapUpload>& uploads,
     std::span<const physx::PxU32> changed_handles,
-    bool source_owned_changes) {
+    bool source_owned_changes,
+    bool device_generated_bounds) {
     validate_pre_broadphase_native(update);
     const auto capacity = update.getCapacity();
     const auto bounds_bytes = capacity * sizeof(physx::PxBounds3);
@@ -146,7 +147,7 @@ void append_pre_broadphase_native_uploads(
     // Adjacent source HtoD records have no intervening GPU work.
     // The enclosing AABB-manager pre-update owns their submission.
     uploads.reserve(uploads.size()+4u);
-    if(update.getStateChanged()) {
+    if(update.getStateChanged() && !device_generated_bounds) {
         if(!bounds_resident || !source_owned_changes || !dirty_interval) {
             uploads.push_back({buffers.bounds.getDevicePtr(),
                                update.getAABBs(),bounds_bytes});
