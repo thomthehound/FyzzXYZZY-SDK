@@ -1061,7 +1061,8 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto uploads_before_motion=stream.submission_stats();
             pre_update_source_sap_aabb_manager_native(moved,nextPre,stream);
             const auto expected_motion_bytes=
-                nextPre.aggregated.words.size()*sizeof(physx::PxU32)+
+                (nextPre.added.words.size()+nextPre.removed.words.size()+
+                 nextPre.aggregated.words.size())*sizeof(physx::PxU32)+
                 nextPre.volume_data.size()*sizeof(physx::Bp::VolumeData)+
                 sizeof(physx::PxBounds3)+
                 std::size_t(moved.getCapacity())*
