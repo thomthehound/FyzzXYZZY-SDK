@@ -90,7 +90,9 @@ SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
     // persistent allocations until its fetch continuation has completed.
     const auto admission=advance_source_sap_frame_native(
         members.aabb_update,dma,stream,force_update,stages,
-        addresses,members.update);
+        addresses,members.update,
+        members.aabb_manager.has_aggregates
+            ? nullptr : members.aabb_manager.gpu_box_transforms);
     // Original PxgAABBManager::updateBPSecondPass postBPStage2 begins
     // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
     // aggregate members must invalidate the descriptor's integer AABB
