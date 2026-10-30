@@ -40,9 +40,11 @@ VkInstance create_instance() {
         vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
     if (getVersion)
         require(getVersion(&runtimeVersion), "vkEnumerateInstanceVersion");
-    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_2
-        ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
-            ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0);
+    application.apiVersion = runtimeVersion >= VK_API_VERSION_1_4
+        ? VK_API_VERSION_1_4 : (runtimeVersion >= VK_API_VERSION_1_3
+            ? VK_API_VERSION_1_3 : (runtimeVersion >= VK_API_VERSION_1_2
+                ? VK_API_VERSION_1_2 : (runtimeVersion >= VK_API_VERSION_1_1
+                    ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0)));
 
     VkInstanceCreateInfo create{};
     create.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -1113,14 +1115,18 @@ struct Context::Impl {
             stage.pName = desc.shader.entry_point.c_str();
             VkPipelineShaderStageRequiredSubgroupSizeCreateInfo required_size{};
             if (const auto width = desc.required_subgroup_size) {
+                // SPIR-V 1.6 can vary subgroup size without the varying-size
+                // pipeline flag. Only an explicit required-size stage contract
+                // or an older fixed-default shader guarantees physical width.
+                const bool fixed_default =
+                    width == info.subgroup_size && words[1] < 0x00010600u;
                 if ((width & (width-1u)) != 0u ||
                     width < info.min_subgroup_size ||
                     width > info.max_subgroup_size ||
-                    (width != info.subgroup_size &&
-                     !info.supports_required_subgroup_size))
+                    (!info.supports_required_subgroup_size && !fixed_default))
                     throw std::invalid_argument(
                         "Required Vulkan subgroup width is unsupported by this device");
-                if (width != info.subgroup_size) {
+                if (info.supports_required_subgroup_size) {
                     required_size.sType =
                         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
                     required_size.requiredSubgroupSize = width;
