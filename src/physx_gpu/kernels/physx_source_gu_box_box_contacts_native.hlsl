@@ -64,11 +64,11 @@ float3 inverseApply(float3x3 basis,float3 world) {
     return float3(dot(basis[0],world),dot(basis[1],world),dot(basis[2],world));
 }
 void emit(uint outputStart,uint outputLimit,inout uint count,inout uint overflow,
-          float3 point,float3 normal,float separation,
+          float3 contactLocal,float3 normal,float separation,
           float3x3 frame,float3 origin) {
     if(count<outputLimit && count<255u) {
         uint dst=p.contactBias+(outputStart+count)*32u;
-        float3 world=apply(frame,point)+origin;
+        float3 world=apply(frame,contactLocal)+origin;
         contacts.Store3(dst,asuint(world));
         contacts.Store3(dst+12u,asuint(normal));
         contacts.Store(dst+24u,asuint(separation));
