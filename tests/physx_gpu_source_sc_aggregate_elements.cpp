@@ -279,13 +279,16 @@ void run(Backend backend) {
             }
             const auto pending=sc.create_aggregate(
                 1u,physx::Bp::getFilterGroup_Statics(),0u);
+            const auto pending_handle=sc.aggregate_root_handle(pending);
+            const auto retired_user_data=
+                owner.actor_lifetime().volume_data[pending_handle].getUserData();
             sc.destroy_aggregate(pending);
-            const auto before_unfetched=sc.aggregate_root_storage_slots();
             const auto concurrent=sc.create_aggregate(
                 4u,physx::Bp::getFilterGroup_Statics(),0u);
-            require(sc.aggregate_root_storage_slots()>=before_unfetched &&
-                    sc.aggregate_root_handle(concurrent)!=BP_INVALID_BP_HANDLE,
-                    "Unfetched Sc aggregate root was reused before GPU report cleanup");
+            const auto concurrent_handle=sc.aggregate_root_handle(concurrent);
+            require(owner.actor_lifetime().volume_data[concurrent_handle].getUserData()!=
+                        retired_user_data,
+                    "Unfetched Sc aggregate root reused an in-flight GPU user-data address");
             sc.destroy_aggregate(concurrent);
             owner.finish_aggregate_report_fetch();
             sc.post_reports_cleanup();
