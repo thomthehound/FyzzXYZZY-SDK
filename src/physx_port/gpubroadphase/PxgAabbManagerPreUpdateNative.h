@@ -32,6 +32,7 @@ struct SourceSapGpuBoxTransformOwnersNative {
     const SourceScBoxTransformBoundsNativeStage& stage;
     physx::PxgCudaBuffer& input_device;
     physx::PxgCudaBuffer& cached_transforms;
+    physx::PxgCudaBuffer& cached_geometry;
 };
 
 struct SourceSapGpuBoxTransformsNative {
@@ -39,6 +40,7 @@ struct SourceSapGpuBoxTransformsNative {
     const CudaDeviceAddressMap& addresses;
     physx::PxgCudaBuffer& input_device;
     physx::PxgCudaBuffer& cached_transforms;
+    physx::PxgCudaBuffer& cached_geometry;
     std::span<const SourceScBoxTransformInputNative> changed;
 };
 
@@ -131,6 +133,8 @@ inline void pre_update_source_sap_aabb_manager_native(
         : 0u;
     const auto cache_bytes=boxes && shape_bytes
         ? checked_bytes(capacity,32u) : 0u;
+    const auto geometry_bytes=boxes && shape_bytes
+        ? checked_bytes(capacity,16u) : 0u;
 
     const auto append_bitmap=[](
         std::vector<SourceSapUpload>& uploads,
@@ -175,6 +179,7 @@ inline void pre_update_source_sap_aabb_manager_native(
     if(shape_bytes) {
         boxes->input_device.allocate(shape_bytes,PX_FL);
         boxes->cached_transforms.allocate(cache_bytes,PX_FL);
+        boxes->cached_geometry.allocate(geometry_bytes,PX_FL);
         uploads.push_back({boxes->input_device.getDevicePtr(),
                            boxes->changed.data(),shape_bytes});
     }
@@ -184,6 +189,7 @@ inline void pre_update_source_sap_aabb_manager_native(
             boxes->input_device.getDevicePtr(),
             manager.sap.bounds.getDevicePtr(),
             boxes->cached_transforms.getDevicePtr(),
+            boxes->cached_geometry.getDevicePtr(),
             static_cast<std::uint32_t>(boxes->changed.size()),capacity);
     }
 
