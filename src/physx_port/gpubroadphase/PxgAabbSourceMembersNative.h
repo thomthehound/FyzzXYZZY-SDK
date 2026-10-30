@@ -112,6 +112,9 @@ public:
            (!aggregate_found_mapped_.reserve(aggregate_report_capacity_) ||
             !aggregate_lost_mapped_.reserve(aggregate_report_capacity_)))
             throw std::bad_alloc();
+        if(aggregate_report_capacity_)
+            aggregate_fetch_snapshot_device_.allocate(
+                sizeof(AggregateFetchSnapshot),PX_FL);
         if(initial_shapes)reserve_shapes(initial_shapes);
     }
     ~PxgAabbSourceMembersNative() {
@@ -626,7 +629,6 @@ public:
         CudaDeviceAddressMap::Address broadphase_descriptor) {
         if(!aggregate_report_capacity_ || !broadphase_descriptor)
             throw std::logic_error("Source aggregate fetch snapshot owner unavailable");
-        aggregate_fetch_snapshot_device_.allocate(sizeof(AggregateFetchSnapshot),PX_FL);
         const auto start=aggregate_fetch_snapshot_device_.getDevicePtr();
         stream.queue_device_copy(start,
             broadphase_descriptor,sizeof(physx::PxgBroadPhaseDesc));
