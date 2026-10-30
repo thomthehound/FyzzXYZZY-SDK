@@ -303,6 +303,7 @@ struct Context::Impl {
     // The source report fetch waits for completion before its next use.
     // One completed READBACK heap serves subsequent batches.
     ComPtr<ID3D12Resource> completed_readback;
+    std::vector<BufferId> readback_sources;
     static constexpr std::size_t kMaxRecycled = 8;
     BufferId next_buffer = 1;
     PipelineId next_pipeline = 1;
@@ -790,8 +791,8 @@ struct Context::Impl {
     void download_batch(const std::vector<DownloadSpan>& downloads) {
         if(downloads.empty())return;
         std::size_t bytes=0;
-        std::unordered_set<BufferId> sources;
-        sources.reserve(downloads.size());
+        readback_sources.clear();
+        readback_sources.reserve(downloads.size());
         for(const auto& item:downloads) {
             const auto& source=get_buffer(item.source);
             validate_range(source.bytes,item.source_offset,item.bytes);
@@ -800,7 +801,9 @@ struct Context::Impl {
                item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
                 throw std::invalid_argument("Invalid D3D12 GPU readback span");
             bytes+=item.bytes;
-            sources.insert(item.source);
+            if(std::find(readback_sources.begin(),readback_sources.end(),
+                         item.source)==readback_sources.end())
+                readback_sources.push_back(item.source);
         }
         auto staging=std::move(completed_readback);
         if(!staging || staging->GetDesc().Width<bytes)
@@ -808,7 +811,7 @@ struct Context::Impl {
                 D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
         Submission cmd=new_commands();
-        for(const auto id:sources)
+        for(const auto id:readback_sources)
             transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
                 D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
         std::size_t offset=0;
@@ -818,7 +821,7 @@ struct Context::Impl {
                 item.bytes);
             offset+=item.bytes;
         }
-        for(const auto id:sources)
+        for(const auto id:readback_sources)
             transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
                 D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
         wait_submission(enqueue(std::move(cmd)));
