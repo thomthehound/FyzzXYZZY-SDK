@@ -124,11 +124,18 @@ void run_case(Context& context, PipelineId pipeline, bool shared_backing) {
     std::vector<std::uint32_t> actual_second(second.size());
     std::vector<std::uint32_t> actual_output(output.size());
     std::vector<std::uint32_t> actual_mirror(mirror.size());
-    context.download(source_a, 0u, actual_first.data(), first_bytes);
-    if (!shared_backing)
-        context.download(source_b, 0u, actual_second.data(), second.size() * 4u);
-    context.download(destination, 0u, actual_output.data(), output.size() * 4u);
-    context.download(snapshot, 0u, actual_mirror.data(), mirror.size() * 4u);
+    std::vector<DownloadSpan> readback{{
+        source_a,0u,actual_first.data(),first_bytes}};
+    if(!shared_backing)
+        readback.push_back({
+            source_b,0u,actual_second.data(),second.size()*4u});
+    readback.push_back({
+        destination,0u,actual_output.data(),output.size()*4u});
+    readback.push_back({
+        snapshot,0u,actual_mirror.data(),mirror.size()*4u});
+    // Fetch GPU-written outputs and a dependent device copy together.
+    // Multiple ranges may share one backing heap without separate fences.
+    context.download_batch(readback);
 
     for (std::size_t i = 0; i < kElements; ++i) {
         const auto a = static_cast<std::uint32_t>(10u + i);
