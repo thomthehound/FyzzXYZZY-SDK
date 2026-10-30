@@ -89,8 +89,9 @@ it is not yet enforced by the current compute context.
 **Physical wave-width contract:** The compute pipeline descriptor declares a
 required subgroup size only for algorithms that require a particular CUDA
 warp layout. Vulkan requests that width through core subgroup-size control
-when the default is different, after querying/enabling the feature and
-verifying compute-stage support; a fixed 32-lane default is also valid.
+whenever selectable sizes are supported, after querying/enabling the
+feature and verifying compute-stage support; a fixed 32-lane default
+also qualifies when the shader cannot vary its subgroup size.
 D3D12 checks the SM6.6 WaveOps-supported range, and the compiled DXIL
 must embed the matching `[WaveSize(32)]` attribute so pipeline creation
 enforces it. Both backends reject unsupported requirements at pipeline
