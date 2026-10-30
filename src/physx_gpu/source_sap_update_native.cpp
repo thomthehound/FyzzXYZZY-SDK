@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_update_native.h"
+#include "physx_port/gpubroadphase/PxgAabbManagerPreUpdateNative.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
 
@@ -181,7 +182,8 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
-    const SourceSapUpdateNativeFrame& frame) {
+    const SourceSapUpdateNativeFrame& frame,
+    const SourceSapGpuBoxTransformsNative* gpu_box_transforms) {
     // A zero descriptor selects source-owned frame layout construction
     // after gpuDMAUp grows its descriptor allocation. Explicit layouts
     // must already alias the same owner for both update and reporting.
@@ -197,6 +199,19 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     bool next_force_update=force_update;
     const auto admitted=begin_sap_update_native(
         update,members,stream,next_force_update);
+    if(gpu_box_transforms && !gpu_box_transforms->changed.empty()) {
+        if(!admitted.execute_gpu_stages)
+            throw std::logic_error("Changed source GPU box bounds require SAP execution");
+        const auto gpu_bounds=static_cast<CudaDeviceAddressMap::Address>(
+            reinterpret_cast<std::uintptr_t>(
+                members.broadphase_descriptor.updateData_fpBounds));
+        gpu_box_transforms->stage.append(
+            stream,gpu_box_transforms->addresses,
+            gpu_box_transforms->input_device.getDevicePtr(),gpu_bounds,
+            gpu_box_transforms->cached_transforms.getDevicePtr(),
+            static_cast<std::uint32_t>(gpu_box_transforms->changed.size()),
+            update.getCapacity());
+    }
     if(admitted.execute_gpu_stages) {
         const auto actual=frame.device_descriptor ? frame :
             make_source_sap_update_frame_native(
