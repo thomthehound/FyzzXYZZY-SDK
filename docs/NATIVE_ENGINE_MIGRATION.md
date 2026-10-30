@@ -3,6 +3,13 @@
 
 # Native engine ownership and migration plan
 
+**Status:** Historical ownership and migration gate record. Native scene N1
+and the bounded N2 GPU-broadphase hybrid have been integrated. These N-numbered
+gates are no longer an active sequencing system; see the
+[capability roadmap](ROADMAP.md) for current production boundaries and next
+implementation priorities. The sections below preserve their original
+technical criteria, including work that remains outside the admitted subset.
+
 ## Objective and boundary
 
 FyzzXYZZY replaces PhysX as an independent CPU/GPU physics SDK. PhysX 5.11 is the algorithmic, dataflow, lifetime and behavior reference; it is **not** the portable-GPU production host. FyzzXYZZY must own one authoritative scene, its task graph, simulation state, allocation and frame publication. Its platform backends lower work to CPU, Vulkan and D3D12. Godot is a consumer, not an owner of physics time.
@@ -195,7 +202,7 @@ The project-wide source-fidelity contract and PR gate now prohibit
 calling a simplified behavioral resemblance a completed source port.
 Full source friction and rigid-body dynamics remain open N1 work.
 
-## Gate N2 — native source-derived SAP and AABB owner
+## Historical gate N2 — native source-derived SAP and AABB owner (delivered for admitted subset)
 
 Consolidate `PxgCudaBroadPhaseSap` and `PxgAABBManager` source behavior into two cohesive native owner implementations. Own one persistent buffer/history representation; remove borrowed frame-member scaffolding when its tests have migrated. Drive the original first-pass/second-pass/update/fetch order, including state-changed/forced/idle logic, AABB and aggregate preparation, three-axis projection/region/rank/sort work, pair/report kernels, capacity and abort checks, old/new bounds swap and the seven fetch-history swaps.
 
@@ -203,7 +210,7 @@ Use one device/stream execution service, with reusable compiled pipelines and so
 
 **Pass:** native scene selects real GPU SAP on Vulkan and D3D12, found/lost pairs flow into the native CPU narrowphase/solver across multiple frames, and explicit diagnostics prove that neither CPU ABP nor a reference PhysX scene ran instead.
 
-## Gate N3 — correctness, parity and runtime-cost acceptance
+## Historical gate N3 — broader correctness, parity and runtime-cost acceptance
 
 A shared standalone/Godot acceptance scene creates, updates and removes actors and aggregates, exercises quiet/forced frames, growth and overlapping/separating bodies, and checks published contact and movement behavior. Compare deterministic observable pair sets and physical invariants against an independently executed reference PhysX CPU scene where semantics permit. Require Linux software Vulkan and Windows D3D12 WARP functional runs before AMD hardware performance profiling.
 
@@ -211,7 +218,7 @@ Record per-frame submissions, GPU pipeline creations, descriptor writes, host st
 
 **Pass:** a real native FyzzXYZZY scene drives GPU broadphase and CPU dynamics and publishes physically relevant found/lost pairs, with zero reference-PhysX execution on that scene. This replaces the old PhysX-hosted G3 criterion.
 
-## Gate N4 — reference retirement and broader engine integration
+## Historical gate N4 — reference retirement and broader engine integration
 
 Make native CPU the default; reference PhysX becomes an opt-in comparison/benchmark target available only to tests or explicit reference builds. Extract upstream source headers still required by the port into SDK-owned, licensed source trees. Remove the mutable PhysX `FetchContent main` dependency from production targets and source-bundle packaging. Run all CPU, GPU, Godot and offline tests. Continue GPU narrowphase, solver, articulations and deformable systems through the same native scene and task DAG.
 
