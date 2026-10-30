@@ -175,7 +175,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                         p.scratchHandleBias+outIndex*4u,sourceHandle);
                 }
             }
-            DeviceMemoryBarrierWithGroupSync();
+            // Chunk destinations are disjoint within this radix pass.
+            // Shared digit ranks need group synchronization every chunk;
+            // GPU-visible scatter writes require a device barrier only
+            // before the next pass reads that completed destination.
+            if(chunk+1u<chunks)
+                GroupMemoryBarrierWithGroupSync();
+            else
+                DeviceMemoryBarrierWithGroupSync();
             if(lane.x<16u) {
                 uint completed=0u;
                 [unroll] for(uint j=0u;j<32u;++j)
