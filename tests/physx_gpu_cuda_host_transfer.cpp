@@ -914,6 +914,20 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
             throw std::runtime_error(
                 "Native GPU AABB bitmap differs from original source admission");
 
+        // An unchanged physical allocation cannot narrow two separated
+        // created handles into a contiguous interval. Replaying this
+        // source admission must still transfer the entire bounds array.
+        const auto before_fragmented=stream.submission_stats();
+        pre_update_source_sap_aabb_manager_native(
+            frame,manager_view(),stream);
+        if(stream.submission_stats().upload_batches!=
+               before_fragmented.upload_batches+1u ||
+           stream.submission_stats().upload_bytes!=
+               before_fragmented.upload_bytes+before_fragmented.upload_bytes)
+            throw std::runtime_error(
+                "Separated source created handles incorrectly narrowed GPU bounds");
+        stream.wait_at_fetch();
+
         // Source processFoundPairs/processLostPairs retire these host bits
         // after successful fetch; the next frame reuses the same allocations.
         clear_source_sap_single_volume_report_bitmaps_native(manager);
