@@ -1058,7 +1058,21 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto nextPre=aabb.pre_update(sap.pre_broadphase_buffers());
             validate_source_sap_owned_aabb_aliases_native(
                 aabb,nextPre,aabb.actor_lifetime().volume_to_actor);
+            const auto uploads_before_motion=stream.submission_stats();
             pre_update_source_sap_aabb_manager_native(moved,nextPre,stream);
+            const auto expected_motion_bytes=
+                (nextPre.added.words.size()+nextPre.removed.words.size()+
+                 nextPre.aggregated.words.size())*sizeof(physx::PxU32)+
+                nextPre.volume_data.size()*sizeof(physx::Bp::VolumeData)+
+                sizeof(physx::PxBounds3)+
+                std::size_t(moved.getCapacity())*
+                    (sizeof(physx::PxReal)+sizeof(physx::Bp::FilterGroup::Enum))+
+                nextPre.changed.words.size()*sizeof(physx::PxU32);
+            require(stream.submission_stats().upload_batches==
+                        uploads_before_motion.upload_batches+1u &&
+                    stream.submission_stats().upload_bytes==
+                        uploads_before_motion.upload_bytes+expected_motion_bytes,
+                    "One moving Sc shape reuploaded unchanged GPU AABB bounds");
             const auto nextAabbView=source_sap_aabb_descriptor_native(nextPre);
             auto nextDma=sap.dma_up_members(&nextAabbView,mappedRoots);
             const auto admitted=begin_sap_update_native(
