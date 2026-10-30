@@ -240,7 +240,6 @@ public:
         aggregated_.growAndReset(root);
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
-        ++num_active_aggregates_;
         return id;
     }
 
@@ -294,6 +293,7 @@ public:
         groups_[handle]=group;
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
+        const bool first_member=aggregate.size==0u;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
         if(canceled_retirement) {
             // No member-history removal/addition is emitted: the GPU
@@ -307,6 +307,7 @@ public:
             added_aggregate_members_.pushBack(handle);
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
+        if(first_member)++num_nonempty_aggregates_;
     }
 
     // AABBManagerBase::setContactDistance / source changed bitmap.
@@ -374,6 +375,7 @@ public:
             volume_to_actor_[handle]=std::numeric_limits<BodyId>::max();
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
+        if(!aggregate.size)--num_nonempty_aggregates_;
         return aggregate.size==0u;
     }
 
@@ -399,7 +401,6 @@ public:
         aggregate.reset();
         aggregate_max_shapes_[id]=0u;
         aggregate_ids_.deferredFreeID(id);
-        --num_active_aggregates_;
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
     }
@@ -770,6 +771,7 @@ public:
         return {dirty_aggregate_indices_.begin(),dirty_aggregate_indices_.size()};
     }
     void finish_aggregate_report_fetch() {
+        const bool advanced_aggregate_history=aggregate_gpu_work_pending();
         for(const auto id:dirty_aggregate_indices()) {
             // Original clearDirtyAggregates retires the source per-frame
             // size history only after GPU aggregate reports are fetched.
@@ -786,7 +788,7 @@ public:
             volumes_[handle].reset();
         }
         removed_aggregate_members_.resetOrClear();
-        if(aggregate_gpu_slot_count_)aggregate_projection_current_slot_^=1u;
+        if(advanced_aggregate_history)aggregate_projection_current_slot_^=1u;
         aggregate_ids_.processDeferredIds();
     }
     physx::Cm::PinnableBitMap& source_aggregated() noexcept {
@@ -803,6 +805,15 @@ public:
             single_volumes(),handle,contact_distance);
     }
 
+    // Retired GPU slots remain allocated for ID reuse, but do not imply
+    // active aggregate work after the last report has been fetched.
+    bool aggregate_gpu_work_pending() const noexcept {
+        return num_nonempty_aggregates_!=0u ||
+            !dirty_aggregate_indices_.empty() ||
+            !added_aggregate_members_.empty() ||
+            !removed_aggregate_members_.empty();
+    }
+
     // Called after Sc has marked source dirty volumes and before the
     // original preBroadPhase task. The returned update borrows this
     // object's arrays until SAP's GPU fetch continuation finishes.
@@ -816,7 +827,7 @@ public:
         // The original PxgAABBManager first pass owns the root's BP
         // created/removed handles, while Sc supplies the actual member
         // geometry. A root is NOT a shape in live actor geometry.
-        if(num_active_aggregates_ || aggregate_gpu_slot_count_) {
+        if(aggregate_gpu_work_pending()) {
             for(std::size_t i=0;i<live.size();++i) {
                 const auto handle=handles[i];
                 if(handle>=volumes_.size() ||
@@ -878,7 +889,7 @@ public:
                 bounds_.begin(),groups_.begin(),distances_.begin(),
                 bounds_.size(),filter,
                 persistent_state_changed_||bounds_.hasChanged(),
-                gpu_state_changed_||aggregate_gpu_slot_count_!=0u);
+                gpu_state_changed_||aggregate_gpu_work_pending());
             validate_source_sap_volume_actor_lifetime_native(
                 actor_lifetime(),update,true);
             return update;
@@ -902,7 +913,7 @@ public:
 
     SourceSapAabbManagerPreUpdateNative pre_update(
         SourceSapPreBroadPhaseBuffers sap) noexcept {
-        const bool aggregate_slots=aggregate_gpu_slot_count_!=0u;
+        const bool aggregate_slots=aggregate_gpu_work_pending();
         return {sap,source_sap_aabb_bitmap_native(added_device_,added_),
             source_sap_aabb_bitmap_native(removed_device_,removed_),
             source_sap_aabb_bitmap_native(aggregated_device_,aggregated_),
@@ -1131,7 +1142,7 @@ private:
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
-    physx::PxU32 num_active_aggregates_=0u;
+    physx::PxU32 num_nonempty_aggregates_=0u;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
 };
 

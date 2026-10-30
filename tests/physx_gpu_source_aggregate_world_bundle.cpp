@@ -233,6 +233,68 @@ void verify_source_sap_report_overflow_recovery(
             "Recovered source GPU SAP replayed stale overlap reports");
 }
 
+
+void verify_retired_aggregate_stops_gpu_work(
+    fyzz::compute::Backend backend,
+    const char* sap_manifest,const char* aggregate_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            128u,128u,
+            fyzz::load_native_gpu_aggregate_shaders(backend,aggregate_manifest));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto root=scene.create_aggregate(1u,true);
+    // An admitted root without member shapes is not a SAP endpoint.
+    // After its initial descriptor reaches the GPU, repeated quiet frames
+    // must not execute aggregate stages merely because the root exists.
+    scene.advance_collision();
+    scene.advance_collision();
+    scene.advance_collision();
+    require(!producer->last_frame().update.execute_gpu_stages,
+            "Empty aggregate root forced a quiet source GPU update");
+    const auto member=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,root);
+    const auto outside=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.25f,1.0f,0.0f});
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId x,fyzz::BodyId y) {
+        const fyzz::native::Pair pair{std::min(x,y),std::max(x,y)};
+        return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+    };
+    scene.advance_collision();
+    require(contains(scene.pairs(),member,outside),
+            "Source GPU aggregate fixture did not publish its initial pair");
+
+    // The final root is deleted, but its source GPU descriptor and pair
+    // history still require this frame's lost-report processing.
+    scene.remove_actor_from_aggregate(root,member);
+    scene.destroy_aggregate(root);
+    scene.advance_collision();
+    require(contains(scene.pairs(),member,outside),
+            "Retiring the last aggregate lost a surviving standalone overlap");
+
+    // A forced source history-convergence frame may still execute SAP.
+    // Once it completes, a retired high-watermark must not keep the
+    // aggregate kernels or SAP update executing forever.
+    scene.advance_collision();
+    scene.advance_collision();
+    require(!producer->last_frame().update.execute_gpu_stages &&
+            contains(scene.pairs(),member,outside),
+            "Retired aggregate GPU slots forced a quiet SAP update");
+
+    // Reusing the source aggregate ID after idle must reinitialize its
+    // own projection history and publish genuine member contacts.
+    const auto next=scene.create_aggregate(1u,true);
+    const auto other=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.5f,1.0f,0.0f},1.0f,next);
+    scene.advance_collision();
+    require(contains(scene.pairs(),other,outside) &&
+            contains(scene.pairs(),other,member),
+            "Source aggregate ID reuse after idle lost GPU member contacts");
+}
+
 void run(fyzz::compute::Backend backend,
          const char* sap_manifest,const char* aggregate_manifest) {
     bool rejected=false;
@@ -366,6 +428,8 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
         verify_source_sap_report_overflow_recovery(
             fyzz::compute::Backend::D3D12,argv[1]);
+        verify_retired_aggregate_stops_gpu_work(
+            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
 #else
         verify_aggregate_gpu_rollback(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
@@ -373,6 +437,8 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
         verify_source_sap_report_overflow_recovery(
             fyzz::compute::Backend::Vulkan,argv[1]);
+        verify_retired_aggregate_stops_gpu_work(
+            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
 #endif
         std::cout<<"Original source aggregate GPU World stage ownership PASS\n";
         return 0;
