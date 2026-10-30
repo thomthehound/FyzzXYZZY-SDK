@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -80,6 +81,94 @@ void verify_aggregate_gpu_rollback(
     require(contains(scene.lost_pairs(),b,outside) &&
             !contains(scene.pairs(),b,outside),
             "Released actor failed source GPU lost-pair retirement");
+}
+
+
+// A real Dy failure after a completed GPU fetch must reject the Sc
+// transaction and reconstruct original AABB/SAP history on the next step.
+// This uses the source velocity-modification path, not a scripted GPU
+// report or a manually invoked history invalidation.
+void verify_aggregate_postfetch_sc_rollback(
+    fyzz::compute::Backend backend,
+    const char* sap_manifest,const char* aggregate_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            128u,128u,
+            fyzz::load_native_gpu_aggregate_shaders(backend,aggregate_manifest));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto root=scene.create_aggregate(2u,true);
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,root);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.4f,1.0f,0.0f},1.0f,root);
+    const auto outside=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.8f,1.0f,0.0f});
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId x,fyzz::BodyId y) {
+        const fyzz::native::Pair key{std::min(x,y),std::max(x,y)};
+        return std::find(pairs.begin(),pairs.end(),key)!=pairs.end();
+    };
+
+    scene.step(1.0f/120.0f);
+    require(contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside),
+            "Postfetch rollback fixture did not publish GPU aggregate contacts");
+    const auto previous_frame=scene.frame_index();
+    const auto previous_result=scene.solved_result_frame();
+    const auto previous_edge=scene.contact_edge_index({a,b});
+    require(previous_result==previous_frame,
+            "Postfetch rollback fixture has no completed source Dy result");
+
+    // This authored transform makes the fetched GPU frame remove a/b.
+    // Two separately valid, finite angular inputs overflow only when
+    // Dy::preIntegration combines the velocity-modification streams.
+    scene.set_position(a,{8.0f,1.0f,0.0f});
+    const float extreme=std::numeric_limits<float>::max()*0.75f;
+    scene.set_angular_velocity(a,{extreme,0.0f,0.0f});
+    scene.add_spatial_velocity_mod(
+        a,{extreme,0.0f,0.0f},
+        fyzz::ForceMode::VelocityChange,true);
+    const auto before=scene.body_state(a);
+    bool rejected=false;
+    try {
+        scene.step(1.0f/120.0f);
+    }catch(const std::overflow_error&) {
+        rejected=true;
+    }
+    require(rejected &&
+            producer->last_frame().update.counts.previous_boxes==2u,
+            "Dy overflow did not occur after a real source GPU fetch");
+    require(scene.frame_index()==previous_frame &&
+            scene.solved_result_frame()==previous_result &&
+            contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside) &&
+            scene.contact_edge_index({a,b})==previous_edge,
+            "Failed postfetch Dy continuation published partial Sc state");
+    const auto restored=scene.body_state(a);
+    require(restored.position.x==before.position.x &&
+            restored.angular_velocity.x==before.angular_velocity.x,
+            "Postfetch Sc rollback did not preserve authored actor motion");
+
+    scene.clear_spatial_velocity_mod(
+        a,fyzz::ForceMode::VelocityChange,true);
+    scene.set_angular_velocity(a,{});
+    scene.step(1.0f/120.0f);
+    require(producer->last_frame().update.counts.previous_boxes==0u &&
+            producer->last_frame().update.counts.created==2u,
+            "Failed GPU frame did not rebuild original root/SAP histories");
+    require(!contains(scene.pairs(),a,b) &&
+            contains(scene.lost_pairs(),a,b) &&
+            contains(scene.pairs(),b,outside) &&
+            scene.solved_result_frame()==scene.frame_index(),
+            "Retry after GPU fetch failed to publish canonical Sc lost/contact history");
+    scene.step(1.0f/120.0f);
+    require(scene.lost_pairs().empty() &&
+            !contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),b,outside),
+            "Postfetch retry replayed a stale GPU aggregate lost report");
 }
 
 void run(fyzz::compute::Backend backend,
@@ -211,8 +300,12 @@ int main(int argc,char** argv) {
 #if defined(FYZZXYZZY_TEST_D3D12)
         verify_aggregate_gpu_rollback(
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
+        verify_aggregate_postfetch_sc_rollback(
+            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
 #else
         verify_aggregate_gpu_rollback(
+            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
+        verify_aggregate_postfetch_sc_rollback(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
 #endif
         std::cout<<"Original source aggregate GPU World stage ownership PASS\n";
