@@ -121,6 +121,11 @@ std::vector<Candidate> discover_adapters() {
         info.supports_int64_wave = info.supports_int64_shader &&
                                    info.supports_wave_arithmetic;
         info.subgroup_size = waveOps ? opts.WaveLaneCountMin : 0u;
+        info.min_subgroup_size = info.subgroup_size;
+        info.max_subgroup_size = waveOps ? opts.WaveLaneCountMax : 0u;
+        info.supports_required_subgroup_size =
+            info.supports_wave_arithmetic && info.min_subgroup_size != 0u &&
+            info.max_subgroup_size >= info.min_subgroup_size;
         D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
         architecture.NodeIndex = 0;
         if (SUCCEEDED(probe->CheckFeatureSupport(
@@ -864,6 +869,16 @@ struct Context::Impl {
     PipelineId create_pipeline(const ComputePipelineDesc& desc) {
         if (desc.shader.format != ShaderFormat::Dxil || desc.shader.bytes.empty())
             throw std::invalid_argument("Native D3D12 requires compiled DXIL");
+        if (const auto width = desc.required_subgroup_size) {
+            if ((width & (width-1u)) != 0u ||
+                !info.supports_required_subgroup_size ||
+                width < info.min_subgroup_size ||
+                width > info.max_subgroup_size)
+                throw std::invalid_argument(
+                    "Required D3D12 wave width is unsupported by this adapter");
+            // SM6.6 DXIL [WaveSize] is authoritative at PSO creation.
+            // Host-side admission cannot override absent DXIL metadata.
+        }
         if (desc.shader.entry_point != "main" ||
             !desc.storage_buffer_binding_count || !desc.push_constant_bytes ||
             desc.push_constant_bytes % 4u || desc.push_constant_bytes / 4u > 62u)
