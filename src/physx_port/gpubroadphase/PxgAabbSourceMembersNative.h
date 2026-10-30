@@ -294,7 +294,9 @@ public:
         groups_[handle]=group;
         distances_[handle]=contact_distance;
         volume_to_actor_[handle]=actor;
+        const bool first_member=aggregate.size==0u;
         aggregate.updateBoundIndices[aggregate.size++]=handle;
+        if(first_member)++num_nonempty_aggregates_;
         if(canceled_retirement) {
             // No member-history removal/addition is emitted: the GPU
             // still owns its previous bound and comparison history.
@@ -341,6 +343,7 @@ public:
             "Source aggregate VolumeData differs from member array");
         aggregate.updateBoundIndices[i]=
             aggregate.updateBoundIndices[--aggregate.size];
+        if(!aggregate.size)--num_nonempty_aggregates_;
         if(!aggregate.size) {
             if(added_.boundedTest(aggregate.mIndex))
                 added_.boundedReset(aggregate.mIndex);
@@ -807,7 +810,7 @@ public:
     // Retired GPU slots remain allocated for ID reuse, but do not imply
     // active aggregate work after the last report has been fetched.
     bool aggregate_gpu_work_pending() const noexcept {
-        return num_active_aggregates_!=0u ||
+        return num_nonempty_aggregates_!=0u ||
             !dirty_aggregate_indices_.empty() ||
             !added_aggregate_members_.empty() ||
             !removed_aggregate_members_.empty();
@@ -1142,6 +1145,7 @@ private:
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
     physx::PxU32 num_active_aggregates_=0u;
+    physx::PxU32 num_nonempty_aggregates_=0u;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
 };
 
