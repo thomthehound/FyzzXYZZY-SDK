@@ -683,10 +683,12 @@ public:
                                 sizeof(physx::PxgBroadPhasePair);
         const auto lost_bytes=std::size_t(counts[1])*
                                sizeof(physx::PxgBroadPhasePair);
-        if(found_bytes)mapped.publish_at_fetch(
-            aggregate_found_mapped_.begin(),found_bytes);
-        if(lost_bytes)mapped.publish_at_fetch(
-            aggregate_lost_mapped_.begin(),lost_bytes);
+        if(found_bytes || lost_bytes) {
+            const std::array<SourceSapMappedReportSpan,2> reports{{
+                {aggregate_found_mapped_.begin(),found_bytes},
+                {aggregate_lost_mapped_.begin(),lost_bytes}}};
+            mapped.publish_batch_at_fetch(reports);
+        }
         aggregate_found_mapped_.forceSize_Unsafe(counts[0]);
         aggregate_lost_mapped_.forceSize_Unsafe(counts[1]);
         return {
