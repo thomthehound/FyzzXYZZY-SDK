@@ -297,8 +297,26 @@ jobs:
             build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
+      - name: Capture Windows native scene crashes
+        shell: pwsh
+        run: |
+          $dumpFolder = Join-Path $env:RUNNER_TEMP 'fyzzxyzzy-native-scene-dumps'
+          New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\fyzzxyzzy_native_scene_smoke.exe'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -PropertyType ExpandString -Value $dumpFolder -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpCount -PropertyType DWord -Value 2 -Force | Out-Null
       - name: Test
         run: ctest --test-dir build -C release --output-on-failure
+      - name: Preserve native scene crash dumps
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fyzzxyzzy-native-scene-crash-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fyzzxyzzy-native-scene-dumps/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Prove strict 48-frame coupled PGS conformance
         run: ctest --test-dir build -C release -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
       - name: Measure native serial/concurrent third-pass scheduler
