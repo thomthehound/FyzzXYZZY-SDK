@@ -86,6 +86,19 @@ the hardware is shipping-qualified. Production admission is tracked
 in [issue #47](https://github.com/thomthehound/FyzzXYZZY-SDK/issues/47);
 it is not yet enforced by the current compute context.
 
+**Physical wave-width contract:** The compute pipeline descriptor declares a
+required subgroup size only for algorithms that require a particular CUDA
+warp layout. Vulkan requests that width through core subgroup-size control
+when the default is different, after querying/enabling the feature and
+verifying compute-stage support; a fixed 32-lane default is also valid.
+D3D12 checks the SM6.6 WaveOps-supported range, and the compiled DXIL
+must embed the matching `[WaveSize(32)]` attribute so pipeline creation
+enforces it. Both backends reject unsupported requirements at pipeline
+creation. Width-agnostic native-wave SAP stages remain free to use 32
+or 64 lanes. The independent native wave32 tests verify rejection and
+actual physical width on adapters supporting it; software-adapter test
+success does not substitute for production AMD hardware acceptance.
+
 **Tiered execution strategy:**
 
 1. **Baseline:** optimized, source-faithful PhysX GPU kernels using
