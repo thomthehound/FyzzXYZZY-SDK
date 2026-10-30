@@ -396,6 +396,13 @@ void verify_combined_actor_aggregate_report_fetch(
     require(scene.pairs().empty() && scene.found_pairs().empty() &&
             scene.lost_pairs().empty(),
             "Combined actor/aggregate report fetch replayed stale GPU reports");
+    scene.set_position(member,{0.0f,1.0f,0.0f});
+    scene.set_position(standalone_b,{10.25f,1.0f,0.0f});
+    scene.advance_collision();
+    require(scene.pairs().size()==2u && scene.found_pairs().size()==2u &&
+            contains(scene.found_pairs(),member,outside) &&
+            contains(scene.found_pairs(),standalone_a,standalone_b),
+            "Mixed source GPU reports failed to recreate retired actor/aggregate pairs");
 }
 
 void run(fyzz::compute::Backend backend,
