@@ -22,9 +22,15 @@ struct SourceScBoxTransformInputNative {
     float position[3];
     float orientation[4];
     float half_extents[3];
-    std::uint32_t reserved=0;
+    float contact_distance=0.0f;
 };
 static_assert(sizeof(SourceScBoxTransformInputNative)==48u);
+
+struct SourceScBoxGeometryNative {
+    float half_extents[3];
+    float contact_distance;
+};
+static_assert(sizeof(SourceScBoxGeometryNative)==16u);
 
 // GPU outputs use the original PxBounds3 (24 bytes) and PxsCachedTransform
 // (32 bytes) element strides. The cache is shared by BP and future NP.
@@ -45,10 +51,10 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=3u;
+        desc.storage_buffer_binding_count=4u;
         desc.storage_buffer_views.assign(
-            3u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=16u;
+            4u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=20u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourceScBoxTransformBoundsNativeStage(
@@ -64,6 +70,7 @@ public:
                 CudaDeviceAddressMap::Address input,
                 CudaDeviceAddressMap::Address bounds,
                 CudaDeviceAddressMap::Address cache,
+                CudaDeviceAddressMap::Address geometry,
                 std::uint32_t count,
                 std::uint32_t capacity) const {
         if(!count)return;
@@ -74,7 +81,7 @@ public:
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
                 "Source Sc box transform GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,4> params{count};
+        std::array<std::uint32_t,5> params{count};
         auto view=[&](CudaDeviceAddressMap::Address address,
                       std::size_t bytes,std::uint32_t slot,
                       compute::BufferAccess access) {
@@ -90,7 +97,9 @@ public:
             view(bounds,source_allocation_bytes(capacity,24u),
                  1u,compute::BufferAccess::Write),
             view(cache,source_allocation_bytes(capacity,32u),
-                 2u,compute::BufferAccess::Write)};
+                 2u,compute::BufferAccess::Write),
+            view(geometry,source_allocation_bytes(capacity,16u),
+                 3u,compute::BufferAccess::Write)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),
                     params.data(),sizeof(params));
@@ -101,9 +110,10 @@ public:
                 CudaDeviceAddressMap::Address input,
                 CudaDeviceAddressMap::Address bounds,
                 CudaDeviceAddressMap::Address cache,
+                CudaDeviceAddressMap::Address geometry,
                 std::uint32_t count,
                 std::uint32_t capacity) const {
-        append(stream.commands(),addresses,input,bounds,cache,count,capacity);
+        append(stream.commands(),addresses,input,bounds,cache,geometry,count,capacity);
     }
 private:
     compute::Context& context_;
