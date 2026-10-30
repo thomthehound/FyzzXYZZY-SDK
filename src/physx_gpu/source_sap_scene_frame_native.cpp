@@ -32,9 +32,8 @@ void validate_source_sap_owned_aabb_aliases_native(
 
 namespace {
 
-// Enqueue the complete source GPU producer before any host report readback.
-// The same Sc/AABB/SAP owners and source stream remain authoritative while
-// later GPU collision stages are appended to this frame.
+// Queue source SAP and aggregate work before blocking Sc report
+// publication. Their device allocations remain owned through fetch.
 SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
     SourceSapSceneFrameNativeMembers members,
     SourceSapDmaNative& stream,
