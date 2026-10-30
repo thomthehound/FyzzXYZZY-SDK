@@ -246,6 +246,14 @@ void verify_retired_aggregate_stops_gpu_work(
     auto* producer=owner.get();
     scene.set_gpu_broadphase(std::move(owner));
     const auto root=scene.create_aggregate(1u,true);
+    // An admitted root without member shapes is not a SAP endpoint.
+    // After its initial descriptor reaches the GPU, repeated quiet frames
+    // must not execute aggregate stages merely because the root exists.
+    scene.advance_collision();
+    scene.advance_collision();
+    scene.advance_collision();
+    require(!producer->last_frame().update.execute_gpu_stages,
+            "Empty aggregate root forced a quiet source GPU update");
     const auto member=scene.add_dynamic_box(
         {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,root);
     const auto outside=scene.add_static_box(
