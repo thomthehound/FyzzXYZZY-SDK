@@ -17,7 +17,7 @@ ConstantBuffer<Parameters> params:register(b0,space0);
 [WaveSize(32)]
 #endif
 [numthreads(32,1,1)]
-void main() {
-    if(WaveGetLaneIndex()==0u)
+void main(uint3 thread:SV_GroupThreadID) {
+    if(thread.x==0u)
         output.Store(params.byteOffset,WaveGetLaneCount());
 }
