@@ -132,6 +132,8 @@ public:
         // must not terminate while unwinding that exception. The Context
         // retains submitted resources until its own final queue cleanup.
         (void)stream_.finish_shutdown();
+        box_input_.deallocate();
+        box_cache_.deallocate();
         aabb_.reset();
         sap_.reset();
         manager_->flushDeferredDeallocs();
