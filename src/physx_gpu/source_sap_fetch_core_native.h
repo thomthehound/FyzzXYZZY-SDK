@@ -63,13 +63,15 @@ inline SourceSapFetchedCounts fetch_source_sap_results_native(
     bool abort_mode,
     RotateHistories&& rotate_histories,
     SourceSapMappedReportView* mapped_roots,
-    PublishActorPairs&& publish_actor_pairs) {
+    PublishActorPairs&& publish_actor_pairs,
+    const physx::PxgBroadPhaseDesc* source_snapshot=nullptr) {
 
     const auto desc_source = addresses.resolve(
         descriptor_address, sizeof(physx::PxgBroadPhaseDesc));
     physx::PxgBroadPhaseDesc gpu_desc{};
-    context.download(desc_source.buffer, desc_source.offset,
-                     &gpu_desc, sizeof(gpu_desc));
+    if(source_snapshot)gpu_desc=*source_snapshot;
+    else context.download(desc_source.buffer, desc_source.offset,
+                          &gpu_desc, sizeof(gpu_desc));
 
     // The source asserts these invariants; the native boundary must also
     // reject corrupt GPU counts before an unsigned subtraction can wrap.
