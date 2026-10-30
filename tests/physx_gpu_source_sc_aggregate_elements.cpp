@@ -44,6 +44,18 @@ struct FailingAllocator final : physx::PxAllocatorCallback {
         delegate.deallocate(allocation);
     }
 };
+struct FaultingHostAllocator final : physx::Cm::VirtualAllocatorCallback {
+    physx::Cm::VirtualAllocatorCallback& source;
+    std::uint32_t reject_call=0u;
+    std::uint32_t calls=0u;
+    explicit FaultingHostAllocator(physx::Cm::VirtualAllocatorCallback& owner)
+        :source(owner) {}
+    void* allocate(std::size_t bytes,int group,const char* file,int line) override {
+        if(reject_call && ++calls==reject_call)return nullptr;
+        return source.allocate(bytes,group,file,line);
+    }
+    void deallocate(void* ptr) override {source.deallocate(ptr);}
+};
 struct Foundation {
     FailingAllocator allocator;
     Errors errors;
@@ -80,6 +92,41 @@ void run(Backend backend) {
         physx::PxgHeapMemoryAllocatorManager heap(
             1u<<20u,callback,pinned,mapped,abort,&aborted);
         auto allocators=physx::PxgCreateAllocatorDesc(heap);
+        // Inject an actual PinnableArray allocation failure after the
+        // bounds buffer has grown but before the source group array can.
+        // Recovery must complete all owner arrays, not return early based
+        // solely on BoundsArray capacity.
+        {
+            FaultingHostAllocator faulty(allocators.hostAlloc);
+            physx::PxgAllocatorDesc fail_allocators(
+                allocators.deviceAlloc,faulty,allocators.hostMappedAlloc);
+            PxgAabbSourceMembersNative probe(fail_allocators,8u);
+            faulty.reject_call=2u;
+            foundation.allocator.fail_next=true;
+            bool rejected=false;
+            try {probe.reserve_shapes(128u);}
+            catch(const std::exception&) {rejected=true;}
+            require(rejected && faulty.calls>=2u &&
+                    !foundation.allocator.fail_next &&
+                    probe.capacity()>=128u,
+                    "Source AABB growth fault was not exercised after bounds reservation");
+            faulty.reject_call=0u;
+            foundation.allocator.fail_next=false;
+            probe.reserve_shapes(128u);
+            const auto recovered=probe.scene_bounds();
+            require(recovered.groups.size()==probe.capacity() &&
+                    recovered.contact_distances.size()==probe.capacity() &&
+                    recovered.bounds.size()==probe.capacity(),
+                    "Failed PhysX AABB array growth was not repaired on retry");
+            const auto identity=probe.actor_lifetime();
+            require(identity.volume_data.size()==probe.capacity(),
+                    "Recovered source VolumeData does not match AABB capacity");
+            for(std::uint32_t i=8u;i<probe.capacity();++i)
+                require(recovered.groups[i]==physx::Bp::FilterGroup::eINVALID &&
+                        recovered.contact_distances[i]==0.0f &&
+                        !identity.volume_data[i].getUserData(),
+                        "Recovered PhysX AABB entries retained invalid source identity");
+        }
         {
             PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
             SourceScSceneElementsNative sc(owner);

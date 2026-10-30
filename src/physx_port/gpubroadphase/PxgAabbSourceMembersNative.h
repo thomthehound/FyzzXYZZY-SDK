@@ -124,26 +124,51 @@ public:
     PxgAabbSourceMembersNative& operator=(const PxgAabbSourceMembersNative&)=delete;
 
     void reserve_shapes(physx::PxU32 count) {
-        if(count<=bounds_.size())return;
         if(count>=BP_INVALID_BP_HANDLE-1u)
-            throw std::out_of_range("Source AABB volume capacity exceeds PhysX handle range");
-        if(!bounds_.initEntry(count-1u))
+            throw std::out_of_range(
+                "Source AABB volume capacity exceeds PhysX handle range");
+        const auto complete=[&] {
+            const auto capacity=bounds_.size();
+            const auto has_bits=[&](const auto& bitmap) {
+                return std::uint64_t(bitmap.getWordCount())*32u>=capacity;
+            };
+            return count<=capacity &&
+                groups_.size()==capacity &&
+                volumes_.size()==capacity &&
+                distances_.size()==capacity &&
+                volume_to_actor_.size()==capacity &&
+                has_bits(added_) && has_bits(removed_) &&
+                has_bits(changed_) && has_bits(aggregated_);
+        };
+        if(complete())return;
+        if(count>bounds_.size() && !bounds_.initEntry(count-1u))
             throw std::bad_alloc();
         const auto capacity=bounds_.size();
-        const auto prior=volumes_.size();
-        groups_.resize(capacity);
-        volumes_.resize(capacity);
-        distances_.resize(capacity);
+
+        // PxArray::resize returns false on allocation failure. Initialize
+        // each newly acquired range immediately, before another source
+        // allocation can fail. A retry completes partially grown arrays
+        // without replacing live source volume identities or BP groups.
+        const auto prior_groups=groups_.size();
+        if(!groups_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_groups;i<capacity;++i)
+            groups_[i]=physx::Bp::FilterGroup::eINVALID;
+
+        const auto prior_volumes=volumes_.size();
+        if(!volumes_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_volumes;i<capacity;++i)
+            volumes_[i].reset();
+
+        const auto prior_distances=distances_.size();
+        if(!distances_.resize(capacity))throw std::bad_alloc();
+        for(auto i=prior_distances;i<capacity;++i)
+            distances_[i]=0.0f;
+
         volume_to_actor_.resize(capacity,
             std::numeric_limits<BodyId>::max());
         if(!added_.resize(capacity) || !removed_.resize(capacity) ||
            !changed_.resize(capacity) || !aggregated_.resize(capacity))
             throw std::bad_alloc();
-        for(auto i=prior;i<capacity;++i) {
-            volumes_[i].reset();
-            groups_[i]=physx::Bp::FilterGroup::eINVALID;
-            distances_[i]=0.0f;
-        }
         persistent_state_changed_=true;
     }
 
@@ -211,7 +236,9 @@ public:
             if(id>=std::numeric_limits<physx::PxU32>::max()/2u)
                 throw std::out_of_range(
                     "PhysX aggregate ID exceeds VolumeData encoding");
-            if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
+            if(aggregates_.size()<=id &&
+               !aggregates_.resize(2u*id+1u))
+                throw std::bad_alloc();
             if(aggregate_max_shapes_.size()<=id)
                 aggregate_max_shapes_.resize(2u*id+1u);
             if(aggregate_gpu_member_starts_.size()<=id)
@@ -320,6 +347,12 @@ public:
                     std::numeric_limits<BodyId>::max()))
             throw std::logic_error(
                 "Original aggregate member handle has a different live or retired owner");
+        if(!dirty_aggregate_indices_.reserve(
+               dirty_aggregate_indices_.size()+1u) ||
+           (!canceled_retirement &&
+            !added_aggregate_members_.reserve(
+                added_aggregate_members_.size()+1u)))
+            throw std::bad_alloc();
         if(!aggregate.size) {
             if(removed_.boundedTest(aggregate.mIndex))
                 removed_.boundedReset(aggregate.mIndex);
@@ -347,8 +380,8 @@ public:
                 throw std::logic_error(
                     "Original aggregate pending retirement disappeared");
             if(!changed_.growAndSet(handle))throw std::bad_alloc();
-        }else
-            added_aggregate_members_.pushBack(handle);
+        }else if(!added_aggregate_members_.pushBack(handle))
+            throw std::bad_alloc();
         mark_aggregate_dirty(id);
         persistent_state_changed_=true;
         if(first_member)++num_nonempty_aggregates_;
@@ -384,6 +417,16 @@ public:
         while(i<aggregate.size && aggregate.updateBoundIndices[i]!=handle)++i;
         if(i==aggregate.size)throw std::logic_error(
             "Source aggregate VolumeData differs from member array");
+        const bool unpublished_candidate=
+            std::find(added_aggregate_members_.begin(),
+                      added_aggregate_members_.end(),handle)!=
+                added_aggregate_members_.end();
+        if(!dirty_aggregate_indices_.reserve(
+               dirty_aggregate_indices_.size()+1u) ||
+           (!unpublished_candidate &&
+            !removed_aggregate_members_.reserve(
+                removed_aggregate_members_.size()+1u)))
+            throw std::bad_alloc();
         aggregate.updateBoundIndices[i]=
             aggregate.updateBoundIndices[--aggregate.size];
         if(!aggregate.size) {
@@ -400,8 +443,8 @@ public:
         // otherwise the old and new GPU integer AABBs must be retired.
         const bool unpublished=
             added_aggregate_members_.findAndReplaceWithLast(handle);
-        if(!unpublished)
-            removed_aggregate_members_.pushBack(handle);
+        if(!unpublished && !removed_aggregate_members_.pushBack(handle))
+            throw std::bad_alloc();
         changed_.boundedReset(handle);
         aggregated_.boundedReset(handle);
         groups_[handle]=physx::Bp::FilterGroup::eINVALID;
@@ -433,6 +476,9 @@ public:
         // history can reuse this range only after source fetch completes.
         free_aggregate_member_slices_.reserve(
             free_aggregate_member_slices_.size()+1u);
+        if(!dirty_aggregate_indices_.reserve(
+            dirty_aggregate_indices_.size()+1u))
+            throw std::bad_alloc();
         const auto root=aggregate.mIndex;
         added_.boundedReset(root);
         changed_.boundedReset(root);
@@ -1116,7 +1162,8 @@ public:
                 volumes_[handle].reset();
             } else if(volumes_[handle].isAggregated()) {
                 if(!aggregated_.growAndSet(handle))throw std::bad_alloc();
-                added_aggregate_members_.pushBack(handle);
+                if(!added_aggregate_members_.pushBack(handle))
+                    throw std::bad_alloc();
             } else if(!volumes_[handle].isAggregate()) {
                 if(!added_.growAndSet(handle))throw std::bad_alloc();
             }
@@ -1230,8 +1277,11 @@ private:
     }
     void mark_aggregate_dirty(physx::Bp::AggregateHandle id) {
         if(!dirty_aggregates_.boundedTest(id)) {
-            if(!dirty_aggregates_.growAndSet(id))throw std::bad_alloc();
-            dirty_aggregate_indices_.pushBack(id);
+            if(!dirty_aggregates_.growAndReset(id))
+                throw std::bad_alloc();
+            if(!dirty_aggregate_indices_.pushBack(id))
+                throw std::bad_alloc();
+            dirty_aggregates_.set(id);
         }
     }
 
