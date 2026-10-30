@@ -179,7 +179,7 @@ inline void pre_update_source_sap_aabb_manager_native(
                            boxes->changed.data(),shape_bytes});
     }
     stream.queue_uploads(uploads);
-    if(shape_bytes) {
+    if(shape_bytes && manager.has_aggregates) {
         boxes->stage.append(stream,boxes->addresses,
             boxes->input_device.getDevicePtr(),
             manager.sap.bounds.getDevicePtr(),
