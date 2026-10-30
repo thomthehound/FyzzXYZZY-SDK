@@ -41,15 +41,16 @@ ShaderBinary load_shader(const char* path) {
     return binary;
 }
 using Aggregate=SourceAggregateGpuNativeRecord;
-constexpr std::uint32_t kBounds=160u,kMembers=80u;
-constexpr std::array<Aggregate,7> kAggregates{{
+constexpr std::uint32_t kBounds=320u,kMembers=208u;
+constexpr std::array<Aggregate,8> kAggregates{{
     {120u,0u,3u,0u},
     {121u,3u,37u,0u},
     {122u,40u,0u,0u},
     {123u,40u,1u,0u},
     {0xffffffffu,41u,2u,0u},
     {125u,44u,35u,0u},
-    {126u,79u,1u,0u}
+    {126u,79u,1u,0u},
+    {127u,80u,128u,0u}
 }};
 constexpr std::size_t boundsBytes=kBounds*6u*4u;
 constexpr std::size_t aggregateBytes=sizeof(kAggregates);
