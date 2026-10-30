@@ -1666,7 +1666,7 @@ void verify_source_shutdown_after_failed_submission(Backend backend) {
 }
 
 void verify_owned_source_world(
-    Backend backend,const std::array<const char*,34>& filenames,
+    Backend backend,const std::array<const char*,35>& filenames,
     const char* manifest) {
     bool rejected_missing_stages=false;
     try {
@@ -1826,7 +1826,7 @@ void verify_owned_source_world(
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 36)
+        if (argc != 37)
             throw std::invalid_argument("Expected source AABB, created, radix, indices, endpoint and region shader paths");
         Context context(
 #if defined(FYZZXYZZY_TEST_D3D12)
@@ -1859,7 +1859,7 @@ int main(int argc, char** argv) {
             Backend::Vulkan
 #endif
         );
-        std::array<const char*,34> filenames{};
+        std::array<const char*,35> filenames{};
         for(std::size_t i=0;i<filenames.size();++i)
             filenames[i]=argv[i+1u];
         verify_owned_source_world(
@@ -1868,7 +1868,7 @@ int main(int argc, char** argv) {
 #else
             Backend::Vulkan,
 #endif
-            filenames,argv[35]);
+            filenames,argv[36]);
         std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {

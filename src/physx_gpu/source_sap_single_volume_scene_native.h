@@ -24,7 +24,8 @@ prepare_source_sap_single_volume_scene_native(
     SourceSapSceneBounds arrays,
     const physx::Bp::BpFilter& filter,
     bool bounds_changed,
-    SourceSapSceneBoundsScratch& scratch) {
+    SourceSapSceneBoundsScratch& scratch,
+    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr) {
     // Source volume state and preBroadPhase must reference the exact
     // same original AABB-manager host arrays (not independently cloned
     // bounds, distance or group storage).
@@ -81,6 +82,6 @@ prepare_source_sap_single_volume_scene_native(
         live_boxes,live_handles,arrays,changes,filter,
         manager.persistent_state_changed || bounds_changed,
         manager.gpu_state_changed,scratch,
-        true); // mGroups is owned by original Sc shape admission.
+        true,gpu_records); // mGroups is owned by original Sc shape admission.
 }
 } // namespace fyzz::physx_gpu

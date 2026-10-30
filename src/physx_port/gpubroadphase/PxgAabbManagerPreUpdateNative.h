@@ -6,6 +6,7 @@
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpubroadphase/PxgSapBroadphaseDescriptorNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_gpu/source_aggregate_gpu_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "physx_port/lowlevelaabb/include/BpVolumeData.h"
@@ -27,6 +28,20 @@ struct SourceSapAabbManagerBitmapNative {
 
 // PxgAABBManager::preBpUpdate_GPU inputs. This does not construct a new
 // AABB manager or derive its bitmaps from Scene geometry.
+struct SourceSapGpuBoxTransformOwnersNative {
+    const SourceScBoxTransformBoundsNativeStage& stage;
+    physx::PxgCudaBuffer& input_device;
+    physx::PxgCudaBuffer& cached_transforms;
+};
+
+struct SourceSapGpuBoxTransformsNative {
+    const SourceScBoxTransformBoundsNativeStage& stage;
+    const CudaDeviceAddressMap& addresses;
+    physx::PxgCudaBuffer& input_device;
+    physx::PxgCudaBuffer& cached_transforms;
+    std::span<const SourceScBoxTransformInputNative> changed;
+};
+
 struct SourceSapAabbManagerPreUpdateNative {
     SourceSapPreBroadPhaseBuffers sap;
     SourceSapAabbManagerBitmapNative added;
@@ -46,6 +61,7 @@ struct SourceSapAabbManagerPreUpdateNative {
     physx::PxgCudaBuffer* aggregate_members_device = nullptr;
     physx::PxU32 aggregate_slots_count = 0;
     physx::PxU32 aggregate_member_capacity = 0;
+    const SourceSapGpuBoxTransformsNative* gpu_box_transforms = nullptr;
 };
 
 inline SourceSapAabbManagerDescriptorView
@@ -78,6 +94,9 @@ inline void pre_update_source_sap_aabb_manager_native(
             "GPU aggregate update requires the source aggregate GPU stage and owner");
     const bool state_changed =
         manager.persistent_state_changed || update.getStateChanged();
+    const auto* boxes=manager.gpu_box_transforms;
+    if(boxes && !state_changed && !boxes->changed.empty())
+        throw std::logic_error("GPU box transform requires source dirty AABB state");
     if(!state_changed && !manager.gpu_state_changed)return;
 
     // The AABB manager's bitmap uploads occur before preBroadPhase.
@@ -105,6 +124,13 @@ inline void pre_update_source_sap_aabb_manager_native(
     const auto changed_bytes=validate_bitmap(manager.changed);
     const auto volume_bytes=checked_bytes(
         state_changed?capacity:0u,sizeof(physx::Bp::VolumeData));
+    if(boxes && boxes->changed.size()>capacity)
+        throw std::out_of_range("GPU box transform count exceeds source AABB capacity");
+    const auto shape_bytes=boxes
+        ? checked_bytes(boxes->changed.size(),sizeof(SourceScBoxTransformInputNative))
+        : 0u;
+    const auto cache_bytes=boxes && shape_bytes
+        ? checked_bytes(capacity,32u) : 0u;
 
     const auto append_bitmap=[](
         std::vector<SourceSapUpload>& uploads,
@@ -138,14 +164,28 @@ inline void pre_update_source_sap_aabb_manager_native(
         // preBroadPhase follows the manager's original bitmap/volume
         // records without a kernel, copy or fence between them.
         append_pre_broadphase_native_uploads(
-            update,manager.sap,uploads,manager.changed.words,true);
+            update,manager.sap,uploads,manager.changed.words,true,
+            boxes!=nullptr);
     }
 
     if(state_changed || manager.gpu_state_changed) {
         manager.changed.device.allocate(changed_bytes,PX_FL);
         append_bitmap(uploads,manager.changed,changed_bytes);
     }
+    if(shape_bytes) {
+        boxes->input_device.allocate(shape_bytes,PX_FL);
+        boxes->cached_transforms.allocate(cache_bytes,PX_FL);
+        uploads.push_back({boxes->input_device.getDevicePtr(),
+                           boxes->changed.data(),shape_bytes});
+    }
     stream.queue_uploads(uploads);
+    if(shape_bytes && manager.has_aggregates) {
+        boxes->stage.append(stream,boxes->addresses,
+            boxes->input_device.getDevicePtr(),
+            manager.sap.bounds.getDevicePtr(),
+            boxes->cached_transforms.getDevicePtr(),
+            static_cast<std::uint32_t>(boxes->changed.size()),capacity);
+    }
 
     // PxgAABBManager::computeAggregateBounds (first pass), followed by
     // markAggregateBoundsBitmap (second pass before SAP update). The

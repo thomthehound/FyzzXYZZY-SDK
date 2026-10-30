@@ -970,7 +970,23 @@ public:
     physx::Bp::BroadPhaseUpdateData prepare(
         std::span<const native::GpuBroadphaseBox> live,
         std::span<const physx::Bp::ShapeHandle> handles,
-        const physx::Bp::BpFilter& filter) {
+        const physx::Bp::BpFilter& filter,
+        bool gpu_bounds = false,
+        bool republish_all_gpu_bounds = false) {
+        box_transform_records_.clear();
+        auto* records=gpu_bounds ? &box_transform_records_ : nullptr;
+        const auto republish_all=[&] {
+            if(!republish_all_gpu_bounds)return;
+            box_transform_records_.clear();
+            box_transform_records_.reserve(live.size());
+            for(std::size_t i=0;i<live.size();++i) {
+                const auto& b=live[i];
+                box_transform_records_.push_back({handles[i],
+                    {b.position.x,b.position.y,b.position.z},
+                    {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
+                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},0u});
+            }
+        };
         if(live.size()!=handles.size())
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
@@ -1032,7 +1048,7 @@ public:
                 {changed_.getWords(),changed_.getWordCount()}};
             write_source_sap_scene_bounds(
                 live,handles,scene_bounds(),bounds_scratch_,
-                &geometry_changes,true);
+                &geometry_changes,true,records);
             const auto update=physx::Bp::BroadPhaseUpdateData(
                 created_.begin(),created_.size(),
                 nullptr,0u,retired_.begin(),retired_.size(),
@@ -1042,6 +1058,7 @@ public:
                 gpu_state_changed_||aggregate_gpu_work_pending());
             validate_source_sap_volume_actor_lifetime_native(
                 actor_lifetime(),update,true);
+            republish_all();
             return update;
         }
         // Sc owns actor identity, while PxgAABBManager owns the volume
@@ -1055,14 +1072,20 @@ public:
         }
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
-            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_);
+            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,records);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
+        republish_all();
         return update;
     }
 
+    std::span<const SourceScBoxTransformInputNative> box_transform_records() const noexcept {
+        return box_transform_records_;
+    }
+
     SourceSapAabbManagerPreUpdateNative pre_update(
-        SourceSapPreBroadPhaseBuffers sap) noexcept {
+        SourceSapPreBroadPhaseBuffers sap,
+        const SourceSapGpuBoxTransformsNative* gpu_boxes=nullptr) noexcept {
         const bool aggregate_slots=aggregate_gpu_work_pending();
         return {sap,source_sap_aabb_bitmap_native(added_device_,added_),
             source_sap_aabb_bitmap_native(removed_device_,removed_),
@@ -1070,7 +1093,8 @@ public:
             source_sap_aabb_bitmap_native(changed_device_,changed_),
             volumes_device_,{volumes_.begin(),volumes_.size()},
             persistent_state_changed_,gpu_state_changed_ || aggregate_slots,
-            aggregate_slots};
+            aggregate_slots, nullptr,nullptr,nullptr,nullptr,0u,0u,
+            gpu_boxes};
     }
 
     // PxgAABBManager::updateBPFirstPass: validate the exact original
@@ -1083,7 +1107,8 @@ public:
         SourceSapPreBroadPhaseBuffers sap,
         const SourceAggregateGpuNativeStage& stage,
         const CudaDeviceAddressMap& addresses,
-        SourceSapDmaNative& stream) {
+        SourceSapDmaNative& stream,
+        const SourceSapGpuBoxTransformsNative* gpu_boxes=nullptr) {
         if(!aggregate_gpu_slot_count_)
             throw std::logic_error("No original aggregate slots for GPU pre-update");
         validate_pre_broadphase_native(update);
@@ -1098,7 +1123,7 @@ public:
         queue_aggregate_projection_gpu_storage(stream);
         queue_aggregate_self_report_gpu_dma_up(stream);
         queue_aggregate_pair_gpu_storage(stream);
-        auto manager=pre_update(sap);
+        auto manager=pre_update(sap,gpu_boxes);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
         manager.aggregate_slots_device=&aggregate_slots_device_;
@@ -1325,6 +1350,7 @@ private:
     physx::PxgCudaBuffer projection_bound_history_0_,projection_bound_history_1_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
+    std::vector<SourceScBoxTransformInputNative> box_transform_records_;
     // Transient original first-pass member geometry handles; Bp root
     // deltas and all persistent identity/history remain AABB-owned.
     std::vector<physx::Bp::ShapeHandle> aggregate_geometry_created_;

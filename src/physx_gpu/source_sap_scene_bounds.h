@@ -3,6 +3,7 @@
 #pragma once
 
 #include "native/scene.h"
+#include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 #include "foundation/PxBounds3.h"
 #include "foundation/PxMat33.h"
@@ -65,7 +66,8 @@ inline void write_source_sap_scene_bounds(
     SourceSapSceneBounds output,
     SourceSapSceneBoundsScratch& scratch,
     const SourceSapSceneFrameChanges* changes = nullptr,
-    bool preserve_source_owned_metadata = false) {
+    bool preserve_source_owned_metadata = false,
+    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr) {
 
     if(boxes.size()!=source_handles.size() ||
        output.bounds.size()!=output.contact_distances.size() ||
@@ -77,7 +79,7 @@ inline void write_source_sap_scene_bounds(
     // source handle population each frame. All writes remain deferred
     // until every geometry and group value has passed validation.
     scratch.visit_epochs.resize(output.bounds.size(),0u);
-    scratch.prepared_bounds.resize(boxes.size());
+    if(!gpu_records)scratch.prepared_bounds.resize(boxes.size());
     // Reserve the following stamp for created/updated volumes in this
     // frame. Both stamps are distinct from every previous frame.
     if(scratch.epoch>=std::numeric_limits<std::uint32_t>::max()-2u) {
@@ -135,7 +137,7 @@ inline void write_source_sap_scene_bounds(
            box.motion!=native::GpuBroadphaseBox::Motion::Static &&
            box.id>=((std::numeric_limits<physx::PxU32>::max()>>3)-1u))
             throw std::out_of_range("Source SAP rigid group ID exceeds encoded range");
-        if(!changes)stage_bounds(i);
+        if(!changes && !gpu_records)stage_bounds(i);
     }
 
     if(changes) {
@@ -192,17 +194,25 @@ inline void write_source_sap_scene_bounds(
             if((handle>>5u)<changed_words.size() &&
                (changed_words[handle>>5u] & (1u<<(handle&31u))))
                 scratch.visit_epochs[handle]=changed_epoch;
-            if(scratch.visit_epochs[handle]==changed_epoch)
+            if(scratch.visit_epochs[handle]==changed_epoch && !gpu_records)
                 stage_bounds(i);
         }
     }
 
+    if(gpu_records)gpu_records->clear();
     for(std::size_t i=0;i<boxes.size();++i) {
         const auto handle=source_handles[i];
         if(changes && scratch.visit_epochs[handle]!=changed_epoch)
             continue;
         const auto& b=boxes[i];
-        output.bounds[handle]=scratch.prepared_bounds[i];
+        if(gpu_records) {
+            gpu_records->push_back({handle,
+                {b.position.x,b.position.y,b.position.z},
+                {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
+                {b.half_extents.x,b.half_extents.y,b.half_extents.z},0u});
+        }else {
+            output.bounds[handle]=scratch.prepared_bounds[i];
+        }
         // The source AABBManagerBase::setContactDistance owns the
         // contact distance, independently of native Sc box snapshots.
         // Never undo a source contact-offset edit when uploading bounds.
@@ -234,10 +244,11 @@ inline physx::Bp::BroadPhaseUpdateData prepare_source_sap_scene_update(
     bool state_changed,
     bool gpu_state_changed,
     SourceSapSceneBoundsScratch& scratch,
-    bool preserve_source_owned_metadata = false) {
+    bool preserve_source_owned_metadata = false,
+    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr) {
     write_source_sap_scene_bounds(
         live_boxes,live_source_handles,arrays,scratch,&changes,
-        preserve_source_owned_metadata);
+        preserve_source_owned_metadata,gpu_records);
     return physx::Bp::BroadPhaseUpdateData(
         changes.created.data(),static_cast<physx::PxU32>(changes.created.size()),
         changes.updated.data(),static_cast<physx::PxU32>(changes.updated.size()),

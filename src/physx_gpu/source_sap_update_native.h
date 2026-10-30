@@ -17,6 +17,7 @@
 #include <vector>
 
 namespace fyzz::physx_gpu {
+struct SourceSapGpuBoxTransformsNative;
 
 // Borrowed GPU stages corresponding to the original sequence of calls in
 // PxgCudaBroadPhaseSap::update(). The source owner retains all pipelines,
@@ -116,5 +117,6 @@ SourceSapUpdateAdmission advance_source_sap_frame_native(
     bool& force_update,
     const SourceSapUpdateNativeStages& stages,
     const CudaDeviceAddressMap& addresses,
-    const SourceSapUpdateNativeFrame& frame);
+    const SourceSapUpdateNativeFrame& frame,
+    const SourceSapGpuBoxTransformsNative* gpu_box_transforms=nullptr);
 } // namespace fyzz::physx_gpu

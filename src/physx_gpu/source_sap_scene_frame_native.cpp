@@ -90,7 +90,9 @@ SourceSapUpdateAdmission queue_source_sap_scene_frame_native(
     // persistent allocations until its fetch continuation has completed.
     const auto admission=advance_source_sap_frame_native(
         members.aabb_update,dma,stream,force_update,stages,
-        addresses,members.update);
+        addresses,members.update,
+        members.aabb_manager.has_aggregates
+            ? nullptr : members.aabb_manager.gpu_box_transforms);
     // Original PxgAABBManager::updateBPSecondPass postBPStage2 begins
     // after PxgCudaBroadPhaseSap::update. Newly admitted and retired
     // aggregate members must invalidate the descriptor's integer AABB
@@ -306,16 +308,28 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     if(original_pre_update.has_aggregates && !inputs.aggregate_stages)
         throw std::logic_error(
             "Original aggregate Sc frame requires the complete source GPU kernel bundle");
+    const auto sap_buffers=sap.pre_broadphase_buffers();
     const auto update=aabb.prepare(
-        inputs.live_boxes,inputs.live_handles,inputs.filter);
+        inputs.live_boxes,inputs.live_handles,inputs.filter,
+        inputs.gpu_box_owners!=nullptr,
+        inputs.gpu_box_owners && aabb.capacity()>sap_buffers.boxes_capacity);
+    std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
+    if(inputs.gpu_box_owners) {
+        const auto& owner=*inputs.gpu_box_owners;
+        gpu_boxes.emplace(SourceSapGpuBoxTransformsNative{
+            owner.stage,addresses,owner.input_device,owner.cached_transforms,
+            aabb.box_transform_records()});
+    }
     const auto lifetime=aabb.actor_lifetime();
     // SourceSapSceneFrameNativeMembers borrows this view by reference;
     // keep the borrowed original member aliases alive through GPU fetch.
-    const auto source_pre_update=aabb.pre_update(sap.pre_broadphase_buffers());
+    const auto source_pre_update=aabb.pre_update(
+        sap.pre_broadphase_buffers(),gpu_boxes ? &*gpu_boxes : nullptr);
     const auto pre_update=source_pre_update.has_aggregates
         ? aabb.aggregate_pre_update(
             update,sap.pre_broadphase_buffers(),
-            inputs.aggregate_stages->bounds,addresses,stream)
+            inputs.aggregate_stages->bounds,addresses,stream,
+            gpu_boxes ? &*gpu_boxes : nullptr)
         : source_pre_update;
     const auto* aggregate=inputs.aggregate_stages;
     const SourceSapSceneFrameNativeMembers members{
