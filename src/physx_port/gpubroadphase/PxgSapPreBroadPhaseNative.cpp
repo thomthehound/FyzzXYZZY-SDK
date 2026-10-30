@@ -44,9 +44,6 @@ std::optional<std::pair<physx::PxU32,physx::PxU32>>
 contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
                         std::span<const physx::PxU32> changed) {
     const auto capacity=update.getCapacity();
-    if(changed.size()<(std::uint64_t(capacity)+31u)/32u)
-        throw std::invalid_argument(
-            "Source GPU changed map cannot address all AABB volumes");
     const auto* created=update.getCreatedHandles();
     const auto* updated=update.getUpdatedHandles();
     const auto created_count=update.getNumCreatedHandles();
@@ -63,8 +60,11 @@ contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
                               updated[updated_index]==i;
         if(in_created)++created_index;
         if(in_updated)++updated_index;
-        const bool dirty=(changed[i>>5u] & (1u<<(i&31u)))!=0u ||
-                          in_created || in_updated;
+        // Original PinnableBitMap::boundedTest treats unallocated high
+        // words as zero; changed storage grows independently of bounds.
+        const bool dirty=((i>>5u)<changed.size() &&
+                          (changed[i>>5u] & (1u<<(i&31u)))!=0u) ||
+                         in_created || in_updated;
         if(dirty) {
             if(gap)return std::nullopt;
             if(first==capacity)first=i;
