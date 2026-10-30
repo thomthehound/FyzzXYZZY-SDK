@@ -46,27 +46,27 @@ public:
         : context_(context), addresses_(addresses) {}
 
     void queue_uploads(const std::vector<SourceSapUpload>& uploads) {
-        std::vector<compute::UploadSpan> resolved;
-        resolved.reserve(uploads.size());
+        resolved_uploads_.clear();
+        resolved_uploads_.reserve(uploads.size());
         for (const auto& upload : uploads) {
             // CUDA zero-byte HtoD copies enqueue no transfer.
             if (!upload.bytes) continue;
             if (!upload.data)
                 throw std::invalid_argument("PhysX source HtoD upload has no host data");
             const auto target = addresses_.resolve(upload.destination, upload.bytes);
-            resolved.push_back({target.buffer, target.offset,
-                                upload.data, upload.bytes});
+            resolved_uploads_.push_back({target.buffer, target.offset,
+                                         upload.data, upload.bytes});
         }
-        if (resolved.empty()) return;
+        if (resolved_uploads_.empty()) return;
         tokens_.reserve(tokens_.size() + (pending_.empty() ? 1u : 2u));
         flush_gpu_commands();
         // The Context snapshots host bytes and owns the GPU staging resource
         // until the corresponding completion token is reaped.
-        const auto token = context_.submit_upload_batch(resolved);
+        const auto token = context_.submit_upload_batch(resolved_uploads_);
         tokens_.push_back(token);
         ++stats_.upload_batches;
-        stats_.upload_spans += resolved.size();
-        for (const auto& span : resolved) stats_.upload_bytes += span.bytes;
+        stats_.upload_spans += resolved_uploads_.size();
+        for (const auto& span : resolved_uploads_) stats_.upload_bytes += span.bytes;
     }
 
     // Original PxgCudaBuffer::allocateCopyOldDataAsync copies RAW mPtr
@@ -97,6 +97,21 @@ public:
     // Appenders provide their own all-or-nothing source field validation.
     std::vector<compute::BatchCommand>& commands() noexcept { return pending_; }
 
+    // A complete source update is validated here before being committed to
+    // mStream. Retaining the scratch capacity avoids reallocating its
+    // command sequence on every frame, including after a failed update.
+    std::vector<compute::BatchCommand>& update_scratch() noexcept {
+        update_scratch_.clear();
+        return update_scratch_;
+    }
+
+    // The caller submits each host snapshot before borrowing this storage
+    // again. Source heap allocations and GPU submission order are unchanged.
+    std::vector<SourceSapUpload>& upload_scratch() noexcept {
+        upload_scratch_.clear();
+        return upload_scratch_;
+    }
+
     // Submit existing source-ordered device commands without a host wait.
     compute::SubmissionId submit() { return flush_gpu_commands(); }
 
@@ -113,18 +128,27 @@ public:
     // PxgAABBManager releases found/lost tasks. Reap all staging/command
     // tokens; waiting the last ordered submission implies GPU visibility
     // of the preceding submissions on the same Context queue.
+    // At scene teardown there is no caller to propagate a failed source
+    // completion to. Keep the Context responsible for already-submitted
+    // resources and drop only commands that never entered the native queue.
+    // This is not a recovery path: the source scene is being destroyed.
+    bool finish_shutdown() noexcept {
+        try {
+            wait_at_fetch();
+            return true;
+        } catch (...) {
+            pending_.clear();
+            return false;
+        }
+    }
+
     void wait_at_fetch() {
         flush_gpu_commands();
-        std::size_t completed = 0;
-        try {
-            for (const auto token : tokens_) {
-                context_.wait_submission(token);
-                ++completed;
-            }
-        } catch (...) {
-            tokens_.erase(tokens_.begin(), tokens_.begin() + completed);
-            throw;
-        }
+        if(tokens_.empty())return;
+        // One fence on the last ordered submission completes every earlier
+        // GPU upload, copy and kernel. Retire their staging and descriptors
+        // together without issuing an OS fence wait for each older token.
+        context_.wait_submissions(tokens_);
         tokens_.clear();
     }
 
@@ -142,6 +166,9 @@ private:
     compute::Context& context_;
     const CudaDeviceAddressMap& addresses_;
     std::vector<compute::BatchCommand> pending_;
+    std::vector<compute::BatchCommand> update_scratch_;
+    std::vector<SourceSapUpload> upload_scratch_;
+    std::vector<compute::UploadSpan> resolved_uploads_;
     std::vector<compute::SubmissionId> tokens_;
     SubmissionStats stats_;
 };

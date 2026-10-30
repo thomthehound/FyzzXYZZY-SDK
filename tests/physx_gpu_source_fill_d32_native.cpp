@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_gpu/source_fill_d32_native.h"
+#include "physx_gpu/source_sap_aabb_report_retire_native.h"
 #include "physx_gpu/source_native_view.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
@@ -199,6 +200,68 @@ void exercise_source_dma_order(Context& ctx, SourceFillD32NativeStage& stage) {
     ctx.destroy_buffer(root);
 }
 
+void exercise_source_aabb_bitmap_retirement(
+    Context& context,SourceFillD32NativeStage& stage) {
+    const auto root=context.create_buffer(4096u,MemoryPlacement::DeviceLocal);
+    CudaDeviceAddressMap addresses;
+    const auto a=addresses.register_slice(root,256u,512u);
+    const auto b=addresses.register_slice(root,1280u,512u);
+    std::array<std::uint32_t,1024u> starting{};
+    starting.fill(kCanary);
+    context.upload(root,0u,starting.data(),sizeof(starting));
+    std::array<std::uint32_t,4u> addedHost{1u,2u,3u,4u};
+    std::array<std::uint32_t,4u> removedHost{5u,6u,7u,8u};
+    SourceSapDmaNative stream(context,addresses);
+    const SourceSapAabbReportBitmapNative added{a,512u,addedHost};
+    const SourceSapAabbReportBitmapNative removed{b,512u,removedHost};
+
+    // An invalid LATE GPU bitmap must not zero either host map or append
+    // the earlier valid clear to the original PhysX source command list.
+    reject([&] {
+        retire_source_sap_aabb_report_bitmaps_native(
+            stream,stage,addresses,added,
+            {b+508u,512u,removedHost});
+    },"Invalid second original AABB bitmap was accepted");
+    check(stream.commands().empty() && addedHost[0]==1u &&
+          removedHost[0]==5u,
+          "Rejected AABB bitmap retirement consumed the source frame");
+
+    // A fetched pair can fail Sc admission after both native bitmap
+    // addresses validated. Discarded retirement preparations must leave
+    // both host bitmaps and the pending GPU stream entirely unchanged.
+    {
+        const auto uncommitted=prepare_source_sap_aabb_report_retirement_native(
+            stream,stage,addresses,added,removed);
+        check(uncommitted.commands.size()==2u && stream.commands().empty() &&
+              addedHost[0]==1u && removedHost[0]==5u,
+              "Rejected Sc fetch partially retired original source bitmaps");
+    }
+
+    retire_source_sap_aabb_report_bitmaps_native(
+        stream,stage,addresses,added,removed);
+    check(stream.commands().size()==2u &&
+          std::all_of(addedHost.begin(),addedHost.end(),
+                      [](auto word){return word==0u;}) &&
+          std::all_of(removedHost.begin(),removedHost.end(),
+                      [](auto word){return word==0u;}),
+          "Source AABB report publication did not retire both bitmaps");
+
+    // Source's next frame uploads after the bitmap clears, in the SAME
+    // native stream, without an extra CPU wait between frames.
+    constexpr std::uint32_t nextFrame=0x197bdeafu;
+    stream.queue_uploads({{a+8u,&nextFrame,sizeof(nextFrame)}});
+    stream.wait_at_fetch();
+    auto expected=starting;
+    std::fill_n(expected.begin()+256u/4u,128u,0u);
+    std::fill_n(expected.begin()+1280u/4u,128u,0u);
+    expected[(256u+8u)/4u]=nextFrame;
+    std::array<std::uint32_t,1024u> observed{};
+    context.download(root,0u,observed.data(),sizeof(observed));
+    check(observed==expected,
+          "PhysX GPU bitmap retirement reordered fills and next-frame uploads");
+    context.destroy_buffer(root);
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
@@ -220,6 +283,7 @@ int main(int argc,char** argv) {
         SourceFillD32NativeStage stage(ctx,load_shader(argv[1]));
         run(ctx,stage);
         exercise_source_dma_order(ctx,stage);
+        exercise_source_aabb_bitmap_retirement(ctx,stage);
         std::cout<<"Original PhysX CUDA memsetD32Async native GPU fill PASS\n";
         return 0;
     }catch(const std::exception& e){

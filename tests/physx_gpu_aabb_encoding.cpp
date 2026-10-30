@@ -174,21 +174,43 @@ void run_ordered_batch(Context& context, AabbEncodingStage& stage) {
     commands.emplace_back(CopyCommand{output, 0, first_snapshot, 0, bound_bytes});
     stage.append(commands, box, distance, env, output, p);
     if (commands.size() != 3) throw std::runtime_error("PhysX batch did not record three operations");
-    // The native D3D12 bounded AABB pipeline uses t0..t2 SRVs.
-    // Explicitly claiming writes to those sources must be rejected before
-    // recording GPU work, rather than silently disregarding metadata.
-#if defined(FYZZXYZZY_TEST_D3D12)
-    auto invalid_access = std::get<DispatchCommand>(commands.front());
-    invalid_access.buffers[0].access = BufferAccess::Write;
+    // The source AABB inputs remain logically read-only on both backends.
+    // D3D12 can bind them through UAVs when source PhysX buddy allocations
+    // share a resource with the destination; reject a caller that falsely
+    // declares a write before it is committed to the original GPU stream.
+    const auto before_invalid = commands.size();
+    std::array<BufferBinding, 4> invalid_views{};
+    const auto& valid = std::get<DispatchCommand>(commands.front());
+    std::copy(valid.buffers.begin(), valid.buffers.end(), invalid_views.begin());
+    invalid_views[0].access = BufferAccess::Write;
     bool rejected_access = false;
     try {
-        context.submit_batch({invalid_access});
+        stage.append_views(commands, invalid_views, p, false);
     } catch (const std::invalid_argument&) {
         rejected_access = true;
     }
-    if (!rejected_access)
-        throw std::runtime_error("Writable PhysX AABB input SRV access was accepted");
-#endif
+    if (!rejected_access || commands.size() != before_invalid)
+        throw std::runtime_error("Writable PhysX AABB source view was admitted");
+    invalid_views[0].access = BufferAccess::Read;
+    invalid_views[3].access = BufferAccess::Read;
+    rejected_access = false;
+    try {
+        stage.append_views(commands, invalid_views, p, false);
+    } catch (const std::invalid_argument&) {
+        rejected_access = true;
+    }
+    if (!rejected_access || commands.size() != before_invalid)
+        throw std::runtime_error("Read-only PhysX AABB output was admitted");
+    invalid_views[3].access = BufferAccess::Write;
+    invalid_views[1].access = BufferAccess::Unspecified;
+    rejected_access = false;
+    try {
+        stage.append_views(commands, invalid_views, p, false);
+    } catch (const std::invalid_argument&) {
+        rejected_access = true;
+    }
+    if (!rejected_access || commands.size() != before_invalid)
+        throw std::runtime_error("Unspecified PhysX AABB distance access was admitted");
     context.wait_submission(context.submit_batch(commands));
 
     std::vector<IntegerBounds> before(p.count), after(p.count);

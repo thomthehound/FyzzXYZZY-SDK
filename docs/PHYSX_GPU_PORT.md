@@ -19,6 +19,175 @@ Status: initial source-grounded execution-path audit. This is a port dependency
 map, not a claim that any PhysX GPU subsystem has been implemented on Vulkan or
 D3D12. Source reference: the PhysX CUDA and host algorithms, without a fixed external source revision.
 
+## N2 source aggregate GPU AABB prepass
+
+`PxgAabbSourceMembersNative::aggregate_pre_update` now connects
+the source dirty aggregate membership DMA to the existing
+`SourceSapAabbManagerPreUpdateNative` boundary. The source
+`pre_update_source_sap_aabb_manager_native` performs its original
+added/removed/aggregated/changed bitmap and
+`PxgCudaBroadPhaseSap::preBroadPhase` bounds, contact-distance and
+group uploads before appending translated
+`aggregate.cu::updateAggregateBounds` and
+`markAggregateBoundsUpdatedBitmap` kernels. Both use the borrowed
+`PxgCudaBuffer` heap allocations and the existing source command
+stream. One GPU command batch runs both shaders, with no intermediate
+CPU reduction or readback.
+
+The native owner conformance runs those stages on actual GPU buffers
+owned by `PxgAabbSourceMembersNative` and
+`PxgSapSourceMembersNative` (Vulkan/SPIR-V and D3D12/DXIL).
+It tests inflated union roots, source member-to-root changed-bit
+promotion, movement/contact-distance edits, member removal,
+and invalidation after aggregate destruction. Original AABB
+post-fetch cleanup retires dirty IDs only after GPU completion.
+
+This gate only connects aggregate AABB *prepasses*. The complete
+`PxgAABBManager::postBPStage2` aggregate self-collision,
+aggregate-pair classification/history, and Sc member contact
+reporting are not yet connected, so public aggregate World
+execution continues to fail closed.
+
+## N2 source aggregate GPU membership DMA
+
+The original `PxgAABBManager` GPU DMA path now uses
+`PxgAabbSourceMembersNative::queue_aggregate_gpu_dma_up` to publish
+dirty `PxgAggregate` slots and their authoritative
+`updateBoundIndices` members through the **same** PhysX GPU heap
+and `SourceSapDmaNative` stream. Logical per-aggregate device member
+pointers are lowered into stable reserved slices of one source-owned
+`PxgCudaBuffer` so Vulkan/D3D12 can bind the original membership
+without a second host registry. The source's member allocation is
+retained on deferred ID reuse, and grown only when the new aggregate
+capacity exceeds its prior reservation.
+
+Each source dirty index sends one 16-byte native descriptor and only
+its live members. The two device buffers retain existing bytes across
+capacity growth using `PxgCudaBuffer::allocateCopyOldDataAsync`.
+No frame-time full-member repack, extra command queue, CPU overlap
+test or second pair lifecycle is introduced. The native GPU AABB
+regression downloads the real PhysX-heap source descriptors and
+member slices to verify admission, selective upload size,
+swap-with-last updates and destroyed-slot invalidation.
+
+The previously translated union-bounds and changed-bitmap kernels
+can consume these owner-produced aggregate descriptors via
+`aggregate_gpu_buffers`, using the ordinary SAP GPU bounds,
+contact distances and AABB changed bitmap. Executing these stages
+within full Sc aggregate preBroadPhase/report processing is the next
+gate, not something this DMA admission alone claims to support.
+
+## N2 source AABB aggregate membership
+
+`PxgAabbSourceMembersNative` now owns the original PhysX
+`PxgAggregate` records and `Cm::DeferredIDPool` alongside its existing
+source `Bp::VolumeData`, group, distance, bounds, and handle bitmaps.
+Its aggregate creation follows `PxgAABBManager::createAggregate`:
+the root is initialized with an empty `PxBounds3` and does not enter
+SAP until the first shape is admitted. Aggregate member
+`VolumeData::setAggregated` encodes ownership without creating a
+second SAP endpoint. The membership array uses source
+`updateBoundIndices`; removals swap with the last live member,
+retire the root when its last member disappears, and defer aggregate
+ID reuse until report cleanup.
+
+The source-owned GPU AABB conformance test exercises empty-root
+creation, first/second member admission, dirty-index deduplication,
+swap-with-last removal, same-frame root admission cancellation,
+and deferred aggregate ID recycling. This validates the original
+AABB-manager host ownership transitions. Scene `World` deliberately
+does not yet accept aggregate roots: SAP pair expansion and Sc
+member-level report publication are still missing. The existing
+single-volume scene preparation explicitly fails closed when it
+encounters a live aggregate rather than misrepresenting a root as
+an ordinary rigid actor.
+
+## N2 GPU aggregate union bounds source translation
+
+The native aggregate bounds and changed-bitmap shaders
+`src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl` and
+`src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl`
+port `gpubroadphase/src/CUDA/aggregate.cu::updateAggregateBounds`
+and `markAggregateBoundsUpdatedBitmap` in the original update order.
+The source's 32-lane per-aggregate minimum/maximum reduction (four
+warps per workgroup), contact-distance inflation, root-handle write
+and invalid-aggregate skip are retained on Vulkan and D3D12.
+The CUDA warp XOR shuffles are lowered to 32-lane shared-memory
+reductions, independent of the adapter's native subgroup width.
+
+The source-native host stage now lives in
+`src/physx_gpu/source_aggregate_gpu_native.h`. It borrows the
+original AABB manager's GPU bounds, distances, aggregate records,
+member indices, and changed-bit storage via `CudaDeviceAddressMap`.
+Both kernels append to the existing `SourceSapDmaNative` stream with
+explicit read/write resource intents, one transactional append, and
+one source fetch fence. Native buffer bindings and shader-local
+address offsets are lowered from the five original allocation views;
+several `PxgCudaBuffer` allocations may occupy one physical buddy
+heap root. The independent Vulkan/D3D12 conformance now exercises
+this shared-root case with nonzero offsets on both stages.
+
+The stage adapter is ready for `PxgAABBManager::gpuDmaDataUp` and
+`computeAggregateBounds` integration, but World does not yet admit
+aggregated shapes. No second aggregate registry or per-frame CPU
+reduction has been introduced.
+
+The standalone conformance uses actual GPU dispatch for one- and
+multi-member aggregates, a 35-member aggregate spanning two warp
+iterations, inactive aggregates and a second workgroup. It compares
+the resulting `PxBounds3` envelopes and source aggregate-root/member
+dirty-bit transitions with independent host oracles. The two kernels
+execute in one ordered GPU batch with no intervening CPU readback.
+This is the source `computeAggregateBounds` kernel translation,
+**not** a claim that `PxgAABBManager::createAggregate`, GPU aggregate
+self-collision, pair expansion, or Sc aggregate report publication are
+implemented. The original GPU aggregate member/descriptor allocation,
+the sorting/collision stages, and aggregate pair report retirement
+must be integrated before N2 supports aggregate actors in World.
+
+## N2 native source SAP shader bundle
+
+The independent source SAP broadphase is constructed by
+`fyzz::create_native_gpu_world` in `fyzzxyzzy/native_gpu_world.h`.
+The GPU World owns one Vulkan or D3D12 Context, the original PhysX GPU
+buddy heap, source AABB/SAP histories, command stream and all 34 compiled
+source kernels. Found/lost reports enter the existing native Sc/PCM/Dy
+scene. This does not claim an independent GPU Dy solver.
+
+The source-free GPU conformance configuration builds deployable shader
+assets from the same HLSL commands used by the SAP lifecycle tests:
+
+```sh
+cmake -S . -B build-native -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_BUILD_VULKAN=ON
+cmake --build build-native --target fyzzxyzzy_native_gpu_sap_shaders
+```
+
+On Windows select `FYZZXYZZY_BUILD_D3D12=ON` instead of Vulkan and
+build `fyzzxyzzy_native_gpu_sap_shaders_d3d12`. DXC is required at
+configuration. The generated manifests are
+`build-native/kernels/fyzzxyzzy_native_sap_spirv.manifest` and
+`build-native/kernels/fyzzxyzzy_native_sap_dxil.manifest`, respectively.
+Deploy the manifest with its compiled shader files in the same directory;
+the file names in the manifest are relative, not build-machine paths.
+
+The production factory accepts the manifest directly:
+
+```cpp
+fyzz::WorldOptions options{fyzz::ExecutionMode::NativePortableGpu};
+auto world=fyzz::create_native_gpu_world(
+    fyzz::compute::Backend::Vulkan,"kernels/fyzzxyzzy_native_sap_spirv.manifest",
+    options);
+```
+
+The loader rejects missing stages, incorrect stage order, unsupported
+manifest versions, and mismatched backend binaries before GPU World
+construction. The existing Vulkan and D3D12 lifecycle tests independently
+compare all loaded binary stages with their original compiler outputs and
+execute real Sc contact found/lost/quiet frames through this factory.
+The plain `World(WorldOptions{NativePortableGpu})` selector remains
+fail-closed until the SDK's default device and shader deployment policy is
+implemented; it never selects the CPU broadphase as a substitute.
+
 ## Port boundary
 
 FyzzXYZZY ports PhysX GPU physics **into its own native simulation pipeline**, preserving the original source task and dataflow dependencies.

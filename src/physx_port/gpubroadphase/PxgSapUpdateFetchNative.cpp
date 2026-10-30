@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "physx_port/gpubroadphase/PxgSapUpdateFetchNative.h"
-#include "BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 #include <cstdint>
 

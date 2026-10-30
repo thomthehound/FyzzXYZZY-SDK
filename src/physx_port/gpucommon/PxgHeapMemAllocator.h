@@ -12,10 +12,10 @@
 #include "foundation/PxArray.h"
 #include "foundation/PxPool.h"
 #include "foundation/PxMutex.h"
-#include "CmVirtualAllocatorCallback.h"
-#include "PxsHeapStats.h"
-#include "PxsHeapMemoryAllocator.h"
-#include "PxgAllocatorDesc.h"
+#include "physx_port/common/src/CmVirtualAllocatorCallback.h"
+#include "physx_port/lowlevel/software/include/PxsHeapStats.h"
+#include "physx_port/lowlevel/software/include/PxsHeapMemoryAllocator.h"
+#include "physx_port/gpucommon/include/PxgAllocatorDesc.h"
 #include "common/PxPhysXCommonConfig.h"
 
 #if PX_DEBUG

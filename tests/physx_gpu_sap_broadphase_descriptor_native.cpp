@@ -6,18 +6,22 @@
 #include "physx_port/gpubroadphase/PxgSapRadixDescriptorsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpUploadsNative.h"
 #include "physx_port/gpubroadphase/PxgSapDmaUpFrameNative.h"
+#include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_port/gpucommon/PxgHeapMemAllocator.h"
 #include "BpBroadPhaseUpdate.h"
-#include "PxgRadixSortKernelIndices.h"
+#include "physx_port/gpucommon/include/PxgRadixSortKernelIndices.h"
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_physx_heap_roots.h"
 #include "physx_gpu/source_physx_root_callback.h"
 #include "physx_gpu/source_sap_dma_native.h"
+#include "physx_gpu/source_sap_scene_reports.h"
+#include "physx_gpu/source_sap_scene_bounds.h"
 #include "fyzzxyzzy/compute.h"
 #include <PxPhysicsAPI.h>
 
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -28,8 +32,197 @@
 using namespace fyzz::compute;
 using namespace fyzz::physx_gpu;
 
+// The live scene-to-source preBroadPhase input uses original AABB-manager
+// volume handles, true oriented box bounds and source filter group encoding.
+// No CPU SAP, independent proxy allocator or second pair history is involved.
+static void verify_source_sap_scene_bounds() {
+    using Box=fyzz::native::GpuBroadphaseBox;
+    constexpr float s=0.7071067811865475f;
+    const std::array<Box,3> boxes{{
+        {7u,{3.0f,4.0f,5.0f},{2.0f,1.0f,0.5f},
+            {0.0f,0.0f,s,s},0.02f,Box::Motion::Dynamic},
+        {3u,{-4.0f,0.0f,0.0f},{1.0f,2.0f,3.0f},
+            {},0.05f,Box::Motion::Static},
+        {9u,{0.0f,0.0f,1.0f},{0.5f,0.5f,0.5f},
+            {},0.10f,Box::Motion::Kinematic}
+    }};
+    // Source volume handle order is independent of Sc BodyId order.
+    const std::array<physx::Bp::ShapeHandle,3> handles{4u,1u,6u};
+    std::array<physx::PxBounds3,7> bounds;
+    bounds.fill(physx::PxBounds3::centerExtents(
+        physx::PxVec3(0.0f),physx::PxVec3(1.0f)));
+    std::array<physx::PxReal,7> distances;
+    distances.fill(-1.0f);
+    std::array<physx::Bp::FilterGroup::Enum,7> groups;
+    groups.fill(physx::Bp::FilterGroup::eINVALID);
+    SourceSapSceneBoundsScratch scratch;
+    const SourceSapSceneBounds output{bounds,distances,groups};
+    const auto check=[](float a,float b) {
+        return std::abs(a-b)<2.0e-5f;
+    };
+    write_source_sap_scene_bounds(boxes,handles,output,scratch);
+    if(!check(bounds[4].minimum.x,2.0f) ||
+       !check(bounds[4].minimum.y,2.0f) ||
+       !check(bounds[4].minimum.z,4.5f) ||
+       !check(bounds[4].maximum.x,4.0f) ||
+       !check(bounds[4].maximum.y,6.0f) ||
+       !check(bounds[4].maximum.z,5.5f) ||
+       !check(distances[4],0.02f) ||
+       !check(bounds[1].minimum.x,-5.0f) ||
+       !check(bounds[1].maximum.y,2.0f) ||
+       !check(distances[1],0.05f) ||
+       !check(bounds[6].minimum.z,0.5f) ||
+       !check(distances[6],0.10f) ||
+       groups[4]!=physx::Bp::getFilterGroup_Dynamics(7u,false) ||
+       groups[1]!=physx::Bp::getFilterGroup_Statics() ||
+       groups[6]!=physx::Bp::getFilterGroup_Dynamics(9u,true) ||
+       distances[0]!=-1.0f ||
+       groups[0]!=physx::Bp::FilterGroup::eINVALID)
+        throw std::runtime_error(
+            "Native Sc oriented bounds/contact offsets/source PhysX groups lowered incorrectly");
+
+    // Quiet source frames do not modify the original AABB-manager arrays.
+    write_source_sap_scene_bounds({}, {},output,scratch);
+    if(!check(bounds[4].minimum.x,2.0f) || distances[4]!=0.02f)
+        throw std::runtime_error("Quiet source bounds publication mutated existing volume");
+
+    // Invalid late inputs cannot partially update an earlier valid handle.
+    auto invalid=boxes;
+    invalid[2].orientation.w=0.0f;
+    bool rejected=false;
+    try {write_source_sap_scene_bounds(invalid,handles,output,scratch);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected || !check(bounds[4].minimum.x,2.0f) ||
+       distances[4]!=0.02f || groups[6]!=
+          physx::Bp::getFilterGroup_Dynamics(9u,true))
+        throw std::runtime_error(
+            "Malformed late source geometry partially changed GPU AABB input");
+
+    auto duplicates=handles;
+    duplicates[2]=handles[0];
+    rejected=false;
+    try {write_source_sap_scene_bounds(boxes,duplicates,output,scratch);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    if(!rejected || distances[4]!=0.02f)
+        throw std::runtime_error("Duplicate original source volume handle accepted");
+
+    auto outside=handles;
+    outside[2]=static_cast<physx::PxU32>(bounds.size());
+    rejected=false;
+    try {write_source_sap_scene_bounds(boxes,outside,output,scratch);}
+    catch(const std::out_of_range&) {rejected=true;}
+    if(!rejected || distances[4]!=0.02f)
+        throw std::runtime_error("Out-of-range source AABB handle partially published");
+
+    // Original Bp update inputs must keep ascending, disjoint source
+    // handle deltas independent of the scene's unsorted actor order.
+    const physx::Bp::BpFilter filter(false,false);
+    const std::array<physx::Bp::ShapeHandle,3> created{1u,4u,6u};
+    const std::array<physx::Bp::ShapeHandle,1> retired{0u};
+    const SourceSapSceneFrameChanges initial{created,{},retired};
+    const auto update=prepare_source_sap_scene_update(
+        boxes,handles,output,initial,filter,true,true,scratch);
+    if(update.getNumCreatedHandles()!=3u ||
+       update.getNumUpdatedHandles()!=0u ||
+       update.getNumRemovedHandles()!=1u ||
+       update.getCreatedHandles()!=created.data() ||
+       update.getRemovedHandles()!=retired.data() ||
+       update.getCapacity()!=bounds.size() ||
+       update.getAABBs()!=bounds.data() ||
+       update.getGroups()!=groups.data() ||
+       update.getContactDistance()!=distances.data() ||
+       !update.getStateChanged() || !update.getGpuStateChanged())
+        throw std::runtime_error("Original source Bp frame deltas were not preserved");
+
+    auto moved=boxes;
+    moved[0].position.x=12.0f;
+    const std::array<physx::Bp::ShapeHandle,1> updated{4u};
+    const SourceSapSceneFrameChanges badOverlap{updated,updated,{}};
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,badOverlap,filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error(
+            "Overlapping original source handle deltas modified staged bounds");
+
+    const std::array<physx::Bp::ShapeHandle,2> unordered{6u,4u};
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,{unordered,{},{}},filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error("Unordered source handle deltas partially published");
+
+    rejected=false;
+    try {
+        (void)prepare_source_sap_scene_update(
+            moved,handles,output,{{},{},updated},filter,true,true,scratch);
+    } catch(const std::invalid_argument&) { rejected=true; }
+    if(!rejected || !check(bounds[4].minimum.x,2.0f))
+        throw std::runtime_error("Live source handle was erroneously retired");
+
+    const auto moving=prepare_source_sap_scene_update(
+        moved,handles,output,{{},updated,{}},filter,true,false,scratch);
+    if(moving.getNumCreatedHandles()!=0u ||
+       moving.getNumUpdatedHandles()!=1u ||
+       moving.getUpdatedHandles()!=updated.data() ||
+       !check(bounds[4].minimum.x,11.0f))
+        throw std::runtime_error("Source Bp moving-frame admission lost handle identity");
+}
+
+// Original GPU source pair handles are not necessarily Scene actor IDs.
+// This proves the real fetch ABI maps volume handles and duplicate source
+// reports into the Sc-ordered stream before its contact-edge publication.
+static void verify_source_sap_sc_report_mapping() {
+    using fyzz::native::Pair;
+    constexpr std::array<fyzz::BodyId,5> ownership{50u,3u,25u,7u,100u};
+    const std::array<physx::PxgBroadPhasePair,3> source_found{
+        physx::PxgBroadPhasePair{0u,2u},
+        physx::PxgBroadPhasePair{1u,4u},
+        physx::PxgBroadPhasePair{0u,2u}};
+    const std::array<physx::PxgBroadPhasePair,1> source_lost{
+        physx::PxgBroadPhasePair{1u,3u}};
+    std::vector<Pair> found,lost;
+    lower_source_sap_actor_reports_to_sc(
+        source_found,source_lost,ownership,found,lost);
+    const std::vector<Pair> expected_found{{3u,100u},{25u,50u}};
+    const std::vector<Pair> expected_lost{{3u,7u}};
+    if(found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Source GPU fetched pair handles did not map to canonical native Sc pairs");
+    const std::array<physx::PxgBroadPhasePair,1> invalid{
+        physx::PxgBroadPhasePair{1u,9u}};
+    bool rejected=false;
+    try {
+        lower_source_sap_actor_reports_to_sc(
+            source_found,invalid,ownership,found,lost);
+    } catch(const std::out_of_range&) {
+        rejected=true;
+    }
+    if(!rejected || found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Invalid source GPU lost report partially published Sc pairs");
+    auto retired=ownership;
+    retired[2]=std::numeric_limits<fyzz::BodyId>::max();
+    rejected=false;
+    try {
+        lower_source_sap_actor_reports_to_sc(
+            source_found,source_lost,retired,found,lost);
+    } catch(const std::out_of_range&) {
+        rejected=true;
+    }
+    if(!rejected || found!=expected_found || lost!=expected_lost)
+        throw std::runtime_error(
+            "Source GPU pair mapping accepted an already retired volume handle");
+}
+
 int main() {
     try {
+        verify_source_sap_sc_report_mapping();
+        verify_source_sap_scene_bounds();
         physx::PxDefaultAllocator defaultAllocator;
         physx::PxDefaultErrorCallback errors;
         auto* foundation=PxCreateFoundation(PX_PHYSICS_VERSION,defaultAllocator,errors);
@@ -49,6 +242,93 @@ int main() {
             {
                 physx::PxgHeapMemoryAllocator heap(16384u,callback,abort,&aborted);
                 constexpr int group=physx::PxsHeapStats::eBROADPHASE;
+                // Exercise the source preBroadPhase GPU upload with
+                // real Sc shape geometry, external source volume handles,
+                // and original PhysX-owned buddy-heap buffers.
+                {
+                    using Box=fyzz::native::GpuBroadphaseBox;
+                    const std::array<Box,2> boxes{{
+                        {12u,{1.0f,3.0f,5.0f},{2.0f,1.0f,0.5f},
+                            {},0.03f,Box::Motion::Dynamic},
+                        {19u,{-1.0f,-2.0f,0.0f},{1.0f,2.0f,0.5f},
+                            {},0.07f,Box::Motion::Kinematic}
+                    }};
+                    const std::array<physx::Bp::ShapeHandle,2> handles{3u,0u};
+                    std::array<physx::PxBounds3,4> bounds;
+                    bounds.fill(physx::PxBounds3::centerExtents(
+                        physx::PxVec3(0.0f),physx::PxVec3(1.0f)));
+                    std::array<physx::PxReal,4> distances{};
+                    std::array<physx::Bp::FilterGroup::Enum,4> groups;
+                    groups.fill(physx::Bp::FilterGroup::eINVALID);
+                    SourceSapSceneBoundsScratch scratch;
+                    const physx::Bp::BpFilter filter(false,false);
+                    // Source creation/removal lists are sorted separately
+                    // from the scene input and the manager's handle mapping.
+                    const std::array<physx::Bp::ShapeHandle,2> created{0u,3u};
+                    const auto update=prepare_source_sap_scene_update(
+                        boxes,handles,{bounds,distances,groups},
+                        {created,{},{}},filter,true,false,scratch);
+                    physx::PxgTypedCudaBuffer<physx::PxBounds3> gpuBounds(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxReal> gpuDistances(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxU32> gpuGroups(heap,group);
+                    physx::PxgTypedCudaBuffer<physx::PxU32> gpuEnvironments(heap,group);
+                    physx::PxU32 sourceCapacity=0u;
+                    pre_broadphase_native(update,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    const auto checkBytes=[&](const auto& gpu,const void* expected,
+                                             std::size_t bytes,const char* diagnostic) {
+                        const auto view=addresses.resolve(gpu.getDevicePtr(),bytes);
+                        std::vector<std::uint8_t> observed(bytes);
+                        context.download(view.buffer,view.offset,
+                                         observed.data(),bytes);
+                        if(std::memcmp(observed.data(),expected,bytes)!=0)
+                            throw std::runtime_error(diagnostic);
+                    };
+                    if(sourceCapacity!=4u)
+                        throw std::runtime_error("Source scene AABB input capacity changed");
+                    checkBytes(gpuBounds,bounds.data(),sizeof(bounds),
+                               "Live Sc shape AABB GPU upload differs from source input");
+                    checkBytes(gpuDistances,distances.data(),sizeof(distances),
+                               "Live Sc contact-distance GPU upload differs from source input");
+                    checkBytes(gpuGroups,groups.data(),sizeof(groups),
+                               "Live Sc filter-group GPU upload differs from source input");
+
+                    // A persistent source handle can move without being
+                    // created again. Its original GPU bounds allocation
+                    // must receive the new authored geometry at preBP.
+                    auto moved=boxes;
+                    moved[0].position.x=8.0f;
+                    const std::array<physx::Bp::ShapeHandle,1> changed{3u};
+                    const auto movedFrame=prepare_source_sap_scene_update(
+                        moved,handles,{bounds,distances,groups},
+                        {{},changed,{}},filter,true,false,scratch);
+                    pre_broadphase_native(movedFrame,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    checkBytes(gpuBounds,bounds.data(),sizeof(bounds),
+                               "Source moving-volume update did not reach original GPU bounds");
+                    if(std::abs(bounds[3].minimum.x-6.0f)>1.0e-5f)
+                        throw std::runtime_error(
+                            "Original source handle did not preserve moved Sc shape bounds");
+
+                    // The source always uploads groups and distances, but
+                    // skips the bounds upload for stateChanged=false.
+                    const auto bytesBefore=stream.submission_stats().upload_bytes;
+                    const auto idle=prepare_source_sap_scene_update(
+                        moved,handles,{bounds,distances,groups},
+                        {},filter,false,false,scratch);
+                    pre_broadphase_native(idle,{
+                        gpuBounds,gpuDistances,gpuGroups,gpuEnvironments,
+                        sourceCapacity},stream);
+                    stream.wait_at_fetch();
+                    if(stream.submission_stats().upload_bytes-bytesBefore !=
+                          sizeof(distances)+sizeof(groups))
+                        throw std::runtime_error(
+                            "Source idle preBroadPhase unexpectedly reuploaded AABBs");
+                }
                 physx::PxgCudaBufferN<27> singles(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxU32> created(heap,group);
                 physx::PxgTypedCudaBuffer<physx::PxU32> removed(heap,group);

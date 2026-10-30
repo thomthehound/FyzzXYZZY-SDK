@@ -10,7 +10,7 @@
 // Import the real source descriptor FIRST: the pinned PhysX version
 // defines SUPPORT_UPDATE_HANDLES_ARRAY_FOR_GPU in this header.
 // Descriptor ABI and the standalone updated-handle branch must agree.
-#include "PxgBroadPhaseDesc.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 namespace fyzz::physx_gpu {

@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <exception>
 #include <stop_token>
 #include <thread>
@@ -50,6 +51,70 @@ struct Pair {
     friend bool operator<(const Pair& lhs, const Pair& rhs) {
         return lhs.a < rhs.a || (lhs.a == rhs.a && lhs.b < rhs.b);
     }
+};
+
+// PxgAABBManager's native scene-facing shape input. Actor identity and
+// authored geometry remain owned by this Scene. GPU SAP retains its own
+// original volume-handle, AABB and projection history across updates.
+// This is a borrowed per-update view, not an alternate simulation state.
+struct GpuBroadphaseBox {
+    enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
+    BodyId id=0;
+    Vec3 position{}, half_extents{};
+    Quat orientation{};
+    float contact_offset=0.0f;
+    Motion motion=Motion::Static;
+};
+
+// Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults produces the two
+// completed actor-pair streams. The GPU source owner maps source volume
+// handles to native scene actor IDs, purges duplicate records and retains
+// both result arrays through this publication. No CPU broadphase oracle
+// is accepted or consulted by this path.
+struct GpuBroadphaseReports {
+    std::span<const Pair> found;
+    std::span<const Pair> lost;
+    bool overflow=false;
+    // Source SAP was rebuilt from zero previous GPU endpoints.
+    // 'found' is the COMPLETE original BP overlap membership, not a
+    // delta against previous Sc contacts (which omit non-dynamic pairs).
+    bool full_rebuild=false;
+};
+class GpuBroadphaseProducer {
+public:
+    virtual ~GpuBroadphaseProducer()=default;
+    virtual GpuBroadphaseReports advance(
+        std::span<const GpuBroadphaseBox> live_boxes,
+        bool force_update,bool geometry_dirty)=0;
+    // ScShapeSim's authored transform/contact-distance changes and
+    // ScPipeline::afterIntegration mark the original PxgAABBManager
+    // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
+    virtual void mark_shape_bounds_changed(
+        BodyId actor,float contact_offset)=0;
+    // Sc::ActorSim/ElementSim own original actor and element IDs.
+    virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
+    virtual AggregateId create_aggregate(std::uint32_t,bool) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void destroy_aggregate(AggregateId) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void remove_actor_from_aggregate(AggregateId,BodyId) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void admit_aggregate_member(
+        AggregateId,BodyId,GpuBroadphaseBox::Motion,float) {
+        throw std::logic_error("Source GPU broadphase has no aggregate stages");
+    }
+    virtual void retire_shape(BodyId)=0;
+    virtual void set_shape_simulation_enabled(BodyId,bool)=0;
+    virtual void set_shape_motion(BodyId,GpuBroadphaseBox::Motion)=0;
+    // Sc::Scene::postReportsCleanup follows fetched GPU/Sc publication.
+    virtual void post_reports_cleanup()=0;
+    // The source GPU has already advanced its histories at fetch. A
+    // rejected Sc/Dy transaction invalidates that frame; the owner must
+    // reconstruct its GPU histories from the next authoritative scene.
+    virtual void invalidate_after_rollback() noexcept=0;
 };
 
 // Matches Gu::PxContactPoint semantics for the presently supported shapes:
@@ -145,6 +210,9 @@ public:
           pcm_box_box_enabled_(generator==ContactGenerator::DefaultPcm) {}
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
+    // The production GPU SAP/AABB owner is attached before any actor is
+    // admitted. A selected GPU scene never silently runs native CPU SAP.
+    void set_gpu_broadphase(std::unique_ptr<GpuBroadphaseProducer> producer);
     Scene(Scene&&) = default;
     Scene& operator=(Scene&&) = default;
     // Configured only at World construction, before scene admission.
@@ -182,9 +250,16 @@ public:
         return contact_event_points_;
     }
 
-    BodyId add_static_box(Vec3 half_extents, Vec3 position);
+    BodyId add_static_box(
+        Vec3 half_extents,Vec3 position,
+        std::optional<AggregateId> aggregate=std::nullopt);
     BodyId add_static_floor(float height);
-    BodyId add_dynamic_box(Vec3 half_extents, Vec3 position, float density);
+    BodyId add_dynamic_box(
+        Vec3 half_extents,Vec3 position,float density,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
+    void destroy_aggregate(AggregateId id);
+    void remove_actor_from_aggregate(AggregateId id,BodyId actor);
     void set_position(BodyId id, Vec3 position);
     void set_pose(BodyId id, Vec3 position, Quat orientation);
     void set_velocity(BodyId id, Vec3 velocity);
@@ -562,6 +637,7 @@ private:
     friend struct SolverIterationSourceFixture;
     friend struct ConstraintIslandSourceFixture;
     friend struct SourceSapEndpointFixture;
+    friend struct GpuSapSceneAdmissionFixture;
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Kind : std::uint8_t {
@@ -762,7 +838,7 @@ private:
         std::array<std::uint32_t,6> published_bounds{};
         std::array<std::array<std::uint32_t,2>,3> endpoint_positions{};
     };
-    BodyId add(Actor actor);
+    BodyId add(Actor actor,std::optional<AggregateId> aggregate=std::nullopt);
     Actor& require(BodyId id);
     const Actor& require(BodyId id) const;
     // Shared Gu collision progression, independent of Dy solver execution.
@@ -776,6 +852,7 @@ private:
     void prepare_unconstrained_velocities(float seconds);
     void publish_kinematic_targets();
     void update_pairs();
+    void update_gpu_pairs(bool force_update);
     void publish_pairs();
     void update_contacts();
     // Original contact-manager addEdge/setEdgeConnected/removeConnection
@@ -1567,7 +1644,15 @@ private:
         void seed(std::span<const Pair> pairs);
     };
     SapPairManager sap_pairs_;
+    // The GPU owner is the only broadphase producer in GPU mode; these
+    // cached shape views are reused, never a duplicate SAP/pair registry.
+    std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
+    std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
     bool sap_pair_registry_dirty_=true;
+    // Sc's existing BP pair membership retains GPU-reported overlaps
+    // that have no current contact manager. Explicit Sc refiltering
+    // consumes it only on authored actor/shape or motion-class edits.
+    bool gpu_pair_refilter_dirty_=false;
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
@@ -1670,3 +1755,15 @@ private:
 };
 
 } // namespace fyzz::native
+
+namespace fyzz {
+// Explicit source GPU broadphase injection. The producer must already
+// own the original PxgAABBManager/PxgCudaBroadPhaseSap lifecycle; the
+// native Sc/Dy scene takes ownership before any actor is admitted.
+// NativePortableGpu stays unavailable until that original owner has
+// a complete device/allocator construction path.
+std::unique_ptr<WorldBackend> create_native_gpu_broadphase_backend(
+    std::unique_ptr<native::GpuBroadphaseProducer> source_producer,
+    bool contact_notifications, bool enhanced_determinism,
+    bool pcm_plane_box, bool pcm_box_box);
+} // namespace fyzz

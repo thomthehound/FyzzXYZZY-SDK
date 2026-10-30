@@ -7,8 +7,8 @@
 #include "physx_port/gpubroadphase/PxgSapHistoryGrowthNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
 
-#include "PxgSapBox1D.h"
-#include "PxgBroadPhaseKernelIndices.h"
+#include "physx_port/gpubroadphase/include/PxgSapBox1D.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseKernelIndices.h"
 
 #include <stdexcept>
 

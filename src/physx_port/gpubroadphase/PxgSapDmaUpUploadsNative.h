@@ -7,8 +7,8 @@
 #ifndef FYZZXYZZY_PXG_SAP_DMA_UP_UPLOADS_NATIVE_H
 #define FYZZXYZZY_PXG_SAP_DMA_UP_UPLOADS_NATIVE_H
 
-#include "PxgBroadPhaseDesc.h"
-#include "PxgRadixSortDesc.h"
+#include "physx_port/gpubroadphase/include/PxgBroadPhaseDesc.h"
+#include "physx_port/gpucommon/include/PxgRadixSortDesc.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <vector>

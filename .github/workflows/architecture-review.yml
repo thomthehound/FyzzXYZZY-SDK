@@ -8,6 +8,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
     branches:
       - main
+      - integration/n2-native-sc-gpu-report-admission
   workflow_dispatch:
 
 concurrency:

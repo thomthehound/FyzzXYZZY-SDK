@@ -6,7 +6,7 @@
 #include "physx_gpu/cuda_device_address_map.h"
 #include "physx_gpu/source_sap_dma_native.h"
 #include "physx_gpu/source_sap_mapped_report_view.h"
-#include "CmVirtualAllocatorCallback.h"
+#include "physx_port/common/src/CmVirtualAllocatorCallback.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +14,7 @@
 #include <map>
 #include <new>
 #include <stdexcept>
+#include <vector>
 
 namespace fyzz::physx_gpu {
 
@@ -171,15 +172,31 @@ public:
     // visibility to GPU is ordered by the caller's source submission.
     // Staged: fetch then download into the *original PhysX CPU array*.
     void publish_at_fetch(void* host, std::size_t bytes) override {
-        if (!host || !bytes) return;
-        if (!source_.bound_to(context_, addresses_))
+        if(!bytes)return;
+        const SourceSapMappedReportSpan request{host,bytes};
+        publish_batch_at_fetch({&request,1u});
+    }
+
+    void publish_batch_at_fetch(
+        std::span<const SourceSapMappedReportSpan> spans) override {
+        if(!source_.bound_to(context_,addresses_))
             throw std::invalid_argument("Foreign source stream for mapped report fetch");
-        const auto location = find(host, bytes);
-        source_.wait_at_fetch(); // backend fence wait, never a polling loop
-        if (!location.root->direct)
-            context_.download(location.root->device,
-                              location.root->gpu_offset + location.offset,
-                              host, bytes);
+        readback_scratch_.clear();
+        readback_scratch_.reserve(spans.size());
+        for(const auto& span:spans) {
+            if(!span.bytes)continue;
+            const auto location=find(span.host,span.bytes);
+            if(!location.root->direct)
+                readback_scratch_.push_back({
+                    location.root->device,
+                    location.root->gpu_offset+location.offset,
+                    span.host,span.bytes});
+        }
+        // A completed source fence makes direct mapped reports visible;
+        // staged outputs share one transfer and one subsequent fence.
+        source_.wait_at_fetch();
+        if(!readback_scratch_.empty())
+            context_.download_batch(readback_scratch_);
     }
 
     std::size_t live_roots() const noexcept { return roots_.size(); }
@@ -241,6 +258,7 @@ private:
     SourceSapDmaNative& source_;
     Mode mode_;
     std::map<std::uintptr_t, Entry> roots_;
+    std::vector<compute::DownloadSpan> readback_scratch_;
 };
 
 } // namespace fyzz::physx_gpu

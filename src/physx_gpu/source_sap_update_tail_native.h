@@ -19,8 +19,8 @@ namespace fyzz::physx_gpu {
 // clearNewFlagKernel -> runCopyResultsKernel. The enclosing source owner
 // must have appended all preceding GPU SAP operations to this SAME stream.
 // No scheduler, buffer owner, submission, blocking wait or fetch here.
-inline void append_source_sap_update_tail_native(
-    SourceSapDmaNative& stream,
+inline void append_source_sap_update_tail_commands_native(
+    std::vector<compute::BatchCommand>& commands,
     const SourceSapBoxIndicesNativeStage& indices,
     const SourceRegionNewBoundsNativeStage& region,
     const SourceClearNewFlagsNativeStage& clear,
@@ -31,8 +31,6 @@ inline void append_source_sap_update_tail_native(
     SourceRegionNewBoundsNativeLayout region_layout,
     SourceClearNewFlagsNativeLayout clear_layout,
     SourceSapReportNativeLayout report_layout,
-    physx::PxgCudaBuffer& new_integer_bounds,
-    physx::PxgCudaBuffer& old_integer_bounds,
     bool execute_gpu_stages) {
     if(!execute_gpu_stages)return;
     // PxgCudaBroadPhaseSap::initializeSapBoxKernel(mNumOfBoxes,false)
@@ -61,14 +59,34 @@ inline void append_source_sap_update_tail_native(
         throw std::logic_error("Original source SAP report dispatch count changed");
     // Resolve every later view BEFORE touching the original bounds owners
     // or committing any commands to the source mStream.
-    auto& commands=stream.commands();
     commands.reserve(commands.size()+prepared.size());
     commands.insert(commands.end(),
         std::make_move_iterator(prepared.begin()),
         std::make_move_iterator(prepared.end()));
-    // Original source swaps after new-pair generation and before flag
-    // clearing/report dispatch. All GPU pointers have already been captured
-    // from the current source descriptor, not from these owning wrappers.
+}
+
+inline void append_source_sap_update_tail_native(
+    SourceSapDmaNative& stream,
+    const SourceSapBoxIndicesNativeStage& indices,
+    const SourceRegionNewBoundsNativeStage& region,
+    const SourceClearNewFlagsNativeStage& clear,
+    const SourceSapReportNativeStage& reports,
+    const physx::PxgBroadPhaseDesc& source,
+    const CudaDeviceAddressMap& addresses,
+    SourceSapBoxIndicesNativeLayout index_layout,
+    SourceRegionNewBoundsNativeLayout region_layout,
+    SourceClearNewFlagsNativeLayout clear_layout,
+    SourceSapReportNativeLayout report_layout,
+    physx::PxgCudaBuffer& new_integer_bounds,
+    physx::PxgCudaBuffer& old_integer_bounds,
+    bool execute_gpu_stages) {
+    if(!execute_gpu_stages)return;
+    append_source_sap_update_tail_commands_native(stream.commands(),
+        indices,region,clear,reports,source,addresses,index_layout,
+        region_layout,clear_layout,report_layout,true);
+    // The source swaps ownership after new-pair generation, before the
+    // next frame's GPU descriptor is built. Dispatches already captured
+    // the old pointers and retain their ordering in mStream.
     physx::PxgCudaBuffer::swapBuffer(new_integer_bounds,old_integer_bounds);
 }
 } // namespace fyzz::physx_gpu

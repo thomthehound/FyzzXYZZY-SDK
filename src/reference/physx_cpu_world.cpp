@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "fyzzxyzzy/world.h"
+#include "physx_foundation_lifetime.h"
 #include <PxPhysicsAPI.h>
 #include <extensions/PxDistanceJoint.h>
 
@@ -37,35 +38,22 @@ std::mutex& runtime_mutex() {
 }
 
 struct PhysXRuntime {
-    physx::PxDefaultAllocator allocator;
-    physx::PxDefaultErrorCallback errors;
-    physx::PxFoundation* foundation = nullptr;
+    std::shared_ptr<physx_runtime::Foundation> foundation;
     physx::PxPhysics* physics = nullptr;
 
-    PhysXRuntime() {
-        foundation = PxCreateFoundation(PX_PHYSICS_VERSION, allocator, errors);
-        if (!foundation) {
-            throw std::runtime_error("Failed to create PhysX foundation");
-        }
-        try {
-            physics = PxCreatePhysics(PX_PHYSICS_VERSION, *foundation,
-                                     physx::PxTolerancesScale(), false, nullptr);
-            if (!physics) {
-                throw std::runtime_error("Failed to create PhysX physics");
-            }
-        } catch (...) {
-            foundation->release();
-            foundation = nullptr;
-            throw;
-        }
+    PhysXRuntime() : foundation(physx_runtime::acquire_foundation()) {
+        physics = PxCreatePhysics(
+            PX_PHYSICS_VERSION,foundation->get(),
+            physx::PxTolerancesScale(),false,nullptr);
+        if(!physics)
+            throw std::runtime_error("Failed to create PhysX physics");
     }
 
     ~PhysXRuntime() {
         // Prevent another CPU world from recreating PhysX while its previous
         // singleton is in the middle of releasing.
         std::lock_guard<std::mutex> guard(runtime_mutex());
-        if (physics) physics->release();
-        if (foundation) foundation->release();
+        if(physics) physics->release();
     }
 };
 

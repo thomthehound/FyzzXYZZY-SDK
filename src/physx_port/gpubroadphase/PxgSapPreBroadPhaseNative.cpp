@@ -6,7 +6,7 @@
 
 #include "physx_port/gpubroadphase/PxgSapPreBroadPhaseNative.h"
 #include "physx_gpu/source_sap_dma_native.h"
-#include "BpBroadPhaseUpdate.h"
+#include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 #include <limits>
 #include <stdexcept>
@@ -15,10 +15,8 @@
 
 namespace fyzz::physx_gpu {
 
-void pre_broadphase_native(
-    const physx::Bp::BroadPhaseUpdateData& update,
-    SourceSapPreBroadPhaseBuffers buffers,
-    SourceSapDmaNative& stream) {
+void validate_pre_broadphase_native(
+    const physx::Bp::BroadPhaseUpdateData& update) {
     // PxgCudaBroadPhaseSap::preBroadPhase uses PxU32 byte counts. Reject
     // unsupported capacities before allocations instead of wrapping them.
     static_assert(sizeof(physx::Bp::FilterGroup::Enum) == sizeof(physx::PxU32),
@@ -31,6 +29,14 @@ void pre_broadphase_native(
                      (update.getStateChanged() && !update.getAABBs())))
         throw std::invalid_argument("PhysX preBroadPhase missing source input array");
 
+}
+
+void pre_broadphase_native(
+    const physx::Bp::BroadPhaseUpdateData& update,
+    SourceSapPreBroadPhaseBuffers buffers,
+    SourceSapDmaNative& stream) {
+    validate_pre_broadphase_native(update);
+    const auto capacity = update.getCapacity();
     const auto bounds_bytes = capacity * sizeof(physx::PxBounds3);
     const auto distances_bytes = capacity * sizeof(physx::PxReal);
     const auto groups_bytes = capacity * sizeof(physx::PxU32);
@@ -51,7 +57,7 @@ void pre_broadphase_native(
     // Four consecutive upstream memcpyHtoDAsync calls are one ordered
     // native upload group. Context snapshots the host bytes at enqueue,
     // and its queue/fences retain staging until PhysX's fetch boundary.
-    std::vector<SourceSapUpload> uploads;
+    auto& uploads=stream.upload_scratch();
     uploads.reserve(4);
     if (update.getStateChanged())
         uploads.push_back({buffers.bounds.getDevicePtr(),
