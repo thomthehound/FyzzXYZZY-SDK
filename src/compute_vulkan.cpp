@@ -347,8 +347,10 @@ struct Context::Impl {
                 size_control.sType =
                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
                 size_control.subgroupSizeControl = VK_TRUE;
-                size_control.pNext = create.pNext;
-                create.pNext = &size_control;
+                if (info.supports_int64_wave)
+                    extended.pNext = &size_control;
+                else
+                    create.pNext = &size_control;
             }
             require(vkCreateDevice(physical, &create, nullptr, &device), "vkCreateDevice");
             vkGetDeviceQueue(device, selected.queue_family, 0, &queue);
