@@ -193,58 +193,98 @@ public:
         reserve_shapes(root+1u);
         if(groups_[root]!=physx::Bp::FilterGroup::eINVALID)
             throw std::logic_error("Source aggregate root already admitted");
-        const auto id=aggregate_ids_.getNewID();
-        if(id>=std::numeric_limits<physx::PxU32>::max()/2u)
-            throw std::out_of_range("PhysX aggregate ID exceeds VolumeData encoding");
-        if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
-        if(aggregate_max_shapes_.size()<=id)
-            aggregate_max_shapes_.resize(2u*id+1u);
-        auto& aggregate=aggregates_[id];
-        aggregate.reset();
-        aggregate.updateBoundIndices=PX_ALLOCATE(
-            physx::PxU32,max_shapes,"updateBoundIndices");
-        if(!aggregate.updateBoundIndices)throw std::bad_alloc();
-        aggregate.mIndex=root;
-        aggregate.filterHint=filter_hint;
-        aggregate.mEnvID=env_id;
-        aggregate_max_shapes_[id]=max_shapes;
-        // Original per-aggregate updateBoundIndices device allocation,
-        // lowered to a stable non-overlapping slice of one source-owned
-        // PxgCudaBuffer so native shaders can bind a single member view.
-        if(aggregate_gpu_member_starts_.size()<=id) {
-            aggregate_gpu_member_starts_.resize(2u*id+1u,0u);
-            aggregate_gpu_member_reservations_.resize(2u*id+1u,0u);
-            self_state_uploaded_.resize(2u*id+1u,false);
-        }
-        self_state_uploaded_[id]=false;
-        // Source aggregate IDs are recycled only after GPU report fetch.
-        // Keep the source-owned member arena stable for all live histories.
-        if(aggregate_gpu_member_reservations_[id]<max_shapes) {
-            aggregate_gpu_member_starts_[id]=allocate_aggregate_member_slice(
-                max_shapes);
-            aggregate_gpu_member_reservations_[id]=max_shapes;
-        }
-        aggregate_gpu_slot_count_=std::max(aggregate_gpu_slot_count_,id+1u);
-        volumes_[root].setUserData(user_data);
-        volumes_[root].setVolumeType(physx::Bp::ElementType::eSHAPE);
-        volumes_[root].setAggregate(id);
+        // GPU member slices use 32-bit byte offsets. Reject impossible
+        // reservations before allocating host members or consuming an ID.
+        if(max_shapes>std::numeric_limits<physx::PxU32>::max()/8u)
+            throw std::out_of_range(
+                "Original aggregate GPU member address range exceeded");
 #if BP_USE_AGGREGATE_GROUP_TAIL
-        // Original AABBManagerBase::getAggregateGroup, including its
-        // free-group stack. Root groups must never equal each other or
-        // the shared static group: root/root and root/static pairs
-        // otherwise disappear before aggregate member collision tests.
-        groups_[root]=original_aggregate_group();
-        PX_UNUSED(group);
-#else
-        groups_[root]=group;
+        if(free_aggregate_groups_.empty() &&
+           aggregate_group_tide_<=physx::Bp::FilterGroup::eDYNAMICS_BASE)
+            throw std::out_of_range(
+                "Original aggregate BP filter group tail exhausted");
 #endif
-        distances_[root]=0.0f;
-        bounds_.setBounds(physx::PxBounds3::empty(),root);
-        added_.growAndReset(root);
-        aggregated_.growAndReset(root);
-        persistent_state_changed_=true;
-        mark_aggregate_dirty(id);
-        return id;
+        const auto id=aggregate_ids_.getNewID();
+        bool acquired_slice=false;
+        physx::PxU32 slice_first=0u;
+        try {
+            if(id>=std::numeric_limits<physx::PxU32>::max()/2u)
+                throw std::out_of_range(
+                    "PhysX aggregate ID exceeds VolumeData encoding");
+            if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
+            if(aggregate_max_shapes_.size()<=id)
+                aggregate_max_shapes_.resize(2u*id+1u);
+            if(aggregate_gpu_member_starts_.size()<=id)
+                aggregate_gpu_member_starts_.resize(2u*id+1u,0u);
+            if(aggregate_gpu_member_reservations_.size()<=id)
+                aggregate_gpu_member_reservations_.resize(2u*id+1u,0u);
+            if(self_state_uploaded_.size()<=id)
+                self_state_uploaded_.resize(2u*id+1u,false);
+            auto& aggregate=aggregates_[id];
+            aggregate.reset();
+            aggregate.updateBoundIndices=PX_ALLOCATE(
+                physx::PxU32,max_shapes,"updateBoundIndices");
+            if(!aggregate.updateBoundIndices)throw std::bad_alloc();
+
+            // All fallible source bitmap/index allocations precede the
+            // GPU slice and root publication, so the committed identity
+            // cannot become detached from its Sc user-data pointer.
+            if(!added_.growAndReset(root) ||
+               !aggregated_.growAndReset(root) ||
+               !dirty_aggregates_.growAndReset(id) ||
+               !dirty_aggregate_indices_.reserve(
+                   dirty_aggregate_indices_.size()+1u))
+                throw std::bad_alloc();
+            free_aggregate_member_slices_.reserve(
+                free_aggregate_member_slices_.size()+1u);
+            slice_first=allocate_aggregate_member_slice(max_shapes);
+            acquired_slice=true;
+            aggregate_gpu_member_starts_[id]=slice_first;
+            aggregate_gpu_member_reservations_[id]=max_shapes;
+            self_state_uploaded_[id]=false;
+            aggregate.mIndex=root;
+            aggregate.filterHint=filter_hint;
+            aggregate.mEnvID=env_id;
+            aggregate_max_shapes_[id]=max_shapes;
+            aggregate_gpu_slot_count_=std::max(aggregate_gpu_slot_count_,id+1u);
+            volumes_[root].setUserData(user_data);
+            volumes_[root].setVolumeType(physx::Bp::ElementType::eSHAPE);
+            volumes_[root].setAggregate(id);
+#if BP_USE_AGGREGATE_GROUP_TAIL
+            // The tail has been preflighted; the original group allocator
+            // now only pops a completed free group or decrements its tide.
+            groups_[root]=original_aggregate_group();
+            PX_UNUSED(group);
+#else
+            groups_[root]=group;
+#endif
+            distances_[root]=0.0f;
+            bounds_.setBounds(physx::PxBounds3::empty(),root);
+            persistent_state_changed_=true;
+            mark_aggregate_dirty(id);
+            return id;
+        }catch(...) {
+            // An unadmitted root never entered the GPU stream. Return
+            // its source ID and member slice immediately, not after fetch.
+            if(acquired_slice) {
+                free_aggregate_member_slices_.push_back(
+                    {slice_first,max_shapes,false});
+                aggregate_gpu_member_starts_[id]=0u;
+                aggregate_gpu_member_reservations_[id]=0u;
+            }
+            if(id<aggregates_.size())aggregates_[id].reset();
+            if(id<aggregate_max_shapes_.size())
+                aggregate_max_shapes_[id]=0u;
+            if(id<self_state_uploaded_.size())self_state_uploaded_[id]=false;
+            groups_[root]=physx::Bp::FilterGroup::eINVALID;
+            distances_[root]=0.0f;
+            volumes_[root].reset();
+            added_.boundedReset(root);
+            aggregated_.boundedReset(root);
+            dirty_aggregates_.boundedReset(id);
+            aggregate_ids_.freeID(id);
+            throw;
+        }
     }
 
     // PxgAABBManager::addBounds aggregate branch. Members are never
@@ -1170,10 +1210,14 @@ private:
                 free_aggregate_member_slices_.begin()+i);
             return first;
         }
-        if(count>std::numeric_limits<physx::PxU32>::max()-
-                     aggregate_gpu_member_capacity_)
+        // Every source projection key/handle/SAP history allocates
+        // eight bytes per reserved member, not merely four for its ID.
+        constexpr auto max_members=
+            std::numeric_limits<physx::PxU32>::max()/8u;
+        if(aggregate_gpu_member_capacity_>max_members ||
+           count>max_members-aggregate_gpu_member_capacity_)
             throw std::out_of_range(
-                "Original aggregate GPU member address range exceeded");
+                "Original aggregate GPU projection address range exceeded");
         const auto first=aggregate_gpu_member_capacity_;
         aggregate_gpu_member_capacity_+=count;
         return first;

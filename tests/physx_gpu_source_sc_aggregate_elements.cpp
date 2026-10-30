@@ -29,8 +29,23 @@ struct Errors final : physx::PxErrorCallback {
         throw std::runtime_error(message);
     }
 };
+struct FailingAllocator final : physx::PxAllocatorCallback {
+    physx::PxDefaultAllocator delegate;
+    bool fail_next=false;
+    void* allocate(std::size_t bytes,const char* type,
+                   const char* filename,int line) override {
+        if(fail_next) {
+            fail_next=false;
+            return nullptr;
+        }
+        return delegate.allocate(bytes,type,filename,line);
+    }
+    void deallocate(void* allocation) override {
+        delegate.deallocate(allocation);
+    }
+};
 struct Foundation {
-    physx::PxDefaultAllocator allocator;
+    FailingAllocator allocator;
     Errors errors;
     physx::PxFoundation* instance=PxCreateFoundation(
         PX_PHYSICS_VERSION,allocator,errors);
@@ -68,8 +83,32 @@ void run(Backend backend) {
         {
             PxgAabbSourceMembersNative owner(allocators,8u,16u,32u);
             SourceScSceneElementsNative sc(owner);
+            // Force a real source allocation failure after obtaining the
+            // first aggregate ID, then prove a valid retry reuses that ID.
+            foundation.allocator.fail_next=true;
+            bool rejected_allocation=false;
+            try {
+                (void)sc.create_aggregate(
+                    2u,physx::Bp::getFilterGroup_Statics(),0u);
+            }catch(const std::exception&) {
+                rejected_allocation=true;
+            }
+            require(rejected_allocation && !foundation.allocator.fail_next,
+                    "Original source aggregate allocation fault was not exercised");
+            bool rejected_capacity=false;
+            try {
+                (void)sc.create_aggregate(
+                    std::numeric_limits<physx::PxU32>::max(),
+                    physx::Bp::getFilterGroup_Statics(),0u);
+            }catch(const std::out_of_range&) {
+                rejected_capacity=true;
+            }
+            require(rejected_capacity,
+                    "Original source aggregate admitted unrepresentable GPU members");
             const auto root=sc.create_aggregate(
                 3u,physx::Bp::getFilterGroup_Statics(),1u);
+            require(root==0u,
+                    "Failed source aggregate admission consumed its deferred ID");
             const auto root_handle=sc.aggregate_root_handle(root);
             require(root_handle!=BP_INVALID_BP_HANDLE &&
                     owner.source_aggregated().boundedTest(root_handle)==0u,
