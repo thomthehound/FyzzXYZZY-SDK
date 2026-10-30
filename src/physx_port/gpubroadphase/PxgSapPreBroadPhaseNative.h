@@ -9,6 +9,7 @@
 
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 #include "foundation/PxBounds3.h"
+#include <span>
 #include <vector>
 
 namespace physx { namespace Bp { class BroadPhaseUpdateData; } }
@@ -40,7 +41,10 @@ void validate_pre_broadphase_native(
 void append_pre_broadphase_native_uploads(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapPreBroadPhaseBuffers buffers,
-    std::vector<SourceSapUpload>& uploads);
+    std::vector<SourceSapUpload>& uploads,
+    // The source AABB manager's original changed-handle bitmap. When
+    // provided, unchanged resident bounds may be retained on the device.
+    std::span<const physx::PxU32> changed_handles = {});
 
 // Source: PxgCudaBroadPhaseSap::preBroadPhase, including its conditional
 // bounds upload and unconditional contact-distance/group uploads.
