@@ -6,6 +6,8 @@
 #include "physx_gpu/source_aggregate_projection_native.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +15,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -38,15 +41,16 @@ ShaderBinary load_shader(const char* path) {
     return binary;
 }
 using Aggregate=SourceAggregateGpuNativeRecord;
-constexpr std::uint32_t kBounds=160u,kMembers=80u;
-constexpr std::array<Aggregate,7> kAggregates{{
+constexpr std::uint32_t kBounds=320u,kMembers=208u;
+constexpr std::array<Aggregate,8> kAggregates{{
     {120u,0u,3u,0u},
     {121u,3u,37u,0u},
     {122u,40u,0u,0u},
     {123u,40u,1u,0u},
     {0xffffffffu,41u,2u,0u},
     {125u,44u,35u,0u},
-    {126u,79u,1u,0u}
+    {126u,79u,1u,0u},
+    {127u,80u,128u,0u}
 }};
 constexpr std::size_t boundsBytes=kBounds*6u*4u;
 constexpr std::size_t aggregateBytes=sizeof(kAggregates);
@@ -243,6 +247,43 @@ void verify(Context& context,ShaderBinary shader) {
         // projection/history slot through the shared root allocation.
         require(projections[2u*41u]==kCanary,
                 "Retired aggregate wrote into native projection history");
+
+        // Opt-in device measurement uses the exact production dispatch
+        // and source buffers. Validation completes before benchmarking;
+        // no timing or extra command work enters ordinary conformance.
+        if(const auto* profile=std::getenv("FYZZXYZZY_PROFILE_AGGREGATE_SORT");
+           profile && std::string_view(profile)=="1") {
+            std::vector<BatchCommand> commands;
+            stage.append(commands,addresses,source);
+            require(commands.size()==1u,
+                    "Aggregate projection profiling changed source dispatch count");
+            constexpr std::size_t warmup=4u,trials=19u;
+            for(std::size_t i=0;i<warmup;++i)
+                (void)context.profile_batch_gpu_nanoseconds(commands);
+            std::vector<double> gpu_samples;
+            gpu_samples.reserve(trials);
+            for(std::size_t i=0;i<trials;++i) {
+                const auto duration=context.profile_batch_gpu_nanoseconds(commands);
+                if(!duration) {
+                    std::cout<<"aggregate_projection_gpu_timestamp_unavailable device="
+                             <<context.device_info().name<<'\n';
+                    break;
+                }
+                gpu_samples.push_back(*duration);
+            }
+            if(!gpu_samples.empty()) {
+                std::sort(gpu_samples.begin(),gpu_samples.end());
+                std::cout<<"aggregate_projection_gpu_ns_median="
+                         <<gpu_samples[gpu_samples.size()/2u]
+                         <<" gpu_ns_min="<<gpu_samples.front()
+                         <<" gpu_ns_max="<<gpu_samples.back()
+                         <<" samples="<<gpu_samples.size()
+                         <<" aggregates="<<kAggregates.size()
+                         <<" members="<<kMembers
+                         <<" endpoint_radix_passes=8"
+                         <<" device="<<context.device_info().name<<'\n';
+            }
+        }
     }
     std::vector<std::uint8_t> completed(totalBytes);
     context.download(root,0u,completed.data(),completed.size());
