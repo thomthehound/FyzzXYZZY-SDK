@@ -39,25 +39,43 @@ public:
            root_group==physx::Bp::FilterGroup::eINVALID)
             throw std::invalid_argument("Invalid original Sc aggregate root");
         const auto root=elements_.createID();
-        const auto prior_roots=aggregate_roots_.size();
+        const bool recycled=!free_root_slots_.empty();
+        const auto slot=recycled
+            ? free_root_slots_.back():aggregate_roots_.size();
+        const auto original_count=aggregate_roots_.size();
         try {
-            aggregate_roots_.push_back(
-                {root,PX_INVALID_U32,true,max_shapes,{}});
-            aggregate_roots_.back().attached_actors.reserve(max_shapes);
+            if(recycled) {
+                auto& record=aggregate_roots_[slot];
+                // Preserve the source's stable user-data address. Increase
+                // attachment reservation only when this root needs more.
+                record.attached_actors.reserve(max_shapes);
+                record.root=root;
+                record.id=PX_INVALID_U32;
+                record.max_shapes=max_shapes;
+                record.live=true;
+                free_root_slots_.pop_back();
+            }else {
+                aggregate_roots_.push_back(
+                    {root,PX_INVALID_U32,true,max_shapes,{},slot});
+                aggregate_roots_.back().attached_actors.reserve(max_shapes);
+            }
         }catch(...) {
-            if(aggregate_roots_.size()!=prior_roots)
+            if(!recycled && aggregate_roots_.size()!=original_count)
                 aggregate_roots_.pop_back();
             elements_.releaseID(root);
             throw;
         }
+        auto& record=aggregate_roots_[slot];
         try {
             const auto id=aabb_.create_aggregate(
-                root,root_group,&aggregate_roots_.back(),
+                root,root_group,&record,
                 max_shapes,PX_INVALID_U32,filter_hint);
-            aggregate_roots_.back().id=id;
+            record.id=id;
             return id;
         }catch(...) {
-            aggregate_roots_.pop_back();
+            record.live=false;
+            if(recycled)free_root_slots_.push_back(slot);
+            else aggregate_roots_.pop_back();
             elements_.releaseID(root);
             throw;
         }
@@ -79,9 +97,13 @@ public:
         auto& root=aggregate_root(id);
         while(!root.attached_actors.empty())
             remove_actor_from_root(root,root.attached_actors.back());
+        // AABB can still publish reports referencing this stable root
+        // until the original postReportsCleanup fetch boundary.
+        pending_root_slots_.reserve(pending_root_slots_.size()+1u);
         aabb_.destroy_aggregate(id);
         elements_.releaseID(root.root);
         root.live=false;
+        pending_root_slots_.push_back(root.slot);
     }
 
     void admit(BodyId actor,native::GpuBroadphaseBox::Motion motion,
@@ -212,9 +234,15 @@ public:
         // Sc::Scene::postReportsCleanup runs after GPU pair publication
         // and AABB-manager removal/bitmap retirement. Both original
         // ID trackers defer recycling until this barrier.
+        if(!pending_root_slots_.empty())
+            free_root_slots_.reserve(
+                free_root_slots_.size()+pending_root_slots_.size());
         SourceScElementLifecycleNative::post_reports_cleanup(elements_);
         actor_ids_.processPendingReleases();
         actor_ids_.clearDeletedIDMap();
+        free_root_slots_.insert(free_root_slots_.end(),
+            pending_root_slots_.begin(),pending_root_slots_.end());
+        pending_root_slots_.clear();
     }
 
     const std::vector<physx::Bp::ShapeHandle>& handles() const noexcept {
@@ -229,6 +257,9 @@ public:
     physx::Bp::ShapeHandle aggregate_root_handle(
         physx::Bp::AggregateHandle id) {
         return aggregate_root(id).root;
+    }
+    std::size_t aggregate_root_storage_slots() const noexcept {
+        return aggregate_roots_.size();
     }
 
 private:
@@ -249,6 +280,7 @@ private:
         // Sc actor attachment survives eSIMULATION_SHAPE disablement;
         // PxgAggregate::updateBoundIndices stores enabled BP members.
         std::vector<BodyId> attached_actors;
+        std::size_t slot=0u;
     };
     AggregateRoot& aggregate_root(physx::Bp::AggregateHandle id) {
         for(auto& root:aggregate_roots_)
@@ -355,6 +387,9 @@ private:
     physx::Sc::ObjectIDTracker elements_,actor_ids_;
     std::deque<Element> records_;
     std::deque<AggregateRoot> aggregate_roots_;
+    // Recycle root user-data addresses only after original Sc/GPU fetch.
+    // These are storage slots, not a second aggregate identity registry.
+    std::vector<std::size_t> pending_root_slots_,free_root_slots_;
     std::vector<physx::Bp::ShapeHandle> handles_;
 };
 

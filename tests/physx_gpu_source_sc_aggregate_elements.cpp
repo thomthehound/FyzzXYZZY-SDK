@@ -258,6 +258,40 @@ void run(Backend backend) {
                 "Disabled original Sc actor incorrectly freed aggregate capacity");
             sc.destroy_aggregate(limited);
             sc.retire(3u);
+
+            // Detached Sc aggregate roots still carry their user-data
+            // addresses until source postReportsCleanup. Reuse their
+            // storage only afterward, even as maxShapes changes.
+            owner.finish_aggregate_report_fetch();
+            sc.post_reports_cleanup();
+            const auto retained=sc.aggregate_root_storage_slots();
+            for(std::uint32_t cycle=0u;cycle<128u;++cycle) {
+                const auto id=sc.create_aggregate(
+                    cycle&1u?6u:1u,physx::Bp::getFilterGroup_Statics(),0u);
+                const auto handle=sc.aggregate_root_handle(id);
+                require(owner.source_aggregate(id).mIndex==handle,
+                        "Reused Sc root record lost the original AABB user-data identity");
+                sc.destroy_aggregate(id);
+                owner.finish_aggregate_report_fetch();
+                sc.post_reports_cleanup();
+                require(sc.aggregate_root_storage_slots()<=retained+1u,
+                        "Retired Sc aggregate root records grew with historical churn");
+            }
+            const auto pending=sc.create_aggregate(
+                1u,physx::Bp::getFilterGroup_Statics(),0u);
+            const auto pending_handle=sc.aggregate_root_handle(pending);
+            const auto retired_user_data=
+                owner.actor_lifetime().volume_data[pending_handle].getUserData();
+            sc.destroy_aggregate(pending);
+            const auto concurrent=sc.create_aggregate(
+                4u,physx::Bp::getFilterGroup_Statics(),0u);
+            const auto concurrent_handle=sc.aggregate_root_handle(concurrent);
+            require(owner.actor_lifetime().volume_data[concurrent_handle].getUserData()!=
+                        retired_user_data,
+                    "Unfetched Sc aggregate root reused an in-flight GPU user-data address");
+            sc.destroy_aggregate(concurrent);
+            owner.finish_aggregate_report_fetch();
+            sc.post_reports_cleanup();
         }
         heap.flushDeferredDeallocs();
     }
