@@ -74,6 +74,10 @@ public:
               allocators_,0u,aggregate_shaders?max_aggregate_pairs:0u,
               aggregate_shaders?max_aggregate_pairs:0u)),
           encoding_(context_,take_shader(shaders,NativeGpuSapStage::TranslateAabbs)),
+          box_transforms_(context_,take_shader(shaders,NativeGpuSapStage::BoxTransformBounds)),
+          box_input_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          box_cache_(allocators_.deviceAlloc,physx::PxsHeapStats::eBROADPHASE),
+          box_owners_{box_transforms_,box_input_,box_cache_},
           lowering_(addresses_,encoding_),
           created_(context_,take_shader(shaders,NativeGpuSapStage::CreatedPairs)),
           radix_(context_,take_shader(shaders,NativeGpuSapStage::RadixInitialize),take_shader(shaders,NativeGpuSapStage::RadixCount),
@@ -112,7 +116,8 @@ public:
           producer_(std::make_unique<SourceScGpuBroadphaseProducerNative>(
               *aabb_,*sap_,stream_,stages_,addresses_,context_,filter_,
               fill_,mapped_roots_,
-              aggregate_stages_?&aggregate_stages_->borrowed():nullptr)) {}
+              aggregate_stages_?&aggregate_stages_->borrowed():nullptr,
+              &box_owners_)) {}
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
     SourceScOwnedGpuBroadphaseNative& operator=(
@@ -201,6 +206,9 @@ private:
     std::unique_ptr<PxgAabbSourceMembersNative> aabb_;
 
     AabbEncodingStage encoding_;
+    SourceScBoxTransformBoundsNativeStage box_transforms_;
+    physx::PxgCudaBuffer box_input_,box_cache_;
+    SourceSapGpuBoxTransformOwnersNative box_owners_;
     CudaAabbLaunchLowering lowering_;
     SourceSapCreatedNativeStage created_;
     SourceSapRadixNativeStage radix_;
