@@ -70,7 +70,7 @@ jobs:
           key: ${{ steps.apt_debs.outputs.cache-primary-key }}
       - name: Install DXC for shared PhysX HLSL to SPIR-V
         shell: bash
-        run: |
+        run: &install_linux_dxc |
           curl -fsSL --retry 3 \
             "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
             -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
@@ -416,15 +416,7 @@ jobs:
           key: ${{ steps.apt_debs.outputs.cache-primary-key }}
       - name: Install DXC for reference-free source GPU conformance
         shell: bash
-        run: |
-          curl -fsSL --retry 3 \
-            "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/linux_dxc_2026_02_20.x86_64.tar.gz" \
-            -o "${RUNNER_TEMP}/linux-dxc.tar.gz"
-          mkdir -p "${RUNNER_TEMP}/dxc"
-          tar -xzf "${RUNNER_TEMP}/linux-dxc.tar.gz" -C "${RUNNER_TEMP}/dxc"
-          test -x "${RUNNER_TEMP}/dxc/bin/dxc"
-          echo "${RUNNER_TEMP}/dxc/bin" >> "${GITHUB_PATH}"
-          echo "LD_LIBRARY_PATH=${RUNNER_TEMP}/dxc/lib" >> "${GITHUB_ENV}"
+        run: *install_linux_dxc
       - name: Configure without external source or network
         run: cmake -S . -B build-native -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_ENABLE_PHYSX_SOURCE=OFF -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_SOURCE_GPU_TESTS=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFETCHCONTENT_FULLY_DISCONNECTED=ON
       - name: Build and test native core and compute
