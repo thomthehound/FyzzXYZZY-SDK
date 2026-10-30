@@ -1681,10 +1681,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
       "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
       "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
-      "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
+      "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}"
+      "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}")
     list(LENGTH FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES _sap_shader_count)
-    if(NOT _sap_shader_count EQUAL 34)
-      message(FATAL_ERROR "Native SPIRV SAP shader bundle does not contain 34 stages")
+    if(NOT _sap_shader_count EQUAL 35)
+      message(FATAL_ERROR "Native SPIRV SAP shader bundle does not contain 35 stages")
     endif()
     set(_sap_names
       TranslateAabbs
@@ -1721,9 +1722,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
       IncrementalCountSecond
       IncrementalPairs
       ClearNewFlags
+      BoxTransformBounds
     )
     set(_sap_manifest "FYZZXYZZY_SOURCE_SAP_1 SPIRV\n")
-    foreach(_idx RANGE 0 33)
+    foreach(_idx RANGE 0 34)
       list(GET _sap_names ${_idx} _stage)
       list(GET FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES ${_idx} _binary)
       get_filename_component(_filename "${_binary}" NAME)
@@ -4851,10 +4853,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
       "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
       "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
-      "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}")
+      "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}"
+      "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}")
     list(LENGTH FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES _sap_shader_count)
-    if(NOT _sap_shader_count EQUAL 34)
-      message(FATAL_ERROR "Native DXIL SAP shader bundle does not contain 34 stages")
+    if(NOT _sap_shader_count EQUAL 35)
+      message(FATAL_ERROR "Native DXIL SAP shader bundle does not contain 35 stages")
     endif()
     set(_sap_names
       TranslateAabbs
@@ -4891,9 +4894,10 @@ if(FYZZXYZZY_BUILD_D3D12)
       IncrementalCountSecond
       IncrementalPairs
       ClearNewFlags
+      BoxTransformBounds
     )
     set(_sap_manifest "FYZZXYZZY_SOURCE_SAP_1 DXIL\n")
-    foreach(_idx RANGE 0 33)
+    foreach(_idx RANGE 0 34)
       list(GET _sap_names ${_idx} _stage)
       list(GET FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES ${_idx} _binary)
       get_filename_component(_filename "${_binary}" NAME)
