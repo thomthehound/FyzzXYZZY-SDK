@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace fyzz::physx_gpu {
 
@@ -12,12 +13,21 @@ namespace fyzz::physx_gpu {
 // retains the actual allocations, GPU address mappings and lifetime.
 // Broadphase report/classification code must not need CUDA-aware allocator
 // headers simply to include the source gpuDMABack/fetch interface.
+struct SourceSapMappedReportSpan {
+    void* host=nullptr;
+    std::size_t bytes=0;
+};
 class SourceSapMappedReportView {
 public:
     virtual ~SourceSapMappedReportView() = default;
     virtual std::uint64_t device_address(const void* host,
                                           std::size_t bytes) const = 0;
     virtual void publish_at_fetch(void* host, std::size_t bytes) = 0;
+    virtual void publish_batch_at_fetch(
+        std::span<const SourceSapMappedReportSpan> spans) {
+        for(const auto& span:spans)
+            if(span.bytes)publish_at_fetch(span.host,span.bytes);
+    }
 };
 
 } // namespace fyzz::physx_gpu
