@@ -9,6 +9,9 @@
 #include "physx_port/lowlevelaabb/include/BpBroadPhaseUpdate.h"
 
 #include <limits>
+#include <optional>
+#include <span>
+#include <utility>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -31,10 +34,55 @@ void validate_pre_broadphase_native(
 
 }
 
+namespace {
+
+// The source AABB manager supplies the changed bitmap, while the original
+// Bp update supplies newly admitted and explicitly updated handles.
+// Restrict the transfer to a single contiguous interval: one smaller HtoD
+// replaces one full HtoD, without extra queue records or a shadow dirty list.
+std::optional<std::pair<physx::PxU32,physx::PxU32>>
+contiguous_dirty_bounds(const physx::Bp::BroadPhaseUpdateData& update,
+                        std::span<const physx::PxU32> changed) {
+    const auto capacity=update.getCapacity();
+    if(changed.size()<(std::uint64_t(capacity)+31u)/32u)
+        throw std::invalid_argument(
+            "Source GPU changed map cannot address all AABB volumes");
+    const auto* created=update.getCreatedHandles();
+    const auto* updated=update.getUpdatedHandles();
+    const auto created_count=update.getNumCreatedHandles();
+    const auto updated_count=update.getNumUpdatedHandles();
+    if((created_count && !created) || (updated_count && !updated))
+        throw std::invalid_argument("Source GPU AABB delta handle array missing");
+    physx::PxU32 first=capacity,last=0u;
+    physx::PxU32 created_index=0u,updated_index=0u;
+    bool gap=false;
+    for(physx::PxU32 i=0u;i<capacity;++i) {
+        const bool in_created=created_index<created_count &&
+                              created[created_index]==i;
+        const bool in_updated=updated_index<updated_count &&
+                              updated[updated_index]==i;
+        if(in_created)++created_index;
+        if(in_updated)++updated_index;
+        const bool dirty=(changed[i>>5u] & (1u<<(i&31u)))!=0u ||
+                          in_created || in_updated;
+        if(dirty) {
+            if(gap)return std::nullopt;
+            if(first==capacity)first=i;
+            last=i+1u;
+        }else if(first!=capacity)gap=true;
+    }
+    if(created_index!=created_count || updated_index!=updated_count)
+        throw std::out_of_range("Source GPU AABB delta handle outside capacity");
+    return std::pair{first,last};
+}
+
+} // namespace
+
 void append_pre_broadphase_native_uploads(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapPreBroadPhaseBuffers buffers,
-    std::vector<SourceSapUpload>& uploads) {
+    std::vector<SourceSapUpload>& uploads,
+    std::span<const physx::PxU32> changed_handles) {
     validate_pre_broadphase_native(update);
     const auto capacity = update.getCapacity();
     const auto bounds_bytes = capacity * sizeof(physx::PxBounds3);
@@ -43,6 +91,14 @@ void append_pre_broadphase_native_uploads(
     const auto env_bytes = capacity * sizeof(physx::PxU32);
 
     buffers.boxes_capacity = capacity;
+    const bool bounds_resident=update.getStateChanged() &&
+        buffers.bounds.getDevicePtr()!=0u &&
+        buffers.bounds.getSize()>=bounds_bytes;
+    // Compute the interval before changing any source heap allocation.
+    // An uninitialized or grown buffer still needs the complete upload.
+    const auto dirty_interval=bounds_resident && !changed_handles.empty()
+        ? contiguous_dirty_bounds(update,changed_handles)
+        : std::nullopt;
 
     // Retain the original allocation conditions and free-first buffer
     // growth semantics. Inactive bounds keep their previous GPU contents;
@@ -57,9 +113,20 @@ void append_pre_broadphase_native_uploads(
     // Adjacent source HtoD records have no intervening GPU work.
     // The enclosing AABB-manager pre-update owns their submission.
     uploads.reserve(uploads.size()+4u);
-    if (update.getStateChanged())
-        uploads.push_back({buffers.bounds.getDevicePtr(),
-                           update.getAABBs(), bounds_bytes});
+    if(update.getStateChanged()) {
+        if(!bounds_resident || changed_handles.empty() || !dirty_interval) {
+            uploads.push_back({buffers.bounds.getDevicePtr(),
+                               update.getAABBs(),bounds_bytes});
+        }else if(dirty_interval->first!=capacity) {
+            const auto first=dirty_interval->first;
+            const auto size=dirty_interval->second-first;
+            uploads.push_back({
+                buffers.bounds.getDevicePtr()+
+                    std::uint64_t(first)*sizeof(physx::PxBounds3),
+                update.getAABBs()+first,
+                std::size_t(size)*sizeof(physx::PxBounds3)});
+        }
+    }
     uploads.push_back({buffers.contact_distances.getDevicePtr(),
                        update.getContactDistance(), distances_bytes});
     uploads.push_back({buffers.groups.getDevicePtr(),
