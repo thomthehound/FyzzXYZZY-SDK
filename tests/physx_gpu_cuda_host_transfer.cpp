@@ -968,8 +968,32 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
            next.getRemovedHandles()!=retired.begin())
             throw std::runtime_error(
                 "Source removed/changed bitmap frame omitted original GPU dirty flags");
+        const auto before_sparse=stream.submission_stats();
         pre_update_source_sap_aabb_manager_native(next,manager_view(),stream);
+        const auto expected_sparse_bytes=
+            std::size_t(added.getWordCount()+removed.getWordCount()+
+                        aggregated.getWordCount()+changed.getWordCount())*
+                sizeof(physx::PxU32)+
+            std::size_t(next.getCapacity())*
+                (sizeof(physx::Bp::VolumeData)+sizeof(physx::PxReal)+
+                 sizeof(physx::Bp::FilterGroup::Enum))+
+            sizeof(physx::PxBounds3);
+        if(stream.submission_stats().upload_batches!=
+               before_sparse.upload_batches+1u ||
+           stream.submission_stats().upload_bytes!=
+               before_sparse.upload_bytes+expected_sparse_bytes)
+            throw std::runtime_error(
+                "Single source AABB change reuploaded the full bounds array");
         stream.wait_at_fetch();
+        const auto gpu_bounds=addresses.resolve(
+            boundsGpu.getDevicePtr(),bounds.size()*sizeof(physx::PxBounds3));
+        std::array<physx::PxBounds3,40u> copied_bounds{};
+        context.download(gpu_bounds.buffer,gpu_bounds.offset,
+                         copied_bounds.data(),sizeof(copied_bounds));
+        if(std::fabs(copied_bounds[2u].minimum.x-5.f)>1.e-6f ||
+           std::fabs(copied_bounds[36u].minimum.x-2.f)>1.e-6f)
+            throw std::runtime_error(
+                "Sparse GPU bounds update corrupted a quiet source volume");
         const auto removedGpuWords=addresses.resolve(
             removedGpu.getDevicePtr(),removed.getWordCount()*sizeof(physx::PxU32));
         observed={};
