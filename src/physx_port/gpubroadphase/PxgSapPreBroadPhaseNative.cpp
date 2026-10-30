@@ -90,8 +90,13 @@ void append_pre_broadphase_native_uploads(
     const auto groups_bytes = capacity * sizeof(physx::PxU32);
     const auto env_bytes = capacity * sizeof(physx::PxU32);
 
+    // The source PxgCudaBuffer can reserve more bytes than the last
+    // published logical array. Growth into that spare allocation still
+    // needs a full initialization of the newly addressable volume slots.
+    const auto previously_published=buffers.boxes_capacity;
     buffers.boxes_capacity = capacity;
     const bool bounds_resident=update.getStateChanged() &&
+        capacity<=previously_published &&
         buffers.bounds.getDevicePtr()!=0u &&
         buffers.bounds.getSize()>=bounds_bytes;
     // Compute the interval before changing any source heap allocation.
