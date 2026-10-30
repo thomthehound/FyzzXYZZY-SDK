@@ -138,7 +138,7 @@ inline void pre_update_source_sap_aabb_manager_native(
         // preBroadPhase follows the manager's original bitmap/volume
         // records without a kernel, copy or fence between them.
         append_pre_broadphase_native_uploads(
-            update,manager.sap,uploads,manager.changed.words);
+            update,manager.sap,uploads,manager.changed.words,true);
     }
 
     if(state_changed || manager.gpu_state_changed) {
