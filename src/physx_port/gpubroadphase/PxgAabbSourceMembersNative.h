@@ -1069,7 +1069,8 @@ public:
     }
 
     SourceSapAabbManagerPreUpdateNative pre_update(
-        SourceSapPreBroadPhaseBuffers sap) noexcept {
+        SourceSapPreBroadPhaseBuffers sap,
+        const SourceSapGpuBoxTransformsNative* gpu_boxes=nullptr) noexcept {
         const bool aggregate_slots=aggregate_gpu_work_pending();
         return {sap,source_sap_aabb_bitmap_native(added_device_,added_),
             source_sap_aabb_bitmap_native(removed_device_,removed_),
@@ -1077,7 +1078,8 @@ public:
             source_sap_aabb_bitmap_native(changed_device_,changed_),
             volumes_device_,{volumes_.begin(),volumes_.size()},
             persistent_state_changed_,gpu_state_changed_ || aggregate_slots,
-            aggregate_slots};
+            aggregate_slots, nullptr,nullptr,nullptr,nullptr,0u,0u,
+            gpu_boxes};
     }
 
     // PxgAABBManager::updateBPFirstPass: validate the exact original
@@ -1090,7 +1092,8 @@ public:
         SourceSapPreBroadPhaseBuffers sap,
         const SourceAggregateGpuNativeStage& stage,
         const CudaDeviceAddressMap& addresses,
-        SourceSapDmaNative& stream) {
+        SourceSapDmaNative& stream,
+        const SourceSapGpuBoxTransformsNative* gpu_boxes=nullptr) {
         if(!aggregate_gpu_slot_count_)
             throw std::logic_error("No original aggregate slots for GPU pre-update");
         validate_pre_broadphase_native(update);
@@ -1105,7 +1108,7 @@ public:
         queue_aggregate_projection_gpu_storage(stream);
         queue_aggregate_self_report_gpu_dma_up(stream);
         queue_aggregate_pair_gpu_storage(stream);
-        auto manager=pre_update(sap);
+        auto manager=pre_update(sap,gpu_boxes);
         manager.aggregate_stage=&stage;
         manager.aggregate_addresses=&addresses;
         manager.aggregate_slots_device=&aggregate_slots_device_;
