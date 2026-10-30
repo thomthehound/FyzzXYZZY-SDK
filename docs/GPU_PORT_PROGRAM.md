@@ -3,6 +3,13 @@
 
 # PhysX-to-portable-GPU engineering program
 
+**Status:** Historical execution-dependency and source-intake program.
+The coherent native GPU AABB/SAP and aggregate broadphase slice has been
+integrated on Vulkan and D3D12 with native CPU contact/solver execution.
+G-numbered gates below record the original dependency plan; they are not
+current independent milestone requirements. See the
+[active capability roadmap](ROADMAP.md) for remaining work.
+
 Status: source audit and native-engine migration, October 2026. This is the program-level
 companion to [the execution trace](PHYSX_GPU_PORT.md) and
 [the detailed broadphase migration ledger](GPU_BROADPHASE_TRACE.md), not a declaration of
@@ -488,9 +495,10 @@ FyzzXYZZY, not claims made by NVIDIA.
 ## Native scene ownership and G3 acceptance
 
 The default `fyzz::World` presently uses an isolated PhysX reference CPU backend.
-The production API explicitly rejects `NativePortableGpu` until the SDK owns a
-native scene and source-derived GPU SAP/AABB manager, native task lifecycle,
-GPU-completion publication, and a corresponding narrowphase/dynamics path.
+The ordinary `WorldOptions` GPU mode is still rejected by the default constructor,
+while `create_native_gpu_world(...)` explicitly constructs a source-derived
+GPU broadphase with native Sc/PCM/Dy CPU contact and solving on Vulkan or
+D3D12. This admission is not GPU narrowphase or GPU rigid dynamics.
 The short-lived source-level factory experiment in the PhysX fork was reverted;
 no production GPU integration shall depend on patching the reference PhysX
 `PxSceneDesc` or `Sc::Scene`.

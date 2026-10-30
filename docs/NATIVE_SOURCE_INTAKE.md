@@ -3,7 +3,15 @@
 
 # N1 source-faithful native dynamics intake
 
-**N1 admitted CPU status:** The native scene owns source-derived SAP/Gu/PCM contact managers, both island graphs, typed 1D constraints, Dy CPU PGS task chains, sleep/kinematic handoffs, force/contact reporting, and completed-result rollback. Original CPU source correspondence is exercised by the tests below; the admitted production slice excludes articulations, CCD, TGS, arbitrary/multishape geometry and GPU dynamics. Final N1 acceptance still requires the current matrix and platform CI to pass.
+**Status:** Historical N1 source correspondence and engineering intake.
+The admitted native CPU rigid-body slice has been integrated; older
+open-gate and unported-status statements in this ledger record their
+contemporaneous scope rather than today's overall milestone status.
+The [capability roadmap](ROADMAP.md) identifies current supported and
+unsupported functionality. Detailed source contracts remain applicable
+when extending their corresponding algorithms.
+
+**N1 admitted CPU status:** The native scene owns source-derived SAP/Gu/PCM contact managers, both island graphs, typed 1D constraints, Dy CPU PGS task chains, sleep/kinematic handoffs, force/contact reporting, and completed-result rollback. Original CPU source correspondence is exercised by the tests below; the admitted production slice excludes articulations, CCD, TGS, arbitrary/multishape geometry and GPU dynamics. This bounded slice has passed integration acceptance; the matrix below also records behaviors outside that admission.
 
 ## Objective: port an execution system, not a collection of formulas
 

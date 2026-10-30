@@ -5,6 +5,14 @@
 existing port. See `GPU_BROADPHASE_TRACE.md` for pinned upstream source
 mapping and `PHYSX_GPU_PORT.md` for progress.
 
+This policy requires continuous scrutiny of algorithmic complexity, occupancy,
+memory movement, submission count and avoidable synchronization. It does
+**not** require a representative end-to-end hardware benchmark at every
+partial integration gate. The current GPU-broadphase/CPU-solver hybrid is
+appropriate for focused dispatch/transfer diagnostics; full GPU rigid-frame
+throughput comparisons belong after source GPU body, contact and solver work
+share a functioning frame path. See [the active roadmap](ROADMAP.md).
+
 ## Objective and reference
 
 - We are porting **NVIDIA PhysX GPU physics**, including its existing CPU

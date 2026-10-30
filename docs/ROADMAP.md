@@ -1,139 +1,170 @@
-# FyzzXYZZY-SDK: initial engineering roadmap
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
-Status: **proposed working plan**, 2026-10-12. Update milestones when evidence changes. This is not a promise to preserve prototype designs forever.
+# FyzzXYZZY capability roadmap
 
-## Mission and constraints
+Status: October 30, 2026. This is the authoritative **active** roadmap.
+Implementation and executable acceptance, not the count of kernels or commits,
+determine completion. Historical milestone names in source-intake and trace
+documents do not define additional active release gates.
 
-FyzzXYZZY is an **independent, PhysX-derived, general-purpose physics SDK** with hardware-neutral GPU acceleration. Godot 4.7.2 is the first consumer and a required early integration test, **not** FyzzXYZZY's runtime or architectural center. Other native applications and game engines must be able to embed the same SDK without any Godot dependencies.
+## Goal and boundaries
 
-- License FyzzXYZZY-authored code under Apache-2.0; preserve upstream and third-party copyright, license, and notice requirements. Do not adopt the Wild Ox Godot reference implementation by default.
-- Prefer working upstream PhysX algorithms, data, API concepts, and tests where they remain sound. Replace CUDA-dependent contracts or other architecture when they obstruct portability.
-- CPU operation is a supported path, not a CUDA fallback masquerading as vendor neutrality.
-- Vulkan is the first non-CUDA GPU runtime; Direct3D 12 is the second. AMD is the first validation target, but portability includes Intel and NVIDIA hardware.
-- Compile PhysX-derived GPU stages for both SPIR-V and DXIL from the beginning; establish a single shared shader source and data contract before expanding the kernel inventory. D3D12 *runtime* integration follows the first Vulkan slice, rather than waiting for all PhysX GPU physics features.
-- HLSL + DXC is the low-risk default **candidate**, not a permanent decision. Compare Slang on the same real GPU workloads before choosing.
-- Public SDK APIs must not expose Godot types, CUDA types, Vulkan/D3D12 resource objects, or shader compiler details.
-- Functional simulation and observed plausibility matter more than bit-for-bit correspondence with CUDA. Test stability, conservation behavior where appropriate, collisions, contacts, and performance independently.
+Deliver an independent, source-faithful PhysX-derived physics SDK with one
+FyzzXYZZY-owned scene, task graph and simulation state. CPU, Vulkan and D3D12
+are execution choices, not separate physics engines. Lower CUDA execution
+mechanisms to the native platform while preserving source algorithm, state,
+lifetime and observable behavior. Change scheduling, memory placement and
+kernel implementation when the new compute model permits a demonstrably
+better solution without changing those semantics.
 
-## Current migration priority
+Godot is a consumer and validation path; the SDK must also build and operate
+without Godot or a reference PhysX runtime. The reference CPU backend remains
+an independent comparison oracle, never a hidden production fallback.
 
-The current `World` default uses a PhysX CPU *reference backend*. It is a temporary integration oracle, not the final native CPU engine. The native FyzzXYZZY scene must own actor/bounds state, scheduling, buffer lifetimes, GPU SAP reports and eventual CPU/GPU narrowphase/solver execution. Extract and consolidate the source-derived components before adding further stage wrappers. The measurable gates and retirement conditions are in [Native engine migration](NATIVE_ENGINE_MIGRATION.md).
+## Delivered foundation and current limits
 
-## Repository and dependency posture
+| Capability | Current production boundary |
+| --- | --- |
+| Native CPU rigid scene | Source-derived Sc/island/task ownership, CPU SAP, PCM contacts and Dy PGS for an admitted **box/plane and one-shape-per-actor subset**; limited source-derived distance constraints, materials, contact events and body lifecycle |
+| Portable compute | Real Vulkan and D3D12 execution, compilation, resource ownership, submissions and synchronization; independent SDK tests without reference PhysX |
+| GPU broadphase | Explicit native GPU World factory, source-derived persistent AABB/SAP and aggregate ownership, multi-frame found/quiet/lost report publication into the same Sc/PCM/Dy scene; **CPU narrowphase and dynamics remain in use** |
+| GPU contact generation | Not yet integrated as a production GPU narrowphase |
+| GPU rigid dynamics | No integrated GPU constraint preparation, rigid solve or body integration |
+| Rigid feature breadth | General geometry, multishape actors, CCD, triggers, complete filtering/reporting, joints, articulations and other PhysX modes are not fully admitted |
+| Nonrigid simulation | GPU deformables, particles and their reciprocal interactions are not integrated |
+| SDK selection and consumers | `WorldOptions` defaults to the reference CPU backend when enabled; `NativeCpu` is explicit. `NativePortableGpu` through the ordinary `World` constructor rejects; `create_native_gpu_world(...)` is the explicit supported GPU-broadphase entry point. Godot acceptance uses native CPU |
 
-- Keep `thomthehound/PhysX` as an unmodified source-reference/tracking fork; SDK GPU execution must not depend on proprietary patches installed into the fork.
-- Import a clearly identified PhysX SDK 5.11 baseline into FyzzXYZZY (only required components; do not take on Blast, Flow, Omniverse, or the third-party Godot module merely because they exist).
-- Preserve source provenance and SPDX notices. A root Apache-2.0 license does not erase differing third-party requirements.
-- Favor reproducible normal CMake builds and an SDK that downstream consumers can package without requiring CUDA, NVIDIA GPU binaries, or Godot.
-- Keep reference/prototype tools separable from distributed runtime dependencies.
-- Organize public headers, runtime backends, kernels, tests, samples, and consumers as separate targets; their final directory names can be settled in M0.
+The GPU broadphase is a working **hybrid scene slice**, not a completed GPU
+physics pipeline or a claim of general PhysX compatibility. There is no
+meaningful single percentage for feature coverage: source breadth,
+execution-device coverage, and end-to-end scene behavior must be tracked
+separately.
 
-PhysX's GPU host-side scene/task pipeline is part of the port, alongside CUDA
-kernels. Every portable physics component must have an upstream source mapping
-for algorithms, data representation, dispatch dependencies, synchronization,
-and scene result publication. See [GPU port audit](PHYSX_GPU_PORT.md).
+## Active implementation priorities
 
-## Proposed layers
+These are **capability gates**, not numbered projects. Closely related
+dependencies may overlap. A gate closes only when the original algorithm and
+scene handoffs execute through the real SDK owner, with supported inputs and
+failure paths tested on the relevant backends.
 
-```text
-  Standalone C++ app      Godot 4.7 adapter      Other consumers
-             \                 |                /
-              +-------- FyzzXYZZY public API -------+
-                         Scene / bodies / constraints
-                         contacts / particles / deformables
-                                  |
-                         Physics implementations
-                                  |
-                        Compute execution contract
-                                  |
-                  CPU       Vulkan        D3D12
-```
+### GPU body and shape state
 
-The compute contract should cover: device discovery/capabilities, buffer ownership and views, buffer+offset addressing, upload/download, descriptors or equivalent bindings, kernel pipeline metadata, dispatch, dependency scheduling, barriers, fences, diagnostics, and optional host-resource interoperation. It must **not** emulate arbitrary CUDA device pointers with unportable integer casts.
+Extend the source-derived simulation-controller and scene/task integration
+beyond CPU-authored broadphase inputs. Admit the required source body and
+shape representations, dirty/update streams, device-produced state, GPU
+AABB preparation and pre/post-collision dependencies. Carry identities and
+ownership across frame boundaries without creating a second scene, CPU
+projection oracle or separate scheduler.
 
-Maintain **one authoritative FyzzXYZZY simulation world** for rigid/deformable/contact interactions; do not let the Godot adapter create a separate cloth physics universe or silently delegate reciprocal collisions to an unrelated engine.
+**Acceptance:** a live native scene evolves device-produced body/shape state
+through the corresponding GPU broadphase work across multiple frames,
+including growth, retirement, sleep/kinematic changes and failed publication.
+The source task order and host/device transfer contracts are observable.
 
-GPU/renderer sharing is an optional *later* optimization with explicit lifetime/synchronization contracts. Initial Godot tests may use staged CPU readback to draw results, so long as that limitation is measured and not mistaken for production performance.
+### GPU narrowphase and contact streams
 
-## Milestones and gates
+Port the actual supported source GPU collision pipeline: shape-pair
+admission, persistent contacts, manifolds, materials, patch/contact streams,
+touch/report transitions and original CPU/GPU eligibility rules. Grow geometry
+support only as the corresponding source path is brought into production;
+do not replace unsupported cases with invented collision rules.
 
-### M0 — Source and CPU foundation
-- Import the needed PhysX 5.11 SDK source and preserve all legal notices; retain `thomthehound/PhysX` as tracking/reference.
-- Make CPU build and basic scene tests pass on Windows and Linux using an ordinary CMake workflow.
-- Establish an independent library target, tiny host application, smoke tests, and a Godot adapter target that consumes the same library (it may initially be CPU only).
-- Record feature/build baseline and the initial GPU dependency map; do not restructure unrelated parts of PhysX as a prerequisite.
+**Acceptance:** native GPU-produced contacts, not just broadphase candidate
+pairs, feed the existing island/constraint owners across creation, motion,
+separation and retirement. Validate exact stream contracts and numerical
+contact behavior on Vulkan and D3D12.
 
-**Gate:** CPU FyzzXYZZY scene works independently; a Godot 4.7.2 sample can create and advance a FyzzXYZZY-managed scene without invoking CUDA or using the reference Godot fork.
+### GPU rigid solving and integration
 
-### M1 — Portable GPU execution vertical slice
-- Implement the minimum **native Vulkan** device, buffer, command, and synchronization runtime, independent of Godot's RenderingDevice.
-- Define an explicit CPU/GPU buffer data contract and use portable pipeline reflection/build metadata.
-- Run representative kernels (simple stream operation plus a difficult one featuring subgroup operations, atomics, or structured data) through HLSL/DXC and Slang. Compare correctness, translation complexity, portable bindings, toolchain friction and measured performance.
-- Use vendor-neutral fallback implementations for features absent on some devices.
+Bring source-derived GPU constraint preparation, partitioning, solving,
+integration and writeback into the same native task graph. Preserve PGS/TGS
+distinctions and the source-supported contact, friction, joint and island
+behaviors. Exercise GPU completion, rollback and wake/sleep transitions
+without shadow CPU solver state or unconditional host round trips.
 
-**Gate:** the same FyzzXYZZY workload runs on AMD Vulkan *outside Godot* and via Godot's FyzzXYZZY adapter, with checked output and no CUDA installation or NVIDIA driver dependency. Record and resolve the HLSL-vs-Slang decision.
+**Acceptance:** GPU-produced body motion and contact/constraint results
+survive multi-frame standalone scenes on both APIs, including collisions,
+coupled rotation/friction, supported joints, varied island topology and
+correct publication. CPU/reference comparisons check behavioral contracts,
+not arbitrary bit identity.
 
-### M2 — First complete native GPU physics pathway
-- Port an identifiable **PhysX-derived** coherent pathway through FyzzXYZZY's native scene, source-derived task orchestration and data contracts: e.g. a selected bounds/broadphase stage through its original launch and result-processing path. Do not substitute an unrelated world or simplified contact solver.
-- Reuse or translate scan, sort, compaction and dispatch utilities as required by the pathway; leave nonessential kernel families unported.
-- Support a fixed-step interactive test scene with rigid bodies and visibly correct collision/response.
-- Document GPU/CPU state transfer semantics; measure synchronization and readback overhead.
+### Rigid scene breadth and native-default readiness
 
-**Gate:** a demonstrably PhysX-derived GPU pathway integrated with FyzzXYZZY's native scene orchestration, with traced source, verified stage ordering and contact/constraint behavior as applicable. A separate Vulkan physics prototype is not sufficient.
+Expand scene shape/actor semantics, geometry and cooking, multishape
+interaction, CCD, triggers/filtering, contact modification/reporting, scene
+queries, constraints and other source-defined runtime behavior. Close
+independent native CPU omissions in parallel with GPU work. Default-world
+reference retirement is a separate packaging/API acceptance decision, not
+a proxy for complete GPU dynamics.
 
-### M3 — First reciprocal deformable/rigid pathway
-- Add enough existing PhysX particle/PBD/FEM/contact functionality to support an interacting deformable body or garment against FyzzXYZZY rigid bodies.
-- Establish a common collision/contact ownership model, consistent simulation stepping and GPU buffer update path.
-- Benchmark first with staging transfers; then investigate zero-copy/host-interop and asynchronous frame scheduling if the measurements justify it.
+**Acceptance:** each advertised capability has source correspondence and
+standalone regression coverage. Ordinary non-test SDK construction and
+packaging do not require a reference scene; unsupported features reject
+explicitly rather than quietly substituting a different engine.
 
-**Gate:** a repeatable Godot scene with a deformable object reacting to moving rigid geometry, plus the equivalent standalone test. Verify contact stability, penetration and plausible behavior.
+### Articulations and advanced rigid interactions
 
-### M4 — SDK and Godot integration maturity
-- Expand the adapter to ordinary Godot physics nodes and queries through a selectable PhysicsServer3D implementation where supported; investigate GDExtension first, use an engine module only if evidence requires it.
-- Provide first-class FyzzXYZZY extension interfaces for functionality beyond the stock PhysicsServer3D contract.
-- Add packaging, consumer samples, diagnostics and clear CPU-only operation. Do not require users to fork Godot to embed basic FyzzXYZZY features if avoidable.
+Port source articulation dataflow, constraints, feedback, joints/tendons where
+supported and their interactions with contact/island solving. Validate mixed
+articulated and ordinary rigid scenes, not isolated articulation arithmetic.
 
-**Gate:** a Godot project loads/selects FyzzXYZZY and uses everyday 3D physics behavior; advanced simulation uses the same FyzzXYZZY world. Native C++ sample still requires no Godot.
+### Deformables, particles and mixed scenes
 
-### M5 — D3D12 and cross-vendor validation
-- Implement the D3D12 compute runtime using the shared kernel sources (DXIL), with backend capability negotiation.
-- Exercise representative workloads on AMD and at least one independent additional vendor/device when accessible.
-- Expand Windows/Linux regression and packaging matrix.
+Port the source deformable/particle components and their contacts as coherent
+subsystems, including reciprocal rigid interactions and shared scene stepping.
+No isolated cloth or particle simulator may stand in for these contracts.
 
-**Gate:** one physics scene produces comparable acceptable physical behavior through Vulkan and D3D12 on supported devices, with verified diagnostics when a capability is unavailable.
+### Consumer and release maturity
 
-### M6 — Broader PhysX GPU feature coverage and optimization
-- Port remaining narrowphase, articulated dynamics, solver modes, particles, soft bodies, cloth, and other PhysX GPU capabilities by priority and demonstrated reuse.
-- Benchmark realistic contact density, small and large scenes, dispatch overhead, GPU occupancy, transfer cost, and host/editor latency.
-- Optimize implementations per backend where needed; no requirement for identical instruction streams or bit-exact numerical behavior.
-- Evaluate Blast and Flow separately if/when they add value; neither is currently an SDK dependency.
+Grow standalone packaging, diagnostics, supported-device capability
+negotiation, Godot integration, engine-facing APIs and cross-vendor coverage
+from the same SDK engine. Maintain a feature/backend support matrix that
+identifies tested hardware and unsupported combinations.
 
-**Gate:** publish a feature coverage matrix and performance comparisons against CPU PhysX and, where available, upstream CUDA PhysX.
+## Evidence required for any capability gate
 
-## Testing discipline
+- **Source fidelity:** mapped source operations, numerical semantics,
+  ownership, buffer layout, task ordering, and deliberate portable lowerings.
+- **Real integration:** production callers and outputs, not only isolated
+  shader fixtures; tests through the scene across multiple frames.
+- **Failure and retirement:** ID reuse, quiet frames, growth, abort/recovery,
+  GPU fences, no silent reference or CPU substitute.
+- **Portability:** Vulkan and D3D12 correctness/API execution as applicable;
+  software Vulkan and D3D12 WARP are not hardware throughput evidence.
+- **Runtime design:** retain efficient algorithmic complexity, useful
+  parallelism, batched work, allocation reuse, minimal transfers and necessary
+  synchronization. Do not add a slow safety path solely because it is easier
+  to port.
 
-Each GPU milestone uses a paired standalone-and-Godot scenario from the **same FyzzXYZZY implementation**. Minimum recorded outcomes:
+## Performance: design now, measure at coherent checkpoints
 
-- Correct scene progression: contacts, constraints, integration and state transitions.
-- Physics quality: penetration, jitter, energy/momentum drift where applicable, solver stability and numerical robustness.
-- CPU/GPU work accounting: GPU simulation time, transfer time, synchronization and frame latency separately.
-- Portable assumptions: subgroup sizes, atomic support, buffer alignment/layout, memory lifetime and compiler backend differences.
-- Error reporting: unsupported device or backend is explicit, never silent fallback to an unrelated physics engine.
+Performance discipline applies to every implementation change: reject obvious
+serialization, excessive readback, per-kernel waits, redundant copies,
+avoidable allocations and scalarized source parallelism before they spread.
+Record submissions, copies, waits and allocator activity where useful, and
+use targeted measurements to resolve a concrete design decision.
 
-No hash/checksum ceremony is needed for normal verification; use ordinary builds, tests, source history, and behavioral validation.
+**Representative end-to-end hardware benchmarking is not the next feature
+gate.** The current hybrid GPU-broadphase/CPU-solver path can diagnose its
+own transfer and scheduling costs, but it cannot predict full GPU-rigid
+performance. Prioritize source-faithful GPU body, contact and solver
+integration first; profile real mixed-size/mixed-contact workloads when those
+systems form a cohesive frame path. Optimize the measured bottleneck, using
+subgroup, wave and device-specific primitives when semantically equivalent.
+Do not confuse CI wall time or software-device performance with hardware
+physics throughput.
 
-## Historical M0/M1 work package
+## Technical references
 
-1. Import and build the minimal PhysX 5.11 SDK CPU baseline in FyzzXYZZY; preserve provenance and legal files.
-2. Establish separate `fyzzxyzzy-core`, `fyzzxyzzy-vulkan` (initially stub), `fyzzxyzzy-godot` and standalone test targets, without gratuitously replacing working PhysX types.
-3. Produce a *focused* CUDA-to-portable dependency inventory of actual launch sites, `CUdeviceptr` representation, streams/events, allocation, device-side pointer graphs, kernel registries, GPU shared data structures, subgroup assumptions, and build/binary dependencies.
-4. Deliver the M0 CPU scene in a standalone harness and Godot. Treat the Wild Ox module as a reference for testing/documentation, not imported source.
-5. Start M1 with the smallest functioning Vulkan physics-related compute slice; run the same representative HLSL and Slang kernels through it.
+- [Architecture and fidelity contract](ARCHITECTURE_CONTRACT.md)
+- [Native scene implementation and historical migration gates](NATIVE_ENGINE_MIGRATION.md)
+- [CPU source correspondence](NATIVE_SOURCE_INTAKE.md)
+- [GPU host execution and stage trace](PHYSX_GPU_PORT.md)
+- [GPU source implementation program and historical gates](GPU_PORT_PROGRAM.md)
+- [GPU performance engineering policy](GPU_PORT_PERFORMANCE.md)
+- [Building and SDK integration](BUILDING.md)
 
-## Open decisions (resolve with experiments, not ideology)
-
-- HLSL/DXC versus Slang as the primary shader authoring/compiler path — decide in M1.
-- Preserve PhysX public API as-is versus a thin FyzzXYZZY API/compatibility layer — keep minimal changes through M0, document any unavoidable breaks.
-- Native Vulkan allocation only, Godot RenderingDevice-hosted execution, or explicit resource sharing for fast rendering interop — prototype after the native backend exists and choose based on measured costs.
-- GDExtension versus compiled Godot module for full `PhysicsServer3D` coverage — choose on implementation and packaging evidence.
-- Additional platform/vendor requirements and shader feature tiers — expand the test matrix as hardware and demand justify it.
+Previous M-, N- and G-numbered schedules are **retired as planning schemes**.
+Their source maps, tests and recorded decisions remain useful; the active
+capability gates above govern subsequent implementation and acceptance.
