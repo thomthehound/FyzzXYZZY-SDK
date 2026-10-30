@@ -215,11 +215,12 @@ public:
             if(aggregates_.size()<=id)aggregates_.resize(2u*id+1u);
             if(aggregate_max_shapes_.size()<=id)
                 aggregate_max_shapes_.resize(2u*id+1u);
-            if(aggregate_gpu_member_starts_.size()<=id) {
+            if(aggregate_gpu_member_starts_.size()<=id)
                 aggregate_gpu_member_starts_.resize(2u*id+1u,0u);
+            if(aggregate_gpu_member_reservations_.size()<=id)
                 aggregate_gpu_member_reservations_.resize(2u*id+1u,0u);
+            if(self_state_uploaded_.size()<=id)
                 self_state_uploaded_.resize(2u*id+1u,false);
-            }
             auto& aggregate=aggregates_[id];
             aggregate.reset();
             aggregate.updateBoundIndices=PX_ALLOCATE(
