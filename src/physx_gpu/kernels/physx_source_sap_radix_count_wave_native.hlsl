@@ -53,13 +53,20 @@ void main(uint3 group:SV_GroupID,uint3 thread:SV_GroupThreadID) {
     const uint block=group.x, axis=group.y;
     const uint input=axis==0u?p.kx:(axis==1u?p.ky:p.kz);
     const uint output=axis==0u?p.hx:(axis==1u?p.hy:p.hz);
-    if(thread.x<16u)totals[thread.x]=0u;
-    GroupMemoryBarrierWithGroupSync();
     const uint vectors=(p.numKeys+3u)/4u;
     const uint required=(vectors+1023u)/1024u;
     const uint iterations=(required+31u)/32u;
     const uint first=min(iterations*block*1024u,vectors);
     const uint last=min(first+iterations*1024u,vectors);
+    // Empty source partitions still write all sixteen histogram bins.
+    // Avoid wave reductions and LDS barriers for those GPU workgroups.
+    if(first==last) {
+        if(thread.x<16u)
+            store_total(axis,output+(thread.x*32u+block)*4u,0u);
+        return;
+    }
+    if(thread.x<16u)totals[thread.x]=0u;
+    GroupMemoryBarrierWithGroupSync();
     uint bins[16];
     [unroll]for(uint d=0u;d<16u;++d)bins[d]=0u;
     for(uint v=first+thread.x;v<last;v+=1024u) {
