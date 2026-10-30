@@ -29,9 +29,18 @@ a new controller simply to make another increment independently testable.
   to actual ownership and responsibilities. Helpers are welcome for a
   cohesive private operation; **do not accumulate a new abstraction for
   every test, CUDA launch, buffer family, or PR**.
-- Production behavior must not silently switch to a different backend
-  on failed GPU admission. If a path is unsupported, fail explicitly
-  and make the execution mode observable.
+- GPU compute is the primary full-physics implementation target. The
+  selected GPU scene must retain shape/transform, broadphase, contact,
+  constraint and integrated body state on the device across dependent stages.
+  The host owns scene admission and required public result publication,
+  not a mandatory intermediate CPU copy of each device result. Device
+  stage submissions remain in the one scene task graph and resource owner.
+- Native CPU execution is an explicit fallback for unsupported devices and
+  a correctness baseline. Reference CPU execution is only an independent
+  comparison mode. Production behavior must not silently switch backends
+  on failed GPU admission or for a missing GPU physics stage: fail explicitly
+  and make the execution mode observable. The N2 broadphase/CPU-solver hybrid
+  is an admitted transitional mode, not the full GPU pipeline.
 
 ## 2. Native runtime cost is part of correctness
 
