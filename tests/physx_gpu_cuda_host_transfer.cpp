@@ -920,10 +920,18 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         const auto before_fragmented=stream.submission_stats();
         pre_update_source_sap_aabb_manager_native(
             frame,manager_view(),stream);
+        const auto expected_full_bytes=
+            std::size_t(added.getWordCount()+removed.getWordCount()+
+                        aggregated.getWordCount()+changed.getWordCount())*
+                sizeof(physx::PxU32)+
+            volumes.size()*sizeof(physx::Bp::VolumeData)+
+            bounds.size()*sizeof(physx::PxBounds3)+
+            offsets.size()*sizeof(physx::PxReal)+
+            groups.size()*sizeof(physx::Bp::FilterGroup::Enum);
         if(stream.submission_stats().upload_batches!=
                before_fragmented.upload_batches+1u ||
            stream.submission_stats().upload_bytes!=
-               before_fragmented.upload_bytes+before_fragmented.upload_bytes)
+               before_fragmented.upload_bytes+expected_full_bytes)
             throw std::runtime_error(
                 "Separated source created handles incorrectly narrowed GPU bounds");
         stream.wait_at_fetch();
