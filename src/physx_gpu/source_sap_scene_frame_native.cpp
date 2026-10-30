@@ -306,9 +306,11 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     if(original_pre_update.has_aggregates && !inputs.aggregate_stages)
         throw std::logic_error(
             "Original aggregate Sc frame requires the complete source GPU kernel bundle");
+    const auto sap_buffers=sap.pre_broadphase_buffers();
     const auto update=aabb.prepare(
         inputs.live_boxes,inputs.live_handles,inputs.filter,
-        inputs.gpu_box_owners!=nullptr);
+        inputs.gpu_box_owners!=nullptr,
+        inputs.gpu_box_owners && aabb.capacity()>sap_buffers.boxes_capacity);
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
     if(inputs.gpu_box_owners) {
         const auto& owner=*inputs.gpu_box_owners;
