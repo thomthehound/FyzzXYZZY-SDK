@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -276,6 +277,9 @@ public:
 
     bool submission_complete(SubmissionId id) const;
     void wait_submission(SubmissionId id);
+    // Ordered submissions on this Context queue retire after one fence
+    // wait on the newest token. Each supplied token is released once.
+    void wait_submissions(std::span<const SubmissionId> ordered);
     void wait_all();
 
 private:
