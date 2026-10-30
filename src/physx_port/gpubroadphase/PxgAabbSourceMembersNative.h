@@ -970,7 +970,10 @@ public:
     physx::Bp::BroadPhaseUpdateData prepare(
         std::span<const native::GpuBroadphaseBox> live,
         std::span<const physx::Bp::ShapeHandle> handles,
-        const physx::Bp::BpFilter& filter) {
+        const physx::Bp::BpFilter& filter,
+        bool gpu_bounds = false) {
+        box_transform_records_.clear();
+        auto* records=gpu_bounds ? &box_transform_records_ : nullptr;
         if(live.size()!=handles.size())
             throw std::invalid_argument(
                 "Source SAP live actor and original volume handle counts disagree");
@@ -1032,7 +1035,7 @@ public:
                 {changed_.getWords(),changed_.getWordCount()}};
             write_source_sap_scene_bounds(
                 live,handles,scene_bounds(),bounds_scratch_,
-                &geometry_changes,true);
+                &geometry_changes,true,records);
             const auto update=physx::Bp::BroadPhaseUpdateData(
                 created_.begin(),created_.size(),
                 nullptr,0u,retired_.begin(),retired_.size(),
@@ -1055,10 +1058,14 @@ public:
         }
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
-            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_);
+            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,records);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
         return update;
+    }
+
+    std::span<const SourceScBoxTransformInputNative> box_transform_records() const noexcept {
+        return box_transform_records_;
     }
 
     SourceSapAabbManagerPreUpdateNative pre_update(
@@ -1325,6 +1332,7 @@ private:
     physx::PxgCudaBuffer projection_bound_history_0_,projection_bound_history_1_;
     std::vector<BodyId> volume_to_actor_;
     SourceSapSceneBoundsScratch bounds_scratch_;
+    std::vector<SourceScBoxTransformInputNative> box_transform_records_;
     // Transient original first-pass member geometry handles; Bp root
     // deltas and all persistent identity/history remain AABB-owned.
     std::vector<physx::Bp::ShapeHandle> aggregate_geometry_created_;
