@@ -784,6 +784,52 @@ struct Context::Impl {
         staging->Unmap(0, &written);
     }
 
+    void download_batch(const std::vector<DownloadSpan>& downloads) {
+        if(downloads.empty())return;
+        std::size_t bytes=0;
+        std::unordered_set<BufferId> sources;
+        sources.reserve(downloads.size());
+        for(const auto& item:downloads) {
+            const auto& source=get_buffer(item.source);
+            validate_range(source.bytes,item.source_offset,item.bytes);
+            if(!item.data || !item.bytes ||
+               (item.source_offset&3u) || (item.bytes&3u) ||
+               item.bytes>std::numeric_limits<std::size_t>::max()-bytes)
+                throw std::invalid_argument("Invalid D3D12 GPU readback span");
+            bytes+=item.bytes;
+            sources.insert(item.source);
+        }
+        auto staging=allocate_resource(device.Get(),bytes,
+            D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        Submission cmd=new_commands();
+        for(const auto id:sources)
+            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
+                D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
+        std::size_t offset=0;
+        for(const auto& item:downloads) {
+            cmd.commands->CopyBufferRegion(staging.Get(),offset,
+                get_buffer(item.source).resource.Get(),item.source_offset,
+                item.bytes);
+            offset+=item.bytes;
+        }
+        for(const auto id:sources)
+            transition(cmd.commands.Get(),get_buffer(id).resource.Get(),
+                D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_COMMON);
+        wait_submission(enqueue(std::move(cmd)));
+        void* mapped=nullptr;
+        D3D12_RANGE read{0,bytes};
+        check(staging->Map(0,&read,&mapped),"Map batched GPU readback");
+        offset=0;
+        for(const auto& item:downloads) {
+            std::memcpy(item.data,
+                static_cast<const std::uint8_t*>(mapped)+offset,item.bytes);
+            offset+=item.bytes;
+        }
+        D3D12_RANGE written{0,0};
+        staging->Unmap(0,&written);
+    }
+
     PipelineId create_pipeline(const ComputePipelineDesc& desc) {
         if (desc.shader.format != ShaderFormat::Dxil || desc.shader.bytes.empty())
             throw std::invalid_argument("Native D3D12 requires compiled DXIL");
@@ -1300,6 +1346,10 @@ SubmissionId Context::submit_upload_batch(const std::vector<UploadSpan>& uploads
 }
 void Context::download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const {
     impl_->download(id, offset, data, bytes);
+}
+
+void Context::download_batch(const std::vector<DownloadSpan>& downloads) const {
+    impl_->download_batch(downloads);
 }
 void Context::copy_buffer(BufferId source, std::size_t so, BufferId dest,
                           std::size_t dst, std::size_t count) {
