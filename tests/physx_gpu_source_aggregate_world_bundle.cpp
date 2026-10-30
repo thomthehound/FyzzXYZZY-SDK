@@ -354,6 +354,50 @@ void verify_retired_aggregate_stops_gpu_work(
             "Source aggregate ID reuse after idle lost GPU member contacts");
 }
 
+// Source actor and aggregate found/lost payloads share one mapped heap
+// fetch without changing their separate original report classification.
+void verify_combined_actor_aggregate_report_fetch(
+    fyzz::compute::Backend backend,
+    const char* sap_manifest,const char* aggregate_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            64u,64u,
+            fyzz::load_native_gpu_aggregate_shaders(backend,aggregate_manifest));
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto root=scene.create_aggregate(1u,true);
+    const auto member=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,root);
+    const auto outside=scene.add_static_box(
+        {0.5f,0.5f,0.5f},{0.2f,1.0f,0.0f});
+    const auto standalone_a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10.0f,1.0f,0.0f},1.0f);
+    const auto standalone_b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10.25f,1.0f,0.0f},1.0f);
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId x,fyzz::BodyId y) {
+        const fyzz::native::Pair key{std::min(x,y),std::max(x,y)};
+        return std::find(pairs.begin(),pairs.end(),key)!=pairs.end();
+    };
+    scene.advance_collision();
+    require(scene.pairs().size()==2u && scene.found_pairs().size()==2u &&
+            contains(scene.found_pairs(),member,outside) &&
+            contains(scene.found_pairs(),standalone_a,standalone_b),
+            "Combined original aggregate/actor GPU found reports lost a pair");
+    scene.set_position(member,{4.0f,1.0f,0.0f});
+    scene.set_position(standalone_b,{16.0f,1.0f,0.0f});
+    scene.advance_collision();
+    require(scene.pairs().empty() && scene.lost_pairs().size()==2u &&
+            contains(scene.lost_pairs(),member,outside) &&
+            contains(scene.lost_pairs(),standalone_a,standalone_b),
+            "Combined original aggregate/actor GPU lost reports changed history");
+    scene.advance_collision();
+    require(scene.pairs().empty() && scene.found_pairs().empty() &&
+            scene.lost_pairs().empty(),
+            "Combined actor/aggregate report fetch replayed stale GPU reports");
+}
+
 void run(fyzz::compute::Backend backend,
          const char* sap_manifest,const char* aggregate_manifest) {
     bool rejected=false;
@@ -489,6 +533,8 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::D3D12,argv[1]);
         verify_aggregate_report_overflow_recovery(
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
+        verify_combined_actor_aggregate_report_fetch(
+            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
         verify_retired_aggregate_stops_gpu_work(
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
 #else
@@ -499,6 +545,8 @@ int main(int argc,char** argv) {
         verify_source_sap_report_overflow_recovery(
             fyzz::compute::Backend::Vulkan,argv[1]);
         verify_aggregate_report_overflow_recovery(
+            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
+        verify_combined_actor_aggregate_report_fetch(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
         verify_retired_aggregate_stops_gpu_work(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
