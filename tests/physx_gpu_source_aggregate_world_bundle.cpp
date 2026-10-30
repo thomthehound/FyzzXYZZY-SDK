@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 void require(bool pass,const char* message) {
@@ -171,6 +172,67 @@ void verify_aggregate_postfetch_sc_rollback(
             "Postfetch retry replayed a stale GPU aggregate lost report");
 }
 
+
+void verify_source_sap_report_overflow_recovery(
+    fyzz::compute::Backend backend,const char* sap_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            8u,8u);
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.25f,1.0f,0.0f},1.0f);
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId x,fyzz::BodyId y) {
+        const fyzz::native::Pair pair{std::min(x,y),std::max(x,y)};
+        return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+    };
+    scene.advance_collision();
+    require(scene.pairs().size()==1u && contains(scene.pairs(),a,b),
+            "Source SAP overflow fixture has no completed Sc contact");
+    const auto edge=scene.contact_edge_index({a,b});
+
+    // This frame contains twenty-one new overlaps but only eight mapped
+    // source report slots. The real GPU fetch must reject the entire Sc
+    // publication without emitting any truncated found-pair set.
+    std::vector<fyzz::BodyId> extra;
+    extra.reserve(7u);
+    for(std::uint32_t i=0;i<7u;++i)
+        extra.push_back(scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20.0f,1.0f,0.0f},1.0f));
+    bool overflow=false;
+    try {
+        scene.advance_collision();
+    }catch(const std::overflow_error&) {
+        overflow=true;
+    }
+    require(overflow && scene.pairs().size()==1u &&
+            contains(scene.pairs(),a,b) &&
+            scene.contact_edge_index({a,b})==edge,
+            "GPU source overflow published a partial Sc contact history");
+
+    for(std::size_t i=0;i<5u;++i)
+        scene.remove(extra[i]);
+    scene.advance_collision();
+    require(producer->last_frame().update.counts.previous_boxes==0u &&
+            producer->last_frame().update.counts.created==4u,
+            "Source GPU overflow retry did not rebuild live SAP handles");
+    require(scene.pairs().size()==2u &&
+            contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),extra[5],extra[6]) &&
+            scene.found_pairs().size()==1u &&
+            contains(scene.found_pairs(),extra[5],extra[6]),
+            "GPU overflow retry did not publish canonical Sc pairs");
+    scene.advance_collision();
+    require(scene.pairs().size()==2u &&
+            scene.found_pairs().empty() && scene.lost_pairs().empty(),
+            "Recovered source GPU SAP replayed stale overlap reports");
+}
+
 void run(fyzz::compute::Backend backend,
          const char* sap_manifest,const char* aggregate_manifest) {
     bool rejected=false;
@@ -302,11 +364,15 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
         verify_aggregate_postfetch_sc_rollback(
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
+        verify_source_sap_report_overflow_recovery(
+            fyzz::compute::Backend::D3D12,argv[1]);
 #else
         verify_aggregate_gpu_rollback(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
         verify_aggregate_postfetch_sc_rollback(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
+        verify_source_sap_report_overflow_recovery(
+            fyzz::compute::Backend::Vulkan,argv[1]);
 #endif
         std::cout<<"Original source aggregate GPU World stage ownership PASS\n";
         return 0;
