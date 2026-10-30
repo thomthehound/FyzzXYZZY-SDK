@@ -28,6 +28,12 @@ struct SourceSapAabbManagerBitmapNative {
 
 // PxgAABBManager::preBpUpdate_GPU inputs. This does not construct a new
 // AABB manager or derive its bitmaps from Scene geometry.
+struct SourceSapGpuBoxTransformOwnersNative {
+    const SourceScBoxTransformBoundsNativeStage& stage;
+    physx::PxgCudaBuffer& input_device;
+    physx::PxgCudaBuffer& cached_transforms;
+};
+
 struct SourceSapGpuBoxTransformsNative {
     const SourceScBoxTransformBoundsNativeStage& stage;
     const CudaDeviceAddressMap& addresses;
