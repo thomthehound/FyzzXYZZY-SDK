@@ -1517,9 +1517,9 @@ void exercise_original_sap_source_members_native(Context& context) {
 
         pre_update_source_sap_aabb_manager_native(first,manager,stream);
         if(stream.submission_stats().upload_batches!=1u ||
-           stream.submission_stats().upload_spans!=9u)
+           stream.submission_stats().upload_spans!=8u)
             throw std::runtime_error(
-                "Source AABB first pass must batch the nine original HtoD spans");
+                "Source AABB first pass must batch the eight original HtoD spans");
         const auto gpu_manager=source_sap_aabb_descriptor_native(manager);
         auto managedMembers=source.dma_up_members(&gpu_manager,mapped);
         const auto counts=gpu_dma_up_sap_frame_native(first,managedMembers,stream);
