@@ -335,6 +335,42 @@ void profile_ordered_same_resource_copies(Context& context) {
     context.destroy_buffer(root);
 }
 
+void verify_ordered_source_fence_retirement(Context& context) {
+    constexpr std::size_t count=16u;
+    std::array<std::uint32_t,count> first{},second{},actual{};
+    for(std::size_t i=0;i<count;++i) {
+        first[i]=static_cast<std::uint32_t>(i+17u);
+        second[i]=static_cast<std::uint32_t>(i+103u);
+    }
+    const auto source=context.create_buffer(sizeof(first),MemoryPlacement::DeviceLocal);
+    const auto target=context.create_buffer(sizeof(first),MemoryPlacement::DeviceLocal);
+    const auto first_upload=context.submit_upload_batch(
+        {{source,0u,first.data(),sizeof(first)}});
+    const auto second_upload=context.submit_upload_batch(
+        {{target,0u,second.data(),sizeof(second)}});
+    const std::vector<BatchCommand> copy{CopyCommand{
+        source,0u,target,0u,sizeof(first)}};
+    const auto last=context.submit_batch(copy);
+    const std::array<SubmissionId,3> ordered{
+        first_upload,second_upload,last};
+    const std::array<SubmissionId,3> invalid{
+        first_upload,last,second_upload};
+    bool rejected=false;
+    try {context.wait_submissions(invalid);}
+    catch(const std::invalid_argument&) {rejected=true;}
+    check(rejected,"Out-of-order source submissions were partially retired");
+    context.wait_submissions(ordered);
+    context.download(target,0u,actual.data(),sizeof(actual));
+    check(actual==first,
+          "Single-fence source retirement did not preserve queue copy order");
+    rejected=false;
+    try {context.wait_submission(first_upload);}
+    catch(const std::exception&) {rejected=true;}
+    check(rejected,"Single-fence source retirement retained consumed upload token");
+    context.destroy_buffer(target);
+    context.destroy_buffer(source);
+}
+
 void verify_batched_gpu_readback(Context& context) {
     const std::array<std::uint32_t,16> a{{
         3u,5u,7u,11u,13u,17u,19u,23u,
@@ -419,6 +455,7 @@ int main(int argc, char** argv) {
         run_case(context, pipeline, true);
         verify_ordered_same_resource_copies(context);
         verify_batched_gpu_readback(context);
+        verify_ordered_source_fence_retirement(context);
         if(benchmark)
             profile_ordered_same_resource_copies(context);
         context.destroy_compute_pipeline(pipeline);
