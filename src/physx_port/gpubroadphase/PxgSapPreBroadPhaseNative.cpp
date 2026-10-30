@@ -109,7 +109,8 @@ void append_pre_broadphase_native_uploads(
     const physx::Bp::BroadPhaseUpdateData& update,
     SourceSapPreBroadPhaseBuffers buffers,
     std::vector<SourceSapUpload>& uploads,
-    std::span<const physx::PxU32> changed_handles) {
+    std::span<const physx::PxU32> changed_handles,
+    bool source_owned_changes) {
     validate_pre_broadphase_native(update);
     const auto capacity = update.getCapacity();
     const auto bounds_bytes = capacity * sizeof(physx::PxBounds3);
