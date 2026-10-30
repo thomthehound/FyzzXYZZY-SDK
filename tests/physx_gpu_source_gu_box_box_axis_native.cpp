@@ -4,10 +4,12 @@
 #include "native/scene.h"
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_gpu/source_gu_box_box_axis_native.h"
+#include "physx_gpu/source_gu_box_box_contacts_native.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -35,7 +37,7 @@ ShaderBinary shader(const char* filename) {
     return binary;
 }
 void verify(Context& context,const char* transform_shader,
-            const char* axis_shader) {
+            const char* axis_shader,const char* contacts_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     const std::array<SourceScBoxTransformInputNative,4> boxes{{
@@ -44,20 +46,29 @@ void verify(Context& context,const char* transform_shader,
         {31u,{30.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,2.f},0.1f},
         {12u,{0.3f,0.4f,2.f},{z,0.f,0.f,w},{1.f,1.f,1.f},0.125f}
     }};
-    const std::array<SourceGuBoxPairAxisNative,7> pairs{{
+    std::array<SourceGuBoxPairAxisNative,8> pairs{{
         {1u,6u,0u},{1u,6u,1u},{6u,1u,0u},
         {1u,31u,0u},{1u,12u,0u},{6u,12u,0u},
-        {31u,31u,0u}
+        {31u,31u,0u},{1u,6u,0u}
     }};
+    constexpr std::uint32_t contacts_per_pair=80u;
+    for(std::uint32_t i=0u;i<pairs.size();++i) {
+        pairs[i].contact_offset=i*contacts_per_pair;
+        pairs[i].contact_capacity=i==pairs.size()-1u?1u:contacts_per_pair;
+    }
     constexpr std::uint32_t capacity=32u;
     std::array<std::uint32_t,pairs.size()> results{};
+    std::array<SourceGuBoxPairResultNative,pairs.size()> manifolds{};
+    std::array<SourceGuBoxContactNative,pairs.size()*contacts_per_pair> gpu_contacts{};
     const std::size_t input_offset=4u;
     const std::size_t bounds_offset=input_offset+sizeof(boxes)+12u;
     const std::size_t transform_offset=bounds_offset+capacity*24u+4u;
     const std::size_t geometry_offset=transform_offset+capacity*32u+4u;
     const std::size_t pair_offset=geometry_offset+capacity*16u+4u;
     const std::size_t axis_offset=pair_offset+sizeof(pairs)+4u;
-    const auto root=context.create_buffer(axis_offset+sizeof(results)+16u);
+    const std::size_t result_offset=axis_offset+sizeof(results)+4u;
+    const std::size_t contact_offset=result_offset+sizeof(manifolds)+4u;
+    const auto root=context.create_buffer(contact_offset+sizeof(gpu_contacts)+16u);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
     CudaDeviceAddressMap addresses;
@@ -67,27 +78,37 @@ void verify(Context& context,const char* transform_shader,
     const auto geometry=addresses.register_slice(root,geometry_offset,capacity*16u);
     const auto pair_data=addresses.register_slice(root,pair_offset,sizeof(pairs));
     const auto axes=addresses.register_slice(root,axis_offset,sizeof(results));
+    const auto result_data=addresses.register_slice(root,result_offset,sizeof(manifolds));
+    const auto contact_data=addresses.register_slice(root,contact_offset,sizeof(gpu_contacts));
     {
         SourceScBoxTransformBoundsNativeStage producer(
             context,shader(transform_shader));
         SourceGuBoxBoxAxisNativeStage gu(context,shader(axis_shader));
+        SourceGuBoxBoxContactsNativeStage contact_stage(
+            context,shader(contacts_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,input,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         gu.append(stream,addresses,transforms,geometry,pair_data,axes,
                   static_cast<std::uint32_t>(pairs.size()),capacity);
+        contact_stage.append(stream,addresses,transforms,geometry,pair_data,
+                             axes,result_data,contact_data,
+                             static_cast<std::uint32_t>(pairs.size()),capacity,
+                             static_cast<std::uint32_t>(gpu_contacts.size()));
         stream.wait_at_fetch();
         require(stream.submission_stats().command_batches==1u,
-                "Source Gu axis selection split the device command batch");
+                "Source Gu witness production split the device command batch");
     }
     context.download(root,axis_offset,results.data(),sizeof(results));
+    context.download(root,result_offset,manifolds.data(),sizeof(manifolds));
+    context.download(root,contact_offset,gpu_contacts.data(),sizeof(gpu_contacts));
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
     for(const auto& box:boxes)by_id[box.element_index]=box;
     unsigned matched=0;
     for(std::size_t i=0;i<pairs.size();++i) {
         if(pairs[i].first_element==pairs[i].second_element) {
-            require(results[i]==0xffffffffu,
-                    "Source Gu axis accepted the same shape twice");
+            require(results[i]==0xffffffffu && manifolds[i].status==1u,
+                    "Source Gu device contacts accepted the same shape twice");
             continue;
         }
         const auto& a=by_id[pairs[i].first_element];
@@ -104,6 +125,29 @@ void verify(Context& context,const char* transform_shader,
             vec(a.half_extents),vec(a.position),quat(a.orientation),
             vec(b.half_extents),vec(b.position),quat(b.orientation),
             a.contact_distance+b.contact_distance,previous,contacts);
+        if(i==pairs.size()-1u) {
+            require(count>1u && manifolds[i].status==2u,
+                    "GPU Gu contact window overflow was not reported");
+            continue;
+        }
+        require(manifolds[i].status==0u && manifolds[i].count==count &&
+                manifolds[i].collision_axis==previous,
+                "Device Gu contact count or pair-axis state differs from source");
+        const auto near=[](float a,float b) {
+            return std::abs(a-b)<0.001f;
+        };
+        for(std::uint32_t contact=0u;contact<count;++contact) {
+            const auto& gpu=gpu_contacts[pairs[i].contact_offset+contact];
+            const auto& cpu=contacts[contact];
+            require(near(gpu.position[0],cpu.position.x) &&
+                    near(gpu.position[1],cpu.position.y) &&
+                    near(gpu.position[2],cpu.position.z) &&
+                    near(gpu.normal[0],cpu.normal.x) &&
+                    near(gpu.normal[1],cpu.normal.y) &&
+                    near(gpu.normal[2],cpu.normal.z) &&
+                    near(gpu.separation,cpu.separation),
+                    "Device Gu witness differs from source ordered contact");
+        }
         if(count) {
             require(results[i]==previous,
                     "GPU Gu SAT selected a different source contact axis");
@@ -115,6 +159,8 @@ void verify(Context& context,const char* transform_shader,
         }
     }
     require(matched>=4u,"Source Gu contact fixtures did not exercise enough axes");
+    addresses.unregister_slice(contact_data);
+    addresses.unregister_slice(result_data);
     addresses.unregister_slice(axes);
     addresses.unregister_slice(pair_data);
     addresses.unregister_slice(geometry);
@@ -128,14 +174,14 @@ void verify(Context& context,const char* transform_shader,
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==3,"Expected transform and Gu axis shader binaries");
+        require(argc==4,"Expected transform, Gu axis, and contact shader binaries");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2]);
-        std::cout<<"Source Gu GPU box axis parity PASS\n";
+        verify(context,argv[1],argv[2],argv[3]);
+        std::cout<<"Source Gu GPU box contact parity PASS\n";
         return 0;
     }catch(const std::exception& error) {
         std::cerr<<"Source Gu GPU box axis parity FAILED: "
