@@ -195,8 +195,7 @@ public:
             throw std::logic_error("Source aggregate root already admitted");
         // GPU member slices use 32-bit byte offsets. Reject impossible
         // reservations before allocating host members or consuming an ID.
-        if(max_shapes>std::numeric_limits<physx::PxU32>::max()/
-                          sizeof(physx::PxU32))
+        if(max_shapes>std::numeric_limits<physx::PxU32>::max()/8u)
             throw std::out_of_range(
                 "Original aggregate GPU member address range exceeded");
 #if BP_USE_AGGREGATE_GROUP_TAIL
@@ -1211,10 +1210,14 @@ private:
                 free_aggregate_member_slices_.begin()+i);
             return first;
         }
-        if(count>std::numeric_limits<physx::PxU32>::max()-
-                     aggregate_gpu_member_capacity_)
+        // Every source projection key/handle/SAP history allocates
+        // eight bytes per reserved member, not merely four for its ID.
+        constexpr auto max_members=
+            std::numeric_limits<physx::PxU32>::max()/8u;
+        if(aggregate_gpu_member_capacity_>max_members ||
+           count>max_members-aggregate_gpu_member_capacity_)
             throw std::out_of_range(
-                "Original aggregate GPU member address range exceeded");
+                "Original aggregate GPU projection address range exceeded");
         const auto first=aggregate_gpu_member_capacity_;
         aggregate_gpu_member_capacity_+=count;
         return first;
