@@ -234,6 +234,65 @@ void verify_source_sap_report_overflow_recovery(
 }
 
 
+// A GPU aggregate self-report overflow occurs AFTER SAP's root report
+// succeeds. Neither original aggregate counters nor Sc contacts can be
+// partially consumed; retry must reconstruct the source member histories.
+void verify_aggregate_report_overflow_recovery(
+    fyzz::compute::Backend backend,
+    const char* sap_manifest,const char* aggregate_manifest) {
+    fyzz::native::Scene scene;
+    auto owner=std::make_unique<
+        fyzz::physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,fyzz::load_native_gpu_sap_shaders(backend,sap_manifest),
+            8u,8u,
+            fyzz::load_native_gpu_aggregate_shaders(backend,aggregate_manifest));
+    auto* producer=owner.get();
+    scene.set_gpu_broadphase(std::move(owner));
+    const auto root=scene.create_aggregate(5u,true);
+    const auto a=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f,root);
+    const auto b=scene.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.1f,1.0f,0.0f},1.0f,root);
+    const auto contains=[](std::span<const fyzz::native::Pair> pairs,
+                           fyzz::BodyId x,fyzz::BodyId y) {
+        const fyzz::native::Pair pair{std::min(x,y),std::max(x,y)};
+        return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
+    };
+    scene.advance_collision();
+    require(scene.pairs().size()==1u && contains(scene.pairs(),a,b),
+            "Original GPU aggregate overflow fixture has no Sc contact");
+    const auto prior_edge=scene.contact_edge_index({a,b});
+    std::vector<fyzz::BodyId> extra;
+    for(std::uint32_t i=0;i<3u;++i)
+        extra.push_back(scene.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.2f+0.1f*i,1.0f,0.0f},1.0f,root));
+    bool rejected=false;
+    try {
+        scene.advance_collision();
+    }catch(const std::overflow_error&) {
+        rejected=true;
+    }
+    require(rejected && scene.pairs().size()==1u &&
+            contains(scene.pairs(),a,b) &&
+            scene.contact_edge_index({a,b})==prior_edge,
+            "Aggregate GPU overflow published truncated Sc contact history");
+    scene.remove(extra[1]);
+    scene.remove(extra[2]);
+    scene.advance_collision();
+    require(producer->last_frame().update.counts.previous_boxes==0u &&
+            producer->last_frame().update.counts.created==1u &&
+            scene.pairs().size()==3u &&
+            contains(scene.pairs(),a,b) &&
+            contains(scene.pairs(),a,extra[0]) &&
+            contains(scene.pairs(),b,extra[0]) &&
+            scene.found_pairs().size()==2u,
+            "Aggregate GPU report overflow retry lost source/Sc pair history");
+    scene.advance_collision();
+    require(scene.found_pairs().empty() && scene.lost_pairs().empty() &&
+            scene.pairs().size()==3u,
+            "Aggregate GPU overflow retry replayed stale reports");
+}
+
 void verify_retired_aggregate_stops_gpu_work(
     fyzz::compute::Backend backend,
     const char* sap_manifest,const char* aggregate_manifest) {
@@ -428,6 +487,8 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
         verify_source_sap_report_overflow_recovery(
             fyzz::compute::Backend::D3D12,argv[1]);
+        verify_aggregate_report_overflow_recovery(
+            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
         verify_retired_aggregate_stops_gpu_work(
             fyzz::compute::Backend::D3D12,argv[1],argv[2]);
 #else
@@ -437,6 +498,8 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
         verify_source_sap_report_overflow_recovery(
             fyzz::compute::Backend::Vulkan,argv[1]);
+        verify_aggregate_report_overflow_recovery(
+            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
         verify_retired_aggregate_stops_gpu_work(
             fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
 #endif
