@@ -48,6 +48,7 @@ enum class NativeGpuSapStage : std::size_t {
     IncrementalCountSecond,
     IncrementalPairs,
     ClearNewFlags,
+    BoxTransformBounds,
     Count
 };
 using NativeGpuSapShaders = std::array<
@@ -68,7 +69,7 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
 
 // Load the original source SAP shader stages from a build-generated manifest.
-// All 34 compiled stages are required in source dispatch order. The manifest
+// All compiled stages are required in source dispatch order. The manifest
 // and binaries can be deployed together, with paths relative to the manifest.
 NativeGpuSapShaders load_native_gpu_sap_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
