@@ -240,7 +240,6 @@ public:
         aggregated_.growAndReset(root);
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
-        ++num_active_aggregates_;
         return id;
     }
 
@@ -402,7 +401,6 @@ public:
         aggregate.reset();
         aggregate_max_shapes_[id]=0u;
         aggregate_ids_.deferredFreeID(id);
-        --num_active_aggregates_;
         persistent_state_changed_=true;
         mark_aggregate_dirty(id);
     }
@@ -1144,7 +1142,6 @@ private:
     physx::Cm::DeferredIDPool aggregate_ids_;
     physx::Cm::PinnableBitMap dirty_aggregates_;
     physx::Cm::PinnableArray<physx::Bp::AggregateHandle> dirty_aggregate_indices_;
-    physx::PxU32 num_active_aggregates_=0u;
     physx::PxU32 num_nonempty_aggregates_=0u;
     bool persistent_state_changed_=true,gpu_state_changed_=false;
 };
