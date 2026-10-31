@@ -4,6 +4,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_gpu/source_pcm_box_candidates_native.h"
+#include "physx_gpu/source_pcm_sparse_epa_native.h"
 
 #include <algorithm>
 #include <array>
@@ -37,7 +38,8 @@ ShaderBinary shader(const char* name) {
     return result;
 }
 void verify(Context& context,const char* transform_shader,
-            const char* candidate_shader) {
+            const char* candidate_shader,const char* reset_shader,
+            const char* compact_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     std::array<SourceScBoxTransformInputNative,8> boxes{{
@@ -153,8 +155,10 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t candidate_offset=result_offset+sizeof(results)+4u;
     const std::size_t edge_offset=
         candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
-    const auto root=context.create_buffer(
-        edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u);
+    const std::size_t work_offset=
+        edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
+    const std::size_t args_offset=work_offset+pairs.size()*4u+16u;
+    const auto root=context.create_buffer(args_offset+12u+16u);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
     context.upload(root,edge_offset,edge_caches.data(),
@@ -170,9 +174,14 @@ void verify(Context& context,const char* transform_shader,
         root,candidate_offset,candidates.size()*sizeof(candidates[0]));
     const auto edge_data=addresses.register_slice(
         root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
+    const auto work_data=addresses.register_slice(
+        root,work_offset,pairs.size()*4u);
+    const auto args_data=addresses.register_slice(root,args_offset,12u);
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
+    SourcePcmSparseEpaNativeStage sparse(
+        context,shader(reset_shader),shader(compact_shader));
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
@@ -182,9 +191,11 @@ void verify(Context& context,const char* transform_shader,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),
                    edge_capacity);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
         stream.wait_at_fetch();
         require(stream.submission_stats().command_batches==1u,
-                "Source PCM candidate stage split the original device stream batch");
+                "Source PCM candidate and sparse EPA stages split the source stream batch");
     }
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
@@ -200,6 +211,41 @@ void verify(Context& context,const char* transform_shader,
     const auto quat=[](const float x[4]) {
         return fyzz::Quat{x[0],x[1],x[2],x[3]};
     };
+    // The actual source PCM results, not synthetic pair flags, generate
+    // the sparse EPA worklist and native indirect dispatch dimensions.
+    std::array<std::uint32_t,3> indirect{};
+    std::vector<std::uint32_t> work(pairs.size());
+    context.download(root,args_offset,indirect.data(),sizeof(indirect));
+    context.download(root,work_offset,work.data(),work.size()*4u);
+    const auto pending=std::count_if(results.begin(),results.end(),
+        [](const auto& result){return result.status==3u;});
+    require(pending>0u && indirect[0]==pending &&
+            indirect[1]==1u && indirect[2]==1u,
+            "GPU sparse EPA work count differs from source PCM pending edges");
+    std::vector<std::uint8_t> seen(pairs.size());
+    for(std::size_t i=0;i<pending;++i) {
+        require(work[i]<pairs.size() && !seen[work[i]] &&
+                results[work[i]].status==3u,
+                "GPU sparse EPA queue lost or duplicated an Sc edge");
+        seen[work[i]]=1u;
+    }
+    // Re-run the device compaction with zero pending results. The same
+    // persistent argument allocation must produce a zero-work dispatch.
+    auto resolved_results=results;
+    for(auto& result:resolved_results)
+        if(result.status==3u)result.status=0u;
+    context.upload(root,result_offset,resolved_results.data(),
+                   sizeof(resolved_results));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
+    }
+    context.download(root,args_offset,indirect.data(),sizeof(indirect));
+    require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
+            "Sparse EPA GPU reset retained stale pending work");
+
     std::uint32_t generated=0u,reduced_batches=0u;
     for(std::size_t i=0;i<pairs.size();++i) {
         require(results[i].edge_handle==pairs[i].edge_handle &&
@@ -491,6 +537,8 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results[0].regenerated==1u,
             "Sc PCM GPU failed to invalidate and regenerate after large motion");
+    addresses.unregister_slice(args_data);
+    addresses.unregister_slice(work_data);
     addresses.unregister_slice(edge_data);
     addresses.unregister_slice(candidate_data);
     addresses.unregister_slice(result_data);
@@ -506,13 +554,14 @@ void verify(Context& context,const char* transform_shader,
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==3,"Expected box transform and source PCM shaders");
+        require(argc==5,
+                "Expected box transforms, source PCM and EPA work shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2]);
+        verify(context,argv[1],argv[2],argv[3],argv[4]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {
