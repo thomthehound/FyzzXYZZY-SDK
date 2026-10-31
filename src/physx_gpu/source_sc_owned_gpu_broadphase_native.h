@@ -132,7 +132,8 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaReset),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
-                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactStream));
     }
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;

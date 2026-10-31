@@ -1404,6 +1404,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
+    set(FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_sc_contact_stream_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -1837,10 +1848,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
-    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
+      "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}")
+    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact ContactStream)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
-    foreach(_idx RANGE 0 3)
+    foreach(_idx RANGE 0 4)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
@@ -4675,6 +4687,17 @@ if(FYZZXYZZY_BUILD_D3D12)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set(FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_sc_contact_stream_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -5147,10 +5170,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
+      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
+      "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
+    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact ContactStream)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 3)
+    foreach(_idx RANGE 0 4)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)

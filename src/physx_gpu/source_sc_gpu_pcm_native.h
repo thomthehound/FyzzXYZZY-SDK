@@ -7,6 +7,7 @@
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
 #include "physx_gpu/source_pcm_epa_native.h"
+#include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
@@ -29,17 +30,20 @@ public:
         const SourceScGpuBroadphaseProducerNative& sc,
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
         compute::ShaderBinary candidate,compute::ShaderBinary reset,
-        compute::ShaderBinary compact,compute::ShaderBinary epa)
+        compute::ShaderBinary compact,compute::ShaderBinary epa,
+        compute::ShaderBinary contact_stream)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(reset),std::move(compact)),
           epa_stage_(context,std::move(epa)),
+          contact_stream_stage_(context,std::move(contact_stream)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
-          work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
+          work_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          dense_contacts_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         // D3D12 indirect arguments require their own physical resource.
@@ -98,6 +102,7 @@ public:
         edges_.allocateCopyOldDataAsync(
             source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
+        dense_contacts_.allocate(source_allocation_bytes(pair_count,176u),PX_FL);
         auto& uploads=stream_.upload_scratch();
         uploads.reserve(pair_count+1u);
         uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
@@ -124,28 +129,33 @@ public:
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             work_.getDevicePtr(),indirect_address_,
             pair_count,shape_capacity,candidate_count,edge_capacity);
+        contact_stream_stage_.append(stream_,addresses_,
+            pairs_.getDevicePtr(),edges_.getDevicePtr(),
+            dense_contacts_.getDevicePtr(),pair_count,edge_capacity);
         stream_.wait_at_fetch();
 
         result_host_.resize(pair_count);
-        cache_host_.resize(edge_capacity);
+        packed_host_.resize(pair_count);
         const auto mapped_results=addresses_.resolve(
             results_.getDevicePtr(),result_host_.size()*sizeof(result_host_[0]));
-        const auto mapped_cache=addresses_.resolve(
-            edges_.getDevicePtr(),cache_host_.size()*sizeof(cache_host_[0]));
+        const auto mapped_packed=addresses_.resolve(
+            dense_contacts_.getDevicePtr(),
+            packed_host_.size()*sizeof(packed_host_[0]));
         const std::vector<compute::DownloadSpan> downloads{
             {mapped_results.buffer,mapped_results.offset,result_host_.data(),
                 result_host_.size()*sizeof(result_host_[0])},
-            {mapped_cache.buffer,mapped_cache.offset,cache_host_.data(),
-                cache_host_.size()*sizeof(cache_host_[0])}
+            {mapped_packed.buffer,mapped_packed.offset,packed_host_.data(),
+                packed_host_.size()*sizeof(packed_host_[0])}
         };
         context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& result=result_host_[i];
             const auto& request=requests[i];
-            const auto& stored=cache_host_[request.edge];
+            const auto& stored=packed_host_[i];
             // A quiet refresh retains persistent witnesses beyond the
             // contact-distance window. Sc filters them at publication.
-            if(result.edge_handle!=request.edge || result.status!=0u ||
+            if(result.edge_handle!=request.edge ||
+               stored.edge_handle!=request.edge || result.status!=0u ||
                result.selected_count>4u || stored.count>4u ||
                result.selected_count>stored.count ||
                (result.regenerated!=0u &&
@@ -177,13 +187,14 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     SourcePcmEpaNativeStage epa_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_;
+    SourcePcmScContactStreamNativeStage contact_stream_stage_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::array<std::uint8_t,240u> empty_cache_{};
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmBoxPairResultNative> result_host_;
-    std::vector<SourcePcmScEdgeCacheNative> cache_host_;
+    std::vector<SourcePcmScContactStreamNative> packed_host_;
     bool reset_manifolds_=false;
 };
 } // namespace fyzz::physx_gpu
