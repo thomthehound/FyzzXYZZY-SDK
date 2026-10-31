@@ -5,6 +5,7 @@
 #include "native/scene.h"
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -102,12 +103,70 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::fabs(cpu_body.position.z-gpu_body.position.z)<0.002f,
             "Source GPU PCM did not feed the existing Sc/Dy rigid solve");
 }
+
+// Sparse live Sc managers keep their original edge handles. GPU readback
+// must scale with active managers, not the largest surviving edge index.
+void verify_sparse_contact_stream(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm) {
+    using namespace fyzz;
+    native::Scene cpu;
+    native::Scene gpu;
+    gpu.set_gpu_broadphase(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm)));
+    std::array<BodyId,12> moving_cpu{},moving_gpu{};
+    std::array<BodyId,12> fixed_cpu{},fixed_gpu{};
+    for(std::uint32_t i=0u;i<12u;++i) {
+        const float x=5.f*float(i);
+        moving_cpu[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,1.f,0.f},1.f);
+        fixed_cpu[i]=cpu.add_static_box(
+            {0.5f,0.5f,0.5f},{x+0.8f,1.f,0.f});
+        moving_gpu[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{x,1.f,0.f},1.f);
+        fixed_gpu[i]=gpu.add_static_box(
+            {0.5f,0.5f,0.5f},{x+0.8f,1.f,0.f});
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(cpu.contacts().size()==12u && gpu.contacts().size()==12u,
+            "Sparse GPU PCM fixture did not admit original Sc managers");
+    const auto retained_edge=gpu.contact_edge_index(
+        {moving_gpu.back(),fixed_gpu.back()});
+    require(retained_edge!=std::numeric_limits<std::uint32_t>::max(),
+            "Sparse GPU PCM fixture has no retained Sc edge");
+    for(std::uint32_t i=0u;i<11u;++i) {
+        cpu.remove(moving_cpu[i]);
+        gpu.remove(moving_gpu[i]);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+            gpu.contacts()[0].edge_handle==retained_edge &&
+            cpu.contacts()[0].count==gpu.contacts()[0].count,
+            "Sparse Sc contact stream misidentified surviving edge handle");
+    const auto c=cpu.contacts()[0].points[0];
+    const auto g=gpu.contacts()[0].points[0];
+    require(std::fabs(c.separation-g.separation)<0.002f &&
+            std::fabs(c.position.x-g.position.x)<0.002f &&
+            std::fabs(c.normal.x-g.normal.x)<0.002f,
+            "Sparse Sc GPU contact stream changed the retained Gu witness");
+}
 } // namespace
 
 int main(int argc,char** argv) {
     try {
         require(argc==3,"Expected native SAP and PCM shader manifests");
         verify(
+#ifdef FYZZXYZZY_TEST_D3D12
+            fyzz::compute::Backend::D3D12,
+#else
+            fyzz::compute::Backend::Vulkan,
+#endif
+            argv[1],argv[2]);
+        verify_sparse_contact_stream(
 #ifdef FYZZXYZZY_TEST_D3D12
             fyzz::compute::Backend::D3D12,
 #else
