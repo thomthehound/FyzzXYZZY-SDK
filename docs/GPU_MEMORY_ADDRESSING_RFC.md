@@ -3,7 +3,8 @@
 
 # GPU memory/addressing: decision RFC and benchmark contract
 
-**Status:** evidence-gathering RFC; **NO representation decision has been made**.
+**Status:** scoped execution policy selected for the first coupled rigid GPU
+slice; general cross-allocation pointer ABI remains under evaluation.
 **Source reference:** upstream PhysX CUDA host/device addressing; no fixed source revision is a consumer requirement.
 **Goal:** preserve PhysX GPU algorithm, allocation ownership, CPU/GPU task
 dependencies and semantic data layouts while making access fast on Vulkan
@@ -119,7 +120,36 @@ The first [GPU timestamp and host-resolved-offset comparison harness](GPU_MEMORY
 tests a deliberately narrow source-derived access-path hypothesis. It is
 not a selection among A/B/C/D or a native AMD performance result.
 
-## 4. Two independent costs: addressing and memory management
+## 4. Scoped address lowering for the first rigid GPU slice
+
+Use direct bound source-owned buffer views with 32-bit byte offsets for
+the first coupled box/PCM/Dy execution path. Pre-resolve stable body,
+contact, friction and constraint-row indices when building the existing
+source task descriptors; do not chase a general-purpose allocation table
+inside every PGS iteration. This chooses the fastest currently implemented
+representation for a bounded set of known arrays, while retaining
+allocation identity and lifetime in the existing scene/device owner.
+It does not freeze a universal pointer ABI or require 104 descriptor
+bindings to represent a descriptor with 104 logical pointer slots.
+
+A pointer-rich stage that cannot be expressed with a bounded set of direct
+views must establish a 64-bit cross-allocation reference representation
+with explicit null, offset range, aliasing, lifetime and reclamation rules.
+Benchmark its actual nested accesses against direct binding on both
+backends. Vulkan BDA may specialize that representation when supported;
+ordinary D3D12 GPU virtual addresses are not shader-dereferenceable
+pointers. Do not require BDA for the baseline Vulkan or D3D12 execution
+path, and do not introduce an unmeasured descriptor-heap lookup into the
+hot rigid solver merely to imitate CUDA pointers.
+
+The current two-variant removal benchmark does not settle that choice:
+it lacks a direct-binding or segmented-reference comparison and does not
+exercise pointer-rich solver rows. The next address-representation
+benchmark must share actual `DyContactPrep`/`DySolverConstraints`-derived
+row layout and iteration dependencies with the first integrated device
+solver, not a fabricated pointer-chase microkernel.
+
+## 5. Two independent costs: addressing and memory management
 
 **Access-path cost** is paid by GPU threads:
 - global reads/writes, pointer chaining, cache misses, descriptor divergence,
@@ -159,7 +189,7 @@ mistake submission/allocator overhead for shader access cost.
 Plan a reusable command/descriptor/staging allocator first or measure the
 GPU stage separately with timestamps on a warmed, prepared command stream.
 
-## 5. Required implementation experiment (next coding PR)
+## 6. Required representation experiment
 
 ### 5.1 Real PhysX layouts as fixtures
 
@@ -257,7 +287,7 @@ budget without seeing the source workload. A feature that is accessed once
 per scene tick and a lookup inside every solver iteration have different
 economic constraints. Document precisely which path loses and why.
 
-## 6. Allocation/synchronization requirements to preserve
+## 7. Allocation/synchronization requirements to preserve
 
 1. Allocation identity vs view address: retain allocator-owned handle and
    aligned subrange separately. Swapping views cannot corrupt free maps.
@@ -282,7 +312,7 @@ economic constraints. Document precisely which path loses and why.
 9. Reserve support for direct GPU API and renderer interop as distinct
    future requirements: do not promise zero-copy with every engine/device.
 
-## 7. Future NPU / MLIR-AIE compatibility: a useful design constraint
+## 8. Future NPU / MLIR-AIE compatibility: a useful design constraint
 
 **Longer-term option, not a current delivery commitment:** execute selected
 source-derived PhysX work units on an AMD Ryzen AI NPU, with MLIR-AIE/IRON
