@@ -286,6 +286,62 @@ void verify(Context& context,const char* transform_shader,
         require(results[i].candidate_count<=4u,
                 "Quiet Sc PCM frame did not reuse reduced manifold");
     }
+    // Refresh moves the cached witness in the second box's local frame.
+    // A small pose change must update separation without invoking SAT.
+    const auto prior=edge_caches[pairs[0].edge_handle];
+    require(prior.count>0u,"PCM refresh fixture requires retained witnesses");
+    const auto bQuat=boxes[1].orientation;
+    const float deltaX=0.002f;
+    boxes[0].position[0]+=deltaX;
+    context.upload(root,input_offset,boxes.data(),sizeof(boxes));
+    {
+        SourceScBoxTransformBoundsNativeStage producer(
+            context,shader(transform_shader));
+        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
+        SourceSapDmaNative stream(context,addresses);
+        producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        static_cast<std::uint32_t>(boxes.size()),capacity);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Sc PCM pose refresh split the native device stream");
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    require(results[0].regenerated==0u,
+            "Small Sc box motion needlessly regenerated the PCM manifold");
+    const auto& old=prior.contacts[0];
+    const auto& now=edge_caches[pairs[0].edge_handle].contacts[0];
+    const float rz=1.0f-2.0f*bQuat[2]*bQuat[2];
+    const float ry=-2.0f*bQuat[2]*bQuat[3];
+    const float expectedDepth=old.separation+
+        deltaX*(rz*old.normal_b[0]+ry*old.normal_b[1]);
+    require(std::abs(now.separation-expectedDepth)<0.001f,
+            "Sc PCM GPU refresh did not update B-local witness depth");
+    // A larger motion must invalidate this edge and regenerate from the
+    // device-owned shape cache; the old manifold cannot be republished.
+    boxes[0].position[0]+=0.25f;
+    context.upload(root,input_offset,boxes.data(),sizeof(boxes));
+    {
+        SourceScBoxTransformBoundsNativeStage producer(
+            context,shader(transform_shader));
+        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
+        SourceSapDmaNative stream(context,addresses);
+        producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        static_cast<std::uint32_t>(boxes.size()),capacity);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    require(results[0].regenerated==1u,
+            "Sc PCM GPU failed to invalidate and regenerate after large motion");
     addresses.unregister_slice(edge_data);
     addresses.unregister_slice(candidate_data);
     addresses.unregister_slice(result_data);
