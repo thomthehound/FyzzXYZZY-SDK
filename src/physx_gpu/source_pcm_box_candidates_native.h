@@ -37,7 +37,8 @@ static_assert(sizeof(SourcePcmBoxCandidateNative)==40u);
 struct SourcePcmBoxPairResultNative {
     std::uint32_t candidate_count;
     std::uint32_t overlapping;
-    // 0 valid, 1 invalid manager/geometry/window, 2 contact-window overflow.
+    // 0 valid, 1 invalid manager/geometry/window, 2 contact-window overflow,
+    // 3 overlapping box pair awaiting GJK/EPA continuation.
     std::uint32_t status;
     std::uint32_t edge_handle;
     std::uint32_t candidate_offset;
@@ -58,7 +59,9 @@ struct SourcePcmScEdgeCacheNative {
     float orientation_a[4];
     float orientation_b[4];
     std::uint32_t initialized;
-    std::uint32_t reserved[3];
+    // Overlap without clipped witnesses requires GJK/EPA continuation.
+    std::uint32_t needs_gjk;
+    std::uint32_t reserved[2];
     SourcePcmBoxCandidateNative contacts[4];
 };
 static_assert(sizeof(SourcePcmScEdgeCacheNative)==240u);
