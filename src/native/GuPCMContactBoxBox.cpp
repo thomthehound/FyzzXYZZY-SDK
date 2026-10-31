@@ -13,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <iostream>
 #include <stdexcept>
 
 namespace fyzz::native {
@@ -147,10 +148,20 @@ struct Generation {
             for(Vec3 corner : std::array<Vec3,4>{{
                     {face_x,face_y,0},{face_x,-face_y,0},
                     {-face_x,face_y,0},{-face_x,-face_y,0}}}) {
-                if(!contains(poly,corner,minimum,maximum))continue;
+                const bool accepted=contains(poly,corner,minimum,maximum);
                 const float nom=dot(incident_normal,sub(poly[0],corner));
                 const float t=nom/incident_normal.z;
                 const float separation=-t;
+                if(a.position.x==1.25f && b.position.x==-0.1f) {
+                    std::cerr<<"CPU PCM corner "<<corner.x<<","<<corner.y
+                             <<" accepted="<<accepted
+                             <<" separation="<<separation
+                             <<" distance="<<contact_distance
+                             <<" normalZ="<<incident_normal.z
+                             <<" rangeX="<<minimum.x<<","<<maximum.x
+                             <<std::endl;
+                }
+                if(!accepted)continue;
                 if(contact_distance>separation)
                     emit(frame,corner,{corner.x,corner.y,t},
                          normal,separation,flipped);
