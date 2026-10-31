@@ -6541,8 +6541,6 @@ void Scene::prepare_constraints(float seconds) {
         const float error=distance-constraint.distance_length;
         const float bias=error*inv_dt;
         DistanceRow row{};
-        row.edge=edge_id;
-        row.a=edge.pair.a;row.b=edge.pair.b;
         row.axis=axis;
         row.angular_a=ja;
         row.angular_b=jb;
