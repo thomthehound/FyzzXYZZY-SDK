@@ -75,6 +75,30 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
+// Binary32 fused product-and-sum using rounded products and their exact
+// residuals. The near-tie path cannot depend on driver FMA contraction.
+float fusedProductSum(float a,float b,float c) {
+    precise float product=a*b;
+    precise float sa=4097.f*a;
+    precise float sb=4097.f*b;
+    precise float highA=sa-(sa-a);
+    precise float highB=sb-(sb-b);
+    precise float lowA=a-highA,lowB=b-highB;
+    precise float e0=highA*highB-product;
+    precise float e1=e0+highA*lowB;
+    precise float e2=e1+lowA*highB;
+    precise float productError=e2+lowA*lowB;
+    precise float sum=product+c;
+    precise float bv=sum-product;
+    precise float sumError=(product-(sum-bv))+(c-bv);
+    precise float fused=sum+(productError+sumError);
+    return fused;
+}
+float fusedDot(float3 a,float3 b) {
+    return fusedProductSum(a.x,b.x,
+                           fusedProductSum(a.y,b.y,a.z*b.z));
+}
+
 void emit(Frame f,float3 reference,float3 incident,float3 normal,
           float separation,bool flipped,
           float3x3 A,float3 pa,float3x3 B,float3 pb,
@@ -307,14 +331,21 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
-            // Source contact-face scores accumulate with a multiply-add.
-            // Preserve its rounding before the X/Y/Z preference comparison.
-            float dx=abs(mad(search.x,incident[0].x,
-                         mad(search.y,incident[0].y,search.z*incident[0].z)));
-            float dy=abs(mad(search.x,incident[1].x,
-                         mad(search.y,incident[1].y,search.z*incident[1].z)));
-            float dz=abs(mad(search.x,incident[2].x,
-                         mad(search.y,incident[2].y,search.z*incident[2].z)));
+            float dx=abs(dot(search,incident[0]));
+            float dy=abs(dot(search,incident[1]));
+            float dz=abs(dot(search,incident[2]));
+            // Use the original source rounding for ambiguous leading axes.
+            // Untied faces retain the ordinary vector-dot fast path.
+            uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
+            uint best=max(bx,max(by,bz));
+            uint tied=(best-bx<=1u?1u:0u)+
+                      (best-by<=1u?1u:0u)+
+                      (best-bz<=1u?1u:0u);
+            if(tied>=2u) {
+                dx=abs(fusedDot(search,incident[0]));
+                dy=abs(fusedDot(search,incident[1]));
+                dz=abs(fusedDot(search,incident[2]));
+            }
             if(limit>=64u) {
                 uint debug=p.candidateBias+(first+63u)*40u;
                 candidates.Store3(debug,asuint(float3(dx,dy,dz)));
