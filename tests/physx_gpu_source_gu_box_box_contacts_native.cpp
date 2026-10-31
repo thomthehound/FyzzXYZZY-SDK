@@ -69,6 +69,7 @@ void verify(Context& context,const char* transform_shader,
     for(std::uint32_t i=0u;i<pairs.size();++i) {
         pairs[i].contact_offset=i*contacts_per_pair;
         pairs[i].contact_capacity=i==pairs.size()-1u?1u:contacts_per_pair;
+        pairs[i].edge_handle=19u+i*11u;
     }
     constexpr std::uint32_t capacity=32u;
     std::array<SourceGuBoxPairResultNative,pairs.size()> manifolds{};
@@ -117,6 +118,9 @@ void verify(Context& context,const char* transform_shader,
     for(const auto& box:boxes)by_id[box.element_index]=box;
     unsigned matched=0;
     for(std::size_t i=0;i<pairs.size();++i) {
+        require(manifolds[i].edge_handle==pairs[i].edge_handle &&
+                manifolds[i].contact_offset==pairs[i].contact_offset,
+                "Device Gu result lost its source Sc contact-manager binding");
         if(pairs[i].first_element==pairs[i].second_element) {
             require(manifolds[i].status==1u,
                     "Source Gu device contacts accepted the same shape twice");
