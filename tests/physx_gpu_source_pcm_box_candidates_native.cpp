@@ -180,6 +180,31 @@ void verify(Context& context,const char* transform_shader,
         for(std::size_t k=0u;k<count;++k) {
             const auto& gpu=candidates[pairs[i].candidate_offset+k];
             const auto& cpu=expected[k];
+            if(!near(gpu.local_a[0],cpu.local_a.x) ||
+               !near(gpu.local_a[1],cpu.local_a.y) ||
+               !near(gpu.local_a[2],cpu.local_a.z) ||
+               !near(gpu.local_b[0],cpu.local_b.x) ||
+               !near(gpu.local_b[1],cpu.local_b.y) ||
+               !near(gpu.local_b[2],cpu.local_b.z) ||
+               !near(gpu.normal_b[0],cpu.normal_b.x) ||
+               !near(gpu.normal_b[1],cpu.normal_b.y) ||
+               !near(gpu.normal_b[2],cpu.normal_b.z) ||
+               !near(gpu.separation,cpu.separation))
+                std::cerr<<"PCM witness pair "<<i<<" index "<<k
+                         <<" GPU A "<<gpu.local_a[0]<<","<<gpu.local_a[1]
+                         <<","<<gpu.local_a[2]
+                         <<" CPU A "<<cpu.local_a.x<<","<<cpu.local_a.y
+                         <<","<<cpu.local_a.z
+                         <<" GPU B "<<gpu.local_b[0]<<","<<gpu.local_b[1]
+                         <<","<<gpu.local_b[2]
+                         <<" CPU B "<<cpu.local_b.x<<","<<cpu.local_b.y
+                         <<","<<cpu.local_b.z
+                         <<" GPU N "<<gpu.normal_b[0]<<","<<gpu.normal_b[1]
+                         <<","<<gpu.normal_b[2]
+                         <<" CPU N "<<cpu.normal_b.x<<","<<cpu.normal_b.y
+                         <<","<<cpu.normal_b.z
+                         <<" GPU separation "<<gpu.separation
+                         <<" CPU separation "<<cpu.separation<<std::endl;
             require(near(gpu.local_a[0],cpu.local_a.x) &&
                     near(gpu.local_a[1],cpu.local_a.y) &&
                     near(gpu.local_a[2],cpu.local_a.z) &&
