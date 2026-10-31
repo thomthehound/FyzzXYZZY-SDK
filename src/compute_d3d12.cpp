@@ -347,15 +347,6 @@ struct Context::Impl {
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                   IID_PPV_ARGS(&fence)), "CreateFence");
-        D3D12_INDIRECT_ARGUMENT_DESC dispatch_argument{};
-        dispatch_argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-        D3D12_COMMAND_SIGNATURE_DESC signature{};
-        signature.ByteStride=sizeof(D3D12_DISPATCH_ARGUMENTS);
-        signature.NumArgumentDescs=1u;
-        signature.pArgumentDescs=&dispatch_argument;
-        check(device->CreateCommandSignature(
-                  &signature,nullptr,IID_PPV_ARGS(&dispatch_signature)),
-              "CreateCommandSignature");
         completion_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!completion_event)
             throw std::runtime_error("CreateEvent failed for D3D12 fence");
@@ -1083,6 +1074,7 @@ struct Context::Impl {
                               bool profile = false) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
+        bool uses_indirect = false;
         std::size_t same_resource_copy_scratch_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
         for (const BatchCommand& op : commands) {
@@ -1104,12 +1096,24 @@ struct Context::Impl {
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
                 validate_dispatch(dispatch);
+                uses_indirect |= dispatch.indirect.has_value();
                 descriptor_count += get_pipeline(dispatch.pipeline).bindings;
                 pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+        if(uses_indirect && !dispatch_signature) {
+            D3D12_INDIRECT_ARGUMENT_DESC argument{};
+            argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+            D3D12_COMMAND_SIGNATURE_DESC signature{};
+            signature.ByteStride=sizeof(D3D12_DISPATCH_ARGUMENTS);
+            signature.NumArgumentDescs=1u;
+            signature.pArgumentDescs=&argument;
+            check(device->CreateCommandSignature(
+                      &signature,nullptr,IID_PPV_ARGS(&dispatch_signature)),
+                  "CreateCommandSignature");
+        }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
         // Legacy D3D12 requires staging nonoverlapping copies within one
         // buffer. All such copies in this command batch can share one
