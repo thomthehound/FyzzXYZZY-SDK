@@ -140,15 +140,12 @@ public:
         const SourceScOwnedGpuBroadphaseNative&)=delete;
 
     ~SourceScOwnedGpuBroadphaseNative() override {
+        // Drain every source launch before retiring the PCM indirect
+        // argument resource, source SAP pipelines or the original heap.
+        // Failed submissions stay owned by Context through teardown.
+        (void)stream_.finish_shutdown();
         pcm_.reset();
         producer_.reset();
-        // Original report-retirement commands remain on the source stream
-        // after Sc publication. Complete them before releasing SAP/AABB
-        // allocations, pipeline objects or the owning native Context.
-        // A failed queue/fence was already reported by the frame; teardown
-        // must not terminate while unwinding that exception. The Context
-        // retains submitted resources until its own final queue cleanup.
-        (void)stream_.finish_shutdown();
         box_input_.deallocate();
         box_cache_.deallocate();
         box_geometry_.deallocate();
