@@ -12,15 +12,20 @@ RWByteAddressBuffer pairs : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
-RWByteAddressBuffer edgeCaches : register(u1,space0);
+RWByteAddressBuffer results : register(u1,space0);
 #ifdef __spirv__
 [[vk::binding(2,0)]]
 #endif
-RWByteAddressBuffer streamContacts : register(u2,space0);
+RWByteAddressBuffer edgeCaches : register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3,0)]]
+#endif
+RWByteAddressBuffer streamContacts : register(u3,space0);
 
 struct Parameters {
     uint pairCount;
     uint pairBias;
+    uint resultBias;
     uint edgeBias;
     uint outputBias;
     uint edgeCapacity;
@@ -37,13 +42,22 @@ void main(uint3 thread : SV_DispatchThreadID) {
     if(i>=p.pairCount)return;
     uint edge=pairs.Load(p.pairBias+i*20u+8u);
     uint dst=p.outputBias+i*176u;
+    uint result=p.resultBias+i*32u;
+    uint resultEdge=results.Load(result+12u);
+    uint status=results.Load(result+8u);
+    uint selected=results.Load(result+20u);
+    uint regenerated=results.Load(result+28u);
+    // Dy/Sc publication uses the same complete result validation without
+    // a second readback of the GPU's per-pair result buffer.
+    uint flags=min(selected,0x7fffffffu) |
+        (regenerated!=0u ? 0x80000000u : 0u);
     if(edge>=p.edgeCapacity) {
-        streamContacts.Store2(dst,uint2(0xffffffffu,0xffffffffu));
+        streamContacts.Store4(dst,uint4(resultEdge,0xffffffffu,status,flags));
         return;
     }
     uint src=p.edgeBias+edge*240u;
     uint count=edgeCaches.Load(src+12u);
-    streamContacts.Store2(dst,uint2(edge,count));
+    streamContacts.Store4(dst,uint4(resultEdge,count,status,flags));
     if(count>4u)return;
     [unroll]
     for(uint j=0u;j<4u;++j) {
