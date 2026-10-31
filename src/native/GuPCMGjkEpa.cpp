@@ -446,7 +446,9 @@ bool source_pcm_box_box_gjk_epa(
                      <<" support=("<<int(support.ai)<<","<<int(support.bi)
                      <<") closest=("<<closest.x<<","<<closest.y<<","
                      <<closest.z<<") projection="<<projection
-                     <<" threshold="<<dist*progress_factor<<std::endl;
+                     <<" threshold="<<dist*progress_factor
+                     <<" supportQ=("<<support.q.x<<","<<support.q.y<<","
+                     <<support.q.z<<")"<<std::endl;
         if(projection>contact_distance) {
             store();
             return false; // GJK_NON_INTERSECT
