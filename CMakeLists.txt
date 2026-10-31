@@ -1363,6 +1363,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")
@@ -1388,6 +1389,21 @@ if(FYZZXYZZY_BUILD_VULKAN)
     endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
+    set(FYZZXYZZY_SOURCE_PCM_EPA_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_epa_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -1399,11 +1415,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_dependencies(fyzzxyzzy_source_pcm_box_candidates
       fyzzxyzzy_source_sc_box_bounds_shader
       fyzzxyzzy_source_pcm_box_candidates_shader
-      fyzzxyzzy_source_pcm_epa_work_shader)
+      fyzzxyzzy_source_pcm_epa_work_shader
+      fyzzxyzzy_source_pcm_epa_shader)
     add_test(NAME fyzzxyzzy_source_pcm_box_candidates
       COMMAND fyzzxyzzy_source_pcm_box_candidates
         "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
 
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
@@ -4582,6 +4600,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
@@ -4607,6 +4626,21 @@ if(FYZZXYZZY_BUILD_D3D12)
     endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
+    set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_epa_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -4619,11 +4653,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_dependencies(fyzzxyzzy_source_pcm_box_candidates_d3d12
       fyzzxyzzy_source_sc_box_bounds_shader_d3d12
       fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
-      fyzzxyzzy_source_pcm_epa_work_shader_d3d12)
+      fyzzxyzzy_source_pcm_epa_work_shader_d3d12
+      fyzzxyzzy_source_pcm_epa_shader_d3d12)
     add_test(NAME fyzzxyzzy_source_pcm_box_candidates_d3d12
       COMMAND fyzzxyzzy_source_pcm_box_candidates_d3d12
         "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
+        "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+        "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
