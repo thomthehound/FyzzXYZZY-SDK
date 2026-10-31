@@ -746,6 +746,10 @@ private:
         // selected broadphase. Native CPU caches encoded endpoints; native
         // GPU marks the source AABB manager's changed volume instead.
         bool cached_bounds_current=false;
+        // Transient Dy row mapping; generation survives frame rollback so
+        // rejected rows can never be revived by reused Sc frame indices.
+        std::size_t solver_row_index=0;
+        std::uint64_t solver_row_generation=0;
         // PxsRigidBody::mLastCCDTransform: the pose at the start of
         // this frame's Dy integration. afterIntegration uses it only
         // when third-pass IslandSim deactivated this body concurrently.
@@ -787,6 +791,8 @@ private:
         Vec3 motion_angular_state{};
         std::uint64_t prepared_generation = 0;
     };
+    SolverBodyRow& admit_solver_row(BodyId id);
+    SolverBodyRow& prepared_solver_row(BodyId id);
     // Source: DySolverContact.h::SolverContactPoint and
     // DySolverConstraintsShared.h::solveDynamicContacts. Each generated
     // contact owns its individual effective mass, angular Jacobians,
@@ -1274,8 +1280,9 @@ private:
     std::uint64_t island_local_split_count_ = 0;
     std::uint64_t island_graph_checkpoint_count_ = 0;
     bool island_topology_dirty_ = true;
-    // Capacity persists across frames; matching actor indices avoid a shadow
-    // body-ID registry. Only solver deltas are published back to actors.
+    // Source Dy rows are dense among current contact/1D participants.
+    // Actor generation-stamped indices resolve their owning rows without
+    // allocating transient state for retired or free-flight actors.
     std::vector<SolverBodyRow> solver_rows_;
     // A failed frame restores the published frame index but deliberately
     // retains scratch rows. Unique preparation generations prevent those
