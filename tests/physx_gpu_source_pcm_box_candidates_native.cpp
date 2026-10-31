@@ -319,6 +319,52 @@ void verify(Context& context,const char* transform_shader,
         require(results[i].candidate_count<=4u,
                 "Quiet Sc PCM frame did not reuse reduced manifold");
     }
+    // A quiet edge may retain four witnesses while only three are
+    // inside the contact distance. A three-slot output must succeed,
+    // and a two-slot output must report overflow without invalidation.
+    constexpr std::size_t filtered_index=base_pairs;
+    const auto filtered_edge=pairs[filtered_index].edge_handle;
+    auto filtered=edge_caches[filtered_edge];
+    require(filtered.initialized==1u && filtered.count==4u,
+            "Quiet PCM filtering requires a complete reduced manifold");
+    for(std::size_t axis=0;axis<3u;++axis)
+        filtered.contacts[3].local_b[axis]-=
+            4.0f*filtered.contacts[3].normal_b[axis];
+    context.upload(root,edge_offset+
+        static_cast<std::size_t>(filtered_edge)*sizeof(filtered),
+        &filtered,sizeof(filtered));
+    const auto submit_filtered=[&] {
+        context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        context.download(root,result_offset,results.data(),sizeof(results));
+    };
+    pairs[filtered_index].candidate_capacity=3u;
+    submit_filtered();
+    require(results[filtered_index].status==0u &&
+            results[filtered_index].regenerated==0u &&
+            results[filtered_index].candidate_count==3u &&
+            results[filtered_index].selected_count==3u,
+            "Quiet PCM incorrectly overflowed after witness filtering");
+    pairs[filtered_index].candidate_capacity=2u;
+    submit_filtered();
+    require(results[filtered_index].status==2u &&
+            results[filtered_index].regenerated==0u &&
+            results[filtered_index].overlapping==1u &&
+            results[filtered_index].candidate_count==2u,
+            "Quiet PCM failed to report an actual filtered-window overflow");
+    pairs[filtered_index].candidate_capacity=3u;
+    submit_filtered();
+    require(results[filtered_index].status==0u &&
+            results[filtered_index].regenerated==0u &&
+            results[filtered_index].candidate_count==3u,
+            "Quiet PCM failed to recover after enlarging its output window");
+    pairs[filtered_index].candidate_capacity=per_pair;
+    context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
     // Refresh moves the cached witness in the second box's local frame.
     // A small pose change must update separation without invoking SAT.
     const auto prior=edge_caches[pairs[0].edge_handle];
