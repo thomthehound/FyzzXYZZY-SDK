@@ -218,6 +218,121 @@ void clip(Frame f,float3 poly[4],float3 incidentNormal,
     }
 }
 
+// GuPersistentContactManifold::reduceBatchContacts retains its swap-last
+// candidate order. Only indices are stored; source candidates stay resident.
+float3 candidateLocalB(uint base,uint index) {
+    return asfloat(candidates.Load3(p.candidateBias+(base+index)*40u+12u));
+}
+float3 candidateNormalB(uint base,uint index) {
+    return asfloat(candidates.Load3(p.candidateBias+(base+index)*40u+24u));
+}
+float candidateDepth(uint base,uint index) {
+    return asfloat(candidates.Load(p.candidateBias+(base+index)*40u+36u));
+}
+float candidateDistanceSquared(float3 a,float3 b) {
+    float3 d=a-b;
+    return dot(d,d);
+}
+uint4 selectBatch(uint base,uint count) {
+    uint available[64];
+    for(uint i=0u;i<count;++i)available[i]=i;
+    uint remaining=count;
+    uint4 selected=uint4(0u,0u,0u,0u);
+    float deepestDepth=candidateDepth(base,0u);
+    float shallowestDepth=deepestDepth;
+    uint deepest=0u;
+    for(uint i=1u;i<count;++i) {
+        float depth=candidateDepth(base,i);
+        shallowestDepth=max(shallowestDepth,depth);
+        if(deepestDepth>depth) {
+            deepestDepth=depth;
+            deepest=i;
+        }
+    }
+    selected.x=deepest;
+    --remaining;
+    available[deepest]=available[remaining];
+
+    uint furthestPosition=0u;
+    float3 anchor=candidateLocalB(base,selected.x);
+    float farthestSquared=candidateDistanceSquared(
+        candidateLocalB(base,available[0]),anchor);
+    for(uint i=1u;i<remaining;++i) {
+        float value=candidateDistanceSquared(
+            candidateLocalB(base,available[i]),anchor);
+        if(value>farthestSquared) {
+            farthestSquared=value;
+            furthestPosition=i;
+        }
+    }
+    selected.y=available[furthestPosition];
+    --remaining;
+    available[furthestPosition]=available[remaining];
+
+    float3 baseline=candidateLocalB(base,selected.y)-anchor;
+    float3 transverse=cross(baseline,candidateNormalB(base,selected.x));
+    float transverseSquared=dot(transverse,transverse);
+    if(transverseSquared>0.f)
+        transverse*=1.f/sqrt(transverseSquared);
+    else
+        transverse=candidateNormalB(base,selected.x);
+
+    float greatest=-3.402823466e38f;
+    float least=3.402823466e38f;
+    uint greatestPosition=0u,leastPosition=0u;
+    for(uint i=0u;i<remaining;++i) {
+        float side=dot(candidateLocalB(base,available[i])-anchor,transverse);
+        if(side>greatest) {
+            greatest=side;
+            greatestPosition=i;
+        }
+        if(side<least) {
+            least=side;
+            leastPosition=i;
+        }
+    }
+    selected.z=available[greatestPosition];
+    --remaining;
+    available[greatestPosition]=available[remaining];
+    if(leastPosition==remaining)leastPosition=greatestPosition;
+    if(least*greatest>0.f) {
+        greatest=-3.402823466e38f;
+        for(uint i=0u;i<remaining;++i) {
+            float side=dot(candidateLocalB(base,available[i])-anchor,transverse);
+            if(side>greatest) {
+                greatest=side;
+                leastPosition=i;
+            }
+        }
+    }
+    selected.w=available[leastPosition];
+    --remaining;
+    available[leastPosition]=available[remaining];
+
+    const float threshold=0.02f; // PxTolerancesScale.length = 1
+    if(deepestDepth<threshold && shallowestDepth>threshold) {
+        for(uint i=0u;i<4u;++i) {
+            float depth=candidateDepth(base,selected[i]);
+            if(depth>threshold) {
+                uint replacement=remaining;
+                for(uint j=0u;j<remaining;++j) {
+                    float candidate=candidateDepth(base,available[j]);
+                    if(depth>candidate && threshold>candidate) {
+                        depth=candidate;
+                        replacement=j;
+                    }
+                }
+                if(replacement<remaining) {
+                    uint prior=selected[i];
+                    selected[i]=available[replacement];
+                    available[replacement]=prior;
+                }
+            }
+        }
+    }
+    return selected;
+}
+
 [numthreads(128,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
     uint i=thread.x;
@@ -226,7 +341,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
     uint first=pairs.Load(source+12u),limit=pairs.Load(source+16u);
-    uint result=p.resultBias+i*20u;
+    uint result=p.resultBias+i*28u;
     uint count=0u,overlap=0u,status=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
        edge==0xffffffffu ||
@@ -373,6 +488,12 @@ void main(uint3 thread : SV_DispatchThreadID) {
                  A,pa,B,pb,first,limit,count,status);
         }
     }
+    uint selectedCount=status==0u?min(count,4u):0u;
+    uint4 selection=uint4(0u,1u,2u,3u);
+    if(status==0u && count>4u)
+        selection=selectBatch(first,count);
+    uint packed=selectedCount==0u?0u:
+        selection.x|(selection.y<<8u)|(selection.z<<16u)|(selection.w<<24u);
     results.Store4(result,uint4(count,overlap,status,edge));
-    results.Store(result+16u,first);
+    results.Store3(result+16u,uint3(first,selectedCount,packed));
 }
