@@ -41,8 +41,12 @@ struct SourcePcmBoxPairResultNative {
     std::uint32_t status;
     std::uint32_t edge_handle;
     std::uint32_t candidate_offset;
+    // Source GuPersistentContactManifold output: zero for invalid or
+    // empty, otherwise 1-4 indices into the original candidate window.
+    std::uint32_t selected_count;
+    std::uint32_t selected_indices;
 };
-static_assert(sizeof(SourcePcmBoxPairResultNative)==20u);
+static_assert(sizeof(SourcePcmBoxPairResultNative)==28u);
 
 class SourcePcmBoxCandidatesNativeStage final {
 public:
@@ -107,7 +111,7 @@ public:
                  1u,compute::BufferAccess::Read),
             view(pairs,source_allocation_bytes(pair_count,20u),
                  2u,compute::BufferAccess::Read),
-            view(results,source_allocation_bytes(pair_count,20u),
+            view(results,source_allocation_bytes(pair_count,28u),
                  3u,compute::BufferAccess::Write),
             view(candidates,source_allocation_bytes(candidate_capacity,40u),
                  4u,compute::BufferAccess::Write)};
