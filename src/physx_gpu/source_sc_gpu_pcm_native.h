@@ -125,12 +125,12 @@ public:
             results_.getDevicePtr(),result_host_.size()*sizeof(result_host_[0]));
         const auto mapped_cache=addresses_.resolve(
             edges_.getDevicePtr(),cache_host_.size()*sizeof(cache_host_[0]));
-        const std::array<compute::DownloadSpan,2> downloads{{
+        const std::vector<compute::DownloadSpan> downloads{
             {mapped_results.buffer,mapped_results.offset,result_host_.data(),
                 result_host_.size()*sizeof(result_host_[0])},
             {mapped_cache.buffer,mapped_cache.offset,cache_host_.data(),
                 cache_host_.size()*sizeof(cache_host_[0])}
-        }};
+        };
         context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& result=result_host_[i];
