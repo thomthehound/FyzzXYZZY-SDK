@@ -1833,6 +1833,40 @@ if(FYZZXYZZY_BUILD_VULKAN)
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES})
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle
       fyzzxyzzy_native_gpu_sap_shaders)
+    set(_pcm_binaries
+      "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
+    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
+    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\\n")
+    foreach(_idx RANGE 0 3)
+      list(GET _pcm_stages ${_idx} _stage)
+      list(GET _pcm_binaries ${_idx} _binary)
+      get_filename_component(_name "${_binary}" NAME)
+      string(APPEND _pcm_manifest "${_stage} ${_name}\\n")
+    endforeach()
+    file(GENERATE
+      OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+      CONTENT "${_pcm_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_pcm_shaders
+      DEPENDS ${_pcm_binaries})
+    add_executable(fyzzxyzzy_source_sc_gpu_pcm_scene
+      tests/physx_gpu_source_sc_pcm_scene_native.cpp)
+    target_include_directories(fyzzxyzzy_source_sc_gpu_pcm_scene PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    
+    target_link_libraries(fyzzxyzzy_source_sc_gpu_pcm_scene PRIVATE
+      FyzzXYZZY::NativeGpuWorld)
+    add_dependencies(fyzzxyzzy_source_sc_gpu_pcm_scene
+      fyzzxyzzy_native_gpu_sap_shaders
+      fyzzxyzzy_native_gpu_pcm_shaders)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest")
+    
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
         ${FYZZXYZZY_NATIVE_GPU_SAP_SPIRV_BINARIES}
@@ -5109,6 +5143,41 @@ if(FYZZXYZZY_BUILD_D3D12)
       DEPENDS ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES})
     add_dependencies(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
       fyzzxyzzy_native_gpu_sap_shaders_d3d12)
+    set(_pcm_binaries
+      "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
+    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\\n")
+    foreach(_idx RANGE 0 3)
+      list(GET _pcm_stages ${_idx} _stage)
+      list(GET _pcm_binaries ${_idx} _binary)
+      get_filename_component(_name "${_binary}" NAME)
+      string(APPEND _pcm_manifest "${_stage} ${_name}\\n")
+    endforeach()
+    file(GENERATE
+      OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
+      CONTENT "${_pcm_manifest}")
+    add_custom_target(fyzzxyzzy_native_gpu_pcm_shaders_d3d12
+      DEPENDS ${_pcm_binaries})
+    add_executable(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+      tests/physx_gpu_source_sc_pcm_scene_native.cpp)
+    target_include_directories(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
+    target_compile_definitions(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_link_libraries(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PRIVATE
+      FyzzXYZZY::NativeGpuWorldD3D12)
+    add_dependencies(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+      fyzzxyzzy_native_gpu_sap_shaders_d3d12
+      fyzzxyzzy_native_gpu_pcm_shaders_d3d12)
+    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest")
+    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}
