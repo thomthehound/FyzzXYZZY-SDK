@@ -165,6 +165,57 @@ void verify_sparse_contact_stream(
             std::fabs(c.normal.x-g.normal.x)<0.002f,
             "Sparse Sc GPU contact stream changed the retained Gu witness");
 }
+
+// Coupled box contacts exercise source Sc manager identity and Dy's
+// real contact partition/PGS path across multiple dependent bodies.
+void verify_coupled_rigid_stack(
+    fyzz::compute::Backend backend,const char* sap,const char* pcm) {
+    using namespace fyzz;
+    native::Scene cpu;
+    native::Scene gpu;
+    gpu.set_gpu_broadphase(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm)));
+    cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
+    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
+    std::array<BodyId,3> dynamic_cpu{},dynamic_gpu{};
+    for(std::size_t i=0;i<dynamic_cpu.size();++i) {
+        const Vec3 position{0.f,0.4f+0.9f*float(i),0.f};
+        dynamic_cpu[i]=cpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+        dynamic_gpu[i]=gpu.add_dynamic_box(
+            {0.5f,0.5f,0.5f},position,1.f);
+    }
+    constexpr float dt=1.f/120.f;
+    bool coupled=false;
+    for(std::uint32_t frame=0u;frame<12u;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        require(cpu.pairs().size()==gpu.pairs().size() &&
+                cpu.contacts().size()==gpu.contacts().size(),
+                "GPU coupled rigid stack lost Sc contact-manager parity");
+        for(const auto& contact:gpu.contacts())
+            if(contact.pair.a!=0u && contact.pair.b!=0u &&
+               contact.count>0u)coupled=true;
+        for(std::size_t i=0;i<dynamic_cpu.size();++i) {
+            const auto a=cpu.body_state(dynamic_cpu[i]);
+            const auto b=gpu.body_state(dynamic_gpu[i]);
+            require(std::fabs(a.position.x-b.position.x)<0.025f &&
+                    std::fabs(a.position.y-b.position.y)<0.025f &&
+                    std::fabs(a.position.z-b.position.z)<0.025f &&
+                    std::fabs(a.velocity.x-b.velocity.x)<0.025f &&
+                    std::fabs(a.velocity.y-b.velocity.y)<0.025f &&
+                    std::fabs(a.velocity.z-b.velocity.z)<0.025f,
+                    "GPU coupled rigid stack diverged from source Sc/Dy motion");
+        }
+        require(gpu.solved_result_frame()==gpu.frame_index(),
+                "GPU coupled rigid stack did not complete Dy solve");
+    }
+    require(coupled,
+            "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
+}
 } // namespace
 
 int main(int argc,char** argv) {
@@ -178,6 +229,13 @@ int main(int argc,char** argv) {
 #endif
             argv[1],argv[2]);
         verify_sparse_contact_stream(
+#ifdef FYZZXYZZY_TEST_D3D12
+            fyzz::compute::Backend::D3D12,
+#else
+            fyzz::compute::Backend::Vulkan,
+#endif
+            argv[1],argv[2]);
+        verify_coupled_rigid_stack(
 #ifdef FYZZXYZZY_TEST_D3D12
             fyzz::compute::Backend::D3D12,
 #else
