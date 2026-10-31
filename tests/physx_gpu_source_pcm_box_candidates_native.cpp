@@ -144,6 +144,11 @@ void verify(Context& context,const char* transform_shader,
                     "Source PCM GPU did not report a bounded candidate overflow");
             continue;
         }
+        if(results[i].status!=0u || results[i].candidate_count!=count)
+            std::cerr<<"PCM pair "<<i<<" ("<<pairs[i].first_element<<","
+                     <<pairs[i].second_element<<") source="<<count
+                     <<" gpu="<<results[i].candidate_count
+                     <<" status="<<results[i].status<<'\\n';
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
         for(std::size_t k=0u;k<count;++k) {
