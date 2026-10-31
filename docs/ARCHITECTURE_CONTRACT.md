@@ -68,10 +68,11 @@ PhysX CPU baseline independent; experimental `world_vulkan` and `*_arena`
 demonstrations are not substitutes for integrated production physics.
 
 Track the exact production boundary and absent connections against the
-[active capability roadmap](ROADMAP.md). The admitted native GPU broadphase
-now publishes source-derived multi-frame found/lost pairs into native
-Sc/PCM/Dy on Vulkan and D3D12; GPU narrowphase and rigid dynamics are not
-yet integrated. A separate reference scene, test-only GPU fixture, or
+[active capability roadmap](ROADMAP.md). The admitted native GPU broadphase publishes source-derived multi-frame
+found/lost pairs into native Sc/PCM/Dy on Vulkan and D3D12. With an explicit
+GPU PCM shader bundle, source box/box contacts also reach the native Sc
+contact managers; GPU Dy constraint preparation, solve and body integration
+are not yet integrated. A separate reference scene, test-only GPU fixture, or
 independent simulation scheduler cannot substitute for either capability.
 
 ### Source fidelity is a release criterion, not just an intent
