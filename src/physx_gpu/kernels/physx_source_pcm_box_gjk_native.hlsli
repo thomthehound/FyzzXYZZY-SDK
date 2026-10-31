@@ -13,7 +13,7 @@ struct GjkSupportPoint {
     uint ai,bi;
 };
 struct GjkClosest {
-    float3 point,a,b;
+    float3 closestPoint,a,b;
     float weights[4];
     uint mask;
     float dist2;
@@ -70,7 +70,7 @@ bool gjkSolve(uint n,inout float a[3][4],out float result[3]) {
 }
 GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
     GjkClosest best;
-    best.point=0.f;best.a=0.f;best.b=0.f;
+    best.closestPoint=0.f;best.a=0.f;best.b=0.f;
     best.mask=0u;
     best.dist2=3.402823466e+38f;
     for(uint i=0u;i<4u;++i)best.weights[i]=0.f;
@@ -83,7 +83,7 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
         weights[ids[0]]=1.f;
         if(n>1u) {
             float3 origin=simplex[ids[0]].q;
-            float3 directions[3]={0.f,0.f,0.f};
+            float3 directions[3];
             float a[3][4]={{0.f,0.f,0.f,0.f},
                            {0.f,0.f,0.f,0.f},
                            {0.f,0.f,0.f,0.f}};
@@ -113,7 +113,7 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
         }
         float d=gjkLength2(q);
         if(d<best.dist2) {
-            best.point=q;best.a=pa;best.b=pb;
+            best.closestPoint=q;best.a=pa;best.b=pb;
             best.mask=mask;best.dist2=d;
             for(uint j=0u;j<4u;++j)best.weights[j]=weights[j];
         }
@@ -135,7 +135,7 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
     witness=(GjkWitness)0;
     float distance=sqrt(nearest.dist2);
     if(!(distance>0.f) || !isfinite(distance))return false;
-    witness.normalB=nearest.point/distance;
+    witness.normalB=nearest.closestPoint/distance;
     witness.localA=rotateSource(
         conjugate(pair.relative),nearest.a-pair.aInB);
     witness.localB=nearest.b;
@@ -177,7 +177,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
         if(next.mask==0u)return 0u;
-        closest=next.point;
+        closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
         if(nextDist>=previous)return 0u;
