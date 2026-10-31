@@ -130,43 +130,40 @@ public:
             work_.getDevicePtr(),indirect_address_,
             pair_count,shape_capacity,candidate_count,edge_capacity);
         contact_stream_stage_.append(stream_,addresses_,
-            pairs_.getDevicePtr(),edges_.getDevicePtr(),
-            dense_contacts_.getDevicePtr(),pair_count,edge_capacity);
+            pairs_.getDevicePtr(),results_.getDevicePtr(),
+            edges_.getDevicePtr(),dense_contacts_.getDevicePtr(),
+            pair_count,edge_capacity);
         stream_.wait_at_fetch();
 
-        result_host_.resize(pair_count);
         packed_host_.resize(pair_count);
-        const auto mapped_results=addresses_.resolve(
-            results_.getDevicePtr(),result_host_.size()*sizeof(result_host_[0]));
         const auto mapped_packed=addresses_.resolve(
             dense_contacts_.getDevicePtr(),
             packed_host_.size()*sizeof(packed_host_[0]));
         const std::vector<compute::DownloadSpan> downloads{
-            {mapped_results.buffer,mapped_results.offset,result_host_.data(),
-                result_host_.size()*sizeof(result_host_[0])},
             {mapped_packed.buffer,mapped_packed.offset,packed_host_.data(),
                 packed_host_.size()*sizeof(packed_host_[0])}
         };
         context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
-            const auto& result=result_host_[i];
             const auto& request=requests[i];
             const auto& stored=packed_host_[i];
+            const auto selected_count=
+                stored.selected_and_regenerated&0x7fffffffu;
+            const bool regenerated=
+                (stored.selected_and_regenerated&0x80000000u)!=0u;
             // A quiet refresh retains persistent witnesses beyond the
             // contact-distance window. Sc filters them at publication.
-            if(result.edge_handle!=request.edge ||
-               stored.edge_handle!=request.edge || result.status!=0u ||
-               result.selected_count>4u || stored.count>4u ||
-               result.selected_count>stored.count ||
-               (result.regenerated!=0u &&
-                result.selected_count!=stored.count))
+            if(stored.edge_handle!=request.edge || stored.status!=0u ||
+               selected_count>4u || stored.count>4u ||
+               selected_count>stored.count ||
+               (regenerated && selected_count!=stored.count))
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
             auto& item=output[i];
             item={};
             item.edge=request.edge;
             item.count=static_cast<std::uint8_t>(stored.count);
-            item.regenerated=result.regenerated!=0u;
+            item.regenerated=regenerated;
             for(std::uint32_t j=0u;j<stored.count;++j) {
                 const auto& c=stored.contacts[j];
                 item.points[j]={
@@ -193,8 +190,7 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::array<std::uint8_t,240u> empty_cache_{};
     std::vector<SourcePcmBoxPairNative> pair_host_;
-    std::vector<SourcePcmBoxPairResultNative> result_host_;
-    std::vector<SourcePcmScContactStreamNative> packed_host_;
+     std::vector<SourcePcmScContactStreamNative> packed_host_;
     bool reset_manifolds_=false;
 };
 } // namespace fyzz::physx_gpu
