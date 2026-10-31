@@ -51,7 +51,7 @@ void verify(Context& context,const char* transform_shader,
     }};
     constexpr std::size_t fixed_pairs=6u;
     std::array<SourceGuBoxPairNative,
-               fixed_pairs+6u*5u*7u+2u> pairs{{
+               fixed_pairs+6u*5u*7u+3u> pairs{{
         {1u,6u,0u},{1u,6u,1u},{6u,1u,0u},
         {1u,31u,0u},{1u,12u,0u},{6u,12u,0u}
     }};
@@ -63,7 +63,8 @@ void verify(Context& context,const char* transform_shader,
                 for(std::uint32_t axis=0u;axis<=6u;++axis)
                     pairs[next++]={a,b,axis};
     pairs[next++]={31u,31u,0u};
-    pairs[next++]={1u,6u,0u};
+    pairs[next++]={1u,6u,0u}; // retired Sc contact-manager edge
+    pairs[next++]={1u,6u,0u}; // bounded contact-window overflow
     require(next==pairs.size(),"Gu pair coverage fixture size mismatch");
     constexpr std::uint32_t contacts_per_pair=80u;
     for(std::uint32_t i=0u;i<pairs.size();++i) {
@@ -71,6 +72,7 @@ void verify(Context& context,const char* transform_shader,
         pairs[i].contact_capacity=i==pairs.size()-1u?1u:contacts_per_pair;
         pairs[i].edge_handle=19u+i*11u;
     }
+    pairs[pairs.size()-2u].edge_handle=0xffffffffu;
     constexpr std::uint32_t capacity=32u;
     std::array<SourceGuBoxPairResultNative,pairs.size()> manifolds{};
     std::vector<SourceGuBoxContactNative> gpu_contacts(
@@ -121,6 +123,11 @@ void verify(Context& context,const char* transform_shader,
         require(manifolds[i].edge_handle==pairs[i].edge_handle &&
                 manifolds[i].contact_offset==pairs[i].contact_offset,
                 "Device Gu result lost its source Sc contact-manager binding");
+        if(pairs[i].edge_handle==0xffffffffu) {
+            require(manifolds[i].status==1u,
+                    "GPU Gu accepted a retired Sc contact-manager edge");
+            continue;
+        }
         if(pairs[i].first_element==pairs[i].second_element) {
             require(manifolds[i].status==1u,
                     "Source Gu device contacts accepted the same shape twice");
