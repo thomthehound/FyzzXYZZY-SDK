@@ -81,10 +81,8 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
-#ifdef __spirv__
-// Preserve the source float32 incident-axis comparison under SPIR-V.
-// DXIL retains the ordinary source dot operation and its native rounding.
-// This path is only evaluated for ambiguous face alignment.
+// Preserve fused float32 source arithmetic without relying on
+// backend-specific multiply-add contraction.
 float fusedProductSum(float a,float b,float c) {
     precise float product=a*b;
     precise float sa=4097.f*a;
@@ -102,6 +100,8 @@ float fusedProductSum(float a,float b,float c) {
     precise float fused=sum+(productError+sumError);
     return fused;
 }
+#ifdef __spirv__
+// Preserve the source float32 incident-axis comparison on near-tied faces.
 float fusedDot(float3 a,float3 b) {
     return fusedProductSum(a.x,b.x,
                            fusedProductSum(a.y,b.y,a.z*b.z));
