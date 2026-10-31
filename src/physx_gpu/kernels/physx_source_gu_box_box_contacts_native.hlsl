@@ -321,7 +321,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint axis=0u;
     uint status=0u,count=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
-       previousAxis>6u ||
+       edgeHandle==0xffffffffu || previousAxis>6u ||
        outputStart>p.contactCapacity ||
        outputLimit>p.contactCapacity-outputStart) {
         status=1u;
