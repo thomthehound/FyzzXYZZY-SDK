@@ -23,7 +23,14 @@ struct GjkWitness {
     float3 localA,localB,normalB;
     float separation;
 };
-float gjkLength2(float3 v) { return dot(v,v); }
+float gjkDot(float3 a,float3 b) {
+    precise float x=a.x*b.x;
+    precise float y=a.y*b.y;
+    precise float z=a.z*b.z;
+    precise float xy=x+y;
+    return xy+z;
+}
+float gjkLength2(float3 v) { return gjkDot(v,v); }
 
 GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     float3 directionA=rotateSource(conjugate(pair.relative),direction);
@@ -92,8 +99,8 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
                 directions[j-1u]=simplex[ids[j]].q-origin;
             for(uint j=1u;j<n;++j) {
                 for(uint k=1u;k<n;++k)
-                    a[j-1u][k-1u]=dot(directions[j-1u],directions[k-1u]);
-                a[j-1u][n-1u]=-dot(directions[j-1u],origin);
+                    a[j-1u][k-1u]=gjkDot(directions[j-1u],directions[k-1u]);
+                a[j-1u][n-1u]=-gjkDot(directions[j-1u],origin);
             }
             float coeff[3]={0.f,0.f,0.f};
             if(!gjkSolve(n-1u,a,coeff))continue;
@@ -106,11 +113,14 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
         for(uint j=0u;j<n;++j)
             if(weights[ids[j]]< -1.e-5f)feasible=false;
         if(!feasible)continue;
-        float3 q=0.f,pa=0.f,pb=0.f;
+        precise float3 q=0.f,pa=0.f,pb=0.f;
         for(uint j=0u;j<count;++j) {
-            q+=simplex[j].q*weights[j];
-            pa+=simplex[j].a*weights[j];
-            pb+=simplex[j].b*weights[j];
+            precise float3 dq=simplex[j].q*weights[j];
+            precise float3 da=simplex[j].a*weights[j];
+            precise float3 db=simplex[j].b*weights[j];
+            q=q+dq;
+            pa=pa+da;
+            pb=pb+db;
         }
         float d=gjkLength2(q);
         if(d<best.dist2) {
@@ -167,7 +177,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         if(dist<=0.f)return 4u;
         float3 normal=closest/dist;
         GjkSupportPoint support=gjkSupport(pair,-closest);
-        float projection=dot(normal,support.q);
+        float projection=gjkDot(normal,support.q);
         trace=uint4(iteration,support.ai,support.bi,count);
         metrics=float4(projection,dist*progressFactor,dist,previous);
         supportQ=support.q;
