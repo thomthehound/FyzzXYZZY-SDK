@@ -217,20 +217,43 @@ void verify(Context& context,const char* transform_shader,
     std::vector<std::uint32_t> work(pairs.size());
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
-    const auto pending=std::count_if(results.begin(),results.end(),
-        [](const auto& result){return result.status==3u;});
-    require(pending>0u && indirect[0]==pending &&
-            indirect[1]==1u && indirect[2]==1u,
-            "GPU sparse EPA work count differs from source PCM pending edges");
-    std::vector<std::uint8_t> seen(pairs.size());
-    for(std::size_t i=0;i<pending;++i) {
-        require(work[i]<pairs.size() && !seen[work[i]] &&
-                results[work[i]].status==3u,
-                "GPU sparse EPA queue lost or duplicated an Sc edge");
-        seen[work[i]]=1u;
+    const auto verify_work=[&](const auto& source_results) {
+        const auto expected=std::count_if(
+            source_results.begin(),source_results.end(),
+            [](const auto& result){return result.status==3u;});
+        if(indirect[0]!=expected || indirect[1]!=1u || indirect[2]!=1u)
+            throw std::runtime_error(
+                "GPU sparse EPA indirect count differs from admitted PCM results");
+        std::vector<std::uint8_t> seen(pairs.size());
+        for(std::size_t i=0;i<expected;++i) {
+            require(work[i]<pairs.size() && !seen[work[i]] &&
+                    source_results[work[i]].status==3u,
+                    "GPU sparse EPA queue lost or duplicated an Sc edge");
+            seen[work[i]]=1u;
+        }
+    };
+    // Actual GPU PCM classification is the authority for admission.
+    verify_work(results);
+    // Exercise nonempty compaction even when this fixture's normal PCM
+    // cases produce no EPA admissions. These injected statuses test only
+    // work-queue indexing and do not represent generated contacts.
+    auto admitted_results=results;
+    admitted_results[1].status=3u;
+    admitted_results[12].status=3u;
+    admitted_results[27].status=3u;
+    context.upload(root,result_offset,admitted_results.data(),
+                   sizeof(admitted_results));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        stream.wait_at_fetch();
     }
-    // Re-run the device compaction with zero pending results. The same
-    // persistent argument allocation must produce a zero-work dispatch.
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    context.download(root,work_offset,work.data(),work.size()*4u);
+    verify_work(admitted_results);
+    // Reuse the same native argument allocation on an empty frame. No
+    // stale atomic count may cause the EPA indirect dispatch to execute.
     auto resolved_results=results;
     for(auto& result:resolved_results)
         if(result.status==3u)result.status=0u;
