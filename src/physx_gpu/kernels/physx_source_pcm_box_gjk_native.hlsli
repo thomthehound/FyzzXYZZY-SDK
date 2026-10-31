@@ -160,7 +160,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     for(uint iteration=0u;iteration<32u;++iteration) {
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon)return 3u;
-        if(dist<=0.f)return 0u;
+        if(dist<=0.f)return 4u;
         float3 normal=closest/dist;
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=dot(normal,support.q);
@@ -168,21 +168,21 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         if(count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex,count);
             return current.mask!=0u && gjkContact(pair,current,witness)
-                ?1u:0u;
+                ?1u:9u;
         }
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
                support.bi==simplex[j].bi)
-                return 0u;
+                return 5u;
         if(count==4u)return 3u;
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
-        if(next.mask==0u)return 0u;
+        if(next.mask==0u)return 6u;
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
-        if(nextDist>=previous)return 0u;
+        if(nextDist>=previous)return 7u;
         previous=nextDist;
     }
-    return 0u;
+    return 8u;
 }
