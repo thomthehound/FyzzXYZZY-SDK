@@ -1328,17 +1328,6 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND fyzzxyzzy_source_sc_box_bounds "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}")
 
 
-    set(FYZZXYZZY_GU_BOX_AXIS_SPV
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_axis_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_AXIS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_GU_BOX_AXIS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_axis_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_axis_native.hlsl"
-      VERBATIM)
-    add_custom_target(fyzzxyzzy_source_gu_box_axis_shader
-      DEPENDS "${FYZZXYZZY_GU_BOX_AXIS_SPV}")
     set(FYZZXYZZY_GU_BOX_CONTACTS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_contacts_native.spv")
     add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}"
@@ -1350,21 +1339,19 @@ if(FYZZXYZZY_BUILD_VULKAN)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
-    add_executable(fyzzxyzzy_source_gu_box_axis
-      tests/physx_gpu_source_gu_box_box_axis_native.cpp
+    add_executable(fyzzxyzzy_source_gu_box_contacts
+      tests/physx_gpu_source_gu_box_box_contacts_native.cpp
       src/native/GuContactBoxBox.cpp)
-    target_include_directories(fyzzxyzzy_source_gu_box_axis PRIVATE
+    target_include_directories(fyzzxyzzy_source_gu_box_contacts PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(fyzzxyzzy_source_gu_box_axis PRIVATE
+    target_link_libraries(fyzzxyzzy_source_gu_box_contacts PRIVATE
       FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
-    add_dependencies(fyzzxyzzy_source_gu_box_axis
+    add_dependencies(fyzzxyzzy_source_gu_box_contacts
       fyzzxyzzy_source_sc_box_bounds_shader
-      fyzzxyzzy_source_gu_box_axis_shader
       fyzzxyzzy_source_gu_box_contacts_shader)
-    add_test(NAME fyzzxyzzy_source_gu_box_axis
-      COMMAND fyzzxyzzy_source_gu_box_axis
-        "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_GU_BOX_AXIS_SPV}"
-        "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
+    add_test(NAME fyzzxyzzy_source_gu_box_contacts
+      COMMAND fyzzxyzzy_source_gu_box_contacts
+        "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
@@ -4503,17 +4490,6 @@ if(FYZZXYZZY_BUILD_D3D12)
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
 
-    set(FYZZXYZZY_GU_BOX_AXIS_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_axis_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_AXIS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_GU_BOX_AXIS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_axis_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_axis_native.hlsl"
-      VERBATIM)
-    add_custom_target(fyzzxyzzy_source_gu_box_axis_shader_d3d12
-      DEPENDS "${FYZZXYZZY_GU_BOX_AXIS_DXIL}")
     set(FYZZXYZZY_GU_BOX_CONTACTS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_contacts_native.dxil")
     add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}"
@@ -4525,24 +4501,22 @@ if(FYZZXYZZY_BUILD_D3D12)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader_d3d12
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
-    add_executable(fyzzxyzzy_source_gu_box_axis_d3d12
-      tests/physx_gpu_source_gu_box_box_axis_native.cpp
+    add_executable(fyzzxyzzy_source_gu_box_contacts_d3d12
+      tests/physx_gpu_source_gu_box_box_contacts_native.cpp
       src/native/GuContactBoxBox.cpp)
-    target_compile_definitions(fyzzxyzzy_source_gu_box_axis_d3d12 PRIVATE
+    target_compile_definitions(fyzzxyzzy_source_gu_box_contacts_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
-    target_include_directories(fyzzxyzzy_source_gu_box_axis_d3d12 PRIVATE
+    target_include_directories(fyzzxyzzy_source_gu_box_contacts_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(fyzzxyzzy_source_gu_box_axis_d3d12 PRIVATE
+    target_link_libraries(fyzzxyzzy_source_gu_box_contacts_d3d12 PRIVATE
       FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
-    add_dependencies(fyzzxyzzy_source_gu_box_axis_d3d12
+    add_dependencies(fyzzxyzzy_source_gu_box_contacts_d3d12
       fyzzxyzzy_source_sc_box_bounds_shader_d3d12
-      fyzzxyzzy_source_gu_box_axis_shader_d3d12
       fyzzxyzzy_source_gu_box_contacts_shader_d3d12)
-    add_test(NAME fyzzxyzzy_source_gu_box_axis_d3d12
-      COMMAND fyzzxyzzy_source_gu_box_axis_d3d12
-        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_GU_BOX_AXIS_DXIL}"
-        "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_gu_box_axis_d3d12 PROPERTIES
+    add_test(NAME fyzzxyzzy_source_gu_box_contacts_d3d12
+      COMMAND fyzzxyzzy_source_gu_box_contacts_d3d12
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_gu_box_contacts_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
