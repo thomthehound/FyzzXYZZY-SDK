@@ -117,6 +117,7 @@ float4 quatProduct(float4 a,float4 b) {
         a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z);
 }
 float4 conjugate(float4 q) {return float4(-q.xyz,q.w);}
+#include "physx_source_pcm_box_gjk_native.hlsli"
 
 uint cachePointAddress(uint edgeBase,uint contactIndex) {
     return edgeBase+80u+contactIndex*40u;
@@ -623,6 +624,34 @@ void main(uint3 thread : SV_DispatchThreadID) {
             clip(f,poly,incidentNormal,faceX,faceY,normal,distance,flipped,
                  A,pa,B,pb,first,limit,count,status);
         }
+        // GuPCMContactBoxBox's GJK continuation only runs when face
+        // clipping found no witness. EPA remains explicitly pending.
+        if(overlap!=0u && count==0u && status==0u) {
+            uint cache=p.edgeCacheBias+edge*240u;
+            if(edgeCaches.Load(cache+12u)==0u) {
+                GjkBoxPair boxPair;
+                boxPair.halfA=ea;
+                boxPair.halfB=eb;
+                boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
+                boxPair.relative=quatProduct(conjugate(qb),qa);
+                GjkWitness witness;
+                uint outcome=gjkBoxContinuation(boxPair,distance,witness);
+                if(outcome==1u) {
+                    if(limit==0u) {
+                        status=2u;
+                    }else {
+                        uint offset=p.candidateBias+first*40u;
+                        candidates.Store3(offset,asuint(witness.localA));
+                        candidates.Store3(offset+12u,asuint(witness.localB));
+                        candidates.Store3(offset+24u,asuint(witness.normalB));
+                        candidates.Store(offset+36u,asuint(witness.separation));
+                        count=1u;
+                    }
+                }else if(outcome==0u)
+                    overlap=0u;
+                else status=3u;
+            }else status=3u;
+        }
     }
     uint selectedCount=status==0u?min(count,4u):0u;
     uint4 selection=uint4(0u,1u,2u,3u);
@@ -638,14 +667,14 @@ void main(uint3 thread : SV_DispatchThreadID) {
         edgeCaches.Store(edgeBase+64u,0u);
         edgeCaches.Store(edgeBase+68u,0u);
     }
-    if(regenerated!=0u && status==0u) {
+    if(regenerated!=0u && (status==0u || status==3u)) {
         uint edgeBase=p.edgeCacheBias+edge*240u;
         for(uint j=0u;j<selectedCount;++j)
             storeSelectedContact(edgeBase,j,
                 p.candidateBias+(first+selection[j])*40u);
         edgeCaches.Store(edgeBase+12u,selectedCount);
         // GJK/EPA owns cases where overlap has no clipped witnesses.
-        uint needsGjk=overlap!=0u && count==0u?1u:0u;
+        uint needsGjk=status==3u?1u:0u;
         edgeCaches.Store(edgeBase+68u,needsGjk);
         if(needsGjk!=0u)status=3u;
     }
