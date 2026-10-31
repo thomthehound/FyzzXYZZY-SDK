@@ -157,8 +157,8 @@ void verify(Context& context,const char* transform_shader,
         candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
     const std::size_t work_offset=
         edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
-    const std::size_t args_offset=work_offset+pairs.size()*4u+16u;
-    const auto root=context.create_buffer(args_offset+12u+16u);
+    const auto root=context.create_buffer(work_offset+pairs.size()*4u+16u);
+    const auto args_buffer=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
     context.upload(root,edge_offset,edge_caches.data(),
@@ -176,7 +176,7 @@ void verify(Context& context,const char* transform_shader,
         root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
     const auto work_data=addresses.register_slice(
         root,work_offset,pairs.size()*4u);
-    const auto args_data=addresses.register_slice(root,args_offset,12u);
+    const auto args_data=addresses.register_slice(args_buffer,0u,12u);
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
@@ -215,7 +215,7 @@ void verify(Context& context,const char* transform_shader,
     // the sparse EPA worklist and native indirect dispatch dimensions.
     std::array<std::uint32_t,3> indirect{};
     std::vector<std::uint32_t> work(pairs.size());
-    context.download(root,args_offset,indirect.data(),sizeof(indirect));
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
     const auto pending=std::count_if(results.begin(),results.end(),
         [](const auto& result){return result.status==3u;});
@@ -242,7 +242,7 @@ void verify(Context& context,const char* transform_shader,
                       static_cast<std::uint32_t>(pairs.size()));
         stream.wait_at_fetch();
     }
-    context.download(root,args_offset,indirect.data(),sizeof(indirect));
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
             "Sparse EPA GPU reset retained stale pending work");
 
@@ -549,6 +549,7 @@ void verify(Context& context,const char* transform_shader,
     addresses.unregister_slice(inputs);
     require(addresses.live_allocations()==0u,
             "Source PCM GPU candidate fixture leaked address mappings");
+    context.destroy_buffer(args_buffer);
     context.destroy_buffer(root);
 }
 }
