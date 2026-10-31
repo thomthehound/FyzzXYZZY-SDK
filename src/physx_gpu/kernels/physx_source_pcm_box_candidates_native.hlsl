@@ -69,7 +69,7 @@ float3 project(Frame f,float3 world) {
     return float3(dot(v,f.x),dot(v,f.y),dot(v,f.z));
 }
 float3 unproject(Frame f,float3 v) {
-    return f.position+f.x*v.x+f.y*v.y+f.z*v.z;
+    return f.position+((f.x*v.x+f.y*v.y)+f.z*v.z);
 }
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
@@ -321,10 +321,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
             float3 u=incident[uAxis]*component(incidentHalf,uAxis);
             float3 v=incident[vAxis]*component(incidentHalf,vAxis);
             float3 poly[4]={
-                project(f,center+u+v),
-                project(f,center+u-v),
-                project(f,center-u-v),
-                project(f,center-u+v)};
+                project(f,center+(u+v)),
+                project(f,center+(u-v)),
+                project(f,center-(u+v)),
+                project(f,center-(u-v))};
             float3 incidentNormal=project(f,
                 f.position+(facing>0.f?-incident[axis]:incident[axis]));
             clip(f,poly,incidentNormal,faceX,faceY,normal,distance,flipped,
