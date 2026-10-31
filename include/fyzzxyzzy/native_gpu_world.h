@@ -68,6 +68,16 @@ using NativeGpuAggregateShaders = std::array<
 NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
     compute::Backend backend,const std::filesystem::path& manifest);
 
+// GuPCMContactBoxBox and sparse GuGJK/GuEPA run in the source Sc
+// contact-manager stream. These are separate from the SAP shader bundle.
+enum class NativeGpuPcmStage : std::size_t {
+    Candidates,EpaReset,EpaCompact,EpaContact,Count
+};
+using NativeGpuPcmShaders = std::array<
+    compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
+NativeGpuPcmShaders load_native_gpu_pcm_shaders(
+    compute::Backend backend,const std::filesystem::path& manifest);
+
 // Load the original source SAP shader stages from a build-generated manifest.
 // All compiled stages are required in source dispatch order. The manifest
 // and binaries can be deployed together, with paths relative to the manifest.
@@ -83,6 +93,13 @@ World create_native_gpu_world(
 
 World create_native_gpu_world(
     compute::Backend backend,const std::filesystem::path& manifest,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
+
+// Explicit source GPU box PCM. Sc owns the real contact managers and
+// chooses the existing CPU solver fetch until GPU constraint prep lands.
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuPcmShaders pcm,
     WorldOptions options={ExecutionMode::NativePortableGpu});
 
 // Explicit source aggregate shader contract: all original aggregate

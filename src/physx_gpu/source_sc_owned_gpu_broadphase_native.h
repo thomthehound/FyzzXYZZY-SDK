@@ -12,6 +12,7 @@
 #include "physx_gpu/source_sap_created_native.h"
 #include "physx_gpu/source_sap_radix_native.h"
 #include "physx_gpu/source_sapbox_indices_native.h"
+#include "physx_gpu/source_sc_gpu_pcm_native.h"
 #include "physx_gpu/source_sap_endpoint_histograms_native.h"
 #include "physx_gpu/source_fill_d32_native.h"
 #include "physx_gpu/source_region_create_native.h"
@@ -48,6 +49,10 @@ class SourceScOwnedGpuBroadphaseNative final : public native::GpuBroadphaseProdu
         SourceSapShaderBinaries& shaders,NativeGpuSapStage stage) {
         return std::move(shaders[static_cast<std::size_t>(stage)]);
     }
+    static compute::ShaderBinary take_pcm_shader(
+        NativeGpuPcmShaders& shaders,NativeGpuPcmStage stage) {
+        return std::move(shaders[static_cast<std::size_t>(stage)]);
+    }
     static void abort_source(void* state) noexcept {
         *static_cast<bool*>(state)=true;
     }
@@ -57,7 +62,8 @@ public:
         compute::Backend backend,SourceSapShaderBinaries shaders,
         std::uint32_t max_pairs=32768u,
         std::uint32_t max_aggregate_pairs=32768u,
-        std::optional<NativeGpuAggregateShaders> aggregate_shaders=std::nullopt)
+        std::optional<NativeGpuAggregateShaders> aggregate_shaders=std::nullopt,
+        std::optional<NativeGpuPcmShaders> pcm_shaders=std::nullopt)
         : foundation_(physx_runtime::acquire_foundation()),
           context_(backend),
           stream_(context_,addresses_),
@@ -118,21 +124,28 @@ public:
               *aabb_,*sap_,stream_,stages_,addresses_,context_,filter_,
               fill_,mapped_roots_,
               aggregate_stages_?&aggregate_stages_->borrowed():nullptr,
-              &box_owners_)) {}
+              &box_owners_)) {
+        if(pcm_shaders)
+            pcm_=std::make_unique<SourceScGpuPcmNative>(
+                context_,addresses_,stream_,allocators_.deviceAlloc,
+                *producer_,box_cache_,box_geometry_,
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaReset),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact));
+    }
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
     SourceScOwnedGpuBroadphaseNative& operator=(
         const SourceScOwnedGpuBroadphaseNative&)=delete;
 
     ~SourceScOwnedGpuBroadphaseNative() override {
-        producer_.reset();
-        // Original report-retirement commands remain on the source stream
-        // after Sc publication. Complete them before releasing SAP/AABB
-        // allocations, pipeline objects or the owning native Context.
-        // A failed queue/fence was already reported by the frame; teardown
-        // must not terminate while unwinding that exception. The Context
-        // retains submitted resources until its own final queue cleanup.
+        // Drain every source launch before retiring the PCM indirect
+        // argument resource, source SAP pipelines or the original heap.
+        // Failed submissions stay owned by Context through teardown.
         (void)stream_.finish_shutdown();
+        pcm_.reset();
+        producer_.reset();
         box_input_.deallocate();
         box_cache_.deallocate();
         box_geometry_.deallocate();
@@ -154,6 +167,14 @@ public:
         if(aborted_)
             throw std::runtime_error("Original GPU SAP heap aborted");
         return producer_->advance(live,force_update,geometry_dirty);
+    }
+    bool has_gpu_pcm_box() const noexcept override { return bool(pcm_); }
+    void generate_gpu_pcm_box_contacts(
+            std::span<const native::GpuPcmBoxPair> requests,
+            std::span<native::GpuPcmBoxResult> results) override {
+        if(!pcm_)
+            throw std::logic_error("Source Sc GPU PCM shaders not installed");
+        pcm_->generate(requests,results,aabb_->capacity());
     }
     void mark_shape_bounds_changed(BodyId id,float offset) override {
         producer_->mark_shape_bounds_changed(id,offset);
@@ -189,6 +210,7 @@ public:
     void post_reports_cleanup() override { producer_->post_reports_cleanup(); }
     void invalidate_after_rollback() noexcept override {
         producer_->invalidate_after_rollback();
+        if(pcm_)pcm_->invalidate_after_rollback();
     }
     const SourceSapSceneFrameNativeResult& last_frame() const {
         return producer_->last_frame();
@@ -237,6 +259,7 @@ private:
     physx::Bp::BpFilter filter_;
     std::unique_ptr<SourceSapAggregateOwnedStagesNative> aggregate_stages_;
     std::unique_ptr<SourceScGpuBroadphaseProducerNative> producer_;
+    std::unique_ptr<SourceScGpuPcmNative> pcm_;
 };
 
 } // namespace fyzz::physx_gpu

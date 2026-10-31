@@ -3370,6 +3370,64 @@ std::uint8_t Scene::generate_pcm_plane_box(
     }
     return emitted;
 }
+std::uint8_t Scene::publish_gpu_pcm_box_box(
+    const Actor& first,const Actor& second,float contact_distance,
+    const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
+    std::span<ContactPoint> output) {
+    if(gpu.status!=0u || gpu.count>4u)
+        throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
+    cache.count=gpu.count;
+    cache.initialized=true;
+    cache.warmstart={};
+    const Vec3 delta{first.position.x-second.position.x,
+                     first.position.y-second.position.y,
+                     first.position.z-second.position.z};
+    cache.relative_position=rotate_inverse(second.orientation,delta);
+    cache.relative_rotation=multiply(
+        {-second.orientation.x,-second.orientation.y,
+         -second.orientation.z,second.orientation.w},first.orientation);
+    cache.orientation_a=first.orientation;
+    cache.orientation_b=second.orientation;
+    for(std::uint8_t i=0;i<gpu.count;++i) {
+        const auto& p=gpu.points[i];
+        cache.points[i]={p.local_a,p.local_b,p.normal_b,p.separation};
+    }
+    if(!gpu.count)return 0u;
+    Vec3 local_normal{};
+    if(gpu.regenerated)
+        local_normal=gpu.points[0].normal_b;
+    else
+        for(std::uint8_t i=0;i<gpu.count;++i) {
+            const auto n=gpu.points[i].normal_b;
+            local_normal.x+=n.x;
+            local_normal.y+=n.y;
+            local_normal.z+=n.z;
+        }
+    const float sq=local_normal.x*local_normal.x+
+        local_normal.y*local_normal.y+local_normal.z*local_normal.z;
+    if(!(sq>0.f) || !std::isfinite(sq))
+        throw std::overflow_error("Source GPU PCM normal is invalid");
+    const float inv=1.f/std::sqrt(sq);
+    const Vec3 normal=rotate(second.orientation,{
+        local_normal.x*inv,local_normal.y*inv,local_normal.z*inv});
+    std::uint8_t emitted=0u;
+    for(std::uint8_t i=0;i<gpu.count;++i) {
+        const auto& p=gpu.points[i];
+        if(!gpu.regenerated && p.separation>contact_distance)continue;
+        if(emitted>=output.size())
+            throw std::logic_error("Source GPU PCM contact arena exhausted");
+        const Vec3 local=rotate(second.orientation,p.local_b);
+        const ContactPoint out{{
+            local.x+second.position.x,
+            local.y+second.position.y,
+            local.z+second.position.z},normal,p.separation};
+        if(!finite(out.position) || !finite(out.normal) ||
+           !std::isfinite(out.separation))
+            throw std::overflow_error("Source GPU PCM witness invalid");
+        output[emitted++]=out;
+    }
+    return emitted;
+}
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
@@ -3389,6 +3447,30 @@ void Scene::update_contacts() {
         indexed_manifold_generation_=1;
     }
     const auto new_lookup_generation=indexed_manifold_generation_;
+    gpu_pcm_pairs_.clear();
+    gpu_pcm_results_.clear();
+    const bool source_gpu_pcm =
+        gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
+        pcm_box_box_enabled_;
+    if(source_gpu_pcm) {
+        gpu_pcm_pairs_.reserve(previous_pairs_.size());
+        for(std::size_t i=0;i<previous_pairs_.size();++i) {
+            const Pair pair=previous_pairs_[i];
+            const Actor& a=actors_[pair.a];
+            const Actor& b=actors_[pair.b];
+            if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+                continue;
+            const EdgeIndex edge=active_edge_handles_[i];
+            const bool swapped=island_edges_[edge].gu_order_reversed;
+            gpu_pcm_pairs_.push_back({
+                swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
+                !island_edges_[edge].pcm_cache.initialized});
+        }
+        gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
+        gpu_broadphase_->generate_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_);
+    }
+    std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
     std::size_t pair_index = 0;
@@ -3463,10 +3545,21 @@ void Scene::update_contacts() {
         }
         if(pcm_box) {
             step_checkpoint_.save_edge(*this,edge);
-            manifold.count=generate_pcm_box_box(
-                first,second,contact_distance,
-                island_edges_[edge].pcm_cache,
-                std::span<ContactPoint>(box_contact_scratch_));
+            if(source_gpu_pcm) {
+                if(gpu_pcm_index>=gpu_pcm_results_.size() ||
+                   gpu_pcm_results_[gpu_pcm_index].edge!=edge)
+                    throw std::logic_error(
+                        "Source GPU PCM result lost Sc EdgeIndex order");
+                manifold.count=publish_gpu_pcm_box_box(
+                    first,second,contact_distance,
+                    gpu_pcm_results_[gpu_pcm_index++],
+                    island_edges_[edge].pcm_cache,
+                    std::span<ContactPoint>(box_contact_scratch_));
+            }else
+                manifold.count=generate_pcm_box_box(
+                    first,second,contact_distance,
+                    island_edges_[edge].pcm_cache,
+                    std::span<ContactPoint>(box_contact_scratch_));
             next_contact_points_.insert(next_contact_points_.end(),
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin()+manifold.count);
