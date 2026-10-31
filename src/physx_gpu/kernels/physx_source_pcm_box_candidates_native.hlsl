@@ -215,7 +215,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                        asfloat(geometry.Load(gb+12u));
         float3 delta=pb-pa;
         float3 s[6]={A[0],A[1],A[2],B[0],B[1],B[2]};
-        float3x3 reference,incident;
+        float3x3 incident;
         float overlapFaces[6],sign[6];
         bool separated=false;
         [unroll]
@@ -261,7 +261,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             bool flipped=feature>=3u;
             bool nonpositive=sign[feature]<=0.f;
             float3x3 face=flipped?B:A;
-            float3 half=flipped?eb:ea;
+            float3 referenceHalf=flipped?eb:ea;
             float3 facePosition=flipped?pb:pa;
             incident=flipped?A:B;
             float3 incidentPosition=flipped?pa:pb;
@@ -276,9 +276,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                     : (nonpositive?-face[2]:face[2]);
                 f.y=face[1];f.z=flipped?-normal:normal;
                 f.position=facePosition+face[0]*
-                    (flipped?(nonpositive?half.x:-half.x):
-                             (nonpositive?-half.x:half.x));
-                faceX=half.z;faceY=half.y;
+                    (flipped?(nonpositive?referenceHalf.x:-referenceHalf.x):
+                             (nonpositive?-referenceHalf.x:referenceHalf.x));
+                faceX=referenceHalf.z;faceY=referenceHalf.y;
             }else if(feature%3u==1u) {
                 normal=nonpositive?face[1]:-face[1];
                 f.x=face[0];
@@ -287,9 +287,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                     : (nonpositive?-face[2]:face[2]);
                 f.z=flipped?-normal:normal;
                 f.position=facePosition+face[1]*
-                    (flipped?(nonpositive?half.y:-half.y):
-                             (nonpositive?-half.y:half.y));
-                faceX=half.x;faceY=half.z;
+                    (flipped?(nonpositive?referenceHalf.y:-referenceHalf.y):
+                             (nonpositive?-referenceHalf.y:referenceHalf.y));
+                faceX=referenceHalf.x;faceY=referenceHalf.z;
             }else {
                 normal=nonpositive?face[2]:-face[2];
                 f.x=face[0];
@@ -298,9 +298,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                     : (nonpositive?face[1]:-face[1]);
                 f.z=flipped?-normal:normal;
                 f.position=facePosition+face[2]*
-                    (flipped?(nonpositive?half.z:-half.z):
-                             (nonpositive?-half.z:half.z));
-                faceX=half.x;faceY=half.y;
+                    (flipped?(nonpositive?referenceHalf.z:-referenceHalf.z):
+                             (nonpositive?-referenceHalf.z:referenceHalf.z));
+                faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
             float dx=abs(dot(search,incident[0]));
