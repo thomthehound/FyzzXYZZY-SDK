@@ -36,6 +36,8 @@ public:
         desc.storage_buffer_views.assign(
             3u,compute::StorageBufferViewKind::RawReadWrite);
         desc.push_constant_bytes=16u;
+        reset_shader.entry_point="reset";
+        compact_shader.entry_point="compact";
         desc.shader=std::move(reset_shader);
         reset_=context_.create_compute_pipeline(desc);
         try {
