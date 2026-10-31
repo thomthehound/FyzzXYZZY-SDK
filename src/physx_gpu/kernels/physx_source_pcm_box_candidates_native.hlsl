@@ -637,9 +637,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 GjkWitness witness;
                 uint4 trace;
                 float4 metrics;
-                float3 supportQ;
+                float3 supportQ,closestQ;
                 uint outcome=gjkBoxContinuation(
-                    boxPair,distance,witness,trace,metrics,supportQ);
+                    boxPair,distance,witness,trace,metrics,supportQ,closestQ);
                 edgeCaches.Store(cache+76u,outcome);
                 if(outcome==5u && limit!=0u) {
                     uint debug=p.candidateBias+first*40u;
@@ -647,6 +647,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
                     candidates.Store4(debug+16u,asuint(metrics));
                     if(limit>1u)
                         candidates.Store3(debug+40u,asuint(supportQ));
+                    if(limit>2u)
+                        candidates.Store3(debug+80u,asuint(closestQ));
                 }
                 if(outcome==1u) {
                     if(limit==0u) {
