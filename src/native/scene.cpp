@@ -5932,7 +5932,6 @@ Scene::SolverBodyRow& Scene::admit_solver_row(BodyId id) {
         solver_rows_.emplace_back();
         actor.solver_row_index=index;
         actor.solver_row_generation=solver_preparation_generation_;
-        solver_rows_.back().prepared_generation=solver_preparation_generation_;
     }
     return solver_rows_[actor.solver_row_index];
 }
@@ -5967,6 +5966,7 @@ void Scene::prepare_solver_bodies() {
         if(body.kind!=Kind::KinematicBox || !body.alive)return;
         if(body.solver_row_generation==solver_preparation_generation_)return;
         auto& row=admit_solver_row(id);
+        row.prepared_generation=solver_preparation_generation_;
         row.data.position=body.position;
         row.data.orientation=body.orientation;
         row.data.linear_velocity=body.velocity;
@@ -6002,13 +6002,16 @@ void Scene::prepare_solver_bodies() {
             prepare_kinematic(pair.b);
             const Actor& first=actors_[pair.a];
             const Actor& second=actors_[pair.b];
-            if(std::min(first.dynamics.max_contact_impulse,
-                        second.dynamics.max_contact_impulse)==0.0f)
-                continue;
+            const bool responds=std::min(
+                first.dynamics.max_contact_impulse,
+                second.dynamics.max_contact_impulse)!=0.0f;
             for(BodyId id:{pair.a,pair.b})
                 if(actors_[id].kind==Kind::DynamicBox &&
-                   !actors_[id].sleeping)
-                    (void)admit_solver_row(id);
+                   !actors_[id].sleeping) {
+                    auto& row=admit_solver_row(id);
+                    if(responds)
+                        row.prepared_generation=solver_preparation_generation_;
+                }
         }
         if(visited!=island.contact_count)
             throw std::logic_error(
@@ -6028,7 +6031,8 @@ void Scene::prepare_solver_bodies() {
                 prepare_kinematic(id);
                 if(actors_[id].kind==Kind::DynamicBox &&
                    !actors_[id].sleeping)
-                    (void)admit_solver_row(id);
+                    admit_solver_row(id).prepared_generation=
+                        solver_preparation_generation_;
             }
         }
         if(visited!=island.constraint_count)
@@ -6045,6 +6049,14 @@ void Scene::prepare_solver_bodies() {
                solver_preparation_generation_)
                 continue;
             auto& row=prepared_solver_row(id);
+            if(row.prepared_generation!=solver_preparation_generation_) {
+                // Source partition progress also admits zero-response
+                // managers, without admitting a solver/integration body.
+                row.solver.partition_mask=0;
+                row.solver.max_dynamic_partition=0;
+                row.solver.static_constraint_count=0;
+                continue;
+            }
             row={};
             row.prepared_generation=solver_preparation_generation_;
             solver_active_ids_.push_back(id);
@@ -8822,7 +8834,9 @@ void Scene::integrate_solver_task(
             // Scene clock increments in advance_collision_internal; only
             // this frame's actual contact participants own motion snapshots.
             const bool solved_contact =
-                actor.solver_row_generation==solver_preparation_generation_;
+                actor.solver_row_generation==solver_preparation_generation_ &&
+                prepared_solver_row(id).prepared_generation==
+                    solver_preparation_generation_;
             if (solved_contact) {
                 const auto& row = prepared_solver_row(id);
                 const Vec3& delta = row.motion_linear_delta;
