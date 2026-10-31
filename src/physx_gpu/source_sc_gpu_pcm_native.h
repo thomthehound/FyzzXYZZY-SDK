@@ -135,9 +135,13 @@ public:
             const auto& result=result_host_[i];
             const auto& request=requests[i];
             const auto& stored=cache_host_[request.edge];
+            // A quiet refresh retains persistent witnesses beyond the
+            // contact-distance window. Sc filters them at publication.
             if(result.edge_handle!=request.edge || result.status!=0u ||
                result.selected_count>4u || stored.count>4u ||
-               result.selected_count!=stored.count)
+               result.selected_count>stored.count ||
+               (result.regenerated!=0u &&
+                result.selected_count!=stored.count))
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
             auto& item=output[i];
