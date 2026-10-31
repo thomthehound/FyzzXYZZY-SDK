@@ -137,81 +137,18 @@ void verify(Context& context,const char* transform_shader,
             vec(a.half_extents),vec(a.position),quat(a.orientation),
             vec(b.half_extents),vec(b.position),quat(b.orientation),
             a.contact_distance+b.contact_distance,expected,count);
-        require((results[i].overlapping&1u)==static_cast<std::uint32_t>(overlap),
+        require(results[i].overlapping==static_cast<std::uint32_t>(overlap),
                 "Source PCM GPU SAT diverged from source separation");
         if(i==pairs.size()-1u) {
             require(count>1u && results[i].status==2u,
                     "Source PCM GPU did not report a bounded candidate overflow");
             continue;
         }
-        if(results[i].status!=0u || results[i].candidate_count!=count) {
-            std::cerr<<"PCM pair "<<i<<" ("<<pairs[i].first_element<<","
-                     <<pairs[i].second_element<<") source="<<count
-                     <<" gpu="<<results[i].candidate_count
-                     <<" status="<<results[i].status
-                     <<" GPU reference="<<((results[i].overlapping>>8u)&255u)
-                     <<" incident="<<((results[i].overlapping>>16u)&255u)
-                     <<std::endl;
-            if(i==9u) {
-                const auto& scores=candidates[pairs[i].candidate_offset+63u];
-                std::cerr<<std::hexfloat
-                         <<" GPU alignment dx="<<scores.local_a[0]
-                         <<" dy="<<scores.local_a[1]
-                         <<" dz="<<scores.local_a[2]
-                         <<std::defaultfloat<<std::endl;
-            }
-            for(std::size_t k=0;k<results[i].candidate_count;++k) {
-                const auto& gpu=candidates[pairs[i].candidate_offset+k];
-                std::cerr<<"  GPU "<<k<<": A "<<gpu.local_a[0]<<","
-                         <<gpu.local_a[1]<<","<<gpu.local_a[2]
-                         <<" B "<<gpu.local_b[0]<<","<<gpu.local_b[1]<<","
-                         <<gpu.local_b[2]<<" separation "<<gpu.separation<<std::endl;
-            }
-            for(std::size_t k=0;k<count;++k) {
-                const auto& cpu=expected[k];
-                std::cerr<<"  CPU "<<k<<": A "<<cpu.local_a.x<<","
-                         <<cpu.local_a.y<<","<<cpu.local_a.z
-                         <<" B "<<cpu.local_b.x<<","<<cpu.local_b.y<<","
-                         <<cpu.local_b.z<<" separation "<<cpu.separation<<std::endl;
-            }
-        }
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
         for(std::size_t k=0u;k<count;++k) {
             const auto& gpu=candidates[pairs[i].candidate_offset+k];
             const auto& cpu=expected[k];
-            if(!near(gpu.local_a[0],cpu.local_a.x) ||
-               !near(gpu.local_a[1],cpu.local_a.y) ||
-               !near(gpu.local_a[2],cpu.local_a.z) ||
-               !near(gpu.local_b[0],cpu.local_b.x) ||
-               !near(gpu.local_b[1],cpu.local_b.y) ||
-               !near(gpu.local_b[2],cpu.local_b.z) ||
-               !near(gpu.normal_b[0],cpu.normal_b.x) ||
-               !near(gpu.normal_b[1],cpu.normal_b.y) ||
-               !near(gpu.normal_b[2],cpu.normal_b.z) ||
-               !near(gpu.separation,cpu.separation))
-                std::cerr<<"PCM witness pair "<<i
-                         <<" GPU reference="<<((results[i].overlapping>>8u)&255u)
-                         <<" incident="<<((results[i].overlapping>>16u)&255u)
-                         <<" scores "<<std::hexfloat
-                         <<candidates[pairs[i].candidate_offset+63u].local_a[0]
-                         <<","<<candidates[pairs[i].candidate_offset+63u].local_a[1]
-                         <<","<<candidates[pairs[i].candidate_offset+63u].local_a[2]
-                         <<std::defaultfloat<<" index "<<k
-                         <<" GPU A "<<gpu.local_a[0]<<","<<gpu.local_a[1]
-                         <<","<<gpu.local_a[2]
-                         <<" CPU A "<<cpu.local_a.x<<","<<cpu.local_a.y
-                         <<","<<cpu.local_a.z
-                         <<" GPU B "<<gpu.local_b[0]<<","<<gpu.local_b[1]
-                         <<","<<gpu.local_b[2]
-                         <<" CPU B "<<cpu.local_b.x<<","<<cpu.local_b.y
-                         <<","<<cpu.local_b.z
-                         <<" GPU N "<<gpu.normal_b[0]<<","<<gpu.normal_b[1]
-                         <<","<<gpu.normal_b[2]
-                         <<" CPU N "<<cpu.normal_b.x<<","<<cpu.normal_b.y
-                         <<","<<cpu.normal_b.z
-                         <<" GPU separation "<<gpu.separation
-                         <<" CPU separation "<<cpu.separation<<std::endl;
             require(near(gpu.local_a[0],cpu.local_a.x) &&
                     near(gpu.local_a[1],cpu.local_a.y) &&
                     near(gpu.local_a[2],cpu.local_a.z) &&
