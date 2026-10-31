@@ -252,6 +252,16 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
     verify_work(admitted_results);
+    // A genuinely empty Sc pair list has no result/work allocations.
+    // Reset the reused GPU dispatch arguments without borrowing either.
+    {
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,0u,0u,args_data,0u);
+        stream.wait_at_fetch();
+    }
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
+            "Zero-pair Sc frame retained an earlier EPA indirect count");
     // Reuse the same native argument allocation on an empty frame. No
     // stale atomic count may cause the EPA indirect dispatch to execute.
     auto resolved_results=results;
