@@ -64,6 +64,16 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     };
     check(true);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
+    // Force the original AABB volume domain to grow while the first
+    // contact manager retains GPU-local cached shape geometry.
+    for(std::uint32_t i=0u;i<36u;++i) {
+        const Vec3 position{20.f+3.f*float(i),1.f,0.f};
+        cpu.add_static_box({0.5f,0.5f,0.5f},position);
+        gpu.add_static_box({0.5f,0.5f,0.5f},position);
+    }
+    check(true);
+    require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
+            "AABB capacity growth discarded an unchanged GPU PCM manifold");
     cpu.set_position(cpu_a,{0.02f,1.0f,0.0f});
     gpu.set_position(gpu_a,{0.02f,1.0f,0.0f});
     check(true);
