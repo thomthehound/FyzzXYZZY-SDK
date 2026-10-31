@@ -21,7 +21,7 @@ struct SourceGuBoxPairNative {
     std::uint32_t previous_axis;
     std::uint32_t contact_offset=0;
     std::uint32_t contact_capacity=0;
-    std::uint32_t reserved=0;
+    std::uint32_t edge_handle=0;
 };
 static_assert(sizeof(SourceGuBoxPairNative)==24u);
 
@@ -38,9 +38,11 @@ struct SourceGuBoxPairResultNative {
     std::uint32_t collision_axis;
     // 0 valid, 1 invalid source handle/window, 2 insufficient contact storage.
     std::uint32_t status;
+    std::uint32_t edge_handle;
+    std::uint32_t contact_offset;
     std::uint32_t reserved;
 };
-static_assert(sizeof(SourceGuBoxPairResultNative)==16u);
+static_assert(sizeof(SourceGuBoxPairResultNative)==24u);
 
 class SourceGuBoxBoxContactsNativeStage final {
 public:
@@ -105,7 +107,7 @@ public:
                  1u,compute::BufferAccess::Read),
             view(pairs,source_allocation_bytes(pair_count,24u),
                  2u,compute::BufferAccess::Read),
-            view(results,source_allocation_bytes(pair_count,16u),
+            view(results,source_allocation_bytes(pair_count,24u),
                  3u,compute::BufferAccess::Write),
             view(contacts,source_allocation_bytes(contact_capacity,32u),
                  4u,compute::BufferAccess::Write)};
