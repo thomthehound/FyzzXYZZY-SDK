@@ -39,10 +39,24 @@ public:
           results_(allocator,physx::PxsHeapStats::eBROADPHASE),
           candidates_(allocator,physx::PxsHeapStats::eBROADPHASE),
           edges_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          work_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          args_(allocator,physx::PxsHeapStats::eBROADPHASE) {
+          work_(allocator,physx::PxsHeapStats::eBROADPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
+        // D3D12 indirect arguments require their own physical resource.
+        // Separate source buddy-heap allocations can share one root UAV.
+        indirect_buffer_=context_.create_buffer(
+            16u,compute::MemoryPlacement::DeviceLocal);
+        try {
+            indirect_address_=addresses_.register_slice(indirect_buffer_,0u,12u);
+        } catch (...) {
+            context_.destroy_buffer(indirect_buffer_);
+            indirect_buffer_=0u;
+            throw;
+        }
+    }
+    ~SourceScGpuPcmNative() {
+        if(indirect_address_)addresses_.unregister_slice(indirect_address_);
+        if(indirect_buffer_)context_.destroy_buffer(indirect_buffer_);
     }
 
     void invalidate_after_rollback() noexcept { reset_manifolds_=true; }
@@ -53,11 +67,9 @@ public:
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         if(requests.empty()) {
-            if(args_.getSize()) {
-                sparse_stage_.append(stream_,addresses_,0u,0u,
-                                     args_.getDevicePtr(),0u);
-                stream_.wait_at_fetch();
-            }
+            sparse_stage_.append(stream_,addresses_,0u,0u,
+                                 indirect_address_,0u);
+            stream_.wait_at_fetch();
             return;
         }
         if(!shape_capacity || requests.size()>
@@ -89,7 +101,6 @@ public:
         edges_.allocateCopyOldDataAsync(
             source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
-        args_.allocate(12u,PX_FL);
         auto& uploads=stream_.upload_scratch();
         uploads.reserve(pair_count+1u);
         uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
@@ -109,12 +120,12 @@ public:
             pair_count,shape_capacity,candidate_count,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
-            args_.getDevicePtr(),pair_count);
+            indirect_address_,pair_count);
         epa_stage_.append(stream_,addresses_,
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            work_.getDevicePtr(),args_.getDevicePtr(),
+            work_.getDevicePtr(),indirect_address_,
             pair_count,shape_capacity,candidate_count,edge_capacity);
         stream_.wait_at_fetch();
 
@@ -169,7 +180,9 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     SourcePcmEpaNativeStage epa_stage_;
-    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,args_;
+    physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_;
+    compute::BufferId indirect_buffer_=0u;
+    CudaDeviceAddressMap::Address indirect_address_=0u;
     std::array<std::uint8_t,240u> empty_cache_{};
     std::vector<SourcePcmBoxPairNative> pair_host_;
     std::vector<SourcePcmBoxPairResultNative> result_host_;
