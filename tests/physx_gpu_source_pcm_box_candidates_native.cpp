@@ -108,6 +108,8 @@ void verify(Context& context,const char* transform_shader,
     std::array<SourcePcmBoxPairResultNative,pairs.size()> results{};
     std::vector<SourcePcmBoxCandidateNative> candidates(
         pairs.size()*per_pair);
+    constexpr std::uint32_t edge_capacity=768u;
+    std::vector<SourcePcmScEdgeCacheNative> edge_caches(edge_capacity);
     const std::size_t input_offset=4u;
     const std::size_t bounds_offset=input_offset+sizeof(boxes)+12u;
     const std::size_t transform_offset=bounds_offset+capacity*24u+4u;
@@ -115,10 +117,14 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t pair_offset=geometry_offset+capacity*16u+4u;
     const std::size_t result_offset=pair_offset+sizeof(pairs)+4u;
     const std::size_t candidate_offset=result_offset+sizeof(results)+4u;
+    const std::size_t edge_offset=
+        candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
     const auto root=context.create_buffer(
-        candidate_offset+candidates.size()*sizeof(candidates[0])+16u);
+        edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+    context.upload(root,edge_offset,edge_caches.data(),
+                   edge_caches.size()*sizeof(edge_caches[0]));
     CudaDeviceAddressMap addresses;
     const auto inputs=addresses.register_slice(root,input_offset,sizeof(boxes));
     const auto bounds=addresses.register_slice(root,bounds_offset,capacity*24u);
@@ -128,6 +134,8 @@ void verify(Context& context,const char* transform_shader,
     const auto result_data=addresses.register_slice(root,result_offset,sizeof(results));
     const auto candidate_data=addresses.register_slice(
         root,candidate_offset,candidates.size()*sizeof(candidates[0]));
+    const auto edge_data=addresses.register_slice(
+        root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
     {
         SourceScBoxTransformBoundsNativeStage producer(
             context,shader(transform_shader));
@@ -136,9 +144,10 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,
+                   result_data,candidate_data,edge_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
-                   static_cast<std::uint32_t>(candidates.size()));
+                   static_cast<std::uint32_t>(candidates.size()),
+                   edge_capacity);
         stream.wait_at_fetch();
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM candidate stage split the original device stream batch");
@@ -146,6 +155,8 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
     for(const auto& box:boxes)by_id[box.element_index]=box;
     const auto near=[](float a,float b) {return std::abs(a-b)<0.001f;};
@@ -208,8 +219,15 @@ void verify(Context& context,const char* transform_shader,
                          <<" separation="<<witness.separation<<std::endl;
             }
         }
-        require(results[i].status==0u && results[i].candidate_count==count,
+        require(results[i].regenerated==1u,
+                "Source PCM GPU initial frame bypassed regeneration");
+        require(results[i].status==(overlap && count==0u?3u:0u) &&
+                results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
+        require(edge_caches[pairs[i].edge_handle].initialized==1u &&
+                edge_caches[pairs[i].edge_handle].count==
+                    std::min<std::size_t>(count,4u),
+                "Source PCM GPU did not retain Sc edge-owned contacts");
         require(results[i].selected_count==std::min<std::size_t>(count,4u),
                 "Source PCM GPU reduced witness count differs from source");
         std::array<std::uint8_t,4> chosen{};
@@ -245,6 +263,30 @@ void verify(Context& context,const char* transform_shader,
     }
     require(generated>=4u && reduced_batches>0u,
             "Source PCM GPU fixture did not execute batch reduction");
+    // A second GPU frame reuses the same Sc edge records without a host
+    // candidate upload, second pipeline, or per-pair CPU collision call.
+    {
+        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Source PCM refresh split the native device stream");
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    for(std::size_t i=0;i<pairs.size();++i) {
+        if(pairs[i].first_element==pairs[i].second_element ||
+           pairs[i].edge_handle==0xffffffffu ||
+           i==pairs.size()-1u)continue;
+        require(results[i].regenerated==0u && results[i].status!=2u,
+                "Unchanged Sc PCM edge unnecessarily regenerated");
+        require(results[i].candidate_count<=4u,
+                "Quiet Sc PCM frame did not reuse reduced manifold");
+    }
+    addresses.unregister_slice(edge_data);
     addresses.unregister_slice(candidate_data);
     addresses.unregister_slice(result_data);
     addresses.unregister_slice(pair_data);
