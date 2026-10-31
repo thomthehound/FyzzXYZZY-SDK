@@ -35,11 +35,11 @@ public:
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(reset),std::move(compact)),
           epa_stage_(context,std::move(epa)),
-          pairs_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          results_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          candidates_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          edges_(allocator,physx::PxsHeapStats::eBROADPHASE),
-          work_(allocator,physx::PxsHeapStats::eBROADPHASE) {
+          pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          edges_(allocator,physx::PxsHeapStats::eNARROWPHASE),
+          work_(allocator,physx::PxsHeapStats::eNARROWPHASE) {
         if(!stream_.bound_to(context_,addresses_))
             throw std::invalid_argument("Source Sc GPU PCM has another device stream");
         // D3D12 indirect arguments require their own physical resource.
