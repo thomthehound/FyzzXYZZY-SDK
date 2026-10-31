@@ -158,12 +158,16 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
                         out GjkWitness witness,out uint4 trace,
                         out float4 metrics,out float3 supportQ,
-                        out float3 closestQ) {
+                        out float3 closestQ,out float4 simplex0,
+                        out float4 simplex1,out float4 simplex2) {
     witness=(GjkWitness)0;
     trace=0u;
     metrics=0.f;
     supportQ=0.f;
     closestQ=0.f;
+    simplex0=0.f;
+    simplex1=0.f;
+    simplex2=0.f;
     const float epsilon=0.005f*min(
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
@@ -192,8 +196,13 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         }
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
-               support.bi==simplex[j].bi)
+               support.bi==simplex[j].bi) {
+                GjkClosest finalClosest=gjkClosestSimplex(simplex,count);
+                if(count>0u)simplex0=float4(simplex[0].q,finalClosest.weights[0]);
+                if(count>1u)simplex1=float4(simplex[1].q,finalClosest.weights[1]);
+                if(count>2u)simplex2=float4(simplex[2].q,finalClosest.weights[2]);
                 return 5u;
+            }
         if(count==4u)return 3u;
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
