@@ -70,7 +70,7 @@ bool gjkSolve(uint n,inout float a[3][4],out float result[3]) {
         for(uint row=0u;row<n;++row)if(row!=col) {
             float factor=a[row][col];
             for(uint j=col;j<=n;++j)
-                a[row][j]=mad(-factor,a[col][j],a[row][j]);
+                a[row][j]=fusedProductSum(-factor,a[col][j],a[row][j]);
         }
     }
     for(uint i=0u;i<3u;++i)
