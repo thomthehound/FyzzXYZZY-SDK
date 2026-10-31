@@ -1839,12 +1839,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
     set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
-    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\\n")
+    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 SPIRV\n")
     foreach(_idx RANGE 0 3)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
-      string(APPEND _pcm_manifest "${_stage} ${_name}\\n")
+      string(APPEND _pcm_manifest "${_stage} ${_name}\n")
     endforeach()
     file(GENERATE
       OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
@@ -5149,12 +5149,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set(_pcm_stages Candidates EpaReset EpaCompact EpaContact)
-    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\\n")
+    set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
     foreach(_idx RANGE 0 3)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)
-      string(APPEND _pcm_manifest "${_stage} ${_name}\\n")
+      string(APPEND _pcm_manifest "${_stage} ${_name}\n")
     endforeach()
     file(GENERATE
       OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
