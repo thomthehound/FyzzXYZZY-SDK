@@ -1411,7 +1411,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
         -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}")
@@ -4694,7 +4696,9 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
         -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
