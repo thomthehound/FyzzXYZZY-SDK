@@ -185,8 +185,10 @@ void verify(Context& context,const char* transform_shader,
             vec(a.half_extents),vec(a.position),quat(a.orientation),
             vec(b.half_extents),vec(b.position),quat(b.orientation),
             a.contact_distance+b.contact_distance,expected,count);
-        require(results[i].overlapping==static_cast<std::uint32_t>(overlap),
-                "Source PCM GPU SAT diverged from source separation");
+        const bool needs_gjk=overlap && count==0u;
+        if(!needs_gjk)
+            require(results[i].overlapping==static_cast<std::uint32_t>(overlap),
+                    "Source PCM GPU SAT diverged from source separation");
         if(i==pairs.size()-1u) {
             require(count>1u && results[i].status==2u,
                     "Source PCM GPU did not report a bounded candidate overflow");
@@ -221,14 +223,50 @@ void verify(Context& context,const char* transform_shader,
         }
         require(results[i].regenerated==1u,
                 "Source PCM GPU initial frame bypassed regeneration");
-        require(results[i].status==(overlap && count==0u?3u:0u) &&
-                results[i].candidate_count==count,
-                "Source PCM GPU candidate count differs from source");
+        if(!needs_gjk) {
+            require(results[i].status==0u &&
+                    results[i].candidate_count==count,
+                    "Source PCM GPU candidate count differs from source");
+        }else {
+            fyzz::native::PcmContactCandidate gjk_reference{};
+            const bool source_contact=fyzz::native::source_pcm_box_box_gjk_epa(
+                vec(a.half_extents),vec(a.position),quat(a.orientation),
+                vec(b.half_extents),vec(b.position),quat(b.orientation),
+                a.contact_distance+b.contact_distance,gjk_reference,nullptr);
+            require(results[i].status==0u || results[i].status==3u,
+                    "GPU PCM returned an invalid GJK continuation status");
+            if(results[i].status==3u) {
+                require(results[i].candidate_count==0u &&
+                        results[i].overlapping==1u &&
+                        edge_caches[pairs[i].edge_handle].needs_gjk==1u,
+                        "GPU PCM lost its pending EPA continuation");
+            }else if(results[i].candidate_count==0u) {
+                require(!source_contact && results[i].overlapping==0u,
+                        "GPU GJK reported no contact against source");
+            }else {
+                const auto& witness=candidates[pairs[i].candidate_offset];
+                require(results[i].candidate_count==1u &&
+                        results[i].overlapping==1u &&
+                        source_contact && gjk_reference.separation>0.f &&
+                        near(witness.local_a[0],gjk_reference.local_a.x) &&
+                        near(witness.local_a[1],gjk_reference.local_a.y) &&
+                        near(witness.local_a[2],gjk_reference.local_a.z) &&
+                        near(witness.local_b[0],gjk_reference.local_b.x) &&
+                        near(witness.local_b[1],gjk_reference.local_b.y) &&
+                        near(witness.local_b[2],gjk_reference.local_b.z) &&
+                        near(witness.normal_b[0],gjk_reference.normal_b.x) &&
+                        near(witness.normal_b[1],gjk_reference.normal_b.y) &&
+                        near(witness.normal_b[2],gjk_reference.normal_b.z) &&
+                        near(witness.separation,gjk_reference.separation),
+                        "GPU GJK witness differs from source");
+            }
+        }
         require(edge_caches[pairs[i].edge_handle].initialized==1u &&
                 edge_caches[pairs[i].edge_handle].count==
-                    std::min<std::size_t>(count,4u),
+                    std::min<std::uint32_t>(results[i].candidate_count,4u),
                 "Source PCM GPU did not retain Sc edge-owned contacts");
-        require(results[i].selected_count==std::min<std::size_t>(count,4u),
+        require(results[i].selected_count==
+                    std::min<std::uint32_t>(results[i].candidate_count,4u),
                 "Source PCM GPU reduced witness count differs from source");
         std::array<std::uint8_t,4> chosen{};
         if(count>4u)
