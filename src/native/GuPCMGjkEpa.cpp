@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <iostream>
+#include <iomanip>
 
 namespace fyzz::native {
 namespace {
@@ -442,7 +443,8 @@ bool source_pcm_box_box_gjk_epa(
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
         if(trace)
-            std::cerr<<"CPU GJK iteration="<<iteration<<" count="<<count
+            std::cerr<<std::setprecision(10)
+                     <<"CPU GJK iteration="<<iteration<<" count="<<count
                      <<" support=("<<int(support.ai)<<","<<int(support.bi)
                      <<") closest=("<<closest.x<<","<<closest.y<<","
                      <<closest.z<<") projection="<<projection
