@@ -1372,13 +1372,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_compact_native.spv")
     foreach(ENTRY reset compact)
       if(ENTRY STREQUAL "reset")
+        set(EPA_DEFINE "-DSOURCE_PCM_EPA_RESET=1")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}")
       else()
+        set(EPA_DEFINE "")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
       endif()
       add_custom_command(OUTPUT "${EPA_OUTPUT}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E "${ENTRY}"
+        COMMAND "${FYZZXYZZY_DXC}" ${EPA_DEFINE} -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E "${ENTRY}"
           -Fo "${EPA_OUTPUT}"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
@@ -4589,13 +4591,15 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_compact_native.dxil")
     foreach(ENTRY reset compact)
       if(ENTRY STREQUAL "reset")
+        set(EPA_DEFINE "-DSOURCE_PCM_EPA_RESET=1")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}")
       else()
+        set(EPA_DEFINE "")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
       endif()
       add_custom_command(OUTPUT "${EPA_OUTPUT}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E "${ENTRY}"
+        COMMAND "${FYZZXYZZY_DXC}" ${EPA_DEFINE} -T cs_6_0 -E "${ENTRY}"
           -Fo "${EPA_OUTPUT}"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
