@@ -66,12 +66,9 @@ public:
                   std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
-        if(requests.empty()) {
-            sparse_stage_.append(stream_,addresses_,0u,0u,
-                                 indirect_address_,0u);
-            stream_.wait_at_fetch();
-            return;
-        }
+        // No contact managers means no indirect consumer this frame.
+        // The next nonempty frame resets its count before compaction.
+        if(requests.empty())return;
         if(!shape_capacity || requests.size()>
               std::numeric_limits<std::uint32_t>::max()/16u)
             throw std::out_of_range("Source GPU PCM pair or candidate capacity overflow");
