@@ -148,7 +148,7 @@ void verify(Context& context,const char* transform_shader,
             std::cerr<<"PCM pair "<<i<<" ("<<pairs[i].first_element<<","
                      <<pairs[i].second_element<<") source="<<count
                      <<" gpu="<<results[i].candidate_count
-                     <<" status="<<results[i].status<<'\\n';
+                     <<" status="<<results[i].status<<std::endl;
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
         for(std::size_t k=0u;k<count;++k) {
