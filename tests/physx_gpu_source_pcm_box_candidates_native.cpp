@@ -137,18 +137,36 @@ void verify(Context& context,const char* transform_shader,
             vec(a.half_extents),vec(a.position),quat(a.orientation),
             vec(b.half_extents),vec(b.position),quat(b.orientation),
             a.contact_distance+b.contact_distance,expected,count);
-        require(results[i].overlapping==static_cast<std::uint32_t>(overlap),
+        require((results[i].overlapping&1u)==static_cast<std::uint32_t>(overlap),
                 "Source PCM GPU SAT diverged from source separation");
         if(i==pairs.size()-1u) {
             require(count>1u && results[i].status==2u,
                     "Source PCM GPU did not report a bounded candidate overflow");
             continue;
         }
-        if(results[i].status!=0u || results[i].candidate_count!=count)
+        if(results[i].status!=0u || results[i].candidate_count!=count) {
             std::cerr<<"PCM pair "<<i<<" ("<<pairs[i].first_element<<","
                      <<pairs[i].second_element<<") source="<<count
                      <<" gpu="<<results[i].candidate_count
-                     <<" status="<<results[i].status<<std::endl;
+                     <<" status="<<results[i].status
+                     <<" GPU reference="<<((results[i].overlapping>>8u)&255u)
+                     <<" incident="<<((results[i].overlapping>>16u)&255u)
+                     <<std::endl;
+            for(std::size_t k=0;k<results[i].candidate_count;++k) {
+                const auto& gpu=candidates[pairs[i].candidate_offset+k];
+                std::cerr<<"  GPU "<<k<<": A "<<gpu.local_a[0]<<","
+                         <<gpu.local_a[1]<<","<<gpu.local_a[2]
+                         <<" B "<<gpu.local_b[0]<<","<<gpu.local_b[1]<<","
+                         <<gpu.local_b[2]<<" separation "<<gpu.separation<<std::endl;
+            }
+            for(std::size_t k=0;k<count;++k) {
+                const auto& cpu=expected[k];
+                std::cerr<<"  CPU "<<k<<": A "<<cpu.local_a.x<<","
+                         <<cpu.local_a.y<<","<<cpu.local_a.z
+                         <<" B "<<cpu.local_b.x<<","<<cpu.local_b.y<<","
+                         <<cpu.local_b.z<<" separation "<<cpu.separation<<std::endl;
+            }
+        }
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
         for(std::size_t k=0u;k<count;++k) {
