@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
-// GuContactBoxBox::generateContacts. The prior SAT stage supplies the six-axis
-// selection; contact witnesses remain in Gu's original insertion order.
+// GuContactBoxBox face-axis selection and contact witness generation in one
+// launch, preserving the source SAT and witness insertion order.
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
@@ -19,22 +19,17 @@ RWByteAddressBuffer pairs : register(u2,space0);
 #ifdef __spirv__
 [[vk::binding(3,0)]]
 #endif
-RWByteAddressBuffer axes : register(u3,space0);
+RWByteAddressBuffer results : register(u3,space0);
 #ifdef __spirv__
 [[vk::binding(4,0)]]
 #endif
-RWByteAddressBuffer results : register(u4,space0);
-#ifdef __spirv__
-[[vk::binding(5,0)]]
-#endif
-RWByteAddressBuffer contacts : register(u5,space0);
+RWByteAddressBuffer contacts : register(u4,space0);
 
 struct Parameters {
     uint pairCount;
     uint transformBias;
     uint geometryBias;
     uint pairBias;
-    uint axisBias;
     uint resultBias;
     uint contactBias;
     uint shapeCapacity;
@@ -55,6 +50,62 @@ float3x3 quaternionBasis(float4 q) {
         float3(1.f-yy-zz,xy+zw,xz-yw),
         float3(xy-zw,1.f-xx-zz,yz+xw),
         float3(xz+yw,yz-xw,1.f-xx-yy));
+}
+
+uint classify(float3x3 A,float3x3 B,float3 e0,float3 e1,
+              float3 p0,float3 p1,float contactDistance,uint previousAxis) {
+    float3 kD=p1-p0;
+    float C[3][3], absC[3][3], ad[3], overlap[6];
+
+    // GuContactBoxBox Class I and II tests in the original axis order.
+    [unroll]
+    for(uint i=0u;i<3u;++i) {
+        ad[i]=dot(A[i],kD);
+        [unroll]
+        for(uint j=0u;j<3u;++j) {
+            C[i][j]=dot(A[i],B[j]);
+            absC[i][j]=1.0e-6f+abs(C[i][j]);
+        }
+        overlap[i]=e0[i]+e1.x*absC[i][0]+e1.y*absC[i][1]+
+                   e1.z*absC[i][2]-abs(ad[i])+contactDistance;
+        if(overlap[i]<0.f)return 0u;
+    }
+    [unroll]
+    for(uint j=0u;j<3u;++j) {
+        float d=dot(B[j],kD);
+        overlap[j+3u]=e1[j]+e0.x*absC[0][j]+e0.y*absC[1][j]+
+                      e0.z*absC[2][j]-abs(d)+contactDistance;
+        if(overlap[j+3u]<0.f)return 0u;
+    }
+
+    // Class III tests are used only for new or previously separated pairs.
+    if(previousAxis==0u) {
+        [unroll]
+        for(uint i=0u;i<3u;++i) {
+            uint i1=(i+1u)%3u, i2=(i+2u)%3u;
+            [unroll]
+            for(uint j=0u;j<3u;++j) {
+                uint j1=(j+1u)%3u,j2=(j+2u)%3u;
+                float d=ad[i2]*C[i1][j]-ad[i1]*C[i2][j];
+                float extent=contactDistance+
+                    e0[i1]*absC[i2][j]+e0[i2]*absC[i1][j]+
+                    e1[j1]*absC[i][j2]+e1[j2]*absC[i][j1];
+                if(abs(d)>extent)return 0u;
+            }
+        }
+    }
+
+    if(previousAxis!=0u)overlap[previousAxis-1u]*=0.999f;
+    float minimum=3.402823466e+38f;
+    uint winner=1u;
+    [unroll]
+    for(uint axis=0u;axis<6u;++axis) {
+        if(overlap[axis]>=0.f && overlap[axis]<minimum) {
+            minimum=overlap[axis];
+            winner=axis+1u;
+        }
+    }
+    return winner;
 }
 
 float3 apply(float3x3 basis,float3 local) {
@@ -266,15 +317,15 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint outputStart=pairs.Load(pairBase+12u);
     uint outputLimit=pairs.Load(pairBase+16u);
     uint resultBase=p.resultBias+index*16u;
-    uint axis=axes.Load(p.axisBias+index*4u);
+    uint axis=0u;
     uint status=0u,count=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
-       previousAxis>6u || axis>6u ||
+       previousAxis>6u ||
        outputStart>p.contactCapacity ||
        outputLimit>p.contactCapacity-outputStart) {
         status=1u;
         axis=0u;
-    }else if(axis!=0u) {
+    }else {
         uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;
         float3 pa=asfloat(transforms.Load3(ta+16u));
         float3 pb=asfloat(transforms.Load3(tb+16u));
@@ -285,6 +336,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
         float3 eb=asfloat(geometry.Load3(gb));
         float distance=asfloat(geometry.Load(ga+12u))+
                        asfloat(geometry.Load(gb+12u));
+        axis=classify(A,B,ea,eb,pa,pb,distance,previousAxis);
+        if(axis!=0u) {
         float3 delta=pb-pa;
         bool sign=(axis<=3u ? dot(A[axis-1u],delta)
                               : dot(B[axis-4u],delta))<0.f;
@@ -339,6 +392,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                        outputStart,outputLimit,overflow);
         if(overflow)status=2u;
         if(count==0u)axis=0u;
+        }
     }
     results.Store4(resultBase,uint4(count,axis,status,0u));
 }
