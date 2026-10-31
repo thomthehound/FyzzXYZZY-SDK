@@ -71,7 +71,7 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
 // GuPCMContactBoxBox and sparse GuGJK/GuEPA run in the source Sc
 // contact-manager stream. These are separate from the SAP shader bundle.
 enum class NativeGpuPcmStage : std::size_t {
-    Candidates,EpaReset,EpaCompact,EpaContact,Count
+    Candidates,EpaReset,EpaCompact,EpaContact,ContactStream,Count
 };
 using NativeGpuPcmShaders = std::array<
     compute::ShaderBinary,static_cast<std::size_t>(NativeGpuPcmStage::Count)>;
