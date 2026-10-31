@@ -454,8 +454,6 @@ void main(uint3 thread : SV_DispatchThreadID) {
         uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;
         float3 pa=asfloat(transforms.Load3(ta+16u));
         float3 pb=asfloat(transforms.Load3(tb+16u));
-        float3x3 A=quaternionBasis(asfloat(transforms.Load4(ta)));
-        float3x3 B=quaternionBasis(asfloat(transforms.Load4(tb)));
         uint ga=p.geometryBias+a*16u,gb=p.geometryBias+b*16u;
         float3 ea=asfloat(geometry.Load3(ga));
         float3 eb=asfloat(geometry.Load3(gb));
@@ -492,6 +490,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
             return;
         }
         regenerated=1u;
+        float3x3 A=quaternionBasis(qa);
+        float3x3 B=quaternionBasis(qb);
         float3 delta=pb-pa;
         float3 s[6]={A[0],A[1],A[2],B[0],B[1],B[2]};
         float3x3 incident;
