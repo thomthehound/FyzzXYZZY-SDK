@@ -287,6 +287,7 @@ struct Context::Impl {
     ComPtr<ID3D12InfoQueue> debug_messages;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Fence> fence;
+    ComPtr<ID3D12CommandSignature> dispatch_signature;
     // Context is not thread-safe; one persistent completion event can serve
     // every serial fence wait without creating Win32 objects per submission.
     HANDLE completion_event = nullptr;
@@ -1038,6 +1039,18 @@ struct Context::Impl {
             const auto& buf = get_buffer(binding.buffer);
             validate_range(buf.bytes, binding.offset, binding.bytes);
         }
+        if(cmd.indirect) {
+            if(cmd.groups.x!=1u || cmd.groups.y!=1u || cmd.groups.z!=1u ||
+               cmd.indirect->offset%4u)
+                throw std::invalid_argument("Invalid D3D12 indirect dispatch arguments");
+            const auto& args=get_buffer(cmd.indirect->buffer);
+            validate_range(args.bytes,cmd.indirect->offset,
+                           sizeof(D3D12_DISPATCH_ARGUMENTS));
+            for(const auto& binding:cmd.buffers)
+                if(binding.buffer==cmd.indirect->buffer)
+                    throw std::invalid_argument(
+                        "D3D12 indirect arguments cannot alias shader bindings");
+        }
         // The entire D3D12 buffer is one stateful subresource. A dispatch
         // cannot simultaneously bind it as an SRV and UAV, even when the
         // views name disjoint byte ranges. Several UAV views may alias.
@@ -1061,6 +1074,7 @@ struct Context::Impl {
                               bool profile = false) {
         if (commands.empty()) throw std::invalid_argument("Empty D3D12 command batch");
         std::size_t descriptor_count = 0;
+        bool uses_indirect = false;
         std::size_t same_resource_copy_scratch_bytes = 0;
         std::vector<PipelineId> pipeline_sequence;
         for (const BatchCommand& op : commands) {
@@ -1082,12 +1096,24 @@ struct Context::Impl {
             } else {
                 const auto& dispatch = std::get<DispatchCommand>(op);
                 validate_dispatch(dispatch);
+                uses_indirect |= dispatch.indirect.has_value();
                 descriptor_count += get_pipeline(dispatch.pipeline).bindings;
                 pipeline_sequence.push_back(dispatch.pipeline);
             }
         }
         if (descriptor_count > std::numeric_limits<UINT>::max())
             throw std::out_of_range("D3D12 descriptor heap capacity exceeded");
+        if(uses_indirect && !dispatch_signature) {
+            D3D12_INDIRECT_ARGUMENT_DESC argument{};
+            argument.Type=D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+            D3D12_COMMAND_SIGNATURE_DESC signature{};
+            signature.ByteStride=sizeof(D3D12_DISPATCH_ARGUMENTS);
+            signature.NumArgumentDescs=1u;
+            signature.pArgumentDescs=&argument;
+            check(device->CreateCommandSignature(
+                      &signature,nullptr,IID_PPV_ARGS(&dispatch_signature)),
+                  "CreateCommandSignature");
+        }
         Submission submission = new_commands(&pipeline_sequence, descriptor_count);
         // Legacy D3D12 requires staging nonoverlapping copies within one
         // buffer. All such copies in this command batch can share one
@@ -1230,6 +1256,9 @@ struct Context::Impl {
             }
             const auto& cmd = std::get<DispatchCommand>(op);
             Pipeline& pipeline = get_pipeline(cmd.pipeline);
+            if(cmd.indirect)
+                require_state(cmd.indirect->buffer,
+                              D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto& binding = cmd.buffers[slot];
                 const auto kind = pipeline.view_kinds[slot];
@@ -1304,7 +1333,14 @@ struct Context::Impl {
             }
             submission.commands->SetComputeRoot32BitConstants(
                 table_root, pipeline.parameters / 4u, cmd.push_constants.data(), 0);
-            submission.commands->Dispatch(cmd.groups.x, cmd.groups.y, cmd.groups.z);
+            if(cmd.indirect)
+                submission.commands->ExecuteIndirect(
+                    dispatch_signature.Get(),1u,
+                    get_buffer(cmd.indirect->buffer).resource.Get(),
+                    cmd.indirect->offset,nullptr,0u);
+            else
+                submission.commands->Dispatch(
+                    cmd.groups.x,cmd.groups.y,cmd.groups.z);
             for (std::size_t slot = 0; slot < cmd.buffers.size(); ++slot) {
                 const auto kind = pipeline.view_kinds[slot];
                 const bool writable = kind == StorageBufferViewKind::RawReadWrite ||

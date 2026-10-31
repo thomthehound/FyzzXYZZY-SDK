@@ -604,6 +604,7 @@ struct Context::Impl {
             create.size = static_cast<VkDeviceSize>(bytes);
             create.usage = storage_eligible
                 ? (VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                   VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                    VK_BUFFER_USAGE_TRANSFER_DST_BIT)
                 : (VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -1383,6 +1384,20 @@ struct Context::Impl {
                 const auto offset=validated_dispatches.size();
                 validated_dispatches.resize(offset+pipeline.binding_count);
                 assigned_slots.resize(pipeline.binding_count);
+                if(dispatch.indirect) {
+                    const auto& indirect=*dispatch.indirect;
+                    const auto& argument=get(indirect.buffer);
+                    if(!argument.storage_eligible || indirect.offset%4u)
+                        throw std::invalid_argument("Invalid Vulkan indirect dispatch arguments");
+                    validate_range(argument.bytes,indirect.offset,12u);
+                    if(dispatch.groups.x!=1u || dispatch.groups.y!=1u ||
+                       dispatch.groups.z!=1u)
+                        throw std::invalid_argument("Indirect dispatch cannot specify direct groups");
+                    for(const auto& binding:dispatch.buffers)
+                        if(binding.buffer==indirect.buffer)
+                            throw std::invalid_argument(
+                                "Indirect arguments cannot alias shader bindings");
+                }
                 validate_dispatch_into(
                     dispatch.pipeline, dispatch.groups,
                     dispatch.buffers, dispatch.push_constants.data(),
@@ -1601,10 +1616,12 @@ struct Context::Impl {
             from_previous.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT |
                                           VK_ACCESS_TRANSFER_WRITE_BIT |
                                           VK_ACCESS_SHADER_READ_BIT |
-                                          VK_ACCESS_SHADER_WRITE_BIT;
+                                          VK_ACCESS_SHADER_WRITE_BIT |
+                                          VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
             vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0,
                                  1, &from_previous, 0, nullptr, 0, nullptr);
 
             struct Access {
@@ -1716,6 +1733,11 @@ struct Context::Impl {
                         found->second.writes |= writes;
                     }
                 }
+                if(dispatch.indirect)
+                    operation_uses.push_back({
+                        dispatch.indirect->buffer,
+                        {VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                         VK_ACCESS_INDIRECT_COMMAND_READ_BIT,false}});
                 before_operation(operation_uses);
                 const VkDescriptorSet descriptor_set=descriptor_sets[dispatch_index++];
 
@@ -1728,8 +1750,13 @@ struct Context::Impl {
                                        static_cast<std::uint32_t>(dispatch.push_constants.size()),
                                        dispatch.push_constants.data());
                 }
-                vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
-                              dispatch.groups.z);
+                if(dispatch.indirect)
+                    vkCmdDispatchIndirect(commands,
+                        get(dispatch.indirect->buffer).buffer,
+                        static_cast<VkDeviceSize>(dispatch.indirect->offset));
+                else
+                    vkCmdDispatch(commands, dispatch.groups.x, dispatch.groups.y,
+                                  dispatch.groups.z);
             }
 
             VkMemoryBarrier to_host{};
