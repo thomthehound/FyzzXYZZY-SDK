@@ -75,8 +75,10 @@ float3 unproject(Frame f,float3 v) {
 float component(float3 v,uint i) {
     return i==0u?v.x:(i==1u?v.y:v.z);
 }
-// Binary32 fused product-and-sum using rounded products and their exact
-// residuals. The near-tie path cannot depend on driver FMA contraction.
+#ifdef __spirv__
+// Preserve the source float32 incident-axis comparison under SPIR-V.
+// DXIL retains the ordinary source dot operation and its native rounding.
+// This path is only evaluated for ambiguous face alignment.
 float fusedProductSum(float a,float b,float c) {
     precise float product=a*b;
     precise float sa=4097.f*a;
@@ -98,6 +100,7 @@ float fusedDot(float3 a,float3 b) {
     return fusedProductSum(a.x,b.x,
                            fusedProductSum(a.y,b.y,a.z*b.z));
 }
+#endif
 
 void emit(Frame f,float3 reference,float3 incident,float3 normal,
           float separation,bool flipped,
@@ -334,8 +337,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
             float dx=abs(dot(search,incident[0]));
             float dy=abs(dot(search,incident[1]));
             float dz=abs(dot(search,incident[2]));
-            // Use the original source rounding for ambiguous leading axes.
-            // Untied faces retain the ordinary vector-dot fast path.
+#ifdef __spirv__
+            // Preserve the source rounding on near-tied faces in SPIR-V.
+            // DXIL's native dot already matches the Windows source.
             uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
             uint bestScoreBits=max(bx,max(by,bz));
             uint tied=(bestScoreBits-bx<=1u?1u:0u)+
@@ -346,6 +350,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 dy=abs(fusedDot(search,incident[1]));
                 dz=abs(fusedDot(search,incident[2]));
             }
+#endif
             uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
             float facing=dot(search,incident[axis]);
             float signedExtent=facing>0.f
