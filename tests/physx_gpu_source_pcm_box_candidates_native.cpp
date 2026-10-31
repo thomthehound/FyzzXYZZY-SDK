@@ -5,6 +5,7 @@
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
+#include "physx_gpu/source_pcm_epa_native.h"
 
 #include <algorithm>
 #include <array>
@@ -39,7 +40,7 @@ ShaderBinary shader(const char* name) {
 }
 void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* reset_shader,
-            const char* compact_shader) {
+            const char* compact_shader,const char* epa_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     std::array<SourceScBoxTransformInputNative,8> boxes{{
@@ -182,6 +183,7 @@ void verify(Context& context,const char* transform_shader,
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     SourcePcmSparseEpaNativeStage sparse(
         context,shader(reset_shader),shader(compact_shader));
+    SourcePcmEpaNativeStage epa(context,shader(epa_shader));
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
@@ -252,8 +254,8 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
     verify_work(admitted_results);
-    // A genuinely empty Sc pair list has no result/work allocations.
-    // Reset the reused GPU dispatch arguments without borrowing either.
+    // No Sc managers are allocated on a zero-pair frame. The indirect
+    // argument reset still executes against its own GPU buffer.
     {
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,0u,0u,args_data,0u);
@@ -570,6 +572,160 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     require(results[0].regenerated==1u,
             "Sc PCM GPU failed to invalidate and regenerate after large motion");
+    // Directly exercise source EPA's penetration branch on the sparse
+    // device continuation. The ordinary SAT cases above remain unchanged.
+    by_id[boxes[0].element_index]=boxes[0];
+    std::size_t penetration_pair=pairs.size();
+    fyzz::native::PcmContactCandidate expected_epa{};
+    for(std::size_t i=0;i<base_pairs && penetration_pair==pairs.size();++i) {
+        const auto& a=by_id[pairs[i].first_element];
+        const auto& b=by_id[pairs[i].second_element];
+        fyzz::native::PcmContactCandidate reference{};
+        if(fyzz::native::source_pcm_box_box_gjk_epa(
+            vec(a.half_extents),vec(a.position),quat(a.orientation),
+            vec(b.half_extents),vec(b.position),quat(b.orientation),
+            a.contact_distance+b.contact_distance,reference,nullptr) &&
+            reference.separation< -0.0001f) {
+            penetration_pair=i;
+            expected_epa=reference;
+        }
+    }
+    require(penetration_pair<pairs.size(),
+            "Source GPU EPA fixture requires a penetrating GJK/EPA pair");
+    // Force exactly this source-verified EPA admission, independent of
+    // whether ordinary face clipping would have supplied a witness.
+    auto epa_results=results;
+    for(auto& result:epa_results)
+        if(result.status==3u)result.status=0u;
+    auto& admitted=epa_results[penetration_pair];
+    admitted.status=3u;
+    admitted.overlapping=1u;
+    admitted.candidate_count=0u;
+    admitted.selected_count=0u;
+    admitted.selected_indices=0u;
+    context.upload(root,result_offset,epa_results.data(),sizeof(epa_results));
+    const auto edge=pairs[penetration_pair].edge_handle;
+    SourcePcmScEdgeCacheNative pending_cache{};
+    context.download(root,edge_offset+edge*sizeof(pending_cache),
+                     &pending_cache,sizeof(pending_cache));
+    pending_cache.count=0u;
+    pending_cache.initialized=1u;
+    pending_cache.needs_gjk=1u;
+    context.upload(root,edge_offset+edge*sizeof(pending_cache),
+                   &pending_cache,sizeof(pending_cache));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                   candidate_data,edge_data,work_data,args_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Source EPA continuation split the native GPU command batch");
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,candidate_offset,candidates.data(),
+                     candidates.size()*sizeof(candidates[0]));
+    context.download(root,edge_offset+edge*sizeof(pending_cache),
+                     &pending_cache,sizeof(pending_cache));
+    context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    require(indirect==std::array<std::uint32_t,3>{1u,1u,1u},
+            "GPU EPA continuation did not consume one sparse work item");
+    const auto& finished=results[penetration_pair];
+    const auto& witness=candidates[pairs[penetration_pair].candidate_offset];
+    require(finished.status==0u && finished.candidate_count==1u &&
+            finished.selected_count==1u &&
+            pending_cache.count==1u && pending_cache.needs_gjk==0u &&
+            near(witness.separation,expected_epa.separation) &&
+            near(witness.local_a[0],expected_epa.local_a.x) &&
+            near(witness.local_a[1],expected_epa.local_a.y) &&
+            near(witness.local_a[2],expected_epa.local_a.z) &&
+            near(witness.local_b[0],expected_epa.local_b.x) &&
+            near(witness.local_b[1],expected_epa.local_b.y) &&
+            near(witness.local_b[2],expected_epa.local_b.z) &&
+            near(witness.normal_b[0],expected_epa.normal_b.x) &&
+            near(witness.normal_b[1],expected_epa.normal_b.y) &&
+            near(witness.normal_b[2],expected_epa.normal_b.z),
+            "GPU EPA contact differs from native source penetration witness");
+    // A source EPA witness must survive the next quiet Sc PCM refresh
+    // through the same EdgeIndex, without another GJK/EPA invocation.
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,candidate_offset,candidates.data(),
+                     candidates.size()*sizeof(candidates[0]));
+    const auto& quiet=results[penetration_pair];
+    const auto& cached=candidates[pairs[penetration_pair].candidate_offset];
+    require(quiet.status==0u && quiet.regenerated==0u &&
+            quiet.candidate_count==1u && quiet.selected_count==1u &&
+            near(cached.separation,expected_epa.separation),
+            "Sc PCM did not retain source GPU EPA witness across a quiet frame");
+    // An explicitly admitted, source-separated pair must not retain
+    // an overlapping result after the GJK/EPA continuation rejects it.
+    std::size_t separated_pair=pairs.size();
+    for(std::size_t i=0;i<base_pairs;++i)
+        if(pairs[i].first_element==1u &&
+           pairs[i].second_element==31u) {
+            separated_pair=i;
+            break;
+        }
+    require(separated_pair<pairs.size(),
+            "Source EPA rejection fixture lacks a separated pair");
+    const auto& farA=by_id[pairs[separated_pair].first_element];
+    const auto& farB=by_id[pairs[separated_pair].second_element];
+    fyzz::native::PcmContactCandidate far_reference{};
+    require(!fyzz::native::source_pcm_box_box_gjk_epa(
+                vec(farA.half_extents),vec(farA.position),
+                quat(farA.orientation),vec(farB.half_extents),
+                vec(farB.position),quat(farB.orientation),
+                farA.contact_distance+farB.contact_distance,
+                far_reference,nullptr),
+            "Source separated GJK fixture unexpectedly generated contact");
+    auto rejected_results=results;
+    for(auto& result:rejected_results)
+        if(result.status==3u)result.status=0u;
+    auto& rejected=rejected_results[separated_pair];
+    rejected.status=3u;
+    rejected.overlapping=1u;
+    rejected.candidate_count=0u;
+    rejected.selected_count=0u;
+    rejected.selected_indices=0u;
+    context.upload(root,result_offset,rejected_results.data(),
+                   sizeof(rejected_results));
+    const auto far_edge=pairs[separated_pair].edge_handle;
+    SourcePcmScEdgeCacheNative far_cache{};
+    far_cache.initialized=1u;
+    far_cache.needs_gjk=1u;
+    context.upload(root,edge_offset+far_edge*sizeof(far_cache),
+                   &far_cache,sizeof(far_cache));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        sparse.append(stream,addresses,result_data,work_data,args_data,
+                      static_cast<std::uint32_t>(pairs.size()));
+        epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
+                   candidate_data,edge_data,work_data,args_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset+far_edge*sizeof(far_cache),
+                     &far_cache,sizeof(far_cache));
+    require(results[separated_pair].status==0u &&
+            results[separated_pair].overlapping==0u &&
+            results[separated_pair].candidate_count==0u &&
+            results[separated_pair].selected_count==0u &&
+            far_cache.count==0u && far_cache.needs_gjk==0u,
+            "Rejected GPU EPA continuation retained a false Sc overlap");
+
     addresses.unregister_slice(args_data);
     addresses.unregister_slice(work_data);
     addresses.unregister_slice(edge_data);
@@ -588,14 +744,14 @@ void verify(Context& context,const char* transform_shader,
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==5,
-                "Expected box transforms, source PCM and EPA work shaders");
+        require(argc==6,
+                "Expected box transforms, PCM, EPA work and contact shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2],argv[3],argv[4]);
+        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {
