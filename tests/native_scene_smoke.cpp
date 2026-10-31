@@ -5998,6 +5998,12 @@ struct SolverIterationSourceFixture {
                mixed.solver_preparation_generation_)
             throw std::runtime_error(
                 "Free-flight island borrowed a constrained Dy row");
+        bool rejected_free_row=false;
+        try { (void)mixed.prepared_solver_row(free); }
+        catch(const std::logic_error&) { rejected_free_row=true; }
+        if(!rejected_free_row)
+            throw std::runtime_error(
+                "Unadmitted free-flight actor aliased another Dy solver row");
         const auto& descriptor=mixed.ordered_constraints_[0];
         const bool contact0=descriptor.row0==0u &&
             descriptor.row1==Scene::invalid_solver_row;
