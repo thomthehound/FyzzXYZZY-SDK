@@ -8,7 +8,6 @@
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
 #include "physx_gpu/source_pcm_epa_native.h"
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
-#include "physx_port/gpucommon/PxgHeapMemoryAllocator.h"
 
 #include <algorithm>
 #include <array>
