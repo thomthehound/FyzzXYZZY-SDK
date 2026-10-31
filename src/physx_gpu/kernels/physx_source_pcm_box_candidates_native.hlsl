@@ -337,10 +337,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
             // Use the original source rounding for ambiguous leading axes.
             // Untied faces retain the ordinary vector-dot fast path.
             uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
-            uint best=max(bx,max(by,bz));
-            uint tied=(best-bx<=1u?1u:0u)+
-                      (best-by<=1u?1u:0u)+
-                      (best-bz<=1u?1u:0u);
+            uint bestScoreBits=max(bx,max(by,bz));
+            uint tied=(bestScoreBits-bx<=1u?1u:0u)+
+                      (bestScoreBits-by<=1u?1u:0u)+
+                      (bestScoreBits-bz<=1u?1u:0u);
             if(tied>=2u) {
                 dx=abs(fusedDot(search,incident[0]));
                 dy=abs(fusedDot(search,incident[1]));
