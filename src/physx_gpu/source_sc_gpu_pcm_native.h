@@ -139,10 +139,10 @@ public:
         const auto mapped_packed=addresses_.resolve(
             dense_contacts_.getDevicePtr(),
             packed_host_.size()*sizeof(packed_host_[0]));
-        const std::vector<compute::DownloadSpan> downloads{
+        const std::array<compute::DownloadSpan,1> downloads{{
             {mapped_packed.buffer,mapped_packed.offset,packed_host_.data(),
                 packed_host_.size()*sizeof(packed_host_[0])}
-        };
+        }};
         context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
@@ -190,7 +190,7 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::array<std::uint8_t,240u> empty_cache_{};
     std::vector<SourcePcmBoxPairNative> pair_host_;
-     std::vector<SourcePcmScContactStreamNative> packed_host_;
+    std::vector<SourcePcmScContactStreamNative> packed_host_;
     bool reset_manifolds_=false;
 };
 } // namespace fyzz::physx_gpu
