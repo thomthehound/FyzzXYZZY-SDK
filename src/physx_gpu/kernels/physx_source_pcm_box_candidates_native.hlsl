@@ -470,18 +470,21 @@ void main(uint3 thread : SV_DispatchThreadID) {
         bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
         if(!regenerate) {
             uint cached=edgeCaches.Load(edgeBase+12u);
+            uint eligible=0u;
             for(uint j=0u;j<cached;++j) {
                 uint source=cachePointAddress(edgeBase,j);
                 float depth=asfloat(edgeCaches.Load(source+36u));
-                if(depth<=distance && count<limit) {
-                    copyCachedContact(edgeBase,j,
-                        p.candidateBias+(first+count)*40u);
-                    ++count;
+                if(depth<=distance) {
+                    if(eligible<limit)
+                        copyCachedContact(edgeBase,j,
+                            p.candidateBias+(first+eligible)*40u);
+                    ++eligible;
                 }
             }
+            count=min(eligible,limit);
             uint needsGjk=edgeCaches.Load(edgeBase+68u);
-            overlap=(count>0u || needsGjk!=0u)?1u:0u;
-            if(cached>limit)status=2u;
+            overlap=(eligible>0u || needsGjk!=0u)?1u:0u;
+            if(eligible>limit)status=2u;
             else if(needsGjk!=0u)status=3u;
             uint selection=count==0u?0u:
                 0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
