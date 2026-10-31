@@ -49,6 +49,10 @@ class SourceScOwnedGpuBroadphaseNative final : public native::GpuBroadphaseProdu
         SourceSapShaderBinaries& shaders,NativeGpuSapStage stage) {
         return std::move(shaders[static_cast<std::size_t>(stage)]);
     }
+    static compute::ShaderBinary take_pcm_shader(
+        NativeGpuPcmShaders& shaders,NativeGpuPcmStage stage) {
+        return std::move(shaders[static_cast<std::size_t>(stage)]);
+    }
     static void abort_source(void* state) noexcept {
         *static_cast<bool*>(state)=true;
     }
@@ -125,10 +129,10 @@ public:
             pcm_=std::make_unique<SourceScGpuPcmNative>(
                 context_,addresses_,stream_,allocators_.deviceAlloc,
                 *producer_,box_cache_,box_geometry_,
-                take_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
-                take_shader(*pcm_shaders,NativeGpuPcmStage::EpaReset),
-                take_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
-                take_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact));
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::Candidates),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaReset),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
+                take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact));
     }
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
