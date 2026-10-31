@@ -310,7 +310,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             precise float dx=abs(dot(search,incident[0]));
             precise float dy=abs(dot(search,incident[1]));
             precise float dz=abs(dot(search,incident[2]));
-            if(i==9u && limit>=64u) {
+            if(limit>=64u) {
                 uint debug=p.candidateBias+(first+63u)*40u;
                 candidates.Store3(debug,asuint(float3(dx,dy,dz)));
             }
