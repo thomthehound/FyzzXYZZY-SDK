@@ -88,6 +88,19 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     require(gpu.contact_edge_index({gpu_a,gpu_b})!=
                 std::numeric_limits<std::uint32_t>::max(),
             "Source Sc GPU PCM failed contact retirement and re-admission");
+    // The source-owned Gu contacts must enter the existing Dy contact
+    // preparation/solve path, not merely appear in collision queries.
+    constexpr float dt=1.f/120.f;
+    cpu.step(dt);
+    gpu.step(dt);
+    const auto cpu_body=cpu.body_state(cpu_a);
+    const auto gpu_body=gpu.body_state(gpu_a);
+    require(gpu.solved_result_frame()==gpu.frame_index() &&
+            cpu.solved_result_frame()==cpu.frame_index() &&
+            std::fabs(cpu_body.position.x-gpu_body.position.x)<0.002f &&
+            std::fabs(cpu_body.position.y-gpu_body.position.y)<0.002f &&
+            std::fabs(cpu_body.position.z-gpu_body.position.z)<0.002f,
+            "Source GPU PCM did not feed the existing Sc/Dy rigid solve");
 }
 } // namespace
 
