@@ -50,25 +50,25 @@ GjkSupportPoint gjkSupport(GjkBoxPair pair,float3 direction) {
     s.q=s.a-s.b;
     return s;
 }
-bool gjkSolve(uint n,inout float a[3][4],out float result[3]) {
-    float scale=0.f;
+bool gjkSolve(uint n,inout precise float a[3][4],out float result[3]) {
+    precise float scale=0.f;
     for(uint i=0u;i<n;++i)scale=max(scale,abs(a[i][i]));
     if(!(scale>0.f) || !isfinite(scale))return false;
-    const float tolerance=1.1920928955078125e-7f*scale;
+    precise float tolerance=1.1920928955078125e-7f*scale;
     for(uint col=0u;col<n;++col) {
         uint pivot=col;
         for(uint row=col+1u;row<n;++row)
             if(abs(a[row][col])>abs(a[pivot][col]))pivot=row;
         if(!(abs(a[pivot][col])>tolerance))return false;
         for(uint j=col;j<=n;++j) {
-            float swap=a[col][j];
+            precise float swap=a[col][j];
             a[col][j]=a[pivot][j];
             a[pivot][j]=swap;
         }
-        float divisor=a[col][col];
+        precise float divisor=a[col][col];
         for(uint j=col;j<=n;++j)a[col][j]/=divisor;
         for(uint row=0u;row<n;++row)if(row!=col) {
-            float factor=a[row][col];
+            precise float factor=a[row][col];
             for(uint j=col;j<=n;++j)a[row][j]-=factor*a[col][j];
         }
     }
@@ -87,12 +87,12 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
         uint n=0u;
         for(uint i=0u;i<count;++i)
             if((mask&(1u<<i))!=0u)ids[n++]=i;
-        float weights[4]={0.f,0.f,0.f,0.f};
+        precise float weights[4]={0.f,0.f,0.f,0.f};
         weights[ids[0]]=1.f;
         if(n>1u) {
             float3 origin=simplex[ids[0]].q;
             float3 directions[3];
-            float a[3][4]={{0.f,0.f,0.f,0.f},
+            precise float a[3][4]={{0.f,0.f,0.f,0.f},
                            {0.f,0.f,0.f,0.f},
                            {0.f,0.f,0.f,0.f}};
             for(uint j=1u;j<n;++j)
@@ -102,7 +102,7 @@ GjkClosest gjkClosestSimplex(GjkSupportPoint simplex[4],uint count) {
                     a[j-1u][k-1u]=gjkDot(directions[j-1u],directions[k-1u]);
                 a[j-1u][n-1u]=-gjkDot(directions[j-1u],origin);
             }
-            float coeff[3]={0.f,0.f,0.f};
+            precise float coeff[3]={0.f,0.f,0.f};
             if(!gjkSolve(n-1u,a,coeff))continue;
             for(uint j=1u;j<n;++j) {
                 weights[ids[j]]=coeff[j-1u];
