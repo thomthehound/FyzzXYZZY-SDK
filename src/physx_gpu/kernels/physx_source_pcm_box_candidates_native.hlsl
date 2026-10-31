@@ -46,8 +46,9 @@ struct Frame {
 };
 float3 rotateSource(float4 q,float3 v) {
     float3 u=q.xyz;
-    float3 t=cross(u,v)*2.f;
-    return v+(t*q.w+cross(u,t));
+    precise float3 t=cross(u,v)*2.f;
+    precise float3 rotated=v+(t*q.w+cross(u,t));
+    return rotated;
 }
 float3x3 quaternionBasis(float4 q) {
     // GuPCMContactBoxBox builds axes by rotating unit vectors. Retain
@@ -306,9 +307,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
-            float dx=abs(dot(search,incident[0]));
-            float dy=abs(dot(search,incident[1]));
-            float dz=abs(dot(search,incident[2]));
+            precise float dx=abs(dot(search,incident[0]));
+            precise float dy=abs(dot(search,incident[1]));
+            precise float dz=abs(dot(search,incident[2]));
             uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
             overlap|=((feature+1u)<<8u)|((axis+1u)<<16u);
             float facing=dot(search,incident[axis]);
