@@ -5925,18 +5925,33 @@ void Scene::prepare_active_accurate_island_batches() {
 // The all-awake rigid island-node order is active here. Incremental island
 // retirement, sleep/wake, task joins, joints, CCD, and exact packed ABI
 // remain separate N1 requirements.
+Scene::SolverBodyRow& Scene::admit_solver_row(BodyId id) {
+    auto& actor=actors_[id];
+    if(actor.solver_row_generation!=solver_preparation_generation_) {
+        const auto index=solver_rows_.size();
+        solver_rows_.emplace_back();
+        actor.solver_row_index=index;
+        actor.solver_row_generation=solver_preparation_generation_;
+        solver_rows_.back().prepared_generation=solver_preparation_generation_;
+    }
+    return solver_rows_[actor.solver_row_index];
+}
+
+Scene::SolverBodyRow& Scene::prepared_solver_row(BodyId id) {
+    // Source active-island admission assigns every participating actor
+    // before partitioning, row preparation and task-local solving.
+    return solver_rows_[actors_[id].solver_row_index];
+}
+
 void Scene::prepare_solver_bodies() {
     // DyDynamics::preIntegrationParallel -> Dy::copyToSolverBodyData.
-    // Retain capacity across frames. Prepare each contact participant once;
-    // free-flight actors stay on the existing source body integrator.
-    // This is the sole scene-owned transient solver state.
-    solver_rows_.resize(actors_.size());
-    // Keep a distinct monotonic generation: StepCheckpoint rolls back
-    // frame_index_, but rejected solver rows remain in reusable storage.
-    // Reusing a frame index would otherwise reactivate stale contact rows
-    // after geometry changes on a retry.
+    // Retain allocation capacity, but hold rows only for admitted bodies.
+    // Retired actors and free-flight dynamics do not consume GPU-bound rows.
+    solver_rows_.clear();
+    // StepCheckpoint may restore frame_index_ after rejected work. The
+    // independent generation invalidates actor-to-row mappings on retry.
     if(++solver_preparation_generation_==0) {
-        for(auto& row:solver_rows_)row.prepared_generation=0;
+        for(auto& actor:actors_)actor.solver_row_generation=0;
         solver_preparation_generation_=1;
     }
     solver_active_ids_.clear();
@@ -5950,10 +5965,8 @@ void Scene::prepare_solver_bodies() {
     const auto prepare_kinematic=[&](BodyId id) {
         const Actor& body=actors_[id];
         if(body.kind!=Kind::KinematicBox || !body.alive)return;
-        auto& row=solver_rows_[id];
-        if(row.prepared_generation==solver_preparation_generation_)return;
-        row={};
-        row.prepared_generation=solver_preparation_generation_;
+        if(body.solver_row_generation==solver_preparation_generation_)return;
+        auto& row=admit_solver_row(id);
         row.data.position=body.position;
         row.data.orientation=body.orientation;
         row.data.linear_velocity=body.velocity;
@@ -5995,8 +6008,7 @@ void Scene::prepare_solver_bodies() {
             for(BodyId id:{pair.a,pair.b})
                 if(actors_[id].kind==Kind::DynamicBox &&
                    !actors_[id].sleeping)
-                    solver_rows_[id].prepared_generation=
-                        solver_preparation_generation_;
+                    (void)admit_solver_row(id);
         }
         if(visited!=island.contact_count)
             throw std::logic_error(
@@ -6016,8 +6028,7 @@ void Scene::prepare_solver_bodies() {
                 prepare_kinematic(id);
                 if(actors_[id].kind==Kind::DynamicBox &&
                    !actors_[id].sleeping)
-                    solver_rows_[id].prepared_generation=
-                        solver_preparation_generation_;
+                    (void)admit_solver_row(id);
             }
         }
         if(visited!=island.constraint_count)
@@ -6030,21 +6041,10 @@ void Scene::prepare_solver_bodies() {
         for(std::size_t index=accurate_island_offsets_[island];
             index<accurate_island_offsets_[island+1];++index) {
             const BodyId id=accurate_island_nodes_[index];
-            auto& row=solver_rows_[id];
-            if(row.prepared_generation!=solver_preparation_generation_) {
-                // DyConstraintPartition::initSolverProgress initializes
-                // all active partition inputs, not only bodies with
-                // nonzero Dy contact rows. A zero-capped Gu manager
-                // still owns a source constraint descriptor, so its
-                // lightweight partition fields must be reset every
-                // frame even though extractContacts omits every row.
-                // Piggyback on the existing active-island traversal:
-                // no dormant-actor scan and no unused solver-body setup.
-                row.solver.partition_mask=0;
-                row.solver.max_dynamic_partition=0;
-                row.solver.static_constraint_count=0;
+            if(actors_[id].solver_row_generation!=
+               solver_preparation_generation_)
                 continue;
-            }
+            auto& row=prepared_solver_row(id);
             row={};
             row.prepared_generation=solver_preparation_generation_;
             solver_active_ids_.push_back(id);
@@ -6212,7 +6212,7 @@ void Scene::partition_constraints() {
             const auto& d=actors_[id].dynamics;
             task_pos_iters=std::max(task_pos_iters,d.position_iterations);
             task_vel_iters=std::max(task_vel_iters,d.velocity_iterations);
-            if(solver_rows_[id].prepared_generation==
+            if(prepared_solver_row(id).prepared_generation==
                solver_preparation_generation_)
                 ++prepared_solver_bodies;
         }
@@ -6310,15 +6310,15 @@ void Scene::partition_constraints() {
             if(wave)
                 for(std::size_t i:pending_dynamic_constraints_) {
                     const Pair pair=pair_of(i);
-                    solver_rows_[pair.a].solver.partition_mask=0;
-                    solver_rows_[pair.b].solver.partition_mask=0;
+                    prepared_solver_row(pair.a).solver.partition_mask=0;
+                    prepared_solver_row(pair.b).solver.partition_mask=0;
                 }
             std::size_t overflow_count=0;
             for(std::size_t k=0;k<pending_dynamic_constraints_.size();++k) {
                 const std::size_t i=pending_dynamic_constraints_[k];
                 const Pair pair=pair_of(i);
-                auto& a=solver_rows_[pair.a].solver;
-                auto& b=solver_rows_[pair.b].solver;
+                auto& a=prepared_solver_row(pair.a).solver;
+                auto& b=prepared_solver_row(pair.b).solver;
                 const std::uint32_t available=~(a.partition_mask |
                                                  b.partition_mask);
                 if(!available) {
@@ -6363,7 +6363,7 @@ void Scene::partition_constraints() {
             if((dynamic_a && actors_[pair.a].sleeping) ||
                (dynamic_b && actors_[pair.b].sleeping))continue;
             if(!dynamic_a && !dynamic_b)continue;
-            auto& active=solver_rows_[dynamic_a?pair.a:pair.b].solver;
+            auto& active=prepared_solver_row(dynamic_a?pair.a:pair.b).solver;
             const std::size_t local_partition=
                 active.max_dynamic_partition+
                 active.static_constraint_count++;
@@ -6516,7 +6516,7 @@ void Scene::prepare_constraints(float seconds) {
         };
         const auto jacobian=[&](BodyId id,Vec3 r) {
             if(actors_[id].kind!=Kind::DynamicBox)return Vec3{};
-            const auto& t=solver_rows_[id].data.sqrt_inverse_inertia;
+            const auto& t=prepared_solver_row(id).data.sqrt_inverse_inertia;
             const Vec3 j=cross(r,axis);
             return Vec3{dot(t[0],j),dot(t[1],j),dot(t[2],j)};
         };
@@ -6633,9 +6633,9 @@ void Scene::prepare_constraints(float seconds) {
         const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
         const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
         const auto& a = rigid_node(actors_[id0].kind)
-            ? solver_rows_[id0].data : world_solver_row_.data;
+            ? prepared_solver_row(id0).data : world_solver_row_.data;
         const auto& b = rigid_node(actors_[id1].kind)
-            ? solver_rows_[id1].data : world_solver_row_.data;
+            ? prepared_solver_row(id1).data : world_solver_row_.data;
         manifold.solver_offset = solver_contact_points_.size();
         manifold.friction_patch_offset = next_friction_patches_.size();
         manifold.friction_patch_count = 0;
@@ -7226,10 +7226,10 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 auto& row=distance_rows_[index];
                 auto& a=actors_[descriptor.body0].kind==Kind::StaticBox ||
                         actors_[descriptor.body0].kind==Kind::StaticPlane
-                    ? local_world_solver_row:solver_rows_[descriptor.body0];
+                    ? local_world_solver_row:prepared_solver_row(descriptor.body0);
                 auto& b=actors_[descriptor.body1].kind==Kind::StaticBox ||
                         actors_[descriptor.body1].kind==Kind::StaticPlane
-                    ? local_world_solver_row:solver_rows_[descriptor.body1];
+                    ? local_world_solver_row:prepared_solver_row(descriptor.body1);
                 const double normal_delta=
                     static_cast<double>(row.axis.x)*
                         (a.solver.linear_velocity_delta.x-
@@ -7288,9 +7288,9 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 const BodyId id0=descriptor.body0;
                 const BodyId id1=descriptor.body1;
                 auto& a = rigid_node(actors_[id0].kind)
-                    ? solver_rows_[id0] : local_world_solver_row;
+                    ? prepared_solver_row(id0) : local_world_solver_row;
                 auto& b = rigid_node(actors_[id1].kind)
-                    ? solver_rows_[id1] : local_world_solver_row;
+                    ? prepared_solver_row(id1) : local_world_solver_row;
                 // A zero source maxContactImpulse is omitted by
                 // DyContactPrepShared::extractContacts; there is no packed
                 // solver header to execute. Gu touch state and its indexed
@@ -7474,7 +7474,7 @@ void Scene::solve_constraint_task(std::size_t task_index) {
             for(std::size_t body=task_solver_begin;
                 body<task.solver_body_end;++body) {
                 const BodyId id=solver_active_ids_[body];
-                auto& row = solver_rows_[id];
+                auto& row = prepared_solver_row(id);
                 row.motion_linear_delta = row.solver.linear_velocity_delta;
                 row.motion_angular_state = row.solver.angular_state;
             }
@@ -7839,7 +7839,7 @@ void Scene::publish_solver_bodies(std::size_t first,std::size_t last) {
         const BodyId id=solver_active_ids_[index];
         auto& actor = actors_[id];
         if (!actor.alive || actor.kind != Kind::DynamicBox) continue;
-        const auto& row = solver_rows_[id];
+        const auto& row = prepared_solver_row(id);
         const Vec3& d = row.solver.linear_velocity_delta;
         Vec3 linear{
             row.data.linear_velocity.x+d.x,
@@ -8821,10 +8821,10 @@ void Scene::integrate_solver_task(
             Vec3 motion_angular = actor.angular_velocity;
             // Scene clock increments in advance_collision_internal; only
             // this frame's actual contact participants own motion snapshots.
-            const bool solved_contact = id < solver_rows_.size() &&
-                solver_rows_[id].prepared_generation == solver_preparation_generation_;
+            const bool solved_contact =
+                actor.solver_row_generation==solver_preparation_generation_;
             if (solved_contact) {
-                const auto& row = solver_rows_[id];
+                const auto& row = prepared_solver_row(id);
                 const Vec3& delta = row.motion_linear_delta;
                 motion_linear = {
                     row.data.linear_velocity.x + delta.x,
