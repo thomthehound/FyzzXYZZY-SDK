@@ -307,20 +307,19 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
-            precise float dx=abs(dot(search,incident[0]));
-            precise float dy=abs(dot(search,incident[1]));
-            precise float dz=abs(dot(search,incident[2]));
+            // Source contact-face scores accumulate with a fused multiply-add.
+            // Preserve its rounding before the X/Y/Z preference comparison.
+            float dx=abs(fma(search.x,incident[0].x,
+                         fma(search.y,incident[0].y,search.z*incident[0].z)));
+            float dy=abs(fma(search.x,incident[1].x,
+                         fma(search.y,incident[1].y,search.z*incident[1].z)));
+            float dz=abs(fma(search.x,incident[2].x,
+                         fma(search.y,incident[2].y,search.z*incident[2].z)));
             if(limit>=64u) {
                 uint debug=p.candidateBias+(first+63u)*40u;
                 candidates.Store3(debug,asuint(float3(dx,dy,dz)));
             }
-            // Source face preference is X, then Y, then Z. A one-ULP
-            // discrepancy from native float32 lowering is an axis tie.
-            uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
-            bool xWins=(bx>=by || by-bx==1u) &&
-                       (bx>=bz || bz-bx==1u);
-            bool yWins=by>=bz || bz-by==1u;
-            uint axis=xWins?0u:(yWins?1u:2u);
+            uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
             overlap|=((feature+1u)<<8u)|((axis+1u)<<16u);
             float facing=dot(search,incident[axis]);
             float signedExtent=facing>0.f
