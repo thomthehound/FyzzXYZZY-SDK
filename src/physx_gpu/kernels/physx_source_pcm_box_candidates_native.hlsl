@@ -635,28 +635,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 boxPair.aInB=rotateSource(conjugate(qb),pa-pb);
                 boxPair.relative=quatProduct(conjugate(qb),qa);
                 GjkWitness witness;
-                uint4 trace;
-                float4 metrics;
-                float3 supportQ,closestQ;
-                float4 simplex0,simplex1,simplex2;
-                uint outcome=gjkBoxContinuation(
-                    boxPair,distance,witness,trace,metrics,supportQ,closestQ,
-                    simplex0,simplex1,simplex2);
-                edgeCaches.Store(cache+76u,outcome);
-                if(outcome==5u && limit!=0u) {
-                    uint debug=p.candidateBias+first*40u;
-                    candidates.Store4(debug,trace);
-                    candidates.Store4(debug+16u,asuint(metrics));
-                    if(limit>1u)
-                        candidates.Store3(debug+40u,asuint(supportQ));
-                    if(limit>2u)
-                        candidates.Store3(debug+80u,asuint(closestQ));
-                    if(limit>5u) {
-                        candidates.Store4(debug+120u,asuint(simplex0));
-                        candidates.Store4(debug+160u,asuint(simplex1));
-                        candidates.Store4(debug+200u,asuint(simplex2));
-                    }
-                }
+                uint outcome=gjkBoxContinuation(boxPair,distance,witness);
                 if(outcome==1u) {
                     if(limit==0u) {
                         status=2u;

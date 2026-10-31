@@ -7,13 +7,10 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
-#include <cstring>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <iomanip>
 #include <iterator>
 #include <stdexcept>
 #include <vector>
@@ -272,71 +269,16 @@ void verify(Context& context,const char* transform_shader,
                 a.contact_distance+b.contact_distance,gjk_reference,nullptr);
             require(results[i].status==0u || results[i].status==3u,
                     "GPU PCM returned an invalid GJK continuation status");
-            if(source_contact && gjk_reference.separation>0.0001f &&
-               (results[i].status!=0u || results[i].candidate_count!=1u)) {
-                std::array<std::uint32_t,10> trace{};
-                std::memcpy(trace.data(),
-                    &candidates[pairs[i].candidate_offset],sizeof(trace));
-                std::cerr<<std::setprecision(10)
-                         <<"GPU GJK trace iteration="<<trace[0]
-                         <<" support=("<<trace[1]<<","<<trace[2]<<")"
-                         <<" simplex_count="<<trace[3]
-                         <<" projection="<<std::bit_cast<float>(trace[4])
-                         <<" threshold="<<std::bit_cast<float>(trace[5])
-                         <<" distance="<<std::bit_cast<float>(trace[6])
-                         <<" previous="<<std::bit_cast<float>(trace[7])
-                         <<" supportQ=("
-                         <<candidates[pairs[i].candidate_offset+1u].local_a[0]
-                         <<","
-                         <<candidates[pairs[i].candidate_offset+1u].local_a[1]
-                         <<","
-                         <<candidates[pairs[i].candidate_offset+1u].local_a[2]
-                         <<") closestQ=("
-                         <<candidates[pairs[i].candidate_offset+2u].local_a[0]
-                         <<","
-                         <<candidates[pairs[i].candidate_offset+2u].local_a[1]
-                         <<","
-                         <<candidates[pairs[i].candidate_offset+2u].local_a[2]
-                         <<")"<<std::endl;
-                for(std::size_t k=0;k<3u;++k) {
-                    const auto& q=candidates[
-                        pairs[i].candidate_offset+3u+k];
-                    std::cerr<<std::setprecision(10)
-                             <<"GPU simplex "<<k<<" q=("
-                             <<q.local_a[0]<<","<<q.local_a[1]<<","
-                             <<q.local_a[2]<<") weight="
-                             <<q.local_b[0]<<std::endl;
-                }
-                std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
-                         <<pairs[i].first_element<<","<<pairs[i].second_element
-                         <<") gpu_status="<<results[i].status
-                         <<" gpu_count="<<results[i].candidate_count
-                         <<" gjk_exit="
-                         <<edge_caches[pairs[i].edge_handle].reserved[1]
-                         <<" source_separation="<<gjk_reference.separation
-                         <<" B=("<<b.position[0]<<","<<b.position[1]<<","
-                         <<b.position[2]<<") quat=("<<b.orientation[0]<<","
-                         <<b.orientation[1]<<","<<b.orientation[2]<<","
-                         <<b.orientation[3]<<")"<<std::endl;
-                throw std::runtime_error(
-                    "GPU GJK failed to emit source positive-gap contact");
-            }
+            if(source_contact && gjk_reference.separation>0.0001f)
+                require(results[i].status==0u &&
+                        results[i].candidate_count==1u,
+                        "GPU GJK failed to emit source positive-gap contact");
             if(results[i].status==3u) {
                 require(results[i].candidate_count==0u &&
                         results[i].overlapping==1u &&
                         edge_caches[pairs[i].edge_handle].needs_gjk==1u,
                         "GPU PCM lost its pending EPA continuation");
             }else if(results[i].candidate_count==0u) {
-                if(source_contact || results[i].overlapping!=0u)
-                    std::cerr<<"GJK mismatch pair "<<i<<" ("<<pairs[i].first_element
-                             <<","<<pairs[i].second_element<<") gpu_status="
-                             <<results[i].status<<" gpu_overlap="
-                             <<results[i].overlapping<<" source_contact="
-                             <<source_contact<<" source_separation="
-                             <<gjk_reference.separation<<" A=("
-                             <<a.position[0]<<","<<a.position[1]<<","
-                             <<a.position[2]<<") B=("<<b.position[0]<<","
-                             <<b.position[1]<<","<<b.position[2]<<")"<<std::endl;
                 require(!source_contact && results[i].overlapping==0u,
                         "GPU GJK reported no contact against source");
             }else {

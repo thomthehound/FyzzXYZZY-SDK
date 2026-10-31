@@ -157,18 +157,8 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
 // 0: no source GJK contact; 1: source GJK contact;
 // 3: simplex requires the source EPA continuation.
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
-                        out GjkWitness witness,out uint4 trace,
-                        out float4 metrics,out float3 supportQ,
-                        out float3 closestQ,out float4 simplex0,
-                        out float4 simplex1,out float4 simplex2) {
+                        out GjkWitness witness) {
     witness=(GjkWitness)0;
-    trace=0u;
-    metrics=0.f;
-    supportQ=0.f;
-    closestQ=0.f;
-    simplex0=0.f;
-    simplex1=0.f;
-    simplex2=0.f;
     const float epsilon=0.005f*min(
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
@@ -181,38 +171,29 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
     for(uint iteration=0u;iteration<32u;++iteration) {
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon)return 3u;
-        if(dist<=0.f)return 4u;
+        if(dist<=0.f)return 0u;
         float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=gjkDot(normal,support.q);
-        trace=uint4(iteration,support.ai,support.bi,count);
-        metrics=float4(projection,dist*progressFactor,dist,previous);
-        supportQ=support.q;
-        closestQ=closest;
         if(projection>contactDistance)return 0u;
         if(count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex,count);
             return current.mask!=0u && gjkContact(pair,current,witness)
-                ?1u:9u;
+                ?1u:0u;
         }
         for(uint j=0u;j<count;++j)
             if(support.ai==simplex[j].ai &&
-               support.bi==simplex[j].bi) {
-                GjkClosest finalClosest=gjkClosestSimplex(simplex,count);
-                if(count>0u)simplex0=float4(simplex[0].q,finalClosest.weights[0]);
-                if(count>1u)simplex1=float4(simplex[1].q,finalClosest.weights[1]);
-                if(count>2u)simplex2=float4(simplex[2].q,finalClosest.weights[2]);
-                return 5u;
-            }
+               support.bi==simplex[j].bi)
+                return 0u;
         if(count==4u)return 3u;
         simplex[count++]=support;
         GjkClosest next=gjkClosestSimplex(simplex,count);
-        if(next.mask==0u)return 6u;
+        if(next.mask==0u)return 0u;
         closest=next.closestPoint;
         float nextDist=sqrt(next.dist2);
         gjkCompact(simplex,count,next);
-        if(nextDist>=previous)return 7u;
+        if(nextDist>=previous)return 0u;
         previous=nextDist;
     }
-    return 8u;
+    return 0u;
 }
