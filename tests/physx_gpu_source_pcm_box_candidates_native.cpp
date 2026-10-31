@@ -136,10 +136,10 @@ void verify(Context& context,const char* transform_shader,
         root,candidate_offset,candidates.size()*sizeof(candidates[0]));
     const auto edge_data=addresses.register_slice(
         root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
+    SourceScBoxTransformBoundsNativeStage producer(
+        context,shader(transform_shader));
+    SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     {
-        SourceScBoxTransformBoundsNativeStage producer(
-            context,shader(transform_shader));
-        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
@@ -266,7 +266,6 @@ void verify(Context& context,const char* transform_shader,
     // A second GPU frame reuses the same Sc edge records without a host
     // candidate upload, second pipeline, or per-pair CPU collision call.
     {
-        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
                    result_data,candidate_data,edge_data,
@@ -295,9 +294,6 @@ void verify(Context& context,const char* transform_shader,
     boxes[0].position[0]+=deltaX;
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     {
-        SourceScBoxTransformBoundsNativeStage producer(
-            context,shader(transform_shader));
-        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
@@ -327,9 +323,6 @@ void verify(Context& context,const char* transform_shader,
     boxes[0].position[0]+=0.25f;
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     {
-        SourceScBoxTransformBoundsNativeStage producer(
-            context,shader(transform_shader));
-        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
