@@ -152,6 +152,14 @@ void verify(Context& context,const char* transform_shader,
                      <<" GPU reference="<<((results[i].overlapping>>8u)&255u)
                      <<" incident="<<((results[i].overlapping>>16u)&255u)
                      <<std::endl;
+            if(i==9u) {
+                const auto& scores=candidates[pairs[i].candidate_offset+63u];
+                std::cerr<<std::hexfloat
+                         <<" GPU alignment dx="<<scores.local_a[0]
+                         <<" dy="<<scores.local_a[1]
+                         <<" dz="<<scores.local_a[2]
+                         <<std::defaultfloat<<std::endl;
+            }
             for(std::size_t k=0;k<results[i].candidate_count;++k) {
                 const auto& gpu=candidates[pairs[i].candidate_offset+k];
                 std::cerr<<"  GPU "<<k<<": A "<<gpu.local_a[0]<<","
