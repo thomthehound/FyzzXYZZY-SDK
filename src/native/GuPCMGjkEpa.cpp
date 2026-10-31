@@ -94,7 +94,7 @@ bool solve(int n,float a[3][4],float result[3]) {
         for(int row=0;row<n;++row)if(row!=col) {
             const float factor=a[row][col];
             for(int j=col;j<=n;++j)
-                a[row][j]-=factor*a[col][j];
+                a[row][j]=std::fma(-factor,a[col][j],a[row][j]);
         }
     }
     for(int i=0;i<n;++i)result[i]=a[i][n];
