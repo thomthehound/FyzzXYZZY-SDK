@@ -178,8 +178,12 @@ inline void pre_update_source_sap_aabb_manager_native(
     }
     if(shape_bytes) {
         boxes->input_device.allocate(shape_bytes,PX_FL);
-        boxes->cached_transforms.allocate(cache_bytes,PX_FL);
-        boxes->cached_geometry.allocate(geometry_bytes,PX_FL);
+        // Unchanged Sc elements remain authoritative GPU geometry even
+        // when another element expands the original AABB manager capacity.
+        boxes->cached_transforms.allocateCopyOldDataAsync(
+            cache_bytes,stream,PX_FL);
+        boxes->cached_geometry.allocateCopyOldDataAsync(
+            geometry_bytes,stream,PX_FL);
         uploads.push_back({boxes->input_device.getDevicePtr(),
                            boxes->changed.data(),shape_bytes});
     }
