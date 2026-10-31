@@ -1480,6 +1480,17 @@ private:
     };
     static_assert(sizeof(ConstraintDescriptor)==16u &&
                   alignof(ConstraintDescriptor)==4u);
+    // Stable conflict scatter resolves source ActorIDs to dense solver
+    // row indices; the static-world participant has no writable row.
+    struct SolverConstraintDescriptor {
+        std::uint32_t index=0;
+        std::uint32_t row0=0, row1=0;
+        std::uint32_t distance=0;
+    };
+    static_assert(sizeof(SolverConstraintDescriptor)==16u &&
+                  alignof(SolverConstraintDescriptor)==4u);
+    static constexpr std::uint32_t invalid_solver_row=
+        std::numeric_limits<std::uint32_t>::max();
     std::vector<ConstraintDescriptor> constraint_descriptors_;
     std::vector<std::size_t> constraint_partitions_;
     // Reusable unassigned descriptor list for each 32-bit mask wave.
@@ -1567,7 +1578,7 @@ private:
     std::vector<IndexedManifold> next_manifold_by_edge_;
     std::uint64_t indexed_manifold_generation_=0;
     std::uint64_t manifold_lookup_generation_=0;
-    std::vector<ConstraintDescriptor> ordered_constraints_;
+    std::vector<SolverConstraintDescriptor> ordered_constraints_;
     std::vector<std::size_t> partition_ends_;
     std::vector<std::size_t> partition_cursors_;
     // Correlation and friction constraint streams retain capacity across
