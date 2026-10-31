@@ -69,7 +69,8 @@ bool gjkSolve(uint n,inout precise float a[3][4],out float result[3]) {
         for(uint j=col;j<=n;++j)a[col][j]/=divisor;
         for(uint row=0u;row<n;++row)if(row!=col) {
             precise float factor=a[row][col];
-            for(uint j=col;j<=n;++j)a[row][j]-=factor*a[col][j];
+            for(uint j=col;j<=n;++j)
+                a[row][j]=mad(-factor,a[col][j],a[row][j]);
         }
     }
     for(uint i=0u;i<3u;++i)
