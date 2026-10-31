@@ -6414,11 +6414,23 @@ void Scene::partition_constraints() {
     for (std::size_t p=0;p<partition_cursors_.size();++p)
         partition_cursors_[p]=p ? partition_ends_[p-1] : 0;
     ordered_constraints_.resize(count);
+    const auto dense_row=[&](BodyId id) {
+        const auto& actor=actors_[id];
+        if(!rigid_node(actor.kind))return invalid_solver_row;
+        if(actor.solver_row_generation!=solver_preparation_generation_ ||
+           actor.solver_row_index>=solver_rows_.size() ||
+           actor.solver_row_index>=invalid_solver_row)
+            throw std::logic_error(
+                "Native Dy partition references an unprepared solver body");
+        return static_cast<std::uint32_t>(actor.solver_row_index);
+    };
     for(std::size_t i=0;i<constraint_descriptors_.size();++i) {
         const std::size_t partition=constraint_partitions_[i];
-        if(partition!=invalid_instance)
-            ordered_constraints_[partition_cursors_[partition]++]=
-                constraint_descriptors_[i];
+        if(partition==invalid_instance)continue;
+        const auto& source=constraint_descriptors_[i];
+        ordered_constraints_[partition_cursors_[partition]++]={
+            source.index,dense_row(source.body0),
+            dense_row(source.body1),source.distance};
     }
 }
 
@@ -7231,12 +7243,10 @@ void Scene::solve_constraint_task(std::size_t task_index) {
             if(descriptor.distance) {
                 const std::size_t index=descriptor.index;
                 auto& row=distance_rows_[index];
-                auto& a=actors_[descriptor.body0].kind==Kind::StaticBox ||
-                        actors_[descriptor.body0].kind==Kind::StaticPlane
-                    ? local_world_solver_row:prepared_solver_row(descriptor.body0);
-                auto& b=actors_[descriptor.body1].kind==Kind::StaticBox ||
-                        actors_[descriptor.body1].kind==Kind::StaticPlane
-                    ? local_world_solver_row:prepared_solver_row(descriptor.body1);
+                auto& a=descriptor.row0==invalid_solver_row
+                    ? local_world_solver_row:solver_rows_[descriptor.row0];
+                auto& b=descriptor.row1==invalid_solver_row
+                    ? local_world_solver_row:solver_rows_[descriptor.row1];
                 const double normal_delta=
                     static_cast<double>(row.axis.x)*
                         (a.solver.linear_velocity_delta.x-
@@ -7289,15 +7299,12 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 // Gu force-buffer offsets are independent of this permutation.
                 const auto index=descriptor.index;
                 const auto& manifold = manifolds_[index];
-                // Source-oriented endpoints survive the conflict-free
-                // partition scatter without re-reading an Sc edge during
-                // every Dy position and velocity iteration.
-                const BodyId id0=descriptor.body0;
-                const BodyId id1=descriptor.body1;
-                auto& a = rigid_node(actors_[id0].kind)
-                    ? prepared_solver_row(id0) : local_world_solver_row;
-                auto& b = rigid_node(actors_[id1].kind)
-                    ? prepared_solver_row(id1) : local_world_solver_row;
+                // Stable source-orientation and dense solver-body rows
+                // are resolved once at scatter, never per PGS iteration.
+                auto& a=descriptor.row0==invalid_solver_row
+                    ? local_world_solver_row:solver_rows_[descriptor.row0];
+                auto& b=descriptor.row1==invalid_solver_row
+                    ? local_world_solver_row:solver_rows_[descriptor.row1];
                 // A zero source maxContactImpulse is omitted by
                 // DyContactPrepShared::extractContacts; there is no packed
                 // solver header to execute. Gu touch state and its indexed
