@@ -300,8 +300,9 @@ bool source_pcm_box_box_candidates(
     const float dy=std::abs(dot(search,incident.axis[1]));
     const float dz=std::abs(dot(search,incident.axis[2]));
     const unsigned incident_axis=dx>=dy && dx>=dz?0:(dy>=dz?1:2);
-    if(a.position.x==1.25f && b.position.x==-0.1f)
-        std::cerr<<"CPU PCM reference="<<feature<<" incident="<<incident_axis
+    if((a.position.x==1.25f || a.position.x==0.3f) &&
+       b.position.x==-0.1f)
+        std::cerr<<"CPU PCM pair a.x="<<a.position.x<<" reference="<<feature<<" incident="<<incident_axis
                  <<" dx="<<std::hexfloat<<dx<<" dy="<<dy
                  <<" dz="<<dz<<std::defaultfloat<<std::endl;
     const float facing=dot(search,incident.axis[incident_axis]);
