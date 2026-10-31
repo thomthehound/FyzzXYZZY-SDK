@@ -80,6 +80,24 @@ struct GpuBroadphaseReports {
     // delta against previous Sc contacts (which omit non-dynamic pairs).
     bool full_rebuild=false;
 };
+// Gu PCM contacts remain keyed by Sc's original contact-manager EdgeIndex.
+// These are borrowed per-frame views; GPU state belongs to the same Sc edge.
+struct GpuPcmBoxPair {
+    BodyId first=0,second=0;
+    std::uint32_t edge=0;
+    bool reset_cache=false;
+};
+struct GpuPcmBoxWitness {
+    Vec3 local_a{},local_b{},normal_b{};
+    float separation=0.0f;
+};
+struct GpuPcmBoxResult {
+    std::uint32_t edge=0;
+    std::uint32_t status=0;
+    std::uint8_t count=0;
+    bool regenerated=false;
+    std::array<GpuPcmBoxWitness,4> points{};
+};
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
@@ -89,6 +107,14 @@ public:
     // ScShapeSim's authored transform/contact-distance changes and
     // ScPipeline::afterIntegration mark the original PxgAABBManager
     // changed-handle bitmap. No CPU geometry diff or parallel dirty list.
+    // GPU PCM is explicit; source SAP-only worlds retain their existing
+    // CPU narrowphase. An enabled producer must never fall back to CPU Gu.
+    virtual bool has_gpu_pcm_box() const noexcept { return false; }
+    virtual void generate_gpu_pcm_box_contacts(
+        std::span<const GpuPcmBoxPair>,
+        std::span<GpuPcmBoxResult>) {
+        throw std::logic_error("Source GPU PCM stages are not installed");
+    }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
     // Sc::ActorSim/ElementSim own original actor and element IDs.
@@ -1660,6 +1686,10 @@ private:
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
     std::vector<Pair> pending_pairs_;
+    // Sc's ordered contact-manager stream borrows these GPU per-frame
+    // records; edge identity and rollback ownership remain with Sc.
+    std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
+    std::vector<GpuPcmBoxResult> gpu_pcm_results_;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;
