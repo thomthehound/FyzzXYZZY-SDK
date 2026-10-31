@@ -40,7 +40,7 @@ void verify(Context& context,const char* transform_shader,
             const char* candidate_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
-    std::array<SourceScBoxTransformInputNative,7> boxes{{
+    std::array<SourceScBoxTransformInputNative,8> boxes{{
         {1u,{0.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,3.f},0.2f},
         {6u,{1.25f,0.1f,0.f},{0.f,0.f,z,w},{1.f,1.5f,2.5f},0.3f},
         {31u,{30.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,2.f},0.1f},
@@ -51,7 +51,7 @@ void verify(Context& context,const char* transform_shader,
         {}
     }};
     constexpr std::size_t base_pairs=6u*5u;
-    std::array<SourcePcmBoxPairNative,base_pairs+4u> pairs{};
+    std::array<SourcePcmBoxPairNative,base_pairs+5u> pairs{};
     constexpr std::array<std::uint32_t,6> ids{1u,6u,31u,12u,9u,20u};
     std::size_t index=0u;
     for(const auto a:ids)
@@ -94,7 +94,59 @@ void verify(Context& context,const char* transform_shader,
             }
         }
     require(found_large_batch,"Source PCM test needs a multi-contact reduction fixture");
+    // Search a corner/edge configuration where source SAT accepts the
+    // candidate pair but face clipping has no witness. GJK must supply
+    // the original positive-distance source contact, not an empty manifold.
+    bool found_gjk_contact=false;
+    SourceScBoxTransformInputNative gjk_box{
+        3u,{0.f,0.f,0.f},{0.f,0.f,0.f,1.f},
+        {0.2f,0.2f,1.5f},0.2f};
+    for(unsigned a=1u;a<=12u && !found_gjk_contact;++a)
+        for(unsigned b=1u;b<=12u && !found_gjk_contact;++b) {
+            const float ax=0.125f*float(a),az=0.125f*float(b);
+            const float sx=std::sin(ax*0.5f),cx=std::cos(ax*0.5f);
+            const float sz=std::sin(az*0.5f),cz=std::cos(az*0.5f);
+            gjk_box.orientation[0]=cz*sx;
+            gjk_box.orientation[1]=sz*sx;
+            gjk_box.orientation[2]=sz*cx;
+            gjk_box.orientation[3]=cz*cx;
+            for(int x=-4;x<=4 && !found_gjk_contact;++x)
+                for(int y=-4;y<=4 && !found_gjk_contact;++y)
+                    for(int z=-4;z<=4 && !found_gjk_contact;++z) {
+                        gjk_box.position[0]=1.0f+0.1f*float(x);
+                        gjk_box.position[1]=2.0f+0.1f*float(y);
+                        gjk_box.position[2]=3.0f+0.1f*float(z);
+                        auto vec=[](const float p[3]) {
+                            return fyzz::Vec3{p[0],p[1],p[2]};
+                        };
+                        auto quat=[](const float p[4]) {
+                            return fyzz::Quat{p[0],p[1],p[2],p[3]};
+                        };
+                        std::array<fyzz::native::PcmContactCandidate,64> generated{};
+                        std::size_t n=0;
+                        const float distance=boxes[0].contact_distance+
+                                             gjk_box.contact_distance;
+                        const bool overlaps=fyzz::native::source_pcm_box_box_candidates(
+                            vec(boxes[0].half_extents),vec(boxes[0].position),
+                            quat(boxes[0].orientation),
+                            vec(gjk_box.half_extents),vec(gjk_box.position),
+                            quat(gjk_box.orientation),distance,generated,n);
+                        if(!overlaps || n!=0u)continue;
+                        fyzz::native::PcmContactCandidate witness{};
+                        if(fyzz::native::source_pcm_box_box_gjk_epa(
+                            vec(boxes[0].half_extents),vec(boxes[0].position),
+                            quat(boxes[0].orientation),
+                            vec(gjk_box.half_extents),vec(gjk_box.position),
+                            quat(gjk_box.orientation),distance,witness,nullptr) &&
+                           witness.separation>0.0001f) {
+                            boxes[7]=gjk_box;
+                            found_gjk_contact=true;
+                        }
+                    }
+        }
+    require(found_gjk_contact,"Source PCM fixture needs a positive-gap GJK contact");
     pairs[index++]={1u,2u,504u};
+    pairs[index++]={1u,3u,506u};
     pairs[index++]={31u,31u,505u};
     pairs[index++]={1u,6u,0xffffffffu};
     pairs[index++]={1u,6u,710u};
