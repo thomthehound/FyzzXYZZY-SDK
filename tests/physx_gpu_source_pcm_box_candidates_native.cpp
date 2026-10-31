@@ -97,57 +97,39 @@ void verify(Context& context,const char* transform_shader,
             }
         }
     require(found_large_batch,"Source PCM test needs a multi-contact reduction fixture");
-    // Search a corner/edge configuration where source SAT accepts the
-    // candidate pair but face clipping has no witness. GJK must supply
-    // the original positive-distance source contact, not an empty manifold.
-    bool found_gjk_contact=false;
-    SourceScBoxTransformInputNative gjk_box{
-        3u,{0.f,0.f,0.f},{0.f,0.f,0.f,1.f},
+    // A source-selected edge/corner case: SAT admits the pair, face clipping
+    // emits no witness, and GJK must produce a positive-distance contact.
+    constexpr float angle=0.125f;
+    const float sh=std::sin(angle*0.5f),ch=std::cos(angle*0.5f);
+    const SourceScBoxTransformInputNative gjk_box{
+        3u,{1.0f,2.2f,3.3f},{ch*sh,sh*sh,sh*ch,ch*ch},
         {0.2f,0.2f,1.5f},0.2f};
-    for(unsigned a=1u;a<=12u && !found_gjk_contact;++a)
-        for(unsigned b=1u;b<=12u && !found_gjk_contact;++b) {
-            const float ax=0.125f*float(a),az=0.125f*float(b);
-            const float sx=std::sin(ax*0.5f),cx=std::cos(ax*0.5f);
-            const float sz=std::sin(az*0.5f),cz=std::cos(az*0.5f);
-            gjk_box.orientation[0]=cz*sx;
-            gjk_box.orientation[1]=sz*sx;
-            gjk_box.orientation[2]=sz*cx;
-            gjk_box.orientation[3]=cz*cx;
-            for(int x=-4;x<=4 && !found_gjk_contact;++x)
-                for(int y=-4;y<=4 && !found_gjk_contact;++y)
-                    for(int z=-4;z<=4 && !found_gjk_contact;++z) {
-                        gjk_box.position[0]=1.0f+0.1f*float(x);
-                        gjk_box.position[1]=2.0f+0.1f*float(y);
-                        gjk_box.position[2]=3.0f+0.1f*float(z);
-                        auto vec=[](const float p[3]) {
-                            return fyzz::Vec3{p[0],p[1],p[2]};
-                        };
-                        auto quat=[](const float p[4]) {
-                            return fyzz::Quat{p[0],p[1],p[2],p[3]};
-                        };
-                        std::array<fyzz::native::PcmContactCandidate,64> generated{};
-                        std::size_t n=0;
-                        const float distance=boxes[0].contact_distance+
-                                             gjk_box.contact_distance;
-                        const bool overlaps=fyzz::native::source_pcm_box_box_candidates(
-                            vec(boxes[0].half_extents),vec(boxes[0].position),
-                            quat(boxes[0].orientation),
-                            vec(gjk_box.half_extents),vec(gjk_box.position),
-                            quat(gjk_box.orientation),distance,generated,n);
-                        if(!overlaps || n!=0u)continue;
-                        fyzz::native::PcmContactCandidate witness{};
-                        if(fyzz::native::source_pcm_box_box_gjk_epa(
-                            vec(boxes[0].half_extents),vec(boxes[0].position),
-                            quat(boxes[0].orientation),
-                            vec(gjk_box.half_extents),vec(gjk_box.position),
-                            quat(gjk_box.orientation),distance,witness,nullptr) &&
-                           witness.separation>0.0001f) {
-                            boxes[7]=gjk_box;
-                            found_gjk_contact=true;
-                        }
-                    }
-        }
-    require(found_gjk_contact,"Source PCM fixture needs a positive-gap GJK contact");
+    const auto gjk_vec=[](const float v[3]) {
+        return fyzz::Vec3{v[0],v[1],v[2]};
+    };
+    const auto gjk_quat=[](const float v[4]) {
+        return fyzz::Quat{v[0],v[1],v[2],v[3]};
+    };
+    std::array<fyzz::native::PcmContactCandidate,64> gjk_candidates{};
+    std::size_t gjk_count=0u;
+    const auto gjk_distance=boxes[0].contact_distance+gjk_box.contact_distance;
+    require(fyzz::native::source_pcm_box_box_candidates(
+                gjk_vec(boxes[0].half_extents),gjk_vec(boxes[0].position),
+                gjk_quat(boxes[0].orientation),
+                gjk_vec(gjk_box.half_extents),gjk_vec(gjk_box.position),
+                gjk_quat(gjk_box.orientation),gjk_distance,
+                gjk_candidates,gjk_count) && gjk_count==0u,
+            "Source edge/corner fixture must require GJK");
+    fyzz::native::PcmContactCandidate gjk_expected{};
+    require(fyzz::native::source_pcm_box_box_gjk_epa(
+                gjk_vec(boxes[0].half_extents),gjk_vec(boxes[0].position),
+                gjk_quat(boxes[0].orientation),
+                gjk_vec(gjk_box.half_extents),gjk_vec(gjk_box.position),
+                gjk_quat(gjk_box.orientation),gjk_distance,
+                gjk_expected,nullptr) &&
+            gjk_expected.separation>0.0001f,
+            "Source edge/corner fixture must produce a positive-gap contact");
+    boxes[7]=gjk_box;
     pairs[index++]={1u,2u,504u};
     pairs[index++]={1u,3u,506u};
     pairs[index++]={31u,31u,505u};
