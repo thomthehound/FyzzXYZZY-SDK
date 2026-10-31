@@ -144,6 +144,33 @@ void verify(Context& context,const char* transform_shader,
                     "Source PCM GPU did not report a bounded candidate overflow");
             continue;
         }
+        if(results[i].status!=0u || results[i].candidate_count!=count) {
+            std::cerr<<"PCM count mismatch pair "<<i<<" elements ("
+                     <<pairs[i].first_element<<","<<pairs[i].second_element
+                     <<") source="<<count<<" gpu="<<results[i].candidate_count
+                     <<" status="<<results[i].status
+                     <<" overlap="<<results[i].overlapping<<std::endl;
+            for(std::size_t k=0;k<results[i].candidate_count && k<pairs[i].candidate_capacity;++k) {
+                const auto& witness=candidates[pairs[i].candidate_offset+k];
+                std::cerr<<"  GPU "<<k<<" A="<<witness.local_a[0]<<","
+                         <<witness.local_a[1]<<","<<witness.local_a[2]
+                         <<" B="<<witness.local_b[0]<<","<<witness.local_b[1]
+                         <<","<<witness.local_b[2]
+                         <<" normal="<<witness.normal_b[0]<<","
+                         <<witness.normal_b[1]<<","<<witness.normal_b[2]
+                         <<" separation="<<witness.separation<<std::endl;
+            }
+            for(std::size_t k=0;k<count;++k) {
+                const auto& witness=expected[k];
+                std::cerr<<"  CPU "<<k<<" A="<<witness.local_a.x<<","
+                         <<witness.local_a.y<<","<<witness.local_a.z
+                         <<" B="<<witness.local_b.x<<","<<witness.local_b.y
+                         <<","<<witness.local_b.z
+                         <<" normal="<<witness.normal_b.x<<","
+                         <<witness.normal_b.y<<","<<witness.normal_b.z
+                         <<" separation="<<witness.separation<<std::endl;
+            }
+        }
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
         for(std::size_t k=0u;k<count;++k) {
