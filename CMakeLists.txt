@@ -1340,7 +1340,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
     add_executable(fyzzxyzzy_source_gu_box_contacts
-      tests/physx_gpu_source_gu_box_box_axis_native.cpp
+      tests/physx_gpu_source_gu_box_box_contacts_native.cpp
       src/native/GuContactBoxBox.cpp)
     target_include_directories(fyzzxyzzy_source_gu_box_contacts PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -4502,7 +4502,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader_d3d12
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
     add_executable(fyzzxyzzy_source_gu_box_contacts_d3d12
-      tests/physx_gpu_source_gu_box_box_axis_native.cpp
+      tests/physx_gpu_source_gu_box_box_contacts_native.cpp
       src/native/GuContactBoxBox.cpp)
     target_compile_definitions(fyzzxyzzy_source_gu_box_contacts_d3d12 PRIVATE
       FYZZXYZZY_TEST_D3D12=1)
