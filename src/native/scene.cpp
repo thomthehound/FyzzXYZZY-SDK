@@ -6260,15 +6260,34 @@ void Scene::partition_constraints() {
         // Source setupDescTask queues 1D edges before contact managers
         // in each active-island task chain; both enter the SAME body
         // conflict allocator and stable partition scatter.
-        for(std::size_t j=distance_begin;j<task.distance_end;++j)
-            constraint_descriptors_.push_back({j,true});
-        for(std::size_t j=manager_begin;j<manager_end;++j)
-            constraint_descriptors_.push_back({indexed_managers_[j],false});
+        const auto narrow_index=[](std::size_t index) {
+            if(index>std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error(
+                    "Source Dy descriptor index exceeds GPU address range");
+            return static_cast<std::uint32_t>(index);
+        };
+        for(std::size_t j=distance_begin;j<task.distance_end;++j) {
+            const Pair pair=island_edges_[indexed_distance_constraints_[j]].pair;
+            constraint_descriptors_.push_back({
+                narrow_index(j),pair.a,pair.b,true});
+        }
+        for(std::size_t j=manager_begin;j<manager_end;++j) {
+            const std::size_t index=indexed_managers_[j];
+            const auto& manifold=manifolds_[index];
+            const bool reversed=island_edges_[
+                manifold.edge_handle].gu_order_reversed;
+            // ScNPhaseCore::shouldSwapBodies determines Dy's oriented
+            // endpoints before the source partition scatter. Every
+            // position/velocity pass consumes these same resolved IDs.
+            constraint_descriptors_.push_back({
+                narrow_index(index),
+                reversed?manifold.pair.b:manifold.pair.a,
+                reversed?manifold.pair.a:manifold.pair.b,
+                false});
+        }
         const auto pair_of=[&](std::size_t index) {
             const auto& descriptor=constraint_descriptors_[index];
-            return descriptor.distance
-                ? island_edges_[indexed_distance_constraints_[descriptor.index]].pair
-                : manifolds_[descriptor.index].pair;
+            return Pair{descriptor.body0,descriptor.body1};
         };
         constraint_partitions_.resize(constraint_descriptors_.size(),
                                       invalid_instance);
@@ -7207,12 +7226,12 @@ void Scene::solve_constraint_task(std::size_t task_index) {
             if(descriptor.distance) {
                 const std::size_t index=descriptor.index;
                 auto& row=distance_rows_[index];
-                auto& a=actors_[row.a].kind==Kind::StaticBox ||
-                        actors_[row.a].kind==Kind::StaticPlane
-                    ? local_world_solver_row:solver_rows_[row.a];
-                auto& b=actors_[row.b].kind==Kind::StaticBox ||
-                        actors_[row.b].kind==Kind::StaticPlane
-                    ? local_world_solver_row:solver_rows_[row.b];
+                auto& a=actors_[descriptor.body0].kind==Kind::StaticBox ||
+                        actors_[descriptor.body0].kind==Kind::StaticPlane
+                    ? local_world_solver_row:solver_rows_[descriptor.body0];
+                auto& b=actors_[descriptor.body1].kind==Kind::StaticBox ||
+                        actors_[descriptor.body1].kind==Kind::StaticPlane
+                    ? local_world_solver_row:solver_rows_[descriptor.body1];
                 const double normal_delta=
                     static_cast<double>(row.axis.x)*
                         (a.solver.linear_velocity_delta.x-
@@ -7265,12 +7284,11 @@ void Scene::solve_constraint_task(std::size_t task_index) {
                 // Gu force-buffer offsets are independent of this permutation.
                 const auto index=descriptor.index;
                 const auto& manifold = manifolds_[index];
-                // Dy descriptors retain Sc's source-oriented body order,
-                // including the signs of the contact/friction Jacobians.
-                const bool reversed=island_edges_[
-                    manifold.edge_handle].gu_order_reversed;
-                const BodyId id0=reversed?manifold.pair.b:manifold.pair.a;
-                const BodyId id1=reversed?manifold.pair.a:manifold.pair.b;
+                // Source-oriented endpoints survive the conflict-free
+                // partition scatter without re-reading an Sc edge during
+                // every Dy position and velocity iteration.
+                const BodyId id0=descriptor.body0;
+                const BodyId id1=descriptor.body1;
                 auto& a = rigid_node(actors_[id0].kind)
                     ? solver_rows_[id0] : local_world_solver_row;
                 auto& b = rigid_node(actors_[id1].kind)
