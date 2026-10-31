@@ -627,6 +627,14 @@ void main(uint3 thread : SV_DispatchThreadID) {
         selection=selectBatch(first,count);
     uint packed=selectedCount==0u?0u:
         selection.x|(selection.y<<8u)|(selection.z<<16u)|(selection.w<<24u);
+    if(regenerated!=0u && status==2u) {
+        // A partial clip is not a valid PCM manifold. Require full
+        // regeneration even when the next frame has the same pose.
+        uint edgeBase=p.edgeCacheBias+edge*240u;
+        edgeCaches.Store(edgeBase+12u,0u);
+        edgeCaches.Store(edgeBase+64u,0u);
+        edgeCaches.Store(edgeBase+68u,0u);
+    }
     if(regenerated!=0u && status==0u) {
         uint edgeBase=p.edgeCacheBias+edge*240u;
         for(uint j=0u;j<selectedCount;++j)
