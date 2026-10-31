@@ -6049,16 +6049,11 @@ void Scene::prepare_solver_bodies() {
                solver_preparation_generation_)
                 continue;
             auto& row=prepared_solver_row(id);
-            if(row.prepared_generation!=solver_preparation_generation_) {
-                // Source partition progress also admits zero-response
-                // managers, without admitting a solver/integration body.
-                row.solver.partition_mask=0;
-                row.solver.max_dynamic_partition=0;
-                row.solver.static_constraint_count=0;
+            // A newly admitted row is already zero-initialized, including
+            // DyConstraintPartition's progress words for zero-capped
+            // managers. Do not clear the same large row a second time.
+            if(row.prepared_generation!=solver_preparation_generation_)
                 continue;
-            }
-            row={};
-            row.prepared_generation=solver_preparation_generation_;
             solver_active_ids_.push_back(id);
             const Actor& actor=actors_[id];
             row.data.position=actor.position;
