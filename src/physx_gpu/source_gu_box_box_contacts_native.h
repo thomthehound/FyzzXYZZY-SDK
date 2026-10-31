@@ -14,6 +14,17 @@
 
 namespace fyzz::physx_gpu {
 
+// Source Gu contact-manager pair work, keyed by original Sc element handles.
+struct SourceGuBoxPairNative {
+    std::uint32_t first_element;
+    std::uint32_t second_element;
+    std::uint32_t previous_axis;
+    std::uint32_t contact_offset=0;
+    std::uint32_t contact_capacity=0;
+    std::uint32_t reserved=0;
+};
+static_assert(sizeof(SourceGuBoxPairNative)==24u);
+
 struct SourceGuBoxContactNative {
     float position[3];
     float normal[3];
@@ -47,10 +58,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=6u;
+        desc.storage_buffer_binding_count=5u;
         desc.storage_buffer_views.assign(
-            6u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=36u;
+            5u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=32u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourceGuBoxBoxContactsNativeStage(const SourceGuBoxBoxContactsNativeStage&)=delete;
@@ -65,7 +76,6 @@ public:
                 CudaDeviceAddressMap::Address transforms,
                 CudaDeviceAddressMap::Address geometry,
                 CudaDeviceAddressMap::Address pairs,
-                CudaDeviceAddressMap::Address axes,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address contacts,
                 std::uint32_t pair_count,
@@ -77,8 +87,8 @@ public:
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Gu GPU contact dispatch exceeds device limit");
-        std::array<std::uint32_t,9> params{
-            pair_count,0u,0u,0u,0u,0u,0u,shape_capacity,contact_capacity};
+        std::array<std::uint32_t,8> params{
+            pair_count,0u,0u,0u,0u,0u,shape_capacity,contact_capacity};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -95,12 +105,10 @@ public:
                  1u,compute::BufferAccess::Read),
             view(pairs,source_allocation_bytes(pair_count,24u),
                  2u,compute::BufferAccess::Read),
-            view(axes,source_allocation_bytes(pair_count,4u),
-                 3u,compute::BufferAccess::Read),
             view(results,source_allocation_bytes(pair_count,16u),
-                 4u,compute::BufferAccess::Write),
+                 3u,compute::BufferAccess::Write),
             view(contacts,source_allocation_bytes(contact_capacity,32u),
-                 5u,compute::BufferAccess::Write)};
+                 4u,compute::BufferAccess::Write)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         commands.emplace_back(std::move(dispatch));
@@ -110,13 +118,12 @@ public:
                 CudaDeviceAddressMap::Address transforms,
                 CudaDeviceAddressMap::Address geometry,
                 CudaDeviceAddressMap::Address pairs,
-                CudaDeviceAddressMap::Address axes,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address contacts,
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
                 std::uint32_t contact_capacity) const {
-        append(stream.commands(),addresses,transforms,geometry,pairs,axes,
+        append(stream.commands(),addresses,transforms,geometry,pairs,
                results,contacts,pair_count,shape_capacity,contact_capacity);
     }
 private:
