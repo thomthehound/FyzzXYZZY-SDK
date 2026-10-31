@@ -293,6 +293,16 @@ void verify(Context& context,const char* transform_shader,
                         edge_caches[pairs[i].edge_handle].needs_gjk==1u,
                         "GPU PCM lost its pending EPA continuation");
             }else if(results[i].candidate_count==0u) {
+                if(source_contact || results[i].overlapping!=0u)
+                    std::cerr<<"GJK mismatch pair "<<i<<" ("<<pairs[i].first_element
+                             <<","<<pairs[i].second_element<<") gpu_status="
+                             <<results[i].status<<" gpu_overlap="
+                             <<results[i].overlapping<<" source_contact="
+                             <<source_contact<<" source_separation="
+                             <<gjk_reference.separation<<" A=("
+                             <<a.position[0]<<","<<a.position[1]<<","
+                             <<a.position[2]<<") B=("<<b.position[0]<<","
+                             <<b.position[1]<<","<<b.position[2]<<")"<<std::endl;
                 require(!source_contact && results[i].overlapping==0u,
                         "GPU GJK reported no contact against source");
             }else {
