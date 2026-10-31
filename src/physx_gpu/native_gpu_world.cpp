@@ -57,6 +57,10 @@ constexpr std::array<std::string_view,
     "BoxTransformBounds",
 }};
 constexpr std::array<std::string_view,
+    static_cast<std::size_t>(NativeGpuPcmStage::Count)> pcm_stage_names{{
+    "Candidates","EpaReset","EpaCompact","EpaContact"
+}};
+constexpr std::array<std::string_view,
     static_cast<std::size_t>(NativeGpuAggregateStage::Count)> aggregate_stage_names{{
     "Bounds","MarkBounds","MemberHistory","Projection","SelfCollision",
     "PairAdmit","PairPublish","PersistentCollisions","PairRetireHistogram",
@@ -125,6 +129,13 @@ NativeGpuAggregateShaders load_native_gpu_aggregate_shaders(
         aggregate_stage_names);
 }
 
+NativeGpuPcmShaders load_native_gpu_pcm_shaders(
+    compute::Backend backend,const std::filesystem::path& manifest) {
+    return load_source_shader_bundle(
+        backend,manifest,"PCM","FYZZXYZZY_SOURCE_PCM_1",
+        pcm_stage_names);
+}
+
 World create_native_gpu_world(
     compute::Backend backend,const std::filesystem::path& manifest,
     WorldOptions options) {
@@ -148,6 +159,28 @@ World create_native_gpu_world(
     return World(create_native_gpu_broadphase_backend(
         std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,std::move(shaders)),
+        options.contact_notifications,options.enhanced_determinism,
+        options.pcm_plane_box,options.pcm_box_box));
+}
+
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuPcmShaders pcm,WorldOptions options) {
+    if(options.execution!=ExecutionMode::NativePortableGpu)
+        throw std::invalid_argument(
+            "Source GPU PCM World requires NativePortableGpu execution");
+    const auto format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
+    for(const auto& shader:sap)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument("Native GPU SAP shader bundle incomplete");
+    for(const auto& shader:pcm)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument("Native GPU PCM shader bundle incomplete");
+    return World(create_native_gpu_broadphase_backend(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,std::move(sap),32768u,32768u,
+            std::nullopt,std::move(pcm)),
         options.contact_notifications,options.enhanced_determinism,
         options.pcm_plane_box,options.pcm_box_box));
 }
