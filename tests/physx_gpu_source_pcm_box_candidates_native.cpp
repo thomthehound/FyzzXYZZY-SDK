@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <iterator>
 #include <stdexcept>
 #include <vector>
@@ -294,7 +295,8 @@ void verify(Context& context,const char* transform_shader,
                 std::array<std::uint32_t,10> trace{};
                 std::memcpy(trace.data(),
                     &candidates[pairs[i].candidate_offset],sizeof(trace));
-                std::cerr<<"GPU GJK trace iteration="<<trace[0]
+                std::cerr<<std::setprecision(10)
+                         <<"GPU GJK trace iteration="<<trace[0]
                          <<" support=("<<trace[1]<<","<<trace[2]<<")"
                          <<" simplex_count="<<trace[3]
                          <<" projection="<<std::bit_cast<float>(trace[4])
@@ -307,6 +309,12 @@ void verify(Context& context,const char* transform_shader,
                          <<candidates[pairs[i].candidate_offset+1u].local_a[1]
                          <<","
                          <<candidates[pairs[i].candidate_offset+1u].local_a[2]
+                         <<") closestQ=("
+                         <<candidates[pairs[i].candidate_offset+2u].local_a[0]
+                         <<","
+                         <<candidates[pairs[i].candidate_offset+2u].local_a[1]
+                         <<","
+                         <<candidates[pairs[i].candidate_offset+2u].local_a[2]
                          <<")"<<std::endl;
                 std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
                          <<pairs[i].first_element<<","<<pairs[i].second_element
