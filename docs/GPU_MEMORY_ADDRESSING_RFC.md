@@ -191,7 +191,7 @@ GPU stage separately with timestamps on a warmed, prepared command stream.
 
 ## 6. Required representation experiment
 
-### 5.1 Real PhysX layouts as fixtures
+### 6.1 Real PhysX layouts as fixtures
 
 Start with:
 - `PxgBroadPhaseDesc`: pointer tables, nested arrays, old/new bounds
@@ -212,7 +212,7 @@ lifetime, alignment, aliasing relationship and whether its address escapes
 into another allocation. Preserve little-endian scalar layouts and
 handle nontrivial nested structures deliberately.
 
-### 5.2 Correctness probes
+### 6.2 Correctness probes
 
 - Compile and dispatch the same PhysX-source-derived accessor kernels on
   Vulkan and D3D12, not two unrelated demos.
@@ -230,7 +230,7 @@ handle nontrivial nested structures deliberately.
   identically for integer descriptors and within declared tolerances only
   where floating point necessitates them.
 
-### 5.3 Performance probes
+### 6.3 Performance probes
 
 Run each candidate with common **input data and computation**:
 - `translateAABBsLaunch`-like contiguous streams (measure bandwidth),
@@ -268,7 +268,7 @@ do not gate continued source-faithful porting. Capability checks (BDA,
 SM6.6, descriptor indexing, memory limits) must be recorded when an
 actual device is exercised, not assumed from its operating system.
 
-### 5.4 Acceptance criteria (conditional, not invented targets)
+### 6.4 Acceptance criteria (conditional, not invented targets)
 
 A candidate may be used **provisionally for source-derived kernel
 porting** after passing relevant semantic, layout, lifetime and software
