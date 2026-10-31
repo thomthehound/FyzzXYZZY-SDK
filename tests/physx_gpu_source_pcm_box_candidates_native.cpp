@@ -190,7 +190,14 @@ void verify(Context& context,const char* transform_shader,
                !near(gpu.normal_b[1],cpu.normal_b.y) ||
                !near(gpu.normal_b[2],cpu.normal_b.z) ||
                !near(gpu.separation,cpu.separation))
-                std::cerr<<"PCM witness pair "<<i<<" index "<<k
+                std::cerr<<"PCM witness pair "<<i
+                         <<" GPU reference="<<((results[i].overlapping>>8u)&255u)
+                         <<" incident="<<((results[i].overlapping>>16u)&255u)
+                         <<" scores "<<std::hexfloat
+                         <<candidates[pairs[i].candidate_offset+63u].local_a[0]
+                         <<","<<candidates[pairs[i].candidate_offset+63u].local_a[1]
+                         <<","<<candidates[pairs[i].candidate_offset+63u].local_a[2]
+                         <<std::defaultfloat<<" index "<<k
                          <<" GPU A "<<gpu.local_a[0]<<","<<gpu.local_a[1]
                          <<","<<gpu.local_a[2]
                          <<" CPU A "<<cpu.local_a.x<<","<<cpu.local_a.y
