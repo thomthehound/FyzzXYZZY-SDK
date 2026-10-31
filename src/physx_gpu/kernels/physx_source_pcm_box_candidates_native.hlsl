@@ -122,16 +122,16 @@ uint cachePointAddress(uint edgeBase,uint point) {
     return edgeBase+80u+point*40u;
 }
 void copyCachedContact(uint edgeBase,uint point,uint destination) {
-    uint from=cachePointAddress(edgeBase,point);
+    uint sourceOffset=cachePointAddress(edgeBase,point);
     [unroll]
     for(uint k=0u;k<10u;++k)
-        candidates.Store(destination+k*4u,edgeCaches.Load(from+k*4u));
+        candidates.Store(destination+k*4u,edgeCaches.Load(sourceOffset+k*4u));
 }
 void storeSelectedContact(uint edgeBase,uint slot,uint source) {
-    uint to=cachePointAddress(edgeBase,slot);
+    uint destinationOffset=cachePointAddress(edgeBase,slot);
     [unroll]
     for(uint k=0u;k<10u;++k)
-        edgeCaches.Store(to+k*4u,candidates.Load(source+k*4u));
+        edgeCaches.Store(destinationOffset+k*4u,candidates.Load(source+k*4u));
 }
 // GuPersistentContactManifold::refreshContactPoints and
 // invalidate_BoxConvex, operating directly on the Sc EdgeIndex record.
