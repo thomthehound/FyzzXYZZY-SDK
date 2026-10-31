@@ -310,6 +310,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
             float dy=abs(dot(search,incident[1]));
             float dz=abs(dot(search,incident[2]));
             uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
+            overlap|=((feature+1u)<<8u)|((axis+1u)<<16u);
             float facing=dot(search,incident[axis]);
             float signedExtent=facing>0.f
                 ?-component(incidentHalf,axis)
