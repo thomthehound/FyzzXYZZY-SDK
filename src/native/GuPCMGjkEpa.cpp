@@ -442,6 +442,14 @@ bool source_pcm_box_box_gjk_epa(
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
+        if(trace && iteration==5) {
+            const Closest weights=closest_simplex(simplex,count);
+            for(int j=0;j<count;++j)
+                std::cerr<<std::setprecision(10)
+                         <<"CPU simplex "<<j<<" q=("<<simplex[j].q.x
+                         <<","<<simplex[j].q.y<<","<<simplex[j].q.z
+                         <<") weight="<<weights.weights[j]<<std::endl;
+        }
         if(trace)
             std::cerr<<std::setprecision(10)
                      <<"CPU GJK iteration="<<iteration<<" count="<<count
