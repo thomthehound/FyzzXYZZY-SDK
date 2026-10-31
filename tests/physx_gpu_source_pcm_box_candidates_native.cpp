@@ -39,17 +39,18 @@ void verify(Context& context,const char* transform_shader,
             const char* candidate_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
-    const std::array<SourceScBoxTransformInputNative,6> boxes{{
+    std::array<SourceScBoxTransformInputNative,7> boxes{{
         {1u,{0.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,3.f},0.2f},
         {6u,{1.25f,0.1f,0.f},{0.f,0.f,z,w},{1.f,1.5f,2.5f},0.3f},
         {31u,{30.f,0.f,0.f},{0.f,0.f,0.f,1.f},{1.f,2.f,2.f},0.1f},
         {12u,{0.3f,0.4f,2.f},{z,0.f,0.f,w},{1.f,1.f,1.f},0.125f},
         {9u,{0.f,1.1f,-1.f},{0.f,z,0.f,w},{0.75f,1.7f,0.5f},0.15f},
         {20u,{-0.1f,-0.2f,0.75f},{0.f,0.f,0.707106781f,0.707106781f},
-         {2.f,0.45f,0.8f},0.35f}
+         {2.f,0.45f,0.8f},0.35f},
+        {}
     }};
     constexpr std::size_t base_pairs=6u*5u;
-    std::array<SourcePcmBoxPairNative,base_pairs+3u> pairs{};
+    std::array<SourcePcmBoxPairNative,base_pairs+4u> pairs{};
     constexpr std::array<std::uint32_t,6> ids{1u,6u,31u,12u,9u,20u};
     std::size_t index=0u;
     for(const auto a:ids)
@@ -58,6 +59,41 @@ void verify(Context& context,const char* transform_shader,
                 const auto edge=17u+static_cast<std::uint32_t>(index)*13u;
                 pairs[index++]={a,b,edge};
             }
+    // Find a genuine source PCM batch of 5+ ordered witnesses; unlike
+    // fixed 2-4 candidate fixtures, this exercises swap-last reduction.
+    bool found_large_batch=false;
+    for(unsigned a=1u;a<=8u && !found_large_batch;++a)
+        for(unsigned b=1u;b<=8u && !found_large_batch;++b) {
+            const float az=0.15f*static_cast<float>(a);
+            const float ax=0.11f*static_cast<float>(b);
+            const float sx=std::sin(ax*0.5f),cx=std::cos(ax*0.5f);
+            const float sz=std::sin(az*0.5f),cz=std::cos(az*0.5f);
+            const std::array<float,4> q{cz*sx,sz*sx,sz*cx,cz*cx};
+            const auto trial=SourceScBoxTransformInputNative{
+                2u,{0.3f,0.25f,0.35f},{q[0],q[1],q[2],q[3]},
+                {1.2f,1.4f,1.1f},0.15f};
+            std::array<fyzz::native::PcmContactCandidate,64> witness{};
+            std::size_t n=0;
+            const auto source_vec=[](const float v[3]) {
+                return fyzz::Vec3{v[0],v[1],v[2]};
+            };
+            const auto source_quat=[](const float v[4]) {
+                return fyzz::Quat{v[0],v[1],v[2],v[3]};
+            };
+            const bool overlap=fyzz::native::source_pcm_box_box_candidates(
+                source_vec(boxes[0].half_extents),
+                source_vec(boxes[0].position),
+                source_quat(boxes[0].orientation),
+                source_vec(trial.half_extents),source_vec(trial.position),
+                source_quat(trial.orientation),
+                boxes[0].contact_distance+trial.contact_distance,witness,n);
+            if(overlap && n>4u) {
+                boxes[6]=trial;
+                found_large_batch=true;
+            }
+        }
+    require(found_large_batch,"Source PCM test needs a multi-contact reduction fixture");
+    pairs[index++]={1u,2u,504u};
     pairs[index++]={31u,31u,505u};
     pairs[index++]={1u,6u,0xffffffffu};
     pairs[index++]={1u,6u,710u};
@@ -118,7 +154,7 @@ void verify(Context& context,const char* transform_shader,
     const auto quat=[](const float x[4]) {
         return fyzz::Quat{x[0],x[1],x[2],x[3]};
     };
-    std::uint32_t generated=0u;
+    std::uint32_t generated=0u,reduced_batches=0u;
     for(std::size_t i=0;i<pairs.size();++i) {
         require(results[i].edge_handle==pairs[i].edge_handle &&
                 results[i].candidate_offset==pairs[i].candidate_offset,
@@ -173,6 +209,21 @@ void verify(Context& context,const char* transform_shader,
         }
         require(results[i].status==0u && results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
+        require(results[i].selected_count==std::min<std::size_t>(count,4u),
+                "Source PCM GPU reduced witness count differs from source");
+        std::array<std::uint8_t,4> chosen{};
+        if(count>4u)
+            chosen=fyzz::native::source_pcm_box_batch_selection(
+                std::span<const fyzz::native::PcmContactCandidate>{
+                    expected.data(),count},1.0f);
+        else
+            for(std::size_t k=0;k<count;++k)
+                chosen[k]=static_cast<std::uint8_t>(k);
+        for(std::size_t k=0;k<results[i].selected_count;++k) {
+            const auto gpu=(results[i].selected_indices>>(8u*k))&255u;
+            require(gpu==chosen[k],
+                    "Source PCM GPU reduced witness ordering differs from source");
+        }
         for(std::size_t k=0u;k<count;++k) {
             const auto& gpu=candidates[pairs[i].candidate_offset+k];
             const auto& cpu=expected[k];
@@ -189,8 +240,10 @@ void verify(Context& context,const char* transform_shader,
                     "Source PCM GPU candidate order or geometry differs from source");
         }
         generated+=static_cast<std::uint32_t>(count);
+        if(count>4u)++reduced_batches;
     }
-    require(generated>=4u,"Source PCM GPU fixture produced no useful witnesses");
+    require(generated>=4u && reduced_batches>0u,
+            "Source PCM GPU fixture did not execute batch reduction");
     addresses.unregister_slice(candidate_data);
     addresses.unregister_slice(result_data);
     addresses.unregister_slice(pair_data);
