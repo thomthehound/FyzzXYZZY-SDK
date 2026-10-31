@@ -1484,8 +1484,7 @@ private:
     // island EdgeIndex, never stored as shape-contact managers.
     std::vector<EdgeIndex> indexed_distance_constraints_;
     struct DistanceRow {
-        EdgeIndex edge=invalid_edge;
-        BodyId a=0,b=0;
+        // The partitioned source descriptor owns this row's edge endpoints.
         Vec3 axis{};
         Vec3 angular_a{},angular_b{};
         float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
