@@ -301,7 +301,13 @@ void verify(Context& context,const char* transform_shader,
                          <<" threshold="<<std::bit_cast<float>(trace[5])
                          <<" distance="<<std::bit_cast<float>(trace[6])
                          <<" previous="<<std::bit_cast<float>(trace[7])
-                         <<std::endl;
+                         <<" supportQ=("
+                         <<candidates[pairs[i].candidate_offset+1u].local_a[0]
+                         <<","
+                         <<candidates[pairs[i].candidate_offset+1u].local_a[1]
+                         <<","
+                         <<candidates[pairs[i].candidate_offset+1u].local_a[2]
+                         <<")"<<std::endl;
                 std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
                          <<pairs[i].first_element<<","<<pairs[i].second_element
                          <<") gpu_status="<<results[i].status
