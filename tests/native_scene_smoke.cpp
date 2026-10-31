@@ -5971,6 +5971,43 @@ namespace fyzz::native {
 // source computes maximum solverIterationCounts across all bodies in
 // each task (including unconstrained members), not across the scene.
 struct SolverIterationSourceFixture {
+    static void verify_sparse_solver_row_admission() {
+        constexpr float dt=1.0f/120.0f;
+        Scene free_flight;
+        const BodyId flying=free_flight.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20.0f,12.0f,0.0f},1.0f);
+        free_flight.step(dt);
+        if(!free_flight.solver_rows_.empty() ||
+           !free_flight.solver_active_ids_.empty() ||
+           !std::isfinite(free_flight.body_state(flying).position.y))
+            throw std::runtime_error(
+                "Unconstrained Dy island created or dereferenced a solver row");
+
+        Scene mixed;
+        mixed.add_static_floor(0.0f);
+        const BodyId touching=mixed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{0.0f,0.49f,0.0f},1.0f);
+        const BodyId free=mixed.add_dynamic_box(
+            {0.5f,0.5f,0.5f},{20.0f,12.0f,0.0f},1.0f);
+        mixed.step(dt);
+        if(mixed.solver_rows_.size()!=1 ||
+           mixed.solver_active_ids_.size()!=1 ||
+           mixed.solver_active_ids_[0]!=touching ||
+           mixed.ordered_constraints_.size()!=1 ||
+           mixed.actors_[free].solver_row_generation==
+               mixed.solver_preparation_generation_)
+            throw std::runtime_error(
+                "Free-flight island borrowed a constrained Dy row");
+        const auto& descriptor=mixed.ordered_constraints_[0];
+        const bool contact0=descriptor.row0==0u &&
+            descriptor.row1==Scene::invalid_solver_row;
+        const bool contact1=descriptor.row1==0u &&
+            descriptor.row0==Scene::invalid_solver_row;
+        if(descriptor.distance || (!contact0 && !contact1))
+            throw std::runtime_error(
+                "Mixed Dy partition lost its compact static/body row assignment");
+    }
+
     static void verify_active_manager_admission() {
         constexpr float dt=1.0f/120.0f;
         Scene scene{Scene::ContactGenerator::DiagnosticLegacyGu};
@@ -14765,6 +14802,7 @@ int run_native_scene_smoke() {
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_source_writeback();
     fyzz::native::ContactCorrelationSourceFixture::verify_signed_compliant_friction_solver();
     fyzz::native::ContactCorrelationSourceFixture::verify_source_contact_slop();
+    fyzz::native::SolverIterationSourceFixture::verify_sparse_solver_row_admission();
     fyzz::native::SolverIterationSourceFixture::verify_active_manager_admission();
     fyzz::native::SolverIterationSourceFixture::verify();
     fyzz::native::SolverIterationSourceFixture::verify_parallel_pgs_groups();
