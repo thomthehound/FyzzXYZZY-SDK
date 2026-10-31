@@ -54,7 +54,10 @@ void verify(Context& context,const char* transform_shader,
     std::size_t index=0u;
     for(const auto a:ids)
         for(const auto b:ids)
-            if(a!=b)pairs[index++]={a,b,17u+static_cast<std::uint32_t>(index)*13u};
+            if(a!=b) {
+                const auto edge=17u+static_cast<std::uint32_t>(index)*13u;
+                pairs[index++]={a,b,edge};
+            }
     pairs[index++]={31u,31u,505u};
     pairs[index++]={1u,6u,0xffffffffu};
     pairs[index++]={1u,6u,710u};
