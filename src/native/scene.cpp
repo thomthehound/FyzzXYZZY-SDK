@@ -3376,22 +3376,10 @@ std::uint8_t Scene::publish_gpu_pcm_box_box(
     std::span<ContactPoint> output) {
     if(gpu.status!=0u || gpu.count>4u)
         throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
-    cache.count=gpu.count;
+    // The GuPCM persistent witnesses stay in the device EdgeIndex cache.
+    // The scene retains only the generation marker used for reset after
+    // manager admission or a rejected frame.
     cache.initialized=true;
-    cache.warmstart={};
-    const Vec3 delta{first.position.x-second.position.x,
-                     first.position.y-second.position.y,
-                     first.position.z-second.position.z};
-    cache.relative_position=rotate_inverse(second.orientation,delta);
-    cache.relative_rotation=multiply(
-        {-second.orientation.x,-second.orientation.y,
-         -second.orientation.z,second.orientation.w},first.orientation);
-    cache.orientation_a=first.orientation;
-    cache.orientation_b=second.orientation;
-    for(std::uint8_t i=0;i<gpu.count;++i) {
-        const auto& p=gpu.points[i];
-        cache.points[i]={p.local_a,p.local_b,p.normal_b,p.separation};
-    }
     if(!gpu.count)return 0u;
     Vec3 local_normal{};
     if(gpu.regenerated)
