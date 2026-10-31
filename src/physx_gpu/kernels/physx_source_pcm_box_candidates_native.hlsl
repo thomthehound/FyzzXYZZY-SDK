@@ -481,8 +481,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
                     ++count;
                 }
             }
-            overlap=count>0u?1u:0u;
+            uint needsGjk=edgeCaches.Load(edgeBase+68u);
+            overlap=(count>0u || needsGjk!=0u)?1u:0u;
             if(cached>limit)status=2u;
+            else if(needsGjk!=0u)status=3u;
             uint selection=count==0u?0u:
                 0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
             publishPair(result,count,overlap,status,edge,first,
@@ -632,7 +634,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 p.candidateBias+(first+selection[j])*40u);
         edgeCaches.Store(edgeBase+12u,selectedCount);
         // GJK/EPA owns cases where overlap has no clipped witnesses.
-        if(overlap!=0u && count==0u)status=3u;
+        uint needsGjk=overlap!=0u && count==0u?1u:0u;
+        edgeCaches.Store(edgeBase+68u,needsGjk);
+        if(needsGjk!=0u)status=3u;
     }
     publishPair(result,count,overlap,status,edge,first,selectedCount,
                 packed,regenerated);
