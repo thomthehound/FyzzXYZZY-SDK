@@ -1706,8 +1706,8 @@ struct ConstraintIslandSourceFixture {
            scene.solver_partition_count()!=spokes+1 ||
            scene.solver_tasks_.size()!=1 ||
            scene.solver_tasks_[0].constraint_end!=spokes+1 ||
-           scene.solver_rows_[root].solver.max_dynamic_partition!=spokes ||
-           scene.solver_rows_[root].solver.static_constraint_count!=1)
+           scene.prepared_solver_row(root).solver.max_dynamic_partition!=spokes ||
+           scene.prepared_solver_row(root).solver.static_constraint_count!=1)
             throw std::runtime_error(
                 "Mixed source partition failed 32-mask overflow or static reservation");
         for(std::size_t i=0;i<spokes;++i)
@@ -3348,12 +3348,12 @@ struct ContactCorrelationSourceFixture {
                 "Settled kinematic contact fixture lacked active island");
         // A previous solver epoch's row is untrusted scratch, whether
         // it came from a target or a frame later rejected by the journal.
-        auto& stale=scene.solver_rows_[kinematic];
+        auto& stale=scene.prepared_solver_row(kinematic);
         stale.solver.linear_velocity_delta={80,12,0};
         stale.solver.angular_state={4,3,2};
         stale.data.inverse_mass=9;
         scene.step(dt);
-        const auto& row=scene.solver_rows_[kinematic];
+        const auto& row=scene.prepared_solver_row(kinematic);
         if(row.prepared_generation!=scene.solver_preparation_generation_ ||
            row.data.inverse_mass!=0.0f ||
            row.solver.linear_velocity_delta.x!=0.0f ||
@@ -5845,7 +5845,7 @@ struct ContactCorrelationSourceFixture {
                 throw std::runtime_error(
                     "Zero-capped dynamic pair lost source Gu manager or created Dy rows");
             for(const BodyId id:{a,b}) {
-                const auto& row=scene.solver_rows_[id];
+                const auto& row=scene.prepared_solver_row(id);
                 if(row.prepared_generation==scene.solver_preparation_generation_ ||
                    row.solver.partition_mask!=1 ||
                    row.solver.max_dynamic_partition!=1 ||
@@ -5875,9 +5875,9 @@ struct ContactCorrelationSourceFixture {
         if(scene.manifolds_.size()!=1 ||
            scene.solver_contact_points_.empty() ||
            scene.solver_active_ids_.size()!=2 ||
-           scene.solver_rows_[a].prepared_generation!=
+           scene.prepared_solver_row(a).prepared_generation!=
                scene.solver_preparation_generation_ ||
-           scene.solver_rows_[b].prepared_generation!=
+           scene.prepared_solver_row(b).prepared_generation!=
                scene.solver_preparation_generation_)
             throw std::runtime_error(
                 "Zero-capped dynamic pair did not reenter source PGS");
@@ -5898,8 +5898,8 @@ struct ContactCorrelationSourceFixture {
                scene.ordered_constraints_.size()!=1 ||
                !scene.solver_contact_points_.empty() ||
                !scene.solver_active_ids_.empty() ||
-               scene.solver_rows_[a].solver.partition_mask!=1 ||
-               scene.solver_rows_[b].solver.partition_mask!=1)
+               scene.prepared_solver_row(a).solver.partition_mask!=1 ||
+               scene.prepared_solver_row(b).solver.partition_mask!=1)
                 throw std::runtime_error(
                     "Re-capping original PGS manager leaked stale partition or rows");
         }
@@ -5996,6 +5996,7 @@ struct SolverIterationSourceFixture {
         if(scene.manifolds_.size()<=3 ||
            scene.indexed_managers_.size()!=3 ||
            scene.solver_active_ids_.size()!=2 ||
+           scene.solver_rows_.size()!=2 ||
            std::find(scene.solver_active_ids_.begin(),
                      scene.solver_active_ids_.end(),first)==
                scene.solver_active_ids_.end() ||
@@ -6006,6 +6007,11 @@ struct SolverIterationSourceFixture {
            scene.actors_[second].num_counted_interactions!=2)
             throw std::runtime_error(
                 "PhysX active island contact edges did not drive both Dy stages");
+        // Source Dy rows are dense despite the 48 dormant contact
+        // histories and the historical actor-ID high-water mark.
+        if(scene.solver_rows_.size()!=scene.solver_active_ids_.size())
+            throw std::runtime_error(
+                "Source Dy allocated solver rows for dormant or retired actors");
         // Dormant Gu managers remain queryable, but the unified input
         // carries only this frame's three active source descriptors.
         // It no longer allocates or clears stamps for dormant Gu slots.
@@ -6493,7 +6499,7 @@ struct SolverIterationSourceFixture {
                 throw std::runtime_error(
                     "Final-pass fixture lost source 128+2 task isolation");
             const BodyId last=body_count;
-            const auto& row=tested.solver_rows_[last];
+            const auto& row=tested.prepared_solver_row(last);
             if(row.prepared_generation!=tested.solver_preparation_generation_)
                 throw std::runtime_error(
                     "Final-pass fixture omitted second-task solver body");
