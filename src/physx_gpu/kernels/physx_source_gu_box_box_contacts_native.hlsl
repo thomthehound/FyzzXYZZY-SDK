@@ -316,7 +316,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint previousAxis=pairs.Load(pairBase+8u);
     uint outputStart=pairs.Load(pairBase+12u);
     uint outputLimit=pairs.Load(pairBase+16u);
-    uint resultBase=p.resultBias+index*16u;
+    uint edgeHandle=pairs.Load(pairBase+20u);
+    uint resultBase=p.resultBias+index*24u;
     uint axis=0u;
     uint status=0u,count=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
@@ -394,5 +395,6 @@ void main(uint3 thread : SV_DispatchThreadID) {
         if(count==0u)axis=0u;
         }
     }
-    results.Store4(resultBase,uint4(count,axis,status,0u));
+    results.Store4(resultBase,uint4(count,axis,status,edgeHandle));
+    results.Store2(resultBase+16u,uint2(outputStart,0u));
 }
