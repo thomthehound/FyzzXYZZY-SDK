@@ -180,6 +180,8 @@ struct PcmGjkWarmstart {
     std::array<std::uint8_t,4> a{},b{};
     std::uint8_t count=0;
 };
+std::array<std::uint8_t,4> source_pcm_box_batch_selection(
+    std::span<const PcmContactCandidate> contacts,float tolerance_length);
 bool source_pcm_box_box_candidates(
     Vec3 half0,Vec3 position0,Quat rotation0,
     Vec3 half1,Vec3 position1,Quat rotation1,
