@@ -32,10 +32,10 @@ public:
             std::max<std::uint64_t>(4u,device.storage_buffer_offset_alignment));
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
-        desc.storage_buffer_binding_count=3u;
+        desc.storage_buffer_binding_count=1u;
         desc.storage_buffer_views.assign(
-            3u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=16u;
+            1u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=4u;
         if(reset_shader.format==compute::ShaderFormat::Spirv) {
             reset_shader.entry_point="reset";
             compact_shader.entry_point="compact";
@@ -43,6 +43,10 @@ public:
         desc.shader=std::move(reset_shader);
         reset_=context_.create_compute_pipeline(desc);
         try {
+            desc.storage_buffer_binding_count=3u;
+            desc.storage_buffer_views.assign(
+                3u,compute::StorageBufferViewKind::RawReadWrite);
+            desc.push_constant_bytes=16u;
             desc.shader=std::move(compact_shader);
             compact_=context_.create_compute_pipeline(desc);
         }catch(...) {
@@ -68,11 +72,25 @@ public:
                 CudaDeviceAddressMap::Address work,
                 CudaDeviceAddressMap::Address dispatch_args,
                 std::uint32_t pair_count) const {
-        if(!pair_count)return;
         const auto& limits=context_.device_info();
         if(pair_count>limits.max_workgroup_count[0])
             throw std::out_of_range(
                 "Source EPA work count exceeds indirect dispatch limit");
+        std::uint32_t resetBias=0u;
+        const auto resetView=source_native_view(
+            addresses,dispatch_args,12u,alignment_,0u,
+            compute::BufferAccess::Write,resetBias,max_view_);
+        compute::DispatchCommand reset{};
+        reset.pipeline=reset_;
+        reset.groups={1u,1u,1u};
+        reset.buffers={resetView};
+        reset.push_constants.resize(sizeof(resetBias));
+        std::memcpy(reset.push_constants.data(),
+                    &resetBias,sizeof(resetBias));
+        if(!pair_count) {
+            commands.emplace_back(std::move(reset));
+            return;
+        }
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         std::array<std::uint32_t,4> params{pair_count,0u,0u,0u};
         const auto view=[&](CudaDeviceAddressMap::Address addr,
@@ -87,25 +105,18 @@ public:
             view(work,source_allocation_bytes(pair_count,4u),
                  1u,compute::BufferAccess::Write),
             view(dispatch_args,12u,2u,compute::BufferAccess::ReadWrite)};
-        if(inputs[2].buffer==inputs[0].buffer ||
-           inputs[2].buffer==inputs[1].buffer)
+        if(resetView.buffer==inputs[0].buffer ||
+           resetView.buffer==inputs[1].buffer)
             throw std::invalid_argument(
                 "Source EPA indirect arguments must have a separate GPU buffer");
-        const auto make=[&](compute::PipelineId pipeline,
-                            std::uint32_t count) {
-            compute::DispatchCommand dispatch{};
-            dispatch.pipeline=pipeline;
-            dispatch.groups={count,1u,1u};
-            dispatch.buffers.assign(inputs.begin(),inputs.end());
-            dispatch.push_constants.resize(sizeof(params));
-            std::memcpy(dispatch.push_constants.data(),
-                        params.data(),sizeof(params));
-            return dispatch;
-        };
-        auto reset=make(reset_,1u);
-        reset.buffers[0].access=compute::BufferAccess::Read;
-        reset.buffers[1].access=compute::BufferAccess::Write;
-        auto compact=make(compact_,static_cast<std::uint32_t>(groups));
+        compute::DispatchCommand compact{};
+        compact.pipeline=compact_;
+        compact.groups={static_cast<std::uint32_t>(groups),1u,1u};
+        compact.buffers.assign(inputs.begin(),inputs.end());
+        compact.push_constants.resize(sizeof(params));
+        std::memcpy(compact.push_constants.data(),
+                    params.data(),sizeof(params));
+        commands.reserve(commands.size()+2u);
         commands.emplace_back(std::move(reset));
         commands.emplace_back(std::move(compact));
     }
