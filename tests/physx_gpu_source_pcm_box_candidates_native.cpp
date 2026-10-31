@@ -298,6 +298,15 @@ void verify(Context& context,const char* transform_shader,
                          <<","
                          <<candidates[pairs[i].candidate_offset+2u].local_a[2]
                          <<")"<<std::endl;
+                for(std::size_t k=0;k<3u;++k) {
+                    const auto& q=candidates[
+                        pairs[i].candidate_offset+3u+k];
+                    std::cerr<<std::setprecision(10)
+                             <<"GPU simplex "<<k<<" q=("
+                             <<q.local_a[0]<<","<<q.local_a[1]<<","
+                             <<q.local_a[2]<<") weight="
+                             <<q.local_b[0]<<std::endl;
+                }
                 std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
                          <<pairs[i].first_element<<","<<pairs[i].second_element
                          <<") gpu_status="<<results[i].status
