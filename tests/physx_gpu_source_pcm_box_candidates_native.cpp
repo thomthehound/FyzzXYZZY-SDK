@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cstring>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -289,6 +291,17 @@ void verify(Context& context,const char* transform_shader,
                     "GPU PCM returned an invalid GJK continuation status");
             if(source_contact && gjk_reference.separation>0.0001f &&
                (results[i].status!=0u || results[i].candidate_count!=1u)) {
+                std::array<std::uint32_t,10> trace{};
+                std::memcpy(trace.data(),
+                    &candidates[pairs[i].candidate_offset],sizeof(trace));
+                std::cerr<<"GPU GJK trace iteration="<<trace[0]
+                         <<" support=("<<trace[1]<<","<<trace[2]<<")"
+                         <<" simplex_count="<<trace[3]
+                         <<" projection="<<std::bit_cast<float>(trace[4])
+                         <<" threshold="<<std::bit_cast<float>(trace[5])
+                         <<" distance="<<std::bit_cast<float>(trace[6])
+                         <<" previous="<<std::bit_cast<float>(trace[7])
+                         <<std::endl;
                 std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
                          <<pairs[i].first_element<<","<<pairs[i].second_element
                          <<") gpu_status="<<results[i].status
