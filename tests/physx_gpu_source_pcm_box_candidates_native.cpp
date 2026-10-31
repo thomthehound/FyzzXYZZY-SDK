@@ -287,6 +287,22 @@ void verify(Context& context,const char* transform_shader,
                 a.contact_distance+b.contact_distance,gjk_reference,nullptr);
             require(results[i].status==0u || results[i].status==3u,
                     "GPU PCM returned an invalid GJK continuation status");
+            if(source_contact && gjk_reference.separation>0.0001f &&
+               (results[i].status!=0u || results[i].candidate_count!=1u)) {
+                std::cerr<<"Positive-gap GJK mismatch pair "<<i<<" ("
+                         <<pairs[i].first_element<<","<<pairs[i].second_element
+                         <<") gpu_status="<<results[i].status
+                         <<" gpu_count="<<results[i].candidate_count
+                         <<" gjk_exit="
+                         <<edge_caches[pairs[i].edge_handle].reserved[1]
+                         <<" source_separation="<<gjk_reference.separation
+                         <<" B=("<<b.position[0]<<","<<b.position[1]<<","
+                         <<b.position[2]<<") quat=("<<b.orientation[0]<<","
+                         <<b.orientation[1]<<","<<b.orientation[2]<<","
+                         <<b.orientation[3]<<")"<<std::endl;
+                throw std::runtime_error(
+                    "GPU GJK failed to emit source positive-gap contact");
+            }
             if(results[i].status==3u) {
                 require(results[i].candidate_count==0u &&
                         results[i].overlapping==1u &&
