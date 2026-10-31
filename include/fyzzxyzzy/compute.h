@@ -175,11 +175,18 @@ struct CopyCommand {
     std::size_t bytes = 0;
 };
 
+struct DispatchIndirectArgs {
+    BufferId buffer = 0;
+    std::size_t offset = 0; // Three GPU-written uint32 workgroup counts.
+};
+
 struct DispatchCommand {
     PipelineId pipeline = 0;
     DispatchSize groups;
     std::vector<BufferBinding> buffers;
     std::vector<std::uint8_t> push_constants;
+    // GPU-generated dimensions replace direct groups; leave groups {1,1,1}.
+    std::optional<DispatchIndirectArgs> indirect;
 };
 
 using BatchCommand = std::variant<CopyCommand, DispatchCommand>;
