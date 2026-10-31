@@ -24,6 +24,10 @@ RWByteAddressBuffer results : register(u3,space0);
 [[vk::binding(4,0)]]
 #endif
 RWByteAddressBuffer candidates : register(u4,space0);
+#ifdef __spirv__
+[[vk::binding(5,0)]]
+#endif
+RWByteAddressBuffer edgeCaches : register(u5,space0);
 
 struct Parameters {
     uint pairCount;
@@ -32,8 +36,10 @@ struct Parameters {
     uint pairBias;
     uint resultBias;
     uint candidateBias;
+    uint edgeCacheBias;
     uint shapeCapacity;
     uint candidateCapacity;
+    uint edgeCapacity;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -101,6 +107,102 @@ float fusedDot(float3 a,float3 b) {
                            fusedProductSum(a.y,b.y,a.z*b.z));
 }
 #endif
+
+
+float4 quatProduct(float4 a,float4 b) {
+    return float4(
+        a.w*b.x+b.w*a.x+a.y*b.z-a.z*b.y,
+        a.w*b.y+b.w*a.y+a.z*b.x-a.x*b.z,
+        a.w*b.z+b.w*a.z+a.x*b.y-a.y*b.x,
+        a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z);
+}
+float4 conjugate(float4 q) {return float4(-q.xyz,q.w);}
+
+uint cachePointAddress(uint edgeBase,uint contactIndex) {
+    return edgeBase+80u+contactIndex*40u;
+}
+void copyCachedContact(uint edgeBase,uint contactIndex,uint destination) {
+    uint sourceOffset=cachePointAddress(edgeBase,contactIndex);
+    [unroll]
+    for(uint k=0u;k<10u;++k)
+        candidates.Store(destination+k*4u,edgeCaches.Load(sourceOffset+k*4u));
+}
+void storeSelectedContact(uint edgeBase,uint slot,uint source) {
+    uint destinationOffset=cachePointAddress(edgeBase,slot);
+    [unroll]
+    for(uint k=0u;k<10u;++k)
+        edgeCaches.Store(destinationOffset+k*4u,candidates.Load(source+k*4u));
+}
+// GuPersistentContactManifold::refreshContactPoints and
+// invalidate_BoxConvex, operating directly on the Sc EdgeIndex record.
+// The relative transform belongs to B; no independently owned cache.
+bool refreshEdge(uint edgeBase,float3 pa,float3 pb,float4 qa,float4 qb,
+                 float3 ea,float3 eb,float contactDistance) {
+    const float4 inverseB=conjugate(qb);
+    const float3 relative=rotateSource(inverseB,pa-pb);
+    const float4 rotation=quatProduct(inverseB,qa);
+    const uint initialized=edgeCaches.Load(edgeBase+64u);
+    uint count=edgeCaches.Load(edgeBase+12u);
+    if(initialized==0u)count=0u;
+    const uint initial=count;
+    float minA=min(ea.x,min(ea.y,ea.z));
+    float minB=min(eb.x,min(eb.y,eb.z));
+    const float margin=min(min(0.15f*minA,0.15f),min(0.15f*minB,0.15f));
+    const float breakingSq=(margin*0.8f)*(margin*0.8f);
+    for(uint i=count;i>0u;--i) {
+        uint offset=cachePointAddress(edgeBase,i-1u);
+        float3 localA=asfloat(edgeCaches.Load3(offset));
+        float3 localB=asfloat(edgeCaches.Load3(offset+12u));
+        float3 normal=asfloat(edgeCaches.Load3(offset+24u));
+        float3 v=relative+rotateSource(rotation,localA)-localB;
+        float distance=dot(v,normal);
+        float3 tangent=v-normal*distance;
+        if(dot(tangent,tangent)>breakingSq) {
+            --count;
+            if(i-1u!=count) {
+                uint from=cachePointAddress(edgeBase,count);
+                [unroll]
+                for(uint k=0u;k<10u;++k)
+                    edgeCaches.Store(offset+k*4u,
+                                    edgeCaches.Load(from+k*4u));
+            }
+        }else
+            edgeCaches.Store(offset+36u,asuint(distance));
+    }
+    edgeCaches.Store(edgeBase+12u,count);
+    const float3 previous=asfloat(edgeCaches.Load3(edgeBase));
+    const float4 previousA=asfloat(edgeCaches.Load4(edgeBase+32u));
+    const float4 previousB=asfloat(edgeCaches.Load4(edgeBase+48u));
+    const float translation=max(abs(relative.x-previous.x),
+        max(abs(relative.y-previous.y),abs(relative.z-previous.z)));
+    const float thresholds[5]={0.5f,0.125f,0.25f,0.375f,0.375f};
+    const float quaternionThresholds[5]={
+        0.9998f,0.9999f,0.9999f,0.9999f,0.9999f};
+    float qaDot=dot(qa,previousA),qbDot=dot(qb,previousB);
+    float limit=margin*thresholds[count];
+    bool regenerate=initialized==0u || count!=initial ||
+        translation>limit || qaDot<quaternionThresholds[count] ||
+        qbDot<quaternionThresholds[count];
+    if(!regenerate) {
+        float arcA=qaDot<1.f?acos(max(-1.f,qaDot)):0.f;
+        float arcB=qbDot<1.f?acos(max(-1.f,qbDot)):0.f;
+        regenerate=arcA*sqrt(dot(ea,ea))>limit ||
+                   arcB*sqrt(dot(eb,eb))>limit;
+    }
+    if(regenerate) {
+        edgeCaches.Store3(edgeBase,asuint(relative));
+        edgeCaches.Store4(edgeBase+16u,asuint(rotation));
+        edgeCaches.Store4(edgeBase+32u,asuint(qa));
+        edgeCaches.Store4(edgeBase+48u,asuint(qb));
+        edgeCaches.Store(edgeBase+64u,1u);
+    }
+    return regenerate;
+}
+void publishPair(uint offset,uint count,uint overlap,uint status,uint edge,
+                 uint first,uint selectedCount,uint packed,uint regenerated) {
+    results.Store4(offset,uint4(count,overlap,status,edge));
+    results.Store4(offset+16u,uint4(first,selectedCount,packed,regenerated));
+}
 
 void emit(Frame f,float3 reference,float3 incident,float3 normal,
           float separation,bool flipped,
@@ -341,10 +443,10 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
     uint first=pairs.Load(source+12u),limit=pairs.Load(source+16u);
-    uint result=p.resultBias+i*28u;
-    uint count=0u,overlap=0u,status=0u;
+    uint result=p.resultBias+i*32u;
+    uint count=0u,overlap=0u,status=0u,regenerated=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
-       edge==0xffffffffu ||
+       edge>=p.edgeCapacity ||
        first>p.candidateCapacity ||
        limit>p.candidateCapacity-first) {
         status=1u;
@@ -352,13 +454,44 @@ void main(uint3 thread : SV_DispatchThreadID) {
         uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;
         float3 pa=asfloat(transforms.Load3(ta+16u));
         float3 pb=asfloat(transforms.Load3(tb+16u));
-        float3x3 A=quaternionBasis(asfloat(transforms.Load4(ta)));
-        float3x3 B=quaternionBasis(asfloat(transforms.Load4(tb)));
         uint ga=p.geometryBias+a*16u,gb=p.geometryBias+b*16u;
         float3 ea=asfloat(geometry.Load3(ga));
         float3 eb=asfloat(geometry.Load3(gb));
         float distance=asfloat(geometry.Load(ga+12u))+
                        asfloat(geometry.Load(gb+12u));
+        uint edgeBase=p.edgeCacheBias+edge*240u;
+        float4 qa=asfloat(transforms.Load4(ta));
+        float4 qb=asfloat(transforms.Load4(tb));
+        if(edgeCaches.Load(edgeBase+12u)>4u ||
+           edgeCaches.Load(edgeBase+64u)>1u) {
+            publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+            return;
+        }
+        bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
+        if(!regenerate) {
+            uint cached=edgeCaches.Load(edgeBase+12u);
+            for(uint j=0u;j<cached;++j) {
+                uint source=cachePointAddress(edgeBase,j);
+                float depth=asfloat(edgeCaches.Load(source+36u));
+                if(depth<=distance && count<limit) {
+                    copyCachedContact(edgeBase,j,
+                        p.candidateBias+(first+count)*40u);
+                    ++count;
+                }
+            }
+            uint needsGjk=edgeCaches.Load(edgeBase+68u);
+            overlap=(count>0u || needsGjk!=0u)?1u:0u;
+            if(cached>limit)status=2u;
+            else if(needsGjk!=0u)status=3u;
+            uint selection=count==0u?0u:
+                0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
+            publishPair(result,count,overlap,status,edge,first,
+                        min(count,4u),selection,0u);
+            return;
+        }
+        regenerated=1u;
+        float3x3 A=quaternionBasis(qa);
+        float3x3 B=quaternionBasis(qb);
         float3 delta=pb-pa;
         float3 s[6]={A[0],A[1],A[2],B[0],B[1],B[2]};
         float3x3 incident;
@@ -494,6 +627,25 @@ void main(uint3 thread : SV_DispatchThreadID) {
         selection=selectBatch(first,count);
     uint packed=selectedCount==0u?0u:
         selection.x|(selection.y<<8u)|(selection.z<<16u)|(selection.w<<24u);
-    results.Store4(result,uint4(count,overlap,status,edge));
-    results.Store3(result+16u,uint3(first,selectedCount,packed));
+    if(regenerated!=0u && status==2u) {
+        // A partial clip is not a valid PCM manifold. Require full
+        // regeneration even when the next frame has the same pose.
+        uint edgeBase=p.edgeCacheBias+edge*240u;
+        edgeCaches.Store(edgeBase+12u,0u);
+        edgeCaches.Store(edgeBase+64u,0u);
+        edgeCaches.Store(edgeBase+68u,0u);
+    }
+    if(regenerated!=0u && status==0u) {
+        uint edgeBase=p.edgeCacheBias+edge*240u;
+        for(uint j=0u;j<selectedCount;++j)
+            storeSelectedContact(edgeBase,j,
+                p.candidateBias+(first+selection[j])*40u);
+        edgeCaches.Store(edgeBase+12u,selectedCount);
+        // GJK/EPA owns cases where overlap has no clipped witnesses.
+        uint needsGjk=overlap!=0u && count==0u?1u:0u;
+        edgeCaches.Store(edgeBase+68u,needsGjk);
+        if(needsGjk!=0u)status=3u;
+    }
+    publishPair(result,count,overlap,status,edge,first,selectedCount,
+                packed,regenerated);
 }

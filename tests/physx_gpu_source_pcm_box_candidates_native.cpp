@@ -108,6 +108,8 @@ void verify(Context& context,const char* transform_shader,
     std::array<SourcePcmBoxPairResultNative,pairs.size()> results{};
     std::vector<SourcePcmBoxCandidateNative> candidates(
         pairs.size()*per_pair);
+    constexpr std::uint32_t edge_capacity=768u;
+    std::vector<SourcePcmScEdgeCacheNative> edge_caches(edge_capacity);
     const std::size_t input_offset=4u;
     const std::size_t bounds_offset=input_offset+sizeof(boxes)+12u;
     const std::size_t transform_offset=bounds_offset+capacity*24u+4u;
@@ -115,10 +117,14 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t pair_offset=geometry_offset+capacity*16u+4u;
     const std::size_t result_offset=pair_offset+sizeof(pairs)+4u;
     const std::size_t candidate_offset=result_offset+sizeof(results)+4u;
+    const std::size_t edge_offset=
+        candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
     const auto root=context.create_buffer(
-        candidate_offset+candidates.size()*sizeof(candidates[0])+16u);
+        edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+    context.upload(root,edge_offset,edge_caches.data(),
+                   edge_caches.size()*sizeof(edge_caches[0]));
     CudaDeviceAddressMap addresses;
     const auto inputs=addresses.register_slice(root,input_offset,sizeof(boxes));
     const auto bounds=addresses.register_slice(root,bounds_offset,capacity*24u);
@@ -128,17 +134,20 @@ void verify(Context& context,const char* transform_shader,
     const auto result_data=addresses.register_slice(root,result_offset,sizeof(results));
     const auto candidate_data=addresses.register_slice(
         root,candidate_offset,candidates.size()*sizeof(candidates[0]));
+    const auto edge_data=addresses.register_slice(
+        root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
+    SourceScBoxTransformBoundsNativeStage producer(
+        context,shader(transform_shader));
+    SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
     {
-        SourceScBoxTransformBoundsNativeStage producer(
-            context,shader(transform_shader));
-        SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,
+                   result_data,candidate_data,edge_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
-                   static_cast<std::uint32_t>(candidates.size()));
+                   static_cast<std::uint32_t>(candidates.size()),
+                   edge_capacity);
         stream.wait_at_fetch();
         require(stream.submission_stats().command_batches==1u,
                 "Source PCM candidate stage split the original device stream batch");
@@ -146,6 +155,8 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
     for(const auto& box:boxes)by_id[box.element_index]=box;
     const auto near=[](float a,float b) {return std::abs(a-b)<0.001f;};
@@ -208,8 +219,15 @@ void verify(Context& context,const char* transform_shader,
                          <<" separation="<<witness.separation<<std::endl;
             }
         }
-        require(results[i].status==0u && results[i].candidate_count==count,
+        require(results[i].regenerated==1u,
+                "Source PCM GPU initial frame bypassed regeneration");
+        require(results[i].status==(overlap && count==0u?3u:0u) &&
+                results[i].candidate_count==count,
                 "Source PCM GPU candidate count differs from source");
+        require(edge_caches[pairs[i].edge_handle].initialized==1u &&
+                edge_caches[pairs[i].edge_handle].count==
+                    std::min<std::size_t>(count,4u),
+                "Source PCM GPU did not retain Sc edge-owned contacts");
         require(results[i].selected_count==std::min<std::size_t>(count,4u),
                 "Source PCM GPU reduced witness count differs from source");
         std::array<std::uint8_t,4> chosen{};
@@ -245,6 +263,113 @@ void verify(Context& context,const char* transform_shader,
     }
     require(generated>=4u && reduced_batches>0u,
             "Source PCM GPU fixture did not execute batch reduction");
+    // An overflowing regeneration must not turn into a cached quiet
+    // frame. Retry the same pose, then enlarge only the candidate window.
+    const auto overflow_edge=pairs.back().edge_handle;
+    require(edge_caches[overflow_edge].initialized==0u &&
+            edge_caches[overflow_edge].count==0u,
+            "Overflow committed an incomplete Sc PCM edge cache");
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    require(results.back().status==2u && results.back().regenerated==1u,
+            "Same-pose overflow incorrectly used the empty Sc PCM cache");
+    pairs.back().candidate_capacity=per_pair;
+    context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    require(results.back().status==0u && results.back().regenerated==1u &&
+            results.back().candidate_count>1u &&
+            edge_caches[overflow_edge].initialized==1u &&
+            edge_caches[overflow_edge].count==results.back().selected_count,
+            "Sc PCM retry did not regenerate complete witnesses after overflow");
+    // A second GPU frame reuses the same Sc edge records without a host
+    // candidate upload, second pipeline, or per-pair CPU collision call.
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Source PCM refresh split the native device stream");
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    for(std::size_t i=0;i<pairs.size();++i) {
+        if(pairs[i].first_element==pairs[i].second_element ||
+           pairs[i].edge_handle==0xffffffffu)continue;
+        require(results[i].regenerated==0u && results[i].status!=2u,
+                "Unchanged Sc PCM edge unnecessarily regenerated");
+        require(results[i].candidate_count<=4u,
+                "Quiet Sc PCM frame did not reuse reduced manifold");
+    }
+    // Refresh moves the cached witness in the second box's local frame.
+    // A small pose change must update separation without invoking SAT.
+    const auto prior=edge_caches[pairs[0].edge_handle];
+    require(prior.count>0u,"PCM refresh fixture requires retained witnesses");
+    const auto bQuat=boxes[1].orientation;
+    const float deltaX=0.002f;
+    boxes[0].position[0]+=deltaX;
+    context.upload(root,input_offset,boxes.data(),sizeof(boxes));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        static_cast<std::uint32_t>(boxes.size()),capacity);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==1u,
+                "Sc PCM pose refresh split the native device stream");
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    require(results[0].regenerated==0u,
+            "Small Sc box motion needlessly regenerated the PCM manifold");
+    const auto& old=prior.contacts[0];
+    const auto& now=edge_caches[pairs[0].edge_handle].contacts[0];
+    const float rz=1.0f-2.0f*bQuat[2]*bQuat[2];
+    const float ry=-2.0f*bQuat[2]*bQuat[3];
+    const float expectedDepth=old.separation+
+        deltaX*(rz*old.normal_b[0]+ry*old.normal_b[1]);
+    require(std::abs(now.separation-expectedDepth)<0.001f,
+            "Sc PCM GPU refresh did not update B-local witness depth");
+    // A larger motion must invalidate this edge and regenerate from the
+    // device-owned shape cache; the old manifold cannot be republished.
+    boxes[0].position[0]+=0.25f;
+    context.upload(root,input_offset,boxes.data(),sizeof(boxes));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        producer.append(stream,addresses,inputs,bounds,transforms,geometry,
+                        static_cast<std::uint32_t>(boxes.size()),capacity);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    require(results[0].regenerated==1u,
+            "Sc PCM GPU failed to invalidate and regenerate after large motion");
+    addresses.unregister_slice(edge_data);
     addresses.unregister_slice(candidate_data);
     addresses.unregister_slice(result_data);
     addresses.unregister_slice(pair_data);
