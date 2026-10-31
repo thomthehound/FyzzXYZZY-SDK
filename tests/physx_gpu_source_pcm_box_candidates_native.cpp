@@ -263,6 +263,41 @@ void verify(Context& context,const char* transform_shader,
     }
     require(generated>=4u && reduced_batches>0u,
             "Source PCM GPU fixture did not execute batch reduction");
+    // An overflowing regeneration must not turn into a cached quiet
+    // frame. Retry the same pose, then enlarge only the candidate window.
+    const auto overflow_edge=pairs.back().edge_handle;
+    require(edge_caches[overflow_edge].initialized==0u &&
+            edge_caches[overflow_edge].count==0u,
+            "Overflow committed an incomplete Sc PCM edge cache");
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    require(results.back().status==2u && results.back().regenerated==1u,
+            "Same-pose overflow incorrectly used the empty Sc PCM cache");
+    pairs.back().candidate_capacity=per_pair;
+    context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset,edge_caches.data(),
+                     edge_caches.size()*sizeof(edge_caches[0]));
+    require(results.back().status==0u && results.back().regenerated==1u &&
+            results.back().candidate_count>1u &&
+            edge_caches[overflow_edge].initialized==1u &&
+            edge_caches[overflow_edge].count==results.back().selected_count,
+            "Sc PCM retry did not regenerate complete witnesses after overflow");
     // A second GPU frame reuses the same Sc edge records without a host
     // candidate upload, second pipeline, or per-pair CPU collision call.
     {
@@ -278,8 +313,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     for(std::size_t i=0;i<pairs.size();++i) {
         if(pairs[i].first_element==pairs[i].second_element ||
-           pairs[i].edge_handle==0xffffffffu ||
-           i==pairs.size()-1u)continue;
+           pairs[i].edge_handle==0xffffffffu)continue;
         require(results[i].regenerated==0u && results[i].status!=2u,
                 "Unchanged Sc PCM edge unnecessarily regenerated");
         require(results[i].candidate_count<=4u,
