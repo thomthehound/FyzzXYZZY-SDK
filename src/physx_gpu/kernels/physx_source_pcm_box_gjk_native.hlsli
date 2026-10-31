@@ -146,7 +146,7 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
     witness=(GjkWitness)0;
     float distance=sqrt(nearest.dist2);
     if(!(distance>0.f) || !isfinite(distance))return false;
-    witness.normalB=nearest.closestPoint/distance;
+    witness.normalB=nearest.closestPoint*(1.f/distance);
     witness.localA=rotateSource(
         conjugate(pair.relative),nearest.a-pair.aInB);
     witness.localB=nearest.b;
@@ -177,7 +177,7 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         float dist=sqrt(gjkLength2(closest));
         if(count>0u && dist<=epsilon)return 3u;
         if(dist<=0.f)return 4u;
-        float3 normal=closest/dist;
+        float3 normal=closest*(1.f/dist);
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=gjkDot(normal,support.q);
         trace=uint4(iteration,support.ai,support.bi,count);
