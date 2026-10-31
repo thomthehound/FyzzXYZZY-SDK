@@ -5937,9 +5937,13 @@ Scene::SolverBodyRow& Scene::admit_solver_row(BodyId id) {
 }
 
 Scene::SolverBodyRow& Scene::prepared_solver_row(BodyId id) {
-    // Source active-island admission assigns every participating actor
-    // before partitioning, row preparation and task-local solving.
-    return solver_rows_[actors_[id].solver_row_index];
+    // The hot PGS path uses pre-resolved row indices, so verify source
+    // admission here rather than risk aliasing an unrelated active body.
+    const auto& actor=actors_[id];
+    if(actor.solver_row_generation!=solver_preparation_generation_ ||
+       actor.solver_row_index>=solver_rows_.size())
+        throw std::logic_error("Dy solver body has no current source row");
+    return solver_rows_[actor.solver_row_index];
 }
 
 void Scene::prepare_solver_bodies() {
