@@ -307,14 +307,14 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 faceX=referenceHalf.x;faceY=referenceHalf.y;
             }
             float3 search=-f.z;
-            // Source contact-face scores accumulate with a fused multiply-add.
+            // Source contact-face scores accumulate with a multiply-add.
             // Preserve its rounding before the X/Y/Z preference comparison.
-            float dx=abs(fma(search.x,incident[0].x,
-                         fma(search.y,incident[0].y,search.z*incident[0].z)));
-            float dy=abs(fma(search.x,incident[1].x,
-                         fma(search.y,incident[1].y,search.z*incident[1].z)));
-            float dz=abs(fma(search.x,incident[2].x,
-                         fma(search.y,incident[2].y,search.z*incident[2].z)));
+            float dx=abs(mad(search.x,incident[0].x,
+                         mad(search.y,incident[0].y,search.z*incident[0].z)));
+            float dy=abs(mad(search.x,incident[1].x,
+                         mad(search.y,incident[1].y,search.z*incident[1].z)));
+            float dz=abs(mad(search.x,incident[2].x,
+                         mad(search.y,incident[2].y,search.z*incident[2].z)));
             if(limit>=64u) {
                 uint debug=p.candidateBias+(first+63u)*40u;
                 candidates.Store3(debug,asuint(float3(dx,dy,dz)));
