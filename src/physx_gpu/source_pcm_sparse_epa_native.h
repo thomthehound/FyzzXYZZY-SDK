@@ -83,6 +83,10 @@ public:
             view(work,source_allocation_bytes(pair_count,4u),
                  1u,compute::BufferAccess::Write),
             view(dispatch_args,12u,2u,compute::BufferAccess::ReadWrite)};
+        if(inputs[2].buffer==inputs[0].buffer ||
+           inputs[2].buffer==inputs[1].buffer)
+            throw std::invalid_argument(
+                "Source EPA indirect arguments must have a separate GPU buffer");
         const auto make=[&](compute::PipelineId pipeline,
                             std::uint32_t count) {
             compute::DispatchCommand dispatch{};
