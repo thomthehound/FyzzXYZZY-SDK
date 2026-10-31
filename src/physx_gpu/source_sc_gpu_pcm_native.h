@@ -139,10 +139,10 @@ public:
         const auto mapped_packed=addresses_.resolve(
             dense_contacts_.getDevicePtr(),
             packed_host_.size()*sizeof(packed_host_[0]));
-        const std::array<compute::DownloadSpan,1> downloads{{
+        const std::vector<compute::DownloadSpan> downloads{
             {mapped_packed.buffer,mapped_packed.offset,packed_host_.data(),
                 packed_host_.size()*sizeof(packed_host_[0])}
-        }};
+        };
         context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
