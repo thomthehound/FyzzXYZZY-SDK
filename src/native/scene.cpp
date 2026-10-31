@@ -6219,8 +6219,10 @@ void Scene::partition_constraints() {
             const auto& d=actors_[id].dynamics;
             task_pos_iters=std::max(task_pos_iters,d.position_iterations);
             task_vel_iters=std::max(task_vel_iters,d.velocity_iterations);
-            if(prepared_solver_row(id).prepared_generation==
-               solver_preparation_generation_)
+            if(actors_[id].solver_row_generation==
+                   solver_preparation_generation_ &&
+               prepared_solver_row(id).prepared_generation==
+                   solver_preparation_generation_)
                 ++prepared_solver_bodies;
         }
         // DyDynamicsContext::updatePostKinematic breaks after EVERY
