@@ -44,15 +44,18 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 struct Frame {
     float3 x,y,z,position;
 };
+float3 rotateSource(float4 q,float3 v) {
+    float3 u=q.xyz;
+    float3 t=cross(u,v)*2.f;
+    return v+(t*q.w+cross(u,t));
+}
 float3x3 quaternionBasis(float4 q) {
-    float x2=q.x+q.x,y2=q.y+q.y,z2=q.z+q.z;
-    float xx=x2*q.x,yy=y2*q.y,zz=z2*q.z;
-    float xy=x2*q.y,xz=x2*q.z,xw=x2*q.w;
-    float yz=y2*q.z,yw=y2*q.w,zw=z2*q.w;
+    // GuPCMContactBoxBox builds axes by rotating unit vectors. Retain
+    // that operation order where incident-face alignment is nearly tied.
     return float3x3(
-        float3(1.f-yy-zz,xy+zw,xz-yw),
-        float3(xy-zw,1.f-xx-zz,yz+xw),
-        float3(xz+yw,yz-xw,1.f-xx-yy));
+        rotateSource(q,float3(1.f,0.f,0.f)),
+        rotateSource(q,float3(0.f,1.f,0.f)),
+        rotateSource(q,float3(0.f,0.f,1.f)));
 }
 float3 apply(float3x3 basis,float3 v) {
     return basis[0]*v.x+basis[1]*v.y+basis[2]*v.z;
