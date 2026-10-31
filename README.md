@@ -18,12 +18,17 @@ with source-derived SAP, PCM narrowphase, island/task ownership, Dy PGS
 dynamics, materials, constraints and contact reporting. This is not complete
 PhysX CPU feature coverage.
 
-The native GPU World now integrates source-derived AABB/SAP and aggregate
-broadphase on **Vulkan and D3D12** with persistent frame histories, found/lost
-pair publication and the same native Sc/PCM/Dy scene. This is a **hybrid**
-pipeline: narrowphase and rigid solving remain on the CPU. GPU narrowphase,
-GPU dynamics, broader geometry, articulations and deformables are not yet
-production features.
+The native GPU World integrates source-derived AABB/SAP and aggregate
+broadphase on **Vulkan and D3D12**, with persistent frame histories and
+found/lost pair publication into the same native Sc/PCM/Dy scene. Supplying
+the optional `NativeGpuPcmShaders` bundle also runs source GPU box/box PCM,
+sparse GJK/EPA continuation and world-space Gu contact generation for live
+Sc contact managers. Without that bundle, narrowphase remains on the CPU.
+
+This is still a **hybrid** pipeline: Sc publishes GPU contacts for CPU Dy
+constraint preparation and rigid solving. Device-resident constraint
+preparation, GPU PGS and body integration, broader geometry, articulations
+and deformables are not yet production features.
 
 Use `ExecutionMode::NativeCpu` for the independent CPU scene. The ordinary
 `World` default still uses the optional reference CPU backend, and direct
