@@ -636,6 +636,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 boxPair.relative=quatProduct(conjugate(qb),qa);
                 GjkWitness witness;
                 uint outcome=gjkBoxContinuation(boxPair,distance,witness);
+                edgeCaches.Store(cache+76u,outcome);
                 if(outcome==1u) {
                     if(limit==0u) {
                         status=2u;
