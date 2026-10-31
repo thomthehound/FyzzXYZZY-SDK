@@ -1353,6 +1353,33 @@ if(FYZZXYZZY_BUILD_VULKAN)
       COMMAND fyzzxyzzy_source_gu_box_contacts
         "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
 
+
+    set(FYZZXYZZY_SOURCE_PCM_BOX_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_candidates_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")
+    add_executable(fyzzxyzzy_source_pcm_box_candidates
+      tests/physx_gpu_source_pcm_box_candidates_native.cpp
+      src/native/GuPCMContactBoxBox.cpp)
+    target_include_directories(fyzzxyzzy_source_pcm_box_candidates PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_pcm_box_candidates PRIVATE
+      FyzzXYZZY::Compute fyzzxyzzy_source_gpu_primitives)
+    add_dependencies(fyzzxyzzy_source_pcm_box_candidates
+      fyzzxyzzy_source_sc_box_bounds_shader
+      fyzzxyzzy_source_pcm_box_candidates_shader)
+    add_test(NAME fyzzxyzzy_source_pcm_box_candidates
+      COMMAND fyzzxyzzy_source_pcm_box_candidates
+        "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")
+
+
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV
@@ -4518,6 +4545,36 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
     set_tests_properties(fyzzxyzzy_source_gu_box_contacts_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
+
+    set(FYZZXYZZY_SOURCE_PCM_BOX_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_candidates_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
+        -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
+    add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
+      tests/physx_gpu_source_pcm_box_candidates_native.cpp
+      src/native/GuPCMContactBoxBox.cpp)
+    target_compile_definitions(fyzzxyzzy_source_pcm_box_candidates_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
+    target_include_directories(fyzzxyzzy_source_pcm_box_candidates_d3d12 PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(fyzzxyzzy_source_pcm_box_candidates_d3d12 PRIVATE
+      FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12)
+    add_dependencies(fyzzxyzzy_source_pcm_box_candidates_d3d12
+      fyzzxyzzy_source_sc_box_bounds_shader_d3d12
+      fyzzxyzzy_source_pcm_box_candidates_shader_d3d12)
+    add_test(NAME fyzzxyzzy_source_pcm_box_candidates_d3d12
+      COMMAND fyzzxyzzy_source_pcm_box_candidates_d3d12
+        "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
+    set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
+      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+
 
     # Source aggregate.cu::updateAggregateBounds, original 32-lane
     # aggregate member reduction (4 warps per native workgroup).
