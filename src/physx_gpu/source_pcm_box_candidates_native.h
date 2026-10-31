@@ -45,8 +45,23 @@ struct SourcePcmBoxPairResultNative {
     // empty, otherwise 1-4 indices into the original candidate window.
     std::uint32_t selected_count;
     std::uint32_t selected_indices;
+    std::uint32_t regenerated;
 };
-static_assert(sizeof(SourcePcmBoxPairResultNative)==28u);
+static_assert(sizeof(SourcePcmBoxPairResultNative)==32u);
+
+// Borrowed persistent Sc contact-manager slots. The scene owns their
+// initialization, retirement and device storage across frames.
+struct SourcePcmScEdgeCacheNative {
+    float relative_position[3];
+    std::uint32_t count;
+    float relative_rotation[4];
+    float orientation_a[4];
+    float orientation_b[4];
+    std::uint32_t initialized;
+    std::uint32_t reserved[3];
+    SourcePcmBoxCandidateNative contacts[4];
+};
+static_assert(sizeof(SourcePcmScEdgeCacheNative)==240u);
 
 class SourcePcmBoxCandidatesNativeStage final {
 public:
@@ -64,10 +79,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=5u;
+        desc.storage_buffer_binding_count=6u;
         desc.storage_buffer_views.assign(
-            5u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=32u;
+            6u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=40u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmBoxCandidatesNativeStage(const SourcePcmBoxCandidatesNativeStage&)=delete;
@@ -84,17 +99,20 @@ public:
                 CudaDeviceAddressMap::Address pairs,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address candidates,
+                CudaDeviceAddressMap::Address edge_cache,
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
-                std::uint32_t candidate_capacity) const {
+                std::uint32_t candidate_capacity,
+                std::uint32_t edge_capacity) const {
         if(!pair_count)return;
-        if(!shape_capacity || !candidate_capacity)
+        if(!shape_capacity || !candidate_capacity || !edge_capacity)
             throw std::invalid_argument("Source PCM GPU requires shapes and candidate capacity");
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM GPU dispatch exceeds device limit");
-        std::array<std::uint32_t,8> params{
-            pair_count,0u,0u,0u,0u,0u,shape_capacity,candidate_capacity};
+        std::array<std::uint32_t,10> params{
+            pair_count,0u,0u,0u,0u,0u,0u,
+            shape_capacity,candidate_capacity,edge_capacity};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -111,10 +129,12 @@ public:
                  1u,compute::BufferAccess::Read),
             view(pairs,source_allocation_bytes(pair_count,20u),
                  2u,compute::BufferAccess::Read),
-            view(results,source_allocation_bytes(pair_count,28u),
+            view(results,source_allocation_bytes(pair_count,32u),
                  3u,compute::BufferAccess::Write),
             view(candidates,source_allocation_bytes(candidate_capacity,40u),
-                 4u,compute::BufferAccess::Write)};
+                 4u,compute::BufferAccess::ReadWrite),
+            view(edge_cache,source_allocation_bytes(edge_capacity,240u),
+                 5u,compute::BufferAccess::ReadWrite)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         commands.emplace_back(std::move(dispatch));
@@ -126,11 +146,14 @@ public:
                 CudaDeviceAddressMap::Address pairs,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address candidates,
+                CudaDeviceAddressMap::Address edge_cache,
                 std::uint32_t pair_count,
                 std::uint32_t shape_capacity,
-                std::uint32_t candidate_capacity) const {
+                std::uint32_t candidate_capacity,
+                std::uint32_t edge_capacity) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
-               results,candidates,pair_count,shape_capacity,candidate_capacity);
+               results,candidates,edge_cache,pair_count,shape_capacity,
+               candidate_capacity,edge_capacity);
     }
 
 private:
