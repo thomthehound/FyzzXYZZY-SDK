@@ -314,7 +314,13 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 uint debug=p.candidateBias+(first+63u)*40u;
                 candidates.Store3(debug,asuint(float3(dx,dy,dz)));
             }
-            uint axis=dx>=dy&&dx>=dz?0u:(dy>=dz?1u:2u);
+            // Source face preference is X, then Y, then Z. A one-ULP
+            // discrepancy from native float32 lowering is an axis tie.
+            uint bx=asuint(dx),by=asuint(dy),bz=asuint(dz);
+            bool xWins=(bx>=by || by-bx==1u) &&
+                       (bx>=bz || bz-bx==1u);
+            bool yWins=by>=bz || bz-by==1u;
+            uint axis=xWins?0u:(yWins?1u:2u);
             overlap|=((feature+1u)<<8u)|((axis+1u)<<16u);
             float facing=dot(search,incident[axis]);
             float signedExtent=facing>0.f
