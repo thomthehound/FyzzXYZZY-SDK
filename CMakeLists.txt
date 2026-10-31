@@ -1362,12 +1362,14 @@ if(FYZZXYZZY_BUILD_VULKAN)
         -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
-      src/native/GuPCMContactBoxBox.cpp)
+      src/native/GuPCMContactBoxBox.cpp
+      src/native/GuPCMGjkEpa.cpp)
     target_include_directories(fyzzxyzzy_source_pcm_box_candidates PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(fyzzxyzzy_source_pcm_box_candidates PRIVATE
@@ -4555,12 +4557,14 @@ if(FYZZXYZZY_BUILD_D3D12)
         -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
-      src/native/GuPCMContactBoxBox.cpp)
+      src/native/GuPCMContactBoxBox.cpp
+      src/native/GuPCMGjkEpa.cpp)
     target_compile_definitions(fyzzxyzzy_source_pcm_box_candidates_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
     target_include_directories(fyzzxyzzy_source_pcm_box_candidates_d3d12 PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/src")
