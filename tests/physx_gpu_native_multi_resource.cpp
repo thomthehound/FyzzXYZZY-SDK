@@ -477,6 +477,20 @@ void verify_gpu_written_indirect_dispatch(Context& context,PipelineId pipeline) 
     context.download(args,0u,dimensions.data(),sizeof(dimensions));
     check(dimensions==std::array<std::uint32_t,3>{1u,1u,1u},
           "GPU producer did not write the expected indirect dimensions");
+    // With no sparse work, a GPU-written (0,0,0) must skip the
+    // consumer entirely, leaving the destination canaries unchanged.
+    context.upload(a,0u,zeros.data(),bytes);
+    context.upload(b,0u,zeros.data(),bytes);
+    output.fill(kOutputCanary);
+    context.upload(result,0u,output.data(),bytes);
+    context.wait_submission(context.submit_batch({producer,consumer}));
+    context.download(result,0u,output.data(),bytes);
+    check(std::all_of(output.begin(),output.end(),
+                      [](auto v){return v==kOutputCanary;}),
+          "Zero-work GPU indirect dispatch modified the destination");
+    context.download(args,0u,dimensions.data(),sizeof(dimensions));
+    check(dimensions==std::array<std::uint32_t,3>{0u,0u,0u},
+          "GPU producer did not write zero indirect dimensions");
     context.destroy_buffer(result);
     context.destroy_buffer(args);
     context.destroy_buffer(b);
