@@ -179,7 +179,8 @@ void verify_coupled_rigid_stack(
             128u,128u,std::nullopt,
             load_native_gpu_pcm_shaders(backend,pcm)));
     cpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
-    gpu.add_static_box({0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
+    const BodyId fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,-0.5f,0.f});
     std::array<BodyId,3> dynamic_cpu{},dynamic_gpu{};
     for(std::size_t i=0;i<dynamic_cpu.size();++i) {
         const Vec3 position{0.f,0.4f+0.9f*float(i),0.f};
@@ -197,8 +198,9 @@ void verify_coupled_rigid_stack(
                 cpu.contacts().size()==gpu.contacts().size(),
                 "GPU coupled rigid stack lost Sc contact-manager parity");
         for(const auto& contact:gpu.contacts())
-            if(contact.pair.a!=0u && contact.pair.b!=0u &&
-               contact.count>0u)coupled=true;
+            if(contact.pair.a!=fixed_gpu &&
+               contact.pair.b!=fixed_gpu && contact.count>0u)
+                coupled=true;
         for(std::size_t i=0;i<dynamic_cpu.size();++i) {
             const auto a=cpu.body_state(dynamic_cpu[i]);
             const auto b=gpu.body_state(dynamic_gpu[i]);
