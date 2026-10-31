@@ -146,8 +146,11 @@ bool gjkContact(GjkBoxPair pair,GjkClosest nearest,
 // 0: no source GJK contact; 1: source GJK contact;
 // 3: simplex requires the source EPA continuation.
 uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
-                        out GjkWitness witness) {
+                        out GjkWitness witness,out uint4 trace,
+                        out float4 metrics) {
     witness=(GjkWitness)0;
+    trace=0u;
+    metrics=0.f;
     const float epsilon=0.005f*min(
         min(pair.halfA.x,min(pair.halfA.y,pair.halfA.z)),
         min(pair.halfB.x,min(pair.halfB.y,pair.halfB.z)));
@@ -164,6 +167,8 @@ uint gjkBoxContinuation(GjkBoxPair pair,float contactDistance,
         float3 normal=closest/dist;
         GjkSupportPoint support=gjkSupport(pair,-closest);
         float projection=dot(normal,support.q);
+        trace=uint4(iteration,support.ai,support.bi,count);
+        metrics=float4(projection,dist*progressFactor,dist,previous);
         if(projection>contactDistance)return 0u;
         if(count>0u && projection>dist*progressFactor) {
             GjkClosest current=gjkClosestSimplex(simplex,count);
