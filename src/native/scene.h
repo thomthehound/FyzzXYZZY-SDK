@@ -1001,6 +1001,10 @@ private:
     std::uint8_t generate_pcm_box_box(
         const Actor& first, const Actor& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
+    static std::uint8_t publish_gpu_pcm_box_box(
+        const Actor& first,const Actor& second,float contact_distance,
+        const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
+        std::span<ContactPoint> output);
     enum class IslandEdgeType : std::uint8_t {
         ContactManager, Constraint
     };
