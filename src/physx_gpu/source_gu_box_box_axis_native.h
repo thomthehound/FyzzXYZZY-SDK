@@ -20,9 +20,11 @@ struct SourceGuBoxPairAxisNative {
     std::uint32_t first_element;
     std::uint32_t second_element;
     std::uint32_t previous_axis;
+    std::uint32_t contact_offset=0;
+    std::uint32_t contact_capacity=0;
     std::uint32_t reserved=0;
 };
-static_assert(sizeof(SourceGuBoxPairAxisNative)==16u);
+static_assert(sizeof(SourceGuBoxPairAxisNative)==24u);
 
 class SourceGuBoxBoxAxisNativeStage final {
 public:
@@ -81,7 +83,7 @@ public:
                  0u,compute::BufferAccess::Read),
             view(geometry,source_allocation_bytes(shape_capacity,16u),
                  1u,compute::BufferAccess::Read),
-            view(pairs,source_allocation_bytes(pair_count,16u),
+            view(pairs,source_allocation_bytes(pair_count,24u),
                  2u,compute::BufferAccess::Read),
             view(axes,source_allocation_bytes(pair_count,4u),
                  3u,compute::BufferAccess::Write)};
