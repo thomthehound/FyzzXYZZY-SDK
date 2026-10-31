@@ -5,6 +5,7 @@
 #include "physx_gpu/source_sc_box_transform_bounds_native.h"
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
