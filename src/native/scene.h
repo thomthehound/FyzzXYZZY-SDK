@@ -1469,9 +1469,10 @@ private:
     struct ConstraintDescriptor {
         std::uint32_t index=0;
         BodyId body0=0, body1=0;
-        bool distance=false;
+        std::uint32_t distance=0;
     };
-    static_assert(sizeof(ConstraintDescriptor)==16u);
+    static_assert(sizeof(ConstraintDescriptor)==16u &&
+                  alignof(ConstraintDescriptor)==4u);
     std::vector<ConstraintDescriptor> constraint_descriptors_;
     std::vector<std::size_t> constraint_partitions_;
     // Reusable unassigned descriptor list for each 32-bit mask wave.
