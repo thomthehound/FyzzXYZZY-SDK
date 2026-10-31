@@ -102,7 +102,7 @@ public:
         edges_.allocateCopyOldDataAsync(
             source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
-        dense_contacts_.allocate(source_allocation_bytes(pair_count,176u),PX_FL);
+        dense_contacts_.allocate(source_allocation_bytes(pair_count,96u),PX_FL);
         auto& uploads=stream_.upload_scratch();
         uploads.reserve(pair_count+1u);
         uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
@@ -130,9 +130,10 @@ public:
             work_.getDevicePtr(),indirect_address_,
             pair_count,shape_capacity,candidate_count,edge_capacity);
         contact_stream_stage_.append(stream_,addresses_,
+            transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             edges_.getDevicePtr(),dense_contacts_.getDevicePtr(),
-            pair_count,edge_capacity);
+            pair_count,shape_capacity,edge_capacity);
         stream_.wait_at_fetch();
 
         packed_host_.resize(pair_count);
@@ -154,22 +155,21 @@ public:
             // A quiet refresh retains persistent witnesses beyond the
             // contact-distance window. Sc filters them at publication.
             if(stored.edge_handle!=request.edge || stored.status!=0u ||
-               selected_count>4u || stored.count>4u ||
-               selected_count>stored.count ||
-               (regenerated && selected_count!=stored.count))
+               selected_count>4u || stored.cached_count>4u ||
+               selected_count>stored.cached_count ||
+               (regenerated && selected_count!=stored.cached_count) ||
+               stored.emitted_count>stored.cached_count)
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
             auto& item=output[i];
             item={};
             item.edge=request.edge;
-            item.count=static_cast<std::uint8_t>(stored.count);
-            item.regenerated=regenerated;
-            for(std::uint32_t j=0u;j<stored.count;++j) {
+            item.count=static_cast<std::uint8_t>(stored.emitted_count);
+            item.normal={stored.normal[0],stored.normal[1],stored.normal[2]};
+            for(std::uint32_t j=0u;j<stored.emitted_count;++j) {
                 const auto& c=stored.contacts[j];
                 item.points[j]={
-                    {c.local_a[0],c.local_a[1],c.local_a[2]},
-                    {c.local_b[0],c.local_b[1],c.local_b[2]},
-                    {c.normal_b[0],c.normal_b[1],c.normal_b[2]},
+                    {c.position[0],c.position[1],c.position[2]},
                     c.separation};
             }
         }
