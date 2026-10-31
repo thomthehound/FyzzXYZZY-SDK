@@ -3,6 +3,23 @@
 
 // Compact Sc edge managers admitted to Gu EPA without host-visible counts.
 // The same source stream resets, collects, then consumes the indirect work.
+#ifdef SOURCE_PCM_EPA_RESET
+#ifdef __spirv__
+[[vk::binding(0,0)]]
+#endif
+RWByteAddressBuffer dispatchArgs : register(u0,space0);
+struct ResetParams { uint argsBias; };
+#ifdef __spirv__
+[[vk::push_constant]] ResetParams params;
+#else
+ConstantBuffer<ResetParams> params : register(b0,space0);
+#endif
+[numthreads(1,1,1)]
+void reset(uint3 thread : SV_DispatchThreadID) {
+    if(thread.x==0u)
+        dispatchArgs.Store3(params.argsBias,uint3(0u,1u,1u));
+}
+#else
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
@@ -27,13 +44,6 @@ struct Parameters {
 #else
 ConstantBuffer<Parameters> params : register(b0,space0);
 #endif
-
-[numthreads(1,1,1)]
-void reset(uint3 thread : SV_DispatchThreadID) {
-    if(thread.x!=0u)return;
-    dispatchArgs.Store3(params.argsBias,uint3(0u,1u,1u));
-}
-
 [numthreads(128,1,1)]
 void compact(uint3 thread : SV_DispatchThreadID) {
     uint i=thread.x;
@@ -44,3 +54,5 @@ void compact(uint3 thread : SV_DispatchThreadID) {
     dispatchArgs.InterlockedAdd(params.argsBias,1u,destination);
     work.Store(params.workBias+destination*4u,i);
 }
+
+#endif
