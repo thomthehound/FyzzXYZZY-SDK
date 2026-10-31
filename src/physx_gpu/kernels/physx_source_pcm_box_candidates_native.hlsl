@@ -118,11 +118,11 @@ float4 quatProduct(float4 a,float4 b) {
 }
 float4 conjugate(float4 q) {return float4(-q.xyz,q.w);}
 
-uint cachePointAddress(uint edgeBase,uint point) {
-    return edgeBase+80u+point*40u;
+uint cachePointAddress(uint edgeBase,uint contactIndex) {
+    return edgeBase+80u+contactIndex*40u;
 }
-void copyCachedContact(uint edgeBase,uint point,uint destination) {
-    uint sourceOffset=cachePointAddress(edgeBase,point);
+void copyCachedContact(uint edgeBase,uint contactIndex,uint destination) {
+    uint sourceOffset=cachePointAddress(edgeBase,contactIndex);
     [unroll]
     for(uint k=0u;k<10u;++k)
         candidates.Store(destination+k*4u,edgeCaches.Load(sourceOffset+k*4u));
