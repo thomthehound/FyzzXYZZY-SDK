@@ -418,6 +418,71 @@ void verify_batched_gpu_readback(Context& context) {
     context.destroy_buffer(gpu_a);
 }
 
+// A GPU producer writes dispatch dimensions consumed by a dependent kernel
+// within the same native batch, without a CPU readback.
+void verify_gpu_written_indirect_dispatch(Context& context,PipelineId pipeline) {
+    constexpr std::size_t bytes=kElements*sizeof(std::uint32_t);
+    std::array<std::uint32_t,kElements> zeros{},ones{},output{};
+    ones.fill(1u);
+    output.fill(kOutputCanary);
+    const auto a=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    const auto b=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    const auto args=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    const auto result=context.create_buffer(bytes,MemoryPlacement::DeviceLocal);
+    context.upload(a,0u,zeros.data(),bytes);
+    context.upload(b,0u,ones.data(),bytes);
+    context.upload(result,0u,output.data(),bytes);
+    const auto params=[](std::uint32_t count) {
+        std::array<std::uint32_t,8> raw{count,0u,0u,0u,0u,0u,0u,0u};
+        std::vector<std::uint8_t> data(sizeof(raw));
+        std::memcpy(data.data(),raw.data(),sizeof(raw));
+        return data;
+    };
+    DispatchCommand producer{};
+    producer.pipeline=pipeline;
+    producer.groups={1u,1u,1u};
+    producer.buffers={
+        {0u,a,0u,bytes,BufferAccess::ReadWrite},
+        {1u,b,0u,bytes,BufferAccess::ReadWrite},
+        {2u,args,0u,bytes,BufferAccess::Write}};
+    producer.push_constants=params(3u);
+    DispatchCommand consumer{};
+    consumer.pipeline=pipeline;
+    consumer.buffers={
+        {0u,a,0u,bytes,BufferAccess::ReadWrite},
+        {1u,b,0u,bytes,BufferAccess::ReadWrite},
+        {2u,result,0u,bytes,BufferAccess::Write}};
+    consumer.push_constants=params(kElements);
+    consumer.indirect=DispatchIndirectArgs{args,0u};
+    // Preflight must reject the whole batch before the producer writes.
+    auto invalid=consumer;
+    invalid.indirect->offset=bytes-8u;
+    bool rejected=false;
+    try {(void)context.submit_batch({producer,invalid});}
+    catch(const std::out_of_range&){rejected=true;}
+    check(rejected,"Invalid indirect argument window entered GPU batch");
+    rejected=false;
+    invalid=consumer;
+    invalid.indirect->offset=2u;
+    try {(void)context.submit_batch({producer,invalid});}
+    catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"Misaligned indirect dispatch arguments were accepted");
+    const auto done=context.submit_batch({producer,consumer});
+    context.wait_submission(done);
+    context.download(result,0u,output.data(),bytes);
+    for(std::size_t i=0;i<kElements;++i)
+        check(output[i]==(i<3u?6u:1u),
+              "GPU-generated indirect dispatch dimensions or ordering incorrect");
+    std::array<std::uint32_t,3> dimensions{};
+    context.download(args,0u,dimensions.data(),sizeof(dimensions));
+    check(dimensions==std::array<std::uint32_t,3>{1u,1u,1u},
+          "GPU producer did not write the expected indirect dimensions");
+    context.destroy_buffer(result);
+    context.destroy_buffer(args);
+    context.destroy_buffer(b);
+    context.destroy_buffer(a);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -453,6 +518,7 @@ int main(int argc, char** argv) {
         const auto pipeline = context.create_compute_pipeline(desc);
         run_case(context, pipeline, false);
         run_case(context, pipeline, true);
+        verify_gpu_written_indirect_dispatch(context,pipeline);
         verify_ordered_same_resource_copies(context);
         verify_batched_gpu_readback(context);
         verify_ordered_source_fence_retirement(context);
