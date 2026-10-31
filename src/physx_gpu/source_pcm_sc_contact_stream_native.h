@@ -19,7 +19,9 @@ namespace fyzz::physx_gpu {
 struct SourcePcmScContactStreamNative {
     std::uint32_t edge_handle;
     std::uint32_t count;
-    std::uint32_t reserved[2];
+    std::uint32_t status;
+    // Lower 31 bits: selected Gu count; high bit: regenerated flag.
+    std::uint32_t selected_and_regenerated;
     SourcePcmBoxCandidateNative contacts[4];
 };
 static_assert(sizeof(SourcePcmScContactStreamNative)==176u);
@@ -40,10 +42,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=3u;
+        desc.storage_buffer_binding_count=4u;
         desc.storage_buffer_views.assign(
-            3u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=20u;
+            4u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=24u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmScContactStreamNativeStage(const SourcePcmScContactStreamNativeStage&)=delete;
@@ -56,6 +58,7 @@ public:
     void append(std::vector<compute::BatchCommand>& commands,
                 const CudaDeviceAddressMap& addresses,
                 CudaDeviceAddressMap::Address pairs,
+                CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,
@@ -66,7 +69,8 @@ public:
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM contact stream dispatch exceeds device limit");
-        std::array<std::uint32_t,5> params{pair_count,0u,0u,0u,edge_capacity};
+        std::array<std::uint32_t,6> params{
+            pair_count,0u,0u,0u,0u,edge_capacity};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -79,10 +83,12 @@ public:
         dispatch.buffers={
             view(pairs,source_allocation_bytes(pair_count,20u),
                  0u,compute::BufferAccess::Read),
-            view(edge_cache,source_allocation_bytes(edge_capacity,240u),
+            view(results,source_allocation_bytes(pair_count,32u),
                  1u,compute::BufferAccess::Read),
+            view(edge_cache,source_allocation_bytes(edge_capacity,240u),
+                 2u,compute::BufferAccess::Read),
             view(output,source_allocation_bytes(pair_count,176u),
-                 2u,compute::BufferAccess::Write)};
+                 3u,compute::BufferAccess::Write)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         commands.emplace_back(std::move(dispatch));
@@ -90,11 +96,12 @@ public:
     void append(SourceSapDmaNative& stream,
                 const CudaDeviceAddressMap& addresses,
                 CudaDeviceAddressMap::Address pairs,
+                CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,
                 std::uint32_t edge_capacity) const {
-        append(stream.commands(),addresses,pairs,edge_cache,output,
+        append(stream.commands(),addresses,pairs,results,edge_cache,output,
                pair_count,edge_capacity);
     }
 private:
