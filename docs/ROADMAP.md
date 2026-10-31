@@ -3,7 +3,7 @@
 
 # FyzzXYZZY capability roadmap
 
-Status: October 30, 2026. This is the authoritative **active** roadmap.
+Status: October 31, 2026. This is the authoritative **active** roadmap.
 Implementation and executable acceptance, not the count of kernels or commits,
 determine completion. Historical milestone names in source-intake and trace
 documents do not define additional active release gates.
@@ -30,15 +30,15 @@ independent comparison oracle, never a hidden production substitute.
 | --- | --- |
 | Native CPU rigid scene | Source-derived Sc/island/task ownership, CPU SAP, PCM contacts and Dy PGS for an admitted **box/plane and one-shape-per-actor subset**; limited source-derived distance constraints, materials, contact events and body lifecycle |
 | Portable compute | Real Vulkan and D3D12 execution, compilation, resource ownership, submissions and synchronization; independent SDK tests without reference PhysX |
-| GPU broadphase | Explicit native GPU World factory, source-derived persistent AABB/SAP and aggregate ownership, multi-frame found/quiet/lost report publication into the same Sc/PCM/Dy scene; **CPU narrowphase and dynamics remain in use** |
-| GPU contact generation | Not yet integrated as a production GPU narrowphase |
+| GPU broadphase | Explicit native GPU World factory, source-derived persistent AABB/SAP and aggregate ownership, multi-frame found/quiet/lost report publication into the same Sc/PCM/Dy scene |
+| GPU box/box contacts | Explicit `NativeGpuPcmShaders` selection runs GuPCM and sparse GJK/EPA on the device for live Sc managers, with source world-space contact publication; other admitted contacts use CPU narrowphase |
 | GPU rigid dynamics | No integrated GPU constraint preparation, rigid solve or body integration |
 | Rigid feature breadth | General geometry, multishape actors, CCD, triggers, complete filtering/reporting, joints, articulations and other PhysX modes are not fully admitted |
 | Nonrigid simulation | GPU deformables, particles and their reciprocal interactions are not integrated |
 | SDK selection and consumers | `WorldOptions` defaults to the reference CPU backend when enabled; `NativeCpu` is explicit. `NativePortableGpu` through the ordinary `World` constructor rejects; `create_native_gpu_world(...)` is the explicit supported GPU-broadphase entry point. Godot acceptance uses native CPU |
 
-The GPU broadphase is a working **hybrid scene slice**, not a completed GPU
-physics pipeline or a claim of general PhysX compatibility. There is no
+The GPU broadphase and optional GPU box/box PCM form a working **hybrid scene
+slice**, not a completed GPU physics pipeline or general PhysX compatibility. There is no
 meaningful single percentage for feature coverage: source breadth,
 execution-device coverage, and end-to-end scene behavior must be tracked
 separately.
@@ -82,6 +82,11 @@ broadphase, narrowphase and solving. Validate exact stream contracts and
 numerical contact behavior on Vulkan and D3D12.
 
 ### GPU rigid solving and integration
+
+The first acceptance workload is a coupled rigid box stack with persistent
+contacts, friction, angular response and multiple active bodies, retaining
+the same Sc EdgeIndex, Gu PCM and Dy task owners. This is the initial
+performance-comparable subset, not a general rigid-geometry promise.
 
 Bring source-derived GPU constraint preparation, partitioning, solving,
 integration and writeback into the same native task graph. Preserve PGS/TGS
@@ -151,12 +156,12 @@ avoidable allocations and scalarized source parallelism before they spread.
 Record submissions, copies, waits and allocator activity where useful, and
 use targeted measurements to resolve a concrete design decision.
 
-**Representative end-to-end hardware benchmarking is not the next feature
-gate.** The current hybrid GPU-broadphase/CPU-solver path can diagnose its
-own transfer and scheduling costs, but it cannot predict full GPU-rigid
-performance. Prioritize source-faithful GPU body, contact and solver
-integration first; profile real mixed-size/mixed-contact workloads when those
-systems form a cohesive frame path. Optimize the measured bottleneck, using
+The first performance checkpoint is a coupled rigid box scene executing
+broadphase, PCM, constraint preparation, PGS and integration on the device.
+The current hybrid GPU-contact/CPU-solver path can diagnose transfer and
+scheduling costs, but cannot predict complete GPU-rigid throughput. Profile
+the integrated rigid slice on native AMD Vulkan and D3D12 before extending
+the solver to pointer-rich or broader geometry workloads. Optimize the measured bottleneck, using
 subgroup, wave and device-specific primitives when semantically equivalent.
 Do not confuse CI wall time or software-device performance with hardware
 physics throughput.
