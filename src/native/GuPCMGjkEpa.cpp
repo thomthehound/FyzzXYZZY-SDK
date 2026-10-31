@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <iostream>
 
 namespace fyzz::native {
 namespace {
@@ -408,6 +409,10 @@ bool source_pcm_box_box_gjk_epa(
     const float epsilon=0.1f*std::min(
         box_min_margin(half0),box_min_margin(half1));
     constexpr float progress_factor=1.0f-0.000225f;
+    const bool trace=std::abs(position1.x-1.0f)<1.e-4f &&
+        std::abs(position1.y-2.2f)<1.e-4f &&
+        std::abs(position1.z-3.3f)<1.e-4f &&
+        std::abs(rotation1.z-0.0623374f)<1.e-4f;
     std::array<Support,4> simplex{};
     int count=0;
     if(warmstart)*warmstart={};
@@ -436,6 +441,12 @@ bool source_pcm_box_box_gjk_epa(
         const Vec3 normal=mul(closest,1.0f/dist);
         const Support support=pair.support(neg(closest));
         const float projection=dot(normal,support.q);
+        if(trace)
+            std::cerr<<"CPU GJK iteration="<<iteration<<" count="<<count
+                     <<" support=("<<int(support.ai)<<","<<int(support.bi)
+                     <<") closest=("<<closest.x<<","<<closest.y<<","
+                     <<closest.z<<") projection="<<projection
+                     <<" threshold="<<dist*progress_factor<<std::endl;
         if(projection>contact_distance) {
             store();
             return false; // GJK_NON_INTERSECT
