@@ -101,10 +101,6 @@ World create_native_gpu_world(
     compute::Backend backend,NativeGpuSapShaders sap,
     NativeGpuPcmShaders pcm,
     WorldOptions options={ExecutionMode::NativePortableGpu});
-World create_native_gpu_world(
-    compute::Backend backend,const std::filesystem::path& sap_manifest,
-    const std::filesystem::path& pcm_manifest,
-    WorldOptions options={ExecutionMode::NativePortableGpu});
 
 // Explicit source aggregate shader contract: all original aggregate
 // pipelines are created under the same native Context and heap owner.
