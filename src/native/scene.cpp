@@ -3371,50 +3371,29 @@ std::uint8_t Scene::generate_pcm_plane_box(
     return emitted;
 }
 std::uint8_t Scene::publish_gpu_pcm_box_box(
-    const Actor& first,const Actor& second,float contact_distance,
     const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
     std::span<ContactPoint> output) {
     if(gpu.status!=0u || gpu.count>4u)
         throw std::logic_error("Source GPU PCM returned an invalid Sc manifold");
-    // The GuPCM persistent witnesses stay in the device EdgeIndex cache.
-    // The scene retains only the generation marker used for reset after
-    // manager admission or a rejected frame.
+    // The original EdgeIndex cache retains B-local witnesses on device.
+    // This frame's device stream already contains Gu world contacts.
     cache.initialized=true;
     if(!gpu.count)return 0u;
-    Vec3 local_normal{};
-    if(gpu.regenerated)
-        local_normal=gpu.points[0].normal_b;
-    else
-        for(std::uint8_t i=0;i<gpu.count;++i) {
-            const auto n=gpu.points[i].normal_b;
-            local_normal.x+=n.x;
-            local_normal.y+=n.y;
-            local_normal.z+=n.z;
-        }
-    const float sq=local_normal.x*local_normal.x+
-        local_normal.y*local_normal.y+local_normal.z*local_normal.z;
-    if(!(sq>0.f) || !std::isfinite(sq))
+    const float sq=gpu.normal.x*gpu.normal.x+
+                   gpu.normal.y*gpu.normal.y+
+                   gpu.normal.z*gpu.normal.z;
+    if(!(sq>0.f) || !std::isfinite(sq) || !finite(gpu.normal))
         throw std::overflow_error("Source GPU PCM normal is invalid");
-    const float inv=1.f/std::sqrt(sq);
-    const Vec3 normal=rotate(second.orientation,{
-        local_normal.x*inv,local_normal.y*inv,local_normal.z*inv});
-    std::uint8_t emitted=0u;
+    if(gpu.count>output.size())
+        throw std::logic_error("Source GPU PCM contact arena exhausted");
     for(std::uint8_t i=0;i<gpu.count;++i) {
         const auto& p=gpu.points[i];
-        if(!gpu.regenerated && p.separation>contact_distance)continue;
-        if(emitted>=output.size())
-            throw std::logic_error("Source GPU PCM contact arena exhausted");
-        const Vec3 local=rotate(second.orientation,p.local_b);
-        const ContactPoint out{{
-            local.x+second.position.x,
-            local.y+second.position.y,
-            local.z+second.position.z},normal,p.separation};
-        if(!finite(out.position) || !finite(out.normal) ||
-           !std::isfinite(out.separation))
+        const ContactPoint contact{p.position,gpu.normal,p.separation};
+        if(!finite(contact.position) || !std::isfinite(contact.separation))
             throw std::overflow_error("Source GPU PCM witness invalid");
-        output[emitted++]=out;
+        output[i]=contact;
     }
-    return emitted;
+    return gpu.count;
 }
 void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
@@ -3539,7 +3518,6 @@ void Scene::update_contacts() {
                     throw std::logic_error(
                         "Source GPU PCM result lost Sc EdgeIndex order");
                 manifold.count=publish_gpu_pcm_box_box(
-                    first,second,contact_distance,
                     gpu_pcm_results_[gpu_pcm_index++],
                     island_edges_[edge].pcm_cache,
                     std::span<ContactPoint>(box_contact_scratch_));
