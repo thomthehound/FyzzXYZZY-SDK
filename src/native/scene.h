@@ -87,16 +87,16 @@ struct GpuPcmBoxPair {
     std::uint32_t edge=0;
     bool reset_cache=false;
 };
-struct GpuPcmBoxWitness {
-    Vec3 local_a{},local_b{},normal_b{};
+struct GpuPcmBoxWorldPoint {
+    Vec3 position{};
     float separation=0.0f;
 };
 struct GpuPcmBoxResult {
     std::uint32_t edge=0;
     std::uint32_t status=0;
     std::uint8_t count=0;
-    bool regenerated=false;
-    std::array<GpuPcmBoxWitness,4> points{};
+    Vec3 normal{};
+    std::array<GpuPcmBoxWorldPoint,4> points{};
 };
 class GpuBroadphaseProducer {
 public:
@@ -1002,7 +1002,6 @@ private:
         const Actor& first, const Actor& second, float contact_distance,
         PcmManifoldCache& cache, std::span<ContactPoint> output);
     static std::uint8_t publish_gpu_pcm_box_box(
-        const Actor& first,const Actor& second,float contact_distance,
         const GpuPcmBoxResult& gpu,PcmManifoldCache& cache,
         std::span<ContactPoint> output);
     enum class IslandEdgeType : std::uint8_t {

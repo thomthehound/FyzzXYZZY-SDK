@@ -14,17 +14,24 @@
 
 namespace fyzz::physx_gpu {
 
-// Packed, source-ordered Sc PCM witnesses. Persistent manifold state stays
-// in SourcePcmScEdgeCacheNative indexed by the original Sc EdgeIndex.
+// Source-oriented Gu world contacts are the input to DyContactPrep.
+// The original Sc EdgeIndex retains the persistent B-local witnesses.
+struct SourcePcmScWorldContactNative {
+    float position[3];
+    float separation;
+};
+static_assert(sizeof(SourcePcmScWorldContactNative)==16u);
 struct SourcePcmScContactStreamNative {
     std::uint32_t edge_handle;
-    std::uint32_t count;
+    std::uint32_t cached_count;
     std::uint32_t status;
     // Lower 31 bits: selected Gu count; high bit: regenerated flag.
     std::uint32_t selected_and_regenerated;
-    SourcePcmBoxCandidateNative contacts[4];
+    float normal[3];
+    std::uint32_t emitted_count;
+    SourcePcmScWorldContactNative contacts[4];
 };
-static_assert(sizeof(SourcePcmScContactStreamNative)==176u);
+static_assert(sizeof(SourcePcmScContactStreamNative)==96u);
 
 class SourcePcmScContactStreamNativeStage final {
 public:
@@ -42,10 +49,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=4u;
+        desc.storage_buffer_binding_count=6u;
         desc.storage_buffer_views.assign(
-            4u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=24u;
+            6u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=36u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmScContactStreamNativeStage(const SourcePcmScContactStreamNativeStage&)=delete;
@@ -57,20 +64,24 @@ public:
 
     void append(std::vector<compute::BatchCommand>& commands,
                 const CudaDeviceAddressMap& addresses,
+                CudaDeviceAddressMap::Address transforms,
+                CudaDeviceAddressMap::Address geometry,
                 CudaDeviceAddressMap::Address pairs,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,
+                std::uint32_t shape_capacity,
                 std::uint32_t edge_capacity) const {
         if(!pair_count)return;
-        if(!edge_capacity)
-            throw std::invalid_argument("Source PCM contact stream has no Sc edges");
+        if(!shape_capacity || !edge_capacity)
+            throw std::invalid_argument(
+                "Source PCM contact stream requires live Sc shapes and edges");
         const auto groups=(std::uint64_t(pair_count)+127u)/128u;
         if(groups>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range("Source PCM contact stream dispatch exceeds device limit");
-        std::array<std::uint32_t,6> params{
-            pair_count,0u,0u,0u,0u,edge_capacity};
+        std::array<std::uint32_t,9> params{
+            pair_count,0u,0u,0u,0u,0u,0u,shape_capacity,edge_capacity};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
@@ -81,28 +92,36 @@ public:
         dispatch.pipeline=pipeline_;
         dispatch.groups={static_cast<std::uint32_t>(groups),1u,1u};
         dispatch.buffers={
-            view(pairs,source_allocation_bytes(pair_count,20u),
+            view(transforms,source_allocation_bytes(shape_capacity,32u),
                  0u,compute::BufferAccess::Read),
-            view(results,source_allocation_bytes(pair_count,32u),
+            view(geometry,source_allocation_bytes(shape_capacity,16u),
                  1u,compute::BufferAccess::Read),
-            view(edge_cache,source_allocation_bytes(edge_capacity,240u),
+            view(pairs,source_allocation_bytes(pair_count,20u),
                  2u,compute::BufferAccess::Read),
-            view(output,source_allocation_bytes(pair_count,176u),
-                 3u,compute::BufferAccess::Write)};
+            view(results,source_allocation_bytes(pair_count,32u),
+                 3u,compute::BufferAccess::Read),
+            view(edge_cache,source_allocation_bytes(edge_capacity,240u),
+                 4u,compute::BufferAccess::Read),
+            view(output,source_allocation_bytes(pair_count,96u),
+                 5u,compute::BufferAccess::Write)};
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         commands.emplace_back(std::move(dispatch));
     }
     void append(SourceSapDmaNative& stream,
                 const CudaDeviceAddressMap& addresses,
+                CudaDeviceAddressMap::Address transforms,
+                CudaDeviceAddressMap::Address geometry,
                 CudaDeviceAddressMap::Address pairs,
                 CudaDeviceAddressMap::Address results,
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,
+                std::uint32_t shape_capacity,
                 std::uint32_t edge_capacity) const {
-        append(stream.commands(),addresses,pairs,results,edge_cache,output,
-               pair_count,edge_capacity);
+        append(stream.commands(),addresses,transforms,geometry,pairs,
+               results,edge_cache,output,pair_count,shape_capacity,
+               edge_capacity);
     }
 private:
     compute::Context& context_;

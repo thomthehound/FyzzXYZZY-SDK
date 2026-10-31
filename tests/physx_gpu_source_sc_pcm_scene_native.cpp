@@ -80,6 +80,17 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
+    // The device stream reconstructs the original Gu B-local witnesses
+    // in world space, including rotated source-order second shapes.
+    constexpr float angle=0.08f;
+    const Quat orientation{0.f,0.f,std::sin(angle*0.5f),
+                           std::cos(angle*0.5f)};
+    cpu.set_pose(cpu_b,{0.8f,1.f,0.f},orientation);
+    gpu.set_pose(gpu_b,{0.8f,1.f,0.f},orientation);
+    check(true);
+    cpu.set_pose(cpu_b,{0.8f,1.f,0.f},{});
+    gpu.set_pose(gpu_b,{0.8f,1.f,0.f},{});
+    check(true);
     cpu.set_position(cpu_a,{5.0f,1.0f,0.0f});
     gpu.set_position(gpu_a,{5.0f,1.0f,0.0f});
     check(false);
