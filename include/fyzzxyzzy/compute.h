@@ -69,6 +69,8 @@ struct DeviceInfo {
     bool cache_coherent_unified_memory = false;
     // Resolved during adapter admission / logical-device creation, never dispatch.
     bool supports_int64_shader = false;
+    // Native Dy 1D's source impulse recurrence requires FP64 arithmetic.
+    bool supports_float64_shader = false;
     bool supports_int64_wave = false; // 64-bit subgroup add/prefix is enabled.
     std::uint32_t subgroup_size = 0;
     std::uint32_t min_subgroup_size = 0;
