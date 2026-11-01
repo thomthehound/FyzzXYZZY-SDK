@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -44,10 +45,10 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=11u;
+        pipeline.storage_buffer_binding_count=12u;
         pipeline.storage_buffer_views.assign(
-            11u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=88u;
+            12u,compute::StorageBufferViewKind::RawReadWrite);
+        pipeline.push_constant_bytes=116u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
@@ -91,12 +92,37 @@ public:
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),contacts.data(),friction.data(),
             patches.data(),manifolds.data(),contact_order.data()};
-        // Mutated state is one contiguous readback prefix; read-only
-        // partition/manifold inputs remain on the device until fetch.
+        // Download only the source writeback fields. The GPU still
+        // receives the original packed row inputs in one ordered upload.
+        constexpr std::array<std::size_t,6> output_inputs{
+            0u,1u,5u,6u,7u,8u};
+        constexpr std::array<std::size_t,6> output_strides{
+            48u,8u,4u,8u,8u,4u};
+        constexpr std::array<std::size_t,6> input_strides{
+            52u,80u,36u,88u,72u,32u};
+        constexpr std::array<std::size_t,6> field_offsets{
+            0u,72u,32u,72u,64u,12u};
+        static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==72u &&
+                      offsetof(native::GpuDyDistanceTask,error)==32u &&
+                      offsetof(native::GpuDyContactPoint,applied_force)==72u &&
+                      offsetof(native::GpuDyFrictionRow,applied_force)==64u &&
+                      offsetof(native::GpuDyContactPatch,broken)==12u);
+        std::array<std::size_t,6> result_offsets{};
+        std::size_t output_bytes=0u;
+        for(std::size_t i=0;i<output_inputs.size();++i) {
+            const auto n=elements[output_inputs[i]];
+            if(n>(std::numeric_limits<std::uint32_t>::max()-output_bytes)/
+                output_strides[i])
+                throw std::overflow_error("Source Dy writeback exceeds 32-bit view ABI");
+            result_offsets[i]=output_bytes;
+            output_bytes+=n*output_strides[i];
+        }
         constexpr std::array<std::size_t,count> order{
             0u,1u,5u,6u,7u,8u,2u,3u,4u,9u,10u};
         std::array<std::size_t,count> offsets{},views{};
-        std::size_t total=0u,output_bytes=0u;
+        // Leave the source input addresses 128-byte aligned. One packed
+        // output view precedes them, so readback needs only a single copy.
+        std::size_t total=(output_bytes+127u)&~std::size_t(127u);
         for(const auto i:order) {
             views[i]=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
@@ -104,31 +130,44 @@ public:
                 throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
             total=(total+views[i]+127u)&~std::size_t(127u);
-            if(i==8u)output_bytes=offsets[i]+bytes[i];
         }
         narrow(total);
-        narrow(output_bytes);
         host_.resize(total);
         for(std::size_t i=0;i<count;++i)
             if(bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
+        // Seed unmatched source slots with their original values. A
+        // descriptor skipped by source preparation must retain its input
+        // writeback, not uninitialized device memory.
+        for(std::size_t i=0;i<output_inputs.size();++i) {
+            const auto index=output_inputs[i];
+            const auto* source=static_cast<const std::uint8_t*>(sources[index]);
+            for(std::size_t j=0;j<elements[index];++j)
+                std::memcpy(host_.data()+result_offsets[i]+
+                            j*output_strides[i],
+                            source+j*input_strides[i]+field_offsets[i],
+                            output_strides[i]);
+        }
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
-        const std::vector<SourceSapUpload> uploads{
-            {address,host_.data(),host_.size()}};
-        stream_.queue_uploads(uploads);
-        std::array<std::uint32_t,22> params{};
+        stream_.queue_uploads({{address,host_.data(),host_.size()}});
+        std::array<std::uint32_t,29> params{};
         for(std::size_t i=0;i<count;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
+        for(std::size_t i=0;i<result_offsets.size();++i)
+            params[22u+i]=narrow(result_offsets[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.groups={narrow(tasks.size()),1u,1u};
-        dispatch.buffers.reserve(count);
+        dispatch.buffers.reserve(count+1u);
         for(std::uint32_t i=0;i<count;++i)
             dispatch.buffers.push_back(source_native_view(
                 addresses_,address+offsets[i],views[i],alignment_,i,
                 compute::BufferAccess::ReadWrite,
                 params[i<6u?i:i+6u],max_view_));
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,address,output_bytes,alignment_,11u,
+            compute::BufferAccess::ReadWrite,params[28],max_view_));
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
@@ -143,15 +182,27 @@ public:
             throw;
         }
         stream_.wait_at_fetch();
-        if(bytes[0])std::memcpy(bodies.data(),host_.data()+offsets[0],bytes[0]);
-        if(bytes[1])std::memcpy(rows.data(),host_.data()+offsets[1],bytes[1]);
-        if(bytes[5])std::memcpy(tasks.data(),host_.data()+offsets[5],bytes[5]);
-        if(bytes[6])std::memcpy(contacts.data(),host_.data()+offsets[6],bytes[6]);
-        if(bytes[7])std::memcpy(friction.data(),host_.data()+offsets[7],bytes[7]);
-        if(bytes[8])std::memcpy(patches.data(),host_.data()+offsets[8],bytes[8]);
+        for(std::size_t i=0;i<tasks.size();++i)
+            std::memcpy(&tasks[i].error,
+                host_.data()+result_offsets[2]+i*4u,4u);
         for(const auto& task:tasks)
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
+        for(std::size_t i=0;i<bodies.size();++i)
+            std::memcpy(bodies[i].linear_delta,
+                host_.data()+result_offsets[0]+i*48u,48u);
+        for(std::size_t i=0;i<rows.size();++i)
+            std::memcpy(&rows[i].applied_force,
+                host_.data()+result_offsets[1]+i*8u,8u);
+        for(std::size_t i=0;i<contacts.size();++i)
+            std::memcpy(&contacts[i].applied_force,
+                host_.data()+result_offsets[3]+i*8u,8u);
+        for(std::size_t i=0;i<friction.size();++i)
+            std::memcpy(&friction[i].applied_force,
+                host_.data()+result_offsets[4]+i*8u,8u);
+        for(std::size_t i=0;i<patches.size();++i)
+            std::memcpy(&patches[i].broken,
+                host_.data()+result_offsets[5]+i*4u,4u);
         last_transfer_bytes_={total,output_bytes};
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
