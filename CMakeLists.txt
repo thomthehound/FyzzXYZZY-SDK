@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.21)
 project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
+include(cmake/SourceGpuSceneTests.cmake)
 include(FetchContent)
 find_package(Threads REQUIRED)
 
@@ -1890,11 +1891,11 @@ if(FYZZXYZZY_BUILD_VULKAN)
       fyzzxyzzy_native_gpu_sap_shaders
       fyzzxyzzy_native_gpu_pcm_shaders
       fyzzxyzzy_source_dy_distance_shader)
-    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene
-      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
-        "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
+    fyzzxyzzy_register_sc_gpu_pcm_tests(
+      fyzzxyzzy_source_sc_gpu_pcm_scene
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+      "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
     
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
@@ -5229,13 +5230,11 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_native_gpu_sap_shaders_d3d12
       fyzzxyzzy_native_gpu_pcm_shaders_d3d12
       fyzzxyzzy_source_dy_distance_shader_d3d12)
-    add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-      COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
-        "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
-    set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    fyzzxyzzy_register_sc_gpu_pcm_tests(
+      fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
+      "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
         ${FYZZXYZZY_NATIVE_GPU_SAP_DXIL_BINARIES}

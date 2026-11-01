@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 void require(bool good,const char* message) {
@@ -502,47 +503,33 @@ void verify_gpu_distance_solver(
 
 int main(int argc,char** argv) {
     try {
-        require(argc==4,"Expected SAP/PCM manifests and source Dy shader");
-        verify(
+        require(argc==4 || argc==5,
+                "Expected SAP/PCM manifests, source Dy shader and optional scenario");
+        const std::string_view scenario=argc==5?argv[4]:"all";
+        require(scenario=="all" || scenario=="scene" ||
+                scenario=="sparse_contacts" || scenario=="coupled_stack" ||
+                scenario=="coupled_solver" || scenario=="distance_solver",
+                "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
-            fyzz::compute::Backend::D3D12,
+        constexpr auto backend=fyzz::compute::Backend::D3D12;
 #else
-            fyzz::compute::Backend::Vulkan,
+        constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
-            argv[1],argv[2]);
-        verify_sparse_contact_stream(
-#ifdef FYZZXYZZY_TEST_D3D12
-            fyzz::compute::Backend::D3D12,
-#else
-            fyzz::compute::Backend::Vulkan,
-#endif
-            argv[1],argv[2]);
-        verify_coupled_rigid_stack(
-#ifdef FYZZXYZZY_TEST_D3D12
-            fyzz::compute::Backend::D3D12,
-#else
-            fyzz::compute::Backend::Vulkan,
-#endif
-            argv[1],argv[2]);
-        verify_gpu_coupled_solver(
-#ifdef FYZZXYZZY_TEST_D3D12
-            fyzz::compute::Backend::D3D12,
-#else
-            fyzz::compute::Backend::Vulkan,
-#endif
-            argv[1],argv[2],argv[3]);
-        verify_gpu_distance_solver(
-#ifdef FYZZXYZZY_TEST_D3D12
-            fyzz::compute::Backend::D3D12,
-#else
-            fyzz::compute::Backend::Vulkan,
-#endif
-            argv[1],argv[3]);
-        std::cout<<"Native Sc GPU PCM scene publication PASS\n";
+        if(scenario=="all" || scenario=="scene")
+            verify(backend,argv[1],argv[2]);
+        if(scenario=="all" || scenario=="sparse_contacts")
+            verify_sparse_contact_stream(backend,argv[1],argv[2]);
+        if(scenario=="all" || scenario=="coupled_stack")
+            verify_coupled_rigid_stack(backend,argv[1],argv[2]);
+        if(scenario=="all" || scenario=="coupled_solver")
+            verify_gpu_coupled_solver(backend,argv[1],argv[2],argv[3]);
+        if(scenario=="all" || scenario=="distance_solver")
+            verify_gpu_distance_solver(backend,argv[1],argv[3]);
+        std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {
-        std::cerr<<"Native Sc GPU PCM scene publication FAILED: "
-                 <<error.what()<<'\n';
+        std::cerr<<"Native Sc GPU PCM scene regression FAILED: "
+                  <<error.what()<<'\n';
         return 1;
     }
 }
