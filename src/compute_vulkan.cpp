@@ -174,6 +174,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                     features.pNext = &extended;
                     getFeatures2(physical, &features);
                     info.supports_int64_shader = features.features.shaderInt64 == VK_TRUE;
+                    info.supports_float64_shader = features.features.shaderFloat64 == VK_TRUE;
                     info.supports_int64_wave = info.supports_int64_shader &&
                         info.supports_wave_arithmetic &&
                         extended.shaderSubgroupExtendedTypes == VK_TRUE;
