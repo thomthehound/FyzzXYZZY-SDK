@@ -160,8 +160,12 @@ public:
         // metadata reconstruction or per-contact repacking is required.
         const auto mapped=addresses_.resolve(
             dense_contacts_.getDevicePtr(),output.size_bytes());
-        context_.download(
-            mapped.buffer,mapped.offset,output.data(),output.size_bytes());
+        // Batched readback retains the backend's reusable staging
+        // allocation; Context::download would allocate staging per frame.
+        const std::vector<compute::DownloadSpan> downloads{
+            {mapped.buffer,mapped.offset,output.data(),output.size_bytes()}
+        };
+        context_.download_batch(downloads);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             const auto& stored=output[i];
