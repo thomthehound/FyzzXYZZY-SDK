@@ -78,8 +78,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     if(manager.y==0u)return;
     uint a=descriptor.y,b=descriptor.z;
     uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
-    float ma=a==invalidBody?0.f:asfloat(bodies.Load(ao+48u));
-    float mb=b==invalidBody?0.f:asfloat(bodies.Load(bo+48u));
+    float ma=0.f,mb=0.f;
+    if(a!=invalidBody)ma=asfloat(bodies.Load(ao+48u));
+    if(b!=invalidBody)mb=asfloat(bodies.Load(bo+48u));
     uint cursor=manager.z;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
