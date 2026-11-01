@@ -17,52 +17,10 @@ if(FYZZXYZZY_BUILD_D3D12)
     target_compile_options(fyzzxyzzy_compute_d3d12 PRIVATE /W4)
   endif()
 
-  # Same portable source operation on native D3D12, no PhysX reference.
-  add_library(fyzzxyzzy_source_gpu_primitives_d3d12 STATIC
-    src/physx_gpu/source_fill_d32_native.cpp
-    src/physx_gpu/aabb_encoding.cpp
-    src/physx_gpu/cuda_aabb_launch_lowering.cpp
-    src/physx_gpu/source_overlap_work_native.cpp
-    src/physx_gpu/source_overlap_prefix_native.cpp
-    src/physx_gpu/source_newbounds_pairs_native.cpp
-    src/physx_gpu/source_newbounds_sequence_native.cpp
-    src/physx_gpu/source_sap_created_native.cpp
-    src/physx_gpu/source_sap_incremental_counts_native.cpp
-    src/physx_gpu/source_sap_endpoint_histograms_native.cpp
-    src/physx_gpu/source_sap_incremental_pairs_native.cpp
-    src/physx_gpu/source_sap_updated_native.cpp
-    src/physx_gpu/source_sap_removed_native.cpp
-    src/physx_gpu/source_sapbox_indices_native.cpp
-    src/physx_gpu/source_sap_radix_native.cpp
-    src/physx_gpu/source_region_create_native.cpp
-    src/physx_gpu/source_region_histograms_native.cpp
-    src/physx_gpu/source_active_region_lists_native.cpp
-    src/physx_gpu/source_clear_new_flags_native.cpp
-    src/physx_gpu/source_sap_report_multi_root.cpp
-    src/physx_gpu/source_sap_update_native.cpp
-    src/physx_gpu/source_sap_scene_frame_native.cpp)
-  target_compile_features(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC cxx_std_23)
-  target_include_directories(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port"
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_link_libraries(fyzzxyzzy_source_gpu_primitives_d3d12 PUBLIC
-    FyzzXYZZY::ComputeD3D12 fyzzxyzzy_physx_cuda_host_address)
-
-  add_library(fyzzxyzzy_native_gpu_world_d3d12 STATIC
-    src/physx_gpu/native_gpu_world.cpp)
-  add_library(FyzzXYZZY::NativeGpuWorldD3D12 ALIAS
-    fyzzxyzzy_native_gpu_world_d3d12)
-  target_compile_features(fyzzxyzzy_native_gpu_world_d3d12 PUBLIC cxx_std_23)
-  target_include_directories(fyzzxyzzy_native_gpu_world_d3d12
-    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_port")
-  target_link_libraries(fyzzxyzzy_native_gpu_world_d3d12 PUBLIC
-    FyzzXYZZY::Core fyzzxyzzy_physx_original_gpu_heap
+  fyzzxyzzy_add_native_gpu_libraries(
     fyzzxyzzy_source_gpu_primitives_d3d12
-    fyzzxyzzy_physx_foundation_lifetime)
-  set_target_properties(fyzzxyzzy_native_gpu_world_d3d12
-    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    fyzzxyzzy_native_gpu_world_d3d12
+    FyzzXYZZY::NativeGpuWorldD3D12 FyzzXYZZY::ComputeD3D12)
 
   if(BUILD_TESTING AND NOT FYZZXYZZY_ENABLE_PHYSX_SOURCE
      AND FYZZXYZZY_BUILD_SOURCE_GPU_TESTS)
