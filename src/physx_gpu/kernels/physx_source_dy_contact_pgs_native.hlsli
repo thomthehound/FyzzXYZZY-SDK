@@ -205,8 +205,8 @@ void prepareContactRow(uint index,uint pairIndex,uint errorAddress) {
         return;
     }
     uint co=p.contactBias+index*88u;
-    uint pair=p.prepBias+pairIndex*200u;
-    uint b0=pair,b1=pair+80u;
+    uint pair=p.prepBias+pairIndex*232u;
+    uint b0=pair,b1=pair+96u;
     // The source correlation pass has already chosen this row's header
     // normal. The other raw inputs occupy its future Jacobian fields.
     float3 n=asfloat(arena.Load3(co));
@@ -223,7 +223,7 @@ void prepareContactRow(uint index,uint pairIndex,uint errorAddress) {
     float3 r0=cross(pos-p0,n);
     float3 r1=cross(pos-p1,n);
     float linearRel=dot(n,v0-v1);
-    float pairSlop=asfloat(arena.Load(pair+164u));
+    float pairSlop=asfloat(arena.Load(pair+196u));
     if(pairSlop>0.0f) {
         float angularRel=dot(r0,w0)-dot(r1,w1);
         float ratio=linearRel==0.0f
@@ -239,15 +239,15 @@ void prepareContactRow(uint index,uint pairIndex,uint errorAddress) {
     double response=(double)m0+(double)m1+
         (double)dot(ja,ja)+(double)dot(jb,jb);
     double multiplier=response>0.0?1.0/response:0.0;
-    float restDistance=asfloat(arena.Load(pair+160u));
-    float restitution=asfloat(arena.Load(pair+168u));
-    float damping=asfloat(arena.Load(pair+172u));
-    float maxPenBias=asfloat(arena.Load(pair+176u));
-    float invDt=asfloat(arena.Load(pair+180u));
-    float seconds=asfloat(arena.Load(pair+184u));
-    float rigidBias=asfloat(arena.Load(pair+188u));
-    float bounceThreshold=asfloat(arena.Load(pair+192u));
-    bool acceleration=arena.Load(pair+196u)!=0u;
+    float restDistance=asfloat(arena.Load(pair+192u));
+    float restitution=asfloat(arena.Load(pair+200u));
+    float damping=asfloat(arena.Load(pair+204u));
+    float maxPenBias=asfloat(arena.Load(pair+208u));
+    float invDt=asfloat(arena.Load(pair+212u));
+    float seconds=asfloat(arena.Load(pair+216u));
+    float rigidBias=asfloat(arena.Load(pair+220u));
+    float bounceThreshold=asfloat(arena.Load(pair+224u));
+    bool acceleration=arena.Load(pair+228u)!=0u;
     float penetration=separation-restDistance;
     float penetrationInvDt=penetration*invDt;
     bool separated=penetration>=0.0f;
@@ -291,4 +291,60 @@ void prepareContactRow(uint index,uint pairIndex,uint errorAddress) {
     prepStoreDouble(co+48u,impulseMultiplier);
     prepStoreDouble(co+56u,biasedError);
     prepStoreDouble(co+64u,unbiasedError);
+}
+
+float3 prepRotate(uint body,float3 local) {
+    float4 q=asfloat(arena.Load4(body+80u));
+    float3 u=q.xyz;
+    float3 t=cross(u,local)*2.0f;
+    return local+q.w*t+cross(u,t);
+}
+void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
+    if(index>=p.frictionCount || pairIndex>=p.prepCount) {
+        arena.InterlockedOr(errorAddress,16384u);
+        return;
+    }
+    uint fo=p.frictionBias+index*72u;
+    uint pair=p.prepBias+pairIndex*232u;
+    uint b0=pair,b1=pair+96u;
+    // Source DyFrictionCorrelation selected these body-local anchors.
+    // Source DyContactPrep selected the two tangents and their order.
+    float3 tangent=asfloat(arena.Load3(fo));
+    float3 r0=prepRotate(b0,asfloat(arena.Load3(fo+12u)));
+    float3 r1=prepRotate(b1,asfloat(arena.Load3(fo+24u)));
+    float3 p0=asfloat(arena.Load3(b0));
+    float3 p1=asfloat(arena.Load3(b1));
+    float3 v0=asfloat(arena.Load3(b0+12u));
+    float3 v1=asfloat(arena.Load3(b1+12u));
+    float3 w0=asfloat(arena.Load3(b0+24u));
+    float3 w1=asfloat(arena.Load3(b1+24u));
+    float m0=asfloat(arena.Load(b0+72u));
+    float m1=asfloat(arena.Load(b1+72u));
+    float slop=asfloat(arena.Load(pair+196u));
+    float invDt=asfloat(arena.Load(pair+212u));
+    float rigidBias=asfloat(arena.Load(pair+220u));
+    float3 error=prepSlop((r0+p0)-(r1+p1),slop);
+    float3 ax0=prepSlop(cross(r0,tangent),slop);
+    float3 ax1=prepSlop(cross(r1,tangent),slop);
+    float3 ja=prepInertia(b0,ax0);
+    float3 jb=prepInertia(b1,ax1);
+    double response=(double)m0+(double)m1+
+        (double)dot(ja,ja)+(double)dot(jb,jb);
+    double velocityMultiplier=response>0.0
+        ? (double)rigidBias/response:0.0;
+    double bias=(double)(dot(tangent,error)*invDt);
+    float3 relative=v0-v1;
+    double targetVelocity=(double)(-(dot(tangent,relative)+
+        dot(ax0,w0)-dot(ax1,w1)));
+    if(!isfinite(velocityMultiplier) || !isfinite(bias) ||
+       !isfinite(targetVelocity) || !all(isfinite(ja)) ||
+       !all(isfinite(jb))) {
+        arena.InterlockedOr(errorAddress,32768u);
+        return;
+    }
+    arena.Store3(fo+12u,asuint(ja));
+    arena.Store3(fo+24u,asuint(jb));
+    prepStoreDouble(fo+40u,velocityMultiplier);
+    prepStoreDouble(fo+48u,bias);
+    prepStoreDouble(fo+56u,targetVelocity);
 }
