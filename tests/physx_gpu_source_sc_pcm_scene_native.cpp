@@ -277,7 +277,8 @@ void verify_coupled_rigid_stack(
 // production Dy task partitions and device execution on both backends.
 void verify_gpu_coupled_solver(
     fyzz::compute::Backend backend,const char* sap,
-    const char* pcm,const char* dy_shader) {
+    const char* pcm,const char* dy_shader,
+    std::uint32_t spring_mode) {
     using namespace fyzz;
     std::ifstream stream(dy_shader,std::ios::binary);
     require(bool(stream),"Source Dy shader bundle missing");
@@ -310,6 +311,16 @@ void verify_gpu_coupled_solver(
     }
     cpu.create_center_distance_constraint(a[0],a[1],0.82f);
     gpu.create_center_distance_constraint(b[0],b[1],0.82f);
+    if(spring_mode) {
+        Material spring{};
+        spring.restitution=-100.0f;
+        spring.damping=2.0f;
+        spring.compliant_acceleration_spring=spring_mode==2u;
+        for(std::size_t i=0;i<a.size();++i) {
+            cpu.set_material(a[i],spring);
+            gpu.set_material(b[i],spring);
+        }
+    }
     // Zero-impulse Gu managers retain contact geometry but deliberately
     // prepare no Dy solver rows. Coexist with an independently live
     // contact and switch the same manager between zero/live responses.
@@ -415,7 +426,8 @@ void verify_gpu_coupled_solver(
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
-    std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs frames=12 gpu_dispatches="
+    std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs spring_mode="<<spring_mode
+             <<" frames=12 gpu_dispatches="
              <<producer->dy_distance_dispatch_count()
              <<" max_normal_abs_error="<<max_normal_error
              <<" max_friction_abs_error="<<max_friction_error
@@ -556,7 +568,11 @@ int main(int argc,char** argv) {
                 [&]{verify_coupled_rigid_stack(backend,argv[1],argv[2]);});
         if(scenario=="all" || scenario=="coupled_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","coupled_solver",
-                [&]{verify_gpu_coupled_solver(backend,argv[1],argv[2],argv[3]);});
+                [&]{
+                    for(std::uint32_t spring=0u;spring<3u;++spring)
+                        verify_gpu_coupled_solver(
+                            backend,argv[1],argv[2],argv[3],spring);
+                });
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});
