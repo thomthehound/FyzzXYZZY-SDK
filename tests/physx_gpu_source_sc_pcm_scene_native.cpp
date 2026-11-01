@@ -329,6 +329,7 @@ void verify_gpu_coupled_solver(
     gpu.set_velocity(b[0],{0.25f,-0.1f,0.0f});
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
+    bool saw_correlated_multi_point=false;
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
@@ -358,7 +359,10 @@ void verify_gpu_coupled_solver(
         bool found_capped=false;
         for(const auto& contact:gpu.contacts()) {
             const native::Pair capped_pair{capped_fixed_gpu,capped_gpu};
-            if(!(contact.pair==capped_pair))continue;
+            if(!(contact.pair==capped_pair)) {
+                saw_correlated_multi_point |= contact.count>1u;
+                continue;
+            }
             found_capped=true;
             if(frame<4u || frame>=8u)
                 for(std::size_t k=0;k<contact.count;++k)
@@ -408,8 +412,9 @@ void verify_gpu_coupled_solver(
                 "Coupled GPU Gu PCM/1D/contact/friction diverged from CPU Dy");
         }
     }
-    require(saw_contact && saw_force && saw_friction,
-        "Source coupled GPU test never exercised contact/friction response");
+    require(saw_contact && saw_force && saw_friction &&
+            saw_correlated_multi_point,
+        "Source coupled GPU test never exercised multi-point contact/friction");
     std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs frames=12 gpu_dispatches="
              <<producer->dy_distance_dispatch_count()
              <<" max_normal_abs_error="<<max_normal_error
