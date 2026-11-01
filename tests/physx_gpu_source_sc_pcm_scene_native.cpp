@@ -342,6 +342,8 @@ void verify_gpu_coupled_solver(
         cpu.step(dt);
         gpu.step(dt);
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+        require(downloaded>0u && downloaded<uploaded/2u,
+            "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
         require(producer->dy_distance_dispatch_count()==frame+1u,
@@ -501,9 +503,8 @@ void verify_gpu_distance_solver(
             "Source GPU Dy 1D task never dispatched on the device");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
-        require(downloaded>0u && uploaded>downloaded &&
-                uploaded-downloaded>=3u*128u,
-            "Source Dy GPU readback still includes immutable constraint inputs");
+        require(downloaded>0u && downloaded<uploaded/2u,
+            "Source Dy GPU writeback still transfers full solver rows");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);
         require(std::fabs(fixed_expected.position.x-
