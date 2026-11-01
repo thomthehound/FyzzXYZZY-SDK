@@ -309,11 +309,33 @@ void verify_gpu_coupled_solver(
     }
     cpu.create_center_distance_constraint(a[0],a[1],0.82f);
     gpu.create_center_distance_constraint(b[0],b[1],0.82f);
+    // Zero-impulse Gu managers retain contact geometry but deliberately
+    // prepare no Dy solver rows. Coexist with an independently live
+    // contact and switch the same manager between zero/live responses.
+    const auto capped_fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,0.f,0.f});
+    const auto capped_fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{10.f,0.f,0.f});
+    const auto capped_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10.f,0.84f,0.f},1.f);
+    const auto capped_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{10.f,0.84f,0.f},1.f);
+    RigidBodyDynamics capped_dynamics{};
+    capped_dynamics.gravity_enabled=false;
+    capped_dynamics.max_contact_impulse=0.f;
+    cpu.set_dynamics(capped_cpu,capped_dynamics);
+    gpu.set_dynamics(capped_gpu,capped_dynamics);
     cpu.set_velocity(a[0],{0.25f,-0.1f,0.0f});
     gpu.set_velocity(b[0],{0.25f,-0.1f,0.0f});
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
     for(std::uint32_t frame=0;frame<12u;++frame) {
+        if(frame==4u || frame==8u) {
+            capped_dynamics.max_contact_impulse=frame==4u
+                ? std::numeric_limits<float>::max():0.f;
+            cpu.set_dynamics(capped_cpu,capped_dynamics);
+            gpu.set_dynamics(capped_gpu,capped_dynamics);
+        }
         cpu.step(dt);
         gpu.step(dt);
         require(producer->dy_distance_dispatch_count()==frame+1u,
@@ -325,6 +347,19 @@ void verify_gpu_coupled_solver(
                     gpu.solved_friction_patches().size(),
             "GPU Dy contact/friction writeback has wrong source ownership");
         saw_contact |= !gpu.contacts().empty();
+        bool found_capped=false;
+        for(const auto& contact:gpu.contacts()) {
+            const Pair capped_pair{capped_fixed_gpu,capped_gpu};
+            if(!(contact.pair==capped_pair))continue;
+            found_capped=true;
+            if(frame<4u || frame>=8u)
+                for(std::size_t k=0;k<contact.count;++k)
+                    require(gpu.solved_normal_impulses()[
+                                contact.contact_offset+k]==0.0,
+                        "Zero-cap GPU Gu manager generated a Dy contact impulse");
+        }
+        require(found_capped,
+            "Zero-cap source Gu manager lost its Sc contact identity");
         for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
             const auto force=cpu.solved_normal_impulses()[i];
             const auto actual=gpu.solved_normal_impulses()[i];
