@@ -27,19 +27,11 @@ void storeFrictionDouble(uint addr,double value,uint rowIndex,bool finalPass) {
         writeback.Store2(p.writebackBias+p.resultFrictionOffset+
             rowIndex*8u,packed);
 }
-bool contactImpulse(uint a,uint b,float3 n,float3 ja,float3 jb,
+bool contactImpulse(uint a,uint b,uint ao,uint bo,
+                    float3 n,float3 ja,float3 jb,
+                    inout float3 va,inout float3 vb,
+                    inout float3 aa,inout float3 ab,
                     double delta,float ma,float mb,uint errorAddress) {
-    uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
-    float3 va=float3(0,0,0),vb=float3(0,0,0);
-    float3 aa=float3(0,0,0),ab=float3(0,0,0);
-    if(a!=invalidBody) {
-        va=asfloat(bodies.Load3(ao));
-        aa=asfloat(bodies.Load3(ao+12u));
-    }
-    if(b!=invalidBody) {
-        vb=asfloat(bodies.Load3(bo));
-        ab=asfloat(bodies.Load3(bo+12u));
-    }
     double da=delta*(double)ma,db=delta*(double)mb;
     float3 v0=float3((float)((double)va.x+da*(double)n.x),
                      (float)((double)va.y+da*(double)n.y),
@@ -61,10 +53,14 @@ bool contactImpulse(uint a,uint b,float3 n,float3 ja,float3 jb,
     if(a!=invalidBody && ma>0.f) {
         bodies.Store3(ao,asuint(v0));
         bodies.Store3(ao+12u,asuint(w0));
+        va=v0;
+        aa=w0;
     }
     if(b!=invalidBody && mb>0.f) {
         bodies.Store3(bo,asuint(v1));
         bodies.Store3(bo+12u,asuint(w1));
+        vb=v1;
+        ab=w1;
     }
     return true;
 }
@@ -87,8 +83,21 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     uint a=descriptor.y,b=descriptor.z;
     uint ao=p.bodyBias+a*52u,bo=p.bodyBias+b*52u;
     float ma=0.f,mb=0.f;
-    if(a!=invalidBody)ma=asfloat(bodies.Load(ao+48u));
-    if(b!=invalidBody)mb=asfloat(bodies.Load(bo+48u));
+    float3 va=float3(0,0,0),vb=float3(0,0,0);
+    float3 aa=float3(0,0,0),ab=float3(0,0,0);
+    // A source conflict partition gives this descriptor exclusive writes
+    // to its dynamic bodies. Reuse committed velocities through all
+    // correlated normal and friction rows; static participants stay fixed.
+    if(a!=invalidBody) {
+        ma=asfloat(bodies.Load(ao+48u));
+        va=asfloat(bodies.Load3(ao));
+        aa=asfloat(bodies.Load3(ao+12u));
+    }
+    if(b!=invalidBody) {
+        mb=asfloat(bodies.Load(bo+48u));
+        vb=asfloat(bodies.Load3(bo));
+        ab=asfloat(bodies.Load3(bo+12u));
+    }
     uint cursor=manager.z;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
@@ -113,16 +122,6 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float3 n=asfloat(contactPoints.Load3(co));
             float3 ja=asfloat(contactPoints.Load3(co+12u));
             float3 jb=asfloat(contactPoints.Load3(co+24u));
-            float3 va=float3(0,0,0),vb=float3(0,0,0);
-            float3 aa=float3(0,0,0),ab=float3(0,0,0);
-            if(a!=invalidBody) {
-                va=asfloat(bodies.Load3(ao));
-                aa=asfloat(bodies.Load3(ao+12u));
-            }
-            if(b!=invalidBody) {
-                vb=asfloat(bodies.Load3(bo));
-                ab=asfloat(bodies.Load3(bo+12u));
-            }
             float normalVelocity=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
             double oldForce=contactDouble(co+72u);
@@ -137,7 +136,8 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 tasks.InterlockedOr(errorAddress,1024u);
                 return;
             }
-            if(!contactImpulse(a,b,n,ja,jb,nextForce-oldForce,
+            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+                               va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
             storeContactDouble(co+72u,nextForce,pointIndex,finalPass);
             normalImpulse+=nextForce;
@@ -152,16 +152,6 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             float3 n=asfloat(frictionRows.Load3(fo));
             float3 ja=asfloat(frictionRows.Load3(fo+12u));
             float3 jb=asfloat(frictionRows.Load3(fo+24u));
-            float3 va=float3(0,0,0),vb=float3(0,0,0);
-            float3 aa=float3(0,0,0),ab=float3(0,0,0);
-            if(a!=invalidBody) {
-                va=asfloat(bodies.Load3(ao));
-                aa=asfloat(bodies.Load3(ao+12u));
-            }
-            if(b!=invalidBody) {
-                vb=asfloat(bodies.Load3(bo));
-                ab=asfloat(bodies.Load3(bo+12u));
-            }
             float tangentDelta=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
             double oldForce=frictionDouble(fo+64u);
@@ -177,7 +167,8 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
                 tasks.InterlockedOr(errorAddress,2048u);
                 return;
             }
-            if(!contactImpulse(a,b,n,ja,jb,nextForce-oldForce,
+            if(!contactImpulse(a,b,ao,bo,n,ja,jb,
+                               va,vb,aa,ab,nextForce-oldForce,
                                ma,mb,errorAddress))return;
             storeFrictionDouble(fo+64u,nextForce,k,finalPass);
             broken=broken||saturated;
