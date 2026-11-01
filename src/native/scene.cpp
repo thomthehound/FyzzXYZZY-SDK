@@ -7196,6 +7196,88 @@ void Scene::prepare_constraints(float seconds) {
     friction_by_edge_.swap(next_friction_by_edge_);
     friction_cache_epoch_=next_cache_epoch;
 }
+void Scene::solve_gpu_distance_constraints() {
+    // Source Dy owns task, body and 1D row order; the device receives
+    // transient packed views of those exact prepared source inputs.
+    if(!indexed_managers_.empty())
+        throw std::logic_error(
+            "GPU Dy 1D cannot execute Gu contact or friction constraints");
+    if(ordered_constraints_.empty())return;
+    const auto narrow=[](std::size_t value) {
+        if(value>=std::numeric_limits<std::uint32_t>::max())
+            throw std::overflow_error("Native GPU Dy row index exceeds 32 bits");
+        return static_cast<std::uint32_t>(value);
+    };
+    const auto pack=[](float(&out)[3],Vec3 v) {
+        out[0]=v.x;out[1]=v.y;out[2]=v.z;
+    };
+    gpu_dy_bodies_.resize(solver_rows_.size());
+    for(std::size_t i=0;i<solver_rows_.size();++i) {
+        const auto& row=solver_rows_[i];
+        auto& body=gpu_dy_bodies_[i];
+        pack(body.linear_delta,row.solver.linear_velocity_delta);
+        pack(body.angular_state,row.solver.angular_state);
+        pack(body.motion_linear_delta,row.motion_linear_delta);
+        pack(body.motion_angular_state,row.motion_angular_state);
+    }
+    gpu_dy_rows_.resize(distance_rows_.size());
+    for(std::size_t i=0;i<distance_rows_.size();++i) {
+        const auto& row=distance_rows_[i];
+        auto& out=gpu_dy_rows_[i];
+        pack(out.axis,row.axis);
+        pack(out.angular_a,row.angular_a);
+        pack(out.angular_b,row.angular_b);
+        out.inverse_mass_a=row.inverse_mass_a;
+        out.inverse_mass_b=row.inverse_mass_b;
+        out.constant=row.constant;
+        out.unbiased_constant=row.unbiased_constant;
+        out.velocity_multiplier=row.velocity_multiplier;
+        out.applied_force=row.applied_force;
+    }
+    gpu_dy_descriptors_.resize(ordered_constraints_.size());
+    for(std::size_t i=0;i<ordered_constraints_.size();++i) {
+        const auto& d=ordered_constraints_[i];
+        if(!d.distance)
+            throw std::logic_error("GPU Dy 1D received contact descriptor");
+        gpu_dy_descriptors_[i]={d.index,d.row0,d.row1,d.distance};
+    }
+    gpu_dy_partition_ends_.resize(partition_ends_.size());
+    for(std::size_t i=0;i<partition_ends_.size();++i)
+        gpu_dy_partition_ends_[i]=narrow(partition_ends_[i]);
+    gpu_dy_body_ordinals_.resize(solver_active_ids_.size());
+    for(std::size_t i=0;i<solver_active_ids_.size();++i)
+        gpu_dy_body_ordinals_[i]=narrow(
+            actors_[solver_active_ids_[i]].solver_row_index);
+    gpu_dy_tasks_.resize(solver_tasks_.size());
+    for(std::size_t i=0;i<solver_tasks_.size();++i) {
+        const auto& task=solver_tasks_[i];
+        gpu_dy_tasks_[i]={
+            narrow(i?solver_tasks_[i-1].constraint_end:0u),
+            narrow(task.constraint_end),
+            narrow(i?solver_tasks_[i-1].partition_end:0u),
+            narrow(task.partition_end),
+            narrow(i?solver_tasks_[i-1].solver_body_end:0u),
+            narrow(task.solver_body_end),
+            task.position_iterations,task.velocity_iterations,0u};
+    }
+    gpu_broadphase_->solve_gpu_dy_distance(
+        gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
+        gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_);
+    const auto unpack=[](const float(&v)[3]) {
+        return Vec3{v[0],v[1],v[2]};
+    };
+    for(std::size_t i=0;i<solver_rows_.size();++i) {
+        const auto& source=gpu_dy_bodies_[i];
+        auto& target=solver_rows_[i];
+        target.solver.linear_velocity_delta=unpack(source.linear_delta);
+        target.solver.angular_state=unpack(source.angular_state);
+        target.motion_linear_delta=unpack(source.motion_linear_delta);
+        target.motion_angular_state=unpack(source.motion_angular_state);
+    }
+    for(std::size_t i=0;i<distance_rows_.size();++i)
+        distance_rows_[i].applied_force=gpu_dy_rows_[i].applied_force;
+}
+
 void Scene::solve_constraint_task(std::size_t task_index) {
     // DySolverConstraintsShared.h::solveDynamicContacts /
     // solveStaticContacts and DySolverConstraints.cpp friction patch solve,
@@ -9089,13 +9171,16 @@ void Scene::step(float seconds) {
         solver_task_completion_stamps_,solver_task_completion_generation_);
     prepare_constraints(seconds);
     begin_contact_writeback();
+    const bool gpu_dy_distance=
+        gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
+    if(gpu_dy_distance)solve_gpu_distance_constraints();
     // Each source Dy group owns independent accurate islands and disjoint
     // contact, friction, distance and solver-body rows. Admit complete
     // PGS -> PxsSolverEndTask chains when both ranges justify the worker.
     // All chains join before Sc postSolver/afterIntegration publication.
     std::size_t parallel_solver_split=0;
-    if(parallel_solver_enabled_ && !solver_kinematic_participant_ &&
-       solver_tasks_.size()>1 &&
+    if(!gpu_dy_distance && parallel_solver_enabled_ &&
+       !solver_kinematic_participant_ && solver_tasks_.size()>1 &&
        ordered_constraints_.size()>=parallel_solver_min_descriptors_) {
         // Prepared task rows are disjoint only without shared kinematic
         // solver endpoints; their presence is recorded during the
@@ -9170,7 +9255,7 @@ void Scene::step(float seconds) {
         ++concurrent_integration_dispatches_;
     } else {
         for(std::size_t i=0;i<solver_tasks_.size();++i) {
-            solve_constraint_task(i);
+            if(!gpu_dy_distance)solve_constraint_task(i);
             complete_solver_end_task(i,seconds,speculative_ready_nodes_);
             join.finish_solver_task(i);
         }
