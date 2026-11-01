@@ -7,17 +7,25 @@ double contactDouble(uint addr) {
     uint2 v=contactPoints.Load2(addr);
     return asdouble(v.x,v.y);
 }
-void storeContactDouble(uint addr,double value) {
+void storeContactDouble(uint addr,double value,uint pointIndex,bool finalPass) {
     uint lo,hi;asuint(value,lo,hi);
-    contactPoints.Store2(addr,uint2(lo,hi));
+    uint2 packed=uint2(lo,hi);
+    contactPoints.Store2(addr,packed);
+    if(finalPass)
+        writeback.Store2(p.writebackBias+p.resultContactOffset+
+            pointIndex*8u,packed);
 }
 double frictionDouble(uint addr) {
     uint2 v=frictionRows.Load2(addr);
     return asdouble(v.x,v.y);
 }
-void storeFrictionDouble(uint addr,double value) {
+void storeFrictionDouble(uint addr,double value,uint rowIndex,bool finalPass) {
     uint lo,hi;asuint(value,lo,hi);
-    frictionRows.Store2(addr,uint2(lo,hi));
+    uint2 packed=uint2(lo,hi);
+    frictionRows.Store2(addr,packed);
+    if(finalPass)
+        writeback.Store2(p.writebackBias+p.resultFrictionOffset+
+            rowIndex*8u,packed);
 }
 bool contactImpulse(uint a,uint b,float3 n,float3 ja,float3 jb,
                     double delta,float ma,float mb,uint errorAddress) {
@@ -131,7 +139,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             }
             if(!contactImpulse(a,b,n,ja,jb,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            storeContactDouble(co+72u,nextForce);
+            storeContactDouble(co+72u,nextForce,pointIndex,finalPass);
             normalImpulse+=nextForce;
         }
         if(!frictionEnabled || patch.z==0u)continue;
@@ -171,10 +179,14 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             }
             if(!contactImpulse(a,b,n,ja,jb,nextForce-oldForce,
                                ma,mb,errorAddress))return;
-            storeFrictionDouble(fo+64u,nextForce);
+            storeFrictionDouble(fo+64u,nextForce,k,finalPass);
             broken=broken||saturated;
         }
-        if(finalPass)contactPatches.Store(po+12u,broken?1u:0u);
+        if(finalPass) {
+            contactPatches.Store(po+12u,broken?1u:0u);
+            writeback.Store(p.writebackBias+p.resultPatchOffset+
+                patchIndex*4u,broken?1u:0u);
+        }
     }
     if(cursor!=manager.z+manager.w)
         tasks.InterlockedOr(errorAddress,512u);
