@@ -1521,45 +1521,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
   endif()
 
   if(FYZZXYZZY_ENABLE_PHYSX_SOURCE)
-  # Translated PhysX GPU stages. These operations preserve upstream data
-  # contracts; the PhysX scene integration is introduced incrementally.
-  add_library(fyzzxyzzy_physx_gpu_stages STATIC
-    src/physx_gpu/mark_removed_pairs_arena.cpp
-    src/physx_gpu/removed_projections_arena.cpp
-    src/physx_gpu/created_pairs_arena.cpp
-    src/physx_gpu/radix_count_arena.cpp
-    src/physx_gpu/radix_scatter_arena.cpp
-    src/physx_gpu/sap_box_indices_arena.cpp
-    src/physx_gpu/sap_ranked_sort_arena.cpp
-    src/physx_gpu/sap_endpoint_histogram_arena.cpp
-    src/physx_gpu/sap_incremental_comparisons_arena.cpp
-    src/physx_gpu/sap_incremental_pairs_arena.cpp
-    src/physx_gpu/sap_clear_new_flags_arena.cpp
-    src/physx_gpu/broadphase_copy_reports_arena.cpp
-    src/physx_gpu/broadphase_report_classification_arena.cpp
-    src/physx_gpu/sap_host_frame_roles.cpp
-    src/physx_gpu/sap_region_producer_arena.cpp
-    src/physx_gpu/sap_region_histograms_arena.cpp
-    src/physx_gpu/sap_active_region_lists_arena.cpp
-    src/physx_gpu/sap_overlap_work_arena.cpp
-    src/physx_gpu/sap_overlap_prefix_arena.cpp
-    src/physx_gpu/sap_newbounds_pairs_arena.cpp
-    src/physx_gpu/sap_newbounds_sequence_arena.cpp
-    src/physx_gpu/broadphase_completion.cpp
-  )
-  target_compile_features(fyzzxyzzy_physx_gpu_stages PUBLIC cxx_std_23)
-  target_include_directories(fyzzxyzzy_physx_gpu_stages PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpucommon/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/gpubroadphase/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevelaabb/include"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/common/src"
-    "${fyzzxyzzy_physx_SOURCE_DIR}/physx/source/lowlevel/software/include")
-  target_link_libraries(fyzzxyzzy_physx_gpu_stages PUBLIC
-    FyzzXYZZY::Compute physx_lib fyzzxyzzy_physx_cuda_host_address
-    fyzzxyzzy_physx_original_gpu_heap fyzzxyzzy_source_gpu_primitives)
-  set_target_properties(fyzzxyzzy_physx_gpu_stages
-    PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  fyzzxyzzy_add_gpu_source_stages(
+    fyzzxyzzy_physx_gpu_stages FyzzXYZZY::Compute
+    fyzzxyzzy_source_gpu_primitives)
 
   if(MSVC)
     target_compile_options(fyzzxyzzy_compute PRIVATE /W4)
