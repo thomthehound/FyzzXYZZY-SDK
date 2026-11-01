@@ -297,6 +297,13 @@ jobs:
         env:
           FYZZXYZZY_D3D12_FORCE_WARP: '1'
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Summarize coupled solver conformance
+        shell: pwsh
+        run: |
+          $measurements = @(Select-String -Path 'build/Testing/Temporary/LastTest.log' -Pattern 'N1 coupled-friction oracle passed' |
+            ForEach-Object { $_.Line })
+          if (-not $measurements) { throw 'Coupled solver conformance measurements missing' }
+          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
       - name: Stress native scene worker and teardown
         run: ctest --test-dir build -C Release -R '^fyzzxyzzy_native_scene_smoke$' --repeat until-fail:32 --output-on-failure
       - name: Preserve native scene crash dumps
@@ -307,13 +314,6 @@ jobs:
           path: ${{ runner.temp }}/fyzzxyzzy-native-scene-dumps/*.dmp
           if-no-files-found: ignore
           retention-days: 7
-      - name: Summarize coupled solver conformance
-        shell: pwsh
-        run: |
-          $measurements = @(Select-String -Path 'build/Testing/Temporary/LastTest.log' -Pattern 'N1 coupled-friction oracle passed' |
-            ForEach-Object { $_.Line })
-          if (-not $measurements) { throw 'Coupled solver conformance measurements missing' }
-          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
       - name: Measure native serial/concurrent third-pass scheduler
         if: github.event_name == 'workflow_dispatch'
         shell: pwsh
