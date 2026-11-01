@@ -172,8 +172,28 @@ static_assert(sizeof(GpuDyContactPatch)==32u);
 struct GpuDyContactManifold {
     std::uint32_t patch_offset=0,patch_count=0;
     std::uint32_t order_offset=0,contact_count=0;
+    std::uint32_t prep_index=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactManifold)==16u);
+static_assert(sizeof(GpuDyContactManifold)==20u);
+
+// DyContactPrepShared normal-row inputs, packed in the same source-owned
+// GPU arena as the solver. Correlated friction patches retain Sc ownership.
+struct GpuDyContactPrepBody {
+    float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
+    float sqrt_inverse_inertia[9]{};
+    float inverse_mass=0.0f,reserved=0.0f;
+};
+static_assert(sizeof(GpuDyContactPrepBody)==80u);
+struct GpuDyContactPrepPair {
+    GpuDyContactPrepBody body0{},body1{};
+    float rest_distance=0.0f,pair_slop=0.0f;
+    float restitution=0.0f,damping=0.0f;
+    float max_penetration_bias=0.0f,inv_dt=0.0f;
+    float seconds=0.0f,rigid_contact_bias=0.0f;
+    float bounce_threshold=0.0f;
+    std::uint32_t acceleration_spring=0u;
+};
+static_assert(sizeof(GpuDyContactPrepPair)==200u);
 
 class GpuBroadphaseProducer {
 public:
@@ -204,7 +224,8 @@ public:
         std::span<GpuDyFrictionRow>,
         std::span<GpuDyContactPatch>,
         std::span<const GpuDyContactManifold>,
-        std::span<const std::uint32_t>) {
+        std::span<const std::uint32_t>,
+        std::span<const GpuDyContactPrepPair>) {
         throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void mark_shape_bounds_changed(
@@ -1709,6 +1730,8 @@ private:
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
+    std::vector<GpuDyContactPrepPair> gpu_dy_contact_prep_pairs_;
+    std::vector<std::uint32_t> gpu_dy_contact_prep_indices_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
