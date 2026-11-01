@@ -73,7 +73,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         return;
     }
     uint4 manager=arena.Load4(
-        p.manifoldBias+descriptor.x*16u);
+        p.manifoldBias+descriptor.x*20u);
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
        manager.z>p.orderCount || manager.w>p.orderCount-manager.z) {
         arena.InterlockedOr(errorAddress,64u);
@@ -181,4 +181,114 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     }
     if(cursor!=manager.z+manager.w)
         arena.InterlockedOr(errorAddress,512u);
+}
+
+float3 prepSlop(float3 value,float slop) {
+    return float3(abs(value.x)<slop?0.0f:value.x,
+                  abs(value.y)<slop?0.0f:value.y,
+                  abs(value.z)<slop?0.0f:value.z);
+}
+float3 prepInertia(uint body,float3 v) {
+    float3 c0=asfloat(arena.Load3(body+36u));
+    float3 c1=asfloat(arena.Load3(body+48u));
+    float3 c2=asfloat(arena.Load3(body+60u));
+    return c0*v.x+c1*v.y+c2*v.z;
+}
+void prepStoreDouble(uint address,double value) {
+    uint lo,hi;
+    asuint(value,lo,hi);
+    arena.Store2(address,uint2(lo,hi));
+}
+void prepareContactRow(uint index,uint pairIndex,uint errorAddress) {
+    if(index>=p.contactCount || pairIndex>=p.prepCount) {
+        arena.InterlockedOr(errorAddress,4096u);
+        return;
+    }
+    uint co=p.contactBias+index*88u;
+    uint pair=p.prepBias+pairIndex*200u;
+    uint b0=pair,b1=pair+80u;
+    // The source correlation pass has already chosen this row's header
+    // normal. The other raw inputs occupy its future Jacobian fields.
+    float3 n=asfloat(arena.Load3(co));
+    float3 pos=asfloat(arena.Load3(co+12u));
+    float separation=asfloat(arena.Load(co+24u));
+    float3 p0=asfloat(arena.Load3(b0));
+    float3 p1=asfloat(arena.Load3(b1));
+    float3 v0=asfloat(arena.Load3(b0+12u));
+    float3 v1=asfloat(arena.Load3(b1+12u));
+    float3 w0=asfloat(arena.Load3(b0+24u));
+    float3 w1=asfloat(arena.Load3(b1+24u));
+    float m0=asfloat(arena.Load(b0+72u));
+    float m1=asfloat(arena.Load(b1+72u));
+    float3 r0=cross(pos-p0,n);
+    float3 r1=cross(pos-p1,n);
+    float linearRel=dot(n,v0-v1);
+    float pairSlop=asfloat(arena.Load(pair+164u));
+    if(pairSlop>0.0f) {
+        float angularRel=dot(r0,w0)-dot(r1,w1);
+        float ratio=linearRel==0.0f
+            ? 3.402823466e+38f : angularRel/linearRel;
+        float slop=pairSlop*max(ratio,1.0f);
+        r0=prepSlop(r0,slop);
+        r1=prepSlop(r1,slop);
+    }
+    float3 ja=prepInertia(b0,r0);
+    float3 jb=prepInertia(b1,r1);
+    float angularRel=dot(r0,w0)-dot(r1,w1);
+    float vrel=linearRel+angularRel;
+    double response=(double)m0+(double)m1+
+        (double)dot(ja,ja)+(double)dot(jb,jb);
+    double multiplier=response>0.0?1.0/response:0.0;
+    float restDistance=asfloat(arena.Load(pair+160u));
+    float restitution=asfloat(arena.Load(pair+168u));
+    float damping=asfloat(arena.Load(pair+172u));
+    float maxPenBias=asfloat(arena.Load(pair+176u));
+    float invDt=asfloat(arena.Load(pair+180u));
+    float seconds=asfloat(arena.Load(pair+184u));
+    float rigidBias=asfloat(arena.Load(pair+188u));
+    float bounceThreshold=asfloat(arena.Load(pair+192u));
+    bool acceleration=arena.Load(pair+196u)!=0u;
+    float penetration=separation-restDistance;
+    float penetrationInvDt=penetration*invDt;
+    bool separated=penetration>=0.0f;
+    bool closing=-vrel>penetrationInvDt;
+    bool bouncing=restitution>0.0f &&
+        bounceThreshold>vrel && closing;
+    float targetVelocity=bouncing?-vrel*restitution:0.0f;
+    double target=(double)(targetVelocity-vrel);
+    double impulseMultiplier=1.0;
+    double biasedError,unbiasedError;
+    if(restitution<0.0f) {
+        float enabledDamping=separated&&!closing?0.0f:damping;
+        double nrdt=(double)seconds*(double)restitution;
+        double aCoeff=(double)seconds*
+            ((double)enabledDamping-nrdt);
+        double massFactor=acceleration?multiplier:1.0;
+        double x=1.0/(1.0+aCoeff*(acceleration?1.0:response));
+        double bias=x*(-nrdt*(double)penetration*massFactor);
+        multiplier=x*aCoeff*massFactor;
+        impulseMultiplier=1.0-x;
+        biasedError=target*multiplier-bias;
+        unbiasedError=biasedError;
+    } else {
+        float penetrationScaled=separated?penetrationInvDt:
+            penetration*(invDt*rigidBias);
+        double scaledBias=bouncing?0.0:
+            multiplier*(double)max(maxPenBias,penetrationScaled);
+        biasedError=target*multiplier-scaledBias;
+        unbiasedError=target*multiplier-
+            (bouncing?0.0:max(scaledBias,0.0));
+    }
+    if(!isfinite(multiplier) || !isfinite(impulseMultiplier) ||
+       !isfinite(biasedError) || !isfinite(unbiasedError) ||
+       !all(isfinite(ja)) || !all(isfinite(jb))) {
+        arena.InterlockedOr(errorAddress,8192u);
+        return;
+    }
+    arena.Store3(co+12u,asuint(ja));
+    arena.Store3(co+24u,asuint(jb));
+    prepStoreDouble(co+40u,multiplier);
+    prepStoreDouble(co+48u,impulseMultiplier);
+    prepStoreDouble(co+56u,biasedError);
+    prepStoreDouble(co+64u,unbiasedError);
 }

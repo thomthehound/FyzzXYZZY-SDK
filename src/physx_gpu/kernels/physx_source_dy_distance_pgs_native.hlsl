@@ -19,6 +19,7 @@ struct Parameters {
     uint resultBodyOffset,resultRowOffset,resultTaskOffset;
     uint resultContactOffset,resultFrictionOffset,resultPatchOffset;
     uint writebackBias;
+    uint prepBias,prepCount;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -139,6 +140,32 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         return;
     }
+    // Independent Gu normal rows are prepared in parallel after the
+    // source Sc/Dy friction correlation has fixed their order. The same
+    // task group then executes the original PGS partitions and iterations.
+    for(uint i=ranges.x+lane.x;i<ranges.y;i+=128u) {
+        uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        if(desc.w==1u)continue;
+        if(desc.x>=p.manifoldCount) {
+            arena.InterlockedOr(endError,4096u);
+            continue;
+        }
+        uint mo=p.manifoldBias+desc.x*20u;
+        uint4 manager=arena.Load4(mo);
+        if(manager.y==0u)continue;
+        uint pairIndex=arena.Load(mo+16u);
+        if(pairIndex>=p.prepCount ||
+           manager.z>p.orderCount ||
+           manager.w>p.orderCount-manager.z) {
+            arena.InterlockedOr(endError,4096u);
+            continue;
+        }
+        for(uint c=0u;c<manager.w;++c) {
+            uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
+            prepareContactRow(index,pairIndex,endError);
+        }
+    }
+    AllMemoryBarrierWithGroupSync();
     uint velocityIterations=max(iters.y,1u);
     uint firstPartition=ranges.z;
     for(uint iter=0u;iter<iters.x+velocityIterations;++iter) {
