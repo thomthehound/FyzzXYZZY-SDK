@@ -8,6 +8,7 @@
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 int main() {
     try {
@@ -131,6 +132,27 @@ int main() {
             throw std::runtime_error("Consumed submission ID remained valid");
         }
         context.wait_all();
+
+        // Source readback may grow staging while earlier GPU submission
+        // tokens remain owned by an independent ordered stream. Reaping
+        // those tokens during staging retirement breaks the Sc fetch.
+        std::array<std::uint32_t,2> readback{};
+        const SubmissionId retained_small=context.submit_copy_buffer(
+            local_src,0,local_dst,0,sizeof(source));
+        const std::vector<DownloadSpan> small{{
+            local_dst,0,readback.data(),sizeof(std::uint32_t)}};
+        context.download_batch(small);
+        const SubmissionId retained_grow=context.submit_copy_buffer(
+            local_src,0,local_dst,0,sizeof(source));
+        const std::vector<DownloadSpan> larger{{
+            local_dst,0,readback.data(),sizeof(readback)}};
+        context.download_batch(larger);
+        if(readback[0]!=source[0] || readback[1]!=source[1])
+            throw std::runtime_error(
+                "Expanded Vulkan readback lost source-ordered copies");
+        const std::array<SubmissionId,2> retained{
+            retained_small,retained_grow};
+        context.wait_submissions(retained);
 
         // A copy-only batch creates no descriptor pool.
         context.execute_batch({
