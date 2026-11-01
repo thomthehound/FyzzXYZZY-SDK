@@ -182,8 +182,10 @@ struct GpuDyContactPrepBody {
     float position[3]{},linear_velocity[3]{},angular_velocity[3]{};
     float sqrt_inverse_inertia[9]{};
     float inverse_mass=0.0f,reserved=0.0f;
+    float orientation[4]{};
 };
-static_assert(sizeof(GpuDyContactPrepBody)==80u);
+static_assert(sizeof(GpuDyContactPrepBody)==96u &&
+              offsetof(GpuDyContactPrepBody,orientation)==80u);
 struct GpuDyContactPrepPair {
     GpuDyContactPrepBody body0{},body1{};
     float rest_distance=0.0f,pair_slop=0.0f;
@@ -193,7 +195,7 @@ struct GpuDyContactPrepPair {
     float bounce_threshold=0.0f;
     std::uint32_t acceleration_spring=0u;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==200u);
+static_assert(sizeof(GpuDyContactPrepPair)==232u);
 
 class GpuBroadphaseProducer {
 public:
