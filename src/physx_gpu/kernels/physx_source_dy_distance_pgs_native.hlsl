@@ -69,14 +69,16 @@ void solveRow(uint index,uint errorAddress,bool biased) {
     float massB=asfloat(distances.Load(offset+40u));
     uint ao=p.bodyBias+desc.y*48u;
     uint bo=p.bodyBias+desc.z*48u;
-    float3 va=desc.y==invalidBody ? float3(0,0,0):
-        asfloat(bodies.Load3(ao));
-    float3 vb=desc.z==invalidBody ? float3(0,0,0):
-        asfloat(bodies.Load3(bo));
-    float3 aa=desc.y==invalidBody ? float3(0,0,0):
-        asfloat(bodies.Load3(ao+12u));
-    float3 ab=desc.z==invalidBody ? float3(0,0,0):
-        asfloat(bodies.Load3(bo+12u));
+    float3 va=float3(0,0,0),vb=float3(0,0,0);
+    float3 aa=float3(0,0,0),ab=float3(0,0,0);
+    if(desc.y!=invalidBody) {
+        va=asfloat(bodies.Load3(ao));
+        aa=asfloat(bodies.Load3(ao+12u));
+    }
+    if(desc.z!=invalidBody) {
+        vb=asfloat(bodies.Load3(bo));
+        ab=asfloat(bodies.Load3(bo+12u));
+    }
 
     // DySolverConstraints::solveExt1D and source native 1D PGS:
     // float Jacobian dot operations followed by wide accumulated impulse.
