@@ -427,7 +427,7 @@ jobs:
         run: |
           cmake --build build-native --parallel 4
           ctest --test-dir build-native --output-on-failure
-          ctest --test-dir build-native -R '^fyzzxyzzy_wave32_contract$' --verbose --output-on-failure
+          grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
@@ -458,7 +458,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_wave32_contract_d3d12$' --verbose --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
+            ForEach-Object { $_.Line })
+          if (-not $measurements) { throw 'Native GPU integration measurements missing' }
+          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }
