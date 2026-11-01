@@ -44,10 +44,10 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=6u;
+        pipeline.storage_buffer_binding_count=11u;
         pipeline.storage_buffer_views.assign(
-            6u,compute::StorageBufferViewKind::RawReadWrite);
-        pipeline.push_constant_bytes=48u;
+            11u,compute::StorageBufferViewKind::RawReadWrite);
+        pipeline.push_constant_bytes=88u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
@@ -62,77 +62,76 @@ public:
                std::span<const native::GpuDyDistanceDescriptor> descriptors,
                std::span<const std::uint32_t> partition_ends,
                std::span<const std::uint32_t> body_ordinals,
-               std::span<native::GpuDyDistanceTask> tasks) {
+               std::span<native::GpuDyDistanceTask> tasks,
+               std::span<native::GpuDyContactPoint> contacts,
+               std::span<native::GpuDyFrictionRow> friction,
+               std::span<native::GpuDyContactPatch> patches,
+               std::span<const native::GpuDyContactManifold> manifolds,
+               std::span<const std::uint32_t> contact_order) {
         if(tasks.empty() || descriptors.empty())
-            throw std::invalid_argument("Source Dy GPU requires active 1D tasks");
+            throw std::invalid_argument("Source Dy GPU requires active source tasks");
         if(tasks.size()>context_.device_info().max_workgroup_count[0])
-            throw std::out_of_range("Source Dy GPU task dispatch exceeds device limit");
+            throw std::out_of_range("Source Dy task dispatch exceeds device limits");
         const auto narrow=[](std::size_t value) {
             if(value>=std::numeric_limits<std::uint32_t>::max())
-                throw std::overflow_error("Source Dy GPU input exceeds 32-bit offset ABI");
+                throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
             return static_cast<std::uint32_t>(value);
         };
-        constexpr std::size_t parts=6u;
-        const std::array<std::size_t,parts> bytes{
+        constexpr std::size_t count=11u;
+        const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
-            tasks.size_bytes()};
-        std::array<std::size_t,parts> offsets{};
-        std::size_t total=0u;
-        const auto align=[](std::size_t value) {
-            return (value+127u)&~std::size_t(127u);
-        };
-        // Group all GPU-mutated ranges at the front of the source arena.
-        // The single GPU readback need not copy read-only descriptor,
-        // partition or body-ordinal inputs back to the host.
-        constexpr std::array<std::size_t,parts> allocation_order{
-            0u,1u,5u,2u,3u,4u};
-        std::size_t output_bytes=0u;
-        for(const auto i:allocation_order) {
-            if(bytes[i]==0u)
-                throw std::invalid_argument("Source Dy GPU input array is empty");
+            tasks.size_bytes(),contacts.size_bytes(),friction.size_bytes(),
+            patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes()};
+        const std::array<std::size_t,count> elements{
+            bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
+            body_ordinals.size(),tasks.size(),contacts.size(),friction.size(),
+            patches.size(),manifolds.size(),contact_order.size()};
+        const std::array<const void*,count> sources{
+            bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
+            body_ordinals.data(),tasks.data(),contacts.data(),friction.data(),
+            patches.data(),manifolds.data(),contact_order.data()};
+        // Mutated state is one contiguous readback prefix; read-only
+        // partition/manifold inputs remain on the device until fetch.
+        constexpr std::array<std::size_t,count> order{
+            0u,1u,5u,6u,7u,8u,2u,3u,4u,9u,10u};
+        std::array<std::size_t,count> offsets{},views{};
+        std::size_t total=0u,output_bytes=0u;
+        for(const auto i:order) {
+            views[i]=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
-               bytes[i]>std::numeric_limits<std::uint32_t>::max()-total)
-                throw std::overflow_error("Source Dy GPU arena exceeds 32-bit range");
+               views[i]>std::numeric_limits<std::uint32_t>::max()-total)
+                throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
-            total=align(total+bytes[i]);
-            if(i==5u)output_bytes=offsets[i]+bytes[i];
+            total=(total+views[i]+127u)&~std::size_t(127u);
+            if(i==8u)output_bytes=offsets[i]+bytes[i];
         }
         narrow(total);
         narrow(output_bytes);
         host_.resize(total);
-        std::memcpy(host_.data()+offsets[0],bodies.data(),bytes[0]);
-        std::memcpy(host_.data()+offsets[1],rows.data(),bytes[1]);
-        std::memcpy(host_.data()+offsets[2],descriptors.data(),bytes[2]);
-        std::memcpy(host_.data()+offsets[3],partition_ends.data(),bytes[3]);
-        std::memcpy(host_.data()+offsets[4],body_ordinals.data(),bytes[4]);
-        std::memcpy(host_.data()+offsets[5],tasks.data(),bytes[5]);
+        for(std::size_t i=0;i<count;++i)
+            if(bytes[i])
+                std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
         const std::vector<SourceSapUpload> uploads{
             {address,host_.data(),host_.size()}};
         stream_.queue_uploads(uploads);
-
-        std::array<std::uint32_t,12> params{
-            0u,0u,0u,0u,0u,0u,
-            narrow(bodies.size()),narrow(rows.size()),
-            narrow(descriptors.size()),narrow(partition_ends.size()),
-            narrow(body_ordinals.size()),narrow(tasks.size())};
+        std::array<std::uint32_t,22> params{};
+        for(std::size_t i=0;i<count;++i)
+            params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.groups={narrow(tasks.size()),1u,1u};
-        dispatch.buffers.reserve(parts);
-        for(std::uint32_t i=0;i<parts;++i)
+        dispatch.buffers.reserve(count);
+        for(std::uint32_t i=0;i<count;++i)
             dispatch.buffers.push_back(source_native_view(
-                addresses_,address+offsets[i],bytes[i],
-                alignment_,i,compute::BufferAccess::ReadWrite,
-                params[i],max_view_));
+                addresses_,address+offsets[i],views[i],alignment_,i,
+                compute::BufferAccess::ReadWrite,
+                params[i<6u?i:i+6u],max_view_));
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
-        // A single ordered readback covers precisely the mutable body,
-        // distance impulse and task-status prefix; immutable inputs stay
-        // on the device until the source heap's normal retirement.
         const auto mapped=addresses_.resolve(address,output_bytes);
         const std::vector<compute::DownloadSpan> downloads{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
@@ -144,12 +143,15 @@ public:
             throw;
         }
         stream_.wait_at_fetch();
-        std::memcpy(bodies.data(),host_.data()+offsets[0],bytes[0]);
-        std::memcpy(rows.data(),host_.data()+offsets[1],bytes[1]);
-        std::memcpy(tasks.data(),host_.data()+offsets[5],bytes[5]);
+        if(bytes[0])std::memcpy(bodies.data(),host_.data()+offsets[0],bytes[0]);
+        if(bytes[1])std::memcpy(rows.data(),host_.data()+offsets[1],bytes[1]);
+        if(bytes[5])std::memcpy(tasks.data(),host_.data()+offsets[5],bytes[5]);
+        if(bytes[6])std::memcpy(contacts.data(),host_.data()+offsets[6],bytes[6]);
+        if(bytes[7])std::memcpy(friction.data(),host_.data()+offsets[7],bytes[7]);
+        if(bytes[8])std::memcpy(patches.data(),host_.data()+offsets[8],bytes[8]);
         for(const auto& task:tasks)
             if(task.error!=0u)
-                throw std::overflow_error("Source Dy 1D GPU solver rejected a row");
+                throw std::overflow_error("Source Dy GPU solver rejected a row");
         last_transfer_bytes_={total,output_bytes};
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {

@@ -91,54 +91,42 @@ jobs:
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
-            build/_deps/fyzzxyzzy_godot_cpp-build
-            build/_deps/fyzzxyzzy_godot_cpp-subbuild
+            build/_deps/fyzzxyzzy_godot_cpp-build/gen/include
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
-            build/.ninja_deps
-            build/.ninja_log
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
+            build/fyzzxyzzy-godot-cpp-targets.cmake
+          key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }}
       - name: Verify SDK C++23 compiler and standard library
         run: |
           cmake --build build --target fyzzxyzzy_cpp23_contract --parallel 2
           ctest --test-dir build -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
-      - name: Validate shared PhysX HLSL to SPIR-V before full SDK build
-        shell: bash
-        run: |
-          cmake --build build --target fyzzxyzzy_wave32_contract fyzzxyzzy_native_multi_resource fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_physx_source_descriptor fyzzxyzzy_physx_source_overlap_native fyzzxyzzy_physx_source_scan_native fyzzxyzzy_physx_source_pairs_native fyzzxyzzy_physx_source_sequence_native fyzzxyzzy_physx_source_d32_fill_native fyzzxyzzy_physx_source_region_create_native fyzzxyzzy_physx_source_region_histograms_native fyzzxyzzy_physx_source_clear_new_flags_native fyzzxyzzy_physx_source_sapbox_indices_native fyzzxyzzy_physx_source_sap_removed_native fyzzxyzzy_physx_source_sap_updated_native fyzzxyzzy_physx_source_sap_created_native fyzzxyzzy_physx_source_sap_radix_native fyzzxyzzy_physx_source_sap_incremental_counts_native fyzzxyzzy_physx_source_sap_endpoint_histograms_native fyzzxyzzy_physx_source_sap_incremental_pairs_native fyzzxyzzy_physx_source_sap_scene_boundary fyzzxyzzy_physx_mark_removed_arena fyzzxyzzy_physx_removed_projections fyzzxyzzy_physx_created_pairs fyzzxyzzy_physx_radix_count fyzzxyzzy_physx_radix_scatter fyzzxyzzy_physx_sap_box_indices fyzzxyzzy_physx_sap_ranked_sort fyzzxyzzy_physx_sap_endpoint_histogram fyzzxyzzy_physx_sap_incremental_comparisons fyzzxyzzy_physx_sap_incremental_pairs fyzzxyzzy_physx_sap_clear_new_flags fyzzxyzzy_physx_bp_copy_reports fyzzxyzzy_physx_bp_report_classification fyzzxyzzy_physx_sap_region_producer fyzzxyzzy_physx_sap_region_histograms fyzzxyzzy_physx_sap_active_region_lists fyzzxyzzy_sap_overlap_work fyzzxyzzy_sap_overlap_prefix fyzzxyzzy_sap_newbounds_pairs fyzzxyzzy_sap_newbounds_sequence fyzzxyzzy_physx_broadphase_completion --parallel 4
-          ctest --test-dir build -R '^fyzzxyzzy_physx_(aabb_encoding|cuda_aabb_launch|source_descriptor|source_overlap_native|source_scan_native|source_pairs_native|source_sequence_native|source_d32_fill_native|source_region_create_native|source_region_histograms_native|source_clear_new_flags_native|source_sapbox_indices_native|source_sap_removed_native|source_sap_updated_native|source_sap_created_native|source_sap_radix_native|source_sap_incremental_counts_native|source_sap_endpoint_histograms_native|source_sap_incremental_pairs_native|source_sap_scene_boundary|ten_operation_chain|mark_removed_arena|removed_projections|created_pairs|radix_count|radix_scatter|sap_box_indices|sap_ranked_sort|sap_endpoint_histogram|sap_incremental_comparisons|sap_incremental_pairs|sap_clear_new_flags|bp_copy_reports|bp_report_classification|sap_region_producer|sap_region_histograms|sap_active_region_lists|broadphase_completion)$' --output-on-failure
-          ctest --test-dir build -R '^fyzzxyzzy_sap_(overlap_(work|prefix)|newbounds_(pairs|sequence))$' --output-on-failure
-          ctest --test-dir build -R '^fyzzxyzzy_native_multi_resource$' --output-on-failure
-          ctest --test-dir build -R '^fyzzxyzzy_wave32_contract$' --verbose --output-on-failure
       - name: Build
-        run: cmake --build build --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot fyzzxyzzy_vulkan_memory_smoke fyzzxyzzy_physx_cuda_host_transfer fyzzxyzzy_physx_sap_broadphase_descriptor_native fyzzxyzzy_physx_cuda_aabb_launch fyzzxyzzy_vulkan_dispatch_smoke fyzzxyzzy_physx_aabb_encoding fyzzxyzzy_vulkan_floor_physics fyzzxyzzy_vulkan_world_smoke --parallel 4
+        run: cmake --build build --parallel 4
       - name: Validate reusable godot-cpp outputs
         shell: bash
         run: |
           test -s build/bin/libgodot-cpp.linux.template_debug.x86_64.a
           test -d build/_deps/fyzzxyzzy_godot_cpp-src/.git
-          test -d build/_deps/fyzzxyzzy_godot_cpp-subbuild
-          test -s build/.ninja_deps
-          test -s build/.ninja_log
           test -d build/_deps/fyzzxyzzy_godot_cpp-build/gen/include/godot_cpp
-          find build/_deps/fyzzxyzzy_godot_cpp-build -type f -name '*.o' -print -quit | grep -q .
+          test -s build/fyzzxyzzy-godot-cpp-targets.cmake
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
-            build/_deps/fyzzxyzzy_godot_cpp-build
-            build/_deps/fyzzxyzzy_godot_cpp-subbuild
+            build/_deps/fyzzxyzzy_godot_cpp-build/gen/include
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
-            build/.ninja_deps
-            build/.ninja_log
+            build/fyzzxyzzy-godot-cpp-targets.cmake
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: Prove strict 48-frame coupled PGS conformance
-        run: ctest --test-dir build -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
+      - name: Summarize coupled solver conformance
+        shell: bash
+        run: |
+          grep -F 'N1 coupled-friction oracle passed' build/Testing/Temporary/LastTest.log |
+            tee -a "$GITHUB_STEP_SUMMARY"
       - name: Measure native serial/concurrent third-pass scheduler
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -246,13 +234,14 @@ jobs:
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
-            build/_deps/fyzzxyzzy_godot_cpp-build
-            build/_deps/fyzzxyzzy_godot_cpp-subbuild
+            build/_deps/fyzzxyzzy_godot_cpp-build/gen/include
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
+            build/fyzzxyzzy-godot-cpp-targets.cmake
+            build/fyzzxyzzy-godot-cpp-runtime.cmake
+          key: godotcpp-v6-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }} "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Verify SDK C++23 compiler and standard library
         shell: pwsh
         run: |
@@ -260,24 +249,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build -C Release -R '^fyzzxyzzy_cpp23_contract$' --output-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Execute native D3D12 PhysX AABB conformance (WARP)
-        shell: pwsh
-        env:
-          FYZZXYZZY_D3D12_FORCE_WARP: '1'
-        run: |
-          cmake --build build --config Release --target fyzzxyzzy_wave32_contract_d3d12 fyzzxyzzy_native_multi_resource_d3d12 fyzzxyzzy_physx_aabb_encoding_d3d12 fyzzxyzzy_physx_cuda_aabb_launch_d3d12 fyzzxyzzy_physx_source_descriptor_d3d12 fyzzxyzzy_physx_source_overlap_native_d3d12 fyzzxyzzy_physx_source_scan_native_d3d12 fyzzxyzzy_physx_source_pairs_native_d3d12 fyzzxyzzy_physx_source_sequence_native_d3d12 fyzzxyzzy_physx_source_d32_fill_native_d3d12 fyzzxyzzy_physx_source_region_create_native_d3d12 fyzzxyzzy_physx_source_region_histograms_native_d3d12 fyzzxyzzy_physx_source_clear_new_flags_native_d3d12 fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 fyzzxyzzy_physx_source_sap_removed_native_d3d12 fyzzxyzzy_physx_source_sap_updated_native_d3d12 fyzzxyzzy_physx_source_sap_created_native_d3d12 fyzzxyzzy_physx_source_sap_radix_native_d3d12 fyzzxyzzy_physx_source_sap_incremental_counts_native_d3d12 fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 fyzzxyzzy_physx_source_sap_scene_boundary_d3d12 fyzzxyzzy_physx_mark_removed_arena_d3d12 fyzzxyzzy_physx_removed_projections_d3d12 fyzzxyzzy_physx_created_pairs_d3d12 fyzzxyzzy_physx_radix_count_d3d12 fyzzxyzzy_physx_radix_scatter_d3d12 fyzzxyzzy_physx_sap_box_indices_d3d12 fyzzxyzzy_physx_sap_ranked_sort_d3d12 fyzzxyzzy_physx_sap_endpoint_histogram_d3d12 fyzzxyzzy_physx_sap_incremental_comparisons_d3d12 fyzzxyzzy_physx_sap_incremental_pairs_d3d12 fyzzxyzzy_physx_sap_clear_new_flags_d3d12 fyzzxyzzy_physx_bp_copy_reports_d3d12 fyzzxyzzy_physx_bp_report_classification_d3d12 fyzzxyzzy_physx_sap_region_producer_d3d12 fyzzxyzzy_physx_sap_region_histograms_d3d12 fyzzxyzzy_physx_sap_active_region_lists_d3d12 fyzzxyzzy_sap_overlap_work_d3d12 fyzzxyzzy_sap_overlap_prefix_d3d12 fyzzxyzzy_sap_newbounds_pairs_d3d12 fyzzxyzzy_sap_newbounds_sequence_d3d12 fyzzxyzzy_physx_broadphase_completion_d3d12 fyzzxyzzy_physx_cuda_host_transfer_d3d12 fyzzxyzzy_physx_sap_broadphase_descriptor_native_d3d12 --parallel 4
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -R '^fyzzxyzzy_physx_(aabb_encoding|cuda_aabb_launch|source_descriptor|source_overlap_native|source_scan_native|source_pairs_native|source_sequence_native|source_d32_fill_native|source_region_create_native|source_region_histograms_native|source_clear_new_flags_native|source_sapbox_indices_native|source_sap_removed_native|source_sap_updated_native|source_sap_created_native|source_sap_radix_native|source_sap_incremental_counts_native|source_sap_endpoint_histograms_native|source_sap_incremental_pairs_native|source_sap_scene_boundary|ten_operation_chain|mark_removed_arena|removed_projections|created_pairs|radix_count|radix_scatter|sap_box_indices|sap_ranked_sort|sap_endpoint_histogram|sap_incremental_comparisons|sap_incremental_pairs|sap_clear_new_flags|bp_copy_reports|bp_report_classification|sap_region_producer|sap_region_histograms|sap_active_region_lists|broadphase_completion|cuda_host_transfer|sap_broadphase_descriptor_native)_d3d12$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -R '^fyzzxyzzy_sap_(overlap_(work|prefix)|newbounds_(pairs|sequence))_d3d12$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -R '^fyzzxyzzy_native_multi_resource_d3d12$' --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build -C Release -R '^fyzzxyzzy_wave32_contract_d3d12$' --verbose --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
-        run: cmake --build build --config release --target fyzzxyzzy_native_scene_smoke fyzzxyzzy_headless_smoke fyzzxyzzy_physx_foundation_shared_lifetime fyzzxyzzy_physx_cuda_address_test fyzzxyzzy_godot --parallel 4
+        run: cmake --build build --config Release --parallel 4
       - name: Validate reusable godot-cpp outputs
         shell: pwsh
         run: |
@@ -285,20 +258,19 @@ jobs:
           $buildDir = 'build/_deps/fyzzxyzzy_godot_cpp-build'
           if (-not (Test-Path $library) -or (Get-Item $library).Length -eq 0) { throw 'Missing compiled godot-cpp library' }
           if (-not (Test-Path 'build/_deps/fyzzxyzzy_godot_cpp-src/.git')) { throw 'Missing pinned godot-cpp source checkout' }
-          if (-not (Test-Path 'build/_deps/fyzzxyzzy_godot_cpp-subbuild')) { throw 'Missing dependency population state' }
           if (-not (Test-Path "$buildDir/gen/include/godot_cpp")) { throw 'Missing generated bindings' }
-          if (-not (Get-ChildItem -Path $buildDir -Filter '*.obj' -File -Recurse | Select-Object -First 1)) {
-            throw 'Missing godot-cpp compilation intermediates'
-          }
+          if (-not (Test-Path 'build/fyzzxyzzy-godot-cpp-targets.cmake')) { throw 'Missing cached binding target manifest' }
+          if (-not (Test-Path 'build/fyzzxyzzy-godot-cpp-runtime.cmake')) { throw 'Missing cached MSVC runtime configuration' }
       - name: Cache compiled godot-cpp
         if: steps.godot_cpp_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
             build/_deps/fyzzxyzzy_godot_cpp-src
-            build/_deps/fyzzxyzzy_godot_cpp-build
-            build/_deps/fyzzxyzzy_godot_cpp-subbuild
+            build/_deps/fyzzxyzzy_godot_cpp-build/gen/include
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
+            build/fyzzxyzzy-godot-cpp-targets.cmake
+            build/fyzzxyzzy-godot-cpp-runtime.cmake
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Capture Windows native scene crashes
         shell: pwsh
@@ -311,7 +283,16 @@ jobs:
           New-ItemProperty -Path $key -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
           New-ItemProperty -Path $key -Name DumpCount -PropertyType DWord -Value 2 -Force | Out-Null
       - name: Test
-        run: ctest --test-dir build -C release --output-on-failure
+        env:
+          FYZZXYZZY_D3D12_FORCE_WARP: '1'
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Summarize coupled solver conformance
+        shell: pwsh
+        run: |
+          $measurements = @(Select-String -Path 'build/Testing/Temporary/LastTest.log' -Pattern 'N1 coupled-friction oracle passed' |
+            ForEach-Object { $_.Line })
+          if (-not $measurements) { throw 'Coupled solver conformance measurements missing' }
+          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
       - name: Stress native scene worker and teardown
         run: ctest --test-dir build -C Release -R '^fyzzxyzzy_native_scene_smoke$' --repeat until-fail:32 --output-on-failure
       - name: Preserve native scene crash dumps
@@ -322,8 +303,6 @@ jobs:
           path: ${{ runner.temp }}/fyzzxyzzy-native-scene-dumps/*.dmp
           if-no-files-found: ignore
           retention-days: 7
-      - name: Prove strict 48-frame coupled PGS conformance
-        run: ctest --test-dir build -C release -R '^fyzzxyzzy_headless_smoke$' --verbose --output-on-failure
       - name: Measure native serial/concurrent third-pass scheduler
         if: github.event_name == 'workflow_dispatch'
         shell: pwsh
@@ -427,7 +406,7 @@ jobs:
         run: |
           cmake --build build-native --parallel 4
           ctest --test-dir build-native --output-on-failure
-          ctest --test-dir build-native -R '^fyzzxyzzy_wave32_contract$' --verbose --output-on-failure
+          grep -F 'FYZZXYZZY_METRIC' build-native/Testing/Temporary/LastTest.log | tee -a "$GITHUB_STEP_SUMMARY"
           test ! -d build-native/_deps/fyzzxyzzy_physx-src
           test -f build-native/libfyzzxyzzy_core.a
           test -f build-native/libfyzzxyzzy_compute.a
@@ -458,7 +437,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ctest --test-dir build-native -C Release --output-on-failure --stop-on-failure
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ctest --test-dir build-native -C Release -R '^fyzzxyzzy_wave32_contract_d3d12$' --verbose --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $measurements = @(Select-String -Path 'build-native/Testing/Temporary/LastTest.log' -Pattern 'FYZZXYZZY_METRIC' |
+            ForEach-Object { $_.Line })
+          if (-not $measurements) { throw 'Native GPU integration measurements missing' }
+          $measurements | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
           if (Test-Path 'build-native/_deps/fyzzxyzzy_physx-src') { throw 'PhysX was fetched by native-only build' }
           if (-not (Test-Path 'build-native/Release/fyzzxyzzy_source_gpu_primitives_d3d12.lib')) { throw 'Independent source GPU primitive library missing' }

@@ -7199,9 +7199,6 @@ void Scene::prepare_constraints(float seconds) {
 void Scene::solve_gpu_distance_constraints() {
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
-    if(!indexed_managers_.empty())
-        throw std::logic_error(
-            "GPU Dy 1D cannot execute Gu contact or friction constraints");
     if(ordered_constraints_.empty())return;
     const auto narrow=[](std::size_t value) {
         if(value>=std::numeric_limits<std::uint32_t>::max())
@@ -7219,6 +7216,7 @@ void Scene::solve_gpu_distance_constraints() {
         pack(body.angular_state,row.solver.angular_state);
         pack(body.motion_linear_delta,row.motion_linear_delta);
         pack(body.motion_angular_state,row.motion_angular_state);
+        body.inverse_mass=row.data.inverse_mass;
     }
     gpu_dy_rows_.resize(distance_rows_.size());
     for(std::size_t i=0;i<distance_rows_.size();++i) {
@@ -7237,8 +7235,6 @@ void Scene::solve_gpu_distance_constraints() {
     gpu_dy_descriptors_.resize(ordered_constraints_.size());
     for(std::size_t i=0;i<ordered_constraints_.size();++i) {
         const auto& d=ordered_constraints_[i];
-        if(!d.distance)
-            throw std::logic_error("GPU Dy 1D received contact descriptor");
         gpu_dy_descriptors_[i]={d.index,d.row0,d.row1,d.distance};
     }
     gpu_dy_partition_ends_.resize(partition_ends_.size());
@@ -7260,9 +7256,81 @@ void Scene::solve_gpu_distance_constraints() {
             narrow(task.solver_body_end),
             task.position_iterations,task.velocity_iterations,0u};
     }
+    // DyContactPrep retains Gu-indexed force rows and a distinct
+    // correlated patch walk for the original source PGS order.
+    gpu_dy_contacts_.resize(solver_contact_points_.size());
+    for(std::size_t i=0;i<solver_contact_points_.size();++i) {
+        const auto& from=solver_contact_points_[i];
+        auto& out=gpu_dy_contacts_[i];
+        pack(out.normal,from.normal);
+        pack(out.angular_a,from.ra_x_n_sqrt_inertia);
+        pack(out.angular_b,from.rb_x_n_sqrt_inertia);
+        out.velocity_multiplier=from.velocity_multiplier;
+        out.impulse_multiplier=from.impulse_multiplier;
+        out.biased_error=from.biased_error;
+        out.unbiased_error=from.unbiased_error;
+        out.applied_force=from.applied_force;
+        out.max_impulse=from.max_impulse;
+    }
+    gpu_dy_friction_.resize(solver_friction_rows_.size());
+    for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
+        const auto& from=solver_friction_rows_[i];
+        auto& out=gpu_dy_friction_[i];
+        pack(out.tangent,from.tangent);
+        pack(out.angular_a,from.ra_x_t_sqrt_inertia);
+        pack(out.angular_b,from.rb_x_t_sqrt_inertia);
+        out.velocity_multiplier=from.velocity_multiplier;
+        out.bias=from.bias;
+        out.target_velocity=from.target_velocity;
+        out.applied_force=from.applied_force;
+    }
+    gpu_dy_patches_.resize(friction_patches_.size());
+    gpu_dy_manifolds_.assign(manifolds_.size(),{});
+    for(const auto manager_index:indexed_managers_) {
+        const auto& m=manifolds_[manager_index];
+        if(m.prepared_friction_epoch!=friction_cache_epoch_)
+            throw std::logic_error("GPU Dy contact manager is not prepared");
+        if(m.friction_patch_offset>friction_patches_.size() ||
+           m.friction_patch_count>
+               friction_patches_.size()-m.friction_patch_offset)
+            throw std::logic_error("GPU Dy contact patch range invalid");
+        // A dormant Gu manager retains geometry but has no prepared
+        // normal rows; source CPU PGS skips its zero-patch descriptor.
+        if(!m.friction_patch_count)continue;
+        if(m.solver_offset>solver_contact_order_.size() ||
+           m.count>solver_contact_order_.size()-m.solver_offset)
+            throw std::logic_error("GPU Dy contact row window invalid");
+        gpu_dy_manifolds_[manager_index]={
+            narrow(m.friction_patch_offset),m.friction_patch_count,
+            narrow(m.solver_offset),m.count};
+        std::size_t cursor=m.solver_offset;
+        for(std::size_t i=m.friction_patch_offset;
+            i<m.friction_patch_offset+m.friction_patch_count;++i) {
+            const auto& patch=friction_patches_[i];
+            if(patch.row_offset>solver_friction_rows_.size() ||
+               patch.anchor_count>2u ||
+               patch.anchor_count*2u>
+                   solver_friction_rows_.size()-patch.row_offset ||
+               patch.contact_count>m.count-(cursor-m.solver_offset))
+                throw std::logic_error("GPU Dy friction patch rows invalid");
+            gpu_dy_patches_[i]={
+                narrow(patch.row_offset),patch.contact_count,
+                patch.anchor_count,patch.broken?1u:0u,
+                patch.static_friction,patch.dynamic_friction,
+                narrow(cursor),0u};
+            cursor+=patch.contact_count;
+        }
+        if(cursor!=m.solver_offset+m.count)
+            throw std::logic_error("GPU Dy source patch contact stream truncated");
+    }
+    gpu_dy_contact_order_.resize(solver_contact_order_.size());
+    for(std::size_t i=0;i<solver_contact_order_.size();++i)
+        gpu_dy_contact_order_[i]=narrow(solver_contact_order_[i]);
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
-        gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_);
+        gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
+        gpu_dy_contacts_,gpu_dy_friction_,gpu_dy_patches_,
+        gpu_dy_manifolds_,gpu_dy_contact_order_);
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
     };
@@ -7276,6 +7344,12 @@ void Scene::solve_gpu_distance_constraints() {
     }
     for(std::size_t i=0;i<distance_rows_.size();++i)
         distance_rows_[i].applied_force=gpu_dy_rows_[i].applied_force;
+    for(std::size_t i=0;i<solver_contact_points_.size();++i)
+        solver_contact_points_[i].applied_force=gpu_dy_contacts_[i].applied_force;
+    for(std::size_t i=0;i<solver_friction_rows_.size();++i)
+        solver_friction_rows_[i].applied_force=gpu_dy_friction_[i].applied_force;
+    for(std::size_t i=0;i<friction_patches_.size();++i)
+        friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
 }
 
 void Scene::solve_constraint_task(std::size_t task_index) {

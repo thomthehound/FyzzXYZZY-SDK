@@ -3,6 +3,7 @@
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "native/scene.h"
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
+#include "gpu_integration_metrics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -595,37 +596,29 @@ int main(int argc,char** argv) {
             throw std::invalid_argument(
                 "Expected source SAP and aggregate GPU shader manifests");
 #if defined(FYZZXYZZY_TEST_D3D12)
-        run(fyzz::compute::Backend::D3D12,argv[1],argv[2]);
+        constexpr auto backend=fyzz::compute::Backend::D3D12;
 #else
-        run(fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
+        constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
-#if defined(FYZZXYZZY_TEST_D3D12)
-        verify_aggregate_gpu_rollback(
-            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
-        verify_aggregate_postfetch_sc_rollback(
-            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
-        verify_source_sap_report_overflow_recovery(
-            fyzz::compute::Backend::D3D12,argv[1]);
-        verify_aggregate_report_overflow_recovery(
-            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
-        verify_combined_actor_aggregate_report_fetch(
-            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
-        verify_retired_aggregate_stops_gpu_work(
-            fyzz::compute::Backend::D3D12,argv[1],argv[2]);
-#else
-        verify_aggregate_gpu_rollback(
-            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
-        verify_aggregate_postfetch_sc_rollback(
-            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
-        verify_source_sap_report_overflow_recovery(
-            fyzz::compute::Backend::Vulkan,argv[1]);
-        verify_aggregate_report_overflow_recovery(
-            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
-        verify_combined_actor_aggregate_report_fetch(
-            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
-        verify_retired_aggregate_stops_gpu_work(
-            fyzz::compute::Backend::Vulkan,argv[1],argv[2]);
-#endif
+        fyzz::tests::measure_gpu_case("aggregate","world_handoff",
+            [&]{run(backend,argv[1],argv[2]);});
+        fyzz::tests::measure_gpu_case("aggregate","rollback",
+            [&]{verify_aggregate_gpu_rollback(backend,argv[1],argv[2]);});
+        fyzz::tests::measure_gpu_case("aggregate","postfetch_rollback",
+            [&]{verify_aggregate_postfetch_sc_rollback(
+                backend,argv[1],argv[2]);});
+        fyzz::tests::measure_gpu_case("aggregate","sap_report_overflow",
+            [&]{verify_source_sap_report_overflow_recovery(
+                backend,argv[1]);});
+        fyzz::tests::measure_gpu_case("aggregate","aggregate_report_overflow",
+            [&]{verify_aggregate_report_overflow_recovery(
+                backend,argv[1],argv[2]);});
+        fyzz::tests::measure_gpu_case("aggregate","combined_report_fetch",
+            [&]{verify_combined_actor_aggregate_report_fetch(
+                backend,argv[1],argv[2]);});
+        fyzz::tests::measure_gpu_case("aggregate","retirement",
+            [&]{verify_retired_aggregate_stops_gpu_work(
+                backend,argv[1],argv[2]);});
         std::cout<<"Original source aggregate GPU World stage ownership PASS\n";
         return 0;
     }catch(const std::exception& error) {
