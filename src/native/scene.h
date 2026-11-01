@@ -1008,6 +1008,7 @@ private:
     void partition_constraints();
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(BodyId id);
+    void solve_gpu_distance_constraints();
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
@@ -1658,6 +1659,14 @@ private:
     // Prepared contact bodies for the current frame; avoids re-preparing
     // free-flight actors before the original island owner is integrated.
     std::vector<BodyId> solver_active_ids_;
+    // Reused transient upload/readback spans, converted directly from
+    // the original source Dy task, constraint and body row storage.
+    std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
+    std::vector<GpuDyDistanceRow> gpu_dy_rows_;
+    std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
+    std::vector<std::uint32_t> gpu_dy_partition_ends_;
+    std::vector<std::uint32_t> gpu_dy_body_ordinals_;
+    std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
