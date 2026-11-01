@@ -7,7 +7,9 @@
 
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace {
@@ -268,11 +270,84 @@ void verify_coupled_rigid_stack(
     require(coupled,
             "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
 }
+// The explicitly installed device Dy 1D stage must replace the
+// production PGS solve, not merely compute a disconnected fixture result.
+void verify_gpu_distance_solver(
+    fyzz::compute::Backend backend,const char* sap,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    std::vector<char> binary(
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv : compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,std::nullopt,std::move(shader));
+    auto* producer=owner.get();
+    require(producer->has_gpu_dy_distance(),
+            "Explicit source Dy distance stage was not installed");
+    gpu.set_gpu_broadphase(std::move(owner));
+    constexpr float dt=1.f/120.f;
+    std::array<BodyId,4> ids_cpu{},ids_gpu{};
+    for(std::size_t i=0;i<ids_cpu.size();++i) {
+        const Vec3 position{float(i)*4.0f,3.0f,0.0f};
+        ids_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        ids_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        RigidBodyDynamics d{};
+        d.gravity_enabled=false;
+        d.position_iterations=5;
+        d.velocity_iterations=2;
+        d.linear_damping=0.0f;
+        d.angular_damping=0.0f;
+        cpu.set_dynamics(ids_cpu[i],d);
+        gpu.set_dynamics(ids_gpu[i],d);
+    }
+    // Two disconnected accurate islands must advance through independent
+    // source task workgroups. Off-center anchors exercise angular Jacobians.
+    cpu.create_anchored_distance_constraint(ids_cpu[0],ids_cpu[1],
+        {0.0f,0.2f,0.0f},{0.0f,-0.2f,0.0f},3.7f);
+    gpu.create_anchored_distance_constraint(ids_gpu[0],ids_gpu[1],
+        {0.0f,0.2f,0.0f},{0.0f,-0.2f,0.0f},3.7f);
+    cpu.create_center_distance_constraint(ids_cpu[2],ids_cpu[3],3.5f);
+    gpu.create_center_distance_constraint(ids_gpu[2],ids_gpu[3],3.5f);
+    cpu.set_velocity(ids_cpu[0],{0.4f,0.2f,0.0f});
+    gpu.set_velocity(ids_gpu[0],{0.4f,0.2f,0.0f});
+    cpu.set_velocity(ids_cpu[2],{-0.6f,0.0f,0.0f});
+    gpu.set_velocity(ids_gpu[2],{-0.6f,0.0f,0.0f});
+    for(int frame=0;frame<12;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        require(cpu.contacts().empty() && gpu.contacts().empty(),
+            "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
+        require(producer->dy_distance_dispatch_count()==
+                    static_cast<std::uint64_t>(frame+1),
+            "Source GPU Dy 1D task never dispatched on the device");
+        for(std::size_t i=0;i<ids_cpu.size();++i) {
+            const auto expected=cpu.body_state(ids_cpu[i]);
+            const auto actual=gpu.body_state(ids_gpu[i]);
+            require(std::fabs(expected.position.x-actual.position.x)<0.001f &&
+                    std::fabs(expected.position.y-actual.position.y)<0.001f &&
+                    std::fabs(expected.velocity.x-actual.velocity.x)<0.001f &&
+                    std::fabs(expected.angular_velocity.z-
+                              actual.angular_velocity.z)<0.001f,
+                "Source GPU Dy 1D solve diverged from production CPU PGS");
+        }
+    }
+}
 } // namespace
 
 int main(int argc,char** argv) {
     try {
-        require(argc==3,"Expected native SAP and PCM shader manifests");
+        require(argc==4,"Expected SAP/PCM manifests and source Dy shader");
         verify(
 #ifdef FYZZXYZZY_TEST_D3D12
             fyzz::compute::Backend::D3D12,
@@ -294,6 +369,13 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::Vulkan,
 #endif
             argv[1],argv[2]);
+        verify_gpu_distance_solver(
+#ifdef FYZZXYZZY_TEST_D3D12
+            fyzz::compute::Backend::D3D12,
+#else
+            fyzz::compute::Backend::Vulkan,
+#endif
+            argv[1],argv[3]);
         std::cout<<"Native Sc GPU PCM scene publication PASS\n";
         return 0;
     }catch(const std::exception& error) {
