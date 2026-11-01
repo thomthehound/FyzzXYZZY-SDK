@@ -349,6 +349,7 @@ endif()
 # Native compute resources and operations do not depend on Godot or PhysX.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NativeGpuLibraries.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompileHlsl.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GpuTestRegistration.cmake")
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/VulkanBackend.cmake")
 
