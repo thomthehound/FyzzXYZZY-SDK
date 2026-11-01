@@ -19,6 +19,7 @@
 #include <stop_token>
 #include <thread>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace fyzz::native {
@@ -91,13 +92,26 @@ struct GpuPcmBoxWorldPoint {
     Vec3 position{};
     float separation=0.0f;
 };
+// The GPU Sc contact-stream shader writes this exact 96-byte record.
+// Download directly into the scene's result array without repacking an
+// additional host-side copy of every Gu contact.
 struct GpuPcmBoxResult {
     std::uint32_t edge=0;
+    std::uint32_t cached_count=0;
     std::uint32_t status=0;
-    std::uint8_t count=0;
+    // Lower 31 bits: selected count; upper bit: regenerated manifold.
+    std::uint32_t selected_and_regenerated=0;
     Vec3 normal{};
+    std::uint32_t count=0;
     std::array<GpuPcmBoxWorldPoint,4> points{};
 };
+static_assert(sizeof(GpuPcmBoxWorldPoint)==16u);
+static_assert(std::is_trivially_copyable_v<GpuPcmBoxResult> &&
+              std::is_standard_layout_v<GpuPcmBoxResult> &&
+              sizeof(GpuPcmBoxResult)==96u &&
+              offsetof(GpuPcmBoxResult,normal)==16u &&
+              offsetof(GpuPcmBoxResult,count)==28u &&
+              offsetof(GpuPcmBoxResult,points)==32u);
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
