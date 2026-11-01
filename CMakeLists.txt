@@ -5,7 +5,6 @@ cmake_minimum_required(VERSION 3.21)
 project(FyzzXYZZY VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SourceGpuSceneTests.cmake")
 include(FetchContent)
 find_package(Threads REQUIRED)
 
