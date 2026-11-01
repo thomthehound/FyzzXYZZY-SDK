@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace fyzz::physx_gpu {
