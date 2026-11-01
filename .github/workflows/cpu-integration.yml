@@ -96,9 +96,10 @@ jobs:
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
             build/.ninja_deps
             build/.ninja_log
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
+            build/fyzzxyzzy-godot-cpp-targets.cmake
+          key: godotcpp-v5-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_VULKAN=ON -DFYZZXYZZY_BUILD_PHYSX_GPU_AABB_TEST=ON -DFYZZXYZZY_ENABLE_GPU_PHYSICS_PROTOTYPES=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }}
       - name: Verify SDK C++23 compiler and standard library
         run: |
           cmake --build build --target fyzzxyzzy_cpp23_contract --parallel 2
@@ -134,6 +135,7 @@ jobs:
             build/bin/libgodot-cpp.linux.template_debug.x86_64.a
             build/.ninja_deps
             build/.ninja_log
+            build/fyzzxyzzy-godot-cpp-targets.cmake
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Test
         run: ctest --test-dir build --output-on-failure
@@ -249,10 +251,11 @@ jobs:
             build/_deps/fyzzxyzzy_godot_cpp-build
             build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
-          key: godotcpp-v4-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
+            build/fyzzxyzzy-godot-cpp-targets.cmake
+          key: godotcpp-v5-${{ runner.os }}-${{ runner.arch }}-${{ steps.cache_toolchain.outputs.toolchain }}-${{ hashFiles('godot/dependency.json', 'cmake/GodotDependency.cmake') }}-template_debug-Release
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
+        run: cmake -S . -B build -A x64 -DBUILD_TESTING=ON -DFYZZXYZZY_BUILD_GODOT=ON -DFYZZXYZZY_STRICT_RIGID_FRICTION_CONFORMANCE=ON -DFYZZXYZZY_BUILD_D3D12=ON -DFYZZXYZZY_BUILD_D3D12_AABB_TEST=ON -DFYZZXYZZY_GODOT_CPP_CACHED=${{ steps.godot_cpp_cache.outputs.cache-hit }} "-DFYZZXYZZY_DXC=$env:FYZZXYZZY_DXC"
       - name: Verify SDK C++23 compiler and standard library
         shell: pwsh
         run: |
@@ -299,6 +302,7 @@ jobs:
             build/_deps/fyzzxyzzy_godot_cpp-build
             build/_deps/fyzzxyzzy_godot_cpp-subbuild
             build/bin/libgodot-cpp.windows.template_debug.x86_64.lib
+            build/fyzzxyzzy-godot-cpp-targets.cmake
           key: ${{ steps.godot_cpp_cache.outputs.cache-primary-key }}
       - name: Capture Windows native scene crashes
         shell: pwsh

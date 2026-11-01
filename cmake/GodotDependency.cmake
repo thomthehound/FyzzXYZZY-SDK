@@ -33,5 +33,24 @@ FetchContent_Declare(fyzzxyzzy_godot_cpp
   GIT_TAG "${FYZZXYZZY_GODOT_CPP_COMMIT}"
   GIT_SHALLOW FALSE
 )
-FetchContent_MakeAvailable(fyzzxyzzy_godot_cpp)
+# A cached build carries the compiled target's exact usage requirements.
+# Import it directly rather than running the binding generator again.
+set(_fyzzxyzzy_godot_cpp_targets
+  "${CMAKE_BINARY_DIR}/fyzzxyzzy-godot-cpp-targets.cmake")
+option(FYZZXYZZY_GODOT_CPP_CACHED
+  "Use compiled Godot bindings from a previously configured build" OFF)
+if(FYZZXYZZY_GODOT_CPP_CACHED)
+  if(NOT EXISTS "${_fyzzxyzzy_godot_cpp_targets}")
+    message(FATAL_ERROR "Cached binding target manifest is missing")
+  endif()
+  include("${_fyzzxyzzy_godot_cpp_targets}")
+  if(NOT TARGET godot::godot-cpp)
+    message(FATAL_ERROR "Cached binding target is unavailable")
+  endif()
+  add_library(godot::cpp ALIAS godot::godot-cpp)
+else()
+  FetchContent_MakeAvailable(fyzzxyzzy_godot_cpp)
+  export(TARGETS godot-cpp
+    FILE "${_fyzzxyzzy_godot_cpp_targets}" NAMESPACE godot::)
+endif()
 
