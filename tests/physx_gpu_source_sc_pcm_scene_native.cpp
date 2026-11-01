@@ -349,7 +349,7 @@ void verify_gpu_coupled_solver(
         saw_contact |= !gpu.contacts().empty();
         bool found_capped=false;
         for(const auto& contact:gpu.contacts()) {
-            const Pair capped_pair{capped_fixed_gpu,capped_gpu};
+            const native::Pair capped_pair{capped_fixed_gpu,capped_gpu};
             if(!(contact.pair==capped_pair))continue;
             found_capped=true;
             if(frame<4u || frame>=8u)
