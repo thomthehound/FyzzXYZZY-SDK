@@ -13,6 +13,7 @@
 #include "physx_gpu/source_sap_radix_native.h"
 #include "physx_gpu/source_sapbox_indices_native.h"
 #include "physx_gpu/source_sc_gpu_pcm_native.h"
+#include "physx_gpu/source_dy_distance_native.h"
 #include "physx_gpu/source_sap_endpoint_histograms_native.h"
 #include "physx_gpu/source_fill_d32_native.h"
 #include "physx_gpu/source_region_create_native.h"
@@ -63,7 +64,8 @@ public:
         std::uint32_t max_pairs=32768u,
         std::uint32_t max_aggregate_pairs=32768u,
         std::optional<NativeGpuAggregateShaders> aggregate_shaders=std::nullopt,
-        std::optional<NativeGpuPcmShaders> pcm_shaders=std::nullopt)
+        std::optional<NativeGpuPcmShaders> pcm_shaders=std::nullopt,
+        std::optional<compute::ShaderBinary> dy_shader=std::nullopt)
         : foundation_(physx_runtime::acquire_foundation()),
           context_(backend),
           stream_(context_,addresses_),
@@ -134,6 +136,10 @@ public:
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaCompact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::EpaContact),
                 take_pcm_shader(*pcm_shaders,NativeGpuPcmStage::ContactStream));
+        if(dy_shader)
+            dy_distance_=std::make_unique<SourceDyDistanceNativeStage>(
+                context_,addresses_,stream_,allocators_.deviceAlloc,
+                std::move(*dy_shader));
     }
 
     SourceScOwnedGpuBroadphaseNative(const SourceScOwnedGpuBroadphaseNative&)=delete;
@@ -145,6 +151,7 @@ public:
         // argument resource, source SAP pipelines or the original heap.
         // Failed submissions stay owned by Context through teardown.
         (void)stream_.finish_shutdown();
+        dy_distance_.reset();
         pcm_.reset();
         producer_.reset();
         box_input_.deallocate();
@@ -170,6 +177,20 @@ public:
         return producer_->advance(live,force_update,geometry_dirty);
     }
     bool has_gpu_pcm_box() const noexcept override { return bool(pcm_); }
+    bool has_gpu_dy_distance() const noexcept override {
+        return bool(dy_distance_);
+    }
+    void solve_gpu_dy_distance(
+        std::span<native::GpuDyDistanceBody> bodies,
+        std::span<native::GpuDyDistanceRow> rows,
+        std::span<const native::GpuDyDistanceDescriptor> descriptors,
+        std::span<const std::uint32_t> partitions,
+        std::span<const std::uint32_t> ordinals,
+        std::span<native::GpuDyDistanceTask> tasks) override {
+        if(!dy_distance_)
+            throw std::logic_error("Source GPU Dy distance shader not installed");
+        dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks);
+    }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
             std::span<native::GpuPcmBoxResult> results) override {
