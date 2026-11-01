@@ -45,9 +45,9 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=12u;
-        pipeline.storage_buffer_views.assign(
-            12u,compute::StorageBufferViewKind::RawReadWrite);
+        pipeline.storage_buffer_binding_count=1u;
+        pipeline.storage_buffer_views={
+            compute::StorageBufferViewKind::RawReadWrite};
         pipeline.push_constant_bytes=116u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
@@ -119,17 +119,17 @@ public:
         }
         constexpr std::array<std::size_t,count> order{
             0u,1u,5u,6u,7u,8u,2u,3u,4u,9u,10u};
-        std::array<std::size_t,count> offsets{},views{};
+        std::array<std::size_t,count> offsets{};
         // Leave the source input addresses 128-byte aligned. One packed
         // output view precedes them, so readback needs only a single copy.
         std::size_t total=(output_bytes+127u)&~std::size_t(127u);
         for(const auto i:order) {
-            views[i]=std::max<std::size_t>(bytes[i],4u);
+            const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
-               views[i]>std::numeric_limits<std::uint32_t>::max()-total)
+               view_bytes>std::numeric_limits<std::uint32_t>::max()-total)
                 throw std::overflow_error("Source Dy solver arena too large");
             offsets[i]=total;
-            total=(total+views[i]+127u)&~std::size_t(127u);
+            total=(total+view_bytes+127u)&~std::size_t(127u);
         }
         narrow(total);
         host_.resize(total);
@@ -159,15 +159,15 @@ public:
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
         dispatch.groups={narrow(tasks.size()),1u,1u};
-        dispatch.buffers.reserve(count+1u);
-        for(std::uint32_t i=0;i<count;++i)
-            dispatch.buffers.push_back(source_native_view(
-                addresses_,address+offsets[i],views[i],alignment_,i,
-                compute::BufferAccess::ReadWrite,
-                params[i<6u?i:i+6u],max_view_));
+        // All source spans are subranges of this one source heap block.
+        // Bind its original allocation once; shader offsets are relative
+        // to the native view base, including the required RAW alignment.
         dispatch.buffers.push_back(source_native_view(
-            addresses_,address,output_bytes,alignment_,11u,
+            addresses_,address,total,alignment_,0u,
             compute::BufferAccess::ReadWrite,params[28],max_view_));
+        for(std::size_t i=0;i<count;++i)
+            params[i<6u?i:i+6u]=narrow(
+                static_cast<std::size_t>(params[28])+offsets[i]);
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));

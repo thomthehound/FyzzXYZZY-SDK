@@ -7,52 +7,7 @@
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
-RWByteAddressBuffer bodies : register(u0,space0);
-#ifdef __spirv__
-[[vk::binding(1,0)]]
-#endif
-RWByteAddressBuffer distances : register(u1,space0);
-#ifdef __spirv__
-[[vk::binding(2,0)]]
-#endif
-RWByteAddressBuffer descriptors : register(u2,space0);
-#ifdef __spirv__
-[[vk::binding(3,0)]]
-#endif
-RWByteAddressBuffer partitionEnds : register(u3,space0);
-#ifdef __spirv__
-[[vk::binding(4,0)]]
-#endif
-RWByteAddressBuffer bodyOrdinals : register(u4,space0);
-#ifdef __spirv__
-[[vk::binding(5,0)]]
-#endif
-RWByteAddressBuffer tasks : register(u5,space0);
-
-#ifdef __spirv__
-[[vk::binding(6,0)]]
-#endif
-RWByteAddressBuffer contactPoints : register(u6,space0);
-#ifdef __spirv__
-[[vk::binding(7,0)]]
-#endif
-RWByteAddressBuffer frictionRows : register(u7,space0);
-#ifdef __spirv__
-[[vk::binding(8,0)]]
-#endif
-RWByteAddressBuffer contactPatches : register(u8,space0);
-#ifdef __spirv__
-[[vk::binding(9,0)]]
-#endif
-RWByteAddressBuffer contactManifolds : register(u9,space0);
-#ifdef __spirv__
-[[vk::binding(10,0)]]
-#endif
-RWByteAddressBuffer contactOrder : register(u10,space0);
-#ifdef __spirv__
-[[vk::binding(11,0)]]
-#endif
-RWByteAddressBuffer writeback : register(u11,space0);
+RWByteAddressBuffer arena : register(u0,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -74,44 +29,44 @@ static const uint invalidBody = 0xffffffffu;
 static const double maxImpulse = 3.4028234663852886e+38;
 
 double loadDouble(uint byteOffset) {
-    uint2 words=distances.Load2(byteOffset);
+    uint2 words=arena.Load2(byteOffset);
     return asdouble(words.x,words.y);
 }
 void storeDouble(uint byteOffset,double value,uint rowIndex,bool finalPass) {
     uint lo,hi;
     asuint(value,lo,hi);
     uint2 packed=uint2(lo,hi);
-    distances.Store2(byteOffset,packed);
+    arena.Store2(byteOffset,packed);
     if(finalPass)
-        writeback.Store2(p.writebackBias+p.resultRowOffset+
+        arena.Store2(p.writebackBias+p.resultRowOffset+
             rowIndex*8u,packed);
 }
 void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
     uint d=p.descriptorBias+index*16u;
-    uint4 desc=descriptors.Load4(d);
+    uint4 desc=arena.Load4(d);
     if(desc.w!=1u || desc.x>=p.rowCount ||
        (desc.y!=invalidBody && desc.y>=p.bodyCount) ||
        (desc.z!=invalidBody && desc.z>=p.bodyCount)) {
-        tasks.InterlockedOr(errorAddress,1u);
+        arena.InterlockedOr(errorAddress,1u);
         return;
     }
     uint offset=p.distanceBias+desc.x*80u;
-    float3 axis=asfloat(distances.Load3(offset));
-    float3 ja=asfloat(distances.Load3(offset+12u));
-    float3 jb=asfloat(distances.Load3(offset+24u));
-    float massA=asfloat(distances.Load(offset+36u));
-    float massB=asfloat(distances.Load(offset+40u));
+    float3 axis=asfloat(arena.Load3(offset));
+    float3 ja=asfloat(arena.Load3(offset+12u));
+    float3 jb=asfloat(arena.Load3(offset+24u));
+    float massA=asfloat(arena.Load(offset+36u));
+    float massB=asfloat(arena.Load(offset+40u));
     uint ao=p.bodyBias+desc.y*52u;
     uint bo=p.bodyBias+desc.z*52u;
     float3 va=float3(0,0,0),vb=float3(0,0,0);
     float3 aa=float3(0,0,0),ab=float3(0,0,0);
     if(desc.y!=invalidBody) {
-        va=asfloat(bodies.Load3(ao));
-        aa=asfloat(bodies.Load3(ao+12u));
+        va=asfloat(arena.Load3(ao));
+        aa=asfloat(arena.Load3(ao+12u));
     }
     if(desc.z!=invalidBody) {
-        vb=asfloat(bodies.Load3(bo));
-        ab=asfloat(bodies.Load3(bo+12u));
+        vb=asfloat(arena.Load3(bo));
+        ab=asfloat(arena.Load3(bo+12u));
     }
 
     // DySolverConstraints::solveExt1D and source native 1D PGS:
@@ -148,18 +103,18 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
     if(!isfinite(next) || !all(isfinite(newVa)) ||
        !all(isfinite(newVb)) || !all(isfinite(newAa)) ||
        !all(isfinite(newAb))) {
-        tasks.InterlockedOr(errorAddress,2u);
+        arena.InterlockedOr(errorAddress,2u);
         return;
     }
     // Only finite-mass dynamic bodies can be updated. Kinematic rows
     // retain their original zero-response state across disjoint groups.
     if(desc.y!=invalidBody && massA>0.f) {
-        bodies.Store3(ao,asuint(newVa));
-        bodies.Store3(ao+12u,asuint(newAa));
+        arena.Store3(ao,asuint(newVa));
+        arena.Store3(ao+12u,asuint(newAa));
     }
     if(desc.z!=invalidBody && massB>0.f) {
-        bodies.Store3(bo,asuint(newVb));
-        bodies.Store3(bo+12u,asuint(newAb));
+        arena.Store3(bo,asuint(newVb));
+        arena.Store3(bo+12u,asuint(newAb));
     }
     storeDouble(offset+72u,next,desc.x,finalPass);
 }
@@ -170,16 +125,16 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     if(group.x>=p.taskCount)return;
     uint t=p.taskBias+group.x*36u;
-    uint4 ranges=tasks.Load4(t);
-    uint2 bodyRange=tasks.Load2(t+16u);
-    uint2 iters=tasks.Load2(t+24u);
+    uint4 ranges=arena.Load4(t);
+    uint2 bodyRange=arena.Load2(t+16u);
+    uint2 iters=arena.Load2(t+24u);
     uint endError=t+32u;
     if(ranges.x>ranges.y || ranges.y>p.descriptorCount ||
        ranges.z>ranges.w || ranges.w>p.partitionCount ||
        bodyRange.x>bodyRange.y || bodyRange.y>p.ordinalCount) {
         if(lane.x==0u) {
-            tasks.InterlockedOr(endError,4u);
-            writeback.Store(p.writebackBias+p.resultTaskOffset+
+            arena.InterlockedOr(endError,4u);
+            arena.Store(p.writebackBias+p.resultTaskOffset+
                             group.x*4u,4u);
         }
         return;
@@ -189,10 +144,10 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     for(uint iter=0u;iter<iters.x+velocityIterations;++iter) {
         for(uint partition=firstPartition;partition<ranges.w;++partition) {
             uint begin=partition==firstPartition ? ranges.x:
-                partitionEnds.Load(p.partitionBias+(partition-1u)*4u);
-            uint end=partitionEnds.Load(p.partitionBias+partition*4u);
+                arena.Load(p.partitionBias+(partition-1u)*4u);
+            uint end=arena.Load(p.partitionBias+partition*4u);
             for(uint i=begin+lane.x;i<end;i+=128u) {
-                uint4 desc=descriptors.Load4(p.descriptorBias+i*16u);
+                uint4 desc=arena.Load4(p.descriptorBias+i*16u);
                 bool finalPass=iter+1u==iters.x+velocityIterations;
                 if(desc.w==1u)
                     solveRow(i,endError,iter<iters.x,finalPass);
@@ -206,14 +161,14 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         if(iter+1u==iters.x) {
             for(uint i=bodyRange.x+lane.x;i<bodyRange.y;i+=128u) {
-                uint ordinal=bodyOrdinals.Load(p.ordinalBias+i*4u);
+                uint ordinal=arena.Load(p.ordinalBias+i*4u);
                 if(ordinal>=p.bodyCount) {
-                    tasks.InterlockedOr(endError,8u);
+                    arena.InterlockedOr(endError,8u);
                     continue;
                 }
                 uint base=p.bodyBias+ordinal*52u;
-                bodies.Store3(base+24u,bodies.Load3(base));
-                bodies.Store3(base+36u,bodies.Load3(base+12u));
+                arena.Store3(base+24u,arena.Load3(base));
+                arena.Store3(base+36u,arena.Load3(base+12u));
             }
             AllMemoryBarrierWithGroupSync();
         }
@@ -223,19 +178,19 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     // Gu writeback; the original prepared inputs remain device-local.
     AllMemoryBarrierWithGroupSync();
     for(uint i=bodyRange.x+lane.x;i<bodyRange.y;i+=128u) {
-        uint ordinal=bodyOrdinals.Load(p.ordinalBias+i*4u);
+        uint ordinal=arena.Load(p.ordinalBias+i*4u);
         if(ordinal>=p.bodyCount) {
-            tasks.InterlockedOr(endError,8u);
+            arena.InterlockedOr(endError,8u);
             continue;
         }
         uint from=p.bodyBias+ordinal*52u;
         uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
-        writeback.Store4(to,bodies.Load4(from));
-        writeback.Store4(to+16u,bodies.Load4(from+16u));
-        writeback.Store4(to+32u,bodies.Load4(from+32u));
+        arena.Store4(to,arena.Load4(from));
+        arena.Store4(to+16u,arena.Load4(from+16u));
+        arena.Store4(to+32u,arena.Load4(from+32u));
     }
     AllMemoryBarrierWithGroupSync();
     if(lane.x==0u)
-        writeback.Store(p.writebackBias+p.resultTaskOffset+
-            group.x*4u,tasks.Load(endError));
+        arena.Store(p.writebackBias+p.resultTaskOffset+
+            group.x*4u,arena.Load(endError));
 }
