@@ -102,6 +102,14 @@ World create_native_gpu_world(
     NativeGpuPcmShaders pcm,
     WorldOptions options={ExecutionMode::NativePortableGpu});
 
+// Explicit source Dy 1D solver: source task partitions run on the GPU.
+// This mode admits distance constraints only; contact/friction constraints
+// fail rather than silently execute CPU PGS on a selected GPU scene.
+World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    compute::ShaderBinary dy_distance,
+    WorldOptions options={ExecutionMode::NativePortableGpu});
+
 // Explicit source aggregate shader contract: all original aggregate
 // pipelines are created under the same native Context and heap owner.
 // The existing single-volume World entrypoints remain unchanged.

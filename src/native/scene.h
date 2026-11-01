@@ -112,6 +112,37 @@ static_assert(std::is_trivially_copyable_v<GpuPcmBoxResult> &&
               offsetof(GpuPcmBoxResult,normal)==16u &&
               offsetof(GpuPcmBoxResult,count)==28u &&
               offsetof(GpuPcmBoxResult,points)==32u);
+// Transient source Dy 1D PGS buffer ABI. Original Sc actor IDs and
+// task ownership remain with Scene; the GPU consumes resolved row slots.
+struct GpuDyDistanceBody {
+    float linear_delta[3]{};
+    float angular_state[3]{};
+    float motion_linear_delta[3]{};
+    float motion_angular_state[3]{};
+};
+static_assert(sizeof(GpuDyDistanceBody)==48u);
+struct GpuDyDistanceRow {
+    float axis[3]{},angular_a[3]{},angular_b[3]{};
+    float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
+    std::uint32_t reserved=0u;
+    double constant=0.0,unbiased_constant=0.0;
+    double velocity_multiplier=0.0,applied_force=0.0;
+};
+static_assert(sizeof(GpuDyDistanceRow)==80u &&
+              offsetof(GpuDyDistanceRow,constant)==48u);
+struct GpuDyDistanceDescriptor {
+    std::uint32_t index=0,row0=0,row1=0,distance=0;
+};
+static_assert(sizeof(GpuDyDistanceDescriptor)==16u);
+struct GpuDyDistanceTask {
+    std::uint32_t descriptor_begin=0,descriptor_end=0;
+    std::uint32_t partition_begin=0,partition_end=0;
+    std::uint32_t body_begin=0,body_end=0;
+    std::uint32_t position_iterations=0,velocity_iterations=0;
+    std::uint32_t error=0u;
+};
+static_assert(sizeof(GpuDyDistanceTask)==36u);
+
 class GpuBroadphaseProducer {
 public:
     virtual ~GpuBroadphaseProducer()=default;
@@ -128,6 +159,16 @@ public:
         std::span<const GpuPcmBoxPair>,
         std::span<GpuPcmBoxResult>) {
         throw std::logic_error("Source GPU PCM stages are not installed");
+    }
+    virtual bool has_gpu_dy_distance() const noexcept { return false; }
+    virtual void solve_gpu_dy_distance(
+        std::span<GpuDyDistanceBody>,
+        std::span<GpuDyDistanceRow>,
+        std::span<const GpuDyDistanceDescriptor>,
+        std::span<const std::uint32_t>,
+        std::span<const std::uint32_t>,
+        std::span<GpuDyDistanceTask>) {
+        throw std::logic_error("Source GPU Dy 1D shader is not installed");
     }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
@@ -967,6 +1008,7 @@ private:
     void partition_constraints();
     void prepare_constraints(float seconds);
     void erase_shape_friction_history(BodyId id);
+    void solve_gpu_distance_constraints();
     void solve_constraint_task(std::size_t task_index);
     void integrate_solver_task(std::size_t task_index,float seconds,
                                std::vector<BodyId>& ready_nodes);
@@ -1617,6 +1659,14 @@ private:
     // Prepared contact bodies for the current frame; avoids re-preparing
     // free-flight actors before the original island owner is integrated.
     std::vector<BodyId> solver_active_ids_;
+    // Reused transient upload/readback spans, converted directly from
+    // the original source Dy task, constraint and body row storage.
+    std::vector<GpuDyDistanceBody> gpu_dy_bodies_;
+    std::vector<GpuDyDistanceRow> gpu_dy_rows_;
+    std::vector<GpuDyDistanceDescriptor> gpu_dy_descriptors_;
+    std::vector<std::uint32_t> gpu_dy_partition_ends_;
+    std::vector<std::uint32_t> gpu_dy_body_ordinals_;
+    std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.

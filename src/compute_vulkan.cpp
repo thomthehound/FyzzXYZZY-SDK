@@ -155,6 +155,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             VkPhysicalDeviceFeatures basic{};
             vkGetPhysicalDeviceFeatures(physical, &basic);
             info.supports_int64_shader = basic.shaderInt64 == VK_TRUE;
+            info.supports_float64_shader = basic.shaderFloat64 == VK_TRUE;
             if (properties.apiVersion >= VK_API_VERSION_1_2) {
                 auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
                     vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
@@ -173,6 +174,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
                     features.pNext = &extended;
                     getFeatures2(physical, &features);
                     info.supports_int64_shader = features.features.shaderInt64 == VK_TRUE;
+                    info.supports_float64_shader = features.features.shaderFloat64 == VK_TRUE;
                     info.supports_int64_wave = info.supports_int64_shader &&
                         info.supports_wave_arithmetic &&
                         extended.shaderSubgroupExtendedTypes == VK_TRUE;
@@ -336,6 +338,7 @@ struct Context::Impl {
             // enforces its own baseline at construction. No dispatch probes.
             VkPhysicalDeviceFeatures enabled{};
             enabled.shaderInt64 = info.supports_int64_shader ? VK_TRUE : VK_FALSE;
+            enabled.shaderFloat64 = info.supports_float64_shader ? VK_TRUE : VK_FALSE;
             create.pEnabledFeatures = &enabled;
             VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
             if (info.supports_int64_wave) {

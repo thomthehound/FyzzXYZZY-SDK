@@ -117,6 +117,12 @@ std::vector<Candidate> discover_adapters() {
             waveOps && shaderModel.HighestShaderModel >= D3D_SHADER_MODEL_6_6;
         // Device admission is a setup-time decision. The native PhysX
         // overlap scan requires both Int64ShaderOps and WaveOps.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS floatOptions{};
+        info.supports_float64_shader =
+            SUCCEEDED(probe->CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS,
+                &floatOptions,sizeof(floatOptions))) &&
+            floatOptions.DoublePrecisionFloatShaderOps;
         info.supports_int64_shader = opts.Int64ShaderOps != FALSE;
         info.supports_int64_wave = info.supports_int64_shader &&
                                    info.supports_wave_arithmetic;
