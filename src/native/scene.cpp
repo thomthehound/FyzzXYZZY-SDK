@@ -7292,10 +7292,14 @@ void Scene::solve_gpu_distance_constraints() {
             throw std::logic_error("GPU Dy contact manager is not prepared");
         if(m.friction_patch_offset>friction_patches_.size() ||
            m.friction_patch_count>
-               friction_patches_.size()-m.friction_patch_offset ||
-           m.solver_offset>solver_contact_order_.size() ||
-           m.count>solver_contact_order_.size()-m.solver_offset)
+               friction_patches_.size()-m.friction_patch_offset)
             throw std::logic_error("GPU Dy contact patch range invalid");
+        // A dormant Gu manager retains geometry but has no prepared
+        // normal rows; source CPU PGS skips its zero-patch descriptor.
+        if(!m.friction_patch_count)continue;
+        if(m.solver_offset>solver_contact_order_.size() ||
+           m.count>solver_contact_order_.size()-m.solver_offset)
+            throw std::logic_error("GPU Dy contact row window invalid");
         gpu_dy_manifolds_[manager_index]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
             narrow(m.solver_offset),m.count};
