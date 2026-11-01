@@ -49,6 +49,10 @@ RWByteAddressBuffer contactManifolds : register(u9,space0);
 [[vk::binding(10,0)]]
 #endif
 RWByteAddressBuffer contactOrder : register(u10,space0);
+#ifdef __spirv__
+[[vk::binding(11,0)]]
+#endif
+RWByteAddressBuffer writeback : register(u11,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -57,6 +61,9 @@ struct Parameters {
     uint ordinalCount, taskCount;
     uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
     uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
+    uint resultBodyOffset,resultRowOffset,resultTaskOffset;
+    uint resultContactOffset,resultFrictionOffset,resultPatchOffset;
+    uint writebackBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -166,7 +173,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     if(ranges.x>ranges.y || ranges.y>p.descriptorCount ||
        ranges.z>ranges.w || ranges.w>p.partitionCount ||
        bodyRange.x>bodyRange.y || bodyRange.y>p.ordinalCount) {
-        if(lane.x==0u)tasks.InterlockedOr(endError,4u);
+        if(lane.x==0u) {
+            tasks.InterlockedOr(endError,4u);
+            writeback.Store(p.writebackBias+p.resultTaskOffset+
+                            group.x*4u,4u);
+        }
         return;
     }
     uint velocityIterations=max(iters.y,1u);
@@ -203,4 +214,63 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             AllMemoryBarrierWithGroupSync();
         }
     }
+    // A Dy task owns exclusive solver-body ordinals and descriptor ranges.
+    // Publish only the fields consumed by the source PxsSolverEndTask and
+    // Gu writeback; the original prepared inputs remain device-local.
+    AllMemoryBarrierWithGroupSync();
+    for(uint i=bodyRange.x+lane.x;i<bodyRange.y;i+=128u) {
+        uint ordinal=bodyOrdinals.Load(p.ordinalBias+i*4u);
+        if(ordinal>=p.bodyCount) {
+            tasks.InterlockedOr(endError,8u);
+            continue;
+        }
+        uint from=p.bodyBias+ordinal*52u;
+        uint to=p.writebackBias+p.resultBodyOffset+ordinal*48u;
+        writeback.Store4(to,bodies.Load4(from));
+        writeback.Store4(to+16u,bodies.Load4(from+16u));
+        writeback.Store4(to+32u,bodies.Load4(from+32u));
+    }
+    for(uint i=ranges.x+lane.x;i<ranges.y;i+=128u) {
+        uint4 desc=descriptors.Load4(p.descriptorBias+i*16u);
+        if(desc.w==1u) {
+            if(desc.x>=p.rowCount)continue;
+            writeback.Store2(p.writebackBias+p.resultRowOffset+desc.x*8u,
+                distances.Load2(p.distanceBias+desc.x*80u+72u));
+            continue;
+        }
+        if(desc.x>=p.manifoldCount)continue;
+        uint4 manager=contactManifolds.Load4(
+            p.manifoldBias+desc.x*16u);
+        if(manager.x>p.patchCount ||
+           manager.y>p.patchCount-manager.x ||
+           manager.z>p.orderCount ||
+           manager.w>p.orderCount-manager.z)continue;
+        uint cursor=manager.z;
+        for(uint patchIndex=manager.x;
+            patchIndex<manager.x+manager.y;++patchIndex) {
+            uint po=p.patchBias+patchIndex*32u;
+            uint4 patch=contactPatches.Load4(po);
+            if(patch.x>p.frictionCount || patch.z>2u ||
+               patch.z*2u>p.frictionCount-patch.x ||
+               cursor>p.orderCount ||
+               patch.y>p.orderCount-cursor)break;
+            for(uint c=0u;c<patch.y;++c) {
+                uint pointIndex=contactOrder.Load(
+                    p.orderBias+(cursor++)*4u);
+                if(pointIndex>=p.contactCount)continue;
+                writeback.Store2(p.writebackBias+p.resultContactOffset+
+                    pointIndex*8u,
+                    contactPoints.Load2(p.contactBias+pointIndex*88u+72u));
+            }
+            for(uint k=patch.x;k<patch.x+patch.z*2u;++k)
+                writeback.Store2(p.writebackBias+p.resultFrictionOffset+
+                    k*8u,frictionRows.Load2(p.frictionBias+k*72u+64u));
+            writeback.Store(p.writebackBias+p.resultPatchOffset+
+                patchIndex*4u,contactPatches.Load(po+12u));
+        }
+    }
+    AllMemoryBarrierWithGroupSync();
+    if(lane.x==0u)
+        writeback.Store(p.writebackBias+p.resultTaskOffset+
+            group.x*4u,tasks.Load(endError));
 }
