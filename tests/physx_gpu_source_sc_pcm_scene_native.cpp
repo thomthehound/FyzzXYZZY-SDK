@@ -319,6 +319,26 @@ void verify_gpu_distance_solver(
         {0.0f,0.2f,0.0f},{0.0f,-0.2f,0.0f},3.7f);
     cpu.create_center_distance_constraint(ids_cpu[2],ids_cpu[3],3.5f);
     gpu.create_center_distance_constraint(ids_gpu[2],ids_gpu[3],3.5f);
+    // A source 1D joint against an immovable body must use the
+    // original static-world sentinel, never a fabricated solver body.
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.3f,0.3f,0.3f},{40.f,3.f,0.f});
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.3f,0.3f,0.3f},{40.f,3.f,0.f});
+    const auto anchored_cpu=cpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{44.f,3.f,0.f},1.f);
+    const auto anchored_gpu=gpu.add_dynamic_box(
+        {0.3f,0.3f,0.3f},{44.f,3.f,0.f},1.f);
+    RigidBodyDynamics anchored_dynamics{};
+    anchored_dynamics.gravity_enabled=false;
+    anchored_dynamics.linear_damping=0.f;
+    anchored_dynamics.angular_damping=0.f;
+    cpu.set_dynamics(anchored_cpu,anchored_dynamics);
+    gpu.set_dynamics(anchored_gpu,anchored_dynamics);
+    cpu.create_center_distance_constraint(
+        fixed_cpu,anchored_cpu,3.8f);
+    gpu.create_center_distance_constraint(
+        fixed_gpu,anchored_gpu,3.8f);
     cpu.set_velocity(ids_cpu[0],{0.4f,0.2f,0.0f});
     gpu.set_velocity(ids_gpu[0],{0.4f,0.2f,0.0f});
     cpu.set_velocity(ids_cpu[2],{-0.6f,0.0f,0.0f});
@@ -331,6 +351,13 @@ void verify_gpu_distance_solver(
         require(producer->dy_distance_dispatch_count()==
                     static_cast<std::uint64_t>(frame+1),
             "Source GPU Dy 1D task never dispatched on the device");
+        const auto fixed_expected=cpu.body_state(anchored_cpu);
+        const auto fixed_actual=gpu.body_state(anchored_gpu);
+        require(std::fabs(fixed_expected.position.x-
+                          fixed_actual.position.x)<0.001f &&
+                std::fabs(fixed_expected.velocity.x-
+                          fixed_actual.velocity.x)<0.001f,
+                "Static-world Dy GPU 1D constraint changed source dynamics");
         for(std::size_t i=0;i<ids_cpu.size();++i) {
             const auto expected=cpu.body_state(ids_cpu[i]);
             const auto actual=gpu.body_state(ids_gpu[i]);
