@@ -77,12 +77,16 @@ double loadDouble(uint byteOffset) {
     uint2 words=distances.Load2(byteOffset);
     return asdouble(words.x,words.y);
 }
-void storeDouble(uint byteOffset,double value) {
+void storeDouble(uint byteOffset,double value,uint rowIndex,bool finalPass) {
     uint lo,hi;
     asuint(value,lo,hi);
-    distances.Store2(byteOffset,uint2(lo,hi));
+    uint2 packed=uint2(lo,hi);
+    distances.Store2(byteOffset,packed);
+    if(finalPass)
+        writeback.Store2(p.writebackBias+p.resultRowOffset+
+            rowIndex*8u,packed);
 }
-void solveRow(uint index,uint errorAddress,bool biased) {
+void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
     uint d=p.descriptorBias+index*16u;
     uint4 desc=descriptors.Load4(d);
     if(desc.w!=1u || desc.x>=p.rowCount ||
@@ -157,7 +161,7 @@ void solveRow(uint index,uint errorAddress,bool biased) {
         bodies.Store3(bo,asuint(newVb));
         bodies.Store3(bo+12u,asuint(newAb));
     }
-    storeDouble(offset+72u,next);
+    storeDouble(offset+72u,next,desc.x,finalPass);
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
@@ -189,12 +193,12 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             uint end=partitionEnds.Load(p.partitionBias+partition*4u);
             for(uint i=begin+lane.x;i<end;i+=128u) {
                 uint4 desc=descriptors.Load4(p.descriptorBias+i*16u);
+                bool finalPass=iter+1u==iters.x+velocityIterations;
                 if(desc.w==1u)
-                    solveRow(i,endError,iter<iters.x);
+                    solveRow(i,endError,iter<iters.x,finalPass);
                 else
                     solveContact(desc,endError,iter<iters.x,
-                        iter>=iters.x || iters.x-iter<=3u,
-                        iter+1u==iters.x+velocityIterations);
+                        iter>=iters.x || iters.x-iter<=3u,finalPass);
             }
             // The original conflict partition guarantees no body writes
             // overlap inside this barrier; later partitions depend on it.
@@ -229,45 +233,6 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         writeback.Store4(to,bodies.Load4(from));
         writeback.Store4(to+16u,bodies.Load4(from+16u));
         writeback.Store4(to+32u,bodies.Load4(from+32u));
-    }
-    for(uint i=ranges.x+lane.x;i<ranges.y;i+=128u) {
-        uint4 desc=descriptors.Load4(p.descriptorBias+i*16u);
-        if(desc.w==1u) {
-            if(desc.x>=p.rowCount)continue;
-            writeback.Store2(p.writebackBias+p.resultRowOffset+desc.x*8u,
-                distances.Load2(p.distanceBias+desc.x*80u+72u));
-            continue;
-        }
-        if(desc.x>=p.manifoldCount)continue;
-        uint4 manager=contactManifolds.Load4(
-            p.manifoldBias+desc.x*16u);
-        if(manager.x>p.patchCount ||
-           manager.y>p.patchCount-manager.x ||
-           manager.z>p.orderCount ||
-           manager.w>p.orderCount-manager.z)continue;
-        uint cursor=manager.z;
-        for(uint patchIndex=manager.x;
-            patchIndex<manager.x+manager.y;++patchIndex) {
-            uint po=p.patchBias+patchIndex*32u;
-            uint4 patch=contactPatches.Load4(po);
-            if(patch.x>p.frictionCount || patch.z>2u ||
-               patch.z*2u>p.frictionCount-patch.x ||
-               cursor>p.orderCount ||
-               patch.y>p.orderCount-cursor)break;
-            for(uint c=0u;c<patch.y;++c) {
-                uint pointIndex=contactOrder.Load(
-                    p.orderBias+(cursor++)*4u);
-                if(pointIndex>=p.contactCount)continue;
-                writeback.Store2(p.writebackBias+p.resultContactOffset+
-                    pointIndex*8u,
-                    contactPoints.Load2(p.contactBias+pointIndex*88u+72u));
-            }
-            for(uint k=patch.x;k<patch.x+patch.z*2u;++k)
-                writeback.Store2(p.writebackBias+p.resultFrictionOffset+
-                    k*8u,frictionRows.Load2(p.frictionBias+k*72u+64u));
-            writeback.Store(p.writebackBias+p.resultPatchOffset+
-                patchIndex*4u,contactPatches.Load(po+12u));
-        }
     }
     AllMemoryBarrierWithGroupSync();
     if(lane.x==0u)
