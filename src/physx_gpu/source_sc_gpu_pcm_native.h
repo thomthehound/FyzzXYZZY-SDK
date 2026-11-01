@@ -153,19 +153,29 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             edges_.getDevicePtr(),dense_contacts_.getDevicePtr(),
             pair_count,shape_capacity,edge_capacity);
-        stream_.wait_at_fetch();
 
-        // The shader emits the exact Sc-owned 96-byte record. Download
-        // into the caller's existing result span; no second host stream,
-        // metadata reconstruction or per-contact repacking is required.
+        // The shader emits the exact Sc-owned 96-byte record. Resolve
+        // the download destination before submitting the source stream.
         const auto mapped=addresses_.resolve(
             dense_contacts_.getDevicePtr(),output.size_bytes());
-        // Batched readback retains the backend's reusable staging
-        // allocation; Context::download would allocate staging per frame.
+        // Reuse the backend's cached readback staging. The download is
+        // queued after all preceding PCM commands on this same Context;
+        // waiting for its fence also completes every earlier source token.
         const std::vector<compute::DownloadSpan> downloads{
             {mapped.buffer,mapped.offset,output.data(),output.size_bytes()}
         };
-        context_.download_batch(downloads);
+        stream_.submit();
+        try {
+            context_.download_batch(downloads);
+        } catch (...) {
+            // Reap outstanding source allocations even when the readback
+            // itself cannot publish. Sc rolls back the rejected frame.
+            stream_.wait_at_fetch();
+            throw;
+        }
+        // The readback fence has already completed. Retire the source
+        // command/upload tokens without an intervening CPU/GPU stall.
+        stream_.wait_at_fetch();
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             const auto& stored=output[i];
