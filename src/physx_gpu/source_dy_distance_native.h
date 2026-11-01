@@ -189,7 +189,7 @@ public:
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
         for(std::size_t i=0;i<bodies.size();++i)
-            std::memcpy(bodies[i].linear_delta,
+            std::memcpy(&bodies[i],
                 host_.data()+result_offsets[0]+i*48u,48u);
         for(std::size_t i=0;i<rows.size();++i)
             std::memcpy(&rows[i].applied_force,
