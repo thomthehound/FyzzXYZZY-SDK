@@ -301,14 +301,23 @@ void verify_gpu_coupled_solver(
     require(producer->has_gpu_pcm_box() && producer->has_gpu_dy_distance(),
             "Source coupled GPU PCM/Dy stages were not installed");
     gpu.set_gpu_broadphase(std::move(owner));
-    cpu.add_static_box({0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
-    gpu.add_static_box({0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
+    const auto floor_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
+    const auto floor_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
+    // Exercise non-identity static and dynamic anchor frames.
+    constexpr Quat floor_turn{0.0f,0.0998334166f,0.0f,0.9950041653f};
+    cpu.set_pose(floor_cpu,{0.0f,0.0f,0.0f},floor_turn);
+    gpu.set_pose(floor_gpu,{0.0f,0.0f,0.0f},floor_turn);
     std::array<BodyId,2> a{},b{};
     for(std::size_t i=0;i<a.size();++i) {
         const Vec3 p{0.0f,0.83f+0.83f*float(i),0.0f};
         a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
         b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
     }
+    constexpr Quat body_turn{0.0f,0.0499791693f,0.0f,0.9987502604f};
+    cpu.set_pose(a[0],{0.0f,0.83f,0.0f},body_turn);
+    gpu.set_pose(b[0],{0.0f,0.83f,0.0f},body_turn);
     cpu.create_center_distance_constraint(a[0],a[1],0.82f);
     gpu.create_center_distance_constraint(b[0],b[1],0.82f);
     if(spring_mode) {
