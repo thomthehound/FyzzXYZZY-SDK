@@ -180,6 +180,40 @@ void verify_sparse_contact_stream(
             std::fabs(c.position.x-g.position.x)<0.002f &&
             std::fabs(c.normal.x-g.normal.x)<0.002f,
             "Sparse Sc GPU contact stream changed the retained Gu witness");
+
+    // Re-grow the GPU contact readback after the 12-pair -> 1-pair
+    // retirement. The source PCM commands are now still outstanding
+    // when Vulkan enlarges its cached staging buffer for this fetch.
+    constexpr std::uint32_t added=16u;
+    for(std::uint32_t i=0u;i<added;++i) {
+        const Vec3 position{200.f+4.f*float(i),1.f,0.f};
+        cpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        gpu.add_dynamic_box({0.5f,0.5f,0.5f},position,1.f);
+        const Vec3 other{position.x+0.8f,position.y,position.z};
+        cpu.add_static_box({0.5f,0.5f,0.5f},other);
+        gpu.add_static_box({0.5f,0.5f,0.5f},other);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(cpu.contacts().size()==added+1u &&
+            gpu.contacts().size()==cpu.contacts().size() &&
+            gpu.contact_edge_index(
+                {moving_gpu.back(),fixed_gpu.back()})==retained_edge,
+            "Growing source GPU PCM readback lost an existing Sc contact manager");
+    for(std::size_t i=0;i<cpu.contacts().size();++i) {
+        const auto& prior=cpu.contacts()[i];
+        const auto& current=gpu.contacts()[i];
+        require(prior.pair==current.pair &&
+                prior.count==current.count &&
+                current.count>0u,
+                "Expanded GPU PCM readback changed source Gu manager order/count");
+        for(std::uint8_t j=0;j<prior.count;++j)
+            require(std::fabs(prior.points[j].separation-
+                              current.points[j].separation)<0.002f &&
+                    std::fabs(prior.points[j].normal.x-
+                              current.points[j].normal.x)<0.002f,
+                    "Expanded source GPU PCM stream changed Gu contact geometry");
+    }
 }
 
 // Coupled box contacts exercise source Sc manager identity and Dy's
