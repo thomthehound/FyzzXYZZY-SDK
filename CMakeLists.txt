@@ -1426,6 +1426,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
       DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_dy_distance_shader
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
@@ -4725,6 +4726,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
       DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli"
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_dy_distance_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
