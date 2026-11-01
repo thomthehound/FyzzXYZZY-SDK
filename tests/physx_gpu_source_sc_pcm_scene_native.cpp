@@ -351,6 +351,11 @@ void verify_gpu_distance_solver(
         require(producer->dy_distance_dispatch_count()==
                     static_cast<std::uint64_t>(frame+1),
             "Source GPU Dy 1D task never dispatched on the device");
+        const auto [uploaded,downloaded]=
+            producer->dy_distance_transfer_bytes();
+        require(downloaded>0u && uploaded>downloaded &&
+                uploaded-downloaded>=3u*128u,
+            "Source Dy GPU readback still includes immutable constraint inputs");
         const auto fixed_expected=cpu.body_state(anchored_cpu);
         const auto fixed_actual=gpu.body_state(anchored_gpu);
         require(std::fabs(fixed_expected.position.x-
