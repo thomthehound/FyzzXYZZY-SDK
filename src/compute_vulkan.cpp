@@ -971,7 +971,11 @@ struct Context::Impl {
         // The fetch is synchronous, so completed readback memory can be
         // reused without a per-frame VkBuffer or device-memory allocation.
         if(bytes>readback_staging_bytes_) {
-            if(readback_staging_)destroy_buffer(readback_staging_);
+            // Source GPU commands may already be queued before this
+            // readback. Ordinary destroy_buffer waits/reaps ALL Context
+            // tokens, including still-owned source stream submissions.
+            // Retire only the previous completed staging allocation.
+            if(readback_staging_)retire_buffer(readback_staging_);
             readback_staging_=0;
             readback_staging_bytes_=0;
             readback_staging_=create_buffer(
