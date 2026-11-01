@@ -160,10 +160,8 @@ public:
         // metadata reconstruction or per-contact repacking is required.
         const auto mapped=addresses_.resolve(
             dense_contacts_.getDevicePtr(),output.size_bytes());
-        const std::array<compute::DownloadSpan,1> downloads{{
-            {mapped.buffer,mapped.offset,output.data(),output.size_bytes()}
-        }};
-        context_.download_batch(downloads);
+        context_.download(
+            mapped.buffer,mapped.offset,output.data(),output.size_bytes());
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
             const auto& stored=output[i];
