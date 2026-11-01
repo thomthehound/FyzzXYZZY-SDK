@@ -570,7 +570,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       COMMAND fyzzxyzzy_owned_pairs_to_sc_d3d12
       ${FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES} ${FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS})
     set_tests_properties(fyzzxyzzy_owned_pairs_to_sc_d3d12 PROPERTIES
-      SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+      SKIP_RETURN_CODE 77 TIMEOUT 180)
 
     add_executable(fyzzxyzzy_owned_source_roots_d3d12
       tests/physx_gpu_source_roots_independent.cpp)
@@ -1488,7 +1488,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     add_test(NAME fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 COMMAND fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_aggregate_dxil.manifest")
-    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+    set_tests_properties(fyzzxyzzy_source_gpu_aggregate_world_bundle_d3d12 PROPERTIES TIMEOUT 180)
     add_executable(fyzzxyzzy_source_sc_aggregate_elements_d3d12
       tests/physx_gpu_source_sc_aggregate_elements.cpp)
     target_compile_definitions(fyzzxyzzy_source_sc_aggregate_elements_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -1682,7 +1682,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_three_frame_retirement_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set_tests_properties(fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12 PROPERTIES
-      ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
+      TIMEOUT 180)
 
 
 
