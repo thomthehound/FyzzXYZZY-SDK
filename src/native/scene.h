@@ -19,6 +19,7 @@
 #include <stop_token>
 #include <thread>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace fyzz::native {
@@ -105,7 +106,9 @@ struct GpuPcmBoxResult {
     std::array<GpuPcmBoxWorldPoint,4> points{};
 };
 static_assert(sizeof(GpuPcmBoxWorldPoint)==16u);
-static_assert(sizeof(GpuPcmBoxResult)==96u &&
+static_assert(std::is_trivially_copyable_v<GpuPcmBoxResult> &&
+              std::is_standard_layout_v<GpuPcmBoxResult> &&
+              sizeof(GpuPcmBoxResult)==96u &&
               offsetof(GpuPcmBoxResult,normal)==16u &&
               offsetof(GpuPcmBoxResult,count)==28u &&
               offsetof(GpuPcmBoxResult,points)==32u);
