@@ -282,6 +282,7 @@ private:
     std::unique_ptr<SourceSapAggregateOwnedStagesNative> aggregate_stages_;
     std::unique_ptr<SourceScGpuBroadphaseProducerNative> producer_;
     std::unique_ptr<SourceScGpuPcmNative> pcm_;
+    std::unique_ptr<SourceDyDistanceNativeStage> dy_distance_;
 };
 
 } // namespace fyzz::physx_gpu
