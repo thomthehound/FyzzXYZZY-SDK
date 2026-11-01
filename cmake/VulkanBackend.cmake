@@ -39,14 +39,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_WAVE32_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main -Fo "${FYZZXYZZY_WAVE32_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_WAVE32_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_wave32_spv DEPENDS "${FYZZXYZZY_WAVE32_SPV}")
       add_executable(fyzzxyzzy_wave32_contract tests/native_wave32_contract.cpp)
       target_link_libraries(fyzzxyzzy_wave32_contract PRIVATE FyzzXYZZY::Compute)
@@ -56,14 +49,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     set(FYZZXYZZY_INDEPENDENT_D32_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_INDEPENDENT_D32_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_INDEPENDENT_D32_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_independent_source_d32_spv
       DEPENDS "${FYZZXYZZY_INDEPENDENT_D32_SPV}")
     add_executable(fyzzxyzzy_source_gpu_d32_independent
@@ -81,14 +67,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       SKIP_RETURN_CODE 77)
     set(FYZZXYZZY_INDEPENDENT_AABB_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_INDEPENDENT_AABB_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_INDEPENDENT_AABB_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_INDEPENDENT_AABB_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_independent_source_aabb_spv
       DEPENDS "${FYZZXYZZY_INDEPENDENT_AABB_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aabb_independent
@@ -104,41 +83,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_INDEPENDENT_AABB_SPV}")
     # Original PxgBroadPhaseDesc is now SDK-owned, not an upstream fixture.
     set(FYZZXYZZY_OWNED_OVERLAP_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_OVERLAP_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_OVERLAP_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_SCAN_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_first_native.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_SCAN_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_second_native.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SCAN_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_PAIRS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.spv")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_PAIRS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_PAIRS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_source_sap_shaders DEPENDS
       ${FYZZXYZZY_OWNED_OVERLAP_SPV}
       ${FYZZXYZZY_OWNED_SCAN_FIRST_SPV}
@@ -173,41 +124,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Source-owned SAP incremental/created GPU work uses the original
     # PxgBroadPhaseDesc and native backend, without a reference PhysX ABI.
     set(FYZZXYZZY_OWNED_CREATED_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CREATED_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_CREATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_CREATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_COUNT_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_COUNT_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_COUNT_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_HIST_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_HIST_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_sap_incremental_shaders DEPENDS
       ${FYZZXYZZY_OWNED_CREATED_SPV}
       ${FYZZXYZZY_OWNED_COUNT_FIRST_SPV}
@@ -253,75 +180,25 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Original SAP rank, projection, changed and removed handle kernels.
     # All layout declarations and stage implementations belong to this SDK.
     set(FYZZXYZZY_OWNED_SAPBOX_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sapbox_indices_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_SAPBOX_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SAPBOX_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SAPBOX_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REMOVED_MARK_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_mark_removed_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REMOVED_PROJ_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_remove_projections_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REMOVED_PROJ_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_UPDATED_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_updated_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_UPDATED_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_UPDATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_UPDATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_INIT_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_init_ranks_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_INIT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_INIT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_COUNT_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_COUNT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_SCATTER_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_SCATTER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_GATHER_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_gather_handles_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_GATHER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_wave_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_sap_sort_shaders DEPENDS
       ${FYZZXYZZY_OWNED_SAPBOX_SPV}
       ${FYZZXYZZY_OWNED_REMOVED_MARK_SPV}
@@ -370,29 +247,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
     )
     # Original source GPU region create and histogram kernels.
     set(FYZZXYZZY_OWNED_REGION_CREATE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_CREATE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_region_shaders DEPENDS
       "${FYZZXYZZY_OWNED_REGION_CREATE_SPV}"
       "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_SPV}"
@@ -424,13 +285,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     set(FYZZXYZZY_OWNED_CLEAR_NEW_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_clear_new_shader
       DEPENDS "${FYZZXYZZY_OWNED_CLEAR_NEW_SPV}")
     add_executable(fyzzxyzzy_owned_clear_new
@@ -452,13 +307,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       endif()
       set(_report_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_report_pass}_native.hlsl")
       set(_report_bin "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_report_pass}_native.spv")
-      add_custom_command(OUTPUT "${_report_bin}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T "${_report_model}" -E main
-          -Fo "${_report_bin}" "${_report_src}"
-        DEPENDS "${_report_src}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_report_bin}" "${_report_src}" "${_report_model}" main
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli")
       list(APPEND FYZZXYZZY_OWNED_REPORT_SPV_OUTPUTS "${_report_bin}")
     endforeach()
     add_custom_target(fyzzxyzzy_owned_report_shaders
@@ -479,11 +329,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       physx_sap_newbounds_pairs_wave_native)
       set(_source "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/${_pair_shader}.hlsl")
       set(_output "${CMAKE_CURRENT_BINARY_DIR}/kernels/${_pair_shader}_owned.spv")
-      add_custom_command(OUTPUT "${_output}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${_output}" "${_source}"
-        DEPENDS "${_source}" VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_output}" "${_source}" cs_6_0 main)
       list(APPEND FYZZXYZZY_OWNED_PAIR_PRODUCER_SPV_FILES "${_output}")
     endforeach()
     add_custom_target(fyzzxyzzy_owned_pair_producer_shaders
@@ -541,13 +387,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_translate_aabbs_shader
       DEPENDS "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_SPV}")
     add_executable(fyzzxyzzy_owned_translate_aabbs
@@ -639,14 +479,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       endif()
       set(FYZZXYZZY_OWNED_ACTIVE_${_pass}_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_${_pass}_owned.spv")
-      add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_ACTIVE_${_pass}_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T ${_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_flag}
-          -Fo "${FYZZXYZZY_OWNED_ACTIVE_${_pass}_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_ACTIVE_${_pass}_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl" ${_profile} main
+        FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_flag})
     endforeach()
     add_custom_target(fyzzxyzzy_owned_active_shaders DEPENDS
       "${FYZZXYZZY_OWNED_ACTIVE_writeout_SPV}"
@@ -916,13 +750,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Source Sc box transform-cache and shared bounds update.
     set(FYZZXYZZY_SC_BOX_BOUNDS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_box_transform_bounds_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SC_BOX_BOUNDS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sc_box_bounds_shader
       DEPENDS "${FYZZXYZZY_SC_BOX_BOUNDS_SPV}")
     add_executable(fyzzxyzzy_source_sc_box_bounds
@@ -939,13 +767,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     set(FYZZXYZZY_GU_BOX_CONTACTS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_contacts_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_GU_BOX_CONTACTS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_SPV}")
     add_executable(fyzzxyzzy_source_gu_box_contacts
@@ -965,15 +787,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     set(FYZZXYZZY_SOURCE_PCM_BOX_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_candidates_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_BOX_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_SPV}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET
@@ -988,55 +804,29 @@ if(FYZZXYZZY_BUILD_VULKAN)
         set(EPA_DEFINE "")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
       endif()
-      add_custom_command(OUTPUT "${EPA_OUTPUT}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" ${EPA_DEFINE} -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E "${ENTRY}"
-          -Fo "${EPA_OUTPUT}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${EPA_OUTPUT}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl" cs_6_0 "${ENTRY}"
+        FLAGS ${EPA_DEFINE})
     endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
-      VERBATIM)
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_SPV}")
     set(FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_sc_contact_stream_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}")
     set(FYZZXYZZY_SOURCE_DY_DISTANCE_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_distance_shader
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates
@@ -1063,21 +853,10 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_bounds_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_changed_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_MARK_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl" cs_6_0 main)
     add_executable(fyzzxyzzy_source_gpu_aggregate_bounds
       tests/physx_gpu_source_aggregate_bounds_native.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_bounds PRIVATE
@@ -1093,13 +872,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Original aggregate.cu added/deleted member integer-AABB history.
     set(FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_members_history_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_member_history_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_member_history
@@ -1116,13 +889,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Source aggregate.cu::sortAndUpdateAggregateProjections.
     set(FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_projection_sort_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_projection_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_projections
@@ -1139,13 +906,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # aggregate.cu::doSelfCollision, found/lost member history on GPU.
     set(FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_self_collision_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_self_collision_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_self_collision
@@ -1163,13 +924,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
         "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_SPV}")
     set(FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_copy_reports_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_report_copy
@@ -1265,13 +1020,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # aggregate.cu::doAggPairCollisions, original GPU root pair member sweep.
     set(FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_persistent_collisions_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_shader DEPENDS "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_SPV}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_persistent_collisions
       tests/physx_gpu_source_aggregate_persistent_collisions_native.cpp)
@@ -1595,14 +1344,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # Verify a physically fixed 32-lane subgroup through actual shader execution.
       set(FYZZXYZZY_WAVE32_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_WAVE32_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main -Fo "${FYZZXYZZY_WAVE32_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_WAVE32_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_wave32_spv DEPENDS "${FYZZXYZZY_WAVE32_SPV}")
       add_executable(fyzzxyzzy_wave32_contract tests/native_wave32_contract.cpp)
       target_link_libraries(fyzzxyzzy_wave32_contract PRIVATE FyzzXYZZY::Compute)
@@ -1617,14 +1359,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
       set(FYZZXYZZY_MULTI_RESOURCE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_MULTI_RESOURCE_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${FYZZXYZZY_MULTI_RESOURCE_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_MULTI_RESOURCE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_native_multi_resource_spv
         DEPENDS "${FYZZXYZZY_MULTI_RESOURCE_SPV}")
       add_executable(fyzzxyzzy_native_multi_resource
@@ -1636,17 +1371,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       set_tests_properties(fyzzxyzzy_native_multi_resource PROPERTIES SKIP_RETURN_CODE 77)
       set(FYZZXYZZY_PHYSX_AABB_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_AABB_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_AABB_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_AABB_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_aabb_shader DEPENDS "${FYZZXYZZY_PHYSX_AABB_SHADER}")
       add_executable(fyzzxyzzy_physx_aabb_encoding tests/physx_gpu_aabb_encoding.cpp)
       target_include_directories(fyzzxyzzy_physx_aabb_encoding PRIVATE
@@ -1673,14 +1398,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # independent native heap roots; retain original per-field ownership.
       set(FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_source_overlap_native_spv
         DEPENDS "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_SPV}")
       add_executable(fyzzxyzzy_physx_source_overlap_native
@@ -1702,11 +1420,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_phase first second)
         set(_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_phase}_native.hlsl")
         set(_spv "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_phase}_native.spv")
-        add_custom_command(OUTPUT "${_spv}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main -Fo "${_spv}" "${_shader}"
-          DEPENDS "${_shader}" VERBATIM)
+        fyzzxyzzy_compile_hlsl("${_spv}" "${_shader}" cs_6_0 main)
         list(APPEND FYZZXYZZY_SOURCE_SCAN_SPV_FILES "${_spv}")
       endforeach()
       add_custom_target(fyzzxyzzy_physx_source_scan_spv
@@ -1729,14 +1443,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # counters and native source heap-root views without arena repacking.
       set(FYZZXYZZY_SOURCE_PAIRS_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_PAIRS_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_PAIRS_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_source_pairs_spv
         DEPENDS "${FYZZXYZZY_SOURCE_PAIRS_SPV}")
       add_executable(fyzzxyzzy_physx_source_pairs_native
@@ -1778,14 +1485,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # dispatch. Original CUdeviceptr slices remain source-owned.
       set(FYZZXYZZY_SOURCE_D32_FILL_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_D32_FILL_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_D32_FILL_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_D32_FILL_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_source_d32_fill_spv
         DEPENDS "${FYZZXYZZY_SOURCE_D32_FILL_SPV}")
       add_executable(fyzzxyzzy_physx_source_d32_fill_native
@@ -1806,14 +1506,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # two original D32 clears, then BP_CREATE_REGIONS over native source buffers.
       set(FYZZXYZZY_SOURCE_REGION_CREATE_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_source_region_create_spv
         DEPENDS "${FYZZXYZZY_SOURCE_REGION_CREATE_SPV}")
       add_executable(fyzzxyzzy_physx_source_region_create_native
@@ -1874,14 +1567,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(variant first wave second)
         set(FYZZXYZZY_SOURCE_REGION_HIST_${variant}_SPV
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_${variant}_native.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_SPV}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_SPV}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl"
-          VERBATIM)
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl" cs_6_0 main)
       endforeach()
       add_custom_target(fyzzxyzzy_physx_source_region_histograms_spv
         DEPENDS "${FYZZXYZZY_SOURCE_REGION_HIST_first_SPV}"
@@ -1946,32 +1632,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # a single GPU arena, no per-pointer descriptors, exact SAP state oracle.
       set(FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_REMOVED_ARENA_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl" cs_6_0 main)
       # Same source and dataflow: five offset fields are pre-resolved into
       # dispatch constants instead of loaded from the GPU descriptor.
       set(FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_resolved.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -D FYZZXYZZY_RESOLVED_SUBSET=1
-          -Fo "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl" cs_6_0 main
+        FLAGS -D FYZZXYZZY_RESOLVED_SUBSET=1)
       add_custom_target(fyzzxyzzy_physx_removed_resolved_shader
         DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_RESOLVED_SHADER}")
       add_custom_target(fyzzxyzzy_physx_removed_arena_shader
@@ -1993,17 +1660,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # markRemovedPairsProjectionsLaunch, after the incremental SAP pass.
       set(FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_removed_projections_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_removed_projections_shader
         DEPENDS "${FYZZXYZZY_PHYSX_REMOVED_PROJECTIONS_SHADER}")
       add_executable(fyzzxyzzy_physx_removed_projections
@@ -2022,17 +1679,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX broadphase.cu::markCreatedPairsLaunch (32x256).
       set(FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_created_pairs_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_created_pairs_shader
         DEPENDS "${FYZZXYZZY_PHYSX_CREATED_PAIRS_SHADER}")
       add_executable(fyzzxyzzy_physx_created_pairs
@@ -2050,32 +1697,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX radixSortImpl.cu multi-block count stage (32x3x1024).
       set(FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_count_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_radix_count_shader
         DEPENDS "${FYZZXYZZY_PHYSX_RADIX_COUNT_SHADER}")
       set(FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_count_wave_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_physx_radix_count_wave_shader
         DEPENDS "${FYZZXYZZY_PHYSX_RADIX_COUNT_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_radix_count
@@ -2094,17 +1721,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX radixSortImpl.cu::radixSortMultiCalculateRanksLaunchWithCount.
       set(FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_radix_scatter_shader
         DEPENDS "${FYZZXYZZY_PHYSX_RADIX_SCATTER_SHADER}")
 
@@ -2112,17 +1729,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # instead of 16 separate 1024-thread Hillis-Steele scans.
       set(FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_wave_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_physx_radix_scatter_wave_shader
         DEPENDS "${FYZZXYZZY_PHYSX_RADIX_SCATTER_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_radix_scatter
@@ -2145,17 +1752,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # broadphase.cu::initializeSapBox1DLaunch (ceil(2 * handles / 256)).
       set(FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_box_indices_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_sap_box_indices_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_BOX_INDICES_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_box_indices
@@ -2186,17 +1783,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_sap_kernel IN ITEMS initialize_ranks update_handles)
         set(FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_${_sap_kernel}_arena.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main
-            -Fo "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl" cs_6_0 main)
         add_custom_target(fyzzxyzzy_physx_sap_${_sap_kernel}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_${_sap_kernel}_SHADER}")
       endforeach()
@@ -2228,17 +1815,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_hist_pass IN ITEMS first second)
         set(FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main
-            -Fo "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl" cs_6_0 main)
         add_custom_target(fyzzxyzzy_physx_sap_endpoint_${_hist_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_${_hist_pass}_SHADER}")
       endforeach()
@@ -2248,17 +1825,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # fallback and the original second-pass output kernel is unchanged.
       set(FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_wave.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_physx_sap_endpoint_wave_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_ENDPOINT_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_endpoint_histogram
@@ -2281,17 +1848,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_comparison_pass IN ITEMS first second)
         set(FYZZXYZZY_PHYSX_SAP_COMPARISONS_${_comparison_pass}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_${_comparison_pass}_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main
-            -Fo "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_${_comparison_pass}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_COMPARISONS_${_comparison_pass}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl" cs_6_0 main)
         add_custom_target(fyzzxyzzy_physx_sap_comparisons_${_comparison_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_${_comparison_pass}_SHADER}")
       endforeach()
@@ -2300,17 +1857,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # one native wave prefix per axis and original 32x256 launch.
       set(FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_comparisons_wave.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_physx_sap_comparisons_wave_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_COMPARISONS_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_incremental_comparisons
@@ -2338,29 +1885,12 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
       set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_SHADER}")
             # Native packed found/lost wave scan, original 256x3x256 dispatch.
       set(FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_physx_sap_incremental_pairs_wave_shader DEPENDS "${FYZZXYZZY_PHYSX_SAP_INCREMENTAL_PAIRS_WAVE_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_incremental_pairs
         tests/physx_gpu_sap_incremental_pairs.cpp)
@@ -2390,13 +1920,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     # Original PxgCudaBroadPhaseSap::initializeSapBoxKernel source allocations.
     set(FYZZXYZZY_SOURCE_SAPBOX_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sapbox_indices_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAPBOX_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAPBOX_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAPBOX_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sapbox_spv DEPENDS "${FYZZXYZZY_SOURCE_SAPBOX_SPV}")
     add_executable(fyzzxyzzy_physx_source_sapbox_indices_native tests/physx_gpu_source_sapbox_indices_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sapbox_indices_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -2414,11 +1938,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     foreach(part IN ITEMS mark_removed remove_projections)
       set(shader_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_${part}_native.hlsl")
       set(shader_out "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_${part}_native.spv")
-      add_custom_command(OUTPUT "${shader_out}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main -Fo "${shader_out}" "${shader_src}"
-        DEPENDS "${shader_src}" VERBATIM)
+      fyzzxyzzy_compile_hlsl("${shader_out}" "${shader_src}" cs_6_0 main)
     endforeach()
     add_custom_target(fyzzxyzzy_source_sap_removed_spv
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_SPV}" "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_SPV}")
@@ -2439,13 +1959,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Original GPU AABB-manager changed/added/removed bitmap projection update.
     set(FYZZXYZZY_SOURCE_SAP_UPDATED_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_updated_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_UPDATED_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_SAP_UPDATED_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_UPDATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_updated_spv
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_UPDATED_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_updated_native
@@ -2464,13 +1978,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # current endpoint handles and old integer bounds before WOR sorting.
     set(FYZZXYZZY_SOURCE_SAP_CREATED_SPV
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_CREATED_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-        -T cs_6_0 -E main -Fo "${FYZZXYZZY_SOURCE_SAP_CREATED_SPV}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_CREATED_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_created_spv
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_CREATED_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_created_native
@@ -2488,41 +1996,17 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     # Original WR/WOR radix pointers, eight stable LSD passes, preserved handles.
     set(FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_init_ranks_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_gather_handles_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_wave_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_radix_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_SPV}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_radix_native tests/physx_gpu_source_sap_radix_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sap_radix_native PRIVATE
@@ -2559,17 +2043,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     # Source incremental comparison prefixes publish into the original GPU descriptor.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_incremental_counts_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_SPV}" "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_incremental_counts_native tests/physx_gpu_source_sap_incremental_counts_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sap_incremental_counts_native PRIVATE
@@ -2581,17 +2057,9 @@ if(FYZZXYZZY_BUILD_VULKAN)
 
     # Original two 32x3x256 SAP endpoint histogram launches (48 source views).
     set(FYZZXYZZY_SOURCE_SAP_HIST_FIRST_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_HIST_SECOND_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_hist_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_SPV}" "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_endpoint_histograms_native tests/physx_gpu_source_sap_endpoint_histograms_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sap_endpoint_histograms_native PRIVATE
@@ -2604,11 +2072,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     # Source BP_INCREMENTAL_SAP consumes original per-axis comparisons
     # and writes original GPU PxgBroadPhaseDesc found/lost report indices.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_incremental_pairs_spv DEPENDS "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_SPV}")
     add_executable(fyzzxyzzy_physx_source_sap_incremental_pairs_native tests/physx_gpu_source_sap_incremental_pairs_native.cpp)
     target_include_directories(fyzzxyzzy_physx_source_sap_incremental_pairs_native PRIVATE
@@ -2639,13 +2103,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
     
     # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
     set(FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.spv")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_clear_new_flags_spv DEPENDS "${FYZZXYZZY_SOURCE_CLEAR_NEW_VULKAN}")
     add_executable(fyzzxyzzy_physx_source_clear_new_flags_native
       tests/physx_gpu_source_clear_new_flags_native.cpp)
@@ -2659,17 +2117,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
       set(FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_clear_new_flags_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_sap_clear_new_flags_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_CLEAR_NEW_FLAGS_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_clear_new_flags
@@ -2701,17 +2149,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX broadphase.cu::copyReports: 64 x 256 publication stage.
       set(FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_copy_reports_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_bp_copy_reports_shader
         DEPENDS "${FYZZXYZZY_PHYSX_BP_COPY_REPORTS_SHADER}")
       add_executable(fyzzxyzzy_physx_bp_copy_reports
@@ -2730,17 +2168,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_report_pass IN ITEMS first second)
         set(FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_arena.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_0 -E main
-            -Fo "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl" cs_6_0 main)
         add_custom_target(fyzzxyzzy_physx_bp_report_class_${_report_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_SHADER}")
       endforeach()
@@ -2749,15 +2177,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_report_pass IN ITEMS first second)
         set(FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_wave.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_6 -E main
-            -Fo "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
-          VERBATIM)
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl" cs_6_6 main)
         add_custom_target(fyzzxyzzy_physx_bp_report_class_${_report_pass}_wave_shader
           DEPENDS "${FYZZXYZZY_PHYSX_BP_REPORT_CLASS_${_report_pass}_WAVE_SHADER}")
       endforeach()
@@ -2773,14 +2193,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_native_report}_native.hlsl")
         set(_native_binary
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_native_report}_native.spv")
-        add_custom_command(
-          OUTPUT "${_native_binary}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T "${_native_shader_model}" -E main -Fo "${_native_binary}" "${_native_source}"
-          DEPENDS "${_native_source}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
-          VERBATIM)
+        fyzzxyzzy_compile_hlsl("${_native_binary}" "${_native_source}" "${_native_shader_model}" main
+          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli")
         list(APPEND FYZZXYZZY_SOURCE_REPORT_NATIVE_SPV_OUTPUTS "${_native_binary}")
       endforeach()
       add_custom_target(fyzzxyzzy_physx_source_report_multi_root_spv
@@ -2816,17 +2230,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
       set(FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_producer_arena.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-          -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_physx_sap_region_producer_shader
         DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_PRODUCER_SHADER}")
       add_executable(fyzzxyzzy_physx_sap_region_producer
@@ -2851,16 +2255,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
           endif()
           set(FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER
             "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_${_region_pass}.spv")
-          add_custom_command(
-            OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}"
-            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-            COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-              -T cs_6_0 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
-              -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}"
-              "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
-            VERBATIM
-          )
+          fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl" cs_6_0 main
+            FLAGS -DFYZZXYZZY_REGION_START=${_region_flag})
           add_custom_target(fyzzxyzzy_physx_sap_region_${_region_kind}_${_region_pass}_shader
             DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_${_region_pass}_SHADER}")
         endforeach()
@@ -2875,16 +2271,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         endif()
         set(FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_wave.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T cs_6_6 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
-            -Fo "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl" cs_6_6 main
+          FLAGS -DFYZZXYZZY_REGION_START=${_region_flag})
         add_custom_target(fyzzxyzzy_physx_sap_region_${_region_kind}_wave_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_REGION_${_region_kind}_WAVE_SHADER}")
       endforeach()
@@ -2929,16 +2317,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         endif()
         set(FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T ${_active_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag}
-            -Fo "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl" ${_active_profile} main
+          FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag})
         add_custom_target(fyzzxyzzy_physx_sap_active_${_active_pass}_shader
           DEPENDS "${FYZZXYZZY_PHYSX_SAP_ACTIVE_${_active_pass}_SHADER}")
       endforeach()
@@ -2960,15 +2340,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
         endif()
         set(FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_SPV
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_${_native_pass}.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_SPV}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1
-            -T ${_native_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_native_flag}
-            -Fo "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_SPV}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl"
-          VERBATIM)
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl" ${_native_profile} main
+          FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_native_flag})
         add_custom_target(fyzzxyzzy_physx_source_active_${_native_pass}_shader
           DEPENDS "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_SPV}")
       endforeach()
@@ -3000,13 +2373,7 @@ if(FYZZXYZZY_BUILD_VULKAN)
           "${FYZZXYZZY_SOURCE_ACTIVE_output_SPV}")
 
       set(FYZZXYZZY_SAP_OVERLAP_SPV "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work.spv")
-      add_custom_command(OUTPUT "${FYZZXYZZY_SAP_OVERLAP_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_SAP_OVERLAP_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SAP_OVERLAP_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_sap_overlap_shader DEPENDS "${FYZZXYZZY_SAP_OVERLAP_SPV}")
       add_executable(fyzzxyzzy_sap_overlap_work tests/physx_gpu_sap_overlap_work.cpp)
       target_include_directories(fyzzxyzzy_sap_overlap_work PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -3020,15 +2387,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       foreach(_pass IN ITEMS first second)
         set(FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_pass}.spv")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.2
-            -T cs_6_6 -E main
-            -Fo "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
-          VERBATIM)
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl" cs_6_6 main
+          SPIRV_ENV vulkan1.2)
         add_custom_target(fyzzxyzzy_overlap_prefix_${_pass}_spv
           DEPENDS "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_SPV}")
       endforeach()
@@ -3049,14 +2409,8 @@ if(FYZZXYZZY_BUILD_VULKAN)
       # PhysX BP_GENERATE_FOUNDPAIR_NEWBOUNDS, fixed 64x256 native-wave scan.
       set(FYZZXYZZY_NEWBOUNDS_PAIRS_SPV
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs.spv")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.2
-          -T cs_6_6 -E main -Fo "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl" cs_6_6 main
+        SPIRV_ENV vulkan1.2)
       add_custom_target(fyzzxyzzy_newbounds_pairs_spv
         DEPENDS "${FYZZXYZZY_NEWBOUNDS_PAIRS_SPV}")
       add_executable(fyzzxyzzy_sap_newbounds_pairs

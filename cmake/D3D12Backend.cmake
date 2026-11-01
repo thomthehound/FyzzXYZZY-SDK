@@ -27,14 +27,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_WAVE32_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_WAVE32_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_WAVE32_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_WAVE32_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_wave32_dxil DEPENDS "${FYZZXYZZY_WAVE32_DXIL}")
     add_executable(fyzzxyzzy_wave32_contract_d3d12 tests/native_wave32_contract.cpp)
     target_compile_definitions(fyzzxyzzy_wave32_contract_d3d12 PRIVATE
@@ -47,14 +40,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_INDEPENDENT_D32_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_INDEPENDENT_D32_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_INDEPENDENT_D32_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_independent_source_d32_dxil
       DEPENDS "${FYZZXYZZY_INDEPENDENT_D32_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_d32_independent_d3d12
@@ -74,14 +60,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       SKIP_RETURN_CODE 77 ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set(FYZZXYZZY_INDEPENDENT_AABB_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_INDEPENDENT_AABB_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_INDEPENDENT_AABB_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_INDEPENDENT_AABB_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_independent_source_aabb_dxil
       DEPENDS "${FYZZXYZZY_INDEPENDENT_AABB_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aabb_independent_d3d12
@@ -101,41 +80,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     # Original PxgBroadPhaseDesc is now SDK-owned, not an upstream fixture.
     set(FYZZXYZZY_OWNED_OVERLAP_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_OVERLAP_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_OVERLAP_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_SCAN_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_first_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_SCAN_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_second_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SCAN_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_PAIRS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_PAIRS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_source_sap_shaders_d3d12 DEPENDS
       ${FYZZXYZZY_OWNED_OVERLAP_DXIL}
       ${FYZZXYZZY_OWNED_SCAN_FIRST_DXIL}
@@ -175,41 +126,17 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Source-owned SAP incremental/created GPU work uses the original
     # PxgBroadPhaseDesc and native backend, without a reference PhysX ABI.
     set(FYZZXYZZY_OWNED_CREATED_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CREATED_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_CREATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_CREATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_COUNT_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_COUNT_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_COUNT_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_HIST_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_HIST_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_sap_incremental_shaders_d3d12 DEPENDS
       ${FYZZXYZZY_OWNED_CREATED_DXIL}
       ${FYZZXYZZY_OWNED_COUNT_FIRST_DXIL}
@@ -263,75 +190,25 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Original SAP rank, projection, changed and removed handle kernels.
     # All layout declarations and stage implementations belong to this SDK.
     set(FYZZXYZZY_OWNED_SAPBOX_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sapbox_indices_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_SAPBOX_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_SAPBOX_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_SAPBOX_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REMOVED_MARK_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_mark_removed_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_mark_removed_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_remove_projections_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REMOVED_PROJ_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_remove_projections_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_UPDATED_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_updated_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_UPDATED_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_UPDATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_UPDATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_INIT_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_init_ranks_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_INIT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_COUNT_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_COUNT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_SCATTER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_GATHER_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_gather_handles_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_GATHER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_wave_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_RADIX_SCATTER_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_sap_sort_shaders_d3d12 DEPENDS
       ${FYZZXYZZY_OWNED_SAPBOX_DXIL}
       ${FYZZXYZZY_OWNED_REMOVED_MARK_DXIL}
@@ -388,29 +265,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     set_tests_properties(fyzzxyzzy_owned_sap_radix_d3d12 PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     # Original source GPU region create and histogram kernels.
     set(FYZZXYZZY_OWNED_REGION_CREATE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_first_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_wave_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_second_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_REGION_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_region_shaders_d3d12 DEPENDS
       "${FYZZXYZZY_OWNED_REGION_CREATE_DXIL}"
       "${FYZZXYZZY_OWNED_REGION_HIST_FIRST_DXIL}"
@@ -444,13 +305,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_OWNED_CLEAR_NEW_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_clear_new_shader_d3d12
       DEPENDS "${FYZZXYZZY_OWNED_CLEAR_NEW_DXIL}")
     add_executable(fyzzxyzzy_owned_clear_new_d3d12
@@ -478,13 +333,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       endif()
       set(_report_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_report_pass}_native.hlsl")
       set(_report_bin "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_report_pass}_native.dxil")
-      add_custom_command(OUTPUT "${_report_bin}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T "${_report_model}" -E main
-          -Fo "${_report_bin}" "${_report_src}"
-        DEPENDS "${_report_src}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_report_bin}" "${_report_src}" "${_report_model}" main
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli")
       list(APPEND FYZZXYZZY_OWNED_REPORT_DXIL_OUTPUTS "${_report_bin}")
     endforeach()
     add_custom_target(fyzzxyzzy_owned_report_shaders_d3d12
@@ -508,11 +358,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       physx_sap_newbounds_pairs_wave_native)
       set(_source "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/${_pair_shader}.hlsl")
       set(_output "${CMAKE_CURRENT_BINARY_DIR}/kernels/${_pair_shader}_owned.dxil")
-      add_custom_command(OUTPUT "${_output}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${_output}" "${_source}"
-        DEPENDS "${_source}" VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_output}" "${_source}" cs_6_0 main)
       list(APPEND FYZZXYZZY_OWNED_PAIR_PRODUCER_DXIL_FILES "${_output}")
     endforeach()
     add_custom_target(fyzzxyzzy_owned_pair_producer_shaders_d3d12
@@ -587,13 +433,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs_owned.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_owned_translate_aabbs_shader_d3d12
       DEPENDS "${FYZZXYZZY_OWNED_TRANSLATE_AABBS_DXIL}")
     add_executable(fyzzxyzzy_owned_translate_aabbs_d3d12
@@ -700,14 +540,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       endif()
       set(FYZZXYZZY_OWNED_ACTIVE_${_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_${_pass}_owned.dxil")
-      add_custom_command(OUTPUT "${FYZZXYZZY_OWNED_ACTIVE_${_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T ${_profile} -E main
-          -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_flag}
-          -Fo "${FYZZXYZZY_OWNED_ACTIVE_${_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OWNED_ACTIVE_${_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_source}_native.hlsl" ${_profile} main
+        FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_flag})
     endforeach()
     add_custom_target(fyzzxyzzy_owned_active_shaders_d3d12 DEPENDS
       "${FYZZXYZZY_OWNED_ACTIVE_writeout_DXIL}"
@@ -988,13 +822,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_OWNED_INCREMENTAL_PAIRS_DXIL}")
     set(FYZZXYZZY_SC_BOX_BOUNDS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sc_box_transform_bounds_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sc_box_transform_bounds_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sc_box_bounds_shader_d3d12
       DEPENDS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}")
     add_executable(fyzzxyzzy_source_sc_box_bounds_d3d12
@@ -1015,13 +843,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_GU_BOX_CONTACTS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_gu_box_box_contacts_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_gu_box_box_contacts_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gu_box_contacts_shader_d3d12
       DEPENDS "${FYZZXYZZY_GU_BOX_CONTACTS_DXIL}")
     add_executable(fyzzxyzzy_source_gu_box_contacts_d3d12
@@ -1045,15 +867,9 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_PCM_BOX_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_candidates_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET
@@ -1068,55 +884,29 @@ if(FYZZXYZZY_BUILD_D3D12)
         set(EPA_DEFINE "")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
       endif()
-      add_custom_command(OUTPUT "${EPA_OUTPUT}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" ${EPA_DEFINE} -T cs_6_0 -E "${ENTRY}"
-          -Fo "${EPA_OUTPUT}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${EPA_OUTPUT}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl" cs_6_0 "${ENTRY}"
+        FLAGS ${EPA_DEFINE})
     endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
-      VERBATIM)
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_sc_contact_stream_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl" cs_6_0 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
     set(FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
-      DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_contact_pgs_native.hlsli")
     add_custom_target(fyzzxyzzy_source_dy_distance_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
@@ -1146,21 +936,10 @@ if(FYZZXYZZY_BUILD_D3D12)
     # aggregate member reduction (4 warps per native workgroup).
     set(FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_bounds_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_BOUNDS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_bounds_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_changed_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_changed_native.hlsl" cs_6_0 main)
     add_executable(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12
       tests/physx_gpu_source_aggregate_bounds_native.cpp)
     target_include_directories(fyzzxyzzy_source_gpu_aggregate_bounds_d3d12 PRIVATE
@@ -1176,13 +955,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_AGGREGATE_MARK_DXIL}")
     set(FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_mark_members_history_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_mark_members_history_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_MEMBER_HISTORY_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_member_history_d3d12
@@ -1202,13 +975,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set(FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_projection_sort_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_projection_sort_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_projection_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_PROJECTION_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_projections_d3d12
@@ -1229,13 +996,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # aggregate.cu::doSelfCollision, found/lost member history on GPU.
     set(FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_self_collision_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_self_collision_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_SELF_COLLISION_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_self_collision_d3d12
@@ -1257,13 +1018,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       PROPERTIES ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     set(FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_copy_reports_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_copy_reports_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_copy_report_d3d12_shader
       DEPENDS "${FYZZXYZZY_SOURCE_AGGREGATE_COPY_REPORT_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_report_copy_d3d12
@@ -1371,13 +1126,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # aggregate.cu::doAggPairCollisions, original GPU root pair member sweep.
     set(FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_aggregate_persistent_collisions_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_aggregate_persistent_collisions_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12_shader DEPENDS "${FYZZXYZZY_SOURCE_AGG_PAIR_COLLISION_DXIL}")
     add_executable(fyzzxyzzy_source_gpu_aggregate_persistent_collisions_d3d12
       tests/physx_gpu_source_aggregate_persistent_collisions_native.cpp)
@@ -1699,14 +1448,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_WAVE32_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_wave32_contract.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_WAVE32_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_WAVE32_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_WAVE32_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_wave32_contract.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_wave32_dxil DEPENDS "${FYZZXYZZY_WAVE32_DXIL}")
     add_executable(fyzzxyzzy_wave32_contract_d3d12 tests/native_wave32_contract.cpp)
     target_compile_definitions(fyzzxyzzy_wave32_contract_d3d12 PRIVATE
@@ -1722,14 +1464,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     find_program(FYZZXYZZY_DXC NAMES dxc REQUIRED)
     set(FYZZXYZZY_MULTI_RESOURCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/native_multi_resource_bindings.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_MULTI_RESOURCE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_MULTI_RESOURCE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_MULTI_RESOURCE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/native_multi_resource_bindings.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_native_multi_resource_dxil
       DEPENDS "${FYZZXYZZY_MULTI_RESOURCE_DXIL}")
     add_executable(fyzzxyzzy_native_multi_resource_d3d12
@@ -1751,16 +1486,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       USES_TERMINAL VERBATIM)
     set(FYZZXYZZY_D3D12_AABB_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_translate_aabbs.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_AABB_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_AABB_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_AABB_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_translate_aabbs.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_aabb_shader
       DEPENDS "${FYZZXYZZY_D3D12_AABB_DXIL}")
     add_executable(fyzzxyzzy_physx_aabb_encoding_d3d12
@@ -1792,14 +1518,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_physx_source_overlap_native_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_OVERLAP_NATIVE_DXIL}")
     add_executable(fyzzxyzzy_physx_source_overlap_native_d3d12
@@ -1821,10 +1540,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_phase first second)
       set(_shader "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_phase}_native.hlsl")
       set(_dxil "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_phase}_native.dxil")
-      add_custom_command(OUTPUT "${_dxil}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main -Fo "${_dxil}" "${_shader}"
-        DEPENDS "${_shader}" VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_dxil}" "${_shader}" cs_6_0 main)
       list(APPEND FYZZXYZZY_SOURCE_SCAN_DXIL_FILES "${_dxil}")
     endforeach()
     add_custom_target(fyzzxyzzy_physx_source_scan_dxil
@@ -1847,14 +1563,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_PAIRS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs_wave_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_SOURCE_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_PAIRS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_physx_source_pairs_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_PAIRS_DXIL}")
     add_executable(fyzzxyzzy_physx_source_pairs_native_d3d12
@@ -1899,14 +1608,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_D32_FILL_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_fill_d32_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_D32_FILL_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_fill_d32_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_physx_source_d32_fill_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_D32_FILL_DXIL}")
     add_executable(fyzzxyzzy_physx_source_d32_fill_native_d3d12
@@ -1928,14 +1630,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_REGION_CREATE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_create_native.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_create_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_physx_source_region_create_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_REGION_CREATE_DXIL}")
     add_executable(fyzzxyzzy_physx_source_region_create_native_d3d12
@@ -1997,14 +1692,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(variant first wave second)
       set(FYZZXYZZY_SOURCE_REGION_HIST_${variant}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_region_histogram_${variant}_native.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_REGION_HIST_${variant}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_region_histogram_${variant}_native.hlsl" cs_6_0 main)
     endforeach()
     add_custom_target(fyzzxyzzy_physx_source_region_histograms_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_REGION_HIST_first_DXIL}"
@@ -2068,29 +1756,11 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_REMOVED_ARENA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl" cs_6_0 main)
     set(FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_mark_removed_pairs_resolved.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -D FYZZXYZZY_RESOLVED_SUBSET=1
-        -Fo "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_mark_removed_pairs_arena.hlsl" cs_6_0 main
+      FLAGS -D FYZZXYZZY_RESOLVED_SUBSET=1)
     add_custom_target(fyzzxyzzy_d3d12_removed_resolved_shader
       DEPENDS "${FYZZXYZZY_D3D12_REMOVED_RESOLVED_DXIL}")
     add_custom_target(fyzzxyzzy_d3d12_removed_arena_shader
@@ -2113,16 +1783,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_removed_projections_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_removed_projections_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_removed_projections_shader
       DEPENDS "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}")
     add_executable(fyzzxyzzy_physx_removed_projections_d3d12
@@ -2142,16 +1803,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_D3D12_REMOVED_PROJECTIONS_DXIL}")
     set(FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_created_pairs_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_created_pairs_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_created_pairs_shader
       DEPENDS "${FYZZXYZZY_D3D12_CREATED_PAIRS_DXIL}")
     add_executable(fyzzxyzzy_physx_created_pairs_d3d12
@@ -2171,30 +1823,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX radixSortImpl.cu multi-block count stage (32x3x1024).
     set(FYZZXYZZY_D3D12_RADIX_COUNT_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_count_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_radix_count_shader
       DEPENDS "${FYZZXYZZY_D3D12_RADIX_COUNT_DXIL}")
     set(FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_count_wave_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_count_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_d3d12_radix_count_wave_shader
       DEPENDS "${FYZZXYZZY_D3D12_RADIX_COUNT_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_radix_count_d3d12
@@ -2215,31 +1849,13 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX radixSortImpl.cu::radixSortMultiCalculateRanksLaunchWithCount.
     set(FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_radix_scatter_shader
       DEPENDS "${FYZZXYZZY_D3D12_RADIX_SCATTER_DXIL}")
 
     set(FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_radix_scatter_wave_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_radix_scatter_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_d3d12_radix_scatter_wave_shader
       DEPENDS "${FYZZXYZZY_D3D12_RADIX_SCATTER_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_radix_scatter_d3d12
@@ -2264,16 +1880,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # broadphase.cu::initializeSapBox1DLaunch (ceil(2 * handles / 256)).
     set(FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_box_indices_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_box_indices_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_box_indices_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_BOX_INDICES_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_box_indices_d3d12
@@ -2306,16 +1913,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_sap_kernel IN ITEMS initialize_ranks update_handles)
       set(FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_${_sap_kernel}_arena.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_${_sap_kernel}_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_d3d12_sap_${_sap_kernel}_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_${_sap_kernel}_DXIL}")
     endforeach()
@@ -2349,16 +1947,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_hist_pass IN ITEMS first second)
       set(FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_${_hist_pass}_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_d3d12_sap_endpoint_${_hist_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_ENDPOINT_${_hist_pass}_DXIL}")
     endforeach()
@@ -2366,16 +1955,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Source packed 10-bit first-pass wave shader, SM6.6 native path.
     set(FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_endpoint_histogram_wave.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_endpoint_histogram_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_endpoint_wave_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_ENDPOINT_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_endpoint_histogram_d3d12
@@ -2400,16 +1980,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_comparison_pass IN ITEMS first second)
       set(FYZZXYZZY_D3D12_SAP_COMPARISONS_${_comparison_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_SAP_COMPARISONS_${_comparison_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_D3D12_SAP_COMPARISONS_${_comparison_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_COMPARISONS_${_comparison_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_${_comparison_pass}_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_d3d12_sap_comparisons_${_comparison_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_COMPARISONS_${_comparison_pass}_DXIL}")
     endforeach()
@@ -2417,16 +1988,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Three-axis native-wave comparison histogram first-pass fast path.
     set(FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_comparisons_wave.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_comparisons_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_comparisons_wave_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_COMPARISONS_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_incremental_comparisons_d3d12
@@ -2456,28 +2018,12 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX BP_INCREMENTAL_SAP: 256 x 3 x 256 source dispatch.
     set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_DXIL}")
         # Native packed found/lost wave scan, original 256x3x256 dispatch.
     set(FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_incremental_pairs_wave_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}"  -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_incremental_pairs_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_incremental_pairs_wave_shader DEPENDS "${FYZZXYZZY_D3D12_SAP_INCREMENTAL_PAIRS_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_incremental_pairs_d3d12
       tests/physx_gpu_sap_incremental_pairs.cpp)
@@ -2509,13 +2055,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     # Original PxgCudaBroadPhaseSap::initializeSapBoxKernel source allocations.
     set(FYZZXYZZY_SOURCE_SAPBOX_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sapbox_indices_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAPBOX_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAPBOX_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAPBOX_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sapbox_indices_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sapbox_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAPBOX_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 tests/physx_gpu_source_sapbox_indices_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sapbox_indices_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -2533,11 +2073,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(part IN ITEMS mark_removed remove_projections)
       set(shader_src "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_${part}_native.hlsl")
       set(shader_out "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_${part}_native.dxil")
-      add_custom_command(OUTPUT "${shader_out}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${shader_out}" "${shader_src}"
-        DEPENDS "${shader_src}" VERBATIM)
+      fyzzxyzzy_compile_hlsl("${shader_out}" "${shader_src}" cs_6_0 main)
     endforeach()
     add_custom_target(fyzzxyzzy_source_sap_removed_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_REMOVED_MARK_DXIL}" "${FYZZXYZZY_SOURCE_SAP_REMOVED_PROJ_DXIL}")
@@ -2561,13 +2097,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_SAP_UPDATED_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_updated_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_UPDATED_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_UPDATED_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_UPDATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_updated_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_updated_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_UPDATED_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_updated_native_d3d12
@@ -2589,13 +2119,7 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     set(FYZZXYZZY_SOURCE_SAP_CREATED_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_created_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_CREATED_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_CREATED_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_CREATED_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_created_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_created_dxil
       DEPENDS "${FYZZXYZZY_SOURCE_SAP_CREATED_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_created_native_d3d12
@@ -2617,41 +2141,17 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     # Original WR/WOR radix pointers, eight stable LSD passes, preserved handles.
     set(FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_init_ranks_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_init_ranks_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_gather_handles_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_gather_handles_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_count_wave_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_count_wave_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_radix_scatter_wave_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_radix_scatter_wave_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_radix_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_RADIX_INIT_RANKS_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_GATHER_HANDLES_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_COUNT_WAVE_DXIL}" "${FYZZXYZZY_SOURCE_SAP_RADIX_RADIX_SCATTER_WAVE_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_radix_native_d3d12 tests/physx_gpu_source_sap_radix_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sap_radix_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -2688,17 +2188,9 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     # Source incremental comparison prefixes publish into the original GPU descriptor.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_first_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_counts_second_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_counts_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_incremental_counts_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_FIRST_DXIL}" "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_SECOND_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_incremental_counts_native_d3d12 tests/physx_gpu_source_sap_incremental_counts_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sap_incremental_counts_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -2712,17 +2204,9 @@ if(FYZZXYZZY_BUILD_D3D12)
 
     # Original two 32x3x256 SAP endpoint histogram launches (48 source views).
     set(FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_first_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_first_native.hlsl" cs_6_0 main)
     set(FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_endpoint_histograms_second_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_endpoint_histograms_second_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_hist_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_HIST_FIRST_DXIL}" "${FYZZXYZZY_SOURCE_SAP_HIST_SECOND_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 tests/physx_gpu_source_sap_endpoint_histograms_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sap_endpoint_histograms_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -2738,11 +2222,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # Source BP_INCREMENTAL_SAP consumes original per-axis comparisons
     # and writes original GPU PxgBroadPhaseDesc found/lost report indices.
     set(FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_incremental_pairs_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_incremental_pairs_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_sap_incremental_pairs_dxil DEPENDS "${FYZZXYZZY_SOURCE_SAP_INCREMENTAL_PAIRS_DXIL}")
     add_executable(fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 tests/physx_gpu_source_sap_incremental_pairs_native.cpp)
     target_compile_definitions(fyzzxyzzy_physx_source_sap_incremental_pairs_native_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -2776,13 +2256,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     
     # PhysX BP_CLEAR_NEWFLAG on the original seven GPU allocations.
     set(FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12 "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_clear_new_flags_native.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_clear_new_flags_native.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_source_clear_new_flags_dxil DEPENDS "${FYZZXYZZY_SOURCE_CLEAR_NEW_D3D12}")
     add_executable(fyzzxyzzy_physx_source_clear_new_flags_native_d3d12
       tests/physx_gpu_source_clear_new_flags_native.cpp)
@@ -2798,16 +2272,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX clearNewFlagLaunch: 32 x 256, after new-pair generation.
     set(FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_clear_new_flags_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_clear_new_flags_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_clear_new_flags_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_CLEAR_NEW_FLAGS_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_clear_new_flags_d3d12
@@ -2841,16 +2306,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX broadphase.cu::copyReports: 64 x 256 publication stage.
     set(FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_copy_reports_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_copy_reports_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_bp_copy_reports_shader
       DEPENDS "${FYZZXYZZY_D3D12_BP_COPY_REPORTS_DXIL}")
     add_executable(fyzzxyzzy_physx_bp_copy_reports_d3d12
@@ -2871,16 +2327,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_report_pass IN ITEMS first second)
       set(FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_arena.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-          -Fo "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_arena.hlsl" cs_6_0 main)
       add_custom_target(fyzzxyzzy_d3d12_bp_report_class_${_report_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_DXIL}")
     endforeach()
@@ -2888,14 +2335,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_report_pass IN ITEMS first second)
       set(FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_broadphase_report_classification_${_report_pass}_wave.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_broadphase_report_classification_${_report_pass}_wave_arena.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_d3d12_bp_report_class_${_report_pass}_wave_shader
         DEPENDS "${FYZZXYZZY_D3D12_BP_REPORT_CLASS_${_report_pass}_WAVE_DXIL}")
     endforeach()
@@ -2910,14 +2350,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_${_native_report}_native.hlsl")
       set(_native_binary
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_sap_report_${_native_report}_native.dxil")
-      add_custom_command(
-        OUTPUT "${_native_binary}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T "${_native_shader_model}" -E main
-          -Fo "${_native_binary}" "${_native_source}"
-        DEPENDS "${_native_source}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${_native_binary}" "${_native_source}" "${_native_shader_model}" main
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_sap_report_multi_root_common.hlsli")
       list(APPEND FYZZXYZZY_SOURCE_REPORT_NATIVE_DXIL_OUTPUTS "${_native_binary}")
     endforeach()
     add_custom_target(fyzzxyzzy_physx_source_report_multi_root_dxil
@@ -2955,16 +2389,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     # PhysX BP_CREATE_REGIONS: original 32 x 256 region-range producer.
     set(FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_producer_arena.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl"
-      VERBATIM
-    )
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_producer_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_region_producer_shader
       DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_PRODUCER_DXIL}")
     add_executable(fyzzxyzzy_physx_sap_region_producer_d3d12
@@ -2991,15 +2416,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         endif()
         set(FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL
           "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_${_region_pass}.dxil")
-        add_custom_command(
-          OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}"
-          COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-          COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
-            -Fo "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
-          DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl"
-          VERBATIM
-        )
+        fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_${_region_pass}_arena.hlsl" cs_6_0 main
+          FLAGS -DFYZZXYZZY_REGION_START=${_region_flag})
         add_custom_target(fyzzxyzzy_d3d12_sap_region_${_region_kind}_${_region_pass}_shader
           DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_${_region_pass}_DXIL}")
       endforeach()
@@ -3013,15 +2431,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       endif()
       set(FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_region_${_region_kind}_histogram_wave.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main -DFYZZXYZZY_REGION_START=${_region_flag}
-          -Fo "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_region_histogram_wave_arena.hlsl" cs_6_6 main
+        FLAGS -DFYZZXYZZY_REGION_START=${_region_flag})
       add_custom_target(fyzzxyzzy_d3d12_sap_region_${_region_kind}_wave_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_REGION_${_region_kind}_WAVE_DXIL}")
     endforeach()
@@ -3068,15 +2479,8 @@ if(FYZZXYZZY_BUILD_D3D12)
         endif()
       set(FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_active_region_${_active_pass}.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T ${_active_profile} -E main -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag}
-          -Fo "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl"
-        VERBATIM
-      )
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_active_region_${_active_source}_arena.hlsl" ${_active_profile} main
+        FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_active_flag})
       add_custom_target(fyzzxyzzy_d3d12_sap_active_${_active_pass}_shader
         DEPENDS "${FYZZXYZZY_D3D12_SAP_ACTIVE_${_active_pass}_DXIL}")
     endforeach()
@@ -3096,15 +2500,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       endif()
       set(FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_active_${_native_pass}.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T ${_native_profile} -E main
-          -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_native_flag}
-          -Fo "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_active_${_native_source}_native.hlsl" ${_native_profile} main
+        FLAGS -DFYZZXYZZY_ACTIVE_REGION_WAVE=${_native_flag})
       add_custom_target(fyzzxyzzy_physx_source_active_${_native_pass}_dxil
         DEPENDS "${FYZZXYZZY_SOURCE_ACTIVE_${_native_pass}_DXIL}")
     endforeach()
@@ -3138,13 +2535,7 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${FYZZXYZZY_SOURCE_ACTIVE_output_DXIL}")
 
     set(FYZZXYZZY_SAP_OVERLAP_DXIL "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_work.dxil")
-    add_custom_command(OUTPUT "${FYZZXYZZY_SAP_OVERLAP_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_0 -E main
-        -Fo "${FYZZXYZZY_SAP_OVERLAP_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SAP_OVERLAP_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_work_arena.hlsl" cs_6_0 main)
     add_custom_target(fyzzxyzzy_d3d12_sap_overlap_shader DEPENDS "${FYZZXYZZY_SAP_OVERLAP_DXIL}")
     add_executable(fyzzxyzzy_sap_overlap_work_d3d12 tests/physx_gpu_sap_overlap_work.cpp)
     target_compile_definitions(fyzzxyzzy_sap_overlap_work_d3d12 PRIVATE FYZZXYZZY_TEST_D3D12=1)
@@ -3157,14 +2548,7 @@ if(FYZZXYZZY_BUILD_D3D12)
     foreach(_pass IN ITEMS first second)
       set(FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_overlap_prefix_${_pass}.dxil")
-      add_custom_command(
-        OUTPUT "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-        COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-          -Fo "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl"
-        VERBATIM)
+      fyzzxyzzy_compile_hlsl("${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_overlap_prefix_${_pass}_wave.hlsl" cs_6_6 main)
       add_custom_target(fyzzxyzzy_overlap_prefix_${_pass}_dxil
         DEPENDS "${FYZZXYZZY_OVERLAP_PREFIX_${_pass}_DXIL}")
     endforeach()
@@ -3186,14 +2570,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       SKIP_RETURN_CODE 77)
     set(FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_sap_newbounds_pairs.dxil")
-    add_custom_command(
-      OUTPUT "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}"
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
-      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
-        -Fo "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl"
-      VERBATIM)
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_sap_newbounds_pairs_wave_arena.hlsl" cs_6_6 main)
     add_custom_target(fyzzxyzzy_newbounds_pairs_dxil
       DEPENDS "${FYZZXYZZY_NEWBOUNDS_PAIRS_DXIL}")
     add_executable(fyzzxyzzy_sap_newbounds_pairs_d3d12
