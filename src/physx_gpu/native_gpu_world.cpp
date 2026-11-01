@@ -208,6 +208,31 @@ World create_native_gpu_world(
 }
 
 World create_native_gpu_world(
+    compute::Backend backend,NativeGpuSapShaders sap,
+    NativeGpuPcmShaders pcm,compute::ShaderBinary dy_distance,
+    WorldOptions options) {
+    if(options.execution!=ExecutionMode::NativePortableGpu)
+        throw std::invalid_argument(
+            "Source GPU PCM and Dy require NativePortableGpu execution");
+    const auto format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    for(const auto& shader:sap)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument("Native GPU SAP bundle incomplete");
+    for(const auto& shader:pcm)
+        if(shader.format!=format || shader.bytes.empty())
+            throw std::invalid_argument("Native GPU PCM bundle incomplete");
+    if(dy_distance.format!=format || dy_distance.bytes.empty())
+        throw std::invalid_argument("Native GPU Dy shader incompatible with backend");
+    return World(create_native_gpu_broadphase_backend(
+        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,std::move(sap),32768u,32768u,
+            std::nullopt,std::move(pcm),std::move(dy_distance)),
+        options.contact_notifications,options.enhanced_determinism,
+        options.pcm_plane_box,options.pcm_box_box));
+}
+
+World create_native_gpu_world(
     compute::Backend backend,const std::filesystem::path& sap_manifest,
     const std::filesystem::path& aggregate_manifest,WorldOptions options) {
     return create_native_gpu_world(
