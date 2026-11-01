@@ -29,11 +29,34 @@ RWByteAddressBuffer bodyOrdinals : register(u4,space0);
 #endif
 RWByteAddressBuffer tasks : register(u5,space0);
 
+#ifdef __spirv__
+[[vk::binding(6,0)]]
+#endif
+RWByteAddressBuffer contactPoints : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer frictionRows : register(u7,space0);
+#ifdef __spirv__
+[[vk::binding(8,0)]]
+#endif
+RWByteAddressBuffer contactPatches : register(u8,space0);
+#ifdef __spirv__
+[[vk::binding(9,0)]]
+#endif
+RWByteAddressBuffer contactManifolds : register(u9,space0);
+#ifdef __spirv__
+[[vk::binding(10,0)]]
+#endif
+RWByteAddressBuffer contactOrder : register(u10,space0);
+
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
     uint ordinalBias, taskBias;
     uint bodyCount, rowCount, descriptorCount, partitionCount;
     uint ordinalCount, taskCount;
+    uint contactBias,frictionBias,patchBias,manifoldBias,orderBias;
+    uint contactCount,frictionCount,patchCount,manifoldCount,orderCount;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -67,8 +90,8 @@ void solveRow(uint index,uint errorAddress,bool biased) {
     float3 jb=asfloat(distances.Load3(offset+24u));
     float massA=asfloat(distances.Load(offset+36u));
     float massB=asfloat(distances.Load(offset+40u));
-    uint ao=p.bodyBias+desc.y*48u;
-    uint bo=p.bodyBias+desc.z*48u;
+    uint ao=p.bodyBias+desc.y*52u;
+    uint bo=p.bodyBias+desc.z*52u;
     float3 va=float3(0,0,0),vb=float3(0,0,0);
     float3 aa=float3(0,0,0),ab=float3(0,0,0);
     if(desc.y!=invalidBody) {
@@ -130,6 +153,8 @@ void solveRow(uint index,uint errorAddress,bool biased) {
     storeDouble(offset+72u,next);
 }
 
+#include "physx_source_dy_contact_pgs_native.hlsli"
+
 [numthreads(128,1,1)]
 void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
     if(group.x>=p.taskCount)return;
@@ -151,8 +176,15 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             uint begin=partition==firstPartition ? ranges.x:
                 partitionEnds.Load(p.partitionBias+(partition-1u)*4u);
             uint end=partitionEnds.Load(p.partitionBias+partition*4u);
-            for(uint i=begin+lane.x;i<end;i+=128u)
-                solveRow(i,endError,iter<iters.x);
+            for(uint i=begin+lane.x;i<end;i+=128u) {
+                uint4 desc=descriptors.Load4(p.descriptorBias+i*16u);
+                if(desc.w==1u)
+                    solveRow(i,endError,iter<iters.x);
+                else
+                    solveContact(desc,endError,iter<iters.x,
+                        iter>=iters.x || iters.x-iter<=3u,
+                        iter+1u==iters.x+velocityIterations);
+            }
             // The original conflict partition guarantees no body writes
             // overlap inside this barrier; later partitions depend on it.
             AllMemoryBarrierWithGroupSync();
@@ -164,7 +196,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                     tasks.InterlockedOr(endError,8u);
                     continue;
                 }
-                uint base=p.bodyBias+ordinal*48u;
+                uint base=p.bodyBias+ordinal*52u;
                 bodies.Store3(base+24u,bodies.Load3(base));
                 bodies.Store3(base+36u,bodies.Load3(base+12u));
             }
