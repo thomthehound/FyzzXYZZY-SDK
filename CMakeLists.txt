@@ -353,10 +353,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GpuTestRegistration.cmake")
 option(FYZZXYZZY_BUILD_VULKAN "Build the standalone Vulkan compute backend" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/VulkanBackend.cmake")
 
-# Native D3D12 execution of PhysX's AABB stage, using the exact same
-# AabbEncodingStage host dispatch and reference fixtures as Vulkan.
-# The initial executor supports this kernel's 3 SRV + 1 UAV/8-constant ABI.
-# It remains a separate static target pending backend-neutral runtime dispatch.
+# D3D12 and Vulkan use separate compute executors and the same native
+# source-stage implementations.
 option(FYZZXYZZY_BUILD_D3D12 "Build the native Windows D3D12 compute backend" OFF)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/D3D12Backend.cmake")
 

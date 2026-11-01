@@ -29,6 +29,7 @@
 #include "physx_gpu/source_sc_element_lifecycle_native.h"
 #include "physx_gpu/source_sc_gpu_broadphase_producer_native.h"
 #include "fyzzxyzzy/native_gpu_world.h"
+#include "gpu_integration_metrics.h"
 
 #include "extensions/PxDefaultAllocator.h"
 #include "foundation/PxErrorCallback.h"
@@ -1835,7 +1836,8 @@ int main(int argc, char** argv) {
             Backend::Vulkan
 #endif
         );
-        execute(context, load_shader(argv[1]), load_shader(argv[2]),
+        fyzz::tests::measure_gpu_case("sap_lifecycle","gpu_frame_history", [&] {
+          execute(context, load_shader(argv[1]), load_shader(argv[2]),
                 load_shader(argv[3]), load_shader(argv[4]),
                 load_shader(argv[5]), load_shader(argv[6]),
                 load_shader(argv[7]), load_shader(argv[8]),
@@ -1852,23 +1854,28 @@ int main(int argc, char** argv) {
                 load_shader(argv[29]), load_shader(argv[30]),
                 load_shader(argv[31]), load_shader(argv[32]),
                 load_shader(argv[33]), load_shader(argv[34]));
-        verify_source_shutdown_after_failed_submission(
+        });
+        fyzz::tests::measure_gpu_case("sap_lifecycle","failed_submission_shutdown", [&] {
+          verify_source_shutdown_after_failed_submission(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12
 #else
             Backend::Vulkan
 #endif
         );
+        });
         std::array<const char*,35> filenames{};
         for(std::size_t i=0;i<filenames.size();++i)
             filenames[i]=argv[i+1u];
-        verify_owned_source_world(
+        fyzz::tests::measure_gpu_case("sap_lifecycle","scene_pair_lifetime", [&] {
+          verify_owned_source_world(
 #if defined(FYZZXYZZY_TEST_D3D12)
             Backend::D3D12,
 #else
             Backend::Vulkan,
 #endif
             filenames,argv[36]);
+        });
         std::cout << "Original PhysX SAP native GPU AABB owner four-frame lifecycle PASS\n";
         return 0;
     } catch (const std::exception& e) {
