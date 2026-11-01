@@ -155,6 +155,7 @@ std::vector<DeviceCandidate> find_compute_devices(VkInstance instance) {
             VkPhysicalDeviceFeatures basic{};
             vkGetPhysicalDeviceFeatures(physical, &basic);
             info.supports_int64_shader = basic.shaderInt64 == VK_TRUE;
+            info.supports_float64_shader = basic.shaderFloat64 == VK_TRUE;
             if (properties.apiVersion >= VK_API_VERSION_1_2) {
                 auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
                     vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
