@@ -338,6 +338,7 @@ struct Context::Impl {
             // enforces its own baseline at construction. No dispatch probes.
             VkPhysicalDeviceFeatures enabled{};
             enabled.shaderInt64 = info.supports_int64_shader ? VK_TRUE : VK_FALSE;
+            enabled.shaderFloat64 = info.supports_float64_shader ? VK_TRUE : VK_FALSE;
             create.pEnabledFeatures = &enabled;
             VkPhysicalDeviceShaderSubgroupExtendedTypesFeatures extended{};
             if (info.supports_int64_wave) {
