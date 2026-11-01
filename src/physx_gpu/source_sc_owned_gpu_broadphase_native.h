@@ -190,6 +190,10 @@ public:
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy distance shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks);
+        ++dy_distance_dispatch_count_;
+    }
+    std::uint64_t dy_distance_dispatch_count() const noexcept {
+        return dy_distance_dispatch_count_;
     }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
@@ -283,6 +287,7 @@ private:
     std::unique_ptr<SourceScGpuBroadphaseProducerNative> producer_;
     std::unique_ptr<SourceScGpuPcmNative> pcm_;
     std::unique_ptr<SourceDyDistanceNativeStage> dy_distance_;
+    std::uint64_t dy_distance_dispatch_count_=0;
 };
 
 } // namespace fyzz::physx_gpu
