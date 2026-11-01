@@ -798,14 +798,15 @@ if(FYZZXYZZY_BUILD_VULKAN)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_compact_native.spv")
     foreach(ENTRY reset compact)
       if(ENTRY STREQUAL "reset")
-        set(EPA_DEFINE "-DSOURCE_PCM_EPA_RESET=1")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}")
+        set(EPA_COMPILE_ARGS FLAGS -DSOURCE_PCM_EPA_RESET=1)
       else()
-        set(EPA_DEFINE "")
         set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
+        set(EPA_COMPILE_ARGS)
       endif()
-      fyzzxyzzy_compile_hlsl("${EPA_OUTPUT}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl" cs_6_0 "${ENTRY}"
-        FLAGS ${EPA_DEFINE})
+      fyzzxyzzy_compile_hlsl("${EPA_OUTPUT}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
+        cs_6_0 "${ENTRY}" ${EPA_COMPILE_ARGS})
     endforeach()
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_SPV_COMPACT}")
