@@ -48,7 +48,7 @@ public:
         pipeline.storage_buffer_binding_count=1u;
         pipeline.storage_buffer_views={
             compute::StorageBufferViewKind::RawReadWrite};
-        pipeline.push_constant_bytes=116u;
+        pipeline.push_constant_bytes=124u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
@@ -68,7 +68,8 @@ public:
                std::span<native::GpuDyFrictionRow> friction,
                std::span<native::GpuDyContactPatch> patches,
                std::span<const native::GpuDyContactManifold> manifolds,
-               std::span<const std::uint32_t> contact_order) {
+               std::span<const std::uint32_t> contact_order,
+               std::span<const native::GpuDyContactPrepPair> contact_prep) {
         if(tasks.empty() || descriptors.empty())
             throw std::invalid_argument("Source Dy GPU requires active source tasks");
         if(tasks.size()>context_.device_info().max_workgroup_count[0])
@@ -78,20 +79,23 @@ public:
                 throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
             return static_cast<std::uint32_t>(value);
         };
-        constexpr std::size_t count=11u;
+        constexpr std::size_t count=12u;
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
             tasks.size_bytes(),contacts.size_bytes(),friction.size_bytes(),
-            patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes()};
+            patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
+            contact_prep.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contacts.size(),friction.size(),
-            patches.size(),manifolds.size(),contact_order.size()};
+            patches.size(),manifolds.size(),contact_order.size(),
+            contact_prep.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
             body_ordinals.data(),tasks.data(),contacts.data(),friction.data(),
-            patches.data(),manifolds.data(),contact_order.data()};
+            patches.data(),manifolds.data(),contact_order.data(),
+            contact_prep.data()};
         // Download only the source writeback fields. The GPU still
         // receives the original packed row inputs in one ordered upload.
         constexpr std::array<std::size_t,6> output_inputs{
@@ -118,7 +122,7 @@ public:
             output_bytes+=n*output_strides[i];
         }
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,6u,7u,8u,2u,3u,4u,9u,10u};
+            0u,1u,5u,6u,7u,8u,2u,3u,4u,9u,10u,11u};
         std::array<std::size_t,count> offsets{};
         // Leave the source input addresses 128-byte aligned. One packed
         // output view precedes them, so readback needs only a single copy.
@@ -151,9 +155,10 @@ public:
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
         stream_.queue_uploads({{address,host_.data(),host_.size()}});
-        std::array<std::uint32_t,29> params{};
-        for(std::size_t i=0;i<count;++i)
+        std::array<std::uint32_t,31> params{};
+        for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
+        params[30]=narrow(elements[11]);
         for(std::size_t i=0;i<result_offsets.size();++i)
             params[22u+i]=narrow(result_offsets[i]);
         compute::DispatchCommand dispatch{};
@@ -165,9 +170,11 @@ public:
         dispatch.buffers.push_back(source_native_view(
             addresses_,address,total,alignment_,0u,
             compute::BufferAccess::ReadWrite,params[28],max_view_));
-        for(std::size_t i=0;i<count;++i)
+        for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
+        params[29]=narrow(
+            static_cast<std::size_t>(params[28])+offsets[11]);
         dispatch.push_constants.resize(sizeof(params));
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));

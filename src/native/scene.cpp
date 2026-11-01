@@ -6497,6 +6497,11 @@ void Scene::prepare_constraints(float seconds) {
     solver_contact_points_.clear();
     solver_contact_order_.clear();
     distance_rows_.clear();
+    const bool gpu_normal_prep=
+        gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
+    gpu_dy_contact_prep_pairs_.clear();
+    if(gpu_normal_prep)
+        gpu_dy_contact_prep_indices_.assign(manifolds_.size(),0xffffffffu);
     solver_kinematic_participant_=false;
     distance_rows_.reserve(indexed_distance_constraints_.size());
     for(EdgeIndex edge_id:indexed_distance_constraints_) {
@@ -6940,6 +6945,43 @@ void Scene::prepare_constraints(float seconds) {
             header_normals[j]=
                 manifold.points[contact_patch_scratch_[head].start].normal;
         }
+        if(gpu_normal_prep) {
+            if(gpu_dy_contact_prep_pairs_.size()>=
+                std::numeric_limits<std::uint32_t>::max())
+                throw std::overflow_error("Source GPU contact preparation limit");
+            const auto pack_body=[](native::GpuDyContactPrepBody& out,
+                                    const SolverBodyData& body) {
+                const auto pack=[](float(&to)[3],Vec3 v) {
+                    to[0]=v.x;to[1]=v.y;to[2]=v.z;
+                };
+                pack(out.position,body.position);
+                pack(out.linear_velocity,body.linear_velocity);
+                pack(out.angular_velocity,body.angular_velocity);
+                for(std::size_t i=0;i<3u;++i) {
+                    const Vec3 c=body.sqrt_inverse_inertia[i];
+                    out.sqrt_inverse_inertia[i*3u+0u]=c.x;
+                    out.sqrt_inverse_inertia[i*3u+1u]=c.y;
+                    out.sqrt_inverse_inertia[i*3u+2u]=c.z;
+                }
+                out.inverse_mass=body.inverse_mass;
+            };
+            native::GpuDyContactPrepPair prep{};
+            pack_body(prep.body0,a);
+            pack_body(prep.body1,b);
+            prep.rest_distance=rest_distance;
+            prep.pair_slop=pair_slop;
+            prep.restitution=restitution;
+            prep.damping=damping;
+            prep.max_penetration_bias=max_penetration_bias;
+            prep.inv_dt=inv_dt;
+            prep.seconds=seconds;
+            prep.rigid_contact_bias=rigid_contact_bias;
+            prep.bounce_threshold=bounce_threshold;
+            prep.acceleration_spring=acceleration_spring?1u:0u;
+            gpu_dy_contact_prep_indices_[manager_index]=
+                static_cast<std::uint32_t>(gpu_dy_contact_prep_pairs_.size());
+            gpu_dy_contact_prep_pairs_.push_back(prep);
+        }
         // Preserve source reverse correlation-list visitation in the
         // actual PGS solver while keeping Gu-indexed rows/force writeback.
         for(std::size_t j=0;j<kept;++j)
@@ -6958,6 +7000,16 @@ void Scene::prepare_constraints(float seconds) {
             const std::size_t patch_id=contact_patch_ids[j];
             const Vec3 normal=header_normals[
                 patch_id-manifold.friction_patch_offset];
+            if(gpu_normal_prep) {
+                // Source correlation fixes the header normal and Gu
+                // index; the GPU prepares the independent numeric row.
+                SolverContactPoint row{};
+                row.normal=normal;
+                row.friction_patch=patch_id;
+                row.max_impulse=pair_max_impulse;
+                solver_contact_points_.push_back(row);
+                continue;
+            }
             Vec3 ra_x_n = cross(sub(contact.position,a.position),normal);
             Vec3 rb_x_n = cross(sub(contact.position,b.position),normal);
             const float linear_vrel =
@@ -7272,6 +7324,20 @@ void Scene::solve_gpu_distance_constraints() {
         out.applied_force=from.applied_force;
         out.max_impulse=from.max_impulse;
     }
+    // Populate raw Gu positions and signed separations in the fields
+    // that the GPU preparation phase overwrites with angular Jacobians.
+    for(const auto manager_index:indexed_managers_) {
+        const auto& m=manifolds_[manager_index];
+        if(!m.friction_patch_count)continue;
+        if(m.solver_offset>gpu_dy_contacts_.size() ||
+           m.count>gpu_dy_contacts_.size()-m.solver_offset)
+            throw std::logic_error("Source GPU contact preparation range invalid");
+        for(std::size_t j=0;j<m.count;++j) {
+            auto& row=gpu_dy_contacts_[m.solver_offset+j];
+            pack(row.angular_a,m.points[j].position);
+            row.angular_b[0]=m.points[j].separation;
+        }
+    }
     gpu_dy_friction_.resize(solver_friction_rows_.size());
     for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
         const auto& from=solver_friction_rows_[i];
@@ -7300,9 +7366,13 @@ void Scene::solve_gpu_distance_constraints() {
         if(m.solver_offset>solver_contact_order_.size() ||
            m.count>solver_contact_order_.size()-m.solver_offset)
             throw std::logic_error("GPU Dy contact row window invalid");
+        if(manager_index>=gpu_dy_contact_prep_indices_.size() ||
+           gpu_dy_contact_prep_indices_[manager_index]==0xffffffffu)
+            throw std::logic_error("Source GPU contact pair was not prepared");
         gpu_dy_manifolds_[manager_index]={
             narrow(m.friction_patch_offset),m.friction_patch_count,
-            narrow(m.solver_offset),m.count};
+            narrow(m.solver_offset),m.count,
+            gpu_dy_contact_prep_indices_[manager_index]};
         std::size_t cursor=m.solver_offset;
         for(std::size_t i=m.friction_patch_offset;
             i<m.friction_patch_offset+m.friction_patch_count;++i) {
@@ -7330,7 +7400,8 @@ void Scene::solve_gpu_distance_constraints() {
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
         gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
         gpu_dy_contacts_,gpu_dy_friction_,gpu_dy_patches_,
-        gpu_dy_manifolds_,gpu_dy_contact_order_);
+        gpu_dy_manifolds_,gpu_dy_contact_order_,
+        gpu_dy_contact_prep_pairs_);
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
     };
