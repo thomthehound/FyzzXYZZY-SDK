@@ -65,6 +65,22 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     };
     check(true);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
+    // The original GPU producer now downloads the 96-byte shader stream
+    // directly into Sc's result layout. Inspect the live producer result
+    // without an intermediate host-side contact conversion.
+    const std::array<native::GpuPcmBoxPair,1> request{{
+        {gpu_a,gpu_b,edge,false}
+    }};
+    std::array<native::GpuPcmBoxResult,1> direct{};
+    producer->generate_gpu_pcm_box_contacts(request,direct);
+    require(direct[0].edge==edge && direct[0].status==0u &&
+            direct[0].cached_count<=4u &&
+            direct[0].count<=direct[0].cached_count &&
+            (direct[0].selected_and_regenerated&0x7fffffffu)<=4u &&
+            direct[0].count>0u &&
+            std::isfinite(direct[0].normal.x) &&
+            std::isfinite(direct[0].points[0].separation),
+            "Direct Sc GPU PCM readback disagrees with the shader record");
     // Force the original AABB volume domain to grow while the first
     // contact manager retains GPU-local cached shape geometry.
     for(std::uint32_t i=0u;i<36u;++i) {
