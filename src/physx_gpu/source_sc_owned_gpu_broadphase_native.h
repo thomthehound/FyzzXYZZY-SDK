@@ -191,11 +191,13 @@ public:
         std::span<native::GpuDyFrictionRow> friction,
         std::span<native::GpuDyContactPatch> patches,
         std::span<const native::GpuDyContactManifold> manifolds,
-        std::span<const std::uint32_t> contact_order) override {
+        std::span<const std::uint32_t> contact_order,
+        std::span<const native::GpuDyContactPrepPair> contact_prep) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
-                            contacts,friction,patches,manifolds,contact_order);
+                            contacts,friction,patches,manifolds,contact_order,
+                            contact_prep);
         ++dy_distance_dispatch_count_;
     }
     std::uint64_t dy_distance_dispatch_count() const noexcept {
