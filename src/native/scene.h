@@ -119,8 +119,9 @@ struct GpuDyDistanceBody {
     float angular_state[3]{};
     float motion_linear_delta[3]{};
     float motion_angular_state[3]{};
+    float inverse_mass=0.0f;
 };
-static_assert(sizeof(GpuDyDistanceBody)==48u);
+static_assert(sizeof(GpuDyDistanceBody)==52u);
 struct GpuDyDistanceRow {
     float axis[3]{},angular_a[3]{},angular_b[3]{};
     float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
@@ -142,6 +143,37 @@ struct GpuDyDistanceTask {
     std::uint32_t error=0u;
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
+
+// DyContactPrep source normal and friction rows preserve their wide
+// impulse accumulators and separate Gu-indexed contact-force writeback.
+struct GpuDyContactPoint {
+    float normal[3]{},angular_a[3]{},angular_b[3]{};
+    std::uint32_t reserved=0u;
+    double velocity_multiplier=0.0,impulse_multiplier=1.0;
+    double biased_error=0.0,unbiased_error=0.0;
+    double applied_force=0.0,max_impulse=0.0;
+};
+static_assert(sizeof(GpuDyContactPoint)==88u &&
+              offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
+              offsetof(GpuDyContactPoint,applied_force)==72u);
+struct GpuDyFrictionRow {
+    float tangent[3]{},angular_a[3]{},angular_b[3]{};
+    std::uint32_t reserved=0u;
+    double velocity_multiplier=0.0,bias=0.0;
+    double target_velocity=0.0,applied_force=0.0;
+};
+static_assert(sizeof(GpuDyFrictionRow)==72u);
+struct GpuDyContactPatch {
+    std::uint32_t row_offset=0,contact_count=0,anchor_count=0,broken=0;
+    float static_friction=0.0f,dynamic_friction=0.0f;
+    std::uint32_t order_offset=0,reserved=0;
+};
+static_assert(sizeof(GpuDyContactPatch)==32u);
+struct GpuDyContactManifold {
+    std::uint32_t patch_offset=0,patch_count=0;
+    std::uint32_t order_offset=0,contact_count=0;
+};
+static_assert(sizeof(GpuDyContactManifold)==16u);
 
 class GpuBroadphaseProducer {
 public:
@@ -167,8 +199,13 @@ public:
         std::span<const GpuDyDistanceDescriptor>,
         std::span<const std::uint32_t>,
         std::span<const std::uint32_t>,
-        std::span<GpuDyDistanceTask>) {
-        throw std::logic_error("Source GPU Dy 1D shader is not installed");
+        std::span<GpuDyDistanceTask>,
+        std::span<GpuDyContactPoint>,
+        std::span<GpuDyFrictionRow>,
+        std::span<GpuDyContactPatch>,
+        std::span<const GpuDyContactManifold>,
+        std::span<const std::uint32_t>) {
+        throw std::logic_error("Source GPU Dy shader is not installed");
     }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
@@ -1667,6 +1704,11 @@ private:
     std::vector<std::uint32_t> gpu_dy_partition_ends_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
+    std::vector<GpuDyContactPoint> gpu_dy_contacts_;
+    std::vector<GpuDyFrictionRow> gpu_dy_friction_;
+    std::vector<GpuDyContactPatch> gpu_dy_patches_;
+    std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
+    std::vector<std::uint32_t> gpu_dy_contact_order_;
     // retired slots never participate in the SAP workload again. Keep
     // registration in insertion order; retirement erases only its live
     // proxy. This is derived from the authoritative Actor::alive state.
