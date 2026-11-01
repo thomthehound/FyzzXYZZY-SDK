@@ -4,7 +4,9 @@
 #include "fyzzxyzzy/native_gpu_world.h"
 #include "native/scene.h"
 #include "physx_gpu/source_sc_owned_gpu_broadphase_native.h"
+#include "gpu_integration_metrics.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -327,6 +329,9 @@ void verify_gpu_coupled_solver(
     gpu.set_velocity(b[0],{0.25f,-0.1f,0.0f});
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
+    double max_normal_error=0.0,max_friction_error=0.0;
+    float max_position_error=0.f,max_velocity_error=0.f;
+    std::size_t uploaded_bytes=0,downloaded_bytes=0;
     for(std::uint32_t frame=0;frame<12u;++frame) {
         if(frame==4u || frame==8u) {
             capped_dynamics.max_contact_impulse=frame==4u
@@ -336,6 +341,9 @@ void verify_gpu_coupled_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
+        uploaded_bytes+=uploaded;
+        downloaded_bytes+=downloaded;
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "Source coupled Sc scene never dispatched the GPU Dy solver");
         require(cpu.contacts().size()==gpu.contacts().size() &&
@@ -362,6 +370,7 @@ void verify_gpu_coupled_solver(
             const auto force=cpu.solved_normal_impulses()[i];
             const auto actual=gpu.solved_normal_impulses()[i];
             saw_force |= force>0.0;
+            max_normal_error=std::max(max_normal_error,std::fabs(force-actual));
             require(std::fabs(force-actual)<0.06,
                 "Source GPU Dy normal impulse differs from CPU PGS");
         }
@@ -372,26 +381,41 @@ void verify_gpu_coupled_solver(
                     ref.broken==actual.broken,
                 "Source Dy GPU friction patch lost anchor or break state");
             saw_friction |= ref.anchor_count>0;
-            for(std::size_t k=0;k<ref.anchor_count;++k)
-                require(std::fabs(ref.anchor_impulses[k].x-
-                                  actual.anchor_impulses[k].x)<0.06 &&
-                        std::fabs(ref.anchor_impulses[k].y-
-                                  actual.anchor_impulses[k].y)<0.06,
+            for(std::size_t k=0;k<ref.anchor_count;++k) {
+                const double dx=std::fabs(ref.anchor_impulses[k].x-
+                                           actual.anchor_impulses[k].x);
+                const double dy=std::fabs(ref.anchor_impulses[k].y-
+                                           actual.anchor_impulses[k].y);
+                max_friction_error=std::max({max_friction_error,dx,dy});
+                require(dx<0.06 && dy<0.06,
                     "Source Dy GPU friction impulses differ from CPU PGS");
+            }
         }
         for(std::size_t i=0;i<a.size();++i) {
             const auto expected=cpu.body_state(a[i]);
             const auto actual=gpu.body_state(b[i]);
-            require(std::fabs(expected.position.x-actual.position.x)<0.03f &&
-                    std::fabs(expected.position.y-actual.position.y)<0.03f &&
-                    std::fabs(expected.velocity.x-actual.velocity.x)<0.03f &&
-                    std::fabs(expected.velocity.y-actual.velocity.y)<0.03f,
+            const float position_error=std::max(
+                std::fabs(expected.position.x-actual.position.x),
+                std::fabs(expected.position.y-actual.position.y));
+            const float velocity_error=std::max(
+                std::fabs(expected.velocity.x-actual.velocity.x),
+                std::fabs(expected.velocity.y-actual.velocity.y));
+            max_position_error=std::max(max_position_error,position_error);
+            max_velocity_error=std::max(max_velocity_error,velocity_error);
+            require(position_error<0.03f && velocity_error<0.03f,
                 "Coupled GPU Gu PCM/1D/contact/friction diverged from CPU Dy");
         }
     }
     require(saw_contact && saw_force && saw_friction,
         "Source coupled GPU test never exercised contact/friction response");
-
+    std::cout<<"FYZZXYZZY_METRIC suite=dy_pgs frames=12 gpu_dispatches="
+             <<producer->dy_distance_dispatch_count()
+             <<" max_normal_abs_error="<<max_normal_error
+             <<" max_friction_abs_error="<<max_friction_error
+             <<" max_position_abs_error="<<max_position_error
+             <<" max_velocity_abs_error="<<max_velocity_error
+             <<" host_upload_bytes="<<uploaded_bytes
+             <<" host_download_bytes="<<downloaded_bytes<<'\n';
 }
 
 // The explicitly installed device Dy 1D stage must replace the
@@ -516,15 +540,20 @@ int main(int argc,char** argv) {
         constexpr auto backend=fyzz::compute::Backend::Vulkan;
 #endif
         if(scenario=="all" || scenario=="scene")
-            verify(backend,argv[1],argv[2]);
+            fyzz::tests::measure_gpu_case("sc_pcm","scene",
+                [&]{verify(backend,argv[1],argv[2]);});
         if(scenario=="all" || scenario=="sparse_contacts")
-            verify_sparse_contact_stream(backend,argv[1],argv[2]);
+            fyzz::tests::measure_gpu_case("sc_pcm","sparse_contacts",
+                [&]{verify_sparse_contact_stream(backend,argv[1],argv[2]);});
         if(scenario=="all" || scenario=="coupled_stack")
-            verify_coupled_rigid_stack(backend,argv[1],argv[2]);
+            fyzz::tests::measure_gpu_case("sc_pcm","coupled_stack",
+                [&]{verify_coupled_rigid_stack(backend,argv[1],argv[2]);});
         if(scenario=="all" || scenario=="coupled_solver")
-            verify_gpu_coupled_solver(backend,argv[1],argv[2],argv[3]);
+            fyzz::tests::measure_gpu_case("sc_pcm","coupled_solver",
+                [&]{verify_gpu_coupled_solver(backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="distance_solver")
-            verify_gpu_distance_solver(backend,argv[1],argv[3]);
+            fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
+                [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});
         std::cout<<"Native Sc GPU PCM scene "<<scenario<<" PASS\n";
         return 0;
     }catch(const std::exception& error) {
