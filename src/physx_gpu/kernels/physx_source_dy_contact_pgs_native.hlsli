@@ -4,27 +4,27 @@
 // Source DySolverConstraintsShared.h contact and friction PGS, executing
 // correlated Gu contact runs in source DyConstraintPartition order.
 double contactDouble(uint addr) {
-    uint2 v=contactPoints.Load2(addr);
+    uint2 v=arena.Load2(addr);
     return asdouble(v.x,v.y);
 }
 void storeContactDouble(uint addr,double value,uint pointIndex,bool finalPass) {
     uint lo,hi;asuint(value,lo,hi);
     uint2 packed=uint2(lo,hi);
-    contactPoints.Store2(addr,packed);
+    arena.Store2(addr,packed);
     if(finalPass)
-        writeback.Store2(p.writebackBias+p.resultContactOffset+
+        arena.Store2(p.writebackBias+p.resultContactOffset+
             pointIndex*8u,packed);
 }
 double frictionDouble(uint addr) {
-    uint2 v=frictionRows.Load2(addr);
+    uint2 v=arena.Load2(addr);
     return asdouble(v.x,v.y);
 }
 void storeFrictionDouble(uint addr,double value,uint rowIndex,bool finalPass) {
     uint lo,hi;asuint(value,lo,hi);
     uint2 packed=uint2(lo,hi);
-    frictionRows.Store2(addr,packed);
+    arena.Store2(addr,packed);
     if(finalPass)
-        writeback.Store2(p.writebackBias+p.resultFrictionOffset+
+        arena.Store2(p.writebackBias+p.resultFrictionOffset+
             rowIndex*8u,packed);
 }
 bool contactImpulse(uint a,uint b,uint ao,uint bo,
@@ -47,18 +47,18 @@ bool contactImpulse(uint a,uint b,uint ao,uint bo,
                      (float)((double)ab.z-delta*(double)jb.z));
     if(!all(isfinite(v0)) || !all(isfinite(v1)) ||
        !all(isfinite(w0)) || !all(isfinite(w1))) {
-        tasks.InterlockedOr(errorAddress,16u);
+        arena.InterlockedOr(errorAddress,16u);
         return false;
     }
     if(a!=invalidBody && ma>0.f) {
-        bodies.Store3(ao,asuint(v0));
-        bodies.Store3(ao+12u,asuint(w0));
+        arena.Store3(ao,asuint(v0));
+        arena.Store3(ao+12u,asuint(w0));
         va=v0;
         aa=w0;
     }
     if(b!=invalidBody && mb>0.f) {
-        bodies.Store3(bo,asuint(v1));
-        bodies.Store3(bo+12u,asuint(w1));
+        arena.Store3(bo,asuint(v1));
+        arena.Store3(bo+12u,asuint(w1));
         vb=v1;
         ab=w1;
     }
@@ -69,14 +69,14 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     if(descriptor.x>=p.manifoldCount ||
        (descriptor.y!=invalidBody && descriptor.y>=p.bodyCount) ||
        (descriptor.z!=invalidBody && descriptor.z>=p.bodyCount)) {
-        tasks.InterlockedOr(errorAddress,32u);
+        arena.InterlockedOr(errorAddress,32u);
         return;
     }
-    uint4 manager=contactManifolds.Load4(
+    uint4 manager=arena.Load4(
         p.manifoldBias+descriptor.x*16u);
     if(manager.x>p.patchCount || manager.y>p.patchCount-manager.x ||
        manager.z>p.orderCount || manager.w>p.orderCount-manager.z) {
-        tasks.InterlockedOr(errorAddress,64u);
+        arena.InterlockedOr(errorAddress,64u);
         return;
     }
     if(manager.y==0u)return;
@@ -89,39 +89,39 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
     // to its dynamic bodies. Reuse committed velocities through all
     // correlated normal and friction rows; static participants stay fixed.
     if(a!=invalidBody) {
-        ma=asfloat(bodies.Load(ao+48u));
-        va=asfloat(bodies.Load3(ao));
-        aa=asfloat(bodies.Load3(ao+12u));
+        ma=asfloat(arena.Load(ao+48u));
+        va=asfloat(arena.Load3(ao));
+        aa=asfloat(arena.Load3(ao+12u));
     }
     if(b!=invalidBody) {
-        mb=asfloat(bodies.Load(bo+48u));
-        vb=asfloat(bodies.Load3(bo));
-        ab=asfloat(bodies.Load3(bo+12u));
+        mb=asfloat(arena.Load(bo+48u));
+        vb=asfloat(arena.Load3(bo));
+        ab=asfloat(arena.Load3(bo+12u));
     }
     uint cursor=manager.z;
     for(uint patchIndex=manager.x;patchIndex<manager.x+manager.y;++patchIndex) {
         uint po=p.patchBias+patchIndex*32u;
-        uint4 patch=contactPatches.Load4(po);
-        uint4 settings=contactPatches.Load4(po+16u);
+        uint4 patch=arena.Load4(po);
+        uint4 settings=arena.Load4(po+16u);
         if(patch.x>p.frictionCount || patch.z>2u ||
            patch.z*2u>p.frictionCount-patch.x ||
            cursor>p.orderCount || patch.y>p.orderCount-cursor ||
            settings.z!=cursor) {
-            tasks.InterlockedOr(errorAddress,128u);
+            arena.InterlockedOr(errorAddress,128u);
             return;
         }
         double normalImpulse=0.0;
         for(uint i=0;i<patch.y;++i) {
-            uint pointIndex=contactOrder.Load(
+            uint pointIndex=arena.Load(
                 p.orderBias+(cursor++)*4u);
             if(pointIndex>=p.contactCount) {
-                tasks.InterlockedOr(errorAddress,256u);
+                arena.InterlockedOr(errorAddress,256u);
                 return;
             }
             uint co=p.contactBias+pointIndex*88u;
-            float3 n=asfloat(contactPoints.Load3(co));
-            float3 ja=asfloat(contactPoints.Load3(co+12u));
-            float3 jb=asfloat(contactPoints.Load3(co+24u));
+            float3 n=asfloat(arena.Load3(co));
+            float3 ja=asfloat(arena.Load3(co+12u));
+            float3 jb=asfloat(arena.Load3(co+24u));
             float normalVelocity=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
             double oldForce=contactDouble(co+72u);
@@ -133,7 +133,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             double nextForce=min(contactDouble(co+80u),
                 contactDouble(co+48u)*oldForce+candidate);
             if(!isfinite(nextForce)) {
-                tasks.InterlockedOr(errorAddress,1024u);
+                arena.InterlockedOr(errorAddress,1024u);
                 return;
             }
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
@@ -149,9 +149,9 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
         bool broken=false;
         for(uint k=patch.x;k<patch.x+patch.z*2u;++k) {
             uint fo=p.frictionBias+k*72u;
-            float3 n=asfloat(frictionRows.Load3(fo));
-            float3 ja=asfloat(frictionRows.Load3(fo+12u));
-            float3 jb=asfloat(frictionRows.Load3(fo+24u));
+            float3 n=asfloat(arena.Load3(fo));
+            float3 ja=asfloat(arena.Load3(fo+12u));
+            float3 jb=asfloat(arena.Load3(fo+24u));
             float tangentDelta=dot(n,va)-dot(n,vb)+
                 dot(aa,ja)-dot(ab,jb);
             double oldForce=frictionDouble(fo+64u);
@@ -164,7 +164,7 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             double nextForce=saturated
                 ? min(maxDynamic,max(-maxDynamic,candidate)):candidate;
             if(!isfinite(nextForce)) {
-                tasks.InterlockedOr(errorAddress,2048u);
+                arena.InterlockedOr(errorAddress,2048u);
                 return;
             }
             if(!contactImpulse(a,b,ao,bo,n,ja,jb,
@@ -174,11 +174,11 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             broken=broken||saturated;
         }
         if(finalPass) {
-            contactPatches.Store(po+12u,broken?1u:0u);
-            writeback.Store(p.writebackBias+p.resultPatchOffset+
+            arena.Store(po+12u,broken?1u:0u);
+            arena.Store(p.writebackBias+p.resultPatchOffset+
                 patchIndex*4u,broken?1u:0u);
         }
     }
     if(cursor!=manager.z+manager.w)
-        tasks.InterlockedOr(errorAddress,512u);
+        arena.InterlockedOr(errorAddress,512u);
 }
