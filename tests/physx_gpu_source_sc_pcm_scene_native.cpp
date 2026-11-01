@@ -358,9 +358,11 @@ void verify_gpu_coupled_solver(
         saw_contact |= !gpu.contacts().empty();
         bool found_capped=false;
         for(const auto& contact:gpu.contacts()) {
-            saw_correlated_multi_point |= contact.count>1u;
             const native::Pair capped_pair{capped_fixed_gpu,capped_gpu};
-            if(!(contact.pair==capped_pair))continue;
+            if(!(contact.pair==capped_pair)) {
+                saw_correlated_multi_point |= contact.count>1u;
+                continue;
+            }
             found_capped=true;
             if(frame<4u || frame>=8u)
                 for(std::size_t k=0;k<contact.count;++k)
