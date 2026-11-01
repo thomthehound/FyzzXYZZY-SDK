@@ -270,6 +270,99 @@ void verify_coupled_rigid_stack(
     require(coupled,
             "GPU coupled rigid stack never admitted dynamic-dynamic contacts");
 }
+// Source Gu PCM rows, friction patches, and 1D joints share the same
+// production Dy task partitions and device execution on both backends.
+void verify_gpu_coupled_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream stream(dy_shader,std::ios::binary);
+    require(bool(stream),"Source Dy shader bundle missing");
+    std::vector<char> bytes(
+        std::istreambuf_iterator<char>{stream},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(bytes.begin(),bytes.end());
+    native::Scene cpu,gpu;
+    cpu.set_enhanced_determinism(true);
+    gpu.set_enhanced_determinism(true);
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    require(producer->has_gpu_pcm_box() && producer->has_gpu_dy_distance(),
+            "Source coupled GPU PCM/Dy stages were not installed");
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.0f,0.0f,0.0f});
+    std::array<BodyId,2> a{},b{};
+    for(std::size_t i=0;i<a.size();++i) {
+        const Vec3 p{0.0f,0.83f+0.83f*float(i),0.0f};
+        a[i]=cpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+        b[i]=gpu.add_dynamic_box({0.5f,0.5f,0.5f},p,1.f);
+    }
+    cpu.create_center_distance_constraint(a[0],a[1],0.82f);
+    gpu.create_center_distance_constraint(b[0],b[1],0.82f);
+    cpu.set_velocity(a[0],{0.25f,-0.1f,0.0f});
+    gpu.set_velocity(b[0],{0.25f,-0.1f,0.0f});
+    constexpr float dt=1.f/120.f;
+    bool saw_contact=false,saw_force=false,saw_friction=false;
+    for(std::uint32_t frame=0;frame<12u;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        require(producer->dy_distance_dispatch_count()==frame+1u,
+            "Source coupled Sc scene never dispatched the GPU Dy solver");
+        require(cpu.contacts().size()==gpu.contacts().size() &&
+                cpu.solved_normal_impulses().size()==
+                    gpu.solved_normal_impulses().size() &&
+                cpu.solved_friction_patches().size()==
+                    gpu.solved_friction_patches().size(),
+            "GPU Dy contact/friction writeback has wrong source ownership");
+        saw_contact |= !gpu.contacts().empty();
+        for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
+            const auto force=cpu.solved_normal_impulses()[i];
+            const auto actual=gpu.solved_normal_impulses()[i];
+            saw_force |= force>0.0;
+            require(std::fabs(force-actual)<0.06,
+                "Source GPU Dy normal impulse differs from CPU PGS");
+        }
+        for(std::size_t i=0;i<cpu.solved_friction_patches().size();++i) {
+            const auto& ref=cpu.solved_friction_patches()[i];
+            const auto& actual=gpu.solved_friction_patches()[i];
+            require(ref.anchor_count==actual.anchor_count &&
+                    ref.broken==actual.broken,
+                "Source Dy GPU friction patch lost anchor or break state");
+            saw_friction |= ref.anchor_count>0;
+            for(std::size_t k=0;k<ref.anchor_count;++k)
+                require(std::fabs(ref.anchor_impulses[k].x-
+                                  actual.anchor_impulses[k].x)<0.06 &&
+                        std::fabs(ref.anchor_impulses[k].y-
+                                  actual.anchor_impulses[k].y)<0.06,
+                    "Source Dy GPU friction impulses differ from CPU PGS");
+        }
+        for(std::size_t i=0;i<a.size();++i) {
+            const auto expected=cpu.body_state(a[i]);
+            const auto actual=gpu.body_state(b[i]);
+            require(std::fabs(expected.position.x-actual.position.x)<0.03f &&
+                    std::fabs(expected.position.y-actual.position.y)<0.03f &&
+                    std::fabs(expected.velocity.x-actual.velocity.x)<0.03f &&
+                    std::fabs(expected.velocity.y-actual.velocity.y)<0.03f,
+                "Coupled GPU Gu PCM/1D/contact/friction diverged from CPU Dy");
+        }
+    }
+    require(saw_contact && saw_force && saw_friction,
+        "Source coupled GPU test never exercised contact/friction response");
+    require(gpu.contact_edge_index({fixed_gpu,b[0]})!=
+            std::numeric_limits<std::uint32_t>::max(),
+        "Source GPU PCM contact manager retired unexpectedly");
+}
+
 // The explicitly installed device Dy 1D stage must replace the
 // production PGS solve, not merely compute a disconnected fixture result.
 void verify_gpu_distance_solver(
@@ -401,6 +494,13 @@ int main(int argc,char** argv) {
             fyzz::compute::Backend::Vulkan,
 #endif
             argv[1],argv[2]);
+        verify_gpu_coupled_solver(
+#ifdef FYZZXYZZY_TEST_D3D12
+            fyzz::compute::Backend::D3D12,
+#else
+            fyzz::compute::Backend::Vulkan,
+#endif
+            argv[1],argv[2],argv[3]);
         verify_gpu_distance_solver(
 #ifdef FYZZXYZZY_TEST_D3D12
             fyzz::compute::Backend::D3D12,
