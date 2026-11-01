@@ -1417,6 +1417,18 @@ if(FYZZXYZZY_BUILD_VULKAN)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_SPV}")
+    set(FYZZXYZZY_SOURCE_DY_DISTANCE_SPV
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.spv")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_dy_distance_shader
+      DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -1875,11 +1887,13 @@ if(FYZZXYZZY_BUILD_VULKAN)
       FyzzXYZZY::NativeGpuWorld)
     add_dependencies(fyzzxyzzy_source_sc_gpu_pcm_scene
       fyzzxyzzy_native_gpu_sap_shaders
-      fyzzxyzzy_native_gpu_pcm_shaders)
+      fyzzxyzzy_native_gpu_pcm_shaders
+      fyzzxyzzy_source_dy_distance_shader)
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_spirv.manifest"
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest")
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_spv.manifest"
+        "${FYZZXYZZY_SOURCE_DY_DISTANCE_SPV}")
     
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
       COMMAND fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle
@@ -4702,6 +4716,18 @@ if(FYZZXYZZY_BUILD_D3D12)
       VERBATIM)
     add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
+    set(FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL
+      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.dxil")
+    add_custom_command(OUTPUT "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/kernels"
+      COMMAND "${FYZZXYZZY_DXC}" -T cs_6_6 -E main
+        -Fo "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+      DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl"
+      VERBATIM)
+    add_custom_target(fyzzxyzzy_source_dy_distance_shader_d3d12
+      DEPENDS "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
     add_executable(fyzzxyzzy_source_pcm_box_candidates_d3d12
       tests/physx_gpu_source_pcm_box_candidates_native.cpp
       src/native/GuPCMContactBoxBox.cpp
@@ -5199,11 +5225,13 @@ if(FYZZXYZZY_BUILD_D3D12)
       FyzzXYZZY::NativeGpuWorldD3D12)
     add_dependencies(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
       fyzzxyzzy_native_gpu_sap_shaders_d3d12
-      fyzzxyzzy_native_gpu_pcm_shaders_d3d12)
+      fyzzxyzzy_native_gpu_pcm_shaders_d3d12
+      fyzzxyzzy_source_dy_distance_shader_d3d12)
     add_test(NAME fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
       COMMAND fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12
         "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_sap_dxil.manifest"
-        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest")
+        "${CMAKE_CURRENT_BINARY_DIR}/kernels/fyzzxyzzy_native_pcm_dxil.manifest"
+        "${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}")
     set_tests_properties(fyzzxyzzy_source_sc_gpu_pcm_scene_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
     add_test(NAME fyzzxyzzy_owned_sap_gpu_aabb_scene_lifecycle_d3d12
