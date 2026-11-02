@@ -194,8 +194,11 @@ public:
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
         const std::size_t uploaded_bytes=offsets[6]-upload_begin;
+        const auto previous_spans=stream_.submission_stats().upload_spans;
         stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,uploaded_bytes}});
+        last_upload_spans_=stream_.submission_stats().upload_spans-
+                           previous_spans;
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -323,6 +326,9 @@ public:
     std::size_t last_cpu_gu_geometry_bytes() const noexcept {
         return last_cpu_gu_geometry_bytes_;
     }
+    std::size_t last_upload_spans() const noexcept {
+        return last_upload_spans_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -337,6 +343,7 @@ private:
     std::size_t last_reused_pcm_contact_rows_=0u;
     std::size_t last_omitted_pcm_upload_bytes_=0u;
     std::size_t last_cpu_gu_geometry_bytes_=0u;
+    std::size_t last_upload_spans_=0u;
 };
 
 } // namespace fyzz::physx_gpu
