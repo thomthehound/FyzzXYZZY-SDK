@@ -371,6 +371,7 @@ void verify_gpu_coupled_solver(
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
     bool saw_correlated_multi_point=false;
+    bool saw_device_pcm_contact_rows=false;
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
@@ -388,6 +389,8 @@ void verify_gpu_coupled_solver(
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
+        saw_device_pcm_contact_rows |=
+            producer->dy_pcm_device_contact_rows()>0u;
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "Source coupled Sc scene never dispatched the GPU Dy solver");
         require(cpu.contacts().size()==gpu.contacts().size() &&
@@ -470,6 +473,8 @@ void verify_gpu_coupled_solver(
                 "Coupled GPU Gu PCM/1D/contact/friction diverged from CPU Dy");
         }
     }
+    require(saw_device_pcm_contact_rows,
+        "Source Dy did not read producer-resident PCM contacts");
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
