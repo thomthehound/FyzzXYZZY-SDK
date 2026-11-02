@@ -32,8 +32,15 @@ public:
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
         desc.storage_buffer_binding_count=8u;
-        desc.storage_buffer_views.assign(
-            8u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.storage_buffer_views={
+            compute::StorageBufferViewKind::RawRead,
+            compute::StorageBufferViewKind::RawRead,
+            compute::StorageBufferViewKind::RawRead,
+            compute::StorageBufferViewKind::RawReadWrite,
+            compute::StorageBufferViewKind::RawReadWrite,
+            compute::StorageBufferViewKind::RawReadWrite,
+            compute::StorageBufferViewKind::RawRead,
+            compute::StorageBufferViewKind::RawReadWrite};
         desc.push_constant_bytes=48u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
