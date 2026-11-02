@@ -101,7 +101,7 @@ public:
         constexpr std::array<std::size_t,6> output_inputs{
             0u,1u,5u,6u,7u,8u};
         constexpr std::array<std::size_t,6> output_strides{
-            48u,8u,4u,8u,8u,4u};
+            48u,8u,4u,8u,20u,4u};
         constexpr std::array<std::size_t,6> input_strides{
             52u,80u,36u,88u,72u,32u};
         constexpr std::array<std::size_t,6> field_offsets{
@@ -146,11 +146,20 @@ public:
         for(std::size_t i=0;i<output_inputs.size();++i) {
             const auto index=output_inputs[i];
             const auto* source=static_cast<const std::uint8_t*>(sources[index]);
-            for(std::size_t j=0;j<elements[index];++j)
-                std::memcpy(host_.data()+result_offsets[i]+
-                            j*output_strides[i],
-                            source+j*input_strides[i]+field_offsets[i],
-                            output_strides[i]);
+            for(std::size_t j=0;j<elements[index];++j) {
+                auto* output=host_.data()+result_offsets[i]+
+                    j*output_strides[i];
+                const auto* input=source+j*input_strides[i];
+                if(index==7u) {
+                    // Gu friction writeback needs both source tangent
+                    // directions and their final accumulated impulses.
+                    std::memcpy(output,input,12u);
+                    std::memcpy(output+12u,input+64u,8u);
+                } else {
+                    std::memcpy(output,input+field_offsets[i],
+                                output_strides[i]);
+                }
+            }
         }
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
@@ -204,9 +213,11 @@ public:
         for(std::size_t i=0;i<contacts.size();++i)
             std::memcpy(&contacts[i].applied_force,
                 host_.data()+result_offsets[3]+i*8u,8u);
-        for(std::size_t i=0;i<friction.size();++i)
-            std::memcpy(&friction[i].applied_force,
-                host_.data()+result_offsets[4]+i*8u,8u);
+        for(std::size_t i=0;i<friction.size();++i) {
+            const auto* result=host_.data()+result_offsets[4]+i*20u;
+            std::memcpy(&friction[i].tangent,result,12u);
+            std::memcpy(&friction[i].applied_force,result+12u,8u);
+        }
         for(std::size_t i=0;i<patches.size();++i)
             std::memcpy(&patches[i].broken,
                 host_.data()+result_offsets[5]+i*4u,4u);

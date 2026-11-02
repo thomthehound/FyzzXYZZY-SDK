@@ -23,9 +23,14 @@ void storeFrictionDouble(uint addr,double value,uint rowIndex,bool finalPass) {
     uint lo,hi;asuint(value,lo,hi);
     uint2 packed=uint2(lo,hi);
     arena.Store2(addr,packed);
-    if(finalPass)
-        arena.Store2(p.writebackBias+p.resultFrictionOffset+
-            rowIndex*8u,packed);
+    if(finalPass) {
+        uint target=p.writebackBias+p.resultFrictionOffset+rowIndex*20u;
+        // The source Sc friction anchor writeback combines this tangent
+        // with the accumulated impulse. Both are GPU-prepared now.
+        arena.Store3(target,
+            arena.Load3(p.frictionBias+rowIndex*72u));
+        arena.Store2(target+12u,packed);
+    }
 }
 bool contactImpulse(uint a,uint b,uint ao,uint bo,
                     float3 n,float3 ja,float3 jb,

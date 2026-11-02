@@ -7443,8 +7443,10 @@ void Scene::solve_gpu_distance_constraints() {
         distance_rows_[i].applied_force=gpu_dy_rows_[i].applied_force;
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
         solver_contact_points_[i].applied_force=gpu_dy_contacts_[i].applied_force;
-    for(std::size_t i=0;i<solver_friction_rows_.size();++i)
+    for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
+        solver_friction_rows_[i].tangent=unpack(gpu_dy_friction_[i].tangent);
         solver_friction_rows_[i].applied_force=gpu_dy_friction_[i].applied_force;
+    }
     for(std::size_t i=0;i<friction_patches_.size();++i)
         friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
 }
