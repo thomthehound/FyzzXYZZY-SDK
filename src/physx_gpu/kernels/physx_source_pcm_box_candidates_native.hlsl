@@ -411,7 +411,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint source=p.pairBias+i*20u;
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
-    uint first=pairs.Load(source+12u),limit=pairs.Load(source+16u);
+    uint first=pairs.Load(source+12u);
+    uint flags=pairs.Load(source+16u);
+    uint limit=flags&0x7fffffffu;
     uint result=p.resultBias+i*32u;
     uint count=0u,overlap=0u,status=0u,regenerated=0u;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || a==b ||
@@ -429,6 +431,14 @@ void main(uint3 thread : SV_DispatchThreadID) {
         float distance=asfloat(geometry.Load(ga+12u))+
                        asfloat(geometry.Load(gb+12u));
         uint edgeBase=p.edgeCacheBias+edge*240u;
+        if((flags&0x80000000u)!=0u) {
+            // Each Sc EdgeIndex occurs once per source manager batch.
+            // Reset the original 240-byte Gu cache in its owning lane,
+            // before refreshEdge reads any of its historical witnesses.
+            [unroll]
+            for(uint word=0u;word<15u;++word)
+                edgeCaches.Store4(edgeBase+word*16u,uint4(0u,0u,0u,0u));
+        }
         float4 qa=asfloat(transforms.Load4(ta));
         float4 qb=asfloat(transforms.Load4(tb));
         if(edgeCaches.Load(edgeBase+12u)>4u ||

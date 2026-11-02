@@ -86,6 +86,22 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::isfinite(direct[0].normal.x) &&
             std::isfinite(direct[0].points[0].separation),
             "Direct Sc GPU PCM readback disagrees with the shader record");
+    // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
+    // rejected source frame uses the identical candidate-owned reset.
+    const std::array<native::GpuPcmBoxPair,1> reset_request{{
+        {gpu_a,gpu_b,edge,true}
+    }};
+    std::array<native::GpuPcmBoxResult,1> reset{};
+    producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    require(reset[0].edge==edge && reset[0].status==0u &&
+            reset[0].count>0u &&
+            (reset[0].selected_and_regenerated&0x80000000u)!=0u,
+            "Source GPU PCM failed to regenerate a reset EdgeIndex");
+    for(std::uint32_t i=0u;i<reset[0].count;++i)
+        require(std::isfinite(reset[0].points[i].separation) &&
+                std::fabs(reset[0].points[i].separation-
+                          direct[0].points[i].separation)<0.002f,
+                "Source GPU PCM reset altered the Gu witness");
     // Force the original AABB volume domain to grow while the first
     // contact manager retains GPU-local cached shape geometry.
     for(std::uint32_t i=0u;i<36u;++i) {
