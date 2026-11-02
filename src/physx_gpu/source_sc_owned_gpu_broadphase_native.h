@@ -186,6 +186,7 @@ public:
         std::span<const std::uint32_t> ordinals,
         std::span<native::GpuDyDistanceTask> tasks,
         std::span<native::GpuDyContactPoint> contacts,
+        std::span<const native::GpuDyGuContactInput> cpu_gu,
         std::span<native::GpuDyFrictionRow> friction,
         std::span<native::GpuDyContactPatch> patches,
         std::span<const native::GpuDyContactManifold> manifolds,
@@ -194,7 +195,7 @@ public:
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
-                            contacts,friction,patches,manifolds,contact_order,
+                            contacts,cpu_gu,friction,patches,manifolds,contact_order,
                             contact_prep,
                             pcm_?pcm_->contact_stream_address():0u,
                             pcm_?pcm_->contact_stream_pair_count():0u);
@@ -208,6 +209,12 @@ public:
     }
     std::size_t dy_pcm_contact_upload_bytes_saved() const noexcept {
         return dy_distance_ ? dy_distance_->last_omitted_pcm_upload_bytes() : 0u;
+    }
+    std::size_t dy_cpu_gu_geometry_bytes() const noexcept {
+        return dy_distance_ ? dy_distance_->last_cpu_gu_geometry_bytes() : 0u;
+    }
+    std::size_t dy_upload_span_count() const noexcept {
+        return dy_distance_ ? dy_distance_->last_upload_spans() : 0u;
     }
     std::pair<std::size_t,std::size_t>
     dy_distance_transfer_bytes() const noexcept {
