@@ -485,7 +485,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
             publishPair(result,count,overlap,status,edge,first,
                         min(count,4u),selection,0u);
-            if(status!=3u)publishScContacts(i,a,b,edge,result,p.outputBias,
+            publishScContacts(i,a,b,edge,result,p.outputBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
             return;
@@ -677,7 +677,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     publishPair(result,count,overlap,status,edge,first,selectedCount,
                 packed,regenerated);
-    if(status!=3u)publishScContacts(i,a,b,edge,result,p.outputBias,
+    publishScContacts(i,a,b,edge,result,p.outputBias,
                 p.transformBias,p.geometryBias,p.edgeCacheBias,
                 p.shapeCapacity,p.edgeCapacity);
 }
