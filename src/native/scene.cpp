@@ -7365,17 +7365,18 @@ void Scene::solve_gpu_distance_constraints() {
             gpu_dy_gu_inputs_.push_back(input);
         }
     }
-    gpu_dy_friction_.resize(solver_friction_rows_.size());
-    for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
-        const auto& from=solver_friction_rows_[i];
-        auto& out=gpu_dy_friction_[i];
-        pack(out.tangent,from.tangent);
-        pack(out.angular_a,from.ra_x_t_sqrt_inertia);
-        pack(out.angular_b,from.rb_x_t_sqrt_inertia);
-        out.velocity_multiplier=from.velocity_multiplier;
-        out.bias=from.bias;
-        out.target_velocity=from.target_velocity;
-        out.applied_force=from.applied_force;
+    // One source friction anchor generates the two correlated tangents.
+    // The device constructs the full 72-byte rows and returns only the
+    // solved tangent and impulse in the original Gu source order.
+    if(solver_friction_rows_.size()%2u)
+        throw std::logic_error("Source friction anchor has incomplete tangents");
+    gpu_dy_friction_writeback_.resize(solver_friction_rows_.size());
+    gpu_dy_friction_anchors_.resize(solver_friction_rows_.size()/2u);
+    for(std::size_t i=0;i<gpu_dy_friction_anchors_.size();++i) {
+        const auto& from=solver_friction_rows_[2u*i];
+        auto& anchor=gpu_dy_friction_anchors_[i];
+        pack(anchor.local_a,from.ra_x_t_sqrt_inertia);
+        pack(anchor.local_b,from.rb_x_t_sqrt_inertia);
     }
     gpu_dy_patches_.resize(friction_patches_.size());
     gpu_dy_manifolds_.assign(manifolds_.size(),{});
@@ -7426,7 +7427,8 @@ void Scene::solve_gpu_distance_constraints() {
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
         gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
-        gpu_dy_contact_forces_,gpu_dy_gu_inputs_,gpu_dy_friction_,
+        gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
+        gpu_dy_friction_writeback_,gpu_dy_friction_anchors_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_);
     const auto unpack=[](const float(&v)[3]) {
@@ -7445,8 +7447,10 @@ void Scene::solve_gpu_distance_constraints() {
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
         solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
     for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
-        solver_friction_rows_[i].tangent=unpack(gpu_dy_friction_[i].tangent);
-        solver_friction_rows_[i].applied_force=gpu_dy_friction_[i].applied_force;
+        solver_friction_rows_[i].tangent=
+            unpack(gpu_dy_friction_writeback_[i].tangent);
+        solver_friction_rows_[i].applied_force=
+            gpu_dy_friction_writeback_[i].applied_force;
     }
     for(std::size_t i=0;i<friction_patches_.size();++i)
         friction_patches_[i].broken=gpu_dy_patches_[i].broken!=0u;
