@@ -6992,6 +6992,22 @@ void Scene::prepare_constraints(float seconds) {
             prep.rigid_contact_bias=rigid_contact_bias;
             prep.bounce_threshold=bounce_threshold;
             prep.acceleration_spring=acceleration_spring?1u:0u;
+            // The PCM source requests preserve the canonical pair order.
+            // Reuse the live producer's Gu geometry from its device arena.
+            const auto source_pair=std::lower_bound(
+                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),manifold.pair,
+                [](const GpuPcmBoxPair& source,Pair key) {
+                    return Pair{std::min(source.first,source.second),
+                                std::max(source.first,source.second)}<key;
+                });
+            if(source_pair!=gpu_pcm_pairs_.end() &&
+               Pair{std::min(source_pair->first,source_pair->second),
+                    std::max(source_pair->first,source_pair->second)}
+                   ==manifold.pair) {
+                prep.pcm_pair_index=static_cast<std::uint32_t>(
+                    source_pair-gpu_pcm_pairs_.begin());
+                prep.pcm_edge=edge;
+            }
             gpu_dy_contact_prep_indices_[manager_index]=
                 static_cast<std::uint32_t>(gpu_dy_contact_prep_pairs_.size());
             gpu_dy_contact_prep_pairs_.push_back(prep);
@@ -7358,10 +7374,18 @@ void Scene::solve_gpu_distance_constraints() {
         if(m.solver_offset>gpu_dy_contacts_.size() ||
            m.count>gpu_dy_contacts_.size()-m.solver_offset)
             throw std::logic_error("Source GPU contact preparation range invalid");
-        for(std::size_t j=0;j<m.count;++j) {
-            auto& row=gpu_dy_contacts_[m.solver_offset+j];
-            pack(row.angular_a,m.points[j].position);
-            row.angular_b[0]=m.points[j].separation;
+        const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
+        if(prep_index>=gpu_dy_contact_prep_pairs_.size())
+            throw std::logic_error("Source GPU Dy contact pair index invalid");
+        // Sc already publishes these Gu contacts for islands and user
+        // results. Dy retrieves PCM geometry from that same device stream.
+        if(gpu_dy_contact_prep_pairs_[prep_index].pcm_pair_index==
+           0xffffffffu) {
+            for(std::size_t j=0;j<m.count;++j) {
+                auto& row=gpu_dy_contacts_[m.solver_offset+j];
+                pack(row.angular_a,m.points[j].position);
+                row.angular_b[0]=m.points[j].separation;
+            }
         }
     }
     gpu_dy_friction_.resize(solver_friction_rows_.size());
