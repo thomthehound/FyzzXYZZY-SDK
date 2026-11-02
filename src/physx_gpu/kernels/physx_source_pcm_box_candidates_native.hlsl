@@ -7,35 +7,35 @@
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
-RWByteAddressBuffer transforms : register(u0,space0);
+ByteAddressBuffer transforms : register(t0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
-RWByteAddressBuffer geometry : register(u1,space0);
+ByteAddressBuffer geometry : register(t1,space0);
 #ifdef __spirv__
 [[vk::binding(2,0)]]
 #endif
-RWByteAddressBuffer pairs : register(u2,space0);
+ByteAddressBuffer pairs : register(t2,space0);
 #ifdef __spirv__
 [[vk::binding(3,0)]]
 #endif
-RWByteAddressBuffer results : register(u3,space0);
+RWByteAddressBuffer results : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(4,0)]]
 #endif
-RWByteAddressBuffer candidates : register(u4,space0);
+RWByteAddressBuffer candidates : register(u1,space0);
 #ifdef __spirv__
 [[vk::binding(5,0)]]
 #endif
-RWByteAddressBuffer edgeCaches : register(u5,space0);
+RWByteAddressBuffer edgeCaches : register(u2,space0);
 #ifdef __spirv__
 [[vk::binding(6,0)]]
 #endif
-RWByteAddressBuffer dispatchArgs : register(u6,space0);
+RWByteAddressBuffer dispatchArgs : register(u3,space0);
 #ifdef __spirv__
 [[vk::binding(7,0)]]
 #endif
-RWByteAddressBuffer streamContacts : register(u7,space0);
+RWByteAddressBuffer streamContacts : register(u4,space0);
 
 struct Parameters {
     uint pairCount;
