@@ -345,8 +345,13 @@ void verify_gpu_coupled_solver(
     capped_dynamics.max_contact_impulse=0.f;
     cpu.set_dynamics(capped_cpu,capped_dynamics);
     gpu.set_dynamics(capped_gpu,capped_dynamics);
-    cpu.set_velocity(a[0],{0.25f,-0.1f,0.0f});
-    gpu.set_velocity(b[0],{0.25f,-0.1f,0.0f});
+    // A vertical-only approach uses the source fallback tangent axis;
+    // the other material modes exercise velocity-aligned tangents.
+    const Vec3 initial_velocity=spring_mode==1u
+        ? Vec3{0.0f,-0.1f,0.0f}
+        : Vec3{0.25f,-0.1f,0.12f};
+    cpu.set_velocity(a[0],initial_velocity);
+    gpu.set_velocity(b[0],initial_velocity);
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
     bool saw_correlated_multi_point=false;
@@ -413,6 +418,14 @@ void verify_gpu_coupled_solver(
                 const double dy=std::fabs(ref.anchor_impulses[k].y-
                                            actual.anchor_impulses[k].y);
                 max_friction_error=std::max({max_friction_error,dx,dy});
+                if(!(dx<0.06 && dy<0.06))
+                    std::cerr<<"Source Dy friction mismatch: spring="
+                             <<spring_mode<<" frame="<<frame
+                             <<" patch="<<i<<" anchor="<<k
+                             <<" cpu=("<<ref.anchor_impulses[k].x<<","
+                             <<ref.anchor_impulses[k].y<<") gpu=("
+                             <<actual.anchor_impulses[k].x<<","
+                             <<actual.anchor_impulses[k].y<<")\n";
                 require(dx<0.06 && dy<0.06,
                     "Source Dy GPU friction impulses differ from CPU PGS");
             }
