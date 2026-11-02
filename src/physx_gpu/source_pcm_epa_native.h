@@ -31,10 +31,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.shader=std::move(shader);
-        desc.storage_buffer_binding_count=7u;
+        desc.storage_buffer_binding_count=8u;
         desc.storage_buffer_views.assign(
-            7u,compute::StorageBufferViewKind::RawReadWrite);
-        desc.push_constant_bytes=44u;
+            8u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.push_constant_bytes=48u;
         pipeline_=context_.create_compute_pipeline(desc);
     }
     SourcePcmEpaNativeStage(const SourcePcmEpaNativeStage&)=delete;
@@ -53,6 +53,7 @@ public:
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address work,
                 CudaDeviceAddressMap::Address dispatch_args,
+                CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
                 std::uint32_t edge_capacity) const {
@@ -61,14 +62,14 @@ public:
            pair_count>context_.device_info().max_workgroup_count[0])
             throw std::out_of_range(
                 "Source GPU EPA exceeds source or native dispatch capacity");
-        std::array<std::uint32_t,11> params{
+        std::array<std::uint32_t,12> params{
             pair_count,0u,0u,0u,0u,0u,0u,0u,
-            shape_capacity,candidate_capacity,edge_capacity};
+            shape_capacity,candidate_capacity,edge_capacity,0u};
         const auto view=[&](CudaDeviceAddressMap::Address address,
                             std::size_t bytes,std::uint32_t slot,
                             compute::BufferAccess access) {
             return source_native_view(addresses,address,bytes,
-                alignment_,slot,access,params[slot+1u],max_view_);
+                alignment_,slot,access,slot==7u?params[11]:params[slot+1u],max_view_);
         };
         compute::DispatchCommand dispatch{};
         dispatch.pipeline=pipeline_;
@@ -87,7 +88,9 @@ public:
             view(edge_cache,source_allocation_bytes(edge_capacity,240u),
                  5u,compute::BufferAccess::ReadWrite),
             view(work,source_allocation_bytes(pair_count,4u),
-                 6u,compute::BufferAccess::Read)};
+                 6u,compute::BufferAccess::Read),
+            view(output,source_allocation_bytes(pair_count,96u),
+                 7u,compute::BufferAccess::Write)};
         const auto arguments=addresses.resolve(dispatch_args,12u);
         if(arguments.offset%4u)
             throw std::invalid_argument("Source EPA indirect arguments misaligned");
@@ -112,11 +115,12 @@ public:
                 CudaDeviceAddressMap::Address edge_cache,
                 CudaDeviceAddressMap::Address work,
                 CudaDeviceAddressMap::Address dispatch_args,
+                CudaDeviceAddressMap::Address output,
                 std::uint32_t pair_count,std::uint32_t shape_capacity,
                 std::uint32_t candidate_capacity,
                 std::uint32_t edge_capacity) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
-               results,candidates,edge_cache,work,dispatch_args,
+               results,candidates,edge_cache,work,dispatch_args,output,
                pair_count,shape_capacity,candidate_capacity,edge_capacity);
     }
 private:

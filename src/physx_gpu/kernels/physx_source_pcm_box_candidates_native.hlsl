@@ -32,6 +32,10 @@ RWByteAddressBuffer edgeCaches : register(u5,space0);
 [[vk::binding(6,0)]]
 #endif
 RWByteAddressBuffer dispatchArgs : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer streamContacts : register(u7,space0);
 
 struct Parameters {
     uint pairCount;
@@ -45,6 +49,7 @@ struct Parameters {
     uint candidateCapacity;
     uint edgeCapacity;
     uint argsBias;
+    uint outputBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -91,6 +96,7 @@ float fusedDot(float3 a,float3 b) {
 
 
 #include "physx_source_pcm_box_gjk_native.hlsli"
+#include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 uint cachePointAddress(uint edgeBase,uint contactIndex) {
     return edgeBase+80u+contactIndex*40u;
@@ -451,6 +457,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
         if(edgeCaches.Load(edgeBase+12u)>4u ||
            edgeCaches.Load(edgeBase+64u)>1u) {
             publishPair(result,0u,0u,1u,edge,first,0u,0u,0u);
+            publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
             return;
         }
         bool regenerate=refreshEdge(edgeBase,pa,pb,qa,qb,ea,eb,distance);
@@ -476,6 +485,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
                 0u|(1u<<8u)|(2u<<16u)|(3u<<24u);
             publishPair(result,count,overlap,status,edge,first,
                         min(count,4u),selection,0u);
+            if(status!=3u)publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
             return;
         }
         regenerated=1u;
@@ -665,4 +677,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     publishPair(result,count,overlap,status,edge,first,selectedCount,
                 packed,regenerated);
+    if(status!=3u)publishScContacts(i,a,b,edge,result,p.outputBias,
+                p.transformBias,p.geometryBias,p.edgeCacheBias,
+                p.shapeCapacity,p.edgeCapacity);
 }

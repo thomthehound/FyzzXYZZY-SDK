@@ -32,6 +32,10 @@ RWByteAddressBuffer edgeCaches : register(u5,space0);
 [[vk::binding(6,0)]]
 #endif
 RWByteAddressBuffer work : register(u6,space0);
+#ifdef __spirv__
+[[vk::binding(7,0)]]
+#endif
+RWByteAddressBuffer streamContacts : register(u7,space0);
 
 struct Parameters {
     uint pairCount;
@@ -45,6 +49,7 @@ struct Parameters {
     uint shapeCapacity;
     uint candidateCapacity;
     uint edgeCapacity;
+    uint outputBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -55,6 +60,7 @@ ConstantBuffer<Parameters> p : register(b0,space0);
 #include "physx_source_pcm_box_math_native.hlsli"
 #include "physx_source_pcm_box_gjk_native.hlsli"
 #include "physx_source_pcm_box_epa_native.hlsli"
+#include "physx_source_pcm_sc_contact_publish_native.hlsli"
 
 [numthreads(1,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
@@ -98,6 +104,9 @@ void main(uint3 thread : SV_DispatchThreadID) {
         edgeCaches.Store(cache+12u,0u);
         edgeCaches.Store(cache+64u,0u);
         edgeCaches.Store(cache+68u,0u);
+        publishScContacts(i,a,b,edge,result,p.outputBias,
+        p.transformBias,p.geometryBias,p.edgeCacheBias,
+        p.shapeCapacity,p.edgeCapacity);
         return;
     }
     if(admitted) {
@@ -124,4 +133,7 @@ void main(uint3 thread : SV_DispatchThreadID) {
     }
     edgeCaches.Store(cache+68u,0u);
     results.Store(result+8u,0u);
+    publishScContacts(i,a,b,edge,result,p.outputBias,
+        p.transformBias,p.geometryBias,p.edgeCacheBias,
+        p.shapeCapacity,p.edgeCapacity);
 }
