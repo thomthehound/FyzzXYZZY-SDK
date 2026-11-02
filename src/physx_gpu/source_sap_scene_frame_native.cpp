@@ -188,8 +188,14 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
         const auto source=addresses.resolve(
             members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
             sizeof(descriptor_snapshot));
-        context.download(source.buffer,source.offset,
-                         &descriptor_snapshot,sizeof(descriptor_snapshot));
+        // A source GPU allocation may itself be host-visible on Vulkan.
+        // download_batch always submits an ordered copy and completion
+        // fence; download() can map that allocation without waiting.
+        const std::array<compute::DownloadSpan,1> readback{{
+            {source.buffer,source.offset,
+             &descriptor_snapshot,sizeof(descriptor_snapshot)}
+        }};
+        context.download_batch(readback);
     }
     // The synchronous Context readback completed all prior source work.
     // Retire its original upload/command tokens before touching direct
