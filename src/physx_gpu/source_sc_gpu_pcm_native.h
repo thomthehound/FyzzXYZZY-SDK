@@ -89,6 +89,7 @@ public:
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
         // No contact managers means no indirect consumer this frame.
         // The next nonempty frame resets its count before compaction.
+        published_pair_count_=0u;
         if(requests.empty())return;
         if(!shape_capacity || requests.size()>
               std::numeric_limits<std::uint32_t>::max()/16u)
@@ -186,6 +187,13 @@ public:
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
         }
+        published_pair_count_=pair_count;
+    }
+    CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
+        return published_pair_count_?dense_contacts_.getDevicePtr():0u;
+    }
+    std::uint32_t contact_stream_pair_count() const noexcept {
+        return published_pair_count_;
     }
 private:
     compute::Context& context_;
@@ -202,5 +210,6 @@ private:
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
     bool reset_manifolds_=false;
+    std::uint32_t published_pair_count_=0u;
 };
 } // namespace fyzz::physx_gpu
