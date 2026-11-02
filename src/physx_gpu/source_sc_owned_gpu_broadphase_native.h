@@ -217,6 +217,12 @@ public:
     std::size_t dy_upload_span_count() const noexcept {
         return dy_distance_ ? dy_distance_->last_upload_spans() : 0u;
     }
+    std::size_t dy_friction_anchor_upload_bytes() const noexcept {
+        return dy_distance_ ? dy_distance_->last_friction_anchor_upload_bytes() : 0u;
+    }
+    std::size_t dy_friction_prepared_rows() const noexcept {
+        return dy_distance_ ? dy_distance_->last_friction_prepared_rows() : 0u;
+    }
     std::pair<std::size_t,std::size_t>
     dy_distance_transfer_bytes() const noexcept {
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
