@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
+// SPDX-License-Identifier: Apache-2.0
+
+// Compact source Sc EPA continuation work after the candidate-owned
+// indirect argument initialization. The Sc pair results own admission.
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
