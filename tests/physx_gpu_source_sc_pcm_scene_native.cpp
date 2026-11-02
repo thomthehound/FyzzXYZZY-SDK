@@ -418,6 +418,14 @@ void verify_gpu_coupled_solver(
                 const double dy=std::fabs(ref.anchor_impulses[k].y-
                                            actual.anchor_impulses[k].y);
                 max_friction_error=std::max({max_friction_error,dx,dy});
+                if(!(dx<0.06 && dy<0.06))
+                    std::cerr<<"Source Dy friction mismatch: spring="
+                             <<spring_mode<<" frame="<<frame
+                             <<" patch="<<i<<" anchor="<<k
+                             <<" cpu=("<<ref.anchor_impulses[k].x<<","
+                             <<ref.anchor_impulses[k].y<<") gpu=("
+                             <<actual.anchor_impulses[k].x<<","
+                             <<actual.anchor_impulses[k].y<<")\n";
                 require(dx<0.06 && dy<0.06,
                     "Source Dy GPU friction impulses differ from CPU PGS");
             }
