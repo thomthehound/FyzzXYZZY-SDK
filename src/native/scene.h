@@ -290,6 +290,9 @@ struct ContactManifold {
     // PhysX contact manager owns this stable island EdgeIndex; the Gu
     // manifold is simply its current generation of contact geometry.
     std::uint32_t edge_handle=std::numeric_limits<std::uint32_t>::max();
+    // Source Sc GPU PCM ordinal in this frame's published Gu result
+    // stream. The contact manager, not Dy, owns this provenance.
+    std::uint32_t pcm_result_index=std::numeric_limits<std::uint32_t>::max();
     // Source contact streams use a scene-owned contiguous arena, not an
     // eight-vertex limit or an allocating vector for each manager.
     std::span<const ContactPoint> points{};

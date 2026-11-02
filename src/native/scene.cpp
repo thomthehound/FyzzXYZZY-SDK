@@ -3399,6 +3399,8 @@ void Scene::update_contacts() {
     // Gu narrowphase consumes the sum of both PxShapeCore contact offsets.
     next_manifolds_.clear();
     next_contact_points_.clear();
+    next_found_contacts_.clear();
+    next_lost_contacts_.clear();
     // Original PxcNpCacheStreamPair retains source-generated geometry,
     // distinct from this frame's reconstructed midpoint contact output.
     next_gu_cache_records_.clear();
@@ -3447,7 +3449,10 @@ void Scene::update_contacts() {
         // axis across successive physical-touch frames.
         while (old_cursor < manifolds_.size() &&
                manifolds_[old_cursor].pair < pair)
-            ++old_cursor;
+            next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
+        const bool previously_touching=
+            old_cursor<manifolds_.size() &&
+            manifolds_[old_cursor].pair==pair;
         const Actor& a = actors_[pair.a];
         const Actor& b = actors_[pair.b];
         const float contact_distance=a.contact_offset+b.contact_offset;
@@ -3457,9 +3462,8 @@ void Scene::update_contacts() {
         manifold.pair = pair;
         manifold.edge_handle=edge;
         manifold.contact_offset = next_contact_points_.size();
-        if (old_cursor < manifolds_.size() &&
-            manifolds_[old_cursor].pair == pair)
-            manifold.collision_axis = manifolds_[old_cursor].collision_axis;
+        if(previously_touching)
+            manifold.collision_axis=manifolds_[old_cursor].collision_axis;
 
         // PxcNpBatch::discreteNarrowPhase sorts geometry types (plane
         // before box) independently of ScShapeInteraction actor order.
@@ -3517,6 +3521,8 @@ void Scene::update_contacts() {
                    gpu_pcm_results_[gpu_pcm_index].edge!=edge)
                     throw std::logic_error(
                         "Source GPU PCM result lost Sc EdgeIndex order");
+                manifold.pcm_result_index=
+                    static_cast<std::uint32_t>(gpu_pcm_index);
                 manifold.count=publish_gpu_pcm_box_box(
                     gpu_pcm_results_[gpu_pcm_index++],
                     island_edges_[edge].pcm_cache,
@@ -3713,39 +3719,24 @@ void Scene::update_contacts() {
                 n={-n.x,-n.y,-n.z};
             }
         }
-        if (manifold.count > 0) {
+        // Sc's sorted Gu contact-manager traversal already compares
+        // this frame against the preceding physical-touch state. Emit
+        // each transition here, without a second manifold merge pass.
+        if(manifold.count>0u) {
+            if(!previously_touching)
+                next_found_contacts_.push_back(pair);
             next_manifold_by_edge_[edge]={
                 next_manifolds_.size(),new_lookup_generation};
             next_manifolds_.push_back(manifold);
+        } else if(previously_touching) {
+            next_lost_contacts_.push_back(pair);
         }
+        if(previously_touching)++old_cursor;
     }
-
-    // BP pair found/lost and narrowphase touch found/lost are distinct
-    // source events. Report changed touch pairs exactly once per frame.
-    next_found_contacts_.clear();
-    next_lost_contacts_.clear();
-    const auto pair_less = [](const ContactManifold& lhs,
-                              const ContactManifold& rhs) {
-        return lhs.pair < rhs.pair;
-    };
-    // Sorted broadphase candidate iteration preserves manifold order.
-    auto next = next_manifolds_.begin();
-    auto old = manifolds_.begin();
-    while (next != next_manifolds_.end() && old != manifolds_.end()) {
-        if (pair_less(*next, *old)) {
-            next_found_contacts_.push_back(next->pair);
-            ++next;
-        } else if (pair_less(*old, *next)) {
-            next_lost_contacts_.push_back(old->pair);
-            ++old;
-        } else {
-            ++next; ++old;
-        }
-    }
-    for (; next != next_manifolds_.end(); ++next)
-        next_found_contacts_.push_back(next->pair);
-    for (; old != manifolds_.end(); ++old)
-        next_lost_contacts_.push_back(old->pair);
+    // Broadphase-retired pairs and zero-contact pairs still lose their
+    // accurate Sc touch, independently of speculative SAP membership.
+    while(old_cursor<manifolds_.size())
+        next_lost_contacts_.push_back(manifolds_[old_cursor++].pair);
     // Assign all pointers only after the arena has stopped growing.
     // Both old and new contact arenas swap together with their manifolds.
     for (auto& manifold : next_manifolds_)
@@ -6993,20 +6984,16 @@ void Scene::prepare_constraints(float seconds) {
             prep.bounce_threshold=bounce_threshold;
             prep.acceleration_spring=acceleration_spring?1u:0u;
             prep.max_contact_impulse=static_cast<double>(pair_max_impulse);
-            // The PCM source requests preserve the canonical pair order.
-            // Reuse the live producer's Gu geometry from its device arena.
-            const auto source_pair=std::lower_bound(
-                gpu_pcm_pairs_.begin(),gpu_pcm_pairs_.end(),manifold.pair,
-                [](const GpuPcmBoxPair& source,Pair key) {
-                    return Pair{std::min(source.first,source.second),
-                                std::max(source.first,source.second)}<key;
-                });
-            if(source_pair!=gpu_pcm_pairs_.end() &&
-               Pair{std::min(source_pair->first,source_pair->second),
-                    std::max(source_pair->first,source_pair->second)}
-                   ==manifold.pair) {
-                prep.pcm_pair_index=static_cast<std::uint32_t>(
-                    source_pair-gpu_pcm_pairs_.begin());
+            // Sc records PCM provenance when its original Gu manager
+            // is published. Dy consumes that exact source ordinal; no
+            // second host-side search or independent pair registry.
+            if(manifold.pcm_result_index!=
+               std::numeric_limits<std::uint32_t>::max()) {
+                if(manifold.pcm_result_index>=gpu_pcm_pairs_.size() ||
+                   gpu_pcm_pairs_[manifold.pcm_result_index].edge!=edge)
+                    throw std::logic_error(
+                        "Source Sc PCM manager lost GPU result provenance");
+                prep.pcm_pair_index=manifold.pcm_result_index;
                 prep.pcm_edge=edge;
             }
             gpu_dy_contact_prep_indices_[manager_index]=
