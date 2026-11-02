@@ -413,6 +413,15 @@ void verify_gpu_coupled_solver(
         }
         require(found_capped,
             "Zero-cap source Gu manager lost its Sc contact identity");
+        // The same manager alternates between excluded and live Dy rows.
+        // Excluded writeback slots must retain Sc's original source state.
+        const auto capped_expected=cpu.body_state(capped_cpu);
+        const auto capped_actual=gpu.body_state(capped_gpu);
+        require(std::fabs(capped_expected.position.y-
+                          capped_actual.position.y)<0.02f &&
+                std::fabs(capped_expected.velocity.y-
+                          capped_actual.velocity.y)<0.02f,
+                "GPU Dy wrote an excluded contact-manager result");
         for(std::size_t i=0;i<cpu.solved_normal_impulses().size();++i) {
             const auto force=cpu.solved_normal_impulses()[i];
             const auto actual=gpu.solved_normal_impulses()[i];
