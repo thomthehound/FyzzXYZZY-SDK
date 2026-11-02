@@ -389,8 +389,11 @@ void verify_gpu_coupled_solver(
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
-        saw_device_pcm_contact_rows |=
-            producer->dy_pcm_device_contact_rows()>0u;
+        const auto device_rows=producer->dy_pcm_device_contact_rows();
+        saw_device_pcm_contact_rows |= device_rows>0u;
+        require(producer->dy_pcm_contact_upload_bytes_saved()==
+                    device_rows*sizeof(native::GpuDyContactPoint),
+                "Source PCM-derived Dy contacts still upload CPU shadow rows");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "Source coupled Sc scene never dispatched the GPU Dy solver");
         require(cpu.contacts().size()==gpu.contacts().size() &&
