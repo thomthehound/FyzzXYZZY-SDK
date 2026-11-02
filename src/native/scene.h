@@ -235,7 +235,7 @@ public:
         std::span<const std::uint32_t>,
         std::span<const std::uint32_t>,
         std::span<GpuDyDistanceTask>,
-        std::span<GpuDyContactPoint>,
+        std::span<double>,
         std::span<const GpuDyGuContactInput>,
         std::span<GpuDyFrictionRow>,
         std::span<GpuDyContactPatch>,
@@ -1744,7 +1744,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_partition_ends_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
-    std::vector<GpuDyContactPoint> gpu_dy_contacts_;
+    std::vector<double> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionRow> gpu_dy_friction_;
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
