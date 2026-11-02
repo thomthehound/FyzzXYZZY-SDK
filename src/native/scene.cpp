@@ -7208,6 +7208,18 @@ void Scene::prepare_constraints(float seconds) {
             // DyContactPrep.cpp constructs tangents from relative linear
             // velocity, with the same 0.7071 normal-axis fallback and
             // 1e-4 squared-tangent threshold as the source.
+            if(gpu_normal_prep) {
+                // Correlation and anchor retention are source-owned. GPU
+                // preparation constructs each patch's tangent basis.
+                for(std::size_t k=0;k<count;++k)
+                    for(std::size_t axis=0;axis<2u;++axis) {
+                        SolverContactFriction fr{};
+                        fr.ra_x_t_sqrt_inertia=patch.body0_anchors[k];
+                        fr.rb_x_t_sqrt_inertia=patch.body1_anchors[k];
+                        solver_friction_rows_.push_back(fr);
+                    }
+                continue;
+            }
             const Vec3 n=header_normals[
                 patch_id-manifold.friction_patch_offset];
             const Vec3 rel=sub(a.linear_velocity,b.linear_velocity);
@@ -7222,19 +7234,6 @@ void Scene::prepare_constraints(float seconds) {
             t0={t0.x*inv_l,t0.y*inv_l,t0.z*inv_l};
             const Vec3 t1=cross(n,t0);
             for (std::size_t k=0;k<count;++k) {
-                if(gpu_normal_prep) {
-                    // The source selected these persistent local anchors
-                    // and ordered tangents; the GPU derives the solver
-                    // Jacobians and coefficients from the same inputs.
-                    for(const Vec3 tangent : {t0,t1}) {
-                        SolverContactFriction fr{};
-                        fr.tangent=tangent;
-                        fr.ra_x_t_sqrt_inertia=patch.body0_anchors[k];
-                        fr.rb_x_t_sqrt_inertia=patch.body1_anchors[k];
-                        solver_friction_rows_.push_back(fr);
-                    }
-                    continue;
-                }
                 const Vec3 ra=rotate(actor0.orientation,patch.body0_anchors[k]);
                 const Vec3 rb=rotate(actor1.orientation,patch.body1_anchors[k]);
                 const Vec3 error=suppress_slop(sub(

@@ -174,8 +174,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
                 arena.InterlockedOr(endError,16384u);
                 continue;
             }
-            for(uint row=patch.x;row<patch.x+patch.z*2u;++row)
-                prepareFrictionRow(row,pairIndex,endError);
+            prepareFrictionPatch(patchIndex,pairIndex,endError);
         }
     }
     AllMemoryBarrierWithGroupSync();

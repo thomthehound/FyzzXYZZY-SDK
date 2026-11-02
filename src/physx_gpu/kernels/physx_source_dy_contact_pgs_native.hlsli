@@ -348,3 +348,57 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     prepStoreDouble(fo+48u,bias);
     prepStoreDouble(fo+56u,targetVelocity);
 }
+
+void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
+    if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
+        arena.InterlockedOr(errorAddress,16384u);
+        return;
+    }
+    uint po=p.patchBias+patchIndex*32u;
+    uint4 patch=arena.Load4(po);
+    if(patch.z==0u)return;
+    uint orderOffset=arena.Load(po+24u);
+    if(patch.y==0u || orderOffset>=p.orderCount ||
+       patch.x>p.frictionCount || patch.z>2u ||
+       patch.z*2u>p.frictionCount-patch.x) {
+        arena.InterlockedOr(errorAddress,16384u);
+        return;
+    }
+    // setupFinalizeSolverConstraints chooses the first normal from the
+    // source's reverse correlated contact-run list for this patch.
+    uint first=arena.Load(p.orderBias+orderOffset*4u);
+    if(first>=p.contactCount) {
+        arena.InterlockedOr(errorAddress,16384u);
+        return;
+    }
+    float3 n=asfloat(arena.Load3(p.contactBias+first*88u));
+    uint pair=p.prepBias+pairIndex*232u;
+    float3 a=asfloat(arena.Load3(pair+12u));
+    float3 b=asfloat(arena.Load3(pair+108u));
+    float3 relative=a-b;
+    float projection=dot(relative,n);
+    float3 tangent0=relative-float3(
+        n.x*projection,n.y*projection,n.z*projection);
+    float squared=tangent0.x*tangent0.x+
+        tangent0.y*tangent0.y+tangent0.z*tangent0.z;
+    if(squared<=0.0001f)
+        tangent0=abs(n.x)<0.70710678f
+            ? float3(0.0f,-n.z,n.y)
+            : float3(-n.y,n.x,0.0f);
+    float lengthSq=tangent0.x*tangent0.x+
+        tangent0.y*tangent0.y+tangent0.z*tangent0.z;
+    float inverseLength=1.0f/sqrt(lengthSq);
+    tangent0=tangent0*inverseLength;
+    float3 tangent1=cross(n,tangent0);
+    if(!all(isfinite(tangent0)) || !all(isfinite(tangent1))) {
+        arena.InterlockedOr(errorAddress,32768u);
+        return;
+    }
+    for(uint anchor=0u;anchor<patch.z;++anchor) {
+        uint row=patch.x+anchor*2u;
+        arena.Store3(p.frictionBias+row*72u,asuint(tangent0));
+        arena.Store3(p.frictionBias+(row+1u)*72u,asuint(tangent1));
+        prepareFrictionRow(row,pairIndex,errorAddress);
+        prepareFrictionRow(row+1u,pairIndex,errorAddress);
+    }
+}
