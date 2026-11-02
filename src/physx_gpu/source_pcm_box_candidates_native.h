@@ -170,8 +170,8 @@ public:
                 std::uint32_t candidate_capacity,
                 std::uint32_t edge_capacity) const {
         append(stream.commands(),addresses,transforms,geometry,pairs,
-               results,candidates,edge_cache,dispatch_args,output,pair_count,shape_capacity
-               candidate_capacity,edge_capacity);
+               results,candidates,edge_cache,dispatch_args,output,
+               pair_count,shape_capacity,candidate_capacity,edge_capacity);
     }
 
 private:
