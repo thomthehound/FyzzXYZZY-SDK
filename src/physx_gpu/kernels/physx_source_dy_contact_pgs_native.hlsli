@@ -211,7 +211,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         return;
     }
     uint co=p.contactBias+index*88u;
-    uint pair=p.prepBias+pairIndex*248u;
+    uint pair=p.prepBias+pairIndex*256u;
     uint b0=pair,b1=pair+96u;
     // The source correlation fixes patch order and body inputs. The GPU
     // reconstructs PCM normal rows without uploading a placeholder row.
@@ -236,9 +236,18 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(pcmContacts.Load(contact+12u));
         arena.Store3(co,asuint(n));
     } else {
-        n=asfloat(arena.Load3(co));
-        pos=asfloat(arena.Load3(co+12u));
-        separation=asfloat(arena.Load(co+24u));
+        uint cpuOffset=arena.Load(pair+248u);
+        if(cpuOffset==0xffffffffu || index<contactBegin ||
+           index-contactBegin>=contactCount) {
+            arena.InterlockedOr(errorAddress,131072u);
+            return;
+        }
+        uint raw=p.prepBias+p.prepCount*256u+
+            (cpuOffset+index-contactBegin)*28u;
+        n=asfloat(arena.Load3(raw));
+        pos=asfloat(arena.Load3(raw+12u));
+        separation=asfloat(arena.Load(raw+24u));
+        arena.Store3(co,asuint(n));
     }
     float3 p0=asfloat(arena.Load3(b0));
     float3 p1=asfloat(arena.Load3(b1));
@@ -315,6 +324,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     }
     // A freshly prepared source Gu normal row begins with zero impulse.
     // Its limit is common to the entire contact-manager pair.
+    arena.Store(co+36u,0u);
     arena.Store2(co+72u,uint2(0u,0u));
     arena.Store2(co+80u,arena.Load2(pair+240u));
     arena.Store3(co+12u,asuint(ja));
@@ -337,7 +347,7 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
         return;
     }
     uint fo=p.frictionBias+index*72u;
-    uint pair=p.prepBias+pairIndex*248u;
+    uint pair=p.prepBias+pairIndex*256u;
     uint b0=pair,b1=pair+96u;
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
@@ -404,7 +414,7 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         return;
     }
     float3 n=asfloat(arena.Load3(p.contactBias+first*88u));
-    uint pair=p.prepBias+pairIndex*248u;
+    uint pair=p.prepBias+pairIndex*256u;
     float3 a=asfloat(arena.Load3(pair+12u));
     float3 b=asfloat(arena.Load3(pair+108u));
     float3 relative=a-b;
