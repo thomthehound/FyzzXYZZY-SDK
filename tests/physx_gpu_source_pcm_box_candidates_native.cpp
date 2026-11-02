@@ -212,7 +212,6 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,output_offset,published.data(),
                      published.size()*sizeof(published[0]));
     for(std::size_t i=0;i<pairs.size();++i) {
-        if(results[i].status==3u)continue;
         require(published[i].edge_handle==results[i].edge_handle &&
                 published[i].status==results[i].status,
                 "Candidate owner failed Sc contact publication");
