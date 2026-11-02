@@ -243,6 +243,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
             return;
         }
         uint raw=p.prepBias+p.prepCount*256u+
+            (p.frictionCount/2u)*24u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
         pos=asfloat(arena.Load3(raw+12u));
@@ -352,8 +353,11 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
     float3 tangent=asfloat(arena.Load3(fo));
-    float3 r0=prepRotate(b0,asfloat(arena.Load3(fo+12u)));
-    float3 r1=prepRotate(b1,asfloat(arena.Load3(fo+24u)));
+    // The original Gu correlation owns two local anchors per patch
+    // anchor, shared by its two tangent constraints.
+    uint anchor=p.prepBias+p.prepCount*256u+(index/2u)*24u;
+    float3 r0=prepRotate(b0,asfloat(arena.Load3(anchor)));
+    float3 r1=prepRotate(b1,asfloat(arena.Load3(anchor+12u)));
     float3 p0=asfloat(arena.Load3(b0));
     float3 p1=asfloat(arena.Load3(b1));
     float3 v0=asfloat(arena.Load3(b0+12u));
@@ -386,6 +390,8 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     }
     arena.Store3(fo+12u,asuint(ja));
     arena.Store3(fo+24u,asuint(jb));
+    arena.Store(fo+36u,0u);
+    arena.Store2(fo+64u,uint2(0u,0u));
     prepStoreDouble(fo+40u,velocityMultiplier);
     prepStoreDouble(fo+48u,bias);
     prepStoreDouble(fo+56u,targetVelocity);

@@ -453,6 +453,10 @@ void verify_gpu_coupled_solver(
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
             "PCM-only Dy source stage fragmented its HtoD upload");
+        require(producer->dy_friction_anchor_upload_bytes()==
+                    producer->dy_friction_prepared_rows()*
+                        sizeof(native::GpuDyFrictionAnchorInput)/2u,
+            "GPU Dy friction still uploads writable tangent rows");
         require(producer->dy_pcm_contact_upload_bytes_saved()==
                     device_rows*sizeof(native::GpuDyContactPoint),
                 "Source PCM-derived Dy contacts still upload CPU shadow rows");
@@ -615,6 +619,10 @@ void verify_cpu_gu_gpu_dy_solver(
                 producer->dy_cpu_gu_geometry_bytes()%sizeof(
                     native::GpuDyGuContactInput)==0u,
             "CPU Gu inputs did not use compact single-batch source upload");
+        require(producer->dy_friction_anchor_upload_bytes()==
+                    producer->dy_friction_prepared_rows()*
+                        sizeof(native::GpuDyFrictionAnchorInput)/2u,
+            "CPU Gu solver staged complete friction rows");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "CPU Gu contact rows did not enter source GPU Dy solver");
         const auto a=cpu.body_state(moving_cpu);

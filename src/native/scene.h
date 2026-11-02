@@ -163,6 +163,19 @@ struct GpuDyContactPoint {
 static_assert(sizeof(GpuDyContactPoint)==88u &&
               offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
               offsetof(GpuDyContactPoint,applied_force)==72u);
+// The GPU constructs both tangent rows from one pair of Sc-owned,
+// body-local friction anchors; only their solved tangent/force returns.
+struct GpuDyFrictionAnchorInput {
+    float local_a[3]{},local_b[3]{};
+};
+static_assert(sizeof(GpuDyFrictionAnchorInput)==24u);
+struct GpuDyFrictionWriteback {
+    float tangent[3]{};
+    double applied_force=0.0;
+};
+static_assert(sizeof(GpuDyFrictionWriteback)==24u &&
+              offsetof(GpuDyFrictionWriteback,applied_force)==16u);
+// The GPU-only source Dy solver row remains 72 bytes.
 struct GpuDyFrictionRow {
     float tangent[3]{},angular_a[3]{},angular_b[3]{};
     std::uint32_t reserved=0u;
@@ -237,7 +250,8 @@ public:
         std::span<GpuDyDistanceTask>,
         std::span<double>,
         std::span<const GpuDyGuContactInput>,
-        std::span<GpuDyFrictionRow>,
+        std::span<GpuDyFrictionWriteback>,
+        std::span<const GpuDyFrictionAnchorInput>,
         std::span<GpuDyContactPatch>,
         std::span<const GpuDyContactManifold>,
         std::span<const std::uint32_t>,
@@ -1746,7 +1760,8 @@ private:
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<double> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
-    std::vector<GpuDyFrictionRow> gpu_dy_friction_;
+    std::vector<GpuDyFrictionWriteback> gpu_dy_friction_writeback_;
+    std::vector<GpuDyFrictionAnchorInput> gpu_dy_friction_anchors_;
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
     std::vector<std::uint32_t> gpu_dy_contact_order_;
