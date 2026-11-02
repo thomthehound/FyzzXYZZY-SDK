@@ -7338,10 +7338,11 @@ void Scene::solve_gpu_distance_constraints() {
             narrow(task.solver_body_end),
             task.position_iterations,task.velocity_iterations,0u};
     }
-    // DyContactPrep retains Gu-indexed force rows and the original
-    // correlated patch walk. PCM rows are constructed entirely on device;
-    // only CPU-owned Gu pairs need source row staging.
+    // Sc owns Gu point identity and correlated patch normals. The GPU
+    // constructs every writable Dy contact row; only CPU-origin Gu
+    // geometry needs a compact source upload.
     gpu_dy_contacts_.resize(solver_contact_points_.size());
+    gpu_dy_gu_inputs_.clear();
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(!m.friction_patch_count)continue;
@@ -7351,19 +7352,17 @@ void Scene::solve_gpu_distance_constraints() {
         const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
         if(prep_index>=gpu_dy_contact_prep_pairs_.size())
             throw std::logic_error("Source GPU Dy contact pair index invalid");
-        if(gpu_dy_contact_prep_pairs_[prep_index].pcm_pair_index!=
-           0xffffffffu)continue;
-        // The GPU preparation replaces the raw position/separation with
-        // angular Jacobians and initializes every numeric solver field.
+        auto& prep=gpu_dy_contact_prep_pairs_[prep_index];
+        if(prep.pcm_pair_index!=0xffffffffu)continue;
+        prep.cpu_gu_offset=narrow(gpu_dy_gu_inputs_.size());
         for(std::size_t j=0;j<m.count;++j) {
-            const auto index=m.solver_offset+j;
-            const auto& from=solver_contact_points_[index];
-            auto& row=gpu_dy_contacts_[index];
-            pack(row.normal,from.normal);
-            pack(row.angular_a,m.points[j].position);
-            row.angular_b[0]=m.points[j].separation;
-            row.applied_force=from.applied_force;
-            row.max_impulse=from.max_impulse;
+            const auto& from=solver_contact_points_[m.solver_offset+j];
+            const auto& point=m.points[j];
+            native::GpuDyGuContactInput input{};
+            pack(input.normal,from.normal);
+            pack(input.position,point.position);
+            input.separation=point.separation;
+            gpu_dy_gu_inputs_.push_back(input);
         }
     }
     gpu_dy_friction_.resize(solver_friction_rows_.size());
@@ -7427,8 +7426,8 @@ void Scene::solve_gpu_distance_constraints() {
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
         gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
-        gpu_dy_contacts_,gpu_dy_friction_,gpu_dy_patches_,
-        gpu_dy_manifolds_,gpu_dy_contact_order_,
+        gpu_dy_contacts_,gpu_dy_gu_inputs_,gpu_dy_friction_,
+        gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_);
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
