@@ -659,6 +659,14 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{1u,1u,1u},
             "GPU EPA continuation did not consume one sparse work item");
+    context.download(root,output_offset,published.data(),
+                     published.size()*sizeof(published[0]));
+    const auto& epa_published=published[penetration_pair];
+    require(epa_published.edge_handle==edge && epa_published.status==0u &&
+            epa_published.cached_count==1u && epa_published.emitted_count==1u &&
+            epa_published.selected_and_regenerated==0x80000001u &&
+            near(epa_published.contacts[0].separation,expected_epa.separation),
+            "Sparse EPA did not publish its completed Gu world contact");
     const auto& finished=results[penetration_pair];
     const auto& witness=candidates[pairs[penetration_pair].candidate_offset];
     require(finished.status==0u && finished.candidate_count==1u &&
@@ -688,6 +696,15 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
+    context.download(root,output_offset,published.data(),
+                     published.size()*sizeof(published[0]));
+    const auto& quiet_published=published[penetration_pair];
+    require(quiet_published.edge_handle==edge && quiet_published.status==0u &&
+            quiet_published.cached_count==1u &&
+            quiet_published.emitted_count==1u &&
+            quiet_published.selected_and_regenerated==1u &&
+            near(quiet_published.contacts[0].separation,expected_epa.separation),
+            "Quiet Sc refresh did not preserve its Gu world contact");
     const auto& quiet=results[penetration_pair];
     const auto& cached=candidates[pairs[penetration_pair].candidate_offset];
     require(quiet.status==0u && quiet.regenerated==0u &&
