@@ -743,7 +743,10 @@ public:
         const auto source=addresses.resolve(
             aggregate_fetch_snapshot_device_.getDevicePtr(),
             sizeof(snapshot));
-        context.download(source.buffer,source.offset,&snapshot,sizeof(snapshot));
+        const std::array<compute::DownloadSpan,1> readback{{
+            {source.buffer,source.offset,&snapshot,sizeof(snapshot)}
+        }};
+        context.download_batch(readback);
         return snapshot;
     }
     struct AggregateReports {
