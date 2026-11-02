@@ -206,6 +206,9 @@ public:
     std::size_t dy_pcm_device_contact_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
     }
+    std::size_t dy_pcm_contact_upload_bytes_saved() const noexcept {
+        return dy_distance_ ? dy_distance_->last_omitted_pcm_upload_bytes() : 0u;
+    }
     std::pair<std::size_t,std::size_t>
     dy_distance_transfer_bytes() const noexcept {
         return dy_distance_ ? dy_distance_->last_transfer_bytes()
