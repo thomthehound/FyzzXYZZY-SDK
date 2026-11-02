@@ -154,6 +154,29 @@ int main() {
             retained_small,retained_grow};
         context.wait_submissions(retained);
 
+        // Source SAP descriptor allocations may be host-visible. A
+        // batched readback must still fence an earlier GPU write to
+        // such an allocation, without requiring its token to be reaped.
+        const auto mapped_descriptor=context.create_buffer(
+            sizeof(source),MemoryPlacement::HostVisible);
+        const SubmissionId descriptor_write=context.submit_copy_buffer(
+            local_src,0,mapped_descriptor,0,sizeof(source));
+        std::array<std::uint32_t,2> descriptor_words{};
+        const std::array<DownloadSpan,1> descriptor_readback{{
+            {mapped_descriptor,0,descriptor_words.data(),
+             sizeof(descriptor_words)}
+        }};
+        context.download_batch(descriptor_readback);
+        if(descriptor_words[0]!=source[0] ||
+           descriptor_words[1]!=source[1])
+            throw std::runtime_error(
+                "Ordered host-visible source descriptor readback lost GPU writes");
+        if(!context.submission_complete(descriptor_write))
+            throw std::runtime_error(
+                "Source descriptor readback did not complete earlier GPU commands");
+        context.wait_submission(descriptor_write);
+        context.destroy_buffer(mapped_descriptor);
+
         // A copy-only batch creates no descriptor pool.
         context.execute_batch({
             CopyCommand{local_src, 0, local_dst, 0, sizeof(source)},
