@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -87,9 +88,11 @@ public:
                   std::uint32_t shape_capacity) {
         if(requests.size()!=output.size())
             throw std::invalid_argument("Source Sc GPU PCM result count mismatch");
-        // No contact managers means no indirect consumer this frame.
-        // The next nonempty frame resets its count before compaction.
+        // The previous successful source stream is authoritative for
+        // whether this pair buffer has usable resident input records.
+        const auto previous_count=published_pair_count_;
         published_pair_count_=0u;
+        last_pair_upload_bytes_=0u;
         if(requests.empty())return;
         if(!shape_capacity || requests.size()>
               std::numeric_limits<std::uint32_t>::max()/16u)
@@ -97,6 +100,8 @@ public:
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         const auto candidate_count=pair_count*16u; // 4 inside, 4 corners, 8 edge intersections
         std::uint32_t largest_edge=0u;
+        bool changed=reset_manifolds_ ||
+            previous_count!=pair_count || pair_host_.size()!=pair_count;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
@@ -109,12 +114,25 @@ public:
             const auto second=sc_.source_element_handle(request.second);
             if(first>=shape_capacity || second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
-            pair_host_[i]={first,second,request.edge,i*16u,
+            const SourcePcmBoxPairNative next{
+                first,second,request.edge,i*16u,
                 16u | ((request.reset_cache || reset_manifolds_)
                     ? source_pcm_reset_cache_bit : 0u)};
+            // The existing source host descriptor array is retained from
+            // the last successful frame. Do not create a shadow registry
+            // just to determine whether its GPU input changed.
+            if(!changed && std::memcmp(&pair_host_[i],&next,
+                                       sizeof(next))!=0)
+                changed=true;
+            pair_host_[i]=next;
         }
         const auto edge_capacity=largest_edge+1u;
-        pairs_.allocate(source_allocation_bytes(pair_count,20u),PX_FL);
+        const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
+        const auto previous_pair_capacity=pairs_.getSize();
+        const auto previous_pair_address=pairs_.getDevicePtr();
+        pairs_.allocate(requested_pair_bytes,PX_FL);
+        changed |= requested_pair_bytes>previous_pair_capacity ||
+                   pairs_.getDevicePtr()!=previous_pair_address;
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         candidates_.allocate(source_allocation_bytes(candidate_count,40u),PX_FL);
         edges_.allocateCopyOldDataAsync(
@@ -124,10 +142,13 @@ public:
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
         // refreshing it, without a separate upload per new manager.
-        auto& uploads=stream_.upload_scratch();
-        uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
-                           pair_host_.size()*sizeof(pair_host_[0])});
-        stream_.queue_uploads(uploads);
+        if(changed) {
+            auto& uploads=stream_.upload_scratch();
+            uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
+                               pair_host_.size()*sizeof(pair_host_[0])});
+            stream_.queue_uploads(uploads);
+            last_pair_upload_bytes_=pair_host_.size()*sizeof(pair_host_[0]);
+        }
         reset_manifolds_=false;
 
         candidates_stage_.append(stream_,addresses_,
@@ -195,6 +216,9 @@ public:
     std::uint32_t contact_stream_pair_count() const noexcept {
         return published_pair_count_;
     }
+    std::size_t last_pair_upload_bytes() const noexcept {
+        return last_pair_upload_bytes_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -211,5 +235,6 @@ private:
     std::vector<SourcePcmBoxPairNative> pair_host_;
     bool reset_manifolds_=false;
     std::uint32_t published_pair_count_=0u;
+    std::size_t last_pair_upload_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu
