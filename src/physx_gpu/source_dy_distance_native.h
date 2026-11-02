@@ -91,7 +91,7 @@ public:
             contact_forces.size()*sizeof(native::GpuDyContactPoint);
         if(friction.size()>std::numeric_limits<std::size_t>::max()/
                               sizeof(native::GpuDyFrictionRow) ||
-           friction.size()!=anchors.size()*2u)
+           friction.size()%2u || anchors.size()!=friction.size()/2u)
             throw std::logic_error("Source friction rows lack paired anchors");
         const auto friction_bytes=
             friction.size()*sizeof(native::GpuDyFrictionRow);
@@ -335,6 +335,7 @@ public:
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
         last_friction_anchor_upload_bytes_=anchors.size_bytes();
+        last_friction_prepared_rows_=friction.size();
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
@@ -354,6 +355,9 @@ public:
     std::size_t last_friction_anchor_upload_bytes() const noexcept {
         return last_friction_anchor_upload_bytes_;
     }
+    std::size_t last_friction_prepared_rows() const noexcept {
+        return last_friction_prepared_rows_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -370,6 +374,7 @@ private:
     std::size_t last_cpu_gu_geometry_bytes_=0u;
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
+    std::size_t last_friction_prepared_rows_=0u;
 };
 
 } // namespace fyzz::physx_gpu
