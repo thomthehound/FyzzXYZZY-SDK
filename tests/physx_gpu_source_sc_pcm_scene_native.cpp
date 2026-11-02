@@ -368,10 +368,18 @@ void verify_gpu_coupled_solver(
         : Vec3{0.25f,-0.1f,0.12f};
     cpu.set_velocity(a[0],initial_velocity);
     gpu.set_velocity(b[0],initial_velocity);
+    // Mix CPU-generated plane Gu rows into the same Dy arena as PCM
+    // box contacts. Only the latter are omitted from the HtoD upload.
+    const auto plane_cpu=cpu.add_static_floor(-10.f);
+    const auto plane_gpu=gpu.add_static_floor(-10.f);
+    const auto plane_body_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{50.f,-9.54f,0.f},1.f);
+    const auto plane_body_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{50.f,-9.54f,0.f},1.f);
     constexpr float dt=1.f/120.f;
     bool saw_contact=false,saw_force=false,saw_friction=false;
     bool saw_correlated_multi_point=false;
-    bool saw_device_pcm_contact_rows=false;
+    bool saw_device_pcm_contact_rows=false,saw_plane_contact=false;
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
@@ -405,6 +413,9 @@ void verify_gpu_coupled_solver(
         saw_contact |= !gpu.contacts().empty();
         bool found_capped=false;
         for(const auto& contact:gpu.contacts()) {
+            saw_plane_contact |=
+                contact.pair==native::Pair{plane_gpu,plane_body_gpu} &&
+                contact.count>0u;
             const native::Pair capped_pair{capped_fixed_gpu,capped_gpu};
             if(!(contact.pair==capped_pair)) {
                 saw_correlated_multi_point |= contact.count>1u;
@@ -419,6 +430,13 @@ void verify_gpu_coupled_solver(
         }
         require(found_capped,
             "Zero-cap source Gu manager lost its Sc contact identity");
+        const auto plane_expected=cpu.body_state(plane_body_cpu);
+        const auto plane_actual=gpu.body_state(plane_body_gpu);
+        require(std::fabs(plane_expected.position.y-
+                          plane_actual.position.y)<0.02f &&
+                std::fabs(plane_expected.velocity.y-
+                          plane_actual.velocity.y)<0.02f,
+                "Mixed CPU plane and GPU PCM Dy solver rows diverged");
         // The same manager alternates between excluded and live Dy rows.
         // Excluded writeback slots must retain Sc's original source state.
         const auto capped_expected=cpu.body_state(capped_cpu);
@@ -476,8 +494,8 @@ void verify_gpu_coupled_solver(
                 "Coupled GPU Gu PCM/1D/contact/friction diverged from CPU Dy");
         }
     }
-    require(saw_device_pcm_contact_rows,
-        "Source Dy did not read producer-resident PCM contacts");
+    require(saw_device_pcm_contact_rows && saw_plane_contact,
+        "Source Dy did not exercise mixed PCM and plane contact inputs");
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
