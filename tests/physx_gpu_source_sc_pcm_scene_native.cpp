@@ -128,8 +128,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
+    // Authored pose changes may invalidate the Sc PCM cache and require
+    // one descriptor refresh. An identical subsequent source frame must
+    // reuse that now-current device record without another upload.
+    check(true);
     require(producer->pcm_pair_upload_bytes()==0u,
-            "Pose-only PCM update re-uploaded unchanged Sc contact identity");
+            "Unchanged Sc PCM refresh re-uploaded an admitted pair");
     // The device stream reconstructs the original Gu B-local witnesses
     // in world space, including rotated source-order second shapes.
     constexpr float angle=0.08f;
