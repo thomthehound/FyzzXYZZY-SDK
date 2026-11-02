@@ -48,7 +48,7 @@ public:
         pipeline.storage_buffer_binding_count=2u;
         pipeline.storage_buffer_views={
             compute::StorageBufferViewKind::RawReadWrite,
-            compute::StorageBufferViewKind::RawReadWrite};
+            compute::StorageBufferViewKind::RawRead};
         pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
