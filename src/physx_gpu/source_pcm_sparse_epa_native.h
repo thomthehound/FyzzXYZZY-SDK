@@ -32,8 +32,10 @@ public:
         max_view_=device.max_storage_buffer_range;
         compute::ComputePipelineDesc desc{};
         desc.storage_buffer_binding_count=3u;
-        desc.storage_buffer_views.assign(
-            3u,compute::StorageBufferViewKind::RawReadWrite);
+        desc.storage_buffer_views={
+            compute::StorageBufferViewKind::RawRead,
+            compute::StorageBufferViewKind::RawReadWrite,
+            compute::StorageBufferViewKind::RawReadWrite};
         desc.push_constant_bytes=16u;
         if(compact_shader.format==compute::ShaderFormat::Spirv)
             compact_shader.entry_point="compact";
