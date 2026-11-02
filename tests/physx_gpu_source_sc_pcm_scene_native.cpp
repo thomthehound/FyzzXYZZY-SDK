@@ -411,11 +411,21 @@ void verify_gpu_coupled_solver(
                     gpu.solved_friction_patches().size(),
             "GPU Dy contact/friction writeback has wrong source ownership");
         saw_contact |= !gpu.contacts().empty();
+        const auto touching=[](auto contacts,native::Pair pair) {
+            return std::any_of(contacts.begin(),contacts.end(),
+                [pair](const auto& m) {
+                    return m.pair==pair && m.count>0u;
+                });
+        };
+        const bool cpu_plane_touch=touching(
+            cpu.contacts(),native::Pair{plane_cpu,plane_body_cpu});
+        const bool gpu_plane_touch=touching(
+            gpu.contacts(),native::Pair{plane_gpu,plane_body_gpu});
+        require(cpu_plane_touch==gpu_plane_touch,
+            "Mixed CPU plane/PCM scene changed Gu touch publication");
+        saw_plane_contact |= gpu_plane_touch;
         bool found_capped=false;
         for(const auto& contact:gpu.contacts()) {
-            saw_plane_contact |=
-                contact.pair==native::Pair{plane_gpu,plane_body_gpu} &&
-                contact.count>0u;
             const native::Pair capped_pair{capped_fixed_gpu,capped_gpu};
             if(!(contact.pair==capped_pair)) {
                 saw_correlated_multi_point |= contact.count>1u;
