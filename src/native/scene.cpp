@@ -6992,6 +6992,7 @@ void Scene::prepare_constraints(float seconds) {
             prep.rigid_contact_bias=rigid_contact_bias;
             prep.bounce_threshold=bounce_threshold;
             prep.acceleration_spring=acceleration_spring?1u:0u;
+            prep.max_contact_impulse=static_cast<double>(pair_max_impulse);
             // The PCM source requests preserve the canonical pair order.
             // Reuse the live producer's Gu geometry from its device arena.
             const auto source_pair=std::lower_bound(
