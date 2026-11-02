@@ -47,13 +47,13 @@ public:
         SourceSapDmaNative& stream,physx::PxgHeapMemoryAllocator& allocator,
         const SourceScGpuBroadphaseProducerNative& sc,
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
-        compute::ShaderBinary candidate,compute::ShaderBinary reset,
-        compute::ShaderBinary compact,compute::ShaderBinary epa,
+        compute::ShaderBinary candidate,compute::ShaderBinary compact,
+        compute::ShaderBinary epa,
         compute::ShaderBinary contact_stream)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           candidates_stage_(context,std::move(candidate)),
-          sparse_stage_(context,std::move(reset),std::move(compact)),
+          sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
           contact_stream_stage_(context,std::move(contact_stream)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -136,7 +136,8 @@ public:
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            pair_count,shape_capacity,candidate_count,edge_capacity);
+            indirect_address_,pair_count,shape_capacity,
+            candidate_count,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
             indirect_address_,pair_count);

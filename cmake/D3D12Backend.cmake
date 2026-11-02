@@ -496,24 +496,13 @@ if(FYZZXYZZY_BUILD_D3D12)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
-    set(FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_reset_native.dxil")
     set(FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_epa_compact_native.dxil")
-    foreach(ENTRY reset compact)
-      if(ENTRY STREQUAL "reset")
-        set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}")
-        set(EPA_COMPILE_ARGS FLAGS -DSOURCE_PCM_EPA_RESET=1)
-      else()
-        set(EPA_OUTPUT "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
-        set(EPA_COMPILE_ARGS)
-      endif()
-      fyzzxyzzy_compile_hlsl("${EPA_OUTPUT}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
-        cs_6_0 "${ENTRY}" ${EPA_COMPILE_ARGS})
-    endforeach()
+    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_epa_work_native.hlsl"
+      cs_6_0 compact)
     add_custom_target(fyzzxyzzy_source_pcm_epa_work_shader_d3d12
-      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
+      DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_epa_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
@@ -540,7 +529,7 @@ if(FYZZXYZZY_BUILD_D3D12)
       INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src"
       LIBRARIES FyzzXYZZY::ComputeD3D12 fyzzxyzzy_source_gpu_primitives_d3d12
       DEPENDS fyzzxyzzy_source_sc_box_bounds_shader_d3d12 fyzzxyzzy_source_pcm_box_candidates_shader_d3d12 fyzzxyzzy_source_pcm_epa_work_shader_d3d12 fyzzxyzzy_source_pcm_epa_shader_d3d12
-      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+      ARGS "${FYZZXYZZY_SC_BOX_BOUNDS_DXIL}" "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}" "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
     set_tests_properties(fyzzxyzzy_source_pcm_box_candidates_d3d12 PROPERTIES
       ENVIRONMENT "FYZZXYZZY_D3D12_DEBUG=1")
 
@@ -870,13 +859,12 @@ if(FYZZXYZZY_BUILD_D3D12)
       fyzzxyzzy_native_gpu_sap_shaders_d3d12)
     set(_pcm_binaries
       "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_RESET}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
-    set(_pcm_stages Candidates EpaReset EpaCompact EpaContact ContactStream)
+    set(_pcm_stages Candidates EpaCompact EpaContact ContactStream)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 4)
+    foreach(_idx RANGE 0 3)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)

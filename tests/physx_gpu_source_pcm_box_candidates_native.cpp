@@ -39,8 +39,8 @@ ShaderBinary shader(const char* name) {
     return result;
 }
 void verify(Context& context,const char* transform_shader,
-            const char* candidate_shader,const char* reset_shader,
-            const char* compact_shader,const char* epa_shader) {
+            const char* candidate_shader,const char* compact_shader,
+            const char* epa_shader) {
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     std::array<SourceScBoxTransformInputNative,8> boxes{{
@@ -181,15 +181,14 @@ void verify(Context& context,const char* transform_shader,
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
-    SourcePcmSparseEpaNativeStage sparse(
-        context,shader(reset_shader),shader(compact_shader));
+    SourcePcmSparseEpaNativeStage sparse(context,shader(compact_shader));
     SourcePcmEpaNativeStage epa(context,shader(epa_shader));
     {
         SourceSapDmaNative stream(context,addresses);
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),
                    edge_capacity);
@@ -218,6 +217,13 @@ void verify(Context& context,const char* transform_shader,
     std::array<std::uint32_t,3> indirect{};
     std::vector<std::uint32_t> work(pairs.size());
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
+    const std::array<std::uint32_t,3> empty_indirect{0u,1u,1u};
+    // Standalone synthetic worklists initialize the same argument record
+    // that the production PCM candidates initialize on device.
+    const auto seed_compaction=[&] {
+        context.upload(args_buffer,0u,
+                       empty_indirect.data(),sizeof(empty_indirect));
+    };
     context.download(root,work_offset,work.data(),work.size()*4u);
     const auto verify_work=[&](const auto& source_results) {
         const auto expected=std::count_if(
@@ -246,6 +252,7 @@ void verify(Context& context,const char* transform_shader,
     context.upload(root,result_offset,admitted_results.data(),
                    sizeof(admitted_results));
     {
+        seed_compaction();
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
@@ -254,24 +261,25 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     context.download(root,work_offset,work.data(),work.size()*4u);
     verify_work(admitted_results);
-    // No Sc managers are allocated on a zero-pair frame. The indirect
-    // argument reset still executes against its own GPU buffer.
+    // Empty Sc streams have no EPA consumer or GPU reset dispatch.
+    const auto prior_indirect=indirect;
     {
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,0u,0u,args_data,0u);
         stream.wait_at_fetch();
+        require(stream.submission_stats().command_batches==0u,
+                "Empty Sc EPA stream submitted an unnecessary GPU dispatch");
     }
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
-    require(indirect==std::array<std::uint32_t,3>{0u,1u,1u},
-            "Zero-pair Sc frame retained an earlier EPA indirect count");
-    // Reuse the same native argument allocation on an empty frame. No
-    // stale atomic count may cause the EPA indirect dispatch to execute.
+    require(indirect==prior_indirect,
+            "Empty Sc pair stream modified unconsumed EPA arguments");
     auto resolved_results=results;
     for(auto& result:resolved_results)
         if(result.status==3u)result.status=0u;
     context.upload(root,result_offset,resolved_results.data(),
                    sizeof(resolved_results));
     {
+        seed_compaction();
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
@@ -429,7 +437,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -442,7 +450,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -460,7 +468,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -494,7 +502,7 @@ void verify(Context& context,const char* transform_shader,
         context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -535,7 +543,7 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -564,7 +572,7 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -614,6 +622,7 @@ void verify(Context& context,const char* transform_shader,
     context.upload(root,edge_offset+edge*sizeof(pending_cache),
                    &pending_cache,sizeof(pending_cache));
     {
+        seed_compaction();
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
@@ -654,7 +663,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,
+                   result_data,candidate_data,edge_data,args_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -707,6 +716,7 @@ void verify(Context& context,const char* transform_shader,
     context.upload(root,edge_offset+far_edge*sizeof(far_cache),
                    &far_cache,sizeof(far_cache));
     {
+        seed_compaction();
         SourceSapDmaNative stream(context,addresses);
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
@@ -744,14 +754,14 @@ void verify(Context& context,const char* transform_shader,
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==6,
-                "Expected box transforms, PCM, EPA work and contact shaders");
+        require(argc==5,
+                "Expected box transforms, PCM, EPA compact and contact shaders");
 #ifdef FYZZXYZZY_TEST_D3D12
         Context context(Backend::D3D12);
 #else
         Context context(Backend::Vulkan);
 #endif
-        verify(context,argv[1],argv[2],argv[3],argv[4],argv[5]);
+        verify(context,argv[1],argv[2],argv[3],argv[4]);
         std::cout<<"Source PCM GPU box candidate parity PASS\n";
         return 0;
     }catch(const std::exception& error) {
