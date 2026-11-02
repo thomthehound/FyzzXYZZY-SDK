@@ -144,10 +144,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         return;
     }
-    // Independent Gu normal rows are prepared in parallel after the
-    // source Sc/Dy friction correlation has fixed their order. The same
-    // task group then executes the original PGS partitions and iterations.
-    for(uint i=ranges.x+lane.x;i<ranges.y;i+=128u) {
+    // Four lanes prepare one Sc-owned contact manager. Source Gu PCM
+    // emits up to four witnesses per box pair, and CPU Gu managers may
+    // use multiple four-contact iterations. Distribute the numerical
+    // row preparation without changing manager, Gu point or patch order.
+    for(uint i=ranges.x+(lane.x>>2u);i<ranges.y;i+=32u) {
         uint4 desc=arena.Load4(p.descriptorBias+i*16u);
         if(desc.w==1u)continue;
         if(desc.x>=p.manifoldCount) {
@@ -166,12 +167,30 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
             arena.InterlockedOr(endError,4096u);
             continue;
         }
-        for(uint c=0u;c<manager.w;++c) {
+        for(uint c=lane.x&3u;c<manager.w;c+=4u) {
             uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
             prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
         }
-        for(uint patchIndex=manager.x;
-            patchIndex<manager.x+manager.y;++patchIndex) {
+    }
+    // Friction patch preparation reads each manager's first Gu normal,
+    // so all contact-row writes must be visible before any patch reads.
+    AllMemoryBarrierWithGroupSync();
+    for(uint i=ranges.x+(lane.x>>2u);i<ranges.y;i+=32u) {
+        uint4 desc=arena.Load4(p.descriptorBias+i*16u);
+        if(desc.w==1u)continue;
+        if(desc.x>=p.manifoldCount)continue;
+        uint mo=p.manifoldBias+desc.x*20u;
+        uint4 manager=arena.Load4(mo);
+        if(manager.y==0u)continue;
+        uint pairIndex=arena.Load(mo+16u);
+        if(pairIndex>=p.prepCount ||
+           manager.x>p.patchCount ||
+           manager.y>p.patchCount-manager.x ||
+           manager.z>p.orderCount ||
+           manager.w>p.orderCount-manager.z)
+            continue;
+        for(uint patchIndex=manager.x+(lane.x&3u);
+            patchIndex<manager.x+manager.y;patchIndex+=4u) {
             uint4 patch=arena.Load4(p.patchBias+patchIndex*32u);
             if(patch.x>p.frictionCount || patch.z>2u ||
                patch.z*2u>p.frictionCount-patch.x) {
