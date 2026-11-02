@@ -102,10 +102,6 @@ public:
             0u,1u,5u,6u,7u,8u};
         constexpr std::array<std::size_t,6> output_strides{
             48u,8u,4u,8u,20u,4u};
-        constexpr std::array<std::size_t,6> input_strides{
-            52u,80u,36u,88u,72u,32u};
-        constexpr std::array<std::size_t,6> field_offsets{
-            0u,72u,32u,72u,64u,12u};
         static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==72u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
                       offsetof(native::GpuDyContactPoint,applied_force)==72u &&
@@ -126,7 +122,8 @@ public:
         std::array<std::size_t,count> offsets{};
         // Leave the source input addresses 128-byte aligned. One packed
         // output view precedes them, so readback needs only a single copy.
-        std::size_t total=(output_bytes+127u)&~std::size_t(127u);
+        const std::size_t upload_begin=(output_bytes+127u)&~std::size_t(127u);
+        std::size_t total=upload_begin;
         for(const auto i:order) {
             const auto view_bytes=std::max<std::size_t>(bytes[i],4u);
             if(total>std::numeric_limits<std::uint32_t>::max()-128u ||
@@ -140,30 +137,14 @@ public:
         for(std::size_t i=0;i<count;++i)
             if(bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
-        // Seed unmatched source slots with their original values. A
-        // descriptor skipped by source preparation must retain its input
-        // writeback, not uninitialized device memory.
-        for(std::size_t i=0;i<output_inputs.size();++i) {
-            const auto index=output_inputs[i];
-            const auto* source=static_cast<const std::uint8_t*>(sources[index]);
-            for(std::size_t j=0;j<elements[index];++j) {
-                auto* output=host_.data()+result_offsets[i]+
-                    j*output_strides[i];
-                const auto* input=source+j*input_strides[i];
-                if(index==7u) {
-                    // Gu friction writeback needs both source tangent
-                    // directions and their final accumulated impulses.
-                    std::memcpy(output,input,12u);
-                    std::memcpy(output+12u,input+64u,8u);
-                } else {
-                    std::memcpy(output,input+field_offsets[i],
-                                output_strides[i]);
-                }
-            }
-        }
+        // The CPU retains unexecuted source rows. Only ranges owned by
+        // active Dy tasks consume GPU writeback; the compact output region
+        // needs no HtoD initialization.
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
-        stream_.queue_uploads({{address,host_.data(),host_.size()}});
+        stream_.queue_uploads({{
+            address+upload_begin,host_.data()+upload_begin,
+            total-upload_begin}});
         std::array<std::uint32_t,31> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -204,24 +185,68 @@ public:
         for(const auto& task:tasks)
             if(task.error!=0u)
                 throw std::overflow_error("Source Dy GPU solver rejected a row");
-        for(std::size_t i=0;i<bodies.size();++i)
-            std::memcpy(&bodies[i],
-                host_.data()+result_offsets[0]+i*48u,48u);
-        for(std::size_t i=0;i<rows.size();++i)
-            std::memcpy(&rows[i].applied_force,
-                host_.data()+result_offsets[1]+i*8u,8u);
-        for(std::size_t i=0;i<contacts.size();++i)
-            std::memcpy(&contacts[i].applied_force,
-                host_.data()+result_offsets[3]+i*8u,8u);
-        for(std::size_t i=0;i<friction.size();++i) {
-            const auto* result=host_.data()+result_offsets[4]+i*20u;
-            std::memcpy(&friction[i].tangent,result,12u);
-            std::memcpy(&friction[i].applied_force,result+12u,8u);
+        // The source task graph identifies every GPU-written slot. Rows
+        // excluded from its descriptor/ordinal ranges retain their original
+        // CPU values rather than requiring device-side output seeding.
+        for(const auto& task:tasks) {
+            for(std::size_t i=task.body_begin;i<task.body_end;++i) {
+                const auto index=body_ordinals[i];
+                if(index>=bodies.size())
+                    throw std::logic_error("Source Dy body writeback index invalid");
+                std::memcpy(&bodies[index],
+                    host_.data()+result_offsets[0]+index*48u,48u);
+            }
+            for(std::size_t i=task.descriptor_begin;
+                i<task.descriptor_end;++i) {
+                const auto& desc=descriptors[i];
+                if(desc.distance==1u) {
+                    if(desc.index>=rows.size())
+                        throw std::logic_error("Source Dy row writeback index invalid");
+                    std::memcpy(&rows[desc.index].applied_force,
+                        host_.data()+result_offsets[1]+desc.index*8u,8u);
+                    continue;
+                }
+                if(desc.index>=manifolds.size())
+                    throw std::logic_error("Source Dy manager writeback index invalid");
+                const auto& manager=manifolds[desc.index];
+                if(!manager.patch_count)continue;
+                if(manager.order_offset>contact_order.size() ||
+                   manager.contact_count>
+                       contact_order.size()-manager.order_offset ||
+                   manager.patch_offset>patches.size() ||
+                   manager.patch_count>patches.size()-manager.patch_offset)
+                    throw std::logic_error("Source Dy contact writeback range invalid");
+                for(std::size_t j=manager.order_offset;
+                    j<manager.order_offset+manager.contact_count;++j) {
+                    const auto index=contact_order[j];
+                    if(index>=contacts.size())
+                        throw std::logic_error("Source Dy contact writeback index invalid");
+                    std::memcpy(&contacts[index].applied_force,
+                        host_.data()+result_offsets[3]+index*8u,8u);
+                }
+                for(std::size_t j=manager.patch_offset;
+                    j<manager.patch_offset+manager.patch_count;++j) {
+                    const auto& patch=patches[j];
+                    // The final source velocity pass writes only live
+                    // friction anchors; zero-anchor patches retain history.
+                    if(!patch.anchor_count)continue;
+                    if(patch.anchor_count>2u ||
+                       patch.row_offset>friction.size() ||
+                       patch.anchor_count*2u>friction.size()-patch.row_offset)
+                        throw std::logic_error("Source Dy friction writeback range invalid");
+                    for(std::size_t k=patch.row_offset;
+                        k<patch.row_offset+patch.anchor_count*2u;++k) {
+                        const auto* result=
+                            host_.data()+result_offsets[4]+k*20u;
+                        std::memcpy(&friction[k].tangent,result,12u);
+                        std::memcpy(&friction[k].applied_force,result+12u,8u);
+                    }
+                    std::memcpy(&patches[j].broken,
+                        host_.data()+result_offsets[5]+j*4u,4u);
+                }
+            }
         }
-        for(std::size_t i=0;i<patches.size();++i)
-            std::memcpy(&patches[i].broken,
-                host_.data()+result_offsets[5]+i*4u,4u);
-        last_transfer_bytes_={total,output_bytes};
+        last_transfer_bytes_={total-upload_begin,output_bytes};
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
