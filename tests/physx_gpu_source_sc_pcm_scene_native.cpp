@@ -41,9 +41,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
     const auto gpu_b=gpu.add_static_box(
         {0.5f,0.5f,0.5f},{0.8f,1.0f,0.0f});
-    const auto check=[&](bool contact) {
-        cpu.advance_collision();
-        gpu.advance_collision();
+    const auto check=[&](bool contact,bool force=false) {
+        cpu.advance_collision(force);
+        gpu.advance_collision(force);
         require(cpu.pairs().size()==gpu.pairs().size() &&
                 cpu.contacts().size()==gpu.contacts().size(),
                 "Sc GPU PCM pair or contact manager publication differs");
@@ -86,6 +86,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::isfinite(direct[0].normal.x) &&
             std::isfinite(direct[0].points[0].separation),
             "Direct Sc GPU PCM readback disagrees with the shader record");
+    // A quiet refresh must reuse Sc's original device pair descriptor:
+    // the GPU still runs PCM, but no pair-list HtoD submission is needed.
+    std::array<native::GpuPcmBoxResult,1> repeated{};
+    producer->generate_gpu_pcm_box_contacts(request,repeated);
+    require(producer->pcm_pair_upload_bytes()==0u &&
+            repeated[0].status==0u && repeated[0].edge==edge &&
+            repeated[0].count>0u,
+            "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
     const std::array<native::GpuPcmBoxPair,1> reset_request{{
@@ -93,6 +101,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    require(producer->pcm_pair_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "Source PCM reset did not refresh its GPU pair descriptor");
     require(reset[0].edge==edge && reset[0].status==0u &&
             reset[0].count>0u &&
             (reset[0].selected_and_regenerated&0x80000000u)!=0u,
@@ -117,6 +128,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
+    // Quiet advance_collision() does not rerun Gu PCM. Force one real
+    // Sc/Gu refresh after the authored pose invalidated its cache, then
+    // require the next identical forced refresh to reuse the GPU pair
+    // buffer rather than reading a stale transfer counter.
+    check(true,true);
+    check(true,true);
+    require(producer->pcm_pair_upload_bytes()==0u,
+            "Unchanged Sc PCM refresh re-uploaded an admitted pair");
     // The device stream reconstructs the original Gu B-local witnesses
     // in world space, including rotated source-order second shapes.
     constexpr float angle=0.08f;
@@ -159,11 +178,13 @@ void verify_sparse_contact_stream(
     using namespace fyzz;
     native::Scene cpu;
     native::Scene gpu;
-    gpu.set_gpu_broadphase(
-        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
             128u,128u,std::nullopt,
-            load_native_gpu_pcm_shaders(backend,pcm)));
+            load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
     std::array<BodyId,12> moving_cpu{},moving_gpu{};
     std::array<BodyId,12> fixed_cpu{},fixed_gpu{};
     for(std::uint32_t i=0u;i<12u;++i) {
@@ -201,6 +222,9 @@ void verify_sparse_contact_stream(
     gpu.advance_collision();
     require(cpu.contacts().size()==12u && gpu.contacts().size()==12u,
             "Sparse GPU PCM fixture did not admit original Sc managers");
+    require(producer->pcm_pair_upload_bytes()==
+                12u*sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "Initial sparse PCM manager admission did not upload source pairs");
     check_transitions(12u,0u);
     check_ordinals();
     // Physically retire disjoint managers before their BP EdgeIndex
@@ -279,6 +303,9 @@ void verify_sparse_contact_stream(
             gpu.contact_edge_index(
                 {moving_gpu.back(),fixed_gpu.back()})==retained_edge,
             "Growing source GPU PCM readback lost an existing Sc contact manager");
+    require(producer->pcm_pair_upload_bytes()==
+                (added+1u)*sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "PCM pair-buffer growth did not refresh all source manager descriptors");
     check_ordinals();
     for(std::size_t i=0;i<cpu.contacts().size();++i) {
         const auto& prior=cpu.contacts()[i];
