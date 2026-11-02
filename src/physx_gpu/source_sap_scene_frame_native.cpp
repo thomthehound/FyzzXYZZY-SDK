@@ -171,13 +171,32 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
     compute::Context& context) {
     const SourceSapVolumeActorLifetimeNative volume_lifetime{
         members.volume_to_actor,members.aabb_manager.volume_data};
-    stream.wait_at_fetch();
+    // The source queue and Context readback queue are ordered. Submit
+    // the complete SAP/aggregate producer first; its descriptor readback
+    // is also the GPU completion fence. Reaping source submission tokens
+    // afterward cannot introduce a second device wait.
+    stream.submit();
     std::optional<PxgAabbSourceMembersNative::AggregateFetchSnapshot>
         aggregate_snapshot;
-    std::array<SourceSapMappedReportSpan,2> aggregate_payloads{};
+    physx::PxgBroadPhaseDesc descriptor_snapshot{};
     if(members.aabb_manager.has_aggregates && !members.abort_mode) {
+        // The aggregate snapshot already contains the original SAP
+        // descriptor and the three aggregate report counters.
         aggregate_snapshot=members.aabb_owner->download_aggregate_fetch_snapshot(
             context,addresses);
+    } else {
+        const auto source=addresses.resolve(
+            members.dma.descriptor_gpu_buffers.broadphase.getDevicePtr(),
+            sizeof(descriptor_snapshot));
+        context.download(source.buffer,source.offset,
+                         &descriptor_snapshot,sizeof(descriptor_snapshot));
+    }
+    // The synchronous Context readback completed all prior source work.
+    // Retire its original upload/command tokens before touching direct
+    // mapped report arrays or preparing source bitmap retirement.
+    stream.wait_at_fetch();
+    std::array<SourceSapMappedReportSpan,2> aggregate_payloads{};
+    if(aggregate_snapshot) {
         aggregate_payloads=members.aabb_owner->validated_aggregate_report_spans(
             aggregate_snapshot->counts,aggregate_snapshot->pair_overflow);
     }
@@ -254,7 +273,8 @@ SourceSapSceneFrameNativeResult fetch_source_sap_scene_frame_native(
                 source_found,source_lost,aggregate_found,aggregate_lost,
                 members.volume_to_actor,members.found,members.lost);
         },
-        aggregate_snapshot ? &aggregate_snapshot->broadphase : nullptr,
+        aggregate_snapshot ? &aggregate_snapshot->broadphase
+                           : &descriptor_snapshot,
         aggregate_snapshot
             ? std::span<const SourceSapMappedReportSpan>(aggregate_payloads)
             : std::span<const SourceSapMappedReportSpan>{});
