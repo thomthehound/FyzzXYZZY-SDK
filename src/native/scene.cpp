@@ -6992,6 +6992,7 @@ void Scene::prepare_constraints(float seconds) {
             prep.rigid_contact_bias=rigid_contact_bias;
             prep.bounce_threshold=bounce_threshold;
             prep.acceleration_spring=acceleration_spring?1u:0u;
+            prep.max_contact_impulse=static_cast<double>(pair_max_impulse);
             // The PCM source requests preserve the canonical pair order.
             // Reuse the live producer's Gu geometry from its device arena.
             const auto source_pair=std::lower_bound(
@@ -7350,24 +7351,10 @@ void Scene::solve_gpu_distance_constraints() {
             narrow(task.solver_body_end),
             task.position_iterations,task.velocity_iterations,0u};
     }
-    // DyContactPrep retains Gu-indexed force rows and a distinct
-    // correlated patch walk for the original source PGS order.
+    // DyContactPrep retains Gu-indexed force rows and the original
+    // correlated patch walk. PCM rows are constructed entirely on device;
+    // only CPU-owned Gu pairs need source row staging.
     gpu_dy_contacts_.resize(solver_contact_points_.size());
-    for(std::size_t i=0;i<solver_contact_points_.size();++i) {
-        const auto& from=solver_contact_points_[i];
-        auto& out=gpu_dy_contacts_[i];
-        pack(out.normal,from.normal);
-        pack(out.angular_a,from.ra_x_n_sqrt_inertia);
-        pack(out.angular_b,from.rb_x_n_sqrt_inertia);
-        out.velocity_multiplier=from.velocity_multiplier;
-        out.impulse_multiplier=from.impulse_multiplier;
-        out.biased_error=from.biased_error;
-        out.unbiased_error=from.unbiased_error;
-        out.applied_force=from.applied_force;
-        out.max_impulse=from.max_impulse;
-    }
-    // Populate raw Gu positions and signed separations in the fields
-    // that the GPU preparation phase overwrites with angular Jacobians.
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(!m.friction_patch_count)continue;
@@ -7377,15 +7364,19 @@ void Scene::solve_gpu_distance_constraints() {
         const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
         if(prep_index>=gpu_dy_contact_prep_pairs_.size())
             throw std::logic_error("Source GPU Dy contact pair index invalid");
-        // Sc already publishes these Gu contacts for islands and user
-        // results. Dy retrieves PCM geometry from that same device stream.
-        if(gpu_dy_contact_prep_pairs_[prep_index].pcm_pair_index==
-           0xffffffffu) {
-            for(std::size_t j=0;j<m.count;++j) {
-                auto& row=gpu_dy_contacts_[m.solver_offset+j];
-                pack(row.angular_a,m.points[j].position);
-                row.angular_b[0]=m.points[j].separation;
-            }
+        if(gpu_dy_contact_prep_pairs_[prep_index].pcm_pair_index!=
+           0xffffffffu)continue;
+        // The GPU preparation replaces the raw position/separation with
+        // angular Jacobians and initializes every numeric solver field.
+        for(std::size_t j=0;j<m.count;++j) {
+            const auto index=m.solver_offset+j;
+            const auto& from=solver_contact_points_[index];
+            auto& row=gpu_dy_contacts_[index];
+            pack(row.normal,from.normal);
+            pack(row.angular_a,m.points[j].position);
+            row.angular_b[0]=m.points[j].separation;
+            row.applied_force=from.applied_force;
+            row.max_impulse=from.max_impulse;
         }
     }
     gpu_dy_friction_.resize(solver_friction_rows_.size());

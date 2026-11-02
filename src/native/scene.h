@@ -196,8 +196,10 @@ struct GpuDyContactPrepPair {
     std::uint32_t acceleration_spring=0u;
     // Source Sc PCM pair ordinal, or no device Gu contact producer.
     std::uint32_t pcm_pair_index=0xffffffffu,pcm_edge=0u;
+    // Source extractContacts's body-level contact impulse limit.
+    double max_contact_impulse=0.0;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==240u);
+static_assert(sizeof(GpuDyContactPrepPair)==248u);
 
 class GpuBroadphaseProducer {
 public:

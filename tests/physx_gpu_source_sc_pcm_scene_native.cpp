@@ -389,8 +389,11 @@ void verify_gpu_coupled_solver(
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
-        saw_device_pcm_contact_rows |=
-            producer->dy_pcm_device_contact_rows()>0u;
+        const auto device_rows=producer->dy_pcm_device_contact_rows();
+        saw_device_pcm_contact_rows |= device_rows>0u;
+        require(producer->dy_pcm_contact_upload_bytes_saved()==
+                    device_rows*sizeof(native::GpuDyContactPoint),
+                "Source PCM-derived Dy contacts still upload CPU shadow rows");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "Source coupled Sc scene never dispatched the GPU Dy solver");
         require(cpu.contacts().size()==gpu.contacts().size() &&
@@ -474,7 +477,7 @@ void verify_gpu_coupled_solver(
         }
     }
     require(saw_device_pcm_contact_rows,
-        "Source Dy did not read producer-resident PCM contacts");
+        "Source Dy did not consume device-owned PCM contact rows");
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
@@ -487,6 +490,74 @@ void verify_gpu_coupled_solver(
              <<" max_velocity_abs_error="<<max_velocity_error
              <<" host_upload_bytes="<<uploaded_bytes
              <<" host_download_bytes="<<downloaded_bytes<<'\n';
+}
+
+// The optional legacy Gu generator remains the source authority when
+// selected before admission. Its CPU-prepared rows must still be uploaded
+// to the same actual GPU Dy solver, without PCM-origin row omission.
+void verify_cpu_gu_gpu_dy_solver(
+    fyzz::compute::Backend backend,const char* sap,
+    const char* pcm,const char* dy_shader) {
+    using namespace fyzz;
+    std::ifstream input(dy_shader,std::ios::binary);
+    require(bool(input),"Compiled source Dy shader unavailable");
+    std::vector<char> binary(
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{});
+    compute::ShaderBinary shader{};
+    shader.format=backend==compute::Backend::Vulkan
+        ? compute::ShaderFormat::Spirv:compute::ShaderFormat::Dxil;
+    shader.bytes.assign(binary.begin(),binary.end());
+    native::Scene cpu,gpu;
+    cpu.set_pcm_box_box(false);
+    gpu.set_pcm_box_box(false);
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+            backend,load_native_gpu_sap_shaders(backend,sap),
+            128u,128u,std::nullopt,
+            load_native_gpu_pcm_shaders(backend,pcm),std::move(shader));
+    auto* producer=owner.get();
+    require(producer->has_gpu_pcm_box() && producer->has_gpu_dy_distance(),
+        "Source legacy Gu/GPU Dy regression has no installed GPU solver");
+    gpu.set_gpu_broadphase(std::move(owner));
+    const auto fixed_cpu=cpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto fixed_gpu=gpu.add_static_box(
+        {0.5f,0.5f,0.5f},{0.f,0.f,0.f});
+    const auto moving_cpu=cpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.84f,0.f},1.f);
+    const auto moving_gpu=gpu.add_dynamic_box(
+        {0.5f,0.5f,0.5f},{0.f,0.84f,0.f},1.f);
+    constexpr float dt=1.f/120.f;
+    bool saw_contact=false;
+    for(std::uint32_t frame=0;frame<4u;++frame) {
+        cpu.step(dt);
+        gpu.step(dt);
+        const native::Pair expected_cpu{fixed_cpu,moving_cpu};
+        const native::Pair expected_gpu{fixed_gpu,moving_gpu};
+        const auto touching=[](auto contacts,native::Pair pair) {
+            return std::any_of(contacts.begin(),contacts.end(),
+                [pair](const auto& m) {
+                    return m.pair==pair && m.count>0u;
+                });
+        };
+        const bool reference=touching(cpu.contacts(),expected_cpu);
+        const bool actual=touching(gpu.contacts(),expected_gpu);
+        saw_contact|=actual;
+        require(reference==actual,
+            "Source GPU Dy legacy Gu touch differs from CPU");
+        require(producer->dy_pcm_device_contact_rows()==0u &&
+                producer->dy_pcm_contact_upload_bytes_saved()==0u,
+            "CPU-owned Gu rows were omitted from source Dy GPU upload");
+        require(producer->dy_distance_dispatch_count()==frame+1u,
+            "CPU Gu contact rows did not enter source GPU Dy solver");
+        const auto a=cpu.body_state(moving_cpu);
+        const auto b=gpu.body_state(moving_gpu);
+        require(std::fabs(a.position.y-b.position.y)<0.002f &&
+                std::fabs(a.velocity.y-b.velocity.y)<0.002f,
+            "Source GPU Dy legacy Gu contact solve diverged from CPU");
+    }
+    require(saw_contact,"Source legacy Gu fixture never generated a contact");
 }
 
 // The explicitly installed device Dy 1D stage must replace the
@@ -602,7 +673,8 @@ int main(int argc,char** argv) {
         const std::string_view scenario=argc==5?argv[4]:"all";
         require(scenario=="all" || scenario=="scene" ||
                 scenario=="sparse_contacts" || scenario=="coupled_stack" ||
-                scenario=="coupled_solver" || scenario=="distance_solver",
+                scenario=="coupled_solver" || scenario=="legacy_gu_solver" ||
+                scenario=="distance_solver",
                 "Unknown GPU scene regression scenario");
 #ifdef FYZZXYZZY_TEST_D3D12
         constexpr auto backend=fyzz::compute::Backend::D3D12;
@@ -625,6 +697,10 @@ int main(int argc,char** argv) {
                         verify_gpu_coupled_solver(
                             backend,argv[1],argv[2],argv[3],spring);
                 });
+        if(scenario=="all" || scenario=="legacy_gu_solver")
+            fyzz::tests::measure_gpu_case("sc_pcm","legacy_gu_solver",
+                [&]{verify_cpu_gu_gpu_dy_solver(
+                    backend,argv[1],argv[2],argv[3]);});
         if(scenario=="all" || scenario=="distance_solver")
             fyzz::tests::measure_gpu_case("sc_pcm","distance_solver",
                 [&]{verify_gpu_distance_solver(backend,argv[1],argv[3]);});

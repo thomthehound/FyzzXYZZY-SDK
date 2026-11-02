@@ -83,6 +83,8 @@ public:
             return static_cast<std::uint32_t>(value);
         };
         std::size_t reused_pcm_rows=0u;
+        skipped_contact_ranges_.clear();
+        skipped_contact_ranges_.reserve(manifolds.size());
         for(const auto& pair:contact_prep)
             if(pair.pcm_pair_index!=0xffffffffu) {
                 if(!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
@@ -95,9 +97,24 @@ public:
                 if(manager.prep_index>=contact_prep.size())
                     throw std::logic_error(
                         "Source Dy PCM preparation index is invalid");
-                if(contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu)
+                if(contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu) {
+                    if(manager.order_offset>contacts.size() ||
+                       manager.contact_count>
+                           contacts.size()-manager.order_offset)
+                        throw std::logic_error(
+                            "Source Dy PCM contact input range invalid");
+                    const auto end=manager.order_offset+manager.contact_count;
+                    skipped_contact_ranges_.emplace_back(manager.order_offset,end);
                     reused_pcm_rows+=manager.contact_count;
+                }
             }
+        std::sort(skipped_contact_ranges_.begin(),
+                  skipped_contact_ranges_.end());
+        for(std::size_t i=1;i<skipped_contact_ranges_.size();++i)
+            if(skipped_contact_ranges_[i].first<
+               skipped_contact_ranges_[i-1u].second)
+                throw std::logic_error(
+                    "Source Dy PCM contact manager ranges overlap");
         constexpr std::size_t count=12u;
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
@@ -154,16 +171,49 @@ public:
         narrow(total);
         host_.resize(total);
         for(std::size_t i=0;i<count;++i)
-            if(bytes[i])
+            if(i!=6u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
-        // The CPU retains unexecuted source rows. Only ranges owned by
-        // active Dy tasks consume GPU writeback; the compact output region
-        // needs no HtoD initialization.
+        // The source PCM output already resides on this device. Its
+        // contact rows are fully initialized by Dy's preparation before
+        // the PGS solver reads them, so do not copy those rows HtoD.
+        const auto* cpu_contacts=
+            static_cast<const std::uint8_t*>(sources[6]);
+        std::size_t copied_contact_end=0u;
+        for(const auto [begin,end]:skipped_contact_ranges_) {
+            if(begin>copied_contact_end)
+                std::memcpy(host_.data()+offsets[6]+copied_contact_end*88u,
+                    cpu_contacts+copied_contact_end*88u,
+                    (begin-copied_contact_end)*88u);
+            copied_contact_end=end;
+        }
+        if(copied_contact_end<contacts.size())
+            std::memcpy(host_.data()+offsets[6]+copied_contact_end*88u,
+                cpu_contacts+copied_contact_end*88u,
+                (contacts.size()-copied_contact_end)*88u);
+        // Retain the one source-ordered native upload batch. Omit only
+        // the actual PCM-derived Gu rows; CPU-generated rows and all
+        // source task/patch/solver input spans remain unchanged.
         arena_.allocate(total,PX_FL);
         const auto address=arena_.getDevicePtr();
-        stream_.queue_uploads({{
-            address+upload_begin,host_.data()+upload_begin,
-            total-upload_begin}});
+        auto& uploads=stream_.upload_scratch();
+        std::size_t uploaded_bytes=0u;
+        std::size_t cursor=upload_begin;
+        const auto append_upload=[&](std::size_t end) {
+            if(end>cursor) {
+                uploads.push_back({address+cursor,host_.data()+cursor,
+                                   end-cursor});
+                uploaded_bytes+=end-cursor;
+            }
+            cursor=end;
+        };
+        for(const auto [begin,end]:skipped_contact_ranges_) {
+            const auto skip_begin=offsets[6]+begin*88u;
+            const auto skip_end=offsets[6]+end*88u;
+            append_upload(skip_begin);
+            cursor=skip_end;
+        }
+        append_upload(total);
+        stream_.queue_uploads(uploads);
         std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
@@ -273,14 +323,18 @@ public:
                 }
             }
         }
-        last_transfer_bytes_={total-upload_begin,output_bytes};
+        last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
+        last_omitted_pcm_upload_bytes_=total-upload_begin-uploaded_bytes;
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
     }
     std::size_t last_reused_pcm_contact_rows() const noexcept {
         return last_reused_pcm_contact_rows_;
+    }
+    std::size_t last_omitted_pcm_upload_bytes() const noexcept {
+        return last_omitted_pcm_upload_bytes_;
     }
 private:
     compute::Context& context_;
@@ -291,9 +345,11 @@ private:
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
+    std::vector<std::pair<std::size_t,std::size_t>> skipped_contact_ranges_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
     std::size_t last_reused_pcm_contact_rows_=0u;
+    std::size_t last_omitted_pcm_upload_bytes_=0u;
 };
 
 } // namespace fyzz::physx_gpu
