@@ -11,7 +11,7 @@ RWByteAddressBuffer arena : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
-RWByteAddressBuffer pcmContacts : register(u1,space0);
+ByteAddressBuffer pcmContacts : register(t0,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
