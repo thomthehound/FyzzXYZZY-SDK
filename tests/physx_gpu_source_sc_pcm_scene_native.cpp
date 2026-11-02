@@ -177,10 +177,54 @@ void verify_sparse_contact_stream(
         fixed_gpu[i]=gpu.add_static_box(
             {0.5f,0.5f,0.5f},{x+0.8f,1.f,0.f});
     }
+    const auto check_transitions=[&](std::size_t found,std::size_t lost) {
+        const auto cf=cpu.found_contacts(),gf=gpu.found_contacts();
+        const auto cl=cpu.lost_contacts(),gl=gpu.lost_contacts();
+        require(cf.size()==found && gf.size()==found &&
+                cl.size()==lost && gl.size()==lost &&
+                std::equal(cf.begin(),cf.end(),gf.begin()) &&
+                std::equal(cl.begin(),cl.end(),gl.begin()) &&
+                std::is_sorted(gf.begin(),gf.end()) &&
+                std::is_sorted(gl.begin(),gl.end()),
+            "Sc PCM single-pass touch transitions disagree with source order");
+    };
+    const auto check_ordinals=[&] {
+        require(cpu.contacts().size()==gpu.contacts().size(),
+            "Sc GPU PCM contact manager count diverged");
+        for(std::size_t i=0;i<gpu.contacts().size();++i)
+            require(gpu.contacts()[i].pcm_result_index==i &&
+                    cpu.contacts()[i].pcm_result_index==
+                        std::numeric_limits<std::uint32_t>::max(),
+                "Source Sc contact manager lost its GPU PCM result ordinal");
+    };
     cpu.advance_collision();
     gpu.advance_collision();
     require(cpu.contacts().size()==12u && gpu.contacts().size()==12u,
             "Sparse GPU PCM fixture did not admit original Sc managers");
+    check_transitions(12u,0u);
+    check_ordinals();
+    // Physically retire disjoint managers before their BP EdgeIndex
+    // handles are reused. The simultaneous lost and later found sets
+    // must remain ordered without a second Sc manifold comparison.
+    constexpr std::array<std::uint32_t,3> interrupted{1u,6u,10u};
+    for(const auto i:interrupted) {
+        const Vec3 away{5.f*float(i)+2.5f,1.f,0.f};
+        cpu.set_position(moving_cpu[i],away);
+        gpu.set_position(moving_gpu[i],away);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    check_transitions(0u,interrupted.size());
+    check_ordinals();
+    for(const auto i:interrupted) {
+        const Vec3 restored{5.f*float(i),1.f,0.f};
+        cpu.set_position(moving_cpu[i],restored);
+        gpu.set_position(moving_gpu[i],restored);
+    }
+    cpu.advance_collision();
+    gpu.advance_collision();
+    check_transitions(interrupted.size(),0u);
+    check_ordinals();
     const auto retained_edge=gpu.contact_edge_index(
         {moving_gpu.back(),fixed_gpu.back()});
     require(retained_edge!=std::numeric_limits<std::uint32_t>::max(),
@@ -195,6 +239,7 @@ void verify_sparse_contact_stream(
             gpu.contacts()[0].edge_handle==retained_edge &&
             cpu.contacts()[0].count==gpu.contacts()[0].count,
             "Sparse Sc contact stream misidentified surviving edge handle");
+    check_ordinals();
     const auto c=cpu.contacts()[0].points[0];
     const auto g=gpu.contacts()[0].points[0];
     require(std::fabs(c.separation-g.separation)<0.002f &&
@@ -221,6 +266,7 @@ void verify_sparse_contact_stream(
             gpu.contact_edge_index(
                 {moving_gpu.back(),fixed_gpu.back()})==retained_edge,
             "Growing source GPU PCM readback lost an existing Sc contact manager");
+    check_ordinals();
     for(std::size_t i=0;i<cpu.contacts().size();++i) {
         const auto& prior=cpu.contacts()[i];
         const auto& current=gpu.contacts()[i];
