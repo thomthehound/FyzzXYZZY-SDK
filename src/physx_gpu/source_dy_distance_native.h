@@ -179,7 +179,9 @@ public:
             total=(total+view_bytes+127u)&~std::size_t(127u);
         }
         narrow(total);
-        host_.resize(total);
+        // Host staging contains only compact readback and real upload
+        // inputs. Writable GPU contact rows have no CPU mirror.
+        host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
             if(i!=6u && i!=11u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
