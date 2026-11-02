@@ -139,7 +139,7 @@ public:
             view(pairs,source_allocation_bytes(pair_count,20u),
                  2u,compute::BufferAccess::Read),
             view(results,source_allocation_bytes(pair_count,32u),
-                 3u,compute::BufferAccess::Write),
+                 3u,compute::BufferAccess::ReadWrite),
             view(candidates,source_allocation_bytes(candidate_capacity,40u),
                  4u,compute::BufferAccess::ReadWrite),
             view(edge_cache,source_allocation_bytes(edge_capacity,240u),
