@@ -146,6 +146,13 @@ static_assert(sizeof(GpuDyDistanceTask)==36u);
 
 // DyContactPrep source normal and friction rows preserve their wide
 // impulse accumulators and separate Gu-indexed contact-force writeback.
+// CPU-origin Gu geometry is uploaded in source contact order. Every
+// prepared Dy contact row itself is generated in the GPU solver arena.
+struct GpuDyGuContactInput {
+    float normal[3]{},position[3]{};
+    float separation=0.0f;
+};
+static_assert(sizeof(GpuDyGuContactInput)==28u);
 struct GpuDyContactPoint {
     float normal[3]{},angular_a[3]{},angular_b[3]{};
     std::uint32_t reserved=0u;
@@ -198,8 +205,10 @@ struct GpuDyContactPrepPair {
     std::uint32_t pcm_pair_index=0xffffffffu,pcm_edge=0u;
     // Source extractContacts's body-level contact impulse limit.
     double max_contact_impulse=0.0;
+    // Dense CPU Gu geometry offset for non-PCM managers only.
+    std::uint32_t cpu_gu_offset=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==248u);
+static_assert(sizeof(GpuDyContactPrepPair)==256u);
 
 class GpuBroadphaseProducer {
 public:
@@ -227,6 +236,7 @@ public:
         std::span<const std::uint32_t>,
         std::span<GpuDyDistanceTask>,
         std::span<GpuDyContactPoint>,
+        std::span<const GpuDyGuContactInput>,
         std::span<GpuDyFrictionRow>,
         std::span<GpuDyContactPatch>,
         std::span<const GpuDyContactManifold>,
@@ -1735,6 +1745,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
     std::vector<GpuDyContactPoint> gpu_dy_contacts_;
+    std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionRow> gpu_dy_friction_;
     std::vector<GpuDyContactPatch> gpu_dy_patches_;
     std::vector<GpuDyContactManifold> gpu_dy_manifolds_;
