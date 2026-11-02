@@ -195,11 +195,16 @@ public:
             throw std::logic_error("Source GPU Dy shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contacts,friction,patches,manifolds,contact_order,
-                            contact_prep);
+                            contact_prep,
+                            pcm_?pcm_->contact_stream_address():0u,
+                            pcm_?pcm_->contact_stream_pair_count():0u);
         ++dy_distance_dispatch_count_;
     }
     std::uint64_t dy_distance_dispatch_count() const noexcept {
         return dy_distance_dispatch_count_;
+    }
+    std::size_t dy_pcm_device_contact_rows() const noexcept {
+        return dy_distance_ ? dy_distance_->last_reused_pcm_contact_rows() : 0u;
     }
     std::pair<std::size_t,std::size_t>
     dy_distance_transfer_bytes() const noexcept {
