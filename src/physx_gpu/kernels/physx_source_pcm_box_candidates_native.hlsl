@@ -28,6 +28,10 @@ RWByteAddressBuffer candidates : register(u4,space0);
 [[vk::binding(5,0)]]
 #endif
 RWByteAddressBuffer edgeCaches : register(u5,space0);
+#ifdef __spirv__
+[[vk::binding(6,0)]]
+#endif
+RWByteAddressBuffer dispatchArgs : register(u6,space0);
 
 struct Parameters {
     uint pairCount;
@@ -40,6 +44,7 @@ struct Parameters {
     uint shapeCapacity;
     uint candidateCapacity;
     uint edgeCapacity;
+    uint argsBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -407,6 +412,8 @@ uint4 selectBatch(uint base,uint count) {
 [numthreads(128,1,1)]
 void main(uint3 thread : SV_DispatchThreadID) {
     uint i=thread.x;
+    // The completed candidate dispatch precedes EPA work compaction.
+    if(i==0u)dispatchArgs.Store3(p.argsBias,uint3(0u,1u,1u));
     if(i>=p.pairCount)return;
     uint source=p.pairBias+i*20u;
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
