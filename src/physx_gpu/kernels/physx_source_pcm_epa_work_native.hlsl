@@ -6,15 +6,15 @@
 #ifdef __spirv__
 [[vk::binding(0,0)]]
 #endif
-RWByteAddressBuffer results : register(u0,space0);
+ByteAddressBuffer results : register(t0,space0);
 #ifdef __spirv__
 [[vk::binding(1,0)]]
 #endif
-RWByteAddressBuffer work : register(u1,space0);
+RWByteAddressBuffer work : register(u0,space0);
 #ifdef __spirv__
 [[vk::binding(2,0)]]
 #endif
-RWByteAddressBuffer dispatchArgs : register(u2,space0);
+RWByteAddressBuffer dispatchArgs : register(u1,space0);
 
 struct Parameters {
     uint pairCount;
