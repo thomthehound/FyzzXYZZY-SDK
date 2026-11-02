@@ -67,7 +67,8 @@ public:
                std::span<native::GpuDyDistanceTask> tasks,
                std::span<double> contact_forces,
                std::span<const native::GpuDyGuContactInput> cpu_gu,
-               std::span<native::GpuDyFrictionRow> friction,
+               std::span<native::GpuDyFrictionWriteback> friction,
+               std::span<const native::GpuDyFrictionAnchorInput> anchors,
                std::span<native::GpuDyContactPatch> patches,
                std::span<const native::GpuDyContactManifold> manifolds,
                std::span<const std::uint32_t> contact_order,
@@ -88,6 +89,12 @@ public:
             throw std::overflow_error("Source Dy contact row byte count overflow");
         const auto contact_bytes=
             contact_forces.size()*sizeof(native::GpuDyContactPoint);
+        if(friction.size()>std::numeric_limits<std::size_t>::max()/
+                              sizeof(native::GpuDyFrictionRow) ||
+           friction.size()!=anchors.size()*2u)
+            throw std::logic_error("Source friction rows lack paired anchors");
+        const auto friction_bytes=
+            friction.size()*sizeof(native::GpuDyFrictionRow);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
         for(const auto& pair:contact_prep)
@@ -125,16 +132,19 @@ public:
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
         constexpr std::size_t count=12u;
-        if(cpu_gu.size_bytes()>
-           std::numeric_limits<std::size_t>::max()-contact_prep.size_bytes())
-            throw std::overflow_error("Source CPU Gu input arena exceeds address space");
         const std::size_t prep_bytes=contact_prep.size_bytes();
+        if(anchors.size_bytes()>
+               std::numeric_limits<std::size_t>::max()-prep_bytes ||
+           cpu_gu.size_bytes()>
+               std::numeric_limits<std::size_t>::max()-prep_bytes-
+                   anchors.size_bytes())
+            throw std::overflow_error("Source Gu/friction input arena exceeds address space");
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
-            tasks.size_bytes(),contact_bytes,friction.size_bytes(),
+            tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
-            prep_bytes+cpu_gu.size_bytes()};
+            prep_bytes+anchors.size_bytes()+cpu_gu.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
             body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
@@ -142,11 +152,11 @@ public:
             contact_prep.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
-            body_ordinals.data(),tasks.data(),nullptr,friction.data(),
+            body_ordinals.data(),tasks.data(),nullptr,nullptr,
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data()};
-        // Source Gu contact rows exist only on GPU; the host owns their
-        // eight-byte force results rather than an 88-byte row mirror.
+        // The host retains only source normal impulses and friction
+        // tangent/force writeback. Both full row ABIs live only on GPU.
         constexpr std::array<std::size_t,6> output_inputs{
             0u,1u,5u,6u,7u,8u};
         constexpr std::array<std::size_t,6> output_strides{
@@ -166,10 +176,10 @@ public:
             result_offsets[i]=output_bytes;
             output_bytes+=n*output_strides[i];
         }
-        // All upload inputs precede the writable contact-row arena.
-        // GPU preparation owns every row before the PGS task consumes it.
+        // Both writable contact and friction arenas follow all source
+        // inputs. The existing GPU preparation owns the complete rows.
         constexpr std::array<std::size_t,count> order{
-            0u,1u,5u,7u,8u,2u,3u,4u,9u,10u,11u,6u};
+            0u,1u,5u,8u,2u,3u,4u,9u,10u,11u,6u,7u};
         std::array<std::size_t,count> offsets{};
         // Leave the source input addresses 128-byte aligned. One packed
         // output view precedes them, so readback needs only a single copy.
@@ -188,12 +198,16 @@ public:
         // inputs. Writable GPU contact rows have no CPU mirror.
         host_.resize(offsets[6]);
         for(std::size_t i=0;i<count;++i)
-            if(i!=6u && i!=11u && bytes[i])
+            if(i!=6u && i!=7u && i!=11u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
             std::memcpy(host_.data()+offsets[11],contact_prep.data(),prep_bytes);
-        if(!cpu_gu.empty())
+        if(!anchors.empty())
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
+                        anchors.data(),anchors.size_bytes());
+        if(!cpu_gu.empty())
+            std::memcpy(host_.data()+offsets[11]+prep_bytes+
+                            anchors.size_bytes(),
                         cpu_gu.data(),cpu_gu.size_bytes());
         // The source GPU kernel constructs all writable Gu contact rows.
         // One ordered source upload covers every other active input and
@@ -320,6 +334,7 @@ public:
         last_omitted_pcm_upload_bytes_=
             reused_pcm_rows*sizeof(native::GpuDyContactPoint);
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
+        last_friction_anchor_upload_bytes_=anchors.size_bytes();
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
@@ -336,6 +351,9 @@ public:
     std::size_t last_upload_spans() const noexcept {
         return last_upload_spans_;
     }
+    std::size_t last_friction_anchor_upload_bytes() const noexcept {
+        return last_friction_anchor_upload_bytes_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -351,6 +369,7 @@ private:
     std::size_t last_omitted_pcm_upload_bytes_=0u;
     std::size_t last_cpu_gu_geometry_bytes_=0u;
     std::size_t last_upload_spans_=0u;
+    std::size_t last_friction_anchor_upload_bytes_=0u;
 };
 
 } // namespace fyzz::physx_gpu
