@@ -65,7 +65,8 @@ void main(uint3 thread : SV_DispatchThreadID) {
     uint source=p.pairBias+i*20u;
     uint a=pairs.Load(source),b=pairs.Load(source+4u);
     uint edge=pairs.Load(source+8u);
-    uint first=pairs.Load(source+12u),limit=pairs.Load(source+16u);
+    uint first=pairs.Load(source+12u);
+    uint limit=pairs.Load(source+16u)&0x7fffffffu;
     if(a>=p.shapeCapacity || b>=p.shapeCapacity || edge>=p.edgeCapacity ||
        first>p.candidateCapacity || limit>p.candidateCapacity-first)return;
     uint ta=p.transformBias+a*32u,tb=p.transformBias+b*32u;

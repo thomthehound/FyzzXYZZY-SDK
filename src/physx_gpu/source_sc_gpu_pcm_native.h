@@ -11,7 +11,6 @@
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -113,7 +112,9 @@ public:
             const auto second=sc_.source_element_handle(request.second);
             if(first>=shape_capacity || second>=shape_capacity)
                 throw std::out_of_range("Source Sc PCM element outside original AABB capacity");
-            pair_host_[i]={first,second,request.edge,i*16u,16u};
+            pair_host_[i]={first,second,request.edge,i*16u,
+                16u | ((request.reset_cache || reset_manifolds_)
+                    ? source_pcm_reset_cache_bit : 0u)};
         }
         pairs_.allocate(source_allocation_bytes(pair_count,20u),PX_FL);
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
@@ -122,15 +123,12 @@ public:
             source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
         dense_contacts_.allocate(source_allocation_bytes(pair_count,96u),PX_FL);
+        // Sc's reset intent travels with the source pair. The GPU
+        // candidate owner initializes its own EdgeIndex record before
+        // refreshing it, without a separate upload per new manager.
         auto& uploads=stream_.upload_scratch();
-        uploads.reserve(pair_count+1u);
         uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
                            pair_host_.size()*sizeof(pair_host_[0])});
-        for(const auto& request:requests)
-            if(request.reset_cache || reset_manifolds_)
-                uploads.push_back({
-                    edges_.getDevicePtr()+std::uint64_t(request.edge)*240u,
-                    empty_cache_.data(),sizeof(empty_cache_)});
         stream_.queue_uploads(uploads);
         reset_manifolds_=false;
 
@@ -208,7 +206,6 @@ private:
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
-    std::array<std::uint8_t,240u> empty_cache_{};
     std::vector<SourcePcmBoxPairNative> pair_host_;
     bool reset_manifolds_=false;
 };

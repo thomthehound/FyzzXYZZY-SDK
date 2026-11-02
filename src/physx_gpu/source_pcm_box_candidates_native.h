@@ -20,9 +20,12 @@ struct SourcePcmBoxPairNative {
     std::uint32_t second_element;
     std::uint32_t edge_handle;
     std::uint32_t candidate_offset;
+    // The high bit requests an in-kernel reset of this Sc edge's
+    // persistent Gu PCM witness cache before any refresh reads.
     std::uint32_t candidate_capacity;
 };
 static_assert(sizeof(SourcePcmBoxPairNative)==20u);
+constexpr std::uint32_t source_pcm_reset_cache_bit=0x80000000u;
 
 // GuPCMContactBoxBox::pcmContactBoxBox requires local A/B witnesses and a
 // B-local normal before the source persistent-manifold reduction.
