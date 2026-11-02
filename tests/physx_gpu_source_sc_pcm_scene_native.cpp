@@ -227,6 +227,15 @@ void verify_sparse_contact_stream(
             "Initial sparse PCM manager admission did not upload source pairs");
     check_transitions(12u,0u);
     check_ordinals();
+    // Initial Sc admission sets reset flags on every GPU PCM manager.
+    // Publish the first source refresh to retire those flags before
+    // measuring a genuinely isolated middle-manager edit.
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==
+                12u*sizeof(physx_gpu::SourcePcmBoxPairNative),
+        "Initial PCM reset-bit retirement did not republish all managers");
+    check_ordinals();
     // Reset only a middle Sc manager in a twelve-pair device input.
     // Its original pair ordinal and EdgeIndex stay fixed; the GPU
     // refresh must transfer only that manager's 20-byte descriptor.
