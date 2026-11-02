@@ -155,6 +155,8 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(manager.y==0u)continue;
         uint pairIndex=arena.Load(mo+16u);
         if(pairIndex>=p.prepCount ||
+           manager.x>p.patchCount ||
+           manager.y>p.patchCount-manager.x ||
            manager.z>p.orderCount ||
            manager.w>p.orderCount-manager.z) {
             arena.InterlockedOr(endError,4096u);
@@ -163,6 +165,17 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         for(uint c=0u;c<manager.w;++c) {
             uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
             prepareContactRow(index,pairIndex,endError);
+        }
+        for(uint patchIndex=manager.x;
+            patchIndex<manager.x+manager.y;++patchIndex) {
+            uint4 patch=arena.Load4(p.patchBias+patchIndex*32u);
+            if(patch.x>p.frictionCount || patch.z>2u ||
+               patch.z*2u>p.frictionCount-patch.x) {
+                arena.InterlockedOr(endError,16384u);
+                continue;
+            }
+            for(uint row=patch.x;row<patch.x+patch.z*2u;++row)
+                prepareFrictionRow(row,pairIndex,endError);
         }
     }
     AllMemoryBarrierWithGroupSync();
