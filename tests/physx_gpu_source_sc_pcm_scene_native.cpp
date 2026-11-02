@@ -172,11 +172,13 @@ void verify_sparse_contact_stream(
     using namespace fyzz;
     native::Scene cpu;
     native::Scene gpu;
-    gpu.set_gpu_broadphase(
-        std::make_unique<physx_gpu::SourceScOwnedGpuBroadphaseNative>(
+    auto owner=std::make_unique<
+        physx_gpu::SourceScOwnedGpuBroadphaseNative>(
             backend,load_native_gpu_sap_shaders(backend,sap),
             128u,128u,std::nullopt,
-            load_native_gpu_pcm_shaders(backend,pcm)));
+            load_native_gpu_pcm_shaders(backend,pcm));
+    auto* producer=owner.get();
+    gpu.set_gpu_broadphase(std::move(owner));
     std::array<BodyId,12> moving_cpu{},moving_gpu{};
     std::array<BodyId,12> fixed_cpu{},fixed_gpu{};
     for(std::uint32_t i=0u;i<12u;++i) {
@@ -214,6 +216,9 @@ void verify_sparse_contact_stream(
     gpu.advance_collision();
     require(cpu.contacts().size()==12u && gpu.contacts().size()==12u,
             "Sparse GPU PCM fixture did not admit original Sc managers");
+    require(producer->pcm_pair_upload_bytes()==
+                12u*sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "Initial sparse PCM manager admission did not upload source pairs");
     check_transitions(12u,0u);
     check_ordinals();
     // Physically retire disjoint managers before their BP EdgeIndex
@@ -292,6 +297,9 @@ void verify_sparse_contact_stream(
             gpu.contact_edge_index(
                 {moving_gpu.back(),fixed_gpu.back()})==retained_edge,
             "Growing source GPU PCM readback lost an existing Sc contact manager");
+    require(producer->pcm_pair_upload_bytes()==
+                (added+1u)*sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "PCM pair-buffer growth did not refresh all source manager descriptors");
     check_ordinals();
     for(std::size_t i=0;i<cpu.contacts().size();++i) {
         const auto& prior=cpu.contacts()[i];
