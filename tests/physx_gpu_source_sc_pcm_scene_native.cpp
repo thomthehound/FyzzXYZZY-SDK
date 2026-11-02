@@ -41,9 +41,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
         {0.5f,0.5f,0.5f},{0.0f,1.0f,0.0f},1.0f);
     const auto gpu_b=gpu.add_static_box(
         {0.5f,0.5f,0.5f},{0.8f,1.0f,0.0f});
-    const auto check=[&](bool contact) {
-        cpu.advance_collision();
-        gpu.advance_collision();
+    const auto check=[&](bool contact,bool force=false) {
+        cpu.advance_collision(force);
+        gpu.advance_collision(force);
         require(cpu.pairs().size()==gpu.pairs().size() &&
                 cpu.contacts().size()==gpu.contacts().size(),
                 "Sc GPU PCM pair or contact manager publication differs");
@@ -128,12 +128,12 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
-    // An authored pose may set the original cache-reset bit; the next
-    // Sc publication then clears that bit after regeneration. Once both
-    // transitions have reached the resident pair buffer, an unchanged
-    // frame must not schedule another upload.
-    check(true);
-    check(true);
+    // Quiet advance_collision() does not rerun Gu PCM. Force one real
+    // Sc/Gu refresh after the authored pose invalidated its cache, then
+    // require the next identical forced refresh to reuse the GPU pair
+    // buffer rather than reading a stale transfer counter.
+    check(true,true);
+    check(true,true);
     require(producer->pcm_pair_upload_bytes()==0u,
             "Unchanged Sc PCM refresh re-uploaded an admitted pair");
     // The device stream reconstructs the original Gu B-local witnesses
