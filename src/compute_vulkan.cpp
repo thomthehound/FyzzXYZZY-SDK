@@ -959,7 +959,7 @@ struct Context::Impl {
         release_buffer(staging);
     }
 
-    void download_batch(const std::vector<DownloadSpan>& downloads) {
+    void download_batch(std::span<const DownloadSpan> downloads) {
         if(downloads.empty())return;
         std::size_t bytes=0;
         for(const auto& item:downloads) {
@@ -1888,7 +1888,7 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
     impl_->transfer(id, offset, data, bytes, false);
 }
 
-void Context::download_batch(const std::vector<DownloadSpan>& downloads) const {
+void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
 }
 

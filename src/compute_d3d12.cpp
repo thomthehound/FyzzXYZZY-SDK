@@ -822,7 +822,7 @@ struct Context::Impl {
         staging->Unmap(0, &written);
     }
 
-    void download_batch(const std::vector<DownloadSpan>& downloads) {
+    void download_batch(std::span<const DownloadSpan> downloads) {
         if(downloads.empty())return;
         std::size_t bytes=0;
         readback_sources.clear();
@@ -1436,7 +1436,7 @@ void Context::download(BufferId id, std::size_t offset, void* data, std::size_t 
     impl_->download(id, offset, data, bytes);
 }
 
-void Context::download_batch(const std::vector<DownloadSpan>& downloads) const {
+void Context::download_batch(std::span<const DownloadSpan> downloads) const {
     impl_->download_batch(downloads);
 }
 void Context::copy_buffer(BufferId source, std::size_t so, BufferId dest,
