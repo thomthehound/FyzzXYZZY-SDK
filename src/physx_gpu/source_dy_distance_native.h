@@ -325,12 +325,16 @@ public:
         }
         last_transfer_bytes_={uploaded_bytes,output_bytes};
         last_reused_pcm_contact_rows_=reused_pcm_rows;
+        last_omitted_pcm_upload_bytes_=total-upload_begin-uploaded_bytes;
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
     }
     std::size_t last_reused_pcm_contact_rows() const noexcept {
         return last_reused_pcm_contact_rows_;
+    }
+    std::size_t last_omitted_pcm_upload_bytes() const noexcept {
+        return last_omitted_pcm_upload_bytes_;
     }
 private:
     compute::Context& context_;
@@ -345,6 +349,7 @@ private:
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
     std::size_t last_reused_pcm_contact_rows_=0u;
+    std::size_t last_omitted_pcm_upload_bytes_=0u;
 };
 
 } // namespace fyzz::physx_gpu
