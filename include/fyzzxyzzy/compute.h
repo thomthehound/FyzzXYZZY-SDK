@@ -253,7 +253,7 @@ public:
     void download(BufferId id, std::size_t offset, void* data, std::size_t bytes) const;
     // One submission and wait for all nonempty device-local readbacks.
     // Source buffer ownership and original CPU output addresses are retained.
-    void download_batch(const std::vector<DownloadSpan>& downloads) const;
+    void download_batch(std::span<const DownloadSpan> downloads) const;
 
     // Submits a GPU transfer and completes it before returning.
     // Operations on a Context are synchronous and not thread-safe yet.

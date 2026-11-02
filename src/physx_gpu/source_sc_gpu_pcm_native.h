@@ -11,6 +11,7 @@
 #include "physx_port/gpucommon/PxgCudaBuffer.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -97,17 +98,14 @@ public:
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         const auto candidate_count=pair_count*16u; // 4 inside, 4 corners, 8 edge intersections
         std::uint32_t largest_edge=0u;
-        for(const auto& request:requests) {
-            if(request.first==request.second)
-                throw std::invalid_argument("Sc PCM pair references one actor twice");
-            largest_edge=std::max(largest_edge,request.edge);
-        }
-        if(largest_edge==std::numeric_limits<std::uint32_t>::max())
-            throw std::out_of_range("Source Sc edge watermark overflow");
-        const auto edge_capacity=largest_edge+1u;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
+            if(request.first==request.second)
+                throw std::invalid_argument("Sc PCM pair references one actor twice");
+            if(request.edge==std::numeric_limits<std::uint32_t>::max())
+                throw std::out_of_range("Source Sc edge watermark overflow");
+            largest_edge=std::max(largest_edge,request.edge);
             const auto first=sc_.source_element_handle(request.first);
             const auto second=sc_.source_element_handle(request.second);
             if(first>=shape_capacity || second>=shape_capacity)
@@ -116,6 +114,7 @@ public:
                 16u | ((request.reset_cache || reset_manifolds_)
                     ? source_pcm_reset_cache_bit : 0u)};
         }
+        const auto edge_capacity=largest_edge+1u;
         pairs_.allocate(source_allocation_bytes(pair_count,20u),PX_FL);
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         candidates_.allocate(source_allocation_bytes(candidate_count,40u),PX_FL);
@@ -160,7 +159,7 @@ public:
         // Reuse the backend's cached readback staging. The download is
         // queued after all preceding PCM commands on this same Context;
         // waiting for its fence also completes every earlier source token.
-        const std::vector<compute::DownloadSpan> downloads{
+        const std::array<compute::DownloadSpan,1> downloads{
             {mapped.buffer,mapped.offset,output.data(),output.size_bytes()}
         };
         stream_.submit();

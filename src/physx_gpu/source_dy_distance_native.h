@@ -188,7 +188,7 @@ public:
         std::memcpy(dispatch.push_constants.data(),params.data(),sizeof(params));
         stream_.commands().emplace_back(std::move(dispatch));
         const auto mapped=addresses_.resolve(address,output_bytes);
-        const std::vector<compute::DownloadSpan> downloads{
+        const std::array<compute::DownloadSpan,1> downloads{
             {mapped.buffer,mapped.offset,host_.data(),output_bytes}};
         stream_.submit();
         try {
