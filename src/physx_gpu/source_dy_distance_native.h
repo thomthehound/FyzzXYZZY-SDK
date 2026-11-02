@@ -45,10 +45,11 @@ public:
         max_view_=info.max_storage_buffer_range;
         compute::ComputePipelineDesc pipeline{};
         pipeline.shader=std::move(shader);
-        pipeline.storage_buffer_binding_count=1u;
+        pipeline.storage_buffer_binding_count=2u;
         pipeline.storage_buffer_views={
+            compute::StorageBufferViewKind::RawReadWrite,
             compute::StorageBufferViewKind::RawReadWrite};
-        pipeline.push_constant_bytes=124u;
+        pipeline.push_constant_bytes=128u;
         pipeline_=context_.create_compute_pipeline(pipeline);
     }
     SourceDyDistanceNativeStage(const SourceDyDistanceNativeStage&)=delete;
@@ -69,7 +70,9 @@ public:
                std::span<native::GpuDyContactPatch> patches,
                std::span<const native::GpuDyContactManifold> manifolds,
                std::span<const std::uint32_t> contact_order,
-               std::span<const native::GpuDyContactPrepPair> contact_prep) {
+               std::span<const native::GpuDyContactPrepPair> contact_prep,
+               CudaDeviceAddressMap::Address pcm_contacts,
+               std::uint32_t pcm_pair_count) {
         if(tasks.empty() || descriptors.empty())
             throw std::invalid_argument("Source Dy GPU requires active source tasks");
         if(tasks.size()>context_.device_info().max_workgroup_count[0])
@@ -79,6 +82,22 @@ public:
                 throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
             return static_cast<std::uint32_t>(value);
         };
+        std::size_t reused_pcm_rows=0u;
+        for(const auto& pair:contact_prep)
+            if(pair.pcm_pair_index!=0xffffffffu) {
+                if(!pcm_contacts || pair.pcm_pair_index>=pcm_pair_count ||
+                   pair.pcm_edge==0xffffffffu)
+                    throw std::logic_error(
+                        "Source Dy PCM contact provenance is invalid");
+            }
+        for(const auto& manager:manifolds)
+            if(manager.patch_count) {
+                if(manager.prep_index>=contact_prep.size())
+                    throw std::logic_error(
+                        "Source Dy PCM preparation index is invalid");
+                if(contact_prep[manager.prep_index].pcm_pair_index!=0xffffffffu)
+                    reused_pcm_rows+=manager.contact_count;
+            }
         constexpr std::size_t count=12u;
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
@@ -145,7 +164,7 @@ public:
         stream_.queue_uploads({{
             address+upload_begin,host_.data()+upload_begin,
             total-upload_begin}});
-        std::array<std::uint32_t,31> params{};
+        std::array<std::uint32_t,32> params{};
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?6u+i:17u+i-6u]=narrow(elements[i]);
         params[30]=narrow(elements[11]);
@@ -160,6 +179,14 @@ public:
         dispatch.buffers.push_back(source_native_view(
             addresses_,address,total,alignment_,0u,
             compute::BufferAccess::ReadWrite,params[28],max_view_));
+        // A Dy-only scene has no PCM contact buffer. Its source rows
+        // never index this slot; reuse the existing solver allocation.
+        dispatch.buffers.push_back(source_native_view(
+            addresses_,pcm_pair_count?pcm_contacts:address,
+            pcm_pair_count
+                ? source_allocation_bytes(pcm_pair_count,96u):total,
+            alignment_,1u,compute::BufferAccess::Read,
+            params[31],max_view_));
         for(std::size_t i=0;i<11u;++i)
             params[i<6u?i:i+6u]=narrow(
                 static_cast<std::size_t>(params[28])+offsets[i]);
@@ -247,9 +274,13 @@ public:
             }
         }
         last_transfer_bytes_={total-upload_begin,output_bytes};
+        last_reused_pcm_contact_rows_=reused_pcm_rows;
     }
     std::pair<std::size_t,std::size_t> last_transfer_bytes() const noexcept {
         return last_transfer_bytes_;
+    }
+    std::size_t last_reused_pcm_contact_rows() const noexcept {
+        return last_reused_pcm_contact_rows_;
     }
 private:
     compute::Context& context_;
@@ -262,6 +293,7 @@ private:
     std::vector<std::uint8_t> host_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
+    std::size_t last_reused_pcm_contact_rows_=0u;
 };
 
 } // namespace fyzz::physx_gpu
