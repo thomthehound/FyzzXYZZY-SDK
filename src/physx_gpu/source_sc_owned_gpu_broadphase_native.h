@@ -187,7 +187,8 @@ public:
         std::span<native::GpuDyDistanceTask> tasks,
         std::span<double> contact_forces,
         std::span<const native::GpuDyGuContactInput> cpu_gu,
-        std::span<native::GpuDyFrictionRow> friction,
+        std::span<native::GpuDyFrictionWriteback> friction,
+        std::span<const native::GpuDyFrictionAnchorInput> anchors,
         std::span<native::GpuDyContactPatch> patches,
         std::span<const native::GpuDyContactManifold> manifolds,
         std::span<const std::uint32_t> contact_order,
@@ -195,7 +196,7 @@ public:
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
-                            contact_forces,cpu_gu,friction,patches,manifolds,contact_order,
+                            contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,
                             pcm_?pcm_->contact_stream_address():0u,
                             pcm_?pcm_->contact_stream_pair_count():0u);
