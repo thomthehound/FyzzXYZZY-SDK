@@ -100,8 +100,9 @@ public:
         const auto pair_count=static_cast<std::uint32_t>(requests.size());
         const auto candidate_count=pair_count*16u; // 4 inside, 4 corners, 8 edge intersections
         std::uint32_t largest_edge=0u;
-        bool changed=reset_manifolds_ ||
+        bool full_upload=reset_manifolds_ ||
             previous_count!=pair_count || pair_host_.size()!=pair_count;
+        std::uint32_t first_dirty=pair_count,last_dirty=0u;
         pair_host_.resize(pair_count);
         for(std::uint32_t i=0u;i<pair_count;++i) {
             const auto& request=requests[i];
@@ -118,12 +119,15 @@ public:
                 first,second,request.edge,i*16u,
                 16u | ((request.reset_cache || reset_manifolds_)
                     ? source_pcm_reset_cache_bit : 0u)};
-            // The existing source host descriptor array is retained from
-            // the last successful frame. Do not create a shadow registry
-            // just to determine whether its GPU input changed.
-            if(!changed && std::memcmp(&pair_host_[i],&next,
-                                       sizeof(next))!=0)
-                changed=true;
+            // Sc's previous pair records are the transfer baseline.
+            // Preserve a single ordered upload by widening one dirty
+            // interval over changed descriptors, never creating per-pair
+            // submissions or another pair registry.
+            if(!full_upload &&
+               std::memcmp(&pair_host_[i],&next,sizeof(next))!=0) {
+                first_dirty=std::min(first_dirty,i);
+                last_dirty=i+1u;
+            }
             pair_host_[i]=next;
         }
         const auto edge_capacity=largest_edge+1u;
@@ -131,8 +135,8 @@ public:
         const auto previous_pair_capacity=pairs_.getSize();
         const auto previous_pair_address=pairs_.getDevicePtr();
         pairs_.allocate(requested_pair_bytes,PX_FL);
-        changed |= requested_pair_bytes>previous_pair_capacity ||
-                   pairs_.getDevicePtr()!=previous_pair_address;
+        full_upload |= requested_pair_bytes>previous_pair_capacity ||
+                       pairs_.getDevicePtr()!=previous_pair_address;
         results_.allocate(source_allocation_bytes(pair_count,32u),PX_FL);
         candidates_.allocate(source_allocation_bytes(candidate_count,40u),PX_FL);
         edges_.allocateCopyOldDataAsync(
@@ -142,12 +146,19 @@ public:
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
         // refreshing it, without a separate upload per new manager.
-        if(changed) {
+        if(full_upload) {
+            first_dirty=0u;
+            last_dirty=pair_count;
+        }
+        if(first_dirty<last_dirty) {
+            const auto stride=sizeof(pair_host_[0]);
+            const auto bytes=std::size_t(last_dirty-first_dirty)*stride;
             auto& uploads=stream_.upload_scratch();
-            uploads.push_back({pairs_.getDevicePtr(),pair_host_.data(),
-                               pair_host_.size()*sizeof(pair_host_[0])});
+            uploads.push_back({
+                pairs_.getDevicePtr()+std::size_t(first_dirty)*stride,
+                pair_host_.data()+first_dirty,bytes});
             stream_.queue_uploads(uploads);
-            last_pair_upload_bytes_=pair_host_.size()*sizeof(pair_host_[0]);
+            last_pair_upload_bytes_=bytes;
         }
         reset_manifolds_=false;
 
