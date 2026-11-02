@@ -128,9 +128,11 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
-    // Authored pose changes may invalidate the Sc PCM cache and require
-    // one descriptor refresh. An identical subsequent source frame must
-    // reuse that now-current device record without another upload.
+    // An authored pose may set the original cache-reset bit; the next
+    // Sc publication then clears that bit after regeneration. Once both
+    // transitions have reached the resident pair buffer, an unchanged
+    // frame must not schedule another upload.
+    check(true);
     check(true);
     require(producer->pcm_pair_upload_bytes()==0u,
             "Unchanged Sc PCM refresh re-uploaded an admitted pair");
