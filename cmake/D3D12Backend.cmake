@@ -493,7 +493,8 @@ if(FYZZXYZZY_BUILD_D3D12)
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_box_candidates_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_candidates_native.hlsl" cs_6_0 main
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_box_candidates_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}")
     set(FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT
@@ -508,15 +509,10 @@ if(FYZZXYZZY_BUILD_D3D12)
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsl" cs_6_0 main
       DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_epa_native.hlsli"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_gjk_native.hlsli"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_publish_native.hlsli")
     add_custom_target(fyzzxyzzy_source_pcm_epa_shader_d3d12
       DEPENDS "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
-    set(FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL
-      "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_pcm_sc_contact_stream_native.dxil")
-    fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_sc_contact_stream_native.hlsl" cs_6_0 main
-      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_pcm_box_math_native.hlsli")
-    add_custom_target(fyzzxyzzy_source_pcm_contact_stream_shader_d3d12
-      DEPENDS "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
     set(FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL
       "${CMAKE_CURRENT_BINARY_DIR}/kernels/physx_source_dy_distance_pgs_native.dxil")
     fyzzxyzzy_compile_hlsl("${FYZZXYZZY_SOURCE_DY_DISTANCE_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/src/physx_gpu/kernels/physx_source_dy_distance_pgs_native.hlsl" cs_6_6 main
@@ -860,11 +856,10 @@ if(FYZZXYZZY_BUILD_D3D12)
     set(_pcm_binaries
       "${FYZZXYZZY_SOURCE_PCM_BOX_DXIL}"
       "${FYZZXYZZY_SOURCE_PCM_EPA_WORK_DXIL_COMPACT}"
-      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}"
-      "${FYZZXYZZY_SOURCE_PCM_CONTACT_STREAM_DXIL}")
-    set(_pcm_stages Candidates EpaCompact EpaContact ContactStream)
+      "${FYZZXYZZY_SOURCE_PCM_EPA_DXIL}")
+    set(_pcm_stages Candidates EpaCompact EpaContact)
     set(_pcm_manifest "FYZZXYZZY_SOURCE_PCM_1 DXIL\n")
-    foreach(_idx RANGE 0 3)
+    foreach(_idx RANGE 0 2)
       list(GET _pcm_stages ${_idx} _stage)
       list(GET _pcm_binaries ${_idx} _binary)
       get_filename_component(_name "${_binary}" NAME)

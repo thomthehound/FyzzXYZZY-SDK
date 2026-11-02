@@ -6,6 +6,7 @@
 #include "physx_gpu/source_pcm_box_candidates_native.h"
 #include "physx_gpu/source_pcm_sparse_epa_native.h"
 #include "physx_gpu/source_pcm_epa_native.h"
+#include "physx_gpu/source_pcm_sc_contact_stream_native.h"
 
 #include <algorithm>
 #include <array>
@@ -158,7 +159,10 @@ void verify(Context& context,const char* transform_shader,
         candidate_offset+candidates.size()*sizeof(candidates[0])+4u;
     const std::size_t work_offset=
         edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
-    const auto root=context.create_buffer(work_offset+pairs.size()*4u+16u);
+    const std::size_t output_offset=work_offset+pairs.size()*4u+16u;
+    std::vector<SourcePcmScContactStreamNative> published(pairs.size());
+    const auto root=context.create_buffer(
+        output_offset+published.size()*sizeof(published[0])+16u);
     const auto args_buffer=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
@@ -177,6 +181,8 @@ void verify(Context& context,const char* transform_shader,
         root,edge_offset,edge_caches.size()*sizeof(edge_caches[0]));
     const auto work_data=addresses.register_slice(
         root,work_offset,pairs.size()*4u);
+    const auto output_data=addresses.register_slice(
+        root,output_offset,published.size()*sizeof(published[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
@@ -188,7 +194,7 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),
                    edge_capacity);
@@ -203,6 +209,17 @@ void verify(Context& context,const char* transform_shader,
                      candidates.size()*sizeof(candidates[0]));
     context.download(root,edge_offset,edge_caches.data(),
                      edge_caches.size()*sizeof(edge_caches[0]));
+    context.download(root,output_offset,published.data(),
+                     published.size()*sizeof(published[0]));
+    for(std::size_t i=0;i<pairs.size();++i) {
+        require(published[i].edge_handle==results[i].edge_handle &&
+                published[i].status==results[i].status,
+                "Candidate owner failed Sc contact publication");
+        if(results[i].status==0u)
+            require(published[i].emitted_count<=published[i].cached_count &&
+                    published[i].cached_count<=4u,
+                    "Candidate owner emitted invalid Sc contact count");
+    }
     std::array<SourceScBoxTransformInputNative,capacity> by_id{};
     for(const auto& box:boxes)by_id[box.element_index]=box;
     const auto near=[](float a,float b) {return std::abs(a-b)<0.001f;};
@@ -437,7 +454,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -450,7 +467,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -468,7 +485,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -502,7 +519,7 @@ void verify(Context& context,const char* transform_shader,
         context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -543,7 +560,7 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -572,7 +589,7 @@ void verify(Context& context,const char* transform_shader,
         producer.append(stream,addresses,inputs,bounds,transforms,geometry,
                         static_cast<std::uint32_t>(boxes.size()),capacity);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -627,7 +644,7 @@ void verify(Context& context,const char* transform_shader,
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                   candidate_data,edge_data,work_data,args_data,
+                   candidate_data,edge_data,work_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -642,6 +659,14 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{1u,1u,1u},
             "GPU EPA continuation did not consume one sparse work item");
+    context.download(root,output_offset,published.data(),
+                     published.size()*sizeof(published[0]));
+    const auto& epa_published=published[penetration_pair];
+    require(epa_published.edge_handle==edge && epa_published.status==0u &&
+            epa_published.cached_count==1u && epa_published.emitted_count==1u &&
+            epa_published.selected_and_regenerated==0x80000001u &&
+            near(epa_published.contacts[0].separation,expected_epa.separation),
+            "Sparse EPA did not publish its completed Gu world contact");
     const auto& finished=results[penetration_pair];
     const auto& witness=candidates[pairs[penetration_pair].candidate_offset];
     require(finished.status==0u && finished.candidate_count==1u &&
@@ -663,7 +688,7 @@ void verify(Context& context,const char* transform_shader,
     {
         SourceSapDmaNative stream(context,addresses);
         pcm.append(stream,addresses,transforms,geometry,pair_data,
-                   result_data,candidate_data,edge_data,args_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -671,6 +696,15 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
+    context.download(root,output_offset,published.data(),
+                     published.size()*sizeof(published[0]));
+    const auto& quiet_published=published[penetration_pair];
+    require(quiet_published.edge_handle==edge && quiet_published.status==0u &&
+            quiet_published.cached_count==1u &&
+            quiet_published.emitted_count==1u &&
+            quiet_published.selected_and_regenerated==1u &&
+            near(quiet_published.contacts[0].separation,expected_epa.separation),
+            "Quiet Sc refresh did not preserve its Gu world contact");
     const auto& quiet=results[penetration_pair];
     const auto& cached=candidates[pairs[penetration_pair].candidate_offset];
     require(quiet.status==0u && quiet.regenerated==0u &&
@@ -721,7 +755,7 @@ void verify(Context& context,const char* transform_shader,
         sparse.append(stream,addresses,result_data,work_data,args_data,
                       static_cast<std::uint32_t>(pairs.size()));
         epa.append(stream,addresses,transforms,geometry,pair_data,result_data,
-                   candidate_data,edge_data,work_data,args_data,
+                   candidate_data,edge_data,work_data,args_data,output_data,
                    static_cast<std::uint32_t>(pairs.size()),capacity,
                    static_cast<std::uint32_t>(candidates.size()),edge_capacity);
         stream.wait_at_fetch();
@@ -737,6 +771,7 @@ void verify(Context& context,const char* transform_shader,
             "Rejected GPU EPA continuation retained a false Sc overlap");
 
     addresses.unregister_slice(args_data);
+    addresses.unregister_slice(output_data);
     addresses.unregister_slice(work_data);
     addresses.unregister_slice(edge_data);
     addresses.unregister_slice(candidate_data);

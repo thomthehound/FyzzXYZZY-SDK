@@ -49,14 +49,12 @@ public:
         const SourceScGpuBroadphaseProducerNative& sc,
         physx::PxgCudaBuffer& transforms,physx::PxgCudaBuffer& geometry,
         compute::ShaderBinary candidate,compute::ShaderBinary compact,
-        compute::ShaderBinary epa,
-        compute::ShaderBinary contact_stream)
+        compute::ShaderBinary epa)
         : context_(context),addresses_(addresses),stream_(stream),sc_(sc),
           transforms_(transforms),geometry_(geometry),
           candidates_stage_(context,std::move(candidate)),
           sparse_stage_(context,std::move(compact)),
           epa_stage_(context,std::move(epa)),
-          contact_stream_stage_(context,std::move(contact_stream)),
           pairs_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           results_(allocator,physx::PxsHeapStats::eNARROWPHASE),
           candidates_(allocator,physx::PxsHeapStats::eNARROWPHASE),
@@ -135,8 +133,8 @@ public:
             transforms_.getDevicePtr(),geometry_.getDevicePtr(),
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
-            indirect_address_,pair_count,shape_capacity,
-            candidate_count,edge_capacity);
+            indirect_address_,dense_contacts_.getDevicePtr(),
+            pair_count,shape_capacity,candidate_count,edge_capacity);
         sparse_stage_.append(stream_,addresses_,
             results_.getDevicePtr(),work_.getDevicePtr(),
             indirect_address_,pair_count);
@@ -145,12 +143,9 @@ public:
             pairs_.getDevicePtr(),results_.getDevicePtr(),
             candidates_.getDevicePtr(),edges_.getDevicePtr(),
             work_.getDevicePtr(),indirect_address_,
-            pair_count,shape_capacity,candidate_count,edge_capacity);
-        contact_stream_stage_.append(stream_,addresses_,
-            transforms_.getDevicePtr(),geometry_.getDevicePtr(),
-            pairs_.getDevicePtr(),results_.getDevicePtr(),
-            edges_.getDevicePtr(),dense_contacts_.getDevicePtr(),
-            pair_count,shape_capacity,edge_capacity);
+            dense_contacts_.getDevicePtr(),pair_count,shape_capacity,
+            candidate_count,edge_capacity);
+
 
         // The shader emits the exact Sc-owned 96-byte record. Resolve
         // the download destination before submitting the source stream.
@@ -202,7 +197,6 @@ private:
     SourcePcmBoxCandidatesNativeStage candidates_stage_;
     SourcePcmSparseEpaNativeStage sparse_stage_;
     SourcePcmEpaNativeStage epa_stage_;
-    SourcePcmScContactStreamNativeStage contact_stream_stage_;
     physx::PxgCudaBuffer pairs_,results_,candidates_,edges_,work_,dense_contacts_;
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
