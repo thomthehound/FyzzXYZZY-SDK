@@ -8,6 +8,10 @@
 [[vk::binding(0,0)]]
 #endif
 RWByteAddressBuffer arena : register(u0,space0);
+#ifdef __spirv__
+[[vk::binding(1,0)]]
+#endif
+RWByteAddressBuffer pcmContacts : register(u1,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -19,7 +23,7 @@ struct Parameters {
     uint resultBodyOffset,resultRowOffset,resultTaskOffset;
     uint resultContactOffset,resultFrictionOffset,resultPatchOffset;
     uint writebackBias;
-    uint prepBias,prepCount;
+    uint prepBias,prepCount,pcmBias;
 };
 #ifdef __spirv__
 [[vk::push_constant]] Parameters p;
@@ -164,7 +168,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         }
         for(uint c=0u;c<manager.w;++c) {
             uint index=arena.Load(p.orderBias+(manager.z+c)*4u);
-            prepareContactRow(index,pairIndex,endError);
+            prepareContactRow(index,pairIndex,manager.z,manager.w,endError);
         }
         for(uint patchIndex=manager.x;
             patchIndex<manager.x+manager.y;++patchIndex) {
