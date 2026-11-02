@@ -65,7 +65,7 @@ public:
                std::span<const std::uint32_t> partition_ends,
                std::span<const std::uint32_t> body_ordinals,
                std::span<native::GpuDyDistanceTask> tasks,
-               std::span<native::GpuDyContactPoint> contacts,
+               std::span<double> contact_forces,
                std::span<const native::GpuDyGuContactInput> cpu_gu,
                std::span<native::GpuDyFrictionRow> friction,
                std::span<native::GpuDyContactPatch> patches,
@@ -83,6 +83,11 @@ public:
                 throw std::overflow_error("Source Dy GPU exceeds 32-bit view ABI");
             return static_cast<std::uint32_t>(value);
         };
+        if(contact_forces.size()>
+           std::numeric_limits<std::size_t>::max()/sizeof(native::GpuDyContactPoint))
+            throw std::overflow_error("Source Dy contact row byte count overflow");
+        const auto contact_bytes=
+            contact_forces.size()*sizeof(native::GpuDyContactPoint);
         std::size_t reused_pcm_rows=0u;
         std::size_t cpu_gu_rows=0u;
         for(const auto& pair:contact_prep)
@@ -94,9 +99,9 @@ public:
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
-               manager.order_offset>contacts.size() ||
+               manager.order_offset>contact_forces.size() ||
                manager.contact_count>
-                   contacts.size()-manager.order_offset)
+                   contact_forces.size()-manager.order_offset)
                 throw std::logic_error(
                     "Source Dy Gu contact preparation range invalid");
             const auto& pair=contact_prep[manager.prep_index];
@@ -116,7 +121,7 @@ public:
             }
         }
         if(cpu_gu_rows!=cpu_gu.size() ||
-           reused_pcm_rows+cpu_gu_rows!=contacts.size())
+           reused_pcm_rows+cpu_gu_rows!=contact_forces.size())
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
         constexpr std::size_t count=12u;
@@ -127,21 +132,21 @@ public:
         const std::array<std::size_t,count> bytes{
             bodies.size_bytes(),rows.size_bytes(),descriptors.size_bytes(),
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
-            tasks.size_bytes(),contacts.size_bytes(),friction.size_bytes(),
+            tasks.size_bytes(),contact_bytes,friction.size_bytes(),
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
             prep_bytes+cpu_gu.size_bytes()};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
-            body_ordinals.size(),tasks.size(),contacts.size(),friction.size(),
+            body_ordinals.size(),tasks.size(),contact_forces.size(),friction.size(),
             patches.size(),manifolds.size(),contact_order.size(),
             contact_prep.size()};
         const std::array<const void*,count> sources{
             bodies.data(),rows.data(),descriptors.data(),partition_ends.data(),
-            body_ordinals.data(),tasks.data(),contacts.data(),friction.data(),
+            body_ordinals.data(),tasks.data(),nullptr,friction.data(),
             patches.data(),manifolds.data(),contact_order.data(),
             contact_prep.data()};
-        // Download only the source writeback fields. The GPU still
-        // receives the original packed row inputs in one ordered upload.
+        // Source Gu contact rows exist only on GPU; the host owns their
+        // eight-byte force results rather than an 88-byte row mirror.
         constexpr std::array<std::size_t,6> output_inputs{
             0u,1u,5u,6u,7u,8u};
         constexpr std::array<std::size_t,6> output_strides{
@@ -283,9 +288,9 @@ public:
                 for(std::size_t j=manager.order_offset;
                     j<manager.order_offset+manager.contact_count;++j) {
                     const auto index=contact_order[j];
-                    if(index>=contacts.size())
+                    if(index>=contact_forces.size())
                         throw std::logic_error("Source Dy contact writeback index invalid");
-                    std::memcpy(&contacts[index].applied_force,
+                    std::memcpy(&contact_forces[index],
                         host_.data()+result_offsets[3]+index*8u,8u);
                 }
                 for(std::size_t j=manager.patch_offset;

@@ -7341,13 +7341,13 @@ void Scene::solve_gpu_distance_constraints() {
     // Sc owns Gu point identity and correlated patch normals. The GPU
     // constructs every writable Dy contact row; only CPU-origin Gu
     // geometry needs a compact source upload.
-    gpu_dy_contacts_.resize(solver_contact_points_.size());
+    gpu_dy_contact_forces_.resize(solver_contact_points_.size());
     gpu_dy_gu_inputs_.clear();
     for(const auto manager_index:indexed_managers_) {
         const auto& m=manifolds_[manager_index];
         if(!m.friction_patch_count)continue;
-        if(m.solver_offset>gpu_dy_contacts_.size() ||
-           m.count>gpu_dy_contacts_.size()-m.solver_offset)
+        if(m.solver_offset>gpu_dy_contact_forces_.size() ||
+           m.count>gpu_dy_contact_forces_.size()-m.solver_offset)
             throw std::logic_error("Source GPU contact preparation range invalid");
         const auto prep_index=gpu_dy_contact_prep_indices_[manager_index];
         if(prep_index>=gpu_dy_contact_prep_pairs_.size())
@@ -7426,7 +7426,7 @@ void Scene::solve_gpu_distance_constraints() {
     gpu_broadphase_->solve_gpu_dy_distance(
         gpu_dy_bodies_,gpu_dy_rows_,gpu_dy_descriptors_,
         gpu_dy_partition_ends_,gpu_dy_body_ordinals_,gpu_dy_tasks_,
-        gpu_dy_contacts_,gpu_dy_gu_inputs_,gpu_dy_friction_,
+        gpu_dy_contact_forces_,gpu_dy_gu_inputs_,gpu_dy_friction_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
         gpu_dy_contact_prep_pairs_);
     const auto unpack=[](const float(&v)[3]) {
@@ -7443,7 +7443,7 @@ void Scene::solve_gpu_distance_constraints() {
     for(std::size_t i=0;i<distance_rows_.size();++i)
         distance_rows_[i].applied_force=gpu_dy_rows_[i].applied_force;
     for(std::size_t i=0;i<solver_contact_points_.size();++i)
-        solver_contact_points_[i].applied_force=gpu_dy_contacts_[i].applied_force;
+        solver_contact_points_[i].applied_force=gpu_dy_contact_forces_[i];
     for(std::size_t i=0;i<solver_friction_rows_.size();++i) {
         solver_friction_rows_[i].tangent=unpack(gpu_dy_friction_[i].tangent);
         solver_friction_rows_[i].applied_force=gpu_dy_friction_[i].applied_force;
