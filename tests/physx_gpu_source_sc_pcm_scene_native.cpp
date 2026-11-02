@@ -86,6 +86,14 @@ void verify(fyzz::compute::Backend backend,const char* sap,
             std::isfinite(direct[0].normal.x) &&
             std::isfinite(direct[0].points[0].separation),
             "Direct Sc GPU PCM readback disagrees with the shader record");
+    // A quiet refresh must reuse Sc's original device pair descriptor:
+    // the GPU still runs PCM, but no pair-list HtoD submission is needed.
+    std::array<native::GpuPcmBoxResult,1> repeated{};
+    producer->generate_gpu_pcm_box_contacts(request,repeated);
+    require(producer->pcm_pair_upload_bytes()==0u &&
+            repeated[0].status==0u && repeated[0].edge==edge &&
+            repeated[0].count>0u,
+            "Stable Sc PCM manager unexpectedly re-uploaded source pair input");
     // Explicitly invalidate a live Sc EdgeIndex. A newly admitted or
     // rejected source frame uses the identical candidate-owned reset.
     const std::array<native::GpuPcmBoxPair,1> reset_request{{
@@ -93,6 +101,9 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     }};
     std::array<native::GpuPcmBoxResult,1> reset{};
     producer->generate_gpu_pcm_box_contacts(reset_request,reset);
+    require(producer->pcm_pair_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmBoxPairNative),
+            "Source PCM reset did not refresh its GPU pair descriptor");
     require(reset[0].edge==edge && reset[0].status==0u &&
             reset[0].count>0u &&
             (reset[0].selected_and_regenerated&0x80000000u)!=0u,
@@ -117,6 +128,8 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     check(true);
     require(gpu.contact_edge_index({gpu_a,gpu_b})==edge,
             "Quiet Sc GPU PCM invalidated a persistent contact edge");
+    require(producer->pcm_pair_upload_bytes()==0u,
+            "Pose-only PCM update re-uploaded unchanged Sc contact identity");
     // The device stream reconstructs the original Gu B-local witnesses
     // in world space, including rotated source-order second shapes.
     constexpr float angle=0.08f;
