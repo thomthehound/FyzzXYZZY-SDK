@@ -216,14 +216,27 @@ void verify_sparse_contact_stream(
     gpu.advance_collision();
     check_transitions(0u,interrupted.size());
     check_ordinals();
-    for(const auto i:interrupted) {
+    // Readmit two old contacts while losing a different touching pair.
+    // Both event streams must remain independently sorted and disjoint.
+    for(const auto i:std::array<std::uint32_t,2>{1u,10u}) {
+        const Vec3 restored{5.f*float(i),1.f,0.f};
+        cpu.set_position(moving_cpu[i],restored);
+        gpu.set_position(moving_gpu[i],restored);
+    }
+    cpu.set_position(moving_cpu[4],{22.5f,1.f,0.f});
+    gpu.set_position(moving_gpu[4],{22.5f,1.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    check_transitions(2u,1u);
+    check_ordinals();
+    for(const auto i:std::array<std::uint32_t,2>{4u,6u}) {
         const Vec3 restored{5.f*float(i),1.f,0.f};
         cpu.set_position(moving_cpu[i],restored);
         gpu.set_position(moving_gpu[i],restored);
     }
     cpu.advance_collision();
     gpu.advance_collision();
-    check_transitions(interrupted.size(),0u);
+    check_transitions(2u,0u);
     check_ordinals();
     const auto retained_edge=gpu.contact_edge_index(
         {moving_gpu.back(),fixed_gpu.back()});
