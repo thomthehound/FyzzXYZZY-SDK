@@ -99,6 +99,32 @@ void exercise(Context& context) {
         reused.allocate(256u, PX_FL);
         require(reused.getDevicePtr() == oldAddress && roots.live_roots() == 1u,
                 "Original PhysX buddy block was not reused after fetch");
+        // The source Dy arena needs only its live Sc friction prefix on
+        // growth, not the transient rows occupying the rest of the heap.
+        const auto previous = buffer.getDevicePtr();
+        bool invalid_prefix = false;
+        try {
+            buffer.allocateCopyPrefixAsync(1024u,buffer.getSize()+1u,
+                                           stream,PX_FL);
+        } catch(const std::out_of_range&) {
+            invalid_prefix = true;
+        }
+        require(invalid_prefix && buffer.getDevicePtr()==previous,
+                "Source prefix growth admitted an unallocated history range");
+        buffer.allocateCopyPrefixAsync(1024u,sizeof(contents),stream,PX_FL);
+        const auto& queued = stream.commands();
+        require(queued.size()==1u &&
+                std::holds_alternative<CopyCommand>(queued.front()) &&
+                std::get<CopyCommand>(queued.front()).bytes==sizeof(contents),
+                "Source Dy growth copied more than its live GPU prefix");
+        stream.wait_at_fetch();
+        const auto grown = addresses.resolve(buffer.getDevicePtr(),
+                                            sizeof(observed));
+        context.download(grown.buffer,grown.offset,
+                         observed.data(),sizeof(observed));
+        require(observed==contents && buffer.getDevicePtr()!=previous,
+                "Source GPU prefix growth failed to preserve retained history");
+        heap.flushDeferredDeallocs();
         companion.deallocate();
         buffer.deallocate();
         reused.deallocate();

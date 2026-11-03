@@ -79,6 +79,51 @@ void PxgCudaBuffer::allocateCopyOldDataAsync(
     mSize = capacity;
 }
 
+void PxgCudaBuffer::allocateCopyPrefixAsync(
+    PxU64 size, PxU64 livePrefixBytes,
+    fyzz::physx_gpu::SourceSapDmaNative& stream,
+    const char* filename, PxI32 line) {
+    if (livePrefixBytes > mSize)
+        throw std::out_of_range(
+            "PhysX GPU retained prefix exceeds previous buffer capacity");
+    if (size <= mSize) return;
+    if (mSize > std::numeric_limits<PxU64>::max() / 2u)
+        throw std::overflow_error("PhysX GPU prefix growth overflows");
+    const PxU64 capacity = PxMax(size, mSize * 2u);
+    if (capacity > std::numeric_limits<std::size_t>::max())
+        throw std::overflow_error("PhysX GPU buffer exceeds native address range");
+
+    void* next = mDeviceAlloc.allocate(
+        static_cast<std::size_t>(capacity), mStatGroup, filename, line);
+    if (!next) throw std::bad_alloc();
+    const auto nextRaw =
+        static_cast<CUdeviceptr>(reinterpret_cast<std::uintptr_t>(next));
+    const auto nextView = (nextRaw + 127u) & ~CUdeviceptr(127u);
+    const auto oldView = getDevicePtr();
+    const auto nextBias = nextView - nextRaw;
+    const auto oldBias = oldView - mPtr;
+    try {
+        if (oldBias > mSize || nextBias > capacity ||
+            livePrefixBytes > mSize - oldBias ||
+            livePrefixBytes > capacity - nextBias)
+            throw std::out_of_range(
+                "PhysX GPU retained prefix exceeds aligned device view");
+        if (mPtr && livePrefixBytes)
+            stream.queue_device_copy(nextView, oldView,
+                static_cast<std::size_t>(livePrefixBytes));
+    } catch (...) {
+        mDeviceAlloc.deallocate(next);
+        throw;
+    }
+    // Only published source history survives. The remaining Dy arena
+    // contains disposable, frame-local solver inputs and writeback.
+    if (mPtr && mSize)
+        mDeviceAlloc.deallocateDeferred(reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(mPtr)));
+    mPtr = nextRaw;
+    mSize = capacity;
+}
+
 void PxgCudaBuffer::deallocate() {
     if (mPtr && mSize) {
         mDeviceAlloc.deallocate(reinterpret_cast<void*>(

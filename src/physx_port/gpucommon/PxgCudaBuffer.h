@@ -40,6 +40,11 @@ public:
     void allocateCopyOldDataAsync(PxU64 size,
                                   fyzz::physx_gpu::SourceSapDmaNative& stream,
                                   const char* filename, PxI32 line);
+    // A source GPU stage may retain only the live prefix of the aligned
+    // getDevicePtr() view when the remainder is transient frame storage.
+    void allocateCopyPrefixAsync(PxU64 size, PxU64 livePrefixBytes,
+                                 fyzz::physx_gpu::SourceSapDmaNative& stream,
+                                 const char* filename, PxI32 line);
 
     void deallocate();
     void deallocateDeferred();
