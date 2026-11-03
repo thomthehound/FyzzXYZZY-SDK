@@ -191,6 +191,7 @@ inline void write_source_sap_scene_bounds(
            intersects(changes->created,changes->removed) ||
            intersects(changes->updated,changes->removed))
             throw std::invalid_argument("Source SAP handle occurs in multiple delta lists");
+    }
 
     const auto publish=[&](std::size_t i) {
         const auto handle=source_handles[i];
