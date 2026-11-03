@@ -126,6 +126,7 @@ struct RigidBodyDynamics {
 };
 
 using BodyId = std::uint32_t;
+using ShapeId = std::uint32_t;
 using AggregateId = std::uint32_t;
 // World-visible identity includes a generation. Native IslandSim
 // EdgeIndex and ScConstraintSim's recycled IDTracker slot are private.
