@@ -9650,16 +9650,11 @@ void Scene::step(float seconds) {
                 actor.orientation.y==result.orientation[1] &&
                 actor.orientation.z==result.orientation[2] &&
                 actor.orientation.w==result.orientation[3];
+            // Reconciled deactivations already mark the restored Sc
+            // shape dirty in publish_integrated_shape_bounds. Only
+            // matching Dy poses may regain device-cache authorization.
             if(accepted)
                 gpu_broadphase_->authorize_device_integrated_pose(id);
-            else {
-                // IslandSim can deactivate and restore a rigid pose after
-                // Dy has already overwritten the resident GPU bounds.
-                // Invalidate that volume in the original AABB manager so
-                // the next source SAP frame uploads Sc's restored pose.
-                gpu_broadphase_->mark_shape_bounds_changed(
-                    id,actor.contact_offset);
-            }
         }
     }
     join.finish_after_integration();
