@@ -54,6 +54,7 @@ struct GpuSapSceneAdmissionFixture {
             // This admission fixture supplies fetched reports explicitly.
         }
         void admit_shape(BodyId,GpuBroadphaseBox::Motion,float) override {}
+        void admit_plane(BodyId) override {}
         void retire_shape(BodyId) override {}
         void set_shape_simulation_enabled(BodyId,bool) override {}
         void set_shape_motion(BodyId,GpuBroadphaseBox::Motion) override {}
