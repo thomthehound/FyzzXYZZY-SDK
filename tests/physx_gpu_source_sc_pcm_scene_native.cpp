@@ -17,6 +17,19 @@
 
 namespace fyzz::native {
 struct GpuPcmFrictionAnchorFixture {
+    static std::size_t cpu_gu_anchor_bytes(const Scene& scene) {
+        std::size_t count=0u;
+        for(const auto index:scene.indexed_managers_) {
+            const auto& manager=scene.manifolds_[index];
+            if(manager.pcm_result_index!=
+               std::numeric_limits<std::uint32_t>::max())continue;
+            for(std::size_t i=manager.friction_patch_offset;
+                i<manager.friction_patch_offset+
+                  manager.friction_patch_count;++i)
+                count+=scene.friction_patches_[i].anchor_count;
+        }
+        return count*sizeof(GpuDyFrictionAnchorInput);
+    }
     static void verify(const Scene& cpu,const Scene& gpu) {
         const auto& reference=cpu.friction_patches_;
         const auto& actual=gpu.friction_patches_;
@@ -926,10 +939,16 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         sizeof(native::GpuDyGuContactInput) &&
                     producer->dy_upload_span_count()==1u,
                 "Mixed source Gu and PCM rows did not enter one GPU Dy task");
-            require(producer->dy_friction_anchor_upload_bytes()==
+            const auto expected_cpu_anchors=
+                native::GpuPcmFrictionAnchorFixture::cpu_gu_anchor_bytes(gpu);
+            require(expected_cpu_anchors>0u &&
+                    producer->dy_friction_anchor_upload_bytes()==
+                        expected_cpu_anchors &&
+                    expected_cpu_anchors<
                         producer->dy_friction_prepared_rows()*
                             sizeof(native::GpuDyFrictionAnchorInput)/2u,
-                "Mixed source friction anchors lost their compact GPU layout");
+                "Mixed Dy source upload still includes resident PCM anchors");
+            native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
             require(producer->dy_contact_prep_upload_saving()==176,
                 "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
             require(cpu.contacts().size()==gpu.contacts().size() &&
