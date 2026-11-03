@@ -1069,19 +1069,12 @@ public:
             republish_all();
             return update;
         }
-        // Sc owns actor identity, while PxgAABBManager owns the volume
-        // handle. Their persistent admission binding must agree before
-        // changing any bounds, groups, handle lists, or GPU descriptors.
-        for(std::size_t i=0;i<live.size();++i) {
-            if(handles[i]>=volume_to_actor_.size() ||
-               volume_to_actor_[handles[i]]!=live[i].id)
-                throw std::invalid_argument(
-                    "Source GPU volume handle no longer belongs to the supplied Sc actor");
-        }
+        // Validate the Sc actor-to-volume binding and the original
+        // volume admission/filter group in the same pre-write pass.
         auto update=prepare_source_sap_single_volume_scene_native(
             single_volumes(),{created_,retired_,updated_},live,handles,
-            scene_bounds(),filter,bounds_.hasChanged(),bounds_scratch_,
-            records,cached_poses);
+            volume_to_actor_,scene_bounds(),filter,bounds_.hasChanged(),
+            bounds_scratch_,records,cached_poses);
         validate_source_sap_volume_actor_lifetime_native(
             actor_lifetime(),update);
         republish_all();

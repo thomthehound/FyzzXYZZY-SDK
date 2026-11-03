@@ -389,6 +389,17 @@ void execute(Context& context, ShaderBinary translateShader,
                         "Source Sc element tracker diverged from AABB volume handle");
             }
             const auto scActors=aabb.volume_to_actor();
+            auto foreignOwnerBoxes=liveBoxes;
+            foreignOwnerBoxes[1].id=17u; // Handle 1 is owned by actor 3.
+            bool rejectedForeignActor=false;
+            try {
+                (void)aabb.prepare(foreignOwnerBoxes,created,filter);
+            }catch(const std::invalid_argument&) {
+                rejectedForeignActor=true;
+            }
+            require(rejectedForeignActor,
+                    "Original source AABB admission accepted a foreign actor handle");
+            // A rejected frame must leave source admissions intact.
             const auto update=aabb.prepare(liveBoxes,created,filter);
             const auto sceneBounds=aabb.scene_bounds();
             require(aabb.capacity()==4u &&

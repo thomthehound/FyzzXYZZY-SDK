@@ -880,7 +880,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         try {
             (void)prepare_source_sap_single_volume_scene_native(
                 manager,{created,retired,updated},live_boxes,unadmitted,
-                sceneBounds,filter,true,sceneScratch);
+                sourceActorIds,sceneBounds,filter,true,sceneScratch);
         }catch(const std::invalid_argument&){rejectedUnadmitted=true;}
         if(!rejectedUnadmitted ||
            groups[7]!=physx::Bp::FilterGroup::eINVALID ||
@@ -890,7 +890,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
 
         const auto frame=prepare_source_sap_single_volume_scene_native(
             manager,{created,retired,updated},live_boxes,live_handles,
-            sceneBounds,filter,true,sceneScratch);
+            sourceActorIds,sceneBounds,filter,true,sceneScratch);
         validate_source_sap_volume_actor_lifetime_native(identity,frame);
         if(groups[2]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
             throw std::runtime_error(
@@ -974,7 +974,7 @@ void exercise_source_single_volume_bitmap_lifecycle_native(Context& context) {
         const std::array<physx::Bp::ShapeHandle,1u> retained_handle{2u};
         const auto next=prepare_source_sap_single_volume_scene_native(
             manager,{created,retired,updated},remaining,retained_handle,
-            sceneBounds,filter,true,sceneScratch);
+            sourceActorIds,sceneBounds,filter,true,sceneScratch);
         if(groups[2]!=physx::Bp::getFilterGroup_Dynamics(99u,false))
             throw std::runtime_error(
                 "Moving source volume replaced original Sc actor filter group");
