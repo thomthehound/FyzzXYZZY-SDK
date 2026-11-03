@@ -113,7 +113,15 @@ public:
 
     void admit(BodyId actor,native::GpuBroadphaseBox::Motion motion,
                float contact_distance) {
-        admit_actor(actor,motion,contact_distance,std::nullopt);
+        admit_actor(actor,actor,motion,contact_distance,std::nullopt);
+    }
+
+    // Shape elements have independent source IDs; multiple elements may
+    // reference one Sc rigid actor and therefore share its Bp filter group.
+    void admit_shape(ShapeId shape,BodyId actor,
+                     native::GpuBroadphaseBox::Motion motion,
+                     float contact_distance) {
+        admit_actor(shape,actor,motion,contact_distance,std::nullopt);
     }
 
     // Source Sc records the ElementSim and rigid actor IDs even when
@@ -126,7 +134,7 @@ public:
             const auto capacity=handles_.capacity();
             handles_.reserve(capacity+std::max<std::size_t>(capacity,8));
         }
-        const auto rigid_id=actor_ids_.createID();
+        const auto rigid_id=acquire_rigid_id(actor);
         try {
             const auto handle=elements_.createID();
             try {
@@ -144,7 +152,7 @@ public:
                 throw;
             }
         }catch(...) {
-            actor_ids_.releaseID(rigid_id);
+            release_rigid_id(actor);
             throw;
         }
     }
@@ -156,7 +164,7 @@ public:
         if(root.attached_actors.size()>=root.max_shapes)
             throw std::invalid_argument(
                 "Original Sc aggregate actor capacity exceeded");
-        admit_actor(actor,motion,contact_distance,aggregate);
+        admit_actor(actor,actor,motion,contact_distance,aggregate);
         // Reserved at aggregate creation; source Sc attachment is
         // distinct from the AABB manager's enabled-shape member array.
         records_[actor].aggregate_attachment_index=
@@ -179,7 +187,7 @@ public:
         if(element.aggregate_id!=PX_INVALID_U32)
             unlink_attached_actor(
                 aggregate_root(element.aggregate_id),element);
-        actor_ids_.releaseID(element.rigid_id);
+        release_rigid_id(element.actor);
         element.live=false;
         element.in_aabb=false;
     }
@@ -405,23 +413,28 @@ private:
         element.aggregate_id=PX_INVALID_U32;
     }
     void admit_actor(
-        BodyId actor,native::GpuBroadphaseBox::Motion motion,
+        ShapeId shape,BodyId actor,native::GpuBroadphaseBox::Motion motion,
         float contact_distance,
         std::optional<physx::Bp::AggregateHandle> aggregate) {
-        if(actor!=records_.size() || actor!=handles_.size())
+        if(shape!=records_.size() || shape!=handles_.size())
             throw std::logic_error(
-                "Source Sc actor admission must follow native Scene actor order");
+                "Source Sc shape admission must follow ElementSim order");
+        for(const auto& element:records_)
+            if(element.live && element.actor==actor &&
+               element.motion!=motion)
+                throw std::invalid_argument(
+                    "One Sc rigid actor cannot have conflicting shape motion");
         if(handles_.size()==handles_.capacity()) {
             const auto capacity=handles_.capacity();
             handles_.reserve(capacity+std::max<std::size_t>(capacity,8));
         }
-        const auto rigid_id=actor_ids_.createID();
+        const auto rigid_id=acquire_rigid_id(actor);
         try {
             records_.push_back({
                 actor,rigid_id,motion,contact_distance,true,true,
                 aggregate.value_or(PX_INVALID_U32)});
         }catch(...) {
-            actor_ids_.releaseID(rigid_id);
+            release_rigid_id(actor);
             throw;
         }
         try {
@@ -433,7 +446,7 @@ private:
                         rigid_id,
                         motion==native::GpuBroadphaseBox::Motion::Kinematic);
                     aabb_.admit_aggregate_member(
-                        *aggregate,handle,actor,contact_distance,group,
+                        *aggregate,handle,shape,contact_distance,group,
                         &records_.back());
                 }catch(...) {
                     elements_.releaseID(handle);
@@ -442,16 +455,40 @@ private:
                 handles_.push_back(handle);
             }else {
                 const auto handle=SourceScElementLifecycleNative::admit(
-                    elements_,aabb_,actor,rigid_id,contact_distance,motion,
+                    elements_,aabb_,shape,rigid_id,contact_distance,motion,
                     &records_.back());
                 handles_.push_back(handle);
             }
         }catch(...) {
             records_.pop_back();
-            actor_ids_.releaseID(rigid_id);
+            release_rigid_id(actor);
             throw;
         }
     }
+
+    struct ActorIdentity {
+        physx::PxU32 rigid_id=PX_INVALID_U32;
+        std::uint32_t live_shapes=0u;
+    };
+    physx::PxU32 acquire_rigid_id(BodyId actor) {
+        if(actor>=rigid_actor_ids_.size())
+            rigid_actor_ids_.resize(static_cast<std::size_t>(actor)+1u);
+        auto& identity=rigid_actor_ids_[actor];
+        if(identity.live_shapes==std::numeric_limits<std::uint32_t>::max())
+            throw std::out_of_range("Sc rigid actor shape count overflow");
+        if(!identity.live_shapes)
+            identity.rigid_id=actor_ids_.createID();
+        ++identity.live_shapes;
+        return identity.rigid_id;
+    }
+    void release_rigid_id(BodyId actor) {
+        auto& identity=rigid_actor_ids_[actor];
+        if(!--identity.live_shapes) {
+            actor_ids_.releaseID(identity.rigid_id);
+            identity.rigid_id=PX_INVALID_U32;
+        }
+    }
+
     Element& live(BodyId actor) {
         if(actor>=records_.size() || !records_[actor].live)
             throw std::out_of_range("Unknown or retired source Sc element");
@@ -461,6 +498,7 @@ private:
     PxgAabbSourceMembersNative& aabb_;
     physx::Sc::ObjectIDTracker elements_,actor_ids_;
     std::deque<Element> records_;
+    std::vector<ActorIdentity> rigid_actor_ids_;
     std::deque<AggregateRoot> aggregate_roots_;
     // Recycle root user-data addresses only after original Sc/GPU fetch.
     // These are storage slots, not a second aggregate identity registry.
