@@ -134,6 +134,9 @@ public:
             pair_host_[i]=next;
         }
         const auto edge_capacity=largest_edge+1u;
+        // Reserve the download destination before queueing any source
+        // allocation or GPU work. Its address remains fixed through fetch.
+        readback_.resize(pair_count);
         const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
         const auto previous_pair_capacity=pairs_.getSize();
         const auto previous_pair_address=pairs_.getDevicePtr();
@@ -187,7 +190,6 @@ public:
         // Fetch the losslessly packed device stream, then reconstruct
         // Sc's original host record. The Dy shader reads the same device
         // allocation; no GPU repacking command or second fence is needed.
-        readback_.resize(pair_count);
         const auto readback_bytes=readback_.size()*sizeof(readback_[0]);
         const auto mapped=addresses_.resolve(
             dense_contacts_.getDevicePtr(),readback_bytes);
