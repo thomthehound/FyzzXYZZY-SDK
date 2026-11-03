@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <exception>
+#include <functional>
 #include <stop_token>
 #include <thread>
 #include <span>
@@ -237,7 +238,8 @@ public:
     virtual bool has_gpu_pcm_box() const noexcept { return false; }
     virtual void generate_gpu_pcm_box_contacts(
         std::span<const GpuPcmBoxPair>,
-        std::span<GpuPcmBoxResult>) {
+        std::span<GpuPcmBoxResult>,
+        const std::function<void()>& = {}) {
         throw std::logic_error("Source GPU PCM stages are not installed");
     }
     virtual bool has_gpu_dy_distance() const noexcept { return false; }
@@ -1883,6 +1885,14 @@ private:
     // records; edge identity and rollback ownership remain with Sc.
     std::vector<GpuPcmBoxPair> gpu_pcm_pairs_;
     std::vector<GpuPcmBoxResult> gpu_pcm_results_;
+    // Scratch for Sc CPU plane Gu while independent box PCM runs on GPU.
+    // Published contact ownership remains with next_contact_points_.
+    struct PlaneContactWork {
+        Pair pair{};
+        std::array<ContactPoint,4> points{};
+        std::uint8_t count=0;
+    };
+    std::vector<PlaneContactWork> plane_contact_work_;
     // Publish swaps are reversible without copying the source-owned
     // contact/pair arenas. Rollback keeps externally held Gu spans valid.
     std::uint64_t pair_epoch_=0;

@@ -3489,6 +3489,7 @@ void Scene::update_contacts() {
     const auto new_lookup_generation=indexed_manifold_generation_;
     gpu_pcm_pairs_.clear();
     gpu_pcm_results_.clear();
+    plane_contact_work_.clear();
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
@@ -3507,9 +3508,45 @@ void Scene::update_contacts() {
                 !island_edges_[edge].pcm_cache.initialized});
         }
         gpu_pcm_results_.resize(gpu_pcm_pairs_.size());
-        gpu_broadphase_->generate_gpu_pcm_box_contacts(
-            gpu_pcm_pairs_,gpu_pcm_results_);
     }
+    // Sc's CPU plane/box Gu caches are independent of the GPU box/box
+    // contact stream. Start GPU work first, then prepare the plane
+    // witnesses before its fetch fence, retaining original pair order.
+    const bool overlap_plane_gu=source_gpu_pcm &&
+        pcm_plane_box_enabled_ && !gpu_pcm_pairs_.empty();
+    if(source_gpu_pcm) {
+        const auto prepare_plane_gu=[&] {
+            for(std::size_t i=0;i<previous_pairs_.size();++i) {
+                const Pair pair=previous_pairs_[i];
+                const Actor& a=actors_[pair.a];
+                const Actor& b=actors_[pair.b];
+                if(a.kind!=Kind::StaticPlane &&
+                   b.kind!=Kind::StaticPlane)continue;
+                const Actor& plane=a.kind==Kind::StaticPlane?a:b;
+                const Actor& box=a.kind==Kind::StaticPlane?b:a;
+                if(box.kind!=Kind::DynamicBox)
+                    throw std::logic_error(
+                        "PCM plane-box requires the admitted dynamic box");
+                const float distance=a.contact_offset+b.contact_offset;
+                if(!std::isfinite(distance))
+                    throw std::overflow_error(
+                        "Native Gu contact distance overflow");
+                const EdgeIndex edge=active_edge_handles_[i];
+                step_checkpoint_.save_edge(*this,edge);
+                plane_contact_work_.emplace_back();
+                auto& work=plane_contact_work_.back();
+                work.pair=pair;
+                work.count=generate_pcm_plane_box(
+                    plane,box,distance,island_edges_[edge].pcm_cache,
+                    work.points);
+            }
+        };
+        gpu_broadphase_->generate_gpu_pcm_box_contacts(
+            gpu_pcm_pairs_,gpu_pcm_results_,
+            overlap_plane_gu ? std::function<void()>(prepare_plane_gu)
+                             : std::function<void()>{});
+    }
+    std::size_t plane_work_index=0u;
     std::size_t gpu_pcm_index=0u;
     std::size_t old_cursor = 0;
     std::size_t old_cache_cursor=0;
@@ -3568,22 +3605,31 @@ void Scene::update_contacts() {
         const bool pcm_box=pcm_box_box_enabled_ && !plane_pair;
         bool cache_hit=false;
         if(pcm_plane) {
-            // Persistent PCM cache belongs to the SAME contact-manager
-            // slot as the speculative/accurate island touch flags.
-            // Journal before the first mutation so rejected Gu/PGS
-            // frames and collision-only queries restore both owners.
-            step_checkpoint_.save_edge(*this,edge);
-            const Actor& plane=a.kind==Kind::StaticPlane?a:b;
-            const Actor& box=a.kind==Kind::StaticPlane?b:a;
-            if(box.kind!=Kind::DynamicBox)
-                throw std::logic_error(
-                    "PCM plane-box requires the admitted dynamic box");
-            manifold.count=generate_pcm_plane_box(
-                plane,box,contact_distance,island_edges_[edge].pcm_cache,
-                std::span<ContactPoint>(box_contact_scratch_));
-            next_contact_points_.insert(next_contact_points_.end(),
-                box_contact_scratch_.begin(),
-                box_contact_scratch_.begin()+manifold.count);
+            if(overlap_plane_gu) {
+                if(plane_work_index>=plane_contact_work_.size() ||
+                   plane_contact_work_[plane_work_index].pair!=pair)
+                    throw std::logic_error(
+                        "CPU plane Gu preparation lost Sc manager order");
+                const auto& work=plane_contact_work_[plane_work_index++];
+                manifold.count=work.count;
+                next_contact_points_.insert(next_contact_points_.end(),
+                    work.points.begin(),work.points.begin()+work.count);
+            } else {
+                // This same EdgeIndex cache remains the authority for
+                // source Gu witnesses and rejected-frame restoration.
+                step_checkpoint_.save_edge(*this,edge);
+                const Actor& plane=a.kind==Kind::StaticPlane?a:b;
+                const Actor& box=a.kind==Kind::StaticPlane?b:a;
+                if(box.kind!=Kind::DynamicBox)
+                    throw std::logic_error(
+                        "PCM plane-box requires the admitted dynamic box");
+                manifold.count=generate_pcm_plane_box(
+                    plane,box,contact_distance,island_edges_[edge].pcm_cache,
+                    std::span<ContactPoint>(box_contact_scratch_));
+                next_contact_points_.insert(next_contact_points_.end(),
+                    box_contact_scratch_.begin(),
+                    box_contact_scratch_.begin()+manifold.count);
+            }
         }
         if(pcm_box) {
             step_checkpoint_.save_edge(*this,edge);

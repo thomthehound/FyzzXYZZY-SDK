@@ -233,10 +233,11 @@ public:
     }
     void generate_gpu_pcm_box_contacts(
             std::span<const native::GpuPcmBoxPair> requests,
-            std::span<native::GpuPcmBoxResult> results) override {
+            std::span<native::GpuPcmBoxResult> results,
+            const std::function<void()>& on_submitted = {}) override {
         if(!pcm_)
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
-        pcm_->generate(requests,results,aabb_->capacity());
+        pcm_->generate(requests,results,aabb_->capacity(),on_submitted);
     }
     void mark_shape_bounds_changed(BodyId id,float offset) override {
         producer_->mark_shape_bounds_changed(id,offset);
