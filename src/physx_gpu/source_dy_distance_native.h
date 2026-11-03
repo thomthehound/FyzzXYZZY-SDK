@@ -227,6 +227,9 @@ public:
                 throw std::logic_error("Source Dy contact prep lacks a descriptor");
         const std::size_t compact_prep_bytes=static_begin+
             inline_bodies.size()*sizeof(native::GpuDyContactPrepBody);
+        if(compact_prep_bytes>contact_prep.size_bytes())
+            throw std::logic_error("Source contact prep has no active rigid body");
+        constexpr std::size_t count=13u;
         // One 16-byte header describes the three original Sc/SAP GPU
         // allocations, followed by exactly one source body record per row.
         const std::array<std::size_t,count> bytes{
