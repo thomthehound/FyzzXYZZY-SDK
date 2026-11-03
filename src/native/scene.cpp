@@ -9294,11 +9294,16 @@ void Scene::integrate_solver_task(
                                        static_cast<double>(motion_linear.y)*seconds),
                     static_cast<float>(static_cast<double>(actor.position.z)+
                                        static_cast<double>(motion_linear.z)*seconds)};
+                if(!finite(p))
+                    throw std::overflow_error(
+                        "Native position-iteration motion overflow");
                 q=integrate_quaternion(
                     actor.orientation,motion_angular,seconds);
+                if(!finite(q))
+                    throw std::overflow_error("Native CPU orientation overflow");
             }
             if(!finite(p) || !finite(q))
-                throw std::overflow_error("Native Dy integrateCore pose overflow");
+                throw std::overflow_error("Source GPU Dy integrateCore pose overflow");
             step_checkpoint_.save_motion(*this,id);
             remember_pre_integration_pose(id);
             actor.position = p;
