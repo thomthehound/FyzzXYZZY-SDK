@@ -288,6 +288,9 @@ public:
     }
     virtual void mark_shape_bounds_changed(
         BodyId actor,float contact_offset)=0;
+    virtual void set_device_shape_pose_cache_enabled(BodyId,bool) {
+        throw std::logic_error("Source GPU owner cannot set shape pose cache admission");
+    }
     // Sc::ActorSim/ElementSim own original actor and element IDs.
     virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
     virtual void admit_plane(BodyId) {
@@ -371,6 +374,19 @@ std::uint8_t source_box_box_contacts(
     Vec3 half0, Vec3 position0, Quat rotation0,
     Vec3 half1, Vec3 position1, Quat rotation1,
     float contact_distance, std::uint8_t& previous_axis,
+    std::span<ContactPoint> output);
+
+// Source simple PCM contacts. These generators write original Gu contacts
+// without a persistent witness cache.
+std::uint8_t source_pcm_sphere_sphere(
+    Vec3 center0,float radius0,Vec3 center1,float radius1,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_pcm_sphere_plane(
+    Vec3 center,float radius,float plane_height,
+    float contact_distance,std::span<ContactPoint> output);
+std::uint8_t source_pcm_sphere_box(
+    Vec3 center,float radius,Vec3 box_center,Quat box_orientation,
+    Vec3 box_half_extents,float contact_distance,
     std::span<ContactPoint> output);
 
 // GuPCMContactBoxBox::doBoxBoxGenerateContacts: candidates are local to
@@ -461,6 +477,10 @@ public:
     BodyId add_static_floor(float height);
     BodyId add_dynamic_box(
         Vec3 half_extents,Vec3 position,float density,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId add_static_sphere(float radius,Vec3 position,
+        std::optional<AggregateId> aggregate=std::nullopt);
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density,
         std::optional<AggregateId> aggregate=std::nullopt);
     AggregateId create_aggregate(std::uint32_t max_shapes,bool self_collision);
     void destroy_aggregate(AggregateId id);
@@ -847,7 +867,7 @@ private:
     friend struct NativeSapTimingFixture;
     friend struct NativeThirdPassTimingFixture;
     enum class Motion : std::uint8_t { Static, Dynamic, Kinematic };
-    enum class Geometry : std::uint8_t { Box, Plane };
+    enum class Geometry : std::uint8_t { Box, Plane, Sphere };
     // Node::NodeType is independent of actor kind. Kinematics retain
     // rigid node identity but no island assignment. Other node classes
     // require their own non-rigid simulation owners, not rigid Actor
@@ -870,6 +890,7 @@ private:
         Geometry geometry = Geometry::Box;
         bool alive = false;
         Vec3 half_extents{};
+        float radius=0.0f;
         Vec3 position{};
         Vec3 velocity{};
         Quat orientation{};
