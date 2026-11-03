@@ -25,11 +25,10 @@ namespace fyzz::physx_gpu {
 // an inline body. The source pair's 64-byte material/contact tail is intact.
 struct SourceDyPackedContactPrepNative {
     std::uint32_t body0_source=0u,body1_source=0u;
-    std::uint32_t reserved0=0u,reserved1=0u;
     std::array<std::uint8_t,64> constants{};
 };
-static_assert(sizeof(SourceDyPackedContactPrepNative)==80u &&
-              offsetof(SourceDyPackedContactPrepNative,constants)==16u);
+static_assert(sizeof(SourceDyPackedContactPrepNative)==72u &&
+              offsetof(SourceDyPackedContactPrepNative,constants)==8u);
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
 // transferred as one transient source-heap allocation. The native Scene
@@ -153,7 +152,7 @@ public:
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
         // Original Sc contact managers keep their 256-byte CPU input
-        // records. Lower their GPU transfer into 80-byte descriptors and
+        // records. Lower their GPU transfer into 72-byte descriptors and
         // reuse the already uploaded active Dy body/integrateCore inputs.
         constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
         if(contact_prep.size()>
@@ -178,22 +177,10 @@ public:
                    ordinal>=bodies.size() || ordinal>=invalid/2u)
                     throw std::logic_error(
                         "Active source Dy contact body has no solver ordinal");
-                const auto& input=integration[ordinal];
-                const auto same=[](const float* lhs,const float* rhs,
-                                   std::size_t count) {
-                    return std::memcmp(lhs,rhs,count*sizeof(float))==0;
-                };
-                if(!input.active ||
-                   !same(body.position,input.position,3u) ||
-                   !same(body.orientation,input.orientation,4u) ||
-                   !same(body.linear_velocity,input.linear_velocity,3u) ||
-                   !same(body.angular_velocity,input.angular_velocity,3u) ||
-                   !same(body.sqrt_inverse_inertia,
-                         input.sqrt_inverse_inertia,9u) ||
-                   std::memcmp(&body.inverse_mass,
-                               &bodies[ordinal].inverse_mass,sizeof(float))!=0)
+                if(!integration[ordinal].active ||
+                   body.inverse_mass!=bodies[ordinal].inverse_mass)
                     throw std::logic_error(
-                        "Sc contact preparation disagrees with Dy body input");
+                        "Sc contact preparation has no matching active Dy body");
                 return (ordinal<<1u)|1u;
             }
             if(inline_bodies_.size()>=(
