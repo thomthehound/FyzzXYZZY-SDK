@@ -722,7 +722,7 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         auto* producer=owner.get();
         gpu.set_gpu_broadphase(std::move(owner));
         std::array<BodyId,2> moving_cpu{},moving_gpu{};
-        BodyId floor_cpu{},floor_gpu{};
+        BodyId floor_cpu{},floor_gpu{},pcm_static_cpu{},pcm_static_gpu{};
         const auto add_plane_contact=[&] {
             floor_cpu=cpu.add_static_floor(0.f);
             floor_gpu=gpu.add_static_floor(0.f);
@@ -732,8 +732,10 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                 {0.5f,0.5f,0.5f},{0.f,0.43f,0.f},1.f);
         };
         const auto add_pcm_contact=[&] {
-            cpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
-            gpu.add_static_box({0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+            pcm_static_cpu=cpu.add_static_box(
+                {0.5f,0.5f,0.5f},{5.f,10.f,0.f});
+            pcm_static_gpu=gpu.add_static_box(
+                {0.5f,0.5f,0.5f},{5.f,10.f,0.f});
             moving_cpu[1]=cpu.add_dynamic_box(
                 {0.5f,0.5f,0.5f},{5.f,10.84f,0.f},1.f);
             moving_gpu[1]=gpu.add_dynamic_box(
@@ -805,8 +807,42 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         const auto has_pair=[](auto pairs,native::Pair pair) {
             return std::find(pairs.begin(),pairs.end(),pair)!=pairs.end();
         };
-        const native::Pair plane_pair_cpu{floor_cpu,moving_cpu[0]};
-        const native::Pair plane_pair_gpu{floor_gpu,moving_gpu[0]};
+        const native::Pair plane_pair_cpu{
+            std::min(floor_cpu,moving_cpu[0]),
+            std::max(floor_cpu,moving_cpu[0])};
+        const native::Pair plane_pair_gpu{
+            std::min(floor_gpu,moving_gpu[0]),
+            std::max(floor_gpu,moving_gpu[0])};
+        const native::Pair pcm_pair_cpu{
+            std::min(pcm_static_cpu,moving_cpu[1]),
+            std::max(pcm_static_cpu,moving_cpu[1])};
+        const native::Pair pcm_pair_gpu{
+            std::min(pcm_static_gpu,moving_gpu[1]),
+            std::max(pcm_static_gpu,moving_gpu[1])};
+        // Finite GPU lost/found deltas must preserve the independent
+        // plane contact edge without rebuilding its candidate product.
+        const auto saved_cpu=cpu.body_state(moving_cpu[1]);
+        const auto saved_gpu=gpu.body_state(moving_gpu[1]);
+        cpu.set_position(moving_cpu[1],
+            {30.f,saved_cpu.position.y,saved_cpu.position.z});
+        gpu.set_position(moving_gpu[1],
+            {30.f,saved_gpu.position.y,saved_gpu.position.z});
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                !has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                !has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Finite lost report modified an independent Sc plane contact");
+        cpu.set_position(moving_cpu[1],saved_cpu.position);
+        gpu.set_position(moving_gpu[1],saved_gpu.position);
+        cpu.advance_collision();
+        gpu.advance_collision();
+        require(has_pair(cpu.pairs(),plane_pair_cpu) &&
+                has_pair(gpu.pairs(),plane_pair_gpu) &&
+                has_pair(cpu.pairs(),pcm_pair_cpu) &&
+                has_pair(gpu.pairs(),pcm_pair_gpu),
+            "Finite found report failed to preserve Sc plane membership");
         cpu.set_shape_simulation_enabled(floor_cpu,false);
         gpu.set_shape_simulation_enabled(floor_gpu,false);
         cpu.advance_collision();

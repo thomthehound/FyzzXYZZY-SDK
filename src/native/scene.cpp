@@ -236,7 +236,12 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
         }
     }
     actors_.push_back(actor);
-    if(actor.kind==Kind::StaticPlane)has_admitted_plane_=true;
+    if(actor.kind==Kind::StaticPlane) {
+        has_admitted_plane_=true;
+        if(gpu_broadphase_)plane_pair_membership_dirty_=true;
+    } else if(gpu_broadphase_ && has_admitted_plane_ &&
+              actor.kind==Kind::DynamicBox)
+        plane_pair_membership_dirty_=true;
     live_actor_ids_.push_back(id);
     broadphase_endpoint_membership_dirty_=true;
     if(dynamic_node)++live_dynamic_count_;
@@ -2032,16 +2037,16 @@ void Scene::update_gpu_pairs(bool force_update) {
                     "Noncanonical or unsorted GPU SAP pair reports");
             last=pair;
             have_last=true;
-            if(found) {
-                const auto& a=actors_[pair.a];
-                const auto& b=actors_[pair.b];
-                if(!a.alive || !b.alive ||
-                   !a.simulation_shape_enabled ||
-                   !b.simulation_shape_enabled ||
-                   a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
-                    throw std::invalid_argument(
-                        "GPU SAP found pair references inactive Sc shapes");
-            }
+            const auto& a=actors_[pair.a];
+            const auto& b=actors_[pair.b];
+            if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
+                throw std::invalid_argument(
+                    "GPU SAP pair references a non-finite Sc plane");
+            if(found && (!a.alive || !b.alive ||
+                         !a.simulation_shape_enabled ||
+                         !b.simulation_shape_enabled))
+                throw std::invalid_argument(
+                    "GPU SAP found pair references inactive Sc shapes");
         }
     };
     validate(reports.found,true);
@@ -2051,29 +2056,31 @@ void Scene::update_gpu_pairs(bool force_update) {
     // Candidate membership is the Cartesian product of admitted planes
     // and dynamic shapes, just as in the native source Bp branch. Gu
     // decides accurate touch; GPU SAP alone owns finite BP membership.
-    const auto append_plane_managers=[&](bool finite_delta=false) {
-        if(!has_admitted_plane_) {
-            broadphase_pair_membership_changed_=
-                finite_delta || pending_pairs_!=previous_pairs_;
-            return;
-        }
-        for(const BodyId plane:live_actor_ids_) {
-            const auto& actor=actors_[plane];
-            if(!actor.alive || !actor.simulation_shape_enabled ||
-               actor.kind!=Kind::StaticPlane)continue;
-            for(const BodyId body:live_actor_ids_) {
-                const auto& dynamic=actors_[body];
-                if(dynamic.alive && dynamic.simulation_shape_enabled &&
-                   dynamic.kind==Kind::DynamicBox)
-                    pending_pairs_.push_back(ordered_pair(plane,body));
+    // Only Sc admission/refiltering changes infinite-plane candidate
+    // membership. Ordinary Dy motion and finite GPU crossings retain
+    // the previously published plane manager identities.
+    const auto append_plane_managers=[&](
+        bool finite_delta,bool rebuild_planes) {
+        if(has_admitted_plane_ && rebuild_planes) {
+            for(const BodyId plane:live_actor_ids_) {
+                const auto& actor=actors_[plane];
+                if(!actor.alive || !actor.simulation_shape_enabled ||
+                   actor.kind!=Kind::StaticPlane)continue;
+                for(const BodyId body:live_actor_ids_) {
+                    const auto& dynamic=actors_[body];
+                    if(dynamic.alive && dynamic.simulation_shape_enabled &&
+                       dynamic.kind==Kind::DynamicBox)
+                        pending_pairs_.push_back(ordered_pair(plane,body));
+                }
             }
+            std::sort(pending_pairs_.begin(),pending_pairs_.end());
+            pending_pairs_.erase(
+                std::unique(pending_pairs_.begin(),pending_pairs_.end()),
+                pending_pairs_.end());
         }
-        std::sort(pending_pairs_.begin(),pending_pairs_.end());
-        pending_pairs_.erase(
-            std::unique(pending_pairs_.begin(),pending_pairs_.end()),
-            pending_pairs_.end());
         broadphase_pair_membership_changed_=
-            pending_pairs_!=previous_pairs_;
+            finite_delta || pending_pairs_!=previous_pairs_;
+        plane_pair_membership_dirty_=false;
     };
 
     if(reports.full_rebuild) {
@@ -2092,7 +2099,7 @@ void Scene::update_gpu_pairs(bool force_update) {
             if(actors_[pair.a].kind==Kind::DynamicBox ||
                actors_[pair.b].kind==Kind::DynamicBox)
                 pending_pairs_.push_back(pair);
-        append_plane_managers();
+        append_plane_managers(false,true);
         return;
     }
 
@@ -2144,7 +2151,7 @@ void Scene::update_gpu_pairs(bool force_update) {
         // refiltering still needs sorted contact-manager identities.
         if(!has_admitted_plane_)
             std::sort(pending_pairs_.begin(),pending_pairs_.end());
-        append_plane_managers();
+        append_plane_managers(false,true);
         gpu_pair_refilter_dirty_=false;
         return;
     }
@@ -2188,9 +2195,8 @@ void Scene::update_gpu_pairs(bool force_update) {
     // A quiet Sc pair stream needs no merge even when the source GPU
     // reports non-dynamic overlaps or updates existing PCM contacts.
     if(found.empty() && lost.empty()) {
-        // Plane/rigid admission and shape flags are authored without
-        // finite SAP crossings. Recheck only when Sc has a dirty edit.
-        if(!has_admitted_plane_ || (!dirty_ && !force_update)) {
+        // Motion dirties Gu/PCM, not Sc plane candidate membership.
+        if(!plane_pair_membership_dirty_) {
             broadphase_pair_membership_changed_=false;
             return;
         }
@@ -2199,7 +2205,7 @@ void Scene::update_gpu_pairs(bool force_update) {
             if(actors_[pair.a].kind!=Kind::StaticPlane &&
                actors_[pair.b].kind!=Kind::StaticPlane)
                 pending_pairs_.push_back(pair);
-        append_plane_managers();
+        append_plane_managers(false,true);
         return;
     }
 
@@ -2207,8 +2213,9 @@ void Scene::update_gpu_pairs(bool force_update) {
     pending_pairs_.reserve(previous_pairs_.size()+found.size());
     std::size_t new_index=0,lost_index=0;
     for(const Pair prior:previous_pairs_) {
-        if(actors_[prior.a].kind==Kind::StaticPlane ||
-           actors_[prior.b].kind==Kind::StaticPlane)continue;
+        if(plane_pair_membership_dirty_ &&
+           (actors_[prior.a].kind==Kind::StaticPlane ||
+            actors_[prior.b].kind==Kind::StaticPlane))continue;
         while(new_index<found.size() && found[new_index]<prior)
             pending_pairs_.push_back(found[new_index++]);
         if(lost_index<lost.size() && lost[lost_index]==prior)
@@ -2217,7 +2224,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     }
     while(new_index<found.size())
         pending_pairs_.push_back(found[new_index++]);
-    append_plane_managers(true);
+    append_plane_managers(true,plane_pair_membership_dirty_);
 }
 
 void Scene::update_pairs() {
@@ -8527,6 +8534,7 @@ void Scene::StepCheckpoint::capture(Scene& scene, bool capture_solver_state) {
     quiet_event_epoch=scene.quiet_event_epoch_;
     topology_dirty=scene.island_topology_dirty_;
     dirty=scene.dirty_;
+    plane_pair_membership_dirty=scene.plane_pair_membership_dirty_;
     authored_activation_pending=scene.authored_activation_pending_;
     includes_solver_state=capture_solver_state;
     friction_cache_epoch=scene.friction_cache_epoch_;
@@ -8911,6 +8919,7 @@ void Scene::StepCheckpoint::rollback(Scene& scene) noexcept {
     scene.broadphase_endpoint_membership_dirty_=true;
     scene.sap_pair_registry_dirty_=true;
     scene.dirty_=dirty;
+    scene.plane_pair_membership_dirty_=plane_pair_membership_dirty;
     scene.authored_activation_pending_=authored_activation_pending;
     // GPU source histories already rotate at successful fetch, before
     // the Sc/Dy transaction has committed. Rejecting this transaction

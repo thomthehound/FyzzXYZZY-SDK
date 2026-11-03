@@ -1584,6 +1584,7 @@ private:
         std::uint64_t manifold_lookup_generation=0;
         std::uint64_t quiet_event_epoch=0;
         bool topology_dirty=true, dirty=true;
+        bool plane_pair_membership_dirty=false;
         bool authored_activation_pending=false;
         bool includes_solver_state=true;
         void capture(Scene& scene, bool capture_solver_state=true);
@@ -1873,6 +1874,7 @@ private:
     // consumes it only on authored actor/shape or motion-class edits.
     bool gpu_pair_refilter_dirty_=false;
     bool has_admitted_plane_=false;
+    bool plane_pair_membership_dirty_=false;
     bool broadphase_pair_membership_changed_=true;
     std::vector<Pair> sap_created_pairs_,sap_deleted_pairs_;
     std::vector<Pair> previous_pairs_;
