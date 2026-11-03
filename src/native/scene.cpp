@@ -3529,6 +3529,28 @@ void Scene::update_contacts() {
     const bool source_gpu_pcm =
         gpu_broadphase_ && gpu_broadphase_->has_gpu_pcm_box() &&
         pcm_box_box_enabled_;
+    // Sc owns the live EdgeIndex and last published Gu manifold. An
+    // inactive rigid pair with no authored cache invalidation needs
+    // neither a PCM refresh nor a new contact readback. Dy already
+    // skips its inactive manager. Retain the source Gu record directly.
+    const auto retained_dormant_pcm=[&](Pair pair,EdgeIndex edge) noexcept {
+        if(edge>=island_edges_.size() ||
+           !island_edges_[edge].pcm_cache.initialized ||
+           edge>=manifold_by_edge_.size())return false;
+        const auto& indexed=manifold_by_edge_[edge];
+        if(indexed.generation!=manifold_lookup_generation_ ||
+           indexed.index>=manifolds_.size() ||
+           !(manifolds_[indexed.index].pair==pair) ||
+           !manifolds_[indexed.index].count)return false;
+        const auto& a=actors_[pair.a];
+        const auto& b=actors_[pair.b];
+        if(a.kind==Kind::KinematicBox || b.kind==Kind::KinematicBox)
+            return false;
+        const bool dynamic_a=a.kind==Kind::DynamicBox;
+        const bool dynamic_b=b.kind==Kind::DynamicBox;
+        return (dynamic_a || dynamic_b) &&
+            (!dynamic_a || a.sleeping) && (!dynamic_b || b.sleeping);
+    };
     if(source_gpu_pcm) {
         gpu_pcm_pairs_.reserve(previous_pairs_.size());
         for(std::size_t i=0;i<previous_pairs_.size();++i) {
@@ -3538,6 +3560,7 @@ void Scene::update_contacts() {
             if(a.kind==Kind::StaticPlane || b.kind==Kind::StaticPlane)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
+            if(retained_dormant_pcm(pair,edge))continue;
             const bool swapped=island_edges_[edge].gu_order_reversed;
             gpu_pcm_pairs_.push_back({
                 swapped?pair.b:pair.a,swapped?pair.a:pair.b,edge,
@@ -3668,26 +3691,36 @@ void Scene::update_contacts() {
             }
         }
         if(pcm_box) {
-            step_checkpoint_.save_edge(*this,edge);
-            if(source_gpu_pcm) {
-                if(gpu_pcm_index>=gpu_pcm_results_.size() ||
-                   gpu_pcm_results_[gpu_pcm_index].edge!=edge)
-                    throw std::logic_error(
-                        "Source GPU PCM result lost Sc EdgeIndex order");
-                manifold.pcm_result_index=
-                    static_cast<std::uint32_t>(gpu_pcm_index);
-                manifold.count=publish_gpu_pcm_box_box(
-                    gpu_pcm_results_[gpu_pcm_index++],
-                    island_edges_[edge].pcm_cache,
-                    std::span<ContactPoint>(box_contact_scratch_));
-            }else
-                manifold.count=generate_pcm_box_box(
-                    first,second,contact_distance,
-                    island_edges_[edge].pcm_cache,
-                    std::span<ContactPoint>(box_contact_scratch_));
-            next_contact_points_.insert(next_contact_points_.end(),
-                box_contact_scratch_.begin(),
-                box_contact_scratch_.begin()+manifold.count);
+            if(source_gpu_pcm && previously_touching &&
+               retained_dormant_pcm(pair,edge)) {
+                // The original Gu arena remains live until Sc swaps
+                // its published manifolds. No new EdgeIndex or cache.
+                const auto& prior=manifolds_[old_cursor];
+                manifold.count=prior.count;
+                next_contact_points_.insert(next_contact_points_.end(),
+                    prior.points.begin(),prior.points.end());
+            }else {
+                step_checkpoint_.save_edge(*this,edge);
+                if(source_gpu_pcm) {
+                    if(gpu_pcm_index>=gpu_pcm_results_.size() ||
+                       gpu_pcm_results_[gpu_pcm_index].edge!=edge)
+                        throw std::logic_error(
+                            "Source GPU PCM result lost Sc EdgeIndex order");
+                    manifold.pcm_result_index=
+                        static_cast<std::uint32_t>(gpu_pcm_index);
+                    manifold.count=publish_gpu_pcm_box_box(
+                        gpu_pcm_results_[gpu_pcm_index++],
+                        island_edges_[edge].pcm_cache,
+                        std::span<ContactPoint>(box_contact_scratch_));
+                }else
+                    manifold.count=generate_pcm_box_box(
+                        first,second,contact_distance,
+                        island_edges_[edge].pcm_cache,
+                        std::span<ContactPoint>(box_contact_scratch_));
+                next_contact_points_.insert(next_contact_points_.end(),
+                    box_contact_scratch_.begin(),
+                    box_contact_scratch_.begin()+manifold.count);
+            }
         }
         if(!pcm_plane && !pcm_box && old &&
            old->contact_distance==contact_distance &&
@@ -3886,6 +3919,9 @@ void Scene::update_contacts() {
         }
         if(previously_touching)++old_cursor;
     }
+    if(source_gpu_pcm && gpu_pcm_index!=gpu_pcm_results_.size())
+        throw std::logic_error(
+            "Source GPU PCM stream left an active Sc contact manager unconsumed");
     // Broadphase-retired pairs and zero-contact pairs still lose their
     // accurate Sc touch, independently of speculative SAP membership.
     while(old_cursor<manifolds_.size())
