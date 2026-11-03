@@ -236,6 +236,8 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
         }
     }
     actors_.push_back(actor);
+    if(actor.kind!=Kind::StaticPlane)
+        gpu_broadphase_snapshot_current_=false;
     if(actor.kind==Kind::StaticPlane) {
         if(actor.simulation_shape_enabled)++active_plane_count_;
         if(gpu_broadphase_)plane_pair_membership_dirty_=true;
@@ -465,6 +467,8 @@ void Scene::set_pose(BodyId id, Vec3 position, Quat orientation) {
     actor.position=position;
     actor.orientation=normalized;
     actor.cached_bounds_current=false;
+    if(actor.kind!=Kind::StaticPlane)
+        gpu_broadphase_snapshot_current_=false;
     // Preserve the established source contact-manager wake handoff:
     // relocating or rotating either endpoint wakes old touching peers
     // before their previous Gu managers can be retired.
@@ -789,6 +793,7 @@ void Scene::set_kinematic(BodyId id,bool enabled) {
     island_topology_dirty_=true;
     broadphase_endpoint_membership_dirty_=true;
     if(gpu_broadphase_)gpu_pair_refilter_dirty_=true;
+    gpu_broadphase_snapshot_current_=false;
     dirty_=true;
 }
 
@@ -823,6 +828,8 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
         else
             gpu_pair_refilter_dirty_=true;
     }
+    if(actor.kind!=Kind::StaticPlane)
+        gpu_broadphase_snapshot_current_=false;
     dirty_=true;
 }
 
@@ -860,6 +867,8 @@ void Scene::set_shape_offsets(BodyId id, float contact_offset,
     actor.contact_offset=contact_offset;
     actor.rest_offset=rest_offset;
     actor.cached_bounds_current=false;
+    if(actor.kind!=Kind::StaticPlane)
+        gpu_broadphase_snapshot_current_=false;
     dirty_=true;
 }
 
@@ -992,6 +1001,8 @@ void Scene::remove(BodyId id) {
         else
             gpu_pair_refilter_dirty_=true;
     }
+    if(actor.kind!=Kind::StaticPlane)
+        gpu_broadphase_snapshot_current_=false;
     dirty_ = true;
     island_topology_dirty_ |= dynamic_node;
 }
@@ -1049,6 +1060,21 @@ void Scene::publish_integrated_shape_bounds(BodyId id,Actor& actor) {
     // CPU SAP's unused integer endpoints for a GPU-selected scene.
     if(actor.simulation_shape_enabled)
         gpu_broadphase_->mark_shape_bounds_changed(id,actor.contact_offset);
+    // Sc afterIntegration visits only source active solver and kinematic
+    // body ranges. Patch that same existing BP input view in place rather
+    // than rescanning every live static and dormant shape next frame.
+    if(actor.simulation_shape_enabled && gpu_broadphase_snapshot_current_) {
+        auto it=std::lower_bound(
+            gpu_broadphase_boxes_.begin(),gpu_broadphase_boxes_.end(),id,
+            [](const GpuBroadphaseBox& box,BodyId actor) {
+                return box.id<actor;
+            });
+        if(it==gpu_broadphase_boxes_.end() || it->id!=id)
+            throw std::logic_error(
+                "Source Sc afterIntegration shape missing from GPU SAP input");
+        it->position=actor.position;
+        it->orientation=actor.orientation;
+    }
     actor.cached_bounds_current=true;
 }
 void Scene::update_bounds() {
@@ -2004,11 +2030,12 @@ void Scene::set_gpu_broadphase(
 // contact-edge publication used by the native CPU branch, but it never
 // calls BpBroadPhaseSap or reads that implementation's endpoint registry.
 void Scene::update_gpu_pairs(bool force_update) {
-    // Sc's geometry dirty bit is set by actor/shape admission, authored
-    // edits and afterIntegration. No authoring changed on a quiet pass:
-    // reuse the already validated input view while the source GPU AABB
-    // manager still performs its required DMA, update and fetch cycle.
-    if(dirty_ || !gpu_broadphase_snapshot_current_) {
+    // Full input rebuilds are required for Sc admission/shape edits.
+    // afterIntegration patches the changed source body entries directly
+    // using its existing task-owned island ranges. Constraint/Gu dirty
+    // publications do not imply any change to this finite-box view.
+    // The source GPU AABB still validates and fetches every frame.
+    if(!gpu_broadphase_snapshot_current_) {
         gpu_broadphase_snapshot_current_=false;
         gpu_broadphase_boxes_.clear();
         gpu_broadphase_boxes_.reserve(live_actor_ids_.size());
