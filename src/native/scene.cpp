@@ -9641,15 +9641,25 @@ void Scene::step(float seconds) {
             const auto index=actor.solver_row_index;
             if(index>=gpu_dy_integrated_poses_.size())continue;
             const auto& result=gpu_dy_integrated_poses_[index];
-            if(result.valid==1u &&
-               actor.position.x==result.position[0] &&
-               actor.position.y==result.position[1] &&
-               actor.position.z==result.position[2] &&
-               actor.orientation.x==result.orientation[0] &&
-               actor.orientation.y==result.orientation[1] &&
-               actor.orientation.z==result.orientation[2] &&
-               actor.orientation.w==result.orientation[3])
+            if(result.valid!=1u)continue;
+            const bool accepted=
+                actor.position.x==result.position[0] &&
+                actor.position.y==result.position[1] &&
+                actor.position.z==result.position[2] &&
+                actor.orientation.x==result.orientation[0] &&
+                actor.orientation.y==result.orientation[1] &&
+                actor.orientation.z==result.orientation[2] &&
+                actor.orientation.w==result.orientation[3];
+            if(accepted)
                 gpu_broadphase_->authorize_device_integrated_pose(id);
+            else {
+                // IslandSim can deactivate and restore a rigid pose after
+                // Dy has already overwritten the resident GPU bounds.
+                // Invalidate that volume in the original AABB manager so
+                // the next source SAP frame uploads Sc's restored pose.
+                gpu_broadphase_->mark_shape_bounds_changed(
+                    id,actor.contact_offset);
+            }
         }
     }
     join.finish_after_integration();
