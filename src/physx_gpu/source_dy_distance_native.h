@@ -20,6 +20,16 @@
 
 namespace fyzz::physx_gpu {
 
+// The GPU prep descriptor borrows active Dy bodies from the already uploaded
+// integrateCore input. Only immovable or nonintegrated participants require
+// an inline body. The source pair's 64-byte material/contact tail is intact.
+struct SourceDyPackedContactPrepNative {
+    std::uint32_t body0_source=0u,body1_source=0u;
+    std::array<std::uint8_t,64> constants{};
+};
+static_assert(sizeof(SourceDyPackedContactPrepNative)==72u &&
+              offsetof(SourceDyPackedContactPrepNative,constants)==8u);
+
 // Dy's original per-task conflict partitions and prepared 1D rows are
 // transferred as one transient source-heap allocation. The native Scene
 // remains the sole source state owner; one ordered GPU dispatch executes
@@ -141,14 +151,70 @@ public:
            reused_pcm_rows+cpu_gu_rows!=contact_forces.size())
             throw std::logic_error(
                 "Source Gu contact preparation does not cover solver rows");
-        constexpr std::size_t count=13u;
-        const std::size_t prep_bytes=contact_prep.size_bytes();
-        if(anchors.size_bytes()>
-               std::numeric_limits<std::size_t>::max()-prep_bytes ||
-           cpu_gu.size_bytes()>
-               std::numeric_limits<std::size_t>::max()-prep_bytes-
-                   anchors.size_bytes())
+        // Original Sc contact managers keep their 256-byte CPU input
+        // records. Lower their GPU transfer into 72-byte descriptors and
+        // reuse the already uploaded active Dy body/integrateCore inputs.
+        constexpr auto invalid=std::numeric_limits<std::uint32_t>::max();
+        if(contact_prep.size()>
+           std::numeric_limits<std::uint32_t>::max()/
+               sizeof(SourceDyPackedContactPrepNative))
+            throw std::overflow_error("Source Dy contact prep descriptor overflow");
+        const std::size_t prep_bytes=contact_prep.size()*
+            sizeof(SourceDyPackedContactPrepNative);
+        if(anchors.size_bytes()>std::numeric_limits<std::uint32_t>::max()-prep_bytes ||
+           cpu_gu.size_bytes()>std::numeric_limits<std::uint32_t>::max()-
+               prep_bytes-anchors.size_bytes())
             throw std::overflow_error("Source Gu/friction input arena exceeds address space");
+        const std::size_t static_begin=prep_bytes+anchors.size_bytes()+
+            cpu_gu.size_bytes();
+        packed_.resize(contact_prep.size());
+        inline_bodies_.clear();
+        assigned_.assign(contact_prep.size(),0u);
+        const auto ref_body=[&](const native::GpuDyContactPrepBody& body,
+                                std::uint32_t ordinal) -> std::uint32_t {
+            if(body.inverse_mass>0.f) {
+                if(ordinal==invalid || ordinal>=integration.size() ||
+                   ordinal>=bodies.size() || ordinal>=invalid/2u)
+                    throw std::logic_error(
+                        "Active source Dy contact body has no solver ordinal");
+                if(!integration[ordinal].active ||
+                   body.inverse_mass!=bodies[ordinal].inverse_mass)
+                    throw std::logic_error(
+                        "Sc contact preparation has no matching active Dy body");
+                return (ordinal<<1u)|1u;
+            }
+            if(inline_bodies_.size()>=(
+                std::numeric_limits<std::uint32_t>::max()-static_begin)/
+                    sizeof(native::GpuDyContactPrepBody))
+                throw std::overflow_error("Source Dy inline contact body overflow");
+            const auto offset=static_begin+inline_bodies_.size()*
+                sizeof(native::GpuDyContactPrepBody);
+            inline_bodies_.push_back(body);
+            return narrow(offset); // An aligned offset; low bit clear.
+        };
+        for(const auto& desc:descriptors) {
+            if(desc.distance==1u)continue;
+            if(desc.index>=manifolds.size())
+                throw std::logic_error("Source contact descriptor has no manager");
+            const auto& manager=manifolds[desc.index];
+            if(!manager.patch_count)continue;
+            if(manager.prep_index>=contact_prep.size() ||
+               assigned_[manager.prep_index]++)
+                throw std::logic_error("Source Dy contact prep is not unique");
+            const auto& source=contact_prep[manager.prep_index];
+            auto& target=packed_[manager.prep_index];
+            target.body0_source=ref_body(source.body0,desc.row0);
+            target.body1_source=ref_body(source.body1,desc.row1);
+            std::memcpy(target.constants.data(),
+                reinterpret_cast<const std::uint8_t*>(&source)+192u,
+                target.constants.size());
+        }
+        // A manager excluded by the source island/partition pass has no
+        // GPU reader; only scheduled descriptors require body references.
+        const std::size_t inline_body_bytes=
+            inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
+        const std::size_t compact_prep_bytes=static_begin+inline_body_bytes;
+        constexpr std::size_t count=13u;
         // One 16-byte header describes the three original Sc/SAP GPU
         // allocations, followed by exactly one source body record per row.
         const std::array<std::size_t,count> bytes{
@@ -156,7 +222,7 @@ public:
             partition_ends.size_bytes(),body_ordinals.size_bytes(),
             tasks.size_bytes(),contact_bytes,friction_bytes,
             patches.size_bytes(),manifolds.size_bytes(),contact_order.size_bytes(),
-            prep_bytes+anchors.size_bytes()+cpu_gu.size_bytes(),
+            compact_prep_bytes,
             integration.size_bytes()+16u};
         const std::array<std::size_t,count> elements{
             bodies.size(),rows.size(),descriptors.size(),partition_ends.size(),
@@ -214,7 +280,7 @@ public:
             if(i!=6u && i!=7u && i!=11u && i!=12u && bytes[i])
                 std::memcpy(host_.data()+offsets[i],sources[i],bytes[i]);
         if(prep_bytes)
-            std::memcpy(host_.data()+offsets[11],contact_prep.data(),prep_bytes);
+            std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         if(!anchors.empty())
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         anchors.data(),anchors.size_bytes());
@@ -222,6 +288,10 @@ public:
             std::memcpy(host_.data()+offsets[11]+prep_bytes+
                             anchors.size_bytes(),
                         cpu_gu.data(),cpu_gu.size_bytes());
+        if(!inline_bodies_.empty())
+            std::memcpy(host_.data()+offsets[11]+static_begin,
+                        inline_bodies_.data(),inline_bodies_.size()*
+                            sizeof(native::GpuDyContactPrepBody));
         if(!integration.empty())
             std::memcpy(host_.data()+offsets[12]+16u,
                         integration.data(),integration.size_bytes());
@@ -402,6 +472,9 @@ public:
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
         last_friction_anchor_upload_bytes_=anchors.size_bytes();
         last_friction_prepared_rows_=friction.size();
+        last_contact_prep_upload_saving_=
+            static_cast<std::int64_t>(contact_prep.size_bytes())-
+            static_cast<std::int64_t>(prep_bytes+inline_body_bytes);
     }
     std::size_t last_integrated_body_count() const noexcept {
         return last_integrated_body_count_;
@@ -427,6 +500,9 @@ public:
     std::size_t last_friction_prepared_rows() const noexcept {
         return last_friction_prepared_rows_;
     }
+    std::int64_t last_contact_prep_upload_saving() const noexcept {
+        return last_contact_prep_upload_saving_;
+    }
 private:
     compute::Context& context_;
     CudaDeviceAddressMap& addresses_;
@@ -436,6 +512,9 @@ private:
     std::size_t alignment_=0u;
     std::uint64_t max_view_=0u;
     std::vector<std::uint8_t> host_;
+    std::vector<SourceDyPackedContactPrepNative> packed_;
+    std::vector<native::GpuDyContactPrepBody> inline_bodies_;
+    std::vector<std::uint8_t> assigned_;
     // Actual packed device upload and ordered readback byte counts.
     std::pair<std::size_t,std::size_t> last_transfer_bytes_{};
     std::size_t last_integrated_body_count_=0u;
@@ -445,6 +524,7 @@ private:
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
     std::size_t last_friction_prepared_rows_=0u;
+    std::int64_t last_contact_prep_upload_saving_=0;
 };
 
 } // namespace fyzz::physx_gpu

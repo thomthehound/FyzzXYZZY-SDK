@@ -193,10 +193,33 @@ float3 prepSlop(float3 value,float slop) {
                   abs(value.y)<slop?0.0f:value.y,
                   abs(value.z)<slop?0.0f:value.z);
 }
-float3 prepInertia(uint body,float3 v) {
-    float3 c0=asfloat(arena.Load3(body+36u));
-    float3 c1=asfloat(arena.Load3(body+48u));
-    float3 c2=asfloat(arena.Load3(body+60u));
+// Low-bit-tagged references reuse one active integrateCore body for every
+// contact manager. Even references address the inline immovable-body payload
+// relative to the packed source contact-prep block.
+uint prepBodyOffset(uint source,uint offset) {
+    if((source&1u)==0u)return p.prepBias+source+offset;
+    uint ordinal=source>>1u;
+    uint base=p.integrationBias+16u+ordinal*104u;
+    if(offset==12u)return base+28u;
+    if(offset==24u)return base+40u;
+    if(offset>=36u && offset<=60u)return base+offset+16u;
+    if(offset==72u)return p.bodyBias+ordinal*52u+48u;
+    if(offset==80u)return base+12u;
+    return base+offset;
+}
+float3 prepBody3(uint source,uint offset) {
+    return asfloat(arena.Load3(prepBodyOffset(source,offset)));
+}
+float4 prepBody4(uint source,uint offset) {
+    return asfloat(arena.Load4(prepBodyOffset(source,offset)));
+}
+float prepBodyFloat(uint source,uint offset) {
+    return asfloat(arena.Load(prepBodyOffset(source,offset)));
+}
+float3 prepInertia(uint source,float3 v) {
+    float3 c0=prepBody3(source,36u);
+    float3 c1=prepBody3(source,48u);
+    float3 c2=prepBody3(source,60u);
     return c0*v.x+c1*v.y+c2*v.z;
 }
 void prepStoreDouble(uint address,double value) {
@@ -211,20 +234,20 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         return;
     }
     uint co=p.contactBias+index*88u;
-    uint pair=p.prepBias+pairIndex*256u;
-    uint b0=pair,b1=pair+96u;
+    uint pair=p.prepBias+pairIndex*72u;
+    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // The source correlation fixes patch order and body inputs. The GPU
     // reconstructs PCM normal rows without uploading a placeholder row.
     float3 n;
     float3 pos;
     float separation;
-    uint pcmIndex=arena.Load(pair+232u);
+    uint pcmIndex=arena.Load(pair+48u);
     if(pcmIndex!=0xffffffffu) {
         uint local=index-contactBegin;
         uint source=p.pcmBias+pcmIndex*96u;
         if(index<contactBegin || local>=contactCount ||
            local>=4u ||
-           pcmContacts.Load(source)!=arena.Load(pair+236u) ||
+           pcmContacts.Load(source)!=arena.Load(pair+52u) ||
            pcmContacts.Load(source+8u)!=0u ||
            local>=pcmContacts.Load(source+28u)) {
             arena.InterlockedOr(errorAddress,65536u);
@@ -236,13 +259,13 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(pcmContacts.Load(contact+12u));
         arena.Store3(co,asuint(n));
     } else {
-        uint cpuOffset=arena.Load(pair+248u);
+        uint cpuOffset=arena.Load(pair+64u);
         if(cpuOffset==0xffffffffu || index<contactBegin ||
            index-contactBegin>=contactCount) {
             arena.InterlockedOr(errorAddress,131072u);
             return;
         }
-        uint raw=p.prepBias+p.prepCount*256u+
+        uint raw=p.prepBias+p.prepCount*72u+
             (p.frictionCount/2u)*24u+
             (cpuOffset+index-contactBegin)*28u;
         n=asfloat(arena.Load3(raw));
@@ -250,18 +273,18 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
         separation=asfloat(arena.Load(raw+24u));
         arena.Store3(co,asuint(n));
     }
-    float3 p0=asfloat(arena.Load3(b0));
-    float3 p1=asfloat(arena.Load3(b1));
-    float3 v0=asfloat(arena.Load3(b0+12u));
-    float3 v1=asfloat(arena.Load3(b1+12u));
-    float3 w0=asfloat(arena.Load3(b0+24u));
-    float3 w1=asfloat(arena.Load3(b1+24u));
-    float m0=asfloat(arena.Load(b0+72u));
-    float m1=asfloat(arena.Load(b1+72u));
+    float3 p0=prepBody3(b0,0u);
+    float3 p1=prepBody3(b1,0u);
+    float3 v0=prepBody3(b0,12u);
+    float3 v1=prepBody3(b1,12u);
+    float3 w0=prepBody3(b0,24u);
+    float3 w1=prepBody3(b1,24u);
+    float m0=prepBodyFloat(b0,72u);
+    float m1=prepBodyFloat(b1,72u);
     float3 r0=cross(pos-p0,n);
     float3 r1=cross(pos-p1,n);
     float linearRel=dot(n,v0-v1);
-    float pairSlop=asfloat(arena.Load(pair+196u));
+    float pairSlop=asfloat(arena.Load(pair+12u));
     if(pairSlop>0.0f) {
         float angularRel=dot(r0,w0)-dot(r1,w1);
         float ratio=linearRel==0.0f
@@ -277,15 +300,15 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     double response=(double)m0+(double)m1+
         (double)dot(ja,ja)+(double)dot(jb,jb);
     double multiplier=response>0.0?1.0/response:0.0;
-    float restDistance=asfloat(arena.Load(pair+192u));
-    float restitution=asfloat(arena.Load(pair+200u));
-    float damping=asfloat(arena.Load(pair+204u));
-    float maxPenBias=asfloat(arena.Load(pair+208u));
-    float invDt=asfloat(arena.Load(pair+212u));
-    float seconds=asfloat(arena.Load(pair+216u));
-    float rigidBias=asfloat(arena.Load(pair+220u));
-    float bounceThreshold=asfloat(arena.Load(pair+224u));
-    bool acceleration=arena.Load(pair+228u)!=0u;
+    float restDistance=asfloat(arena.Load(pair+8u));
+    float restitution=asfloat(arena.Load(pair+16u));
+    float damping=asfloat(arena.Load(pair+20u));
+    float maxPenBias=asfloat(arena.Load(pair+24u));
+    float invDt=asfloat(arena.Load(pair+28u));
+    float seconds=asfloat(arena.Load(pair+32u));
+    float rigidBias=asfloat(arena.Load(pair+36u));
+    float bounceThreshold=asfloat(arena.Load(pair+40u));
+    bool acceleration=arena.Load(pair+44u)!=0u;
     float penetration=separation-restDistance;
     float penetrationInvDt=penetration*invDt;
     bool separated=penetration>=0.0f;
@@ -327,7 +350,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     // Its limit is common to the entire contact-manager pair.
     arena.Store(co+36u,0u);
     arena.Store2(co+72u,uint2(0u,0u));
-    arena.Store2(co+80u,arena.Load2(pair+240u));
+    arena.Store2(co+80u,arena.Load2(pair+56u));
     arena.Store3(co+12u,asuint(ja));
     arena.Store3(co+24u,asuint(jb));
     prepStoreDouble(co+40u,multiplier);
@@ -337,7 +360,7 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
 }
 
 float3 prepRotate(uint body,float3 local) {
-    float4 q=asfloat(arena.Load4(body+80u));
+    float4 q=prepBody4(body,80u);
     float3 u=q.xyz;
     float3 t=cross(u,local)*2.0f;
     return local+q.w*t+cross(u,t);
@@ -348,27 +371,27 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
         return;
     }
     uint fo=p.frictionBias+index*72u;
-    uint pair=p.prepBias+pairIndex*256u;
-    uint b0=pair,b1=pair+96u;
+    uint pair=p.prepBias+pairIndex*72u;
+    uint b0=arena.Load(pair),b1=arena.Load(pair+4u);
     // Source DyFrictionCorrelation selected these body-local anchors.
     // Source DyContactPrep selected the two tangents and their order.
     float3 tangent=asfloat(arena.Load3(fo));
     // The original Gu correlation owns two local anchors per patch
     // anchor, shared by its two tangent constraints.
-    uint anchor=p.prepBias+p.prepCount*256u+(index/2u)*24u;
+    uint anchor=p.prepBias+p.prepCount*72u+(index/2u)*24u;
     float3 r0=prepRotate(b0,asfloat(arena.Load3(anchor)));
     float3 r1=prepRotate(b1,asfloat(arena.Load3(anchor+12u)));
-    float3 p0=asfloat(arena.Load3(b0));
-    float3 p1=asfloat(arena.Load3(b1));
-    float3 v0=asfloat(arena.Load3(b0+12u));
-    float3 v1=asfloat(arena.Load3(b1+12u));
-    float3 w0=asfloat(arena.Load3(b0+24u));
-    float3 w1=asfloat(arena.Load3(b1+24u));
-    float m0=asfloat(arena.Load(b0+72u));
-    float m1=asfloat(arena.Load(b1+72u));
-    float slop=asfloat(arena.Load(pair+196u));
-    float invDt=asfloat(arena.Load(pair+212u));
-    float rigidBias=asfloat(arena.Load(pair+220u));
+    float3 p0=prepBody3(b0,0u);
+    float3 p1=prepBody3(b1,0u);
+    float3 v0=prepBody3(b0,12u);
+    float3 v1=prepBody3(b1,12u);
+    float3 w0=prepBody3(b0,24u);
+    float3 w1=prepBody3(b1,24u);
+    float m0=prepBodyFloat(b0,72u);
+    float m1=prepBodyFloat(b1,72u);
+    float slop=asfloat(arena.Load(pair+12u));
+    float invDt=asfloat(arena.Load(pair+28u));
+    float rigidBias=asfloat(arena.Load(pair+36u));
     float3 error=prepSlop((r0+p0)-(r1+p1),slop);
     float3 ax0=prepSlop(cross(r0,tangent),slop);
     float3 ax1=prepSlop(cross(r1,tangent),slop);
@@ -420,9 +443,9 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
         return;
     }
     float3 n=asfloat(arena.Load3(p.contactBias+first*88u));
-    uint pair=p.prepBias+pairIndex*256u;
-    float3 a=asfloat(arena.Load3(pair+12u));
-    float3 b=asfloat(arena.Load3(pair+108u));
+    uint pair=p.prepBias+pairIndex*72u;
+    float3 a=prepBody3(arena.Load(pair),12u);
+    float3 b=prepBody3(arena.Load(pair+4u),12u);
     float3 relative=a-b;
     float projection=dot(relative,n);
     float3 tangent0=relative-float3(

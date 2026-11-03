@@ -491,6 +491,8 @@ void verify_gpu_coupled_solver(
     bool saw_contact=false,saw_force=false,saw_friction=false;
     bool saw_correlated_multi_point=false;
     bool saw_device_pcm_contact_rows=false;
+    bool saw_compact_prep=false;
+    std::int64_t saved_prep_bytes=0;
     double max_normal_error=0.0,max_friction_error=0.0;
     float max_position_error=0.f,max_velocity_error=0.f;
     std::size_t uploaded_bytes=0,downloaded_bytes=0;
@@ -509,12 +511,19 @@ void verify_gpu_coupled_solver(
             require(producer->last_frame().device_cached_box_count>0u,
                 "Source Dy integrated Sc pose was reuploaded to GPU SAP");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
-        require(downloaded>0u && downloaded<uploaded/2u,
+        const auto prep_saving=producer->dy_contact_prep_upload_saving();
+        // Compare writeback with the source-sized upload baseline. The
+        // GPU contact-prep payload is intentionally smaller now.
+        require(downloaded>0u &&
+                static_cast<std::int64_t>(downloaded)*2<
+                    static_cast<std::int64_t>(uploaded)+prep_saving,
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
         const auto device_rows=producer->dy_pcm_device_contact_rows();
         saw_device_pcm_contact_rows |= device_rows>0u;
+        saved_prep_bytes+=prep_saving;
+        saw_compact_prep|=prep_saving>0u;
         require(producer->dy_upload_span_count()==1u &&
                 producer->dy_cpu_gu_geometry_bytes()==0u,
             "PCM-only Dy source stage fragmented its HtoD upload");
@@ -610,6 +619,8 @@ void verify_gpu_coupled_solver(
     }
     require(saw_device_pcm_contact_rows,
         "Source Dy did not consume device-owned PCM contact rows");
+    require(saw_compact_prep,
+        "Source Dy contact prep did not reuse GPU-resident body inputs");
     require(saw_contact && saw_force && saw_friction &&
             saw_correlated_multi_point,
         "Source coupled GPU test never exercised multi-point contact/friction");
@@ -621,6 +632,7 @@ void verify_gpu_coupled_solver(
              <<" max_position_abs_error="<<max_position_error
              <<" max_velocity_abs_error="<<max_velocity_error
              <<" host_upload_bytes="<<uploaded_bytes
+             <<" host_contact_prep_bytes_saved="<<saved_prep_bytes
              <<" host_download_bytes="<<downloaded_bytes<<'\n';
 }
 
@@ -689,6 +701,8 @@ void verify_cpu_gu_gpu_dy_solver(
                     producer->dy_friction_prepared_rows()*
                         sizeof(native::GpuDyFrictionAnchorInput)/2u,
             "CPU Gu solver staged complete friction rows");
+        require(producer->dy_contact_prep_upload_saving()==88,
+            "CPU Gu contact-prep accounting includes friction anchors or geometry");
         require(producer->dy_distance_dispatch_count()==frame+1u,
             "CPU Gu contact rows did not enter source GPU Dy solver");
         const auto a=cpu.body_state(moving_cpu);
@@ -771,6 +785,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
                         producer->dy_friction_prepared_rows()*
                             sizeof(native::GpuDyFrictionAnchorInput)/2u,
                 "Mixed source friction anchors lost their compact GPU layout");
+            require(producer->dy_contact_prep_upload_saving()==176,
+                "Mixed Gu/PCM contact-prep savings counted unrelated inputs");
             require(cpu.contacts().size()==gpu.contacts().size() &&
                     cpu.solved_normal_impulses().size()==
                         gpu.solved_normal_impulses().size() &&
