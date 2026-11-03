@@ -235,6 +235,8 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
                     *aggregate,id,motion,actor.contact_offset);
             else
                 gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+            if(actor.geometry==Geometry::Sphere)
+                gpu_broadphase_->set_device_shape_pose_cache_enabled(id,false);
         }
     }
     actors_.push_back(actor);
@@ -337,6 +339,51 @@ BodyId Scene::add_dynamic_box(
     // It is not an angular-body admission and must not silently run
     // with zero/infinite substitute inertia in the actual source solver.
     return add(a,aggregate);
+}
+
+BodyId Scene::add_static_sphere(
+    float radius,Vec3 position,std::optional<AggregateId> aggregate) {
+    if(!std::isfinite(radius) || !(radius>0.0f) || !finite(position))
+        throw std::invalid_argument("Sphere radius and position must be finite and valid");
+    Actor actor;
+    actor.motion=Motion::Static;
+    actor.geometry=Geometry::Sphere;
+    actor.radius=radius;
+    actor.position=position;
+    return add(actor,aggregate);
+}
+BodyId Scene::add_dynamic_sphere(
+    float radius,Vec3 position,float density,
+    std::optional<AggregateId> aggregate) {
+    if(!std::isfinite(radius) || !(radius>0.0f) || !finite(position) ||
+       !std::isfinite(density) || !(density>0.0f))
+        throw std::invalid_argument("Sphere radius, density and position invalid");
+    const double radius64=radius;
+    constexpr double four_thirds_pi=4.1887902047863909846168578443727;
+    const double mass=four_thirds_pi*radius64*radius64*radius64*density;
+    const double inverse_mass=1.0/mass;
+    if(!std::isfinite(inverse_mass) || inverse_mass<=0.0 ||
+       inverse_mass>std::numeric_limits<float>::max() ||
+       static_cast<float>(inverse_mass)==0.0f)
+        throw std::invalid_argument("Sphere mass outside supported range");
+    Actor actor;
+    actor.motion=Motion::Dynamic;
+    actor.geometry=Geometry::Sphere;
+    actor.radius=radius;
+    actor.position=position;
+    actor.density=density;
+    actor.inverse_mass=static_cast<float>(inverse_mass);
+    // Uniform sphere: PxMassProperties uses I=2/5 m r^2 around its center.
+    const double inertia=0.4*mass*radius64*radius64;
+    const double inverse_inertia=1.0/inertia;
+    if(std::isfinite(inverse_inertia) && inverse_inertia>0.0 &&
+       inverse_inertia<=std::numeric_limits<float>::max() &&
+       static_cast<float>(inverse_inertia)>0.0f) {
+        const float inv=static_cast<float>(inverse_inertia);
+        actor.inverse_inertia_local={inv,inv,inv};
+        actor.angular_inertia_available=true;
+    }
+    return add(actor,aggregate);
 }
 
 AggregateId Scene::create_aggregate(
@@ -1025,10 +1072,12 @@ void Scene::update_actor_bounds(Actor& actor) {
         // world-space basis columns weighted by the half extents,
         // plus its shape contact offset. The identity fast path
         // avoids three quaternion rotations for common unrotated boxes.
-        Vec3 extent = h;
+        Vec3 extent = actor.geometry==Geometry::Sphere
+            ? Vec3{actor.radius,actor.radius,actor.radius}:h;
         const Quat q = actor.orientation;
-        if (q.x != 0.0f || q.y != 0.0f ||
-            q.z != 0.0f || q.w != 1.0f) {
+        if (actor.geometry==Geometry::Box &&
+            (q.x != 0.0f || q.y != 0.0f ||
+             q.z != 0.0f || q.w != 1.0f)) {
             const Vec3 x = rotate(q, {1.0f,0.0f,0.0f});
             const Vec3 y = rotate(q, {0.0f,1.0f,0.0f});
             const Vec3 z = rotate(q, {0.0f,0.0f,1.0f});
@@ -1078,7 +1127,8 @@ void Scene::publish_integrated_shape_bounds(BodyId id,Actor& actor) {
             throw std::logic_error(
                 "Source Sc afterIntegration shape missing from GPU SAP input");
         it->position=actor.position;
-        it->orientation=actor.orientation;
+        it->orientation=actor.geometry==Geometry::Sphere
+            ? Quat{}:actor.orientation;
     }
     actor.cached_bounds_current=true;
 }
@@ -2054,8 +2104,13 @@ void Scene::update_gpu_pairs(bool force_update) {
                 : actor.motion==Motion::Kinematic
                     ? GpuBroadphaseBox::Motion::Kinematic
                     : GpuBroadphaseBox::Motion::Static;
+            const Vec3 extents=actor.geometry==Geometry::Sphere
+                ? Vec3{actor.radius,actor.radius,actor.radius}
+                : actor.half_extents;
+            const Quat basis=actor.geometry==Geometry::Sphere
+                ? Quat{}:actor.orientation;
             gpu_broadphase_boxes_.push_back({
-                id,actor.position,actor.half_extents,actor.orientation,
+                id,actor.position,extents,basis,
                 actor.contact_offset,motion});
         }
         gpu_broadphase_snapshot_current_=true;
@@ -3558,7 +3613,7 @@ void Scene::update_contacts() {
             const Pair pair=previous_pairs_[i];
             const Actor& a=actors_[pair.a];
             const Actor& b=actors_[pair.b];
-            if(a.geometry==Geometry::Plane || b.geometry==Geometry::Plane)
+            if(a.geometry!=Geometry::Box || b.geometry!=Geometry::Box)
                 continue;
             const EdgeIndex edge=active_edge_handles_[i];
             if(dormant_pcm(pair,edge))continue;
@@ -3582,6 +3637,8 @@ void Scene::update_contacts() {
                 const Actor& b=actors_[pair.b];
                 if(a.geometry!=Geometry::Plane &&
                    b.geometry!=Geometry::Plane)continue;
+                if(a.geometry==Geometry::Sphere ||
+                   b.geometry==Geometry::Sphere)continue;
                 const Actor& plane=a.geometry==Geometry::Plane?a:b;
                 const Actor& box=a.geometry==Geometry::Plane?b:a;
                 if(box.motion!=Motion::Dynamic)
@@ -3646,15 +3703,17 @@ void Scene::update_contacts() {
         const Actor& second=plane_pair
             ? (a.geometry==Geometry::Plane?b:a)
             : (reversed?a:b);
-        const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair;
-        const bool pcm_box=pcm_box_box_enabled_ && !plane_pair;
+        const bool pcm_sphere=a.geometry==Geometry::Sphere ||
+                              b.geometry==Geometry::Sphere;
+        const bool pcm_plane=pcm_plane_box_enabled_ && plane_pair && !pcm_sphere;
+        const bool pcm_box=pcm_box_box_enabled_ && !plane_pair && !pcm_sphere;
         // Gu's PxcCacheLocalContacts pose and collision-axis record
         // belongs only to the non-PCM path. PCM owns persistent
         // witnesses through the same Sc EdgeIndex; do not reconstruct
         // an unused legacy cache for every GPU PCM manager.
         GuCacheRecord cache{};
         const GuCacheRecord* old=nullptr;
-        if(!pcm_plane && !pcm_box) {
+        if(!pcm_plane && !pcm_box && !pcm_sphere) {
             while(old_cache_cursor<gu_cache_records_.size() &&
                   gu_cache_records_[old_cache_cursor].pair<pair)
                 ++old_cache_cursor;
@@ -3745,7 +3804,7 @@ void Scene::update_contacts() {
                 }
             }
         }
-        if(!pcm_plane && !pcm_box && old &&
+        if(!pcm_plane && !pcm_box && !pcm_sphere && old &&
            old->contact_distance==contact_distance &&
            old->offset<=gu_cached_points_.size() &&
            old->count<=gu_cached_points_.size()-old->offset) {
@@ -3818,7 +3877,42 @@ void Scene::update_contacts() {
                 manifold.count=old->count;
             }
         }
-        if(!pcm_plane && !pcm_box && !cache_hit && (a.geometry == Geometry::Plane || b.geometry == Geometry::Plane)) {
+        if(pcm_sphere) {
+            std::array<ContactPoint,1> output{};
+            const Actor& sphere=a.geometry==Geometry::Sphere?a:b;
+            if(plane_pair) {
+                const Actor& plane=a.geometry==Geometry::Plane?a:b;
+                manifold.count=source_pcm_sphere_plane(
+                    sphere.position,sphere.radius,plane.position.y,
+                    contact_distance,output);
+                // Sc's plane stream flips the raw Gu orientation below.
+                if(manifold.count) {
+                    output[0].normal={
+                        -output[0].normal.x,-output[0].normal.y,
+                        -output[0].normal.z};
+                }
+            }else if(a.geometry==Geometry::Sphere &&
+                     b.geometry==Geometry::Sphere) {
+                manifold.count=source_pcm_sphere_sphere(
+                    first.position,first.radius,
+                    second.position,second.radius,
+                    contact_distance,output);
+            }else {
+                const Actor& box=a.geometry==Geometry::Box?a:b;
+                manifold.count=source_pcm_sphere_box(
+                    sphere.position,sphere.radius,
+                    box.position,box.orientation,box.half_extents,
+                    contact_distance,output);
+                if(manifold.count && first.geometry==Geometry::Box) {
+                    output[0].normal={
+                        -output[0].normal.x,-output[0].normal.y,
+                        -output[0].normal.z};
+                }
+            }
+            if(manifold.count)
+                next_contact_points_.push_back(output[0]);
+        }
+        if(!pcm_plane && !pcm_box && !pcm_sphere && !cache_hit && (a.geometry == Geometry::Plane || b.geometry == Geometry::Plane)) {
             // Direct source order/geometry from
             // GuContactPlaneBox.cpp::contactPlaneBox. The SDK plane's
             // logical normal is +Y, corresponding to PhysX plane-local
@@ -3882,7 +3976,7 @@ void Scene::update_contacts() {
                     point, normal, depths[corner] + contact_distance});
                 ++manifold.count;
             }
-        } else if(!pcm_plane && !pcm_box && !cache_hit) {
+        } else if(!pcm_plane && !pcm_box && !pcm_sphere && !cache_hit) {
             // Original GuContactBoxBox SAT, face/edge candidate generation,
             // six-axis separation cache, and source contact ordering.
             // Its contact buffer owns up to the original 255 contacts.
@@ -3898,7 +3992,7 @@ void Scene::update_contacts() {
                 box_contact_scratch_.begin(),
                 box_contact_scratch_.begin() + manifold.count);
         }
-        if(!pcm_plane && !pcm_box && !cache_hit) {
+        if(!pcm_plane && !pcm_box && !pcm_sphere && !cache_hit) {
             // PxcCacheLocalContacts caches the RAW source Gu stream on a
             // miss, even for zero-contact overlaps. Source mPairData is
             // retained only when the contact generator actually ran.
@@ -3915,7 +4009,8 @@ void Scene::update_contacts() {
                 next_contact_points_.begin()+manifold.contact_offset+
                     manifold.count);
         }
-        if(!pcm_plane && !pcm_box)next_gu_cache_records_.push_back(cache);
+        if(!pcm_plane && !pcm_box && !pcm_sphere)
+            next_gu_cache_records_.push_back(cache);
         // PxcNpBatch::flipContacts runs AFTER PxcCacheLocalContacts.
         // The cached points above must retain the raw plane-first Gu
         // normal, so a subsequent cache hit's motion.dot(normal) keeps
@@ -10060,6 +10155,12 @@ public:
     }
     BodyId add_dynamic_box(Vec3 h, Vec3 p, float density) override {
         return scene_.add_dynamic_box(h, p, density);
+    }
+    BodyId add_static_sphere(float radius,Vec3 position) override {
+        return scene_.add_static_sphere(radius,position);
+    }
+    BodyId add_dynamic_sphere(float radius,Vec3 position,float density) override {
+        return scene_.add_dynamic_sphere(radius,position,density);
     }
     AggregateId create_aggregate(
         std::uint32_t max_shapes,bool self_collision) override {
