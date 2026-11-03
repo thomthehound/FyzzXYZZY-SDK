@@ -3878,6 +3878,8 @@ void Scene::update_contacts() {
             }
         }
         if(pcm_sphere) {
+            const bool use_pcm=plane_pair
+                ? pcm_plane_box_enabled_:pcm_box_box_enabled_;
             std::array<ContactPoint,1> output{};
             const Actor& sphere=a.geometry==Geometry::Sphere?a:b;
             if(plane_pair) {
@@ -3893,16 +3895,26 @@ void Scene::update_contacts() {
                 }
             }else if(a.geometry==Geometry::Sphere &&
                      b.geometry==Geometry::Sphere) {
-                manifold.count=source_pcm_sphere_sphere(
-                    first.position,first.radius,
-                    second.position,second.radius,
-                    contact_distance,output);
+                manifold.count=use_pcm
+                    ? source_pcm_sphere_sphere(
+                        first.position,first.radius,
+                        second.position,second.radius,
+                        contact_distance,output)
+                    : source_gu_sphere_sphere(
+                        first.position,first.radius,
+                        second.position,second.radius,
+                        contact_distance,output);
             }else {
                 const Actor& box=a.geometry==Geometry::Box?a:b;
-                manifold.count=source_pcm_sphere_box(
-                    sphere.position,sphere.radius,
-                    box.position,box.orientation,box.half_extents,
-                    contact_distance,output);
+                manifold.count=use_pcm
+                    ? source_pcm_sphere_box(
+                        sphere.position,sphere.radius,
+                        box.position,box.orientation,box.half_extents,
+                        contact_distance,output)
+                    : source_gu_sphere_box(
+                        sphere.position,sphere.radius,
+                        box.position,box.orientation,box.half_extents,
+                        contact_distance,output);
                 if(manifold.count && first.geometry==Geometry::Box) {
                     output[0].normal={
                         -output[0].normal.x,-output[0].normal.y,
