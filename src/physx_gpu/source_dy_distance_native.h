@@ -68,7 +68,10 @@ public:
         arena_.deallocate();
     }
     void invalidate_after_rollback() noexcept {
-        reset_anchor_cache_=true;
+        if(++history_epoch_==0u) {
+            std::fill(history_epochs_.begin(),history_epochs_.end(),0u);
+            history_epoch_=1u;
+        }
     }
 
     void solve(std::span<native::GpuDyDistanceBody> bodies,
@@ -137,9 +140,28 @@ public:
                 "Source GPU friction history exceeds address space");
         const std::size_t history_bytes=(
             next_history_capacity_*64u+127u)&~std::size_t(127u);
-        for(auto& patch:patches)
-            if((patch.broken&0x80000000u) && reset_anchor_cache_)
-                patch.broken|=0x40000000u;
+        history_epochs_.resize(next_history_capacity_,0u);
+        bool republish_cached_anchors=false;
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count)continue;
+            if(manager.prep_index>=contact_prep.size() ||
+               manager.patch_offset>patches.size() ||
+               manager.patch_count>patches.size()-manager.patch_offset)
+                throw std::logic_error(
+                    "Source friction history has an invalid Sc patch");
+            const auto& pair=contact_prep[manager.prep_index];
+            if(pair.pcm_pair_index==0xffffffffu)continue;
+            for(std::size_t j=manager.patch_offset;
+                j<manager.patch_offset+manager.patch_count;++j) {
+                auto& patch=patches[j];
+                if((patch.broken&0x80000000u)==0u ||
+                   patch.anchor_count==0u)continue;
+                if(history_epochs_[pair.pcm_edge]!=history_epoch_) {
+                    patch.broken|=0x40000000u;
+                    republish_cached_anchors=true;
+                }
+            }
+        }
         for(const auto& manager:manifolds) {
             if(!manager.patch_count)continue;
             if(manager.prep_index>=contact_prep.size() ||
@@ -302,7 +324,7 @@ public:
             std::memcpy(host_.data()+offsets[11],packed_.data(),prep_bytes);
         const bool omit_anchor_upload=
             pcm_pair_count>0u && cpu_gu.empty() &&
-            !reset_anchor_cache_ && !anchors.empty();
+            !republish_cached_anchors && !anchors.empty();
         if(!anchors.empty() && !omit_anchor_upload)
             std::memcpy(host_.data()+offsets[11]+prep_bytes,
                         anchors.data(),anchors.size_bytes());
@@ -515,7 +537,13 @@ public:
         last_cpu_gu_geometry_bytes_=cpu_gu.size_bytes();
         last_friction_anchor_upload_bytes_=omit_anchor_upload
             ? 0u:anchors.size_bytes();
-        reset_anchor_cache_=false;
+        for(const auto& manager:manifolds) {
+            if(!manager.patch_count || manager.prep_index>=contact_prep.size())
+                continue;
+            const auto& pair=contact_prep[manager.prep_index];
+            if(pair.pcm_pair_index!=0xffffffffu)
+                history_epochs_[pair.pcm_edge]=history_epoch_;
+        }
         last_friction_prepared_rows_=friction.size();
         last_contact_prep_upload_saving_=
             static_cast<std::int64_t>(contact_prep.size_bytes())-
@@ -569,7 +597,8 @@ private:
     std::size_t last_upload_spans_=0u;
     std::size_t last_friction_anchor_upload_bytes_=0u;
     std::size_t friction_history_capacity_=0u;
-    bool reset_anchor_cache_=false;
+    std::vector<std::uint32_t> history_epochs_;
+    std::uint32_t history_epoch_=1u;
     std::size_t last_friction_prepared_rows_=0u;
     std::int64_t last_contact_prep_upload_saving_=0;
 };
