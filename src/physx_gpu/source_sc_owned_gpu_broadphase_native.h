@@ -245,6 +245,9 @@ public:
                      float offset) override {
         producer_->admit_shape(id,motion,offset);
     }
+    void admit_plane(BodyId id) override {
+        producer_->admit_plane(id);
+    }
     AggregateId create_aggregate(
         std::uint32_t max_shapes,bool self_collision) override {
         return producer_->create_aggregate(max_shapes,self_collision);
