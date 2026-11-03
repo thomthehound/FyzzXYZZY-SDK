@@ -511,13 +511,16 @@ void verify_gpu_coupled_solver(
             require(producer->last_frame().device_cached_box_count>0u,
                 "Source Dy integrated Sc pose was reuploaded to GPU SAP");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
-        require(downloaded>0u && downloaded<uploaded/2u,
+        const auto prep_saving=producer->dy_contact_prep_upload_saving();
+        // Compare writeback with the source-sized upload baseline. The
+        // GPU contact-prep payload is intentionally smaller now.
+        require(downloaded>0u &&
+                downloaded<(uploaded+prep_saving)/2u,
             "Source coupled GPU Dy writeback did not use compact output");
         uploaded_bytes+=uploaded;
         downloaded_bytes+=downloaded;
         const auto device_rows=producer->dy_pcm_device_contact_rows();
         saw_device_pcm_contact_rows |= device_rows>0u;
-        const auto prep_saving=producer->dy_contact_prep_upload_saving();
         saved_prep_bytes+=prep_saving;
         saw_compact_prep|=prep_saving>0u;
         require(producer->dy_upload_span_count()==1u &&
