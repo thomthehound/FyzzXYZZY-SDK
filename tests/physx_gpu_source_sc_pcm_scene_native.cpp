@@ -15,6 +15,36 @@
 #include <stdexcept>
 #include <string_view>
 
+namespace fyzz::native {
+struct GpuPcmFrictionAnchorFixture {
+    static void verify(const Scene& cpu,const Scene& gpu) {
+        const auto& reference=cpu.friction_patches_;
+        const auto& actual=gpu.friction_patches_;
+        if(reference.size()!=actual.size())
+            throw std::runtime_error(
+                "GPU PCM friction changed Sc source patch count");
+        const auto near=[](Vec3 a,Vec3 b) {
+            return std::fabs(a.x-b.x)<0.005f &&
+                   std::fabs(a.y-b.y)<0.005f &&
+                   std::fabs(a.z-b.z)<0.005f;
+        };
+        for(std::size_t i=0u;i<reference.size();++i) {
+            const auto& a=reference[i];
+            const auto& b=actual[i];
+            if(a.pair!=b.pair || a.contact_count!=b.contact_count ||
+               a.anchor_count!=b.anchor_count)
+                throw std::runtime_error(
+                    "GPU PCM changed source correlated friction topology");
+            for(std::size_t k=0u;k<a.anchor_count;++k)
+                if(!near(a.body0_anchors[k],b.body0_anchors[k]) ||
+                   !near(a.body1_anchors[k],b.body1_anchors[k]))
+                    throw std::runtime_error(
+                        "GPU PCM friction anchor does not match source local witness");
+        }
+    }
+};
+} // namespace fyzz::native
+
 namespace {
 void require(bool good,const char* message) {
     if(!good)throw std::runtime_error(message);
@@ -620,6 +650,7 @@ void verify_gpu_coupled_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        native::GpuPcmFrictionAnchorFixture::verify(cpu,gpu);
         require(producer->source_handle_projection_count()==1u,
             "Source GPU SAP remapped unchanged Sc ElementSim handles");
         if(frame>0u)

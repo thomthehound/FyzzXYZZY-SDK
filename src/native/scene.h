@@ -839,6 +839,7 @@ private:
     // actual Dy preparation state without introducing test-only public
     // simulation operations or a second friction-correlation path.
     friend struct ContactCorrelationSourceFixture;
+    friend struct GpuPcmFrictionAnchorFixture;
     friend struct SolverIterationSourceFixture;
     friend struct ConstraintIslandSourceFixture;
     friend struct SourceSapEndpointFixture;
