@@ -135,6 +135,15 @@ void exercise(Context& context) {
                     manager.getDeviceHeapStats()
                         .stats[physx::PxsHeapStats::eBROADPHASE] > 0u,
                     "Original SAP new-bounds buffer bypassed source heap");
+            const auto retained_bounds=sap.new_integer_bounds().getDevicePtr();
+            auto prior=sap.pre_broadphase_buffers();
+            prior.boxes_capacity=16u;
+            sap.force_update()=false;
+            sap.reset_for_source_rebuild();
+            require(prior.boxes_capacity==0u && sap.num_boxes()==0u &&
+                    sap.force_update() &&
+                    sap.new_integer_bounds().getDevicePtr()==retained_bounds,
+                    "Rejected-frame SAP rebuild reused stale metadata or lost source heap");
         }
         require(manager.getDeviceHeapStats()
                     .stats[physx::PxsHeapStats::eBROADPHASE] == 0u,
