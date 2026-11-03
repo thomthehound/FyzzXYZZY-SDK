@@ -293,11 +293,16 @@ public:
             records_[actor].aggregate_id==PX_INVALID_U32 &&
             records_[actor].motion==native::GpuBroadphaseBox::Motion::Dynamic;
     }
-    physx::Bp::ShapeHandle device_shape_cache_handle(BodyId actor) const {
+    physx::Bp::ShapeHandle device_shape_cache_handle(BodyId actor) {
         if(actor>=handles_.size())
             throw std::out_of_range("Source Sc GPU body has no ElementSim");
-        return device_cache_eligible(actor) ? handles_[actor]
-            : std::numeric_limits<physx::Bp::ShapeHandle>::max();
+        if(!device_cache_eligible(actor))
+            return std::numeric_limits<physx::Bp::ShapeHandle>::max();
+        // This solver submission will overwrite the original device
+        // shape cache. A later island deactivation can restore the Sc
+        // pose, so prior-frame authorization cannot survive the write.
+        records_[actor].device_cached_pose_valid=false;
+        return handles_[actor];
     }
     bool has_authorized_device_cached_pose(BodyId actor) const noexcept {
         return device_cache_eligible(actor) &&

@@ -122,7 +122,7 @@ public:
         return {found_,lost_,false,rebuilt};
     }
 
-    std::uint32_t device_shape_cache_handle(BodyId actor) const {
+    std::uint32_t device_shape_cache_handle(BodyId actor) {
         if(!source_sc_elements_)
             return std::numeric_limits<std::uint32_t>::max();
         return source_sc_elements_->device_shape_cache_handle(actor);
