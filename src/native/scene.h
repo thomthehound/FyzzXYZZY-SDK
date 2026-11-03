@@ -262,6 +262,9 @@ public:
         BodyId actor,float contact_offset)=0;
     // Sc::ActorSim/ElementSim own original actor and element IDs.
     virtual void admit_shape(BodyId,GpuBroadphaseBox::Motion,float)=0;
+    virtual void admit_plane(BodyId) {
+        throw std::logic_error("Source GPU owner has no Sc plane admission");
+    }
     virtual AggregateId create_aggregate(std::uint32_t,bool) {
         throw std::logic_error("Source GPU broadphase has no aggregate stages");
     }
