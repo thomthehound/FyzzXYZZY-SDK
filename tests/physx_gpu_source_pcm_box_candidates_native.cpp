@@ -807,6 +807,44 @@ void verify(Context& context,const char* transform_shader,
             far_cache.count==0u && far_cache.needs_gjk==0u,
             "Rejected GPU EPA continuation retained a false Sc overlap");
 
+    // Source Sc's resetManagerCachedState retires the live contact count,
+    // not the GPU allocation. Poison four old witnesses to verify that
+    // a reset ignores stale slots, publishes no false Gu touch, and
+    // leaves those unreachable slots untouched rather than zero-filling
+    // the entire 240-byte persistent EdgeIndex record.
+    SourcePcmScEdgeCacheNative stale{};
+    stale.initialized=1u;
+    stale.count=4u;
+    stale.needs_gjk=1u;
+    stale.contacts[0].local_a[0]=11.125f;
+    stale.contacts[0].normal_b[1]=-0.75f;
+    stale.contacts[3].local_b[2]=-13.5f;
+    stale.contacts[3].separation=-6.25f;
+    context.upload(root,edge_offset+far_edge*sizeof(stale),
+                   &stale,sizeof(stale));
+    pairs[separated_pair].candidate_capacity|=source_pcm_reset_cache_bit;
+    context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
+    {
+        SourceSapDmaNative stream(context,addresses);
+        pcm.append(stream,addresses,transforms,geometry,pair_data,
+                   result_data,candidate_data,edge_data,args_data,output_data,
+                   static_cast<std::uint32_t>(pairs.size()),capacity,
+                   static_cast<std::uint32_t>(candidates.size()),edge_capacity);
+        stream.wait_at_fetch();
+    }
+    context.download(root,result_offset,results.data(),sizeof(results));
+    context.download(root,edge_offset+far_edge*sizeof(stale),
+                     &far_cache,sizeof(far_cache));
+    require(results[separated_pair].status==0u &&
+            results[separated_pair].regenerated==1u &&
+            results[separated_pair].candidate_count==0u &&
+            far_cache.initialized==1u && far_cache.count==0u &&
+            far_cache.needs_gjk==0u &&
+            std::memcmp(far_cache.contacts,stale.contacts,
+                        sizeof(stale.contacts))==0,
+        "Sc GPU PCM reset reused or cleared unreachable Gu witnesses");
+    pairs[separated_pair].candidate_capacity&=~source_pcm_reset_cache_bit;
+
     addresses.unregister_slice(args_data);
     addresses.unregister_slice(output_data);
     addresses.unregister_slice(work_data);
