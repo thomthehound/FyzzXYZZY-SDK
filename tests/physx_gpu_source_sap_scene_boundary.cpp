@@ -395,6 +395,19 @@ void test_gpu_box_records() {
             resident.reused_records==1u &&
             bounds[36].isEmpty() && bounds[2].isEmpty(),
             "Sc device-resident shape was packed or dirty peer omitted");
+    // Created/updated source deltas and changed bitmap bits select each
+    // volume exactly once, retaining the original Sc input order.
+    const std::array<physx::Bp::ShapeHandle,1> created_peer{2u};
+    (void)prepare_source_sap_scene_update(
+        boxes,handles,arrays,{created_peer,{},{},both_dirty},
+        filter,true,true,scratch,true,&records);
+    require(records.size()==2u &&
+            records[0].element_index==36u &&
+            records[1].element_index==2u &&
+            records[0].position[0]==7.f &&
+            records[1].position[0]==-30.f,
+            "Overlapping source GPU create and changed bits duplicated transforms");
+
     resident.reused_records=0u;
     (void)prepare_source_sap_scene_update(
         boxes,handles,arrays,{{},{},{}},filter,false,false,
