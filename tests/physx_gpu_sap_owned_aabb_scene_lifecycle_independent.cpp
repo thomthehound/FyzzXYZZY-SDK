@@ -1077,7 +1077,6 @@ void execute(Context& context, ShaderBinary translateShader,
             const auto expected_motion_bytes=
                 (nextPre.added.words.size()+nextPre.removed.words.size()+
                  nextPre.aggregated.words.size())*sizeof(physx::PxU32)+
-                nextPre.volume_data.size()*sizeof(physx::Bp::VolumeData)+
                 sizeof(physx::PxBounds3)+
                 sizeof(physx::PxReal)+sizeof(physx::Bp::FilterGroup::Enum)+
                 nextPre.changed.words.size()*sizeof(physx::PxU32);
@@ -1085,7 +1084,7 @@ void execute(Context& context, ShaderBinary translateShader,
                         uploads_before_motion.upload_batches+1u &&
                     stream.submission_stats().upload_bytes==
                         uploads_before_motion.upload_bytes+expected_motion_bytes,
-                    "One moving Sc shape reuploaded quiet AABB or filter metadata");
+                    "Motion-only source SAP reuploaded resident shape identities or metadata");
             const auto nextAabbView=source_sap_aabb_descriptor_native(nextPre);
             auto nextDma=sap.dma_up_members(&nextAabbView,mappedRoots);
             const auto admitted=begin_sap_update_native(
@@ -1152,6 +1151,15 @@ void execute(Context& context, ShaderBinary translateShader,
                 sap.new_integer_bounds(),sap.old_integer_bounds());
             stream.wait_at_fetch();
 
+            constexpr auto volume_words=sizeof(physx::Bp::VolumeData)/
+                sizeof(std::uint32_t);
+            const auto resident_volumes=read_words(
+                nextPre.volume_data_device.getDevicePtr(),
+                moved.getCapacity()*volume_words);
+            require(std::memcmp(resident_volumes.data(),
+                        nextPre.volume_data.data(),
+                        moved.getCapacity()*sizeof(physx::Bp::VolumeData))==0,
+                "Motion-only SAP frame lost original device-resident VolumeData");
             const auto metadata=sap.pre_broadphase_buffers();
             const auto source_groups=read_words(
                 metadata.groups.getDevicePtr(),moved.getCapacity());
@@ -1299,6 +1307,13 @@ void execute(Context& context, ShaderBinary translateShader,
             swap_sap_integer_bounds_after_pairs_native(
                 sap.new_integer_bounds(),sap.old_integer_bounds());
             stream.wait_at_fetch();
+            const auto retired_volumes=read_words(
+                retirePre.volume_data_device.getDevicePtr(),
+                retirement.getCapacity()*volume_words);
+            require(std::memcmp(retired_volumes.data(),
+                        retirePre.volume_data.data(),
+                        retirement.getCapacity()*sizeof(physx::Bp::VolumeData))==0,
+                "Retired Sc VolumeData did not replace its resident GPU record");
             bool removalPublished=false;
             const auto removalCounts=fetch_source_sap_results_native(
                 context,addresses,removalGpu,sap.descriptor(),
