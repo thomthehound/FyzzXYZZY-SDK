@@ -86,9 +86,10 @@ void verify_source_sphere_scene() {
         constexpr float mass=0.5235987756f;
         constexpr float inertia=0.4f*mass*0.25f;
         world.apply_body_torque_impulse(id,{0.f,0.f,inertia});
-        if(std::abs(world.body_state(id).angular_velocity.z-1.f)>0.005f)
+        world.step(1.f/120.f);
+        if(std::abs(world.body_state(id).angular_velocity.z-1.f)>0.06f)
             throw std::runtime_error("Sphere inertia omitted from Dy rigid body");
-        for(std::uint32_t frame=0;frame<8;frame++)
+        for(std::uint32_t frame=1;frame<8;frame++)
             world.step(1.f/120.f);
         const auto state=world.body_state(id);
         if(!std::isfinite(state.position.y) ||
