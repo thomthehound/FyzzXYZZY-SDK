@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "physx_gpu/source_sap_scene_frame_native.h"
 #include "physx_gpu/source_aggregate_post_sap_member_history_native.h"
+#include "physx_gpu/source_sc_scene_elements_native.h"
 #include "physx_port/gpubroadphase/PxgAabbSourceMembersNative.h"
 #include "physx_port/gpubroadphase/PxgSapSourceMembersNative.h"
 
@@ -335,10 +336,18 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
         throw std::logic_error(
             "Original aggregate Sc frame requires the complete source GPU kernel bundle");
     const auto sap_buffers=sap.pre_broadphase_buffers();
+    const bool republish_all=inputs.gpu_box_owners &&
+        aabb.capacity()>sap_buffers.boxes_capacity;
     const auto update=aabb.prepare(
         inputs.live_boxes,inputs.live_handles,inputs.filter,
-        inputs.gpu_box_owners!=nullptr,
-        inputs.gpu_box_owners && aabb.capacity()>sap_buffers.boxes_capacity);
+        inputs.gpu_box_owners!=nullptr,republish_all);
+    // Original AABB changed bits still drive SAP pair classification.
+    // Only Sc-authorized resident poses avoid a redundant HtoD record.
+    const std::size_t reused_device_boxes=
+        inputs.sc_elements && !republish_all
+        ? aabb.omit_cached_box_transform_records([&](BodyId actor) {
+            return inputs.sc_elements->has_authorized_device_cached_pose(actor);
+        }):0u;
     std::optional<SourceSapGpuBoxTransformsNative> gpu_boxes;
     if(inputs.gpu_box_owners) {
         const auto& owner=*inputs.gpu_box_owners;
@@ -383,7 +392,9 @@ SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
     };
     const auto admission=queue_source_sap_scene_frame_native(
         members,stream,sap.force_update(),stages,addresses);
-    return fetch_source_sap_scene_frame_native(
+    auto result=fetch_source_sap_scene_frame_native(
         members,admission,stream,addresses,context);
+    result.device_cached_box_count=reused_device_boxes;
+    return result;
 }
 } // namespace fyzz::physx_gpu

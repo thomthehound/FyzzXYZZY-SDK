@@ -254,6 +254,9 @@ public:
             throw std::logic_error("Source Sc GPU PCM shaders not installed");
         pcm_->generate(requests,results,aabb_->capacity(),on_submitted);
     }
+    void authorize_device_integrated_pose(BodyId id) override {
+        producer_->authorize_device_integrated_pose(id);
+    }
     void mark_shape_bounds_changed(BodyId id,float offset) override {
         producer_->mark_shape_bounds_changed(id,offset);
     }

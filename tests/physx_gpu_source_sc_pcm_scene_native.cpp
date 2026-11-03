@@ -503,6 +503,9 @@ void verify_gpu_coupled_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        if(frame>0u)
+            require(producer->last_frame().device_cached_box_count>0u,
+                "Source Dy integrated Sc pose was reuploaded to GPU SAP");
         const auto [uploaded,downloaded]=producer->dy_distance_transfer_bytes();
         require(downloaded>0u && downloaded<uploaded/2u,
             "Source coupled GPU Dy writeback did not use compact output");

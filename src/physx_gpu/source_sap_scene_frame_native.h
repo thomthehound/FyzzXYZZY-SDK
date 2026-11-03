@@ -17,6 +17,7 @@
 namespace fyzz::physx_gpu {
 class PxgAabbSourceMembersNative;
 class PxgSapSourceMembersNative;
+class SourceScSceneElementsNative;
 class SourceAggregateGpuNativeStage;
 class SourceAggregateMemberHistoryNativeStage;
 class SourceAggregateProjectionNativeStage;
@@ -89,6 +90,7 @@ struct SourceSapSceneFrameNativeMembers {
 struct SourceSapSceneFrameNativeResult {
     SourceSapUpdateAdmission update;
     SourceSapFetchedCounts fetch;
+    std::size_t device_cached_box_count=0u;
 };
 
 // Both source-owner view aliases are verified before any GPU work. The
@@ -117,6 +119,7 @@ struct SourceSapOwnedSceneFrameNativeInputs {
     bool abort_mode=false;
     const SourceSapAggregateStagesNative* aggregate_stages=nullptr;
     const SourceSapGpuBoxTransformOwnersNative* gpu_box_owners=nullptr;
+    const SourceScSceneElementsNative* sc_elements=nullptr;
 };
 
 SourceSapSceneFrameNativeResult advance_source_sap_owned_scene_frame_native(
