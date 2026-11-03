@@ -261,11 +261,11 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         const float3 baseAngular=asfloat(arena.Load3(input+40u));
         const uint locks=arena.Load(input+88u);
         const float dt=asfloat(arena.Load(input+92u));
-        float3 linear=baseLinear+asfloat(arena.Load3(from+24u));
+        float3 motionLinear=baseLinear+asfloat(arena.Load3(from+24u));
         float3 angularState=asfloat(arena.Load3(from+36u));
-        if(locks&1u)linear.x=0.0f;
-        if(locks&2u)linear.y=0.0f;
-        if(locks&4u)linear.z=0.0f;
+        if(locks&1u)motionLinear.x=0.0f;
+        if(locks&2u)motionLinear.y=0.0f;
+        if(locks&4u)motionLinear.z=0.0f;
         if(locks&8u)angularState.x=0.0f;
         if(locks&16u)angularState.y=0.0f;
         if(locks&32u)angularState.z=0.0f;
@@ -278,9 +278,9 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         if(locks&16u)motionAngular.y=0.0f;
         if(locks&32u)motionAngular.z=0.0f;
         const float3 nextPosition=float3(
-            (float)((double)position.x+(double)linear.x*(double)dt),
-            (float)((double)position.y+(double)linear.y*(double)dt),
-            (float)((double)position.z+(double)linear.z*(double)dt));
+            (float)((double)position.x+(double)motionLinear.x*(double)dt),
+            (float)((double)position.y+(double)motionLinear.y*(double)dt),
+            (float)((double)position.z+(double)motionLinear.z*(double)dt));
         float4 nextQuaternion=quaternion;
         float w=dot(motionAngular,motionAngular);
         if(w!=0.0f) {

@@ -7430,10 +7430,12 @@ void Scene::solve_gpu_distance_constraints(float seconds) {
         input.orientation[3]=actor.orientation.w;
         pack(input.linear_velocity,row.data.linear_velocity);
         pack(input.angular_velocity,row.data.angular_velocity);
-        for(std::size_t axis=0;axis<3u;++axis)
-            for(std::size_t k=0;k<3u;++k)
-                input.sqrt_inverse_inertia[axis*3u+k]=
-                    (&row.data.sqrt_inverse_inertia[axis].x)[k];
+        for(std::size_t axis=0;axis<3u;++axis) {
+            const auto& inertia=row.data.sqrt_inverse_inertia[axis];
+            input.sqrt_inverse_inertia[axis*3u]=inertia.x;
+            input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
+            input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
+        }
         input.lock_flags=actor.dynamics.lock_flags;
         input.seconds=seconds;
         input.active=row.prepared_generation==solver_preparation_generation_;

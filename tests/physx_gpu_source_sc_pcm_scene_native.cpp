@@ -970,6 +970,7 @@ void verify_gpu_distance_solver(
         d.velocity_iterations=2;
         d.linear_damping=0.0f;
         d.angular_damping=0.0f;
+        if(i==0u)d.lock_flags=LockAngularZ;
         cpu.set_dynamics(ids_cpu[i],d);
         gpu.set_dynamics(ids_gpu[i],d);
     }
