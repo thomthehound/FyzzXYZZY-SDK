@@ -223,16 +223,16 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
         if(actor.kind==Kind::StaticPlane)
             gpu_broadphase_->admit_plane(id);
         else {
-        const auto motion=actor.kind==Kind::StaticBox
-            ? GpuBroadphaseBox::Motion::Static
-            : actor.kind==Kind::KinematicBox
-                ? GpuBroadphaseBox::Motion::Kinematic
-                : GpuBroadphaseBox::Motion::Dynamic;
-        if(aggregate)
-            gpu_broadphase_->admit_aggregate_member(
-                *aggregate,id,motion,actor.contact_offset);
-        else
-            gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
+            const auto motion=actor.kind==Kind::StaticBox
+                ? GpuBroadphaseBox::Motion::Static
+                : actor.kind==Kind::KinematicBox
+                    ? GpuBroadphaseBox::Motion::Kinematic
+                    : GpuBroadphaseBox::Motion::Dynamic;
+            if(aggregate)
+                gpu_broadphase_->admit_aggregate_member(
+                    *aggregate,id,motion,actor.contact_offset);
+            else
+                gpu_broadphase_->admit_shape(id,motion,actor.contact_offset);
         }
     }
     actors_.push_back(actor);
@@ -2051,10 +2051,10 @@ void Scene::update_gpu_pairs(bool force_update) {
     // Candidate membership is the Cartesian product of admitted planes
     // and dynamic shapes, just as in the native source Bp branch. Gu
     // decides accurate touch; GPU SAP alone owns finite BP membership.
-    const auto append_plane_managers=[&] {
+    const auto append_plane_managers=[&](bool finite_delta=false) {
         if(!has_admitted_plane_) {
             broadphase_pair_membership_changed_=
-                pending_pairs_!=previous_pairs_;
+                finite_delta || pending_pairs_!=previous_pairs_;
             return;
         }
         for(const BodyId plane:live_actor_ids_) {
@@ -2213,7 +2213,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     }
     while(new_index<found.size())
         pending_pairs_.push_back(found[new_index++]);
-    append_plane_managers();
+    append_plane_managers(true);
 }
 
 void Scene::update_pairs() {
