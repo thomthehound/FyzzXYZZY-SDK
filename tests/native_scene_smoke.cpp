@@ -179,6 +179,74 @@ struct GpuSapSceneAdmissionFixture {
                 "Quiet GPU SAP membership rebuilt Sc pairs or skipped moving PCM contacts");
     }
 
+    static void verify_quiet_gpu_snapshot_reuse() {
+        Scene scene;
+        auto producer=std::make_unique<FetchedReports>();
+        auto* gpu=producer.get();
+        scene.set_gpu_broadphase(std::move(producer));
+        std::vector<BodyId> actors;
+        for(int i=0;i<96;++i)
+            actors.push_back(scene.add_static_box(
+                {0.25f,0.25f,0.25f},{float(i)*4.0f,0.0f,0.0f}));
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=1u ||
+           scene.gpu_broadphase_boxes_.size()!=actors.size())
+            throw std::runtime_error(
+                "Initial Sc GPU snapshot did not contain live finite shapes");
+        for(int i=0;i<6;++i)
+            scene.advance_collision(i==3);
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=1u ||
+           gpu->fetches!=7u)
+            throw std::runtime_error(
+                "Quiet/forced GPU SAP frames repacked unchanged Sc geometry");
+        scene.set_position(actors.front(),{1.0f,0.0f,0.0f});
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=2u ||
+           scene.gpu_broadphase_boxes_.front().position.x!=1.0f)
+            throw std::runtime_error(
+                "Authored Sc pose did not refresh the GPU SAP input");
+        scene.set_shape_offsets(actors.front(),0.125f,0.0f);
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=3u ||
+           scene.gpu_broadphase_boxes_.front().contact_offset!=0.125f)
+            throw std::runtime_error(
+                "Authored contact distance did not refresh Sc GPU input");
+        scene.set_shape_simulation_enabled(actors.front(),false);
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=4u ||
+           scene.gpu_broadphase_boxes_.size()!=actors.size()-1u)
+            throw std::runtime_error(
+                "Disabled Sc shape survived GPU snapshot admission");
+        scene.set_shape_simulation_enabled(actors.front(),true);
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=5u ||
+           scene.gpu_broadphase_boxes_.size()!=actors.size())
+            throw std::runtime_error(
+                "Readmitted Sc shape did not restore GPU SAP input");
+        scene.remove(actors.front());
+        scene.advance_collision();
+        scene.advance_collision();
+        if(scene.gpu_broadphase_snapshot_rebuilds_!=6u ||
+           scene.gpu_broadphase_boxes_.size()!=actors.size()-1u)
+            throw std::runtime_error(
+                "GPU snapshot retained a retired Sc volume or rebuilt quiet frame");
+
+        // Even when the actor set has no finite volumes, an admitted
+        // infinite plane must not force a redundant empty snapshot scan.
+        Scene planes;
+        auto plane_producer=std::make_unique<FetchedReports>();
+        auto* plane_gpu=plane_producer.get();
+        planes.set_gpu_broadphase(std::move(plane_producer));
+        planes.add_static_floor(0.0f);
+        planes.advance_collision();
+        planes.advance_collision();
+        if(planes.gpu_broadphase_snapshot_rebuilds_!=1u ||
+           !planes.gpu_broadphase_boxes_.empty() ||
+           plane_gpu->fetches!=2u)
+            throw std::runtime_error(
+                "Plane-only GPU SAP rebuilt an empty finite-box snapshot");
+    }
+
     static void verify_gpu_nondynamic_report_filter() {
         Scene scene;
         auto producer=std::make_unique<FetchedReports>();
@@ -14865,6 +14933,7 @@ int run_native_scene_smoke() {
 int main() {
     try {
     fyzz::native::GpuSapSceneAdmissionFixture::verify();
+    fyzz::native::GpuSapSceneAdmissionFixture::verify_quiet_gpu_snapshot_reuse();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_world_installation();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_nondynamic_report_filter();
     fyzz::native::GpuSapSceneAdmissionFixture::verify_gpu_removed_actor_without_lost_report();

@@ -1899,6 +1899,10 @@ private:
     // cached shape views are reused, never a duplicate SAP/pair registry.
     std::unique_ptr<GpuBroadphaseProducer> gpu_broadphase_;
     std::vector<GpuBroadphaseBox> gpu_broadphase_boxes_;
+    // This is a reusable Sc-to-BP input view, not an actor-state owner.
+    // A rejected transaction revokes its validity before the next fetch.
+    bool gpu_broadphase_snapshot_current_=false;
+    std::uint64_t gpu_broadphase_snapshot_rebuilds_=0;
     bool sap_pair_registry_dirty_=true;
     // Sc's existing BP pair membership retains GPU-reported overlaps
     // that have no current contact manager. Explicit Sc refiltering
