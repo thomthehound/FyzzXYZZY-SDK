@@ -118,9 +118,10 @@ struct GpuSapSceneAdmissionFixture {
         try { scene.advance_collision(); }
         catch(const std::invalid_argument&) { rejected=true; }
         if(!rejected || gpu->rollbacks!=1 ||
-           scene.pairs().size()!=1 || scene.pairs()[0]!=pair)
+           scene.pairs().size()!=1 || scene.pairs()[0]!=pair ||
+           scene.gpu_broadphase_snapshot_current_)
             throw std::runtime_error(
-                "Rejected GPU SAP report escaped Sc rollback");
+                "Rejected GPU SAP report retained Sc snapshot across rollback");
 
         // Source PxgCudaBroadPhaseSap::fetchBroadPhaseResults must reject
         // over-capacity reports before Sc touches a single manager edge.
@@ -131,9 +132,11 @@ struct GpuSapSceneAdmissionFixture {
         catch(const std::overflow_error&) { rejected=true; }
         gpu->overflow=false;
         if(!rejected || gpu->rollbacks!=2 ||
-           scene.pairs().size()!=1 || scene.pairs()[0]!=pair)
+           scene.pairs().size()!=1 || scene.pairs()[0]!=pair ||
+           scene.gpu_broadphase_snapshot_rebuilds_!=2u ||
+           scene.gpu_broadphase_snapshot_current_)
             throw std::runtime_error(
-                "GPU SAP overflow published a partial Sc frame");
+                "GPU SAP overflow retained rejected Sc snapshot or pair frame");
         scene.set_position(b,{8.0f,1.0f,0.0f});
         gpu->set({},{pair});
         scene.advance_collision();
