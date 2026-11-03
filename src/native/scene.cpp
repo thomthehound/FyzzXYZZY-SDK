@@ -2140,6 +2140,10 @@ void Scene::update_gpu_pairs(bool force_update) {
             if(actors_[pair.a].kind==Kind::DynamicBox ||
                actors_[pair.b].kind==Kind::DynamicBox)
                 pending_pairs_.push_back(pair);
+        // The source BP hash has unordered storage; finite-only Sc
+        // refiltering still needs sorted contact-manager identities.
+        if(!has_admitted_plane_)
+            std::sort(pending_pairs_.begin(),pending_pairs_.end());
         append_plane_managers();
         gpu_pair_refilter_dirty_=false;
         return;
