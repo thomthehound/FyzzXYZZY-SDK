@@ -200,10 +200,52 @@ the real SDK on both GPU backends.
 
 ## Beyond the source capability baseline
 
-Once the corresponding subsystem is complete and measurable, pursue
-new models, solvers, numerical methods, authoring tools and GPU execution
-features independently. Additions must be explicitly distinguished from
-source-equivalent behavior and integrate with the same scene contracts.
+Full source capability remains the first deliverable. The following
+additional systems are future independent engineering work, not current
+PhysX parity claims or prerequisites for rigid, articulation or nonrigid
+source admission. Preserve their integration requirements in current
+architecture decisions; implement and benchmark them after the relevant
+source subsystem is functional.
+
+| Future capability | Physical scope and integration requirement |
+| --- | --- |
+| Nonlinear continuum materials | Large-strain, anisotropic, viscoelastic, hyperelastic and near-incompressible solid response; material parameters and constitutive state belong to deformable elements, not rigid shape flags |
+| Slender bodies and strands | Cosserat/elastic-rod or equivalent bending, twist, extension and contact for hair, fibers, cables and tendons, with attachment to moving deformable or articulated surfaces |
+| Thin shells and membranes | Bending, stretching, wrinkling, frictional sliding, enclosed-volume and pressure constraints, including contact with solids and liquids |
+| Wet contact and interfacial flow | Thin-film transport, wetting, adhesion, lubrication and drainage coupled to surface geometry, material state and friction rather than a visual-only wetness parameter |
+| Fluid/structure interaction | Internal and external pressure, viscous flow, surface tension, fluid containment, leakage and bidirectional force exchange with rigid, articulated, shell and volumetric bodies |
+| Thermal and surface state | Temperature, moisture and other transported surface quantities where they affect physical material behavior; renderers consume simulation state without becoming physics authorities |
+
+The solver architecture must support heterogeneous objects and contacts,
+typed constraints, distinct material/field states, bidirectional force
+and momentum exchange, and appropriate substepping. A single monolithic
+numerical solver is not mandatory. Partitioned solvers are acceptable when
+their coupling, iteration, stability and convergence have been validated.
+Every interacting component must participate in the same scene clock,
+topology lifetime, completion dependencies and result visibility rules.
+
+### Future multiphysics acceptance
+
+Representative capability-level validation includes:
+
+- Two contacting nonlinear deformable volumes with sustained sliding,
+  self-contact and calibrated near-incompressible response.
+- A pressurized thin membrane containing fluid and compressed between
+  moving deformable surfaces, with pressure and contact forces returned to
+  every participating object.
+- Flexible strands attached to moving soft or articulated surfaces,
+  exchanging collision forces while bending, twisting and contacting
+  neighboring strands or surfaces.
+- A wet sliding interface whose fluid film and friction state evolve under
+  pressure, motion and drainage instead of using prescribed animation.
+- Mixed rigid, articulated, deformable, fluid and strand bodies running
+  over many frames with explicit energy/momentum error budgets, convergence
+  behavior and failure/retirement handling on both GPU backends.
+
+Numerical accuracy requires constitutive laws, discretization and measured
+material parameters appropriate to each workload. Visual plausibility alone
+is not an equivalence test, and real-time performance is an independently
+measured requirement rather than a claim of universal continuum fidelity.
 
 ## Technical references
 
