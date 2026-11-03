@@ -22,12 +22,12 @@ namespace fyzz::physx_gpu {
 
 // The GPU prep descriptor borrows active Dy bodies from the already uploaded
 // integrateCore input. Only immovable or nonintegrated participants require
-// an inline body. The source pair's 64-byte material/contact tail is intact.
+// an inline body. The source pair's 56-byte material/contact tail is intact.
 struct SourceDyPackedContactPrepNative {
     std::uint32_t body0_source=0u,body1_source=0u;
-    std::array<std::uint8_t,64> constants{};
+    std::array<std::uint8_t,56> constants{};
 };
-static_assert(sizeof(SourceDyPackedContactPrepNative)==72u &&
+static_assert(sizeof(SourceDyPackedContactPrepNative)==64u &&
               offsetof(SourceDyPackedContactPrepNative,constants)==8u);
 
 // Dy's original per-task conflict partitions and prepared 1D rows are
@@ -42,9 +42,6 @@ public:
         : context_(context),addresses_(addresses),stream_(stream),
           arena_(allocator,physx::PxsHeapStats::eSOLVER) {
         const auto& info=context_.device_info();
-        if(!info.supports_float64_shader)
-            throw std::runtime_error(
-                "Source Dy 1D GPU requires enabled shader FP64 arithmetic");
         if(info.max_workgroup_invocations<128u ||
            info.max_workgroup_size[0]<128u ||
            !info.max_workgroup_count[0] ||
@@ -80,7 +77,7 @@ public:
                std::span<const std::uint32_t> partition_ends,
                std::span<const std::uint32_t> body_ordinals,
                std::span<native::GpuDyDistanceTask> tasks,
-               std::span<double> contact_forces,
+               std::span<float> contact_forces,
                std::span<const native::GpuDyGuContactInput> cpu_gu,
                std::span<native::GpuDyFrictionWriteback> friction,
                std::span<const native::GpuDyFrictionAnchorInput> anchors,
@@ -295,7 +292,9 @@ public:
                     // The GPU source descriptor uses the CPU-Gu offset
                     // slot for recovery anchors only when PCM is resident.
                     auto& target=packed_[manager.prep_index];
-                    std::memcpy(target.constants.data()+56u,
+                    std::memcpy(target.constants.data()+
+                        offsetof(native::GpuDyContactPrepPair,cpu_gu_offset)-
+                        offsetof(native::GpuDyContactPrepPair,rest_distance),
                                 &distance,sizeof(distance));
                 }else patch.reserved=distance;
             }
@@ -330,11 +329,11 @@ public:
         constexpr std::array<std::size_t,7> output_inputs{
             0u,1u,5u,6u,7u,8u,12u};
         constexpr std::array<std::size_t,7> output_strides{
-            48u,8u,4u,8u,20u,4u,32u};
-        static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==72u &&
+            48u,4u,4u,4u,16u,4u,32u};
+        static_assert(offsetof(native::GpuDyDistanceRow,applied_force)==60u &&
                       offsetof(native::GpuDyDistanceTask,error)==32u &&
-                      offsetof(native::GpuDyContactPoint,applied_force)==72u &&
-                      offsetof(native::GpuDyFrictionRow,applied_force)==64u &&
+                      offsetof(native::GpuDyContactPoint,applied_force)==56u &&
+                      offsetof(native::GpuDyFrictionRow,applied_force)==52u &&
                       offsetof(native::GpuDyContactPatch,broken)==12u);
         std::array<std::size_t,7> result_offsets{};
         std::size_t output_bytes=0u;
@@ -524,7 +523,7 @@ public:
                     if(desc.index>=rows.size())
                         throw std::logic_error("Source Dy row writeback index invalid");
                     std::memcpy(&rows[desc.index].applied_force,
-                        host_.data()+result_offsets[1]+desc.index*8u,8u);
+                        host_.data()+result_offsets[1]+desc.index*4u,4u);
                     continue;
                 }
                 if(desc.index>=manifolds.size())
@@ -543,7 +542,7 @@ public:
                     if(index>=contact_forces.size())
                         throw std::logic_error("Source Dy contact writeback index invalid");
                     std::memcpy(&contact_forces[index],
-                        host_.data()+result_offsets[3]+index*8u,8u);
+                        host_.data()+result_offsets[3]+index*4u,4u);
                 }
                 for(std::size_t j=manager.patch_offset;
                     j<manager.patch_offset+manager.patch_count;++j) {
@@ -566,9 +565,9 @@ public:
                     for(std::size_t k=patch.row_offset;
                         k<patch.row_offset+count*2u;++k) {
                         const auto* result=
-                            host_.data()+result_offsets[4]+k*20u;
+                            host_.data()+result_offsets[4]+k*16u;
                         std::memcpy(&friction[k].tangent,result,12u);
-                        std::memcpy(&friction[k].applied_force,result+12u,8u);
+                        std::memcpy(&friction[k].applied_force,result+12u,4u);
                     }
                     if(pcm_growth) {
                         patch.anchor_count=count;

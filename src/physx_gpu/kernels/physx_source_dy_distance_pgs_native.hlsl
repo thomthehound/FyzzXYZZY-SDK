@@ -45,20 +45,15 @@ struct Parameters {
 ConstantBuffer<Parameters> p : register(b0,space0);
 #endif
 static const uint invalidBody = 0xffffffffu;
-static const double maxImpulse = 3.4028234663852886e+38;
+static const float maxImpulse = 3.4028234663852886e+38;
 
-double loadDouble(uint byteOffset) {
-    uint2 words=arena.Load2(byteOffset);
-    return asdouble(words.x,words.y);
+float loadScalar(uint byteOffset) {
+    return asfloat(arena.Load(byteOffset));
 }
-void storeDouble(uint byteOffset,double value,uint rowIndex,bool finalPass) {
-    uint lo,hi;
-    asuint(value,lo,hi);
-    uint2 packed=uint2(lo,hi);
-    arena.Store2(byteOffset,packed);
+void storeScalar(uint byteOffset,float value,uint rowIndex,bool finalPass) {
+    arena.Store(byteOffset,asuint(value));
     if(finalPass)
-        arena.Store2(p.writebackBias+p.resultRowOffset+
-            rowIndex*8u,packed);
+        arena.Store(p.writebackBias+p.resultRowOffset+rowIndex*4u,asuint(value));
 }
 void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
     uint d=p.descriptorBias+index*16u;
@@ -69,7 +64,7 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
         arena.InterlockedOr(errorAddress,1u);
         return;
     }
-    uint offset=p.distanceBias+desc.x*80u;
+    uint offset=p.distanceBias+desc.x*64u;
     float3 axis=asfloat(arena.Load3(offset));
     float3 ja=asfloat(arena.Load3(offset+12u));
     float3 jb=asfloat(arena.Load3(offset+24u));
@@ -88,37 +83,18 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
         ab=asfloat(arena.Load3(bo+12u));
     }
 
-    // DySolverConstraints::solveExt1D and source native 1D PGS:
-    // float Jacobian dot operations followed by wide accumulated impulse.
-    double normalDelta=
-        (double)axis.x*(double)(va.x-vb.x)+
-        (double)axis.y*(double)(va.y-vb.y)+
-        (double)axis.z*(double)(va.z-vb.z)+
-        (double)dot(ja,aa)-(double)dot(jb,ab);
-    double previous=loadDouble(offset+72u);
-    double next=clamp(previous+
-        normalDelta*loadDouble(offset+64u)+
-        loadDouble(offset+(biased?48u:56u)),
+    // DySolverConstraints::solveExt1D source row arithmetic.
+    float normalDelta=dot(axis,va-vb)+dot(ja,aa)-dot(jb,ab);
+    float previous=loadScalar(offset+60u);
+    float next=clamp(previous+
+        normalDelta*loadScalar(offset+56u)+
+        loadScalar(offset+(biased?48u:52u)),
         -maxImpulse,maxImpulse);
-    double impulse=next-previous;
-    double ia=impulse*(double)massA;
-    double ib=impulse*(double)massB;
-    float3 newVa=float3(
-        (float)((double)va.x+ia*(double)axis.x),
-        (float)((double)va.y+ia*(double)axis.y),
-        (float)((double)va.z+ia*(double)axis.z));
-    float3 newVb=float3(
-        (float)((double)vb.x-ib*(double)axis.x),
-        (float)((double)vb.y-ib*(double)axis.y),
-        (float)((double)vb.z-ib*(double)axis.z));
-    float3 newAa=float3(
-        (float)((double)aa.x+impulse*(double)ja.x),
-        (float)((double)aa.y+impulse*(double)ja.y),
-        (float)((double)aa.z+impulse*(double)ja.z));
-    float3 newAb=float3(
-        (float)((double)ab.x-impulse*(double)jb.x),
-        (float)((double)ab.y-impulse*(double)jb.y),
-        (float)((double)ab.z-impulse*(double)jb.z));
+    float impulse=next-previous;
+    float3 newVa=va+axis*(impulse*massA);
+    float3 newVb=vb-axis*(impulse*massB);
+    float3 newAa=aa+ja*impulse;
+    float3 newAb=ab-jb*impulse;
     if(!isfinite(next) || !all(isfinite(newVa)) ||
        !all(isfinite(newVb)) || !all(isfinite(newAa)) ||
        !all(isfinite(newAb))) {
@@ -135,7 +111,7 @@ void solveRow(uint index,uint errorAddress,bool biased,bool finalPass) {
         arena.Store3(bo,asuint(newVb));
         arena.Store3(bo+12u,asuint(newAb));
     }
-    storeDouble(offset+72u,next,desc.x,finalPass);
+    storeScalar(offset+60u,next,desc.x,finalPass);
 }
 
 #include "physx_source_dy_contact_pgs_native.hlsli"
@@ -291,10 +267,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         // inverse-inertia transform; the resulting motion is not masked
         // again by DyBodyCoreIntegrator::integrateCore.
         float3 motionAngular=angular;
-        const float3 nextPosition=float3(
-            (float)((double)position.x+(double)motionLinear.x*(double)dt),
-            (float)((double)position.y+(double)motionLinear.y*(double)dt),
-            (float)((double)position.z+(double)motionLinear.z*(double)dt));
+        const float3 nextPosition=position+motionLinear*dt;
         float4 nextQuaternion=quaternion;
         float w=dot(motionAngular,motionAngular);
         if(w!=0.0f) {

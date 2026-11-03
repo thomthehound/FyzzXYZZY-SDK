@@ -65,7 +65,7 @@ independent physical checks remain necessary.
 | Evidence in current code | Required resolution | Delivery |
 | --- | --- | --- |
 | Pair, GPU input and report identities use BodyId; Actor stores geometry/material/offsets | Shape attachment/element keys for collision; body/link keys for dynamics; correct mass frame | Scene foundation |
-| `GpuDyContactPoint`, distance/friction rows and HLSL use double; `SourceDyDistanceNativeStage` requires FP64 | Qualify source-matched FP32 production arithmetic, inventory genuinely necessary wider operations and preserve or explicitly revise the admitted extreme-input contract | Device foundation |
+| Native CPU/GPU rigid rows use source PxReal; compiled SPIR-V/DXIL checks reject FP64 requirements | Extend error/conditioning and cost validation with each subsystem; numerical representation follows the supported physical domain | Every capability |
 | Dy shader dispatches one 128-thread workgroup per task and loops its conflict partitions | Establish scaling for one large connected island as well as many independent tasks; implement source-derived partition tiling where needed | Device foundation |
 | Scene builds host task/constraint/contact arrays; Dy solve downloads before returning | Express device dependencies and public-result visibility separately; retain intermediate device authority | Device foundation |
 | Direct buffer views/32-bit offsets cover the current bounded stage set | Qualify local offsets plus cross-allocation references before pointer-rich solver/nonrigid intake | Device foundation |
@@ -153,10 +153,10 @@ Broadphase siblings and sphere primitive tests alone do not close it.
 Complete these decisions alongside the compound scene, before large-scale
 articulation or nonrigid kernel intake:
 
-- Establish the source numerical domain and FP32 row/prep/solve contract.
-  Separate required wider reporting/intermediate operations from blanket
-  FP64 arithmetic. Validate high mass ratios, tiny/large valid inputs,
-  friction/compliance and angular response before changing admission.
+- Extend numerical quality qualification from the admitted source PxReal
+  rigid solver into new subsystems. Validate mass ratios, supported input
+  ranges, conditioning, friction/compliance and angular response. Select
+  representations per operation against physical error and runtime cost.
 - Qualify the selected local-offset/segmented-reference model with explicit
   null, alignment, atomics, aliasing, range, multi-segment addressing,
   growth/relocation and completion-delayed reuse. A scene is not limited to

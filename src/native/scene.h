@@ -36,8 +36,8 @@ using ::fyzz::ForceThresholdReport;
 // The original FMin(maxDyn,FMax(-maxDyn,candidate)) is defined even
 // when a compliant spring makes maxDyn negative. This belongs to the
 // production solver's source math, not a second test-only solver.
-inline double source_contact_friction_limit(
-    double candidate,double max_dynamic,bool saturated) noexcept {
+inline float source_contact_friction_limit(
+    float candidate,float max_dynamic,bool saturated) noexcept {
     return saturated
         ? std::min(max_dynamic,std::max(-max_dynamic,candidate))
         : candidate;
@@ -147,11 +147,12 @@ struct GpuDyDistanceRow {
     float axis[3]{},angular_a[3]{},angular_b[3]{};
     float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
     std::uint32_t reserved=0u;
-    double constant=0.0,unbiased_constant=0.0;
-    double velocity_multiplier=0.0,applied_force=0.0;
+    float constant=0.0f,unbiased_constant=0.0f;
+    float velocity_multiplier=0.0f,applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyDistanceRow)==80u &&
-              offsetof(GpuDyDistanceRow,constant)==48u);
+static_assert(sizeof(GpuDyDistanceRow)==64u &&
+              offsetof(GpuDyDistanceRow,constant)==48u &&
+              offsetof(GpuDyDistanceRow,applied_force)==60u);
 struct GpuDyDistanceDescriptor {
     std::uint32_t index=0,row0=0,row1=0,distance=0;
 };
@@ -165,8 +166,8 @@ struct GpuDyDistanceTask {
 };
 static_assert(sizeof(GpuDyDistanceTask)==36u);
 
-// DyContactPrep source normal and friction rows preserve their wide
-// impulse accumulators and separate Gu-indexed contact-force writeback.
+// DyContactPrep normal and friction rows use source PxReal arithmetic
+// with separate Gu-indexed contact-force writeback.
 // CPU-origin Gu geometry is uploaded in source contact order. Every
 // prepared Dy contact row itself is generated in the GPU solver arena.
 struct GpuDyGuContactInput {
@@ -177,13 +178,13 @@ static_assert(sizeof(GpuDyGuContactInput)==28u);
 struct GpuDyContactPoint {
     float normal[3]{},angular_a[3]{},angular_b[3]{};
     std::uint32_t reserved=0u;
-    double velocity_multiplier=0.0,impulse_multiplier=1.0;
-    double biased_error=0.0,unbiased_error=0.0;
-    double applied_force=0.0,max_impulse=0.0;
+    float velocity_multiplier=0.0f,impulse_multiplier=1.0f;
+    float biased_error=0.0f,unbiased_error=0.0f;
+    float applied_force=0.0f,max_impulse=0.0f;
 };
-static_assert(sizeof(GpuDyContactPoint)==88u &&
+static_assert(sizeof(GpuDyContactPoint)==64u &&
               offsetof(GpuDyContactPoint,velocity_multiplier)==40u &&
-              offsetof(GpuDyContactPoint,applied_force)==72u);
+              offsetof(GpuDyContactPoint,applied_force)==56u);
 // The GPU constructs both tangent rows from one pair of Sc-owned,
 // body-local friction anchors; only their solved tangent/force returns.
 struct GpuDyFrictionAnchorInput {
@@ -192,18 +193,20 @@ struct GpuDyFrictionAnchorInput {
 static_assert(sizeof(GpuDyFrictionAnchorInput)==24u);
 struct GpuDyFrictionWriteback {
     float tangent[3]{};
-    double applied_force=0.0;
+    float applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyFrictionWriteback)==24u &&
-              offsetof(GpuDyFrictionWriteback,applied_force)==16u);
-// The GPU-only source Dy solver row remains 72 bytes.
+static_assert(sizeof(GpuDyFrictionWriteback)==16u &&
+              offsetof(GpuDyFrictionWriteback,applied_force)==12u);
+// The GPU friction row retains source PxReal coefficients and impulses.
 struct GpuDyFrictionRow {
     float tangent[3]{},angular_a[3]{},angular_b[3]{};
     std::uint32_t reserved=0u;
-    double velocity_multiplier=0.0,bias=0.0;
-    double target_velocity=0.0,applied_force=0.0;
+    float velocity_multiplier=0.0f,bias=0.0f;
+    float target_velocity=0.0f,applied_force=0.0f;
 };
-static_assert(sizeof(GpuDyFrictionRow)==72u);
+static_assert(sizeof(GpuDyFrictionRow)==56u &&
+              offsetof(GpuDyFrictionRow,velocity_multiplier)==40u &&
+              offsetof(GpuDyFrictionRow,applied_force)==52u);
 struct GpuDyContactPatch {
     std::uint32_t row_offset=0,contact_count=0,anchor_count=0,broken=0;
     float static_friction=0.0f,dynamic_friction=0.0f;
@@ -238,11 +241,14 @@ struct GpuDyContactPrepPair {
     // Source Sc PCM pair ordinal, or no device Gu contact producer.
     std::uint32_t pcm_pair_index=0xffffffffu,pcm_edge=0u;
     // Source extractContacts's body-level contact impulse limit.
-    double max_contact_impulse=0.0;
+    float max_contact_impulse=0.0f;
     // Dense CPU Gu geometry offset for non-PCM managers only.
     std::uint32_t cpu_gu_offset=0xffffffffu;
 };
-static_assert(sizeof(GpuDyContactPrepPair)==256u);
+static_assert(sizeof(GpuDyContactPrepPair)==248u &&
+              offsetof(GpuDyContactPrepPair,rest_distance)==192u &&
+              offsetof(GpuDyContactPrepPair,max_contact_impulse)==240u &&
+              offsetof(GpuDyContactPrepPair,cpu_gu_offset)==244u);
 
 class GpuBroadphaseProducer {
 public:
@@ -270,7 +276,7 @@ public:
         std::span<const std::uint32_t>,
         std::span<const std::uint32_t>,
         std::span<GpuDyDistanceTask>,
-        std::span<double>,
+        std::span<float>,
         std::span<const GpuDyGuContactInput>,
         std::span<GpuDyFrictionWriteback>,
         std::span<const GpuDyFrictionAnchorInput>,
@@ -327,9 +333,8 @@ struct ContactPoint {
 };
 // DyContactPrep.cpp::updateFrictionAnchorCountAndPosition and
 // writeBackContactFriction: solver anchor impulses are vectors in world
-// space, one per retained friction anchor. The native representation uses
-// double components only to preserve the SDK's separately admitted
-// extreme inverse-mass range; original PhysX reports PxVec3.
+// space, one per retained friction anchor. Host-visible reports are
+// separate from the source PxReal solver rows.
 struct FrictionImpulse {
     double x=0.0, y=0.0, z=0.0;
 };
@@ -592,9 +597,8 @@ public:
     // impulses in Gu contact order; each manifold's contact_offset/count
     // indexes this flat scene-owned result. An advance_collision() call
     // invalidates writeback (geometry-only queries are not solver results).
-    // Retain double for SDK-admitted extreme inverse-mass cases: ordinary
-    // PhysX uses a PxReal output buffer. The corresponding friction-anchor
-    // and low-level threshold streams are exposed separately below.
+    // Host-visible accumulated reports are separate from PxReal solver
+    // rows. Friction anchors and threshold changes have their own streams.
     std::span<const double> solved_normal_impulses() const noexcept {
         return normal_impulse_writeback_;
     }
@@ -979,20 +983,17 @@ private:
         Vec3 normal{};
         Vec3 ra_x_n_sqrt_inertia{};
         Vec3 rb_x_n_sqrt_inertia{};
-        double velocity_multiplier = 0.0;
+        float velocity_multiplier = 0.0f;
         // DyContactPrepShared's compliant spring recurrence, applied on
-        // every PGS normal iteration; always 1.0 for noncompliant rows.
-        double impulse_multiplier = 1.0;
-        // Extended only for SDK-admitted inverse masses below the range
-        // of a representable PhysX float impulse. No float narrowing
-        // between constraint preparation and the actual impulse update.
-        double biased_error = 0.0;
-        double unbiased_error = 0.0;
-        double applied_force = 0.0;
+        // every PGS normal iteration; always 1.0f for noncompliant rows.
+        float impulse_multiplier = 1.0f;
+        float biased_error = 0.0f;
+        float unbiased_error = 0.0f;
+        float applied_force = 0.0f;
         // DyContactPrepShared::extractContacts supplies the minimum
         // PxsBodyCore contact-impulse limit (overridden per-point only
         // by the source contact-modification branch, still unadmitted).
-        double max_impulse = std::numeric_limits<float>::max();
+        float max_impulse = std::numeric_limits<float>::max();
         std::size_t friction_patch = 0;
     };
     // DyFrictionPatch.h, DyCorrelationBuffer.h and DySolverContact.h:
@@ -1025,10 +1026,10 @@ private:
         Vec3 tangent{};
         Vec3 ra_x_t_sqrt_inertia{};
         Vec3 rb_x_t_sqrt_inertia{};
-        double velocity_multiplier = 0.0;
-        double bias = 0.0;
-        double target_velocity = 0.0;
-        double applied_force = 0.0;
+        float velocity_multiplier = 0.0f;
+        float bias = 0.0f;
+        float target_velocity = 0.0f;
+        float applied_force = 0.0f;
     };
     // BpBroadPhaseSap::mEndPointValues/mEndPointDatas: both min
     // and max for each of three axes, with the original encoded keys.
@@ -1687,8 +1688,8 @@ private:
         Vec3 axis{};
         Vec3 angular_a{},angular_b{};
         float inverse_mass_a=0.0f,inverse_mass_b=0.0f;
-        double constant=0.0,unbiased_constant=0.0;
-        double velocity_multiplier=0.0,applied_force=0.0;
+        float constant=0.0f,unbiased_constant=0.0f;
+        float velocity_multiplier=0.0f,applied_force=0.0f;
     };
     std::vector<DistanceRow> distance_rows_;
     // DyDynamicsContext::updatePostKinematic's contiguous source task
@@ -1794,7 +1795,7 @@ private:
     std::vector<std::uint32_t> gpu_dy_partition_ends_;
     std::vector<std::uint32_t> gpu_dy_body_ordinals_;
     std::vector<GpuDyDistanceTask> gpu_dy_tasks_;
-    std::vector<double> gpu_dy_contact_forces_;
+    std::vector<float> gpu_dy_contact_forces_;
     std::vector<GpuDyGuContactInput> gpu_dy_gu_inputs_;
     std::vector<GpuDyFrictionWriteback> gpu_dy_friction_writeback_;
     std::vector<GpuDyFrictionAnchorInput> gpu_dy_friction_anchors_;
