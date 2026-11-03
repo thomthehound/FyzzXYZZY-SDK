@@ -179,9 +179,12 @@ void solveContact(uint4 descriptor,uint errorAddress,bool biased,
             broken=broken||saturated;
         }
         if(finalPass) {
+            bool gpuGrowth=(patch.w&0x80000000u)!=0u;
             arena.Store(po+12u,broken?1u:0u);
-            arena.Store(p.writebackBias+p.resultPatchOffset+
-                patchIndex*4u,broken?1u:0u);
+            uint reportAddress=p.writebackBias+p.resultPatchOffset+
+                patchIndex*4u;
+            uint report=gpuGrowth?arena.Load(reportAddress):0u;
+            arena.Store(reportAddress,(report&~1u)|(broken?1u:0u));
         }
     }
     if(cursor!=manager.z+manager.w)
@@ -421,6 +424,115 @@ void prepareFrictionRow(uint index,uint pairIndex,uint errorAddress) {
     prepStoreDouble(fo+56u,targetVelocity);
 }
 
+// GPU PCM supplies exactly one Gu normal/contact patch for each active
+// box pair. DyFrictionCorrelation's retained anchors remain Sc-owned;
+// this device pass chooses replacements directly from the original PCM
+// contact stream, before constructing the same source tangent rows.
+// Source output: broken bit 0, resulting count bits 1-2, and changed
+// Gu contact indices (+1) in bits 3-5 and 6-8. Zero means retained.
+void growPcmFrictionAnchors(uint patchIndex,uint pairIndex,
+                            uint errorAddress) {
+    uint po=p.patchBias+patchIndex*32u;
+    uint4 patch=arena.Load4(po);
+    uint pair=p.prepBias+pairIndex*72u;
+    uint pcmIndex=arena.Load(pair+48u);
+    if(pcmIndex==0xffffffffu || patch.y>4u || patch.z>2u ||
+       (patch.x&1u)!=0u || patch.x+4u>p.frictionCount) {
+        arena.InterlockedOr(errorAddress,262144u);
+        return;
+    }
+    uint stream=p.pcmBias+pcmIndex*84u;
+    uint packed=pcmContacts.Load(stream+4u);
+    if(((packed>>3u)&7u)!=0u || ((packed>>10u)&7u)!=patch.y ||
+       pcmContacts.Load(stream)!=arena.Load(pair+52u)) {
+        arena.InterlockedOr(errorAddress,262144u);
+        return;
+    }
+    uint body0=arena.Load(pair);
+    uint body1=arena.Load(pair+4u);
+    uint anchorBase=p.prepBias+p.prepCount*72u+(patch.x/2u)*24u;
+    float3 local0=asfloat(arena.Load3(anchorBase));
+    float3 local1=asfloat(arena.Load3(anchorBase+24u));
+    uint count=patch.z;
+    bool keepPair=false;
+    if(count==2u) {
+        float3 delta=local0-local1;
+        float distance=delta.x*delta.x+delta.y*delta.y+delta.z*delta.z;
+        keepPair=distance*4.0f>=asfloat(arena.Load(po+28u));
+        if(!keepPair)count=0u;
+    }
+    float3 anchors[2];
+    uint selected[2]={0u,0u};
+    bool changed[2]={false,false};
+    float pointDistance=0.0f;
+    if(!keepPair) {
+        if(count==1u)anchors[0]=prepRotate(body0,local0)+
+                                 prepBody3(body0,0u);
+        float limit=asfloat(arena.Load(pair+8u))+0.04f;
+        [loop]
+        for(uint j=0u;j<patch.y;++j) {
+            uint src=stream+20u+j*16u;
+            float separation=asfloat(pcmContacts.Load(src+12u));
+            if(separation>=limit)continue;
+            float3 world=asfloat(pcmContacts.Load3(src));
+            if(count==0u) {
+                anchors[0]=world;
+                selected[0]=j;
+                changed[0]=true;
+                ++count;
+            }else if(count==1u) {
+                float3 v=world-anchors[0];
+                float distance=v.x*v.x+v.y*v.y+v.z*v.z;
+                if(distance>1.0e-8f) {
+                    anchors[1]=world;
+                    selected[1]=j;
+                    changed[1]=true;
+                    pointDistance=distance;
+                    ++count;
+                }
+            }else {
+                float3 v0=world-anchors[0];
+                float3 v1=world-anchors[1];
+                float d0=v0.x*v0.x+v0.y*v0.y+v0.z*v0.z;
+                float d1=v1.x*v1.x+v1.y*v1.y+v1.z*v1.z;
+                if(d0>d1 && d0>pointDistance) {
+                    anchors[1]=world;
+                    selected[1]=j;
+                    changed[1]=true;
+                    pointDistance=d0;
+                } else if(d1>=d0 && d1>pointDistance) {
+                    anchors[0]=world;
+                    selected[0]=j;
+                    changed[0]=true;
+                    pointDistance=d1;
+                }
+            }
+        }
+        [unroll]
+        for(uint k=0u;k<2u;++k) {
+            if(k>=count || !changed[k])continue;
+            float3 w=anchors[k];
+            float3 a=prepBody3(body0,0u);
+            float3 b=prepBody3(body1,0u);
+            float4 qa=prepBody4(body0,80u);
+            float4 qb=prepBody4(body1,80u);
+            float3 da=w-a,db=w-b;
+            float3 ta=cross(-qa.xyz,da)*2.0f;
+            float3 tb=cross(-qb.xyz,db)*2.0f;
+            float3 la=da+qa.w*ta+cross(-qa.xyz,ta);
+            float3 lb=db+qb.w*tb+cross(-qb.xyz,tb);
+            arena.Store3(anchorBase+k*24u,asuint(la));
+            arena.Store3(anchorBase+k*24u+12u,asuint(lb));
+        }
+    }
+    arena.Store(po+8u,count);
+    uint report=(count<<1u) |
+        ((changed[0]?(selected[0]+1u):0u)<<3u) |
+        ((changed[1]?(selected[1]+1u):0u)<<6u);
+    arena.Store(p.writebackBias+p.resultPatchOffset+
+                patchIndex*4u,report);
+}
+
 void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     if(patchIndex>=p.patchCount || pairIndex>=p.prepCount) {
         arena.InterlockedOr(errorAddress,16384u);
@@ -428,6 +540,10 @@ void prepareFrictionPatch(uint patchIndex,uint pairIndex,uint errorAddress) {
     }
     uint po=p.patchBias+patchIndex*32u;
     uint4 patch=arena.Load4(po);
+    if((patch.w&0x80000000u)!=0u) {
+        growPcmFrictionAnchors(patchIndex,pairIndex,errorAddress);
+        patch=arena.Load4(po);
+    }
     if(patch.z==0u)return;
     uint orderOffset=arena.Load(po+24u);
     if(patch.y==0u || orderOffset>=p.orderCount ||
