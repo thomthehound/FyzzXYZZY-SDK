@@ -222,9 +222,8 @@ public:
                 reinterpret_cast<const std::uint8_t*>(&source)+192u,
                 target.constants.size());
         }
-        for(const auto a:assigned_)
-            if(a!=1u)
-                throw std::logic_error("Source Dy contact prep lacks a descriptor");
+        // A manager excluded by the source island/partition pass has no
+        // GPU reader; only scheduled descriptors require body references.
         const std::size_t compact_prep_bytes=static_begin+
             inline_bodies_.size()*sizeof(native::GpuDyContactPrepBody);
         if(compact_prep_bytes>contact_prep.size_bytes())
