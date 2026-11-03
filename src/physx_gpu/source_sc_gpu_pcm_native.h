@@ -95,6 +95,7 @@ public:
         const auto previous_count=published_pair_count_;
         published_pair_count_=0u;
         last_pair_upload_bytes_=0u;
+        last_contact_download_bytes_=0u;
         if(requests.empty())return;
         if(!shape_capacity || requests.size()>
               std::numeric_limits<std::uint32_t>::max()/16u)
@@ -133,6 +134,9 @@ public:
             pair_host_[i]=next;
         }
         const auto edge_capacity=largest_edge+1u;
+        // Reserve the download destination before queueing any source
+        // allocation or GPU work. Its address remains fixed through fetch.
+        readback_.resize(pair_count);
         const auto requested_pair_bytes=source_allocation_bytes(pair_count,20u);
         const auto previous_pair_capacity=pairs_.getSize();
         const auto previous_pair_address=pairs_.getDevicePtr();
@@ -144,7 +148,8 @@ public:
         edges_.allocateCopyOldDataAsync(
             source_allocation_bytes(edge_capacity,240u),stream_,PX_FL);
         work_.allocate(source_allocation_bytes(pair_count,4u),PX_FL);
-        dense_contacts_.allocate(source_allocation_bytes(pair_count,96u),PX_FL);
+        dense_contacts_.allocate(source_allocation_bytes(
+            pair_count,sizeof(SourcePcmGpuContactStreamNative)),PX_FL);
         // Sc's reset intent travels with the source pair. The GPU
         // candidate owner initializes its own EdgeIndex record before
         // refreshing it, without a separate upload per new manager.
@@ -182,15 +187,14 @@ public:
             candidate_count,edge_capacity);
 
 
-        // The shader emits the exact Sc-owned 96-byte record. Resolve
-        // the download destination before submitting the source stream.
+        // Fetch the losslessly packed device stream, then reconstruct
+        // Sc's original host record. The Dy shader reads the same device
+        // allocation; no GPU repacking command or second fence is needed.
+        const auto readback_bytes=readback_.size()*sizeof(readback_[0]);
         const auto mapped=addresses_.resolve(
-            dense_contacts_.getDevicePtr(),output.size_bytes());
-        // Reuse the backend's cached readback staging. The download is
-        // queued after all preceding PCM commands on this same Context;
-        // waiting for its fence also completes every earlier source token.
+            dense_contacts_.getDevicePtr(),readback_bytes);
         const std::array<compute::DownloadSpan,1> downloads{
-            {mapped.buffer,mapped.offset,output.data(),output.size_bytes()}
+            {mapped.buffer,mapped.offset,readback_.data(),readback_bytes}
         };
         stream_.submit();
         try {
@@ -209,8 +213,15 @@ public:
         // command/upload tokens without an intervening CPU/GPU stall.
         stream_.wait_at_fetch();
         for(std::uint32_t i=0u;i<pair_count;++i) {
+            const auto& packed=readback_[i];
+            const auto header=unpack_source_pcm_gpu_header_native(packed);
+            auto& stored=output[i];
+            stored.edge=header.edge_handle;
+            stored.cached_count=header.cached_count;
+            stored.status=header.status;
+            stored.selected_and_regenerated=header.selected_and_regenerated;
+            stored.count=header.emitted_count;
             const auto& request=requests[i];
-            const auto& stored=output[i];
             const auto selected_count=
                 stored.selected_and_regenerated&0x7fffffffu;
             const bool regenerated=
@@ -224,8 +235,15 @@ public:
                stored.count>stored.cached_count)
                 throw std::logic_error(
                     "Source GPU PCM publication disagrees with original Sc manager");
+            // Only live Gu contacts cross into Sc's host manifold arena;
+            // do not copy unused lanes or materialize a second 96-byte
+            // temporary record for every pair.
+            std::memcpy(&stored.normal,packed.normal,sizeof(packed.normal));
+            std::memcpy(stored.points.data(),packed.contacts,
+                        std::size_t(stored.count)*sizeof(packed.contacts[0]));
         }
         published_pair_count_=pair_count;
+        last_contact_download_bytes_=readback_bytes;
     }
     CudaDeviceAddressMap::Address contact_stream_address() const noexcept {
         return published_pair_count_?dense_contacts_.getDevicePtr():0u;
@@ -235,6 +253,9 @@ public:
     }
     std::size_t last_pair_upload_bytes() const noexcept {
         return last_pair_upload_bytes_;
+    }
+    std::size_t last_contact_download_bytes() const noexcept {
+        return last_contact_download_bytes_;
     }
 private:
     compute::Context& context_;
@@ -250,8 +271,10 @@ private:
     compute::BufferId indirect_buffer_=0u;
     CudaDeviceAddressMap::Address indirect_address_=0u;
     std::vector<SourcePcmBoxPairNative> pair_host_;
+    std::vector<SourcePcmGpuContactStreamNative> readback_;
     bool reset_manifolds_=false;
     std::uint32_t published_pair_count_=0u;
     std::size_t last_pair_upload_bytes_=0u;
+    std::size_t last_contact_download_bytes_=0u;
 };
 } // namespace fyzz::physx_gpu

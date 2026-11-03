@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -42,6 +43,36 @@ ShaderBinary shader(const char* name) {
 void verify(Context& context,const char* transform_shader,
             const char* candidate_shader,const char* compact_shader,
             const char* epa_shader) {
+    // Exercise every contact lane with byte-exact IEEE float preservation.
+    SourcePcmGpuContactStreamNative fixture{};
+    fixture.edge_handle=197u;
+    fixture.packed_counts=4u|(4u<<6u)|(1u<<9u)|(4u<<10u);
+    fixture.normal[0]=0.25f;
+    fixture.normal[1]=-0.5f;
+    fixture.normal[2]=0.75f;
+    for(std::size_t i=0u;i<4u;++i) {
+        fixture.contacts[i].position[0]=float(i)+0.125f;
+        fixture.contacts[i].position[1]=-float(i)-0.25f;
+        fixture.contacts[i].position[2]=float(i)*0.5f;
+        fixture.contacts[i].separation=-0.375f*float(i+1u);
+    }
+    const auto unpacked=unpack_source_pcm_sc_contact_native(fixture);
+    require(unpacked.edge_handle==197u && unpacked.cached_count==4u &&
+            unpacked.status==0u && unpacked.emitted_count==4u &&
+            unpacked.selected_and_regenerated==0x80000004u &&
+            std::memcmp(unpacked.normal,fixture.normal,
+                        sizeof(unpacked.normal))==0 &&
+            std::memcmp(unpacked.contacts,fixture.contacts,
+                        sizeof(unpacked.contacts))==0,
+            "Packed GPU PCM record changed a full four-witness Gu manifold");
+    // An invalid source manager must remain rejectable after counter
+    // saturation; never turn an out-of-range count into a valid witness.
+    fixture.packed_counts=7u|(1u<<3u)|(7u<<6u)|(1u<<9u)|(7u<<10u);
+    const auto invalid_stream=unpack_source_pcm_sc_contact_native(fixture);
+    require(invalid_stream.edge_handle==197u && invalid_stream.cached_count==7u &&
+            invalid_stream.status==1u && invalid_stream.emitted_count==7u &&
+            invalid_stream.selected_and_regenerated==0x80000007u,
+            "Packed PCM counters hid an invalid Sc source manager");
     constexpr float z=0.3826834323650898f;
     constexpr float w=0.9238795325112867f;
     std::array<SourceScBoxTransformInputNative,8> boxes{{
@@ -160,9 +191,10 @@ void verify(Context& context,const char* transform_shader,
     const std::size_t work_offset=
         edge_offset+edge_caches.size()*sizeof(edge_caches[0])+16u;
     const std::size_t output_offset=work_offset+pairs.size()*4u+16u;
+    std::vector<SourcePcmGpuContactStreamNative> packed(pairs.size());
     std::vector<SourcePcmScContactStreamNative> published(pairs.size());
     const auto root=context.create_buffer(
-        output_offset+published.size()*sizeof(published[0])+16u);
+        output_offset+packed.size()*sizeof(packed[0])+16u);
     const auto args_buffer=context.create_buffer(16u,MemoryPlacement::DeviceLocal);
     context.upload(root,input_offset,boxes.data(),sizeof(boxes));
     context.upload(root,pair_offset,pairs.data(),sizeof(pairs));
@@ -182,8 +214,16 @@ void verify(Context& context,const char* transform_shader,
     const auto work_data=addresses.register_slice(
         root,work_offset,pairs.size()*4u);
     const auto output_data=addresses.register_slice(
-        root,output_offset,published.size()*sizeof(published[0]));
+        root,output_offset,packed.size()*sizeof(packed[0]));
     const auto args_data=addresses.register_slice(args_buffer,0u,12u);
+    const auto download_publication=[&] {
+        context.download(root,output_offset,packed.data(),
+                         packed.size()*sizeof(packed[0]));
+        for(std::size_t i=0u;i<packed.size();++i)
+            published[i]=unpack_source_pcm_sc_contact_native(packed[i]);
+    };
+    require(sizeof(packed[0])==84u && sizeof(published[0])==96u,
+            "Source PCM packed GPU record does not save twelve bytes per pair");
     SourceScBoxTransformBoundsNativeStage producer(
         context,shader(transform_shader));
     SourcePcmBoxCandidatesNativeStage pcm(context,shader(candidate_shader));
@@ -209,8 +249,7 @@ void verify(Context& context,const char* transform_shader,
                      candidates.size()*sizeof(candidates[0]));
     context.download(root,edge_offset,edge_caches.data(),
                      edge_caches.size()*sizeof(edge_caches[0]));
-    context.download(root,output_offset,published.data(),
-                     published.size()*sizeof(published[0]));
+    download_publication();
     for(std::size_t i=0;i<pairs.size();++i) {
         require(published[i].edge_handle==results[i].edge_handle &&
                 published[i].status==results[i].status,
@@ -659,8 +698,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(args_buffer,0u,indirect.data(),sizeof(indirect));
     require(indirect==std::array<std::uint32_t,3>{1u,1u,1u},
             "GPU EPA continuation did not consume one sparse work item");
-    context.download(root,output_offset,published.data(),
-                     published.size()*sizeof(published[0]));
+    download_publication();
     const auto& epa_published=published[penetration_pair];
     require(epa_published.edge_handle==edge && epa_published.status==0u &&
             epa_published.cached_count==1u && epa_published.emitted_count==1u &&
@@ -696,8 +734,7 @@ void verify(Context& context,const char* transform_shader,
     context.download(root,result_offset,results.data(),sizeof(results));
     context.download(root,candidate_offset,candidates.data(),
                      candidates.size()*sizeof(candidates[0]));
-    context.download(root,output_offset,published.data(),
-                     published.size()*sizeof(published[0]));
+    download_publication();
     const auto& quiet_published=published[penetration_pair];
     require(quiet_published.edge_handle==edge && quiet_published.status==0u &&
             quiet_published.cached_count==1u &&

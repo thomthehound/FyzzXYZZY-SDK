@@ -70,14 +70,16 @@ void verify(fyzz::compute::Backend backend,const char* sap,
     };
     check(true);
     const auto edge=gpu.contact_edge_index({gpu_a,gpu_b});
-    // The original GPU producer now downloads the 96-byte shader stream
-    // directly into Sc's result layout. Inspect the live producer result
-    // without an intermediate host-side contact conversion.
+    // The device's 84-byte stream reconstructs Sc's exact 96-byte
+    // publication record without altering its world-space Gu contacts.
     const std::array<native::GpuPcmBoxPair,1> request{{
         {gpu_a,gpu_b,edge,false}
     }};
     std::array<native::GpuPcmBoxResult,1> direct{};
     producer->generate_gpu_pcm_box_contacts(request,direct);
+    require(producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+            "Direct GPU PCM readback did not use the compact device stream");
     require(direct[0].edge==edge && direct[0].status==0u &&
             direct[0].cached_count<=4u &&
             direct[0].count<=direct[0].cached_count &&
@@ -223,8 +225,10 @@ void verify_sparse_contact_stream(
     require(cpu.contacts().size()==12u && gpu.contacts().size()==12u,
             "Sparse GPU PCM fixture did not admit original Sc managers");
     require(producer->pcm_pair_upload_bytes()==
-                12u*sizeof(physx_gpu::SourcePcmBoxPairNative),
-            "Initial sparse PCM manager admission did not upload source pairs");
+                12u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            producer->pcm_contact_readback_bytes()==
+                12u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+            "Initial sparse PCM manager admission did not use compact GPU records");
     check_transitions(12u,0u);
     check_ordinals();
     // Initial Sc admission sets reset flags on every GPU PCM manager.
@@ -306,6 +310,8 @@ void verify_sparse_contact_stream(
     cpu.advance_collision();
     gpu.advance_collision();
     require(cpu.contacts().size()==1u && gpu.contacts().size()==1u &&
+            producer->pcm_contact_readback_bytes()==
+                sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
             gpu.contacts()[0].edge_handle==retained_edge &&
             cpu.contacts()[0].count==gpu.contacts()[0].count,
             "Sparse Sc contact stream misidentified surviving edge handle");
@@ -337,8 +343,10 @@ void verify_sparse_contact_stream(
                 {moving_gpu.back(),fixed_gpu.back()})==retained_edge,
             "Growing source GPU PCM readback lost an existing Sc contact manager");
     require(producer->pcm_pair_upload_bytes()==
-                (added+1u)*sizeof(physx_gpu::SourcePcmBoxPairNative),
-            "PCM pair-buffer growth did not refresh all source manager descriptors");
+                (added+1u)*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
+            producer->pcm_contact_readback_bytes()==
+                (added+1u)*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+            "PCM pair or packed readback growth lost source manager descriptors");
     check_ordinals();
     for(std::size_t i=0;i<cpu.contacts().size();++i) {
         const auto& prior=cpu.contacts()[i];

@@ -10,11 +10,14 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
     uint status=results.Load(result+8u);
     uint selected=results.Load(result+20u);
     uint regenerated=results.Load(result+28u);
-    uint flags=min(selected,0x7fffffffu) |
-        (regenerated!=0u ? 0x80000000u : 0u);
-    uint dst=outputBias+i*96u;
+    // Source Sc receives the full 96-byte host record after fetch.
+    // Dy consumes this 84-byte device stream without expanding it.
+    uint dst=outputBias+i*84u;
+    uint selectedBits=min(selected,7u)<<6u;
+    uint regenBit=(regenerated!=0u ? 1u : 0u)<<9u;
     if(edge>=edgeCapacity || second>=shapeCapacity) {
-        streamContacts.Store4(dst,uint4(resultEdge,0xffffffffu,1u,flags));
+        streamContacts.Store2(dst,uint2(resultEdge,
+            7u | (1u<<3u) | selectedBits | regenBit));
         return;
     }
     uint src=edgeBias+edge*240u;
@@ -59,14 +62,15 @@ void publishScContacts(uint i,uint first,uint second,uint edge,uint result,
                     if(regenerated==0u && depth>distance)continue;
                     float3 b=asfloat(edgeCaches.Load3(contact+12u));
                     float3 world=rotateSource(qb,b)+pb;
-                    streamContacts.Store4(dst+32u+emitted*16u,
+                    streamContacts.Store4(dst+20u+emitted*16u,
                         asuint(float4(world,depth)));
                     ++emitted;
                 }
             }
         }
     }
-    streamContacts.Store4(dst,uint4(resultEdge,count,status,flags));
-    streamContacts.Store3(dst+16u,asuint(normal));
-    streamContacts.Store(dst+28u,emitted);
+    uint packed=min(count,7u) | (min(status,7u)<<3u) |
+        selectedBits | regenBit | (min(emitted,7u)<<10u);
+    streamContacts.Store2(dst,uint2(resultEdge,packed));
+    streamContacts.Store3(dst+8u,asuint(normal));
 }

@@ -89,7 +89,7 @@ public:
                  5u,compute::BufferAccess::ReadWrite),
             view(work,source_allocation_bytes(pair_count,4u),
                  6u,compute::BufferAccess::Read),
-            view(output,source_allocation_bytes(pair_count,96u),
+            view(output,source_allocation_bytes(pair_count,84u),
                  7u,compute::BufferAccess::Write)};
         const auto arguments=addresses.resolve(dispatch_args,12u);
         if(arguments.offset%4u)

@@ -244,17 +244,18 @@ void prepareContactRow(uint index,uint pairIndex,uint contactBegin,
     uint pcmIndex=arena.Load(pair+48u);
     if(pcmIndex!=0xffffffffu) {
         uint local=index-contactBegin;
-        uint source=p.pcmBias+pcmIndex*96u;
+        uint source=p.pcmBias+pcmIndex*84u;
+        uint packed=pcmContacts.Load(source+4u);
         if(index<contactBegin || local>=contactCount ||
            local>=4u ||
            pcmContacts.Load(source)!=arena.Load(pair+52u) ||
-           pcmContacts.Load(source+8u)!=0u ||
-           local>=pcmContacts.Load(source+28u)) {
+           ((packed>>3u)&7u)!=0u ||
+           local>=((packed>>10u)&7u)) {
             arena.InterlockedOr(errorAddress,65536u);
             return;
         }
-        n=asfloat(pcmContacts.Load3(source+16u));
-        uint contact=source+32u+local*16u;
+        n=asfloat(pcmContacts.Load3(source+8u));
+        uint contact=source+20u+local*16u;
         pos=asfloat(pcmContacts.Load3(contact));
         separation=asfloat(pcmContacts.Load(contact+12u));
         arena.Store3(co,asuint(n));
