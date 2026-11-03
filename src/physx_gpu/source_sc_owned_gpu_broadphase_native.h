@@ -217,6 +217,9 @@ public:
     std::uint64_t dy_distance_dispatch_count() const noexcept {
         return dy_distance_dispatch_count_;
     }
+    std::uint64_t source_handle_projection_count() const noexcept {
+        return producer_->source_handle_projection_count();
+    }
     std::size_t dy_gpu_integrated_body_count() const noexcept {
         return dy_distance_?dy_distance_->last_integrated_body_count():0u;
     }

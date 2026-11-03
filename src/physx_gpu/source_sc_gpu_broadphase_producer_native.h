@@ -82,23 +82,32 @@ public:
             stream_.wait_at_fetch();
             aabb_.reset_for_source_rebuild();
             sap_.reset_for_source_rebuild();
+            handles_dirty_=true;
             rebuilt=true;
         }
-        // Resolve Sc-owned element handles without allocating a second
-        // identity table. The AABB manager's live volume mapping is the
-        // authority, including after post-report ID recycling.
-        const auto source_actors=aabb_.volume_to_actor();
-        handles_.clear();
-        handles_.reserve(live_boxes.size());
-        for(const auto& box:live_boxes) {
-            if(box.id>=sc_actor_element_ids_->size())
-                throw std::out_of_range("Source Sc actor has no element handle");
-            const auto handle=(*sc_actor_element_ids_)[box.id];
-            if(handle>=source_actors.size() ||
-               source_actors[handle]!=box.id)
-                throw std::invalid_argument(
-                    "Source Sc element handle does not match AABB volume owner");
-            handles_.push_back(handle);
+        // The owned Sc ElementSim handle projection changes on admission,
+        // retirement or remapping, not on ordinary Dy motion. The source
+        // AABB manager still checks EVERY live volume-to-actor binding
+        // in its original prepare() pass on each GPU SAP frame.
+        // An externally borrowed handle array has no owned mutation
+        // signal and retains the original per-frame projection.
+        if(!source_sc_elements_ || handles_dirty_ ||
+           handles_.size()!=live_boxes.size()) {
+            const auto source_actors=aabb_.volume_to_actor();
+            handles_.clear();
+            handles_.reserve(live_boxes.size());
+            for(const auto& box:live_boxes) {
+                if(box.id>=sc_actor_element_ids_->size())
+                    throw std::out_of_range("Source Sc actor has no element handle");
+                const auto handle=(*sc_actor_element_ids_)[box.id];
+                if(handle>=source_actors.size() ||
+                   source_actors[handle]!=box.id)
+                    throw std::invalid_argument(
+                        "Source Sc element handle does not match AABB volume owner");
+                handles_.push_back(handle);
+            }
+            handles_dirty_=false;
+            ++source_handle_projection_count_;
         }
         // The owner already authored its changed bitmap. A generic scene
         // dirtiness flag must not turn sparse source updates into a full
@@ -167,6 +176,7 @@ public:
     void admit_shape(BodyId actor,
         native::GpuBroadphaseBox::Motion motion,float contact_distance) override {
         require_scene_elements().admit(actor,motion,contact_distance);
+        handles_dirty_=true;
     }
     void admit_plane(BodyId actor) override {
         require_scene_elements().admit_plane(actor);
@@ -182,10 +192,12 @@ public:
     }
     void destroy_aggregate(AggregateId id) override {
         require_scene_elements().destroy_aggregate(id);
+        handles_dirty_=true;
     }
     void remove_actor_from_aggregate(
         AggregateId aggregate,BodyId actor) override {
         require_scene_elements().remove_actor_from_aggregate(aggregate,actor);
+        handles_dirty_=true;
     }
     void admit_aggregate_member(
         AggregateId aggregate,BodyId actor,
@@ -196,12 +208,15 @@ public:
                 "Native Sc aggregate member requires complete source GPU kernels");
         require_scene_elements().admit_aggregate_member(
             aggregate,actor,motion,contact_distance);
+        handles_dirty_=true;
     }
     void retire_shape(BodyId actor) override {
         require_scene_elements().retire(actor);
+        handles_dirty_=true;
     }
     void set_shape_simulation_enabled(BodyId actor,bool enabled) override {
         require_scene_elements().set_simulation_enabled(actor,enabled);
+        handles_dirty_=true;
     }
     void post_reports_cleanup() override {
         if(source_sc_elements_)source_sc_elements_->post_reports_cleanup();
@@ -220,8 +235,12 @@ public:
 
     void invalidate_after_rollback() noexcept override {
         invalidated_=true;
+        handles_dirty_=true;
         if(source_sc_elements_)
             source_sc_elements_->invalidate_device_cached_poses();
+    }
+    std::uint64_t source_handle_projection_count() const noexcept {
+        return source_handle_projection_count_;
     }
 
     const SourceSapSceneFrameNativeResult& last_frame() const {
@@ -255,6 +274,8 @@ private:
     std::vector<physx::Bp::ShapeHandle> handles_;
     std::vector<native::Pair> found_,lost_;
     std::optional<SourceSapSceneFrameNativeResult> last_frame_;
+    std::uint64_t source_handle_projection_count_=0u;
+    bool handles_dirty_=true;
     bool invalidated_=false;
 };
 

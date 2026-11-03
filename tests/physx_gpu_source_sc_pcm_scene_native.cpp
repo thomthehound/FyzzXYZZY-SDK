@@ -503,6 +503,8 @@ void verify_gpu_coupled_solver(
         }
         cpu.step(dt);
         gpu.step(dt);
+        require(producer->source_handle_projection_count()==1u,
+            "Source GPU SAP remapped unchanged Sc ElementSim handles");
         if(frame>0u)
             require(producer->last_frame().device_cached_box_count>0u,
                 "Source Dy integrated Sc pose was reuploaded to GPU SAP");
