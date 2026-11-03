@@ -288,7 +288,8 @@ void verify_sparse_contact_stream(
     require(producer->pcm_pair_upload_bytes()==
                 12u*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
             producer->pcm_contact_readback_bytes()==
-                12u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                12u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_edge_history_copy_bytes()==0u,
             "Initial sparse PCM manager admission did not use compact GPU records");
     check_transitions(12u,0u);
     check_ordinals();
@@ -406,7 +407,8 @@ void verify_sparse_contact_stream(
     require(producer->pcm_pair_upload_bytes()==
                 (added+1u)*sizeof(physx_gpu::SourcePcmBoxPairNative) &&
             producer->pcm_contact_readback_bytes()==
-                (added+1u)*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                (added+1u)*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_edge_history_copy_bytes()==12u*240u,
             "PCM pair or packed readback growth lost source manager descriptors");
     check_ordinals();
     for(std::size_t i=0;i<cpu.contacts().size();++i) {
@@ -512,6 +514,7 @@ void verify_dormant_contact_stream(
     gpu.advance_collision();
     require(producer->pcm_contact_readback_bytes()==
                 sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_edge_history_copy_bytes()==2u*240u &&
             gpu.contacts().size()==3u &&
             !gpu.body_is_sleeping(awake_gpu),
         "Awake Sc manager retransferred dormant GPU PCM manifolds");
@@ -527,7 +530,8 @@ void verify_dormant_contact_stream(
     require(!gpu.body_is_sleeping(dormant_gpu[0]) &&
             gpu.body_is_sleeping(dormant_gpu[1]) &&
             producer->pcm_contact_readback_bytes()==
-                2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative),
+                2u*sizeof(physx_gpu::SourcePcmGpuContactStreamNative) &&
+            producer->pcm_edge_history_copy_bytes()==0u,
         "Woken Sc EdgeIndex failed to reenter GPU PCM while another slept");
     check(3u);
 }
