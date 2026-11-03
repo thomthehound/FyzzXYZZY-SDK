@@ -244,8 +244,8 @@ public:
     std::size_t dy_friction_prepared_rows() const noexcept {
         return dy_distance_ ? dy_distance_->last_friction_prepared_rows() : 0u;
     }
-    std::size_t dy_contact_prep_upload_saving() const noexcept {
-        return dy_distance_ ? dy_distance_->last_contact_prep_upload_saving() : 0u;
+    std::int64_t dy_contact_prep_upload_saving() const noexcept {
+        return dy_distance_ ? dy_distance_->last_contact_prep_upload_saving() : 0;
     }
     std::pair<std::size_t,std::size_t>
     dy_distance_transfer_bytes() const noexcept {
