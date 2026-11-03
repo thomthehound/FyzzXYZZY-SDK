@@ -192,31 +192,8 @@ inline void write_source_sap_scene_bounds(
            intersects(changes->updated,changes->removed))
             throw std::invalid_argument("Source SAP handle occurs in multiple delta lists");
 
-        // The original GPU manager's updated list is empty by design;
-        // mChangedHandleMap instead identifies changed shape bounds.
-        // Source created/updated lists still apply for other callers.
-        // Scan live handles once and reconstruct only the authoritative
-        // changed volumes; no geometry comparisons or full AABB writes.
-        for(const auto handle:changes->created)
-            scratch.visit_epochs[handle]=changed_epoch;
-        for(const auto handle:changes->updated)
-            scratch.visit_epochs[handle]=changed_epoch;
-        const auto changed_words=changes->changed_bitmap_words;
-        for(std::size_t i=0;i<boxes.size();++i) {
-            const auto handle=source_handles[i];
-            if((handle>>5u)<changed_words.size() &&
-               (changed_words[handle>>5u] & (1u<<(handle&31u))))
-                scratch.visit_epochs[handle]=changed_epoch;
-            if(scratch.visit_epochs[handle]==changed_epoch && !gpu_records)
-                stage_bounds(i);
-        }
-    }
-
-    if(gpu_records)gpu_records->clear();
-    for(std::size_t i=0;i<boxes.size();++i) {
+    const auto publish=[&](std::size_t i) {
         const auto handle=source_handles[i];
-        if(changes && scratch.visit_epochs[handle]!=changed_epoch)
-            continue;
         const auto& b=boxes[i];
         if(gpu_records) {
             if(cached_poses && cached_poses->reuse(b.id))
@@ -230,19 +207,57 @@ inline void write_source_sap_scene_bounds(
         }else {
             output.bounds[handle]=scratch.prepared_bounds[i];
         }
-        // The source AABBManagerBase::setContactDistance owns the
-        // contact distance, independently of native Sc box snapshots.
-        // Never undo a source contact-offset edit when uploading bounds.
-        if(!preserve_source_owned_metadata)
+        // Source admission owns contact distances and filtering groups.
+        if(!preserve_source_owned_metadata) {
             output.contact_distances[handle]=b.contact_offset;
-        // Original Sc::ShapeSimBase::getBPGroup derives this value from
-        // Sc::ActorSim::getActorID, not native BodyId. Geometry updates
-        // must not overwrite the AABB manager's admitted filter group.
-        if(!preserve_source_owned_metadata)
             output.groups[handle]=b.motion==native::GpuBroadphaseBox::Motion::Static
                 ? physx::Bp::getFilterGroup_Statics()
                 : physx::Bp::getFilterGroup_Dynamics(
                     b.id,b.motion==native::GpuBroadphaseBox::Motion::Kinematic);
+        }
+    };
+
+    if(changes) {
+        // The original GPU manager's updated list is empty by design;
+        // mChangedHandleMap instead identifies changed shape bounds.
+        // Source created/updated lists still apply for other callers.
+        for(const auto handle:changes->created)
+            scratch.visit_epochs[handle]=changed_epoch;
+        for(const auto handle:changes->updated)
+            scratch.visit_epochs[handle]=changed_epoch;
+        const auto changed_words=changes->changed_bitmap_words;
+        if(gpu_records) {
+            // All geometry, membership and delta streams are validated.
+            // Select and publish changed transforms in the same pass.
+            gpu_records->clear();
+            for(std::size_t i=0;i<boxes.size();++i) {
+                const auto handle=source_handles[i];
+                if(scratch.visit_epochs[handle]!=changed_epoch &&
+                   ((handle>>5u)>=changed_words.size() ||
+                    !(changed_words[handle>>5u] & (1u<<(handle&31u)))))
+                    continue;
+                publish(i);
+            }
+            return;
+        }
+        // Host AABB writes remain staged until all selected bounds pass
+        // poseExtent validation; a rejected input cannot partially commit.
+        for(std::size_t i=0;i<boxes.size();++i) {
+            const auto handle=source_handles[i];
+            if((handle>>5u)<changed_words.size() &&
+               (changed_words[handle>>5u] & (1u<<(handle&31u))))
+                scratch.visit_epochs[handle]=changed_epoch;
+            if(scratch.visit_epochs[handle]==changed_epoch)
+                stage_bounds(i);
+        }
+    }
+
+    if(gpu_records)gpu_records->clear();
+    for(std::size_t i=0;i<boxes.size();++i) {
+        if(changes &&
+           scratch.visit_epochs[source_handles[i]]!=changed_epoch)
+            continue;
+        publish(i);
     }
 }
 
