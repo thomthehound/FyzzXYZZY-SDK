@@ -1020,8 +1020,30 @@ void verify_gpu_distance_solver(
     cpu.set_velocity(ids_cpu[2],{-0.6f,0.0f,0.0f});
     gpu.set_velocity(ids_gpu[2],{-0.6f,0.0f,0.0f});
     for(int frame=0;frame<12;++frame) {
+        if(frame==4) {
+            // An authored Sc pose edit invalidates every resident
+            // solver-body shape. The next SAP pass must consume the
+            // authoritative CPU poses, then return to GPU residency.
+            for(std::size_t i=0;i<ids_cpu.size();++i) {
+                auto expected=cpu.body_state(ids_cpu[i]);
+                auto actual=gpu.body_state(ids_gpu[i]);
+                if(i==0u) {
+                    expected.position.x+=0.12f;
+                    actual.position.x+=0.12f;
+                }
+                cpu.set_pose(ids_cpu[i],expected.position,expected.orientation);
+                gpu.set_pose(ids_gpu[i],actual.position,actual.orientation);
+            }
+            const auto expected=cpu.body_state(anchored_cpu);
+            const auto actual=gpu.body_state(anchored_gpu);
+            cpu.set_pose(anchored_cpu,expected.position,expected.orientation);
+            gpu.set_pose(anchored_gpu,actual.position,actual.orientation);
+        }
         cpu.step(dt);
         gpu.step(dt);
+        const auto cached=producer->last_frame().device_cached_box_count;
+        require((frame==0 || frame==4) ? cached==0u : cached>0u,
+            "Source GPU Dy shape residency ignored Sc pose invalidation");
         require(cpu.contacts().empty() && gpu.contacts().empty(),
             "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
         require(producer->dy_distance_dispatch_count()==
