@@ -47,6 +47,9 @@ public:
     // All live AABB volumes must be republished as created before DMA.
     void reset_for_source_rebuild() noexcept {
         numBoxes_=0u;
+        // The rejected frame may have uploaded metadata that Sc rolled
+        // back. Reinitialize those resident arrays on the next preBP.
+        boxesCapacity_=0u;
         createdCount_=removedCount_=updatedCount_=0u;
         regionAccumTotal_=startRegionAccumTotal_=0u;
         overlapChecksTotal_=0u;
