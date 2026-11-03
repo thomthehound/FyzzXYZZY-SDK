@@ -37,6 +37,18 @@ struct SourceSapSceneBoundsScratch {
     std::uint32_t epoch=0;
 };
 
+// Sc-owned device pose authorization is consulted for source dirty
+// volumes only, after complete geometry and handle validation.
+struct SourceSapDeviceCachedPoseNative {
+    const void* owner=nullptr;
+    bool (*authorized)(const void*,BodyId) noexcept=nullptr;
+    std::size_t reused_records=0u;
+
+    bool reuse(BodyId actor) const noexcept {
+        return authorized && authorized(owner,actor);
+    }
+};
+
 // Borrowed, ascending source PxgAABBManager/Bp::BroadPhaseUpdateData
 // delta lists. These are NOT reconstructed from Sc geometry: only the
 // original AABB manager knows which volumes were admitted and retired.
@@ -67,7 +79,8 @@ inline void write_source_sap_scene_bounds(
     SourceSapSceneBoundsScratch& scratch,
     const SourceSapSceneFrameChanges* changes = nullptr,
     bool preserve_source_owned_metadata = false,
-    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr) {
+    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr,
+    SourceSapDeviceCachedPoseNative* cached_poses = nullptr) {
 
     if(boxes.size()!=source_handles.size() ||
        output.bounds.size()!=output.contact_distances.size() ||
@@ -206,11 +219,14 @@ inline void write_source_sap_scene_bounds(
             continue;
         const auto& b=boxes[i];
         if(gpu_records) {
-            gpu_records->push_back({handle,
-                {b.position.x,b.position.y,b.position.z},
-                {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
-                {b.half_extents.x,b.half_extents.y,b.half_extents.z},
-                b.contact_offset});
+            if(cached_poses && cached_poses->reuse(b.id))
+                ++cached_poses->reused_records;
+            else
+                gpu_records->push_back({handle,
+                    {b.position.x,b.position.y,b.position.z},
+                    {b.orientation.x,b.orientation.y,b.orientation.z,b.orientation.w},
+                    {b.half_extents.x,b.half_extents.y,b.half_extents.z},
+                    b.contact_offset});
         }else {
             output.bounds[handle]=scratch.prepared_bounds[i];
         }
@@ -246,10 +262,11 @@ inline physx::Bp::BroadPhaseUpdateData prepare_source_sap_scene_update(
     bool gpu_state_changed,
     SourceSapSceneBoundsScratch& scratch,
     bool preserve_source_owned_metadata = false,
-    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr) {
+    std::vector<SourceScBoxTransformInputNative>* gpu_records = nullptr,
+    SourceSapDeviceCachedPoseNative* cached_poses = nullptr) {
     write_source_sap_scene_bounds(
         live_boxes,live_source_handles,arrays,scratch,&changes,
-        preserve_source_owned_metadata,gpu_records);
+        preserve_source_owned_metadata,gpu_records,cached_poses);
     return physx::Bp::BroadPhaseUpdateData(
         changes.created.data(),static_cast<physx::PxU32>(changes.created.size()),
         changes.updated.data(),static_cast<physx::PxU32>(changes.updated.size()),
