@@ -193,15 +193,25 @@ public:
         std::span<const native::GpuDyContactManifold> manifolds,
         std::span<const std::uint32_t> contact_order,
         std::span<const native::GpuDyContactPrepPair> contact_prep,
-        std::span<const native::GpuDyBodyIntegrationInput> integration,
+        std::span<native::GpuDyBodyIntegrationInput> integration,
         std::span<native::GpuDyIntegratedPose> integrated_poses) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
+        // Resolve the Sc actor identity into its original ElementSim
+        // volume. Only eligible standalone dynamic boxes have a device
+        // shape-cache write target; every solver body still integrates.
+        for(auto& input:integration)
+            if(input.active)
+                input.source_element=producer_->device_shape_cache_handle(
+                    input.source_element);
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
                             contact_prep,integration,integrated_poses,
                             pcm_?pcm_->contact_stream_address():0u,
-                            pcm_?pcm_->contact_stream_pair_count():0u);
+                            pcm_?pcm_->contact_stream_pair_count():0u,
+                            box_cache_.getDevicePtr(),
+                            sap_->pre_broadphase_buffers().bounds.getDevicePtr(),
+                            box_geometry_.getDevicePtr(),aabb_->capacity());
         ++dy_distance_dispatch_count_;
     }
     std::uint64_t dy_distance_dispatch_count() const noexcept {

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 thomthehound
 // SPDX-License-Identifier: Apache-2.0
 
+#include "physx_source_box_bounds_math_native.hlsli"
+
 // DyConstraintPartition's independent rows execute concurrently within
 // a source conflict partition. Each workgroup owns one disjoint Dy task
 // and preserves the source position/conclude/velocity iteration sequence.
@@ -12,6 +14,18 @@ RWByteAddressBuffer arena : register(u0,space0);
 [[vk::binding(1,0)]]
 #endif
 RWByteAddressBuffer pcmContacts : register(u1,space0);
+#ifdef __spirv__
+[[vk::binding(2,0)]]
+#endif
+RWByteAddressBuffer scTransforms : register(u2,space0);
+#ifdef __spirv__
+[[vk::binding(3,0)]]
+#endif
+RWByteAddressBuffer scBounds : register(u3,space0);
+#ifdef __spirv__
+[[vk::binding(4,0)]]
+#endif
+RWByteAddressBuffer scGeometry : register(u4,space0);
 
 struct Parameters {
     uint bodyBias, distanceBias, descriptorBias, partitionBias;
@@ -253,7 +267,7 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         arena.Store4(to+32u,arena.Load4(from+32u));
         // Source DyBodyCoreIntegrator::integrateCore uses saved
         // position-iteration deltas, not the final velocity deltas.
-        const uint input=p.integrationBias+ordinal*104u;
+        const uint input=p.integrationBias+16u+ordinal*104u;
         if(arena.Load(input+96u)==0u)continue;
         const float3 position=asfloat(arena.Load3(input));
         const float4 quaternion=asfloat(arena.Load4(input+12u));
@@ -314,6 +328,35 @@ void main(uint3 group:SV_GroupID,uint3 lane:SV_GroupThreadID) {
         arena.Store3(destination,asuint(nextPosition));
         arena.Store4(destination+12u,asuint(nextQuaternion));
         arena.Store(destination+28u,1u);
+        const uint element=arena.Load(input+100u);
+        if(element!=0xffffffffu) {
+            const uint4 views=arena.Load4(p.integrationBias);
+            if(element>=views.w) {
+                arena.InterlockedOr(endError,65536u);
+                continue;
+            }
+            const uint geometryIndex=views.z+element*16u;
+            const float3 halfExtents=asfloat(
+                scGeometry.Load3(geometryIndex));
+            const float3 worldExtents=sourceBoxHalfBounds(
+                nextQuaternion,halfExtents);
+            const float3 lower=nextPosition-worldExtents;
+            const float3 upper=nextPosition+worldExtents;
+            if(!all(isfinite(lower)) || !all(isfinite(upper))) {
+                arena.InterlockedOr(endError,65536u);
+                continue;
+            }
+            // Both original source buffers stay resident for the NEXT
+            // GPU SAP frame; Sc's successful solver-end commit decides
+            // whether the device bounds may supersede CPU staging.
+            const uint cache=views.x+element*32u;
+            scTransforms.Store4(cache,asuint(nextQuaternion));
+            scTransforms.Store3(cache+16u,asuint(nextPosition));
+            scTransforms.Store(cache+28u,0u);
+            const uint bound=views.y+element*24u;
+            scBounds.Store3(bound,asuint(lower));
+            scBounds.Store3(bound+12u,asuint(upper));
+        }
     }
     AllMemoryBarrierWithGroupSync();
     if(lane.x==0u)
