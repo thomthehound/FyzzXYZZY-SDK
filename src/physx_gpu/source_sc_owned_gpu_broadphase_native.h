@@ -192,18 +192,23 @@ public:
         std::span<native::GpuDyContactPatch> patches,
         std::span<const native::GpuDyContactManifold> manifolds,
         std::span<const std::uint32_t> contact_order,
-        std::span<const native::GpuDyContactPrepPair> contact_prep) override {
+        std::span<const native::GpuDyContactPrepPair> contact_prep,
+        std::span<const native::GpuDyBodyIntegrationInput> integration,
+        std::span<native::GpuDyIntegratedPose> integrated_poses) override {
         if(!dy_distance_)
             throw std::logic_error("Source GPU Dy shader not installed");
         dy_distance_->solve(bodies,rows,descriptors,partitions,ordinals,tasks,
                             contact_forces,cpu_gu,friction,anchors,patches,manifolds,contact_order,
-                            contact_prep,
+                            contact_prep,integration,integrated_poses,
                             pcm_?pcm_->contact_stream_address():0u,
                             pcm_?pcm_->contact_stream_pair_count():0u);
         ++dy_distance_dispatch_count_;
     }
     std::uint64_t dy_distance_dispatch_count() const noexcept {
         return dy_distance_dispatch_count_;
+    }
+    std::size_t dy_gpu_integrated_body_count() const noexcept {
+        return dy_distance_?dy_distance_->last_integrated_body_count():0u;
     }
     std::size_t pcm_pair_upload_bytes() const noexcept {
         return pcm_ ? pcm_->last_pair_upload_bytes() : 0u;

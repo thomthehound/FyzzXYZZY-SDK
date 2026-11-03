@@ -520,8 +520,9 @@ void verify_gpu_coupled_solver(
         require(producer->dy_pcm_contact_upload_bytes_saved()==
                     device_rows*sizeof(native::GpuDyContactPoint),
                 "Source PCM-derived Dy contacts still upload CPU shadow rows");
-        require(producer->dy_distance_dispatch_count()==frame+1u,
-            "Source coupled Sc scene never dispatched the GPU Dy solver");
+        require(producer->dy_distance_dispatch_count()==frame+1u &&
+                producer->dy_gpu_integrated_body_count()>0u,
+            "Source coupled Sc scene never published GPU-integrated poses");
         require(cpu.contacts().size()==gpu.contacts().size() &&
                 cpu.solved_normal_impulses().size()==
                     gpu.solved_normal_impulses().size() &&
@@ -961,14 +962,22 @@ void verify_gpu_distance_solver(
     std::array<BodyId,4> ids_cpu{},ids_gpu{};
     for(std::size_t i=0;i<ids_cpu.size();++i) {
         const Vec3 position{float(i)*4.0f,3.0f,0.0f};
-        ids_cpu[i]=cpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
-        ids_gpu[i]=gpu.add_dynamic_box({0.3f,0.3f,0.3f},position,1.f);
+        const Vec3 extents=i==0u
+            ? Vec3{0.2f,0.45f,0.3f}:Vec3{0.3f,0.3f,0.3f};
+        ids_cpu[i]=cpu.add_dynamic_box(extents,position,1.f);
+        ids_gpu[i]=gpu.add_dynamic_box(extents,position,1.f);
+        if(i==0u) {
+            constexpr Quat turn{0.0f,0.258819045f,0.0f,0.965925826f};
+            cpu.set_pose(ids_cpu[i],position,turn);
+            gpu.set_pose(ids_gpu[i],position,turn);
+        }
         RigidBodyDynamics d{};
         d.gravity_enabled=false;
         d.position_iterations=5;
         d.velocity_iterations=2;
         d.linear_damping=0.0f;
         d.angular_damping=0.0f;
+        if(i==0u)d.lock_flags=LockAngularX;
         cpu.set_dynamics(ids_cpu[i],d);
         gpu.set_dynamics(ids_gpu[i],d);
     }
@@ -1010,8 +1019,9 @@ void verify_gpu_distance_solver(
         require(cpu.contacts().empty() && gpu.contacts().empty(),
             "Source GPU Dy 1D fixture unexpectedly generated Gu contacts");
         require(producer->dy_distance_dispatch_count()==
-                    static_cast<std::uint64_t>(frame+1),
-            "Source GPU Dy 1D task never dispatched on the device");
+                    static_cast<std::uint64_t>(frame+1) &&
+                producer->dy_gpu_integrated_body_count()>0u,
+            "Source GPU Dy 1D task never published device body motion");
         const auto [uploaded,downloaded]=
             producer->dy_distance_transfer_bytes();
         require(downloaded>0u && downloaded<uploaded/2u,
@@ -1030,8 +1040,12 @@ void verify_gpu_distance_solver(
                     std::fabs(expected.position.y-actual.position.y)<0.001f &&
                     std::fabs(expected.velocity.x-actual.velocity.x)<0.001f &&
                     std::fabs(expected.angular_velocity.z-
-                              actual.angular_velocity.z)<0.001f,
-                "Source GPU Dy 1D solve diverged from production CPU PGS");
+                              actual.angular_velocity.z)<0.001f &&
+                    std::fabs(expected.orientation.x-actual.orientation.x)<0.001f &&
+                    std::fabs(expected.orientation.y-actual.orientation.y)<0.001f &&
+                    std::fabs(expected.orientation.z-actual.orientation.z)<0.001f &&
+                    std::fabs(expected.orientation.w-actual.orientation.w)<0.001f,
+                "Source GPU Dy locked-axis integration diverged from CPU PGS");
         }
     }
 }

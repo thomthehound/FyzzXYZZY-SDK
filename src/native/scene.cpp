@@ -7395,7 +7395,7 @@ void Scene::prepare_constraints(float seconds) {
     friction_by_edge_.swap(next_friction_by_edge_);
     friction_cache_epoch_=next_cache_epoch;
 }
-void Scene::solve_gpu_distance_constraints() {
+void Scene::solve_gpu_distance_constraints(float seconds) {
     // Source Dy owns task, body and 1D row order; the device receives
     // transient packed views of those exact prepared source inputs.
     if(ordered_constraints_.empty())return;
@@ -7416,6 +7416,29 @@ void Scene::solve_gpu_distance_constraints() {
         pack(body.motion_linear_delta,row.motion_linear_delta);
         pack(body.motion_angular_state,row.motion_angular_state);
         body.inverse_mass=row.data.inverse_mass;
+    }
+    gpu_dy_integration_inputs_.assign(solver_rows_.size(),{});
+    gpu_dy_integrated_poses_.resize(solver_rows_.size());
+    for(const BodyId id:solver_active_ids_) {
+        const auto& actor=actors_[id];
+        const auto& row=solver_rows_[actor.solver_row_index];
+        auto& input=gpu_dy_integration_inputs_[actor.solver_row_index];
+        pack(input.position,actor.position);
+        input.orientation[0]=actor.orientation.x;
+        input.orientation[1]=actor.orientation.y;
+        input.orientation[2]=actor.orientation.z;
+        input.orientation[3]=actor.orientation.w;
+        pack(input.linear_velocity,row.data.linear_velocity);
+        pack(input.angular_velocity,row.data.angular_velocity);
+        for(std::size_t axis=0;axis<3u;++axis) {
+            const auto& inertia=row.data.sqrt_inverse_inertia[axis];
+            input.sqrt_inverse_inertia[axis*3u]=inertia.x;
+            input.sqrt_inverse_inertia[axis*3u+1u]=inertia.y;
+            input.sqrt_inverse_inertia[axis*3u+2u]=inertia.z;
+        }
+        input.lock_flags=actor.dynamics.lock_flags;
+        input.seconds=seconds;
+        input.active=row.prepared_generation==solver_preparation_generation_;
     }
     gpu_dy_rows_.resize(distance_rows_.size());
     for(std::size_t i=0;i<distance_rows_.size();++i) {
@@ -7547,7 +7570,9 @@ void Scene::solve_gpu_distance_constraints() {
         gpu_dy_contact_forces_,gpu_dy_gu_inputs_,
         gpu_dy_friction_writeback_,gpu_dy_friction_anchors_,
         gpu_dy_patches_,gpu_dy_manifolds_,gpu_dy_contact_order_,
-        gpu_dy_contact_prep_pairs_);
+        gpu_dy_contact_prep_pairs_,
+        gpu_dy_integration_inputs_,gpu_dy_integrated_poses_);
+    gpu_dy_pose_ready_=true;
     const auto unpack=[](const float(&v)[3]) {
         return Vec3{v[0],v[1],v[2]};
     };
@@ -9245,19 +9270,40 @@ void Scene::integrate_solver_task(
             // integrateCore also locks position-phase motion separately
             // from the final unbiased velocity publication.
             lock_linear_axes(motion_linear,actor.dynamics.lock_flags);
-            const Vec3 p{
-                static_cast<float>(static_cast<double>(actor.position.x) +
-                                   static_cast<double>(motion_linear.x)*seconds),
-                static_cast<float>(static_cast<double>(actor.position.y) +
-                                   static_cast<double>(motion_linear.y)*seconds),
-                static_cast<float>(static_cast<double>(actor.position.z) +
-                                   static_cast<double>(motion_linear.z)*seconds)};
-            if (!finite(p) || !finite(motion_linear) || !finite(motion_angular))
+            if (!finite(motion_linear) || !finite(motion_angular))
                 throw std::overflow_error("Native position-iteration motion overflow");
-            const Quat q = integrate_quaternion(
-                actor.orientation, motion_angular, seconds);
-            if (!finite(q))
-                throw std::overflow_error("Native CPU orientation overflow");
+            Vec3 p{};
+            Quat q{};
+            if(solved_contact && gpu_dy_pose_ready_) {
+                // Dy's source integrateCore result is produced by the
+                // same GPU task that solves this actor's PGS rows.
+                const auto index=actor.solver_row_index;
+                if(index>=gpu_dy_integrated_poses_.size() ||
+                   gpu_dy_integrated_poses_[index].valid!=1u)
+                    throw std::logic_error(
+                        "Source GPU Dy integrateCore pose missing");
+                const auto& result=gpu_dy_integrated_poses_[index];
+                p={result.position[0],result.position[1],result.position[2]};
+                q={result.orientation[0],result.orientation[1],
+                   result.orientation[2],result.orientation[3]};
+            }else {
+                p={
+                    static_cast<float>(static_cast<double>(actor.position.x)+
+                                       static_cast<double>(motion_linear.x)*seconds),
+                    static_cast<float>(static_cast<double>(actor.position.y)+
+                                       static_cast<double>(motion_linear.y)*seconds),
+                    static_cast<float>(static_cast<double>(actor.position.z)+
+                                       static_cast<double>(motion_linear.z)*seconds)};
+                if(!finite(p))
+                    throw std::overflow_error(
+                        "Native position-iteration motion overflow");
+                q=integrate_quaternion(
+                    actor.orientation,motion_angular,seconds);
+                if(!finite(q))
+                    throw std::overflow_error("Native CPU orientation overflow");
+            }
+            if(!finite(p) || !finite(q))
+                throw std::overflow_error("Source GPU Dy integrateCore pose overflow");
             step_checkpoint_.save_motion(*this,id);
             remember_pre_integration_pose(id);
             actor.position = p;
@@ -9470,7 +9516,8 @@ void Scene::step(float seconds) {
     begin_contact_writeback();
     const bool gpu_dy_distance=
         gpu_broadphase_ && gpu_broadphase_->has_gpu_dy_distance();
-    if(gpu_dy_distance)solve_gpu_distance_constraints();
+    gpu_dy_pose_ready_=false;
+    if(gpu_dy_distance)solve_gpu_distance_constraints(seconds);
     // Each source Dy group owns independent accurate islands and disjoint
     // contact, friction, distance and solver-body rows. Admit complete
     // PGS -> PxsSolverEndTask chains when both ranges justify the worker.
