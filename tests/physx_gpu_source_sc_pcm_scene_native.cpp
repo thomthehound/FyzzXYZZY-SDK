@@ -227,6 +227,39 @@ void verify_sparse_contact_stream(
             "Initial sparse PCM manager admission did not upload source pairs");
     check_transitions(12u,0u);
     check_ordinals();
+    // Initial Sc admission sets reset flags on every GPU PCM manager.
+    // Publish the first source refresh to retire those flags before
+    // measuring a genuinely isolated middle-manager edit.
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==
+                12u*sizeof(physx_gpu::SourcePcmBoxPairNative),
+        "Initial PCM reset-bit retirement did not republish all managers");
+    check_ordinals();
+    // Reset only a middle Sc manager in a twelve-pair device input.
+    // Its original pair ordinal and EdgeIndex stay fixed; the GPU
+    // refresh must transfer only that manager's 20-byte descriptor.
+    cpu.set_position(moving_cpu[5],{25.02f,1.f,0.f});
+    gpu.set_position(moving_gpu[5],{25.02f,1.f,0.f});
+    cpu.advance_collision();
+    gpu.advance_collision();
+    require(cpu.contacts().size()==12u && gpu.contacts().size()==12u &&
+            producer->pcm_pair_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmBoxPairNative),
+        "One Sc PCM cache reset retransmitted the whole pair array");
+    check_ordinals();
+    // The reset bit is cleared in the following forced Sc publication,
+    // which must also update just that pair before the next quiet input.
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==
+                sizeof(physx_gpu::SourcePcmBoxPairNative),
+        "One Sc PCM reset-bit retirement retransmitted unrelated pairs");
+    cpu.advance_collision(true);
+    gpu.advance_collision(true);
+    require(producer->pcm_pair_upload_bytes()==0u,
+        "Stable PCM manager descriptors triggered a redundant upload");
+    check_ordinals();
     // Physically retire disjoint managers before their BP EdgeIndex
     // handles are reused. The simultaneous lost and later found sets
     // must remain ordered without a second Sc manifold comparison.
