@@ -237,9 +237,9 @@ BodyId Scene::add(Actor actor,std::optional<AggregateId> aggregate) {
     }
     actors_.push_back(actor);
     if(actor.kind==Kind::StaticPlane) {
-        ++live_plane_count_;
+        if(actor.simulation_shape_enabled)++active_plane_count_;
         if(gpu_broadphase_)plane_pair_membership_dirty_=true;
-    } else if(gpu_broadphase_ && live_plane_count_ &&
+    } else if(gpu_broadphase_ && active_plane_count_ &&
               actor.kind==Kind::DynamicBox)
         plane_pair_membership_dirty_=true;
     live_actor_ids_.push_back(id);
@@ -812,6 +812,10 @@ void Scene::set_shape_simulation_enabled(BodyId id, bool enabled) {
                 edge.pcm_cache={};
         }
     actor.simulation_shape_enabled=enabled;
+    if(actor.kind==Kind::StaticPlane) {
+        if(enabled)++active_plane_count_;
+        else --active_plane_count_;
+    }
     broadphase_endpoint_membership_dirty_=true;
     if(gpu_broadphase_) {
         if(actor.kind==Kind::StaticPlane)
@@ -971,7 +975,8 @@ void Scene::remove(BodyId id) {
         else ++cursor;
     }
     actor.alive = false;
-    if(actor.kind==Kind::StaticPlane)--live_plane_count_;
+    if(actor.kind==Kind::StaticPlane && actor.simulation_shape_enabled)
+        --active_plane_count_;
     std::erase(live_actor_ids_,id);
     broadphase_endpoint_membership_dirty_=true;
     refresh_kinematic_node(id,false);
@@ -2072,7 +2077,7 @@ void Scene::update_gpu_pairs(bool force_update) {
     // the previously published plane manager identities.
     const auto append_plane_managers=[&](
         bool finite_delta,bool rebuild_planes) {
-        if(live_plane_count_ && rebuild_planes) {
+        if(active_plane_count_ && rebuild_planes) {
             for(const BodyId plane:live_actor_ids_) {
                 const auto& actor=actors_[plane];
                 if(!actor.alive || !actor.simulation_shape_enabled ||
@@ -2160,7 +2165,7 @@ void Scene::update_gpu_pairs(bool force_update) {
                 pending_pairs_.push_back(pair);
         // The source BP hash has unordered storage; finite-only Sc
         // refiltering still needs sorted contact-manager identities.
-        if(!live_plane_count_)
+        if(!active_plane_count_)
             std::sort(pending_pairs_.begin(),pending_pairs_.end());
         append_plane_managers(false,true);
         gpu_pair_refilter_dirty_=false;

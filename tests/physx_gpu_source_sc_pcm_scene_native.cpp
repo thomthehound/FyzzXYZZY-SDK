@@ -891,10 +891,18 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         const native::Pair other_pair_gpu{
             std::min(other_gpu,moving_gpu[1]),
             std::max(other_gpu,moving_gpu[1])};
+        const native::Pair other_first_cpu{
+            std::min(other_cpu,moving_cpu[0]),
+            std::max(other_cpu,moving_cpu[0])};
+        const native::Pair other_first_gpu{
+            std::min(other_gpu,moving_gpu[0]),
+            std::max(other_gpu,moving_gpu[0])};
         cpu.advance_collision();
         gpu.advance_collision();
         require(has_pair(cpu.pairs(),other_pair_cpu) &&
                 has_pair(gpu.pairs(),other_pair_gpu) &&
+                has_pair(cpu.pairs(),other_first_cpu) &&
+                has_pair(gpu.pairs(),other_first_gpu) &&
                 has_pair(cpu.pairs(),plane_pair_cpu) &&
                 has_pair(gpu.pairs(),plane_pair_gpu) &&
                 has_pair(cpu.pairs(),pcm_pair_cpu) &&
@@ -906,6 +914,8 @@ void verify_mixed_gu_pcm_gpu_dy_solver(
         gpu.advance_collision();
         require(!has_pair(cpu.pairs(),other_pair_cpu) &&
                 !has_pair(gpu.pairs(),other_pair_gpu) &&
+                !has_pair(cpu.pairs(),other_first_cpu) &&
+                !has_pair(gpu.pairs(),other_first_gpu) &&
                 has_pair(cpu.pairs(),plane_pair_cpu) &&
                 has_pair(gpu.pairs(),plane_pair_gpu),
             "Retiring one Sc plane modified surviving plane membership");
