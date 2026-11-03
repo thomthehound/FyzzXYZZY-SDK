@@ -178,6 +178,13 @@ public:
         handles_dirty_=true;
         require_scene_elements().admit(actor,motion,contact_distance);
     }
+    void admit_shape_element(
+        ShapeId shape,BodyId actor,
+        native::GpuBroadphaseBox::Motion motion,float contact_distance) {
+        handles_dirty_=true;
+        require_scene_elements().admit_shape(
+            shape,actor,motion,contact_distance);
+    }
     void admit_plane(BodyId actor) override {
         require_scene_elements().admit_plane(actor);
     }
